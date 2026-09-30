@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
@@ -24,7 +25,9 @@ import {
   PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
+import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
@@ -46,7 +49,11 @@ import {
   llmCallUsageFields,
   recordLlmCallStrict,
 } from '@maka/runtime/telemetry';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import {
+  buildProviderOptions,
+  getAIModel,
+  leastReasoningThinkingLevel,
+} from '@maka/runtime/model-factory';
 import { stableHash } from '@maka/runtime/request-shape';
 import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
 import {
@@ -223,7 +230,7 @@ export interface HostWorkHubRoutingModel {
       }[];
     }>;
     readonly abortSignal: AbortSignal;
-  }): Promise<WorkHubRoutingDecision>;
+  }): Promise<WorkHubRoutingDecision | undefined>;
 }
 
 /** Uses the Coordination Session's exact saved model target for split Intent and Recall. */
@@ -372,6 +379,7 @@ export function createHostDailyReviewModel(
           callKind: 'daily_review',
           callId: `daily_review_${callId}`,
           abortSignal: effectiveAbortSignal,
+          reasoning: 'least',
           buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
         });
         return {
@@ -387,6 +395,41 @@ export function createHostDailyReviewModel(
       }
     },
   });
+}
+
+const PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS = 128;
+const PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS = 1_024;
+
+export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (
+    source: import('./prompt-suggestion.js').PromptSuggestionSource,
+    abortSignal: AbortSignal,
+  ): Promise<string | undefined> => {
+    const result = await runHostAuxiliaryModelCall(authority, {
+      transportContextId: source.sessionId,
+      telemetrySessionId: source.sessionId,
+      header: source.header,
+      callKind: 'prompt_suggestion',
+      callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
+      abortSignal,
+      reasoning: 'least',
+      buildRequest: (_target, thinkingLevel) => ({
+        prompt: buildPromptSuggestionPrompt(
+          source.messages,
+          source.header.role === 'workhub_coordination',
+        ),
+        // Reasoning tokens count against the output budget. A model that cannot
+        // turn reasoning off spends some at its lowest effort before the line.
+        maxOutputTokens:
+          thinkingLevel === 'off'
+            ? PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS
+            : PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS,
+        maxRetries: 0,
+      }),
+    });
+    return result.finishReason === 'length' ? undefined : result.text;
+  };
 }
 
 /** Creates tool-free Session title and recap calls on canonical Host model authority. */
@@ -545,11 +588,21 @@ interface HostAuxiliaryModelCallInput {
   readonly header: Pick<
     SessionHeader,
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >;
+  > &
+    Partial<Pick<SessionHeader, 'backend'>>;
   readonly callKind: ModelCallKind;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
-  readonly buildRequest: (target: ResolvedExecutionTarget) => AuxiliaryModelRequest;
+  /**
+   * `'least'` replaces the header's thinking level with the least reasoning
+   * the resolved model accepts (see `leastReasoningThinkingLevel`). Without it
+   * the call reasons at the header's level, as the Session's own turns do.
+   */
+  readonly reasoning?: 'least';
+  readonly buildRequest: (
+    target: ResolvedExecutionTarget,
+    thinkingLevel: ThinkingLevel | undefined,
+  ) => AuxiliaryModelRequest;
 }
 
 function createAuxiliaryModelCallAuthority(
@@ -590,6 +643,11 @@ async function runHostAuxiliaryModelCall(
   readonly finishReason?: string;
   readonly modelId: string;
 }> {
+  if (input.header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin executor Sessions do not provide a native auxiliary model',
+    );
+  }
   const target = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(
       () =>
@@ -605,7 +663,11 @@ async function runHostAuxiliaryModelCall(
   const pricingSnapshot = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(() => authority.usage.pricing.snapshot(), input.abortSignal),
   );
-  const request = input.buildRequest(target);
+  const thinkingLevel =
+    input.reasoning === 'least'
+      ? leastReasoningThinkingLevel(target.connection, target.model)
+      : input.header.thinkingLevel;
+  const request = input.buildRequest(target, thinkingLevel);
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
   const transport = authority.createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
@@ -650,7 +712,7 @@ async function runHostAuxiliaryModelCall(
         const providerOptions = buildProviderOptions(
           target.connection,
           target.model,
-          input.header.thinkingLevel,
+          thinkingLevel,
           runtime,
         );
         const model = getAIModel({
@@ -903,9 +965,14 @@ function providerStateIdentityForResolvedExecution(
     Awaited<ReturnType<RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']>>,
     { kind: 'ready' }
   >,
+  model: string,
 ): `sha256:${string}` {
   const credentialBasis = (material: typeof resolved.secretMaterial.connection) =>
     material ? { credentialId: material.credentialId, revision: material.revision } : null;
+  // Provider state from one wire cannot replay on another, so a model whose
+  // declared wire changes starts a new identity. Undeclared stays absent to
+  // keep every other identity unchanged.
+  const apiProtocol = declaredModelApiProtocol(resolved.connection, model);
   return stableHash({
     protocol: 'provider_state_identity_v1',
     connectionId: resolved.connection.connectionId,
@@ -913,6 +980,7 @@ function providerStateIdentityForResolvedExecution(
     endpoint: new URL(effectiveBaseUrl(resolved.connection)).toString(),
     credential: credentialBasis(resolved.secretMaterial.connection),
     requestHeaders: credentialBasis(resolved.secretMaterial.requestHeaders),
+    ...(apiProtocol === undefined ? {} : { apiProtocol }),
   });
 }
 
@@ -967,7 +1035,8 @@ export async function resolveExecutionTarget(
   header: Pick<
     BackendFactoryContext['header'],
     'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
-  >,
+  > &
+    Partial<Pick<BackendFactoryContext['header'], 'backend'>>,
   runtimePolicy: {
     readonly operations: Pick<
       RuntimePolicyStoresWriter['operations'],
@@ -977,6 +1046,11 @@ export async function resolveExecutionTarget(
   oauthCredentials: HostOAuthExecutionAuthority,
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
+  if (header.backend === 'plugin-executor') {
+    throw new AuxiliaryModelCallConfigurationError(
+      'Plugin Executor Sessions do not expose the native auxiliary model authority',
+    );
+  }
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
     executionConnectionRef(header),
   );
@@ -1009,6 +1083,9 @@ export async function resolveExecutionTarget(
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
+    ...(resolved.connection.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: resolved.connection.defaultApiProtocol }),
     defaultModel: model,
     models: discovered
       ? [...resolved.connection.models]
@@ -1023,7 +1100,7 @@ export async function resolveExecutionTarget(
   const requestHeaders = resolved.secretMaterial.requestHeaders
     ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
     : {};
-  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved);
+  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved, model);
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {

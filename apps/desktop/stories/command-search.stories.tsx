@@ -19,14 +19,16 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useEffect, useState } from 'react';
-import type { SearchErrorReason, SearchResult } from '@maka/core/search';
+import type {
+  RecallSearchOutcome,
+  RecallSearchPassage,
+} from '@maka/ui';
 import { SearchModal } from '@maka/ui';
 import {
   Download,
   FolderOpen,
   Plus,
   Settings,
-  Sparkles,
 } from '@maka/ui/icons';
 import {
   CommandPalette,
@@ -51,36 +53,62 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type SearchResponse = SearchResult[] | { ok: false; reason: SearchErrorReason; message: string };
+type SearchResponse = RecallSearchOutcome | { ok: false; reason: string; message: string };
 type SearchModalDeps = NonNullable<Parameters<typeof SearchModal>[0]['deps']>;
 
 const noop = () => undefined;
 const noopNavigate = (_sessionId: string, _turnId?: string) => undefined;
 const EMPTY_HIDDEN_SESSIONS: ReadonlySet<string> = new Set();
 
-const threadResults: SearchResult[] = [
-  {
-    source: 'thread',
-    title: 'Benchmark 结果横评',
-    summary: '任务 · 今天 10:24',
-    snippet: '把 benchmark 输出整理成稳定的对比表，再补一轮 verifier。',
-    target: { kind: 'thread', sessionId: 'session-benchmark', turnId: 'turn-benchmark-table' },
-    truncated: true,
-  },
-  {
-    source: 'thread',
-    title: 'Command palette 搜索状态',
-    summary: '任务 · 昨天 18:42',
-    snippet: 'content search blocked state 要保持 disabled，不能触发关闭。',
-    target: { kind: 'thread', sessionId: 'session-command-search' },
-  },
-  {
-    source: 'thread',
-    title: 'Harbor adapter metadata',
-    summary: '任务 · 周一',
-    snippet: '确认 provider env passthrough，不要复制本地 adapter。',
-    target: { kind: 'thread', sessionId: 'session-harbor', turnId: 'turn-provider-env' },
-  },
+function passage(
+  sessionId: string,
+  sessionTitle: string,
+  anchorText: string,
+  matchKind: string,
+  turnId?: string,
+): RecallSearchPassage {
+  return {
+    sessionId,
+    sessionTitle,
+    ...(turnId ? { turnId } : {}),
+    anchorMessageId: `${sessionId}-anchor`,
+    sequence: 4,
+    messages: [
+      {
+        messageId: `${sessionId}-anchor`,
+        role: 'assistant',
+        matchKind,
+        text: anchorText,
+        timestamp: 1_700_000_000_000,
+        isAnchor: true,
+      },
+    ],
+    matchedTerms: [],
+    score: 1,
+  };
+}
+
+const recallPassages: RecallSearchPassage[] = [
+  passage(
+    'session-benchmark',
+    'Benchmark 结果横评',
+    '把 benchmark 输出整理成稳定的对比表，再补一轮 verifier。',
+    'assistant_message',
+    'turn-benchmark-table',
+  ),
+  passage(
+    'session-command-search',
+    'Command palette 搜索状态',
+    'content search blocked state 要保持 disabled，不能触发关闭。',
+    'user_message',
+  ),
+  passage(
+    'session-harbor',
+    'Harbor adapter metadata',
+    '确认 provider env passthrough，不要复制本地 adapter。',
+    'tool_intent',
+    'turn-provider-env',
+  ),
 ];
 
 const paletteCommands: Command[] = [
@@ -94,16 +122,7 @@ const paletteCommands: Command[] = [
     keywords: ['new', 'chat', '新建'],
     run: noop,
   },
-  {
-    id: 'action:new-deep-research',
-    kind: 'action',
-    label: '新建深度研究',
-    hint: '只读探索',
-    group: '操作',
-    Icon: Sparkles,
-    keywords: ['deep', 'research', '研究'],
-    run: noop,
-  },
+
   {
     id: 'settings:models',
     kind: 'action',
@@ -162,7 +181,10 @@ storyCatalog.commitSessions([benchmarkSession]);
 
 function searchModalDeps(response: SearchResponse): SearchModalDeps {
   return {
-    searchThread: async () => response,
+    searchRecall: async () =>
+      Array.isArray((response as RecallSearchOutcome).passages)
+        ? (response as RecallSearchOutcome)
+        : (response as { ok: false; reason: string; message: string }),
   };
 }
 
@@ -260,11 +282,17 @@ export const CommandPaletteGroupedResults: Story = {
   ),
 };
 
+const recallOutcome: RecallSearchOutcome = {
+  passages: recallPassages,
+  gaps: 'Searched 3 Session(s).',
+  searchedEverySession: true,
+};
+
 // Real path: same modal with matches, grouped by session with the matched excerpt.
 export const SearchModalResults: Story = {
   render: () => (
     <SearchModalFrame
-      deps={searchModalDeps(threadResults)}
+      deps={searchModalDeps(recallOutcome)}
     />
   ),
   play: async ({ canvasElement }) => {

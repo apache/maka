@@ -26,6 +26,7 @@ import { act, createElement, createRef, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   createDefaultSettings,
   mergeSettings,
@@ -97,7 +98,7 @@ afterEach(() => Object.assign(globalThis, originalGlobals));
 
 /** Install a linkedom DOM + the browser globals React DOM needs, return the root. */
 function setupDom(): { container: HTMLElement; root: Root } {
-  const { document, window } = parseHTML('<div id="root"></div>');
+  const { document, window } = parseHTML('<html><body><div id="root"></div></body></html>');
   const matchMedia = (media: string) => ({
     matches: false,
     media,
@@ -108,13 +109,16 @@ function setupDom(): { container: HTMLElement; root: Root } {
     removeEventListener() {},
     dispatchEvent: () => false,
   });
-  Object.assign(window, { matchMedia, scrollTo: () => {} });
+  const getComputedStyle = () => ({
+    color: 'currentColor', direction: 'ltr', writingMode: 'horizontal-tb', getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(window, { matchMedia, getComputedStyle, scrollTo: () => {} });
   Object.assign(globalThis, {
     document,
     window,
     matchMedia,
     HTMLElement: window.HTMLElement,
-    getComputedStyle: () => ({ color: 'currentColor' }) as CSSStyleDeclaration,
+    getComputedStyle,
     requestAnimationFrame: (cb: FrameRequestCallback) => setTimeout(cb, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     CSS: { supports: () => false, escape: (v: string) => v },
@@ -139,9 +143,10 @@ function tree(opts: {
   settings: AppSettings;
   targetKey: string;
   services: UsageServices;
+  locale?: UiLocale;
 }): ReactNode {
   return createElement(LocaleProvider, {
-    locale: 'en' as const,
+    locale: opts.locale ?? 'en',
     children: createElement(AstryxLocaleProvider, {
       children: createElement(ToastProvider, {
         children: createElement(UsageFeatureScope, {
@@ -167,6 +172,162 @@ const flush = async () => {
 };
 
 describe('Usage feature scope', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    it(`keeps exact token counts accessible in all Usage tables in ${locale}`, async () => {
+      const { container, root } = setupDom();
+      const cases = [
+        { count: 0, compact: '0', exact: '0' },
+        { count: 999, compact: '999', exact: '999' },
+        { count: 45_200, compact: '45.2K', exact: '45,200' },
+        { count: 1_048_576, compact: '1M', exact: '1,048,576' },
+        { count: 1_000_000_000, compact: '1B', exact: '1,000,000,000' },
+      ];
+      const stats = statsWithRequests(1_284);
+      stats.logs = cases.map(({ count }, index) => ({
+        id: `request-${index}`, ts: 1, kind: 'model',
+        provider: `provider-${index}`, model: `model-${index}`,
+        inputTokens: Math.floor(count / 2), outputTokens: count - Math.floor(count / 2),
+        costUsd: 12.34, latencyMs: 1_284, status: 'success',
+      }));
+      stats.byProvider = cases.map(({ count }, index) => ({
+        provider: `provider-${index}`, requests: 1_284, tokens: count, costUsd: 12.34,
+      }));
+      stats.byModel = cases.map(({ count }, index) => ({
+        model: `model-${index}`, requests: 1_284, tokens: count, costUsd: 12.34,
+      }));
+      const base = mergeSettings(createDefaultSettings(), {
+        usage: { range: 'all', activeTab: 'providers', showDetails: true },
+      });
+      const services: UsageServices = {
+        loadUsageStats: async () => stats,
+        updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+      };
+      try {
+        for (const activeTab of ['providers', 'models', 'requests'] as const) {
+          const settings = mergeSettings(base, { usage: { activeTab } });
+          await act(async () => {
+            root.render(tree({ active: true, settings, targetKey: 'host', services, locale }));
+            await flush();
+          });
+          const rows = container.querySelectorAll('tbody tr');
+          assert.equal(rows.length, cases.length);
+          for (const [index, expected] of cases.entries()) {
+            const cells = rows[index]!.querySelectorAll('td');
+            const tokenIndex = activeTab === 'requests' ? 4 : 2;
+            const tokenCell = cells[tokenIndex]!;
+            assert.equal(tokenCell.textContent, expected.compact);
+            assert.equal(cells[tokenIndex + 1]?.textContent, '$12.34');
+            assert.equal(activeTab === 'requests' ? cells[6]?.textContent : cells[1]?.textContent,
+              activeTab === 'requests' ? '1284ms' : '1284');
+            if (expected.count < 1_000) {
+              assert.equal(tokenCell.querySelectorAll('[tabindex], [aria-describedby]').length, 0,
+                'already exact values must not add tooltip tab stops');
+              continue;
+            }
+            const trigger = tokenCell.querySelector<HTMLElement>('[tabindex="0"][aria-describedby]');
+            assert.ok(trigger, 'abbreviated counts must expose exact values to keyboard users');
+            const originalMatches = trigger.matches.bind(trigger);
+            // linkedom has no keyboard modality or :focus-visible implementation.
+            trigger.matches = ((selector: string) => selector === ':focus-visible'
+              || originalMatches(selector)) as typeof trigger.matches;
+            try {
+              await act(async () => {
+                trigger.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+                await flush();
+              });
+              const tooltip = document.getElementById(trigger.getAttribute('aria-describedby')!);
+              assert.ok(tooltip);
+              assert.equal(tooltip.getAttribute('role'), 'tooltip');
+              assert.equal(tooltip.textContent, expected.exact);
+              assert.notEqual(tooltip.style.display, 'none');
+            } finally {
+              trigger.matches = originalMatches;
+              await act(async () => {
+                trigger.dispatchEvent(new window.Event('focusout', { bubbles: true }));
+                await flush();
+              });
+            }
+          }
+        }
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+  }
+
+  it('renders large token totals and breakdowns in compact form on the Usage page', async () => {
+    const { container, root } = setupDom();
+    const base = mergeSettings(createDefaultSettings(), {
+      usage: { range: '24h', activeTab: 'providers' },
+    });
+    const stats = statsWithRequests(12_647_391);
+    Object.assign(stats.summary, {
+      totalTokens: 12_647_391,
+      inputTokens: 12_497_391,
+      outputTokens: 150_000,
+      cacheTokens: 10_000_000,
+      cacheMiss: 2_497_391,
+      cacheRead: 9_500_000,
+      cacheCreation: 500_000,
+    });
+    stats.byProvider = [
+      { provider: 'provider-a', requests: 1, tokens: 12_647_391, costUsd: 1 },
+    ];
+    stats.byModel = [
+      { model: 'model-a', requests: 1, tokens: 12_647_391, costUsd: 1 },
+    ];
+    const services: UsageServices = {
+      loadUsageStats: async () => stats,
+      updateUsageSettings: async (patch) => mergeSettings(base, { usage: patch }).usage,
+    };
+
+    try {
+      await act(async () => {
+        root.render(tree({ active: true, settings: base, targetKey: 'hostA:1', services }));
+        await flush();
+      });
+
+      const tiles = Array.from(container.querySelectorAll('[data-slot="stat-tile"]'));
+      for (const [label, value, detail] of [
+        ['Model calls', '12.6M', undefined],
+        ['Total tokens', '12.6M', 'Input 12.5M / output 150K'],
+        ['Cache tokens', '10M', 'New 2.5M / hit 9.5M / created 500K'],
+      ]) {
+        const tile = tiles.find(
+          (element) => element.querySelector('[data-slot="stat-tile-label"]')?.textContent === label,
+        );
+        assert.ok(tile, `${label} tile should render`);
+        assert.equal(tile.querySelector('[data-slot="stat-tile-value"]')?.textContent, value);
+        if (detail !== undefined) {
+          assert.equal(tile.querySelector('[data-slot="stat-tile-detail"]')?.textContent, detail);
+        }
+      }
+      assert.doesNotMatch(container.textContent ?? '', /12647391/);
+
+      const providerTable = container.querySelector('table');
+      assert.ok(providerTable, 'provider table should render');
+      assert.match(providerTable.textContent ?? '', /12\.6M/);
+      assert.doesNotMatch(providerTable.textContent ?? '', /12647391/);
+
+      const modelSettings = mergeSettings(base, { usage: { activeTab: 'models' } });
+      await act(async () => {
+        root.render(tree({
+          active: true,
+          settings: modelSettings,
+          targetKey: 'hostA:1',
+          services,
+        }));
+        await flush();
+      });
+      const modelTable = container.querySelector('table');
+      assert.ok(modelTable, 'model table should render');
+      assert.match(modelTable.textContent ?? '', /12\.6M/);
+      assert.doesNotMatch(modelTable.textContent ?? '', /12647391/);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('re-displays the last snapshot immediately when returning to the section, then refreshes', async () => {
     const { container, root } = setupDom();
     const base: AppSettings = mergeSettings(createDefaultSettings(), {
@@ -629,6 +790,8 @@ it('capacity failure never retries and retains the original query until a comple
   await act(async () => {root.render(scopeTree(services, Probe)); await flush();});
   await act(async () => {await scope.reload('all');});
   assert.equal(calls, 1); assert.equal(scope.state, 'error'); assert.equal(Boolean(scope.stats), false);
+  assert.deepEqual(scope.failure, {kind: 'screen_response_too_large', section: 'pricing'});
+  assert.equal(scope.error, null, 'typed capacity is not flattened into an error string');
   fail = false;
   await act(async () => {await scope.reload('all', {search: 'old-filter', status: 'all'});});
   fail = true;
@@ -677,6 +840,7 @@ it('numbered pages are present initially and jumping to the last page keeps the 
   await act(async () => {button('Go to page 3').click(); await flush();});
   assert.equal(calls, 1);
   assert.equal(button('Go to next page').disabled, true);
+  assert.match(container.textContent ?? '', /Loading page 1 of 3/);
   assert.match(container.textContent ?? '', /first-0/);
   await act(async () => {
     continuation.resolve({kind: 'activity', page: {revision: 'same-revision', queryIdentity: 'query',
@@ -697,3 +861,163 @@ it('numbered pages are present initially and jumping to the last page keeps the 
   assert.equal(calls, 2, 'returning to a cached page does not fetch again');
   await act(async () => root.unmount());
 });
+
+it('debounces search edits, refreshes immediately, and cancels pending queries on unmount', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const {container, root} = setupDom();
+  let settings = mergeSettings(createDefaultSettings(), {
+    usage: {range: 'all', activeTab: 'requests', showDetails: true},
+  });
+  const queries: UsageScreenQuery[] = [];
+  const services: UsageServices = {
+    loadUsageStats: async (_range, query) => {
+      assert.ok(query);
+      queries.push(query);
+      return navigable(0, query, 'query');
+    },
+    updateUsageSettings: async (patch) => mergeSettings(settings, {usage: patch}).usage,
+  };
+  const render = async (search: string, targetKey = 'host') => {
+    settings = mergeSettings(settings, {usage: {modelFilter: search}});
+    await act(async () => {
+      root.render(tree({active: true, settings, targetKey, services}));
+      await flush();
+    });
+  };
+  const tick = async (ms: number) => {
+    await act(async () => {
+      t.mock.timers.tick(ms);
+      await flush();
+    });
+  };
+
+  await render('');
+  assert.equal(queries.length, 1, 'mount loads immediately');
+  await render('a');
+  await tick(200);
+  await render('ab');
+  await tick(249);
+  assert.equal(queries.length, 1);
+  await tick(1);
+  assert.deepEqual(queries.map((query) => query.search), ['', 'ab']);
+  assert.deepEqual(queries[1]!.range, queries[0]!.range, 'typing preserves time bounds');
+
+  await render(' AB  ');
+  await tick(250);
+  assert.equal(queries.length, 2, 'an equivalent normalized search keeps the current screen');
+
+  await render('abc');
+  await act(async () => {
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh usage"]');
+    assert.ok(refresh);
+    refresh.click();
+    await flush();
+  });
+  assert.equal(queries.at(-1)!.search, 'abc');
+  await tick(250);
+  assert.equal(queries.length, 3, 'refresh consumes the pending search');
+
+  await render('host-search');
+  await render('host-search', 'new-host');
+  assert.equal(queries.length, 4, 'Host change bypasses debounce');
+  await tick(250);
+  assert.equal(queries.length, 4, 'old Host timer was cancelled');
+
+  await render('unmounted', 'new-host');
+  await act(async () => root.unmount());
+  await tick(250);
+  assert.equal(queries.length, 4, 'unmount cancels the pending query');
+});
+
+for (const failure of ['revision_changed', 'screen_response_too_large', 'filter_error'] as const) {
+  it(`keeps cached navigation after ${failure}`, async () => {
+    const {container, root} = setupDom();
+    const settings = mergeSettings(createDefaultSettings(), {
+      usage: {range: 'all', activeTab: 'requests', showDetails: true},
+    });
+    const row = (id: string) => ({
+      id,
+      ts: 1,
+      kind: 'model' as const,
+      provider: 'p',
+      model: id,
+      inputTokens: 0,
+      outputTokens: 0,
+      status: 'success' as const,
+    });
+    let calls = 0;
+    const services: UsageServices = {
+      loadUsageStats: async (_range, query) => {
+        assert.ok(query);
+        if (failure === 'filter_error' && query.status === 'error') throw new Error('filter failed');
+        return {
+          ...navigable(151, query, 'query'),
+          logs: Array.from({length: 50}, (_, index) => row(`first-${index}`)),
+        };
+      },
+      loadUsageActivity: async () => {
+        calls++;
+        if (calls > 1) {
+          return failure === 'revision_changed'
+            ? {kind: 'revision_changed'}
+            : {kind: 'screen_response_too_large', section: 'activity_page'};
+        }
+        return {
+          kind: 'activity',
+          page: {
+            revision: 'same-revision',
+            queryIdentity: 'query',
+            nextCursor: 'third',
+            logs: Array.from({length: 50}, (_, index) => row(`second-${index}`)),
+          },
+        };
+      },
+      updateUsageSettings: async () => settings.usage,
+    };
+    const button = (label: string) => {
+      const result = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+      assert.ok(result, label);
+      return result;
+    };
+    const click = async (label: string) => {
+      await act(async () => {
+        button(label).click();
+        await flush();
+      });
+    };
+
+    await act(async () => {
+      root.render(tree({active: true, settings, targetKey: 'host', services}));
+      await flush();
+    });
+    await click('Go to page 2');
+    assert.match(container.textContent ?? '', /second-0/);
+    if (failure === 'filter_error') {
+      const filteredSettings = mergeSettings(settings, {usage: {status: 'error'}});
+      await act(async () => {
+        root.render(tree({active: true, settings: filteredSettings, targetKey: 'host', services}));
+        await flush();
+      });
+    } else {
+      await click('Go to page 3');
+    }
+
+    const expectedCalls = failure === 'filter_error' ? 1 : 2;
+    assert.equal(calls, expectedCalls);
+    assert.equal(button('Go to next page').disabled, true);
+    assert.equal(button('Go to page 3').disabled, true);
+    assert.equal(button('Go to page 4').disabled, true);
+    assert.equal(button('Go to previous page').disabled, false);
+    await click('Go to page 1');
+    assert.match(container.textContent ?? '', /first-0/);
+    assert.equal(button('Go to next page').disabled, false);
+    await click('Go to next page');
+    assert.match(container.textContent ?? '', /second-0/);
+    await click('Go to previous page');
+    assert.match(container.textContent ?? '', /first-0/);
+    await click('Go to page 2');
+    assert.match(container.textContent ?? '', /second-0/);
+    assert.equal(calls, expectedCalls, 'cached navigation never requests another Host page');
+    await act(async () => root.unmount());
+  });
+}

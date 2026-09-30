@@ -873,7 +873,7 @@ function capability(): InteractionPendingSnapshot {
       contractId: 'contract-1',
       serverId: 'server-1',
       toolName: 'read',
-      capability: 'desktop_mcp',
+      capability: 'mcp',
       scope: { kind: 'mcp_tool', serverId: 'server-1', toolName: 'read' },
     },
   });

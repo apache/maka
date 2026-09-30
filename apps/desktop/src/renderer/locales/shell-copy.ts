@@ -37,7 +37,6 @@ import type { DesktopSessionUpdateFailureCode } from '../../shared/desktop-sessi
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
   'action:side-chat',
-  'action:new-deep-research',
   'action:new-scheduled-task',
   'action:open-settings',
   'action:keyboard-help',
@@ -86,7 +85,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '任务',
     '追问',
   ],
-  'action:new-deep-research': ['deep', 'research', 'explore', 'readonly', '研究', '深度', '探索', '只读'],
   'action:new-scheduled-task': ['plan', 'task', 'schedule', 'new', 'create', '计划', '提醒', '新建', '创建'],
   'action:open-settings': ['settings', 'preferences', '设置', 'options'],
   'action:keyboard-help': ['shortcuts', 'keyboard', 'help', '快捷键', '帮助'],
@@ -151,7 +149,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
 type ShellCopy = {
   navigation: {
     settings: string;
-    backToWorkHub: string;
   };
   actions: {
     retry: string;
@@ -267,6 +264,13 @@ type ShellCopy = {
     unarchiveFailedTitle: string;
     renameFailedTitle: string;
     deleteFailedTitle: string;
+    /** Toast title when a task cannot be re-filed into another project. */
+    moveFailedTitle: string;
+    /** Why a re-file was refused, keyed by the Host's failure code. */
+    moveFailures: Record<
+      'session_busy' | 'operation_conflict' | 'operation_unavailable' | 'not_found',
+      string
+    >;
     currentConversation: string;
     deleteTitle(name: string): string;
     deleteDescription: string;
@@ -541,11 +545,6 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
-  'action:new-deep-research': {
-    label: '新建深度研究',
-    hint: '只读探索',
-    group: '操作',
-  },
   'action:new-scheduled-task': {
     label: '新建定时任务',
     hint: '打开定时任务表单',
@@ -629,11 +628,6 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:side-chat': {
     label: 'Open side chat',
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
-    group: 'Actions',
-  },
-  'action:new-deep-research': {
-    label: 'New deep research',
-    hint: 'Read-only exploration',
     group: 'Actions',
   },
   'action:new-scheduled-task': {
@@ -756,7 +750,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
 
 const SHELL_COPY_BY_LOCALE = {
   'zh-CN': {
-    navigation: { settings: '设置', backToWorkHub: '返回 WorkHub' },
+    navigation: { settings: '设置' },
     actions: { retry: '重试' },
     paths: {
       workspace: '工作区文件夹',
@@ -891,6 +885,13 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: '恢复任务失败',
       renameFailedTitle: '重命名任务失败',
       deleteFailedTitle: '删除任务失败',
+      moveFailedTitle: '移动任务失败',
+      moveFailures: {
+        session_busy: '任务正在运行，结束后再移动。',
+        operation_conflict: '该项目当前不可用，无法移入。',
+        operation_unavailable: '当前无法移动这个任务。',
+        not_found: '找不到该项目或任务。',
+      },
       currentConversation: '当前任务',
       deleteTitle: (name: string) => `删除 "${name}"`,
       deleteDescription: '任务和全部消息会从磁盘上永久移除。该操作不可撤销。',
@@ -1021,6 +1022,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '单个附件超出大小限制。',
+        item_unreadable: '有附件无法读取，可能是文件夹或已被移动。请移除后重新添加。',
         items_invalid: '附件信息无效，请重新选择文件后再发送。',
         count_limit: '一次最多添加 8 个附件。',
         duplicate_source: '附件来源重复，请勿重复添加同一文件。',
@@ -1146,7 +1148,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 输入',
           rows: [
-            { keys: ['Enter'], description: '发送消息' },
+            { keys: ['Enter'], description: '发送消息（运行中加入下一轮队列）' },
+            { keys: ['⌘', 'Enter'], description: '模型运行中调整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入换行' },
             { keys: ['Alt', 'Enter'], description: '插入换行（备用）' },
           ],
@@ -1274,7 +1277,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   'zh-TW': {
-    navigation: { settings: '設定', backToWorkHub: '返回 WorkHub' },
+    navigation: { settings: '設定' },
     actions: { retry: '重試' },
     paths: {
       workspace: '工作區資料夾',
@@ -1409,6 +1412,13 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: '恢復任務失敗',
       renameFailedTitle: '重新命名任務失敗',
       deleteFailedTitle: '刪除任務失敗',
+      moveFailedTitle: '移動任務失敗',
+      moveFailures: {
+        session_busy: '任務正在執行，結束後再移動。',
+        operation_conflict: '該專案目前無法使用，無法移入。',
+        operation_unavailable: '目前無法移動這個任務。',
+        not_found: '找不到該專案或任務。',
+      },
       currentConversation: '目前任務',
       deleteTitle: (name: string) => `刪除 "${name}"`,
       deleteDescription: '任務和全部訊息會從磁碟上永久移除。該操作不可撤銷。',
@@ -1539,6 +1549,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: '單一附件超出大小限制。',
+        item_unreadable: '有附件無法讀取，可能是資料夾或已被移動。請移除後重新新增。',
         items_invalid: '附件資訊無效，請重新選擇檔案後再傳送。',
         count_limit: '一次最多新增 8 個附件。',
         duplicate_source: '附件來源重複，請勿重複新增同一檔案。',
@@ -1664,7 +1675,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 輸入',
           rows: [
-            { keys: ['Enter'], description: '傳送訊息' },
+            { keys: ['Enter'], description: '傳送訊息（執行中加入下一輪佇列）' },
+            { keys: ['⌘', 'Enter'], description: '模型執行中調整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入換行' },
             { keys: ['Alt', 'Enter'], description: '插入換行（備用）' },
           ],
@@ -1792,7 +1804,7 @@ const SHELL_COPY_BY_LOCALE = {
     },
   },
   en: {
-    navigation: { settings: 'Settings', backToWorkHub: 'Back to WorkHub' },
+    navigation: { settings: 'Settings' },
     actions: { retry: 'Retry' },
     paths: {
       workspace: 'workspace',
@@ -1929,6 +1941,13 @@ const SHELL_COPY_BY_LOCALE = {
       unarchiveFailedTitle: 'Could not restore task',
       renameFailedTitle: 'Could not rename task',
       deleteFailedTitle: 'Could not delete task',
+      moveFailedTitle: 'Could not move task',
+      moveFailures: {
+        session_busy: 'A task is running. Wait for it to finish before moving this one.',
+        operation_conflict: 'That project is unavailable right now, so the task cannot move into it.',
+        operation_unavailable: 'This task cannot be moved right now.',
+        not_found: 'That project or task could not be found.',
+      },
       currentConversation: 'Current task',
       deleteTitle: (name: string) => `Delete "${name}"`,
       deleteDescription:
@@ -2063,6 +2082,7 @@ const SHELL_COPY_BY_LOCALE = {
       },
       attachmentIngestBlocked: {
         item_too_large: 'One attachment exceeds the size limit.',
+        item_unreadable: 'An attachment could not be read. It may be a folder or may have moved. Remove it and add it again.',
         items_invalid: 'The attachment list is invalid. Pick the files again and resend.',
         count_limit: 'At most 8 attachments per message.',
         duplicate_source: 'Duplicate attachment source. Do not add the same file twice.',
@@ -2194,7 +2214,8 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer',
           rows: [
-            { keys: ['Enter'], description: 'Send the message' },
+            { keys: ['Enter'], description: 'Send the message (queue next turn while running)' },
+            { keys: ['⌘', 'Enter'], description: 'Steer the running turn' },
             { keys: ['Shift', 'Enter'], description: 'Insert a line break' },
             {
               keys: ['Alt', 'Enter'],

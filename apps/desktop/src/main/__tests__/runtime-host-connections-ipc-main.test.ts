@@ -79,7 +79,6 @@ test('registers pure Connection reads for replacement-Host retry', () => {
     'connections:getRequestHeaders',
     'connections:getSnapshot',
     'connections:hasSecret',
-    'connections:usage',
   ]);
   assert.ok(effects.has('connections:create'));
   assert.ok(effects.has('connections:onboardingVerify'));
@@ -288,7 +287,8 @@ test('retries connection delete after a stale revision instead of failing perman
             revision,
             slug: 'openrouter',
             name: 'OpenRouter',
-            providerType: 'openai-compatible',
+            providerType: 'custom',
+            defaultApiProtocol: 'openai-chat',
             baseUrl: 'https://openrouter.ai/api/v1',
             enabled: true,
             catalogEntries: [],
@@ -427,41 +427,6 @@ test('reports an existing but unconfigured credential as missing', async () => {
   );
 });
 
-test('reads connection usage Host-side and rejects an identity with extra keys', async () => {
-  const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  let readFor: string | undefined;
-  registerRuntimeHostConnectionsIpc({
-    ipcMain: {
-      handle: (channel, handler) => {
-        handlers.set(channel, handler as (...args: unknown[]) => unknown);
-      },
-    },
-    client: {
-      loadConnectionCatalog: async () => catalog(),
-      readConnectionUsage: async (connectionId: string) => {
-        readFor = connectionId;
-        return { kind: 'unavailable', reason: 'unsupported' };
-      },
-    } as never,
-    emitConnectionListChanged() {},
-  });
-
-  assert.deepEqual(
-    await handlers.get('connections:usage')?.({}, connectionIdentity()),
-    { kind: 'unavailable', reason: 'unsupported' },
-  );
-  assert.equal(readFor, 'connection-1');
-
-  // The renderer bug this guards: passing the whole projected connection
-  // instead of the narrow identity. Structural typing lets the extra fields
-  // through at compile time, so the boundary must refuse them at runtime.
-  await assert.rejects(
-    async () =>
-      handlers.get('connections:usage')?.({}, { ...connectionIdentity(), name: 'OpenRouter' }),
-    /Invalid Connection identity/i,
-  );
-});
-
 test('keeps saved custom header values out of the renderer and preserves them by name', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let replacedHeaders: unknown;
@@ -574,7 +539,8 @@ test('projects the Host default target without inventing a second Connection aut
       connectionId: 'connection-1',
       slug: 'openrouter',
       name: 'OpenRouter',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-chat',
       baseUrl: 'https://openrouter.ai/api/v1',
       enabled: true,
       defaultModel: 'model-1',
@@ -645,7 +611,8 @@ function catalog(): ConnectionCatalogSnapshot {
         revision: 4,
         slug: 'openrouter',
         name: 'OpenRouter',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         baseUrl: 'https://openrouter.ai/api/v1',
         enabled: true,
         enabledModelIds: ['model-1', 'model-2'],

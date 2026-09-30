@@ -28,11 +28,16 @@ import {
   readRuntimeHostSessions,
   readRuntimeHostProjects,
   RuntimeHostOperationError,
+  isRuntimeHostReconnectingConnection,
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
+import type {
+  InteractionPendingSnapshot,
+  SessionCatalogItem,
+  TurnResumePlan,
+} from '@maka/runtime-host/protocol';
 import {
   runMakaTextCliCore,
   type MakaRunContext,
@@ -51,6 +56,7 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriver,
 } from './runtime-host-session-driver.js';
+import { RuntimeHostRunMcp } from './runtime-host-run-mcp.js';
 import type { CreateSessionRequest, MakaPreparedSessionTurn } from './session-driver.js';
 import {
   formatRuntimeHostCliTaskBlockers,
@@ -165,6 +171,11 @@ export function createRuntimeHostRunContext(
     createDriver: createRuntimeHostMakaSessionDriver,
     ...overrides,
   };
+  const mcp =
+    (!input.hostProfileId || input.hostProfileId === 'local') &&
+    isRuntimeHostReconnectingConnection(connection)
+      ? new RuntimeHostRunMcp(input.workspaceRoot, connection)
+      : undefined;
   const driver = contextDeps.createDriver({
     connection,
     cwd: input.cwd,
@@ -176,10 +187,12 @@ export function createRuntimeHostRunContext(
         ? { kind: 'client_path' }
         : { kind: 'host' },
     ...(input.projectId ? { workspace: { kind: 'project', projectId: input.projectId } } : {}),
+    ...(mcp ? { prepareSession: (sessionId: string) => mcp.prepare(sessionId) } : {}),
   });
   const runtime = new RuntimeHostRunRuntime(
     connection,
     driver,
+    mcp,
     input.runOutcomeObserver,
     input.enableAgentGraph === true,
     input.sessionCwdOverride,
@@ -249,6 +262,7 @@ type ActiveRuntimeHostTurn = {
 class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #connection: RuntimeHostConnection;
   readonly #driver: RuntimeHostMakaSessionDriver;
+  readonly #mcp: RuntimeHostRunMcp | undefined;
   readonly #observer: ((outcome: MakaRunOutcome) => void | Promise<void>) | undefined;
   readonly #graphEnabled: boolean;
   readonly #sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'];
@@ -273,6 +287,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   constructor(
     connection: RuntimeHostConnection,
     driver: RuntimeHostMakaSessionDriver,
+    mcp: RuntimeHostRunMcp | undefined,
     observer: ((outcome: MakaRunOutcome) => void | Promise<void>) | undefined,
     graphEnabled: boolean,
     sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'],
@@ -280,6 +295,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   ) {
     this.#connection = connection;
     this.#driver = driver;
+    this.#mcp = mcp;
     this.#observer = observer;
     this.#graphEnabled = graphEnabled;
     this.#sessionCwdOverride = sessionCwdOverride;
@@ -308,6 +324,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 
   async *sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent> {
     await this.#attach(sessionId);
+    await this.#mcp?.ready();
     if (this.#stopRequested) throw new Error('Turn was cancelled before start');
     if (input.turnOrchestration?.mode === 'graph') {
       this.#graphAdmissionTurnIds = graphSupervisorTurnIds(await this.#driver.readMessages());
@@ -317,6 +334,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       turnId: input.turnId,
       ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
       ...(maxSteps !== undefined ? { maxSteps } : {}),
+      ...(input.origin !== undefined ? { origin: input.origin } : {}),
     });
     if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
     const activeTurn = {
@@ -347,8 +365,29 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 
   async resumeLatest(sessionId: string): Promise<AsyncIterable<SessionEvent> | null> {
     await this.#attach(sessionId);
+    await this.#mcp?.ready();
     const plan = await this.#connection.request('turn.resume.query', { sessionId });
-    return plan.disposition === 'ready' ? this.#driver.resumeLatest() : null;
+    return plan.disposition === 'ready' ? this.#resumeAndObserve(plan) : null;
+  }
+
+  async *#resumeAndObserve(
+    plan: Extract<TurnResumePlan, { disposition: 'ready' }>,
+  ): AsyncIterable<SessionEvent> {
+    const turn = await this.#driver.resumeLatestTurn(plan);
+    if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
+    const activeTurn: ActiveRuntimeHostTurn = {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+      outcome: new TurnOutcomeClassifier(turn.runId),
+    };
+    this.#activeTurn = activeTurn;
+    try {
+      if (this.#stopRequested) await this.#stopTurn(activeTurn);
+      yield* this.#observeTurn(turn, activeTurn);
+    } finally {
+      if (this.#activeTurn === activeTurn) this.#activeTurn = undefined;
+    }
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -415,16 +454,17 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (outcome) await this.#observer?.(outcome);
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
     this.#closed = true;
     this.#interactions.close();
     this.#unsubscribeTranscriptReplacements();
     this.#cancelGraphTerminalWaiters(new Error('Runtime Host run context closed'));
-    return Promise.resolve();
+    await this.#mcp?.close();
   }
 
   async #attach(sessionId: string): Promise<void> {
     if (this.#sessionId === sessionId) return;
+    await this.#mcp?.prepare(sessionId);
     const switched = await this.#driver.switchSession(sessionId);
     if (
       this.#sessionCwdOverride?.sessionId === sessionId &&

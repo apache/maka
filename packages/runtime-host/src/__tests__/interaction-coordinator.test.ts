@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import type {
   FormRequestEvent,
   SandboxBoundaryRequestEvent,
@@ -218,9 +219,86 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('WorkHub forwards a collected answer under the target admission exactly once', async () => {
+    await withStore(async ({ store }) => {
+      const gate = new SessionAdmissionGate();
+      const answers: (readonly (string | null)[])[] = [];
+      const coordinator = createCoordinator(store, { sessionAdmission: gate });
+      const owner = coordinator.bindRun(RUN);
+      try {
+        await owner.acceptUserQuestionRequest({
+          request: questionEvent('relay-question', 10),
+          continuation: questionContinuation('relay-question', {
+            answer: (value) => {
+              answers.push(value);
+            },
+          }),
+        });
+        const input = {
+          sessionId: RUN.sessionId,
+          interactionId: 'relay-question',
+          answer: { kind: 'question' as const, answers: ['Yes'] },
+        };
+        const forward = () =>
+          gate.run(RUN.sessionId, (lease) => coordinator.answerDelegatedQuestion(input, lease));
+        assert.equal((await forward()).ok, true);
+        assert.equal((await forward()).ok, true);
+        assert.deepEqual(answers, [['Yes']]);
+        assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
+        const wrongSession = await gate.run('other-session', (lease) =>
+          coordinator.answerDelegatedQuestion({ ...input, sessionId: 'other-session' }, lease),
+        );
+        assert.equal(wrongSession.ok, false);
+      } finally {
+        await owner.close('turn_terminal');
+        owner.release();
+        await coordinator.close();
+      }
+    });
+  });
+
+  test('settled target question closes only its copied WorkHub relay', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store);
+      const run = { ...RUN, sessionId: WORKHUB_COORDINATION_SESSION_ID };
+      const owner = coordinator.bindRun(run);
+      const closures: string[] = [];
+      try {
+        await owner.acceptUserQuestionRequest({
+          request: {
+            ...questionEvent('copied-question', 10),
+            turnId: run.turnId,
+            toolUseId: 'relay-tool',
+          },
+          continuation: {
+            ...questionContinuation('copied-question'),
+            applyClosure: async (reason) => {
+              closures.push(reason);
+            },
+          },
+        });
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'wrong-tool'), false);
+        assert.equal((await store.listPending(run)).length, 1);
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'relay-tool'), true);
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'relay-tool'), false);
+        assert.deepEqual(closures, ['producer_cancelled']);
+        assert.equal((await store.listPending(run)).length, 0);
+        assert.equal(
+          (await store.readInteraction('copied-question'))?.outcome?.outcome.kind,
+          'closure',
+        );
+      } finally {
+        await owner.close('turn_terminal');
+        owner.release();
+        await coordinator.close();
+      }
+    });
+  });
+
   test('admits a durable question before continuity and returns one canonical answer to concurrent clients', async () => {
     await withStore(async ({ store }) => {
       const order: string[] = [];
+      const attention: unknown[] = [];
       const continuation = questionContinuation('question_1', {
         answer: (answers) => order.push(`apply:${answers.join(',')}`),
       });
@@ -231,9 +309,13 @@ describe('HostInteractionCoordinator', () => {
           assert.equal(await store.readInteraction('question_1'), undefined);
           return true;
         },
-        refreshCanonicalContinuity: async () => {
+        refreshCanonicalContinuity: async (sessionId, _admission, event) => {
           const record = await store.readInteraction('question_1');
           order.push(record?.outcome ? 'refresh:answered' : 'refresh:pending');
+          if (event) {
+            order.push('attention');
+            attention.push({ sessionId, ...event });
+          }
         },
       });
       const owner = coordinator.bindRun(RUN);
@@ -242,7 +324,15 @@ describe('HostInteractionCoordinator', () => {
         request: questionEvent('question_1', 10),
         continuation,
       });
-      assert.deepEqual(order, ['preflight', 'refresh:pending']);
+      assert.deepEqual(order, ['preflight', 'refresh:pending', 'attention']);
+      assert.deepEqual(attention, [
+        {
+          sessionId: RUN.sessionId,
+          kind: 'waiting',
+          eventId: 'question_1',
+          body: 'Continue?',
+        },
+      ]);
       assert.equal(await coordinator.hasPendingSession(RUN.sessionId), true);
 
       const answer = {
@@ -256,7 +346,14 @@ describe('HostInteractionCoordinator', () => {
       ]);
       assert.equal(first.ok, true);
       assert.equal(second.ok, true);
-      assert.deepEqual(order, ['preflight', 'refresh:pending', 'refresh:answered', 'apply:Yes']);
+      assert.deepEqual(order, [
+        'preflight',
+        'refresh:pending',
+        'attention',
+        'refresh:answered',
+        'apply:Yes',
+      ]);
+      assert.equal(attention.length, 1);
       assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
 
       const conflicting = await coordinator.handlers['interaction.answer'](

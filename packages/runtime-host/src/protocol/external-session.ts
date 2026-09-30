@@ -107,6 +107,8 @@ export interface ExternalSessionCatalogItem {
 export interface ExternalSessionImportInput {
   readonly adapterId: string;
   readonly sourceSessionId: string;
+  /** Optional target chosen by a Desktop client; older clients retain source cwd fallback. */
+  readonly workspace?: WorkspaceTarget;
 }
 
 /** A completed import command may refuse the source before any Session is written. */
@@ -224,10 +226,12 @@ export function decodeExternalSessionCatalogQueryResult(
 }
 
 export function decodeExternalSessionImportInput(value: unknown): ExternalSessionImportInput {
-  const input = requireExactRecord(value, 'external Session import input', [
-    'adapterId',
-    'sourceSessionId',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'external Session import input',
+    ['adapterId', 'sourceSessionId'],
+    ['workspace'],
+  );
   const sourceSessionId = requireUtf8String(
     input.sourceSessionId,
     'external source Session id',
@@ -236,7 +240,13 @@ export function decodeExternalSessionImportInput(value: unknown): ExternalSessio
   if (/[\u0000-\u001f\u007f]/.test(sourceSessionId)) {
     throw invalidProtocolFrame('Invalid external source Session id');
   }
-  return { adapterId: adapterId(input.adapterId), sourceSessionId };
+  return {
+    adapterId: adapterId(input.adapterId),
+    sourceSessionId,
+    ...(Object.hasOwn(input, 'workspace')
+      ? { workspace: decodeWorkspaceTarget(input.workspace) }
+      : {}),
+  };
 }
 
 export function decodeExternalSessionImportResult(value: unknown): ExternalSessionImportResult {

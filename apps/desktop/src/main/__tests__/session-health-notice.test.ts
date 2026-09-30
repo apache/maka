@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
-import { deriveSessionHealthNotice } from '../../renderer/session-health-notice.js';
+import { deriveSessionHealthNotice } from '../../renderer/features/conversation/index.js';
 
 const legacySession = {
   backend: 'ai-sdk',

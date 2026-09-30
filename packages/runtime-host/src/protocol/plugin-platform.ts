@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { normalizeCatalogEntry, type ExecutorCatalogEntry } from '@maka/core/executor-catalog';
 import {
   validateCompositionEntry,
   validatePluginRootId,
@@ -98,6 +99,13 @@ export interface PluginPackageProjection {
   readonly dependencies: readonly string[];
   readonly structuralDependencies: readonly string[];
   readonly requiredBy: readonly string[];
+}
+
+export type PluginExecutorQueryInput =
+  | { readonly kind: 'catalog'; readonly cwd: string }
+  | { readonly kind: 'conversation'; readonly sessionId: string };
+export interface PluginExecutorQueryResult {
+  readonly items: readonly ExecutorCatalogEntry[];
 }
 
 export interface PluginPlatformQueryInput {
@@ -322,6 +330,44 @@ export const PLUGIN_PLATFORM_OPERATION_SPECS = {
     errors: CLIENT_REMOTE_ERRORS,
     decodeInput: decodePluginClientRemoteStreamCursorInput,
     decodeOutput: decodePluginClientRemoteStreamCloseResult,
+  }),
+  'plugin.executor.query': defineOperation<
+    PluginExecutorQueryInput,
+    PluginExecutorQueryResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: (value) => {
+      const record = requireRecord(value, 'Executor query');
+      if (record.kind === 'catalog') {
+        const input = requireExactRecord(record, 'Executor catalog', ['kind', 'cwd']);
+        return { kind: 'catalog', cwd: requireString(input.cwd, 'cwd', 4096) };
+      }
+      const input = requireExactRecord(record, 'Executor conversation', ['kind', 'sessionId']);
+      if (input.kind !== 'conversation') throw invalidProtocolFrame('Invalid executor query');
+      return { kind: 'conversation', sessionId: requireId(input.sessionId, 'sessionId') };
+    },
+    decodeOutput: (value) => {
+      requireEncodedByteLimit(value, 'Executor catalog', MAX_FRAME_BYTES);
+      const output = requireExactRecord(value, 'Executor catalog result', ['items']);
+      if (!Array.isArray(output.items) || output.items.length > 256)
+        throw invalidProtocolFrame('Invalid executor catalog');
+      return {
+        items: output.items.map((entry) => {
+          const record = requireRecord(entry, 'Executor catalog entry');
+          try {
+            return normalizeCatalogEntry(
+              record as unknown as ExecutorCatalogEntry,
+              requireString(record.id, 'executor id', 256),
+            );
+          } catch {
+            throw invalidProtocolFrame('Invalid executor catalog entry');
+          }
+        }),
+      };
+    },
   }),
   'plugin.platform.query': defineOperation<
     PluginPlatformQueryInput,

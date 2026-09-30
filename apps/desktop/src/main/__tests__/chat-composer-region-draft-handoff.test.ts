@@ -28,7 +28,7 @@ import {
   markNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from '../../renderer/new-task-reload-intent.js';
+} from '../../renderer/application/contracts/new-task-reload-intent.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -85,6 +85,12 @@ async function mountRegion(): Promise<{
   Object.assign(document, { getSelection });
   Object.assign(window, {
     getSelection,
+    getComputedStyle: () =>
+      ({
+        direction: 'ltr',
+        writingMode: 'horizontal-tb',
+        getPropertyValue: () => '',
+      }) as unknown as CSSStyleDeclaration,
     matchMedia: () =>
       ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
   });

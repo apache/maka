@@ -168,7 +168,9 @@ export function restoreSessionTranscriptRange<Message>(options: {
   const command = options.lifecycle.request(options);
   if (!command || command.loading || !controller || !sessionId || !options.isCurrent(sessionId, controller)) return;
   const range = currentTranscriptRange(controller, sessionId);
-  if (!range?.ready) return;
+  // A cached range is replaced wholesale by the live answer; only that answer
+  // can say whether the target Turn is reachable.
+  if (!range?.ready || range.generation?.startsWith('cached:')) return;
   const { turnId } = command.target;
   if (controller.store.snapshot().messages.some((message) =>
     message !== null && typeof message === 'object' && 'turnId' in message && message.turnId === turnId,

@@ -27,6 +27,7 @@ import {
   Button,
   EmptyState,
   MoreMenu,
+  NewProjectDialog,
   TextInput,
   useMountedRef,
   useToast,
@@ -91,7 +92,7 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
-  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
+  const [projectDialog, setProjectDialog] = useState<'directory' | 'new' | null>(null);
   const directoryPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const reloadGeneration = useRef(0);
 
@@ -104,6 +105,20 @@ export function ProjectsSettingsPage(props: {
       setCapabilities(snapshot.capabilities);
     }
   }, [host, mountedRef, props.runtimeHostTargetVerified]);
+
+  /**
+   * Create a project from the name the New project dialog collected. The add
+   * call still owns the folder picker, so a cancelled picker simply leaves the
+   * list unchanged; the name rides along and the project is registered under it.
+   */
+  const addNamedProject = useCallback(
+    async (name: string) => {
+      if (!host || !props.runtimeHostTargetVerified) return;
+      const result = await window.maka.projects.add(host, { name });
+      if (result.ok) await reload();
+    },
+    [host, props.runtimeHostTargetVerified, reload],
+  );
 
   useEffect(() => {
     if (!host || !props.runtimeHostTargetVerified) {
@@ -267,12 +282,12 @@ export function ProjectsSettingsPage(props: {
               label={copy.addProject}
               clickAction={capabilities.chooseHostDirectory
                 ? () => {
-                    if (props.runtimeHostTargetVerified) setDirectoryPickerOpen(true);
+                    if (props.runtimeHostTargetVerified) setProjectDialog('directory');
                   }
-                : async () => {
-                    if (!props.runtimeHostTargetVerified) return;
-                    const result = await window.maka.projects.add(host);
-                    if (result.ok) await reload();
+                : () => {
+                    // The dialog names the project first; the folder picker it
+                    // opens is the same one, just reached one step later.
+                    if (props.runtimeHostTargetVerified) setProjectDialog('new');
                   }}
             />
           ) : undefined}
@@ -493,14 +508,24 @@ export function ProjectsSettingsPage(props: {
         )}
         </SettingsSection>
         <RemoteProjectDirectoryDialog
-          host={directoryPickerOpen && props.runtimeHostTargetVerified ? host : undefined}
+          host={projectDialog === 'directory' && props.runtimeHostTargetVerified ? host : undefined}
           returnFocusTo={directoryPickerTriggerRef.current}
-          onClose={() => setDirectoryPickerOpen(false)}
+          onClose={() => setProjectDialog(null)}
           onRegistered={() => {
-            setDirectoryPickerOpen(false);
+            setProjectDialog(null);
             void reload();
           }}
         />
+        {projectDialog === 'new' && props.runtimeHostTargetVerified ? (
+          <NewProjectDialog
+            onOpenChange={(open) => {
+              if (!open) setProjectDialog(null);
+            }}
+            onSubmit={(name) => {
+              void addNamedProject(name);
+            }}
+          />
+        ) : null}
       </RuntimeHostInteractionBoundary>
     </SettingsPage>
   );

@@ -25,6 +25,7 @@ import {
   composerWireText,
   createTriggerSearchSource,
   isChatInputComposing,
+  mentionMatchRank,
   selectedSkillIds,
   skillMentionQuery,
   slashCommandQuery,
@@ -138,6 +139,23 @@ describe('shared chat input behavior', () => {
     assert.equal(slashCommandQuery('/comp', ' tail', 'comp'), 'comp');
     // The query must actually sit against the trigger the menu reports.
     assert.equal(slashCommandQuery('comp', '', 'comp'), null);
+  });
+
+  it('ranks a name match above a description match', () => {
+    // `debug` vs `avoid-ai-writing`: typing `de` must surface the Skill whose
+    // own id answers the query, not the one whose prose happens to contain it.
+    const debug = mentionMatchRank('de', 'debug debug');
+    const proseOnly = mentionMatchRank('de', 'avoid-ai-writing avoid-ai-writing');
+    assert.equal(debug, 0);
+    assert.equal(proseOnly, 3);
+    assert.ok(debug < proseOnly);
+    // Prefix, then anywhere in the id/name, then prose only.
+    assert.equal(mentionMatchRank('pro', 'project-only Project Only'), 0);
+    assert.equal(mentionMatchRank('only', 'project-only Project Only'), 1);
+    assert.equal(mentionMatchRank('  ', 'project-only Project Only'), 0);
+    assert.equal(mentionMatchRank('comp', 'compact'), 0);
+    assert.equal(mentionMatchRank('pact', 'compact'), 1);
+    assert.equal(mentionMatchRank('compact', 'side'), 3);
   });
 
   it('reads `/skill:<query>` and a bare `/<query>` as the same Skill search', () => {

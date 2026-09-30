@@ -65,7 +65,7 @@ describe('Runtime Host connection effects protocol', () => {
             connectionId: '00000000-0000-4000-8000-000000000002',
             revision: 2,
             slug: 'relay-2',
-            providerType: 'openai-compatible',
+            providerType: 'custom',
           },
         }),
       ),
@@ -75,7 +75,7 @@ describe('Runtime Host connection effects protocol', () => {
           connectionId: '00000000-0000-4000-8000-000000000002',
           revision: 2,
           slug: 'relay-2',
-          providerType: 'openai-compatible',
+          providerType: 'custom',
         },
       }),
     );
@@ -96,12 +96,30 @@ describe('Runtime Host connection effects protocol', () => {
     // Provider-specific URL semantics are resolved after an existing target's
     // canonical provider is loaded; the wire still bounds the raw value.
     assertInvalidRequest('connection.onboarding.verify', {
-      target: { kind: 'create', providerType: 'openai-compatible' },
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
       apiKey: 'transient-secret',
       baseUrl: 'x'.repeat(2_049),
     });
+    const customVerify = request('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'anthropic-messages' },
+      apiKey: 'transient-secret',
+      baseUrl: 'https://relay.example/v1',
+    });
+    assert.deepEqual(decodeClientFrame(customVerify), customVerify);
+    // The default protocol is required on a custom target and closed to every other provider.
+    for (const target of [
+      { kind: 'create', providerType: 'custom' },
+      { kind: 'create', providerType: 'custom', defaultApiProtocol: 'google-generate' },
+      { kind: 'create', providerType: 'openrouter', defaultApiProtocol: 'openai-chat' },
+    ]) {
+      assertInvalidRequest('connection.onboarding.verify', {
+        target,
+        apiKey: 'transient-secret',
+        baseUrl: 'https://relay.example/v1',
+      });
+    }
     assertInvalidRequest('connection.onboarding.verify', {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       connectionId: null,
       apiKey: 'transient-secret',
       baseUrl: null,
@@ -130,7 +148,12 @@ describe('Runtime Host connection effects protocol', () => {
     });
     // …and the create target stays closed to fields it does not define.
     assertInvalidRequest('connection.onboarding.verify', {
-      target: { kind: 'create', providerType: 'openai-compatible', slug2: 'surface-owned' },
+      target: {
+        kind: 'create',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
+        slug2: 'surface-owned',
+      },
       apiKey: 'transient-secret',
       baseUrl: null,
     });
@@ -162,7 +185,7 @@ describe('Runtime Host connection effects protocol', () => {
         connectionId: '00000000-0000-4000-8000-000000000002',
         revision: 0,
         slug: 'relay-2',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
       },
     });
   });
@@ -285,135 +308,6 @@ describe('Runtime Host connection effects protocol', () => {
     assertInvalidResponse('connection.test.run', {
       ...failedResult,
       test: { ...failedResult.test, statusCode: 600 },
-    });
-  });
-  test('keeps one exact and bounded connection usage report', () => {
-    const report = response('connection.usage.read', {
-      kind: 'report',
-      report: {
-        accountLabel: 'joob1nhk13d9',
-        planLabel: 'Go',
-        stats: {
-          requests: 3552,
-          failed: 5,
-          successRate: 99.86,
-          cost: 5.85,
-          tokensIn: 428_987_308,
-          tokensOut: 2_971_687,
-        },
-        windows: [
-          {
-            id: 'fiveHour',
-            label: null,
-            used: 0.25,
-            cap: 3,
-            unit: 'credits',
-            resetsAt: 1_789_746_210_944,
-            unlimited: null,
-          },
-          {
-            id: 'weekly',
-            label: 'Weekly',
-            used: 0.38,
-            cap: 6,
-            unit: 'credits',
-            resetsAt: null,
-            unlimited: true,
-          },
-        ],
-        periodEnd: 1_790_310_000_000,
-        partiallyUnauthorized: false,
-        fetchedAt: 1_789_000_000_000,
-      },
-    });
-    assert.deepEqual(decodeHostFrame(report), report);
-
-    // Read-only: the only non-report shapes are an explicit unavailability and
-    // a rejection. A committed/superseded shape has no meaning here.
-    const unavailable = response('connection.usage.read', {
-      kind: 'unavailable',
-      reason: 'unsupported',
-    });
-    assert.deepEqual(decodeHostFrame(unavailable), unavailable);
-    const rejected = response('connection.usage.read', {
-      kind: 'rejected',
-      reason: 'credential_not_configured',
-    });
-    assert.deepEqual(decodeHostFrame(rejected), rejected);
-
-    assertInvalidResponse('connection.usage.read', {
-      kind: 'report',
-      report: {
-        accountLabel: null,
-        planLabel: null,
-        stats: null,
-        windows: [
-          {
-            id: 'w',
-            label: null,
-            used: -1,
-            cap: 1,
-            unit: 'credits',
-            resetsAt: null,
-            unlimited: null,
-          },
-        ],
-        periodEnd: null,
-        fetchedAt: 1,
-      },
-    });
-    assertInvalidResponse('connection.usage.read', {
-      kind: 'unavailable',
-      reason: 'made-up',
-    });
-    // `unauthorized` is an accepted reason: a rejected credential is reported as
-    // itself, not folded into `network`.
-    const unauthorized = response('connection.usage.read', {
-      kind: 'unavailable',
-      reason: 'unauthorized',
-    });
-    assert.deepEqual(decodeHostFrame(unauthorized), unauthorized);
-    // The window array is capped like every other array in this package.
-    assertInvalidResponse('connection.usage.read', {
-      kind: 'report',
-      report: {
-        accountLabel: null,
-        planLabel: null,
-        stats: null,
-        windows: Array.from({ length: 32 }, (_unused, index) => ({
-          id: `w-${index}`,
-          label: null,
-          used: 1,
-          cap: 2,
-          unit: 'credits',
-          resetsAt: null,
-          unlimited: null,
-        })),
-        periodEnd: null,
-        partiallyUnauthorized: false,
-        fetchedAt: 1,
-      },
-    });
-    assertInvalidResponse('connection.usage.read', {
-      kind: 'report',
-      report: {
-        accountLabel: null,
-        planLabel: null,
-        stats: null,
-        windows: [
-          {
-            id: 'w',
-            label: null,
-            used: 1,
-            cap: 1,
-            unit: 'bananas',
-            resetsAt: null,
-            unlimited: null,
-          },
-        ],
-        periodEnd: null,
-        fetchedAt: 1,
-      },
     });
   });
 });

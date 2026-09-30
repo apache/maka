@@ -28,6 +28,16 @@ import { runtimeHostProjectKey } from '../../../application/contracts/runtime-ho
 
 const UNGROUPED_KEY = '__ungrouped__';
 
+/** The rail row a Project scope is drawn as. */
+export function projectGroupId(scopeKey: string): string {
+  return `project:${scopeKey}`;
+}
+
+/** The rail row a Host's project-less Sessions are drawn as. */
+export function ungroupedGroupId(hostId: string): string {
+  return `${UNGROUPED_KEY}:${hostId}`;
+}
+
 function scopedProjectLabel(projectName: string, profileName: string): string {
   return `${projectName} · ${profileName}`;
 }
@@ -71,7 +81,7 @@ export function deriveSessionNavigationGroups(
   const groups = projectScopes.map((scope): SessionHistoryGroup => {
     const key = scope.key;
     return {
-      id: `project:${key}`,
+      id: projectGroupId(key),
       label: scopedProjectLabel(scope.project.name, scope.profileName),
       sessions: sessionsByProject.get(key) ?? [],
       // The UI treats this id as an opaque action target. Scope it here so
@@ -89,7 +99,7 @@ export function deriveSessionNavigationGroups(
       .split(/[/\\]/)
       .at(-1);
     groups.push({
-      id: `project:${key}`,
+      id: projectGroupId(key),
       label: scopedProjectLabel(
         pathName || first.projectId || 'Project',
         first.profileName,
@@ -101,7 +111,7 @@ export function deriveSessionNavigationGroups(
   for (const [hostId, ungrouped] of ungroupedByHost) {
     const profileName = ungrouped[0]!.profileName;
     groups.push({
-      id: `${UNGROUPED_KEY}:${hostId}`,
+      id: ungroupedGroupId(hostId),
       label: scopedProjectLabel(
         getShellRemainingCopy(locale).projects.ungrouped,
         profileName,

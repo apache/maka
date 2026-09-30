@@ -52,10 +52,10 @@
         family instead.
    Alias policy: an alias is defined as `var(--<authoritative-token>)` (or a
    thin color-mix of one) and never holds an independent value, so themes and
-   palettes only ever retune the authoritative token. reference-shell.css and
-   styles/theme-glass.css now hold LAYOUT and GLASS-MATERIAL rules only — no
-   token definitions live there anymore (the darwin glass token overrides were
-   relocated here; see "DARWIN GLASS" below).
+   palettes only ever retune the authoritative token. styles/theme-glass.css
+   holds GLASS-MATERIAL rules only — no token definitions live there anymore
+   (the darwin glass token overrides were relocated here; see "DARWIN GLASS"
+   below).
 ============================================================================ */
 
 /* =============================================================================
@@ -251,13 +251,6 @@
      emphasis, and using this for CTAs is exactly the palette-invisibility
      bug called out in the --brand-deep note above. */
   --maka-brand: #71a8fd;
-  /* Every MCP market tile renders a real library brand mark on a neutral plate
-     (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk + the
-     vendored Feishu mark), so no per-brand plate-tint token is needed — a
-     colourful logo already supplies the brand identity. The system-banner tint
-     alias went the same way: the scheduled-tasks banner derives from --accent
-     directly, which is one indirection fewer for the same result. */
-
   /* === text variants (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
   --destructive-text: color-mix(in oklab, var(--destructive) 50%, var(--foreground));
@@ -388,7 +381,7 @@
      out once their last consumers moved to the --background family, and
      Visual System 2.0 (T2) retired the last one: `--color-bg-container` backed
      the agents content surface, which now names the ladder tier it wanted
-     (`--surface-raised`, see reference-shell.css) instead of aliasing toward
+     (`--surface-raised`, see the agents shell tokens) instead of aliasing toward
      it. Nothing in the app reads a `--color-*` compatibility name any more.
      Do NOT add new --color-* names. */
 
@@ -756,7 +749,7 @@
   /* ICON_SIZE in @maka/ui's icons.tsx is the icon scale; components pass it as
      a prop. These two rungs exist only for the sites that size a glyph from
      CSS — add a rung here when a CSS site needs one, not to mirror the TS. */
-  --icon-meta: 13px;
+  --icon-meta: 12px;
   --icon-control: 14px;
 
   /* === motion ===
@@ -946,6 +939,42 @@
   --maka-reading-measure: 800px;
   --maka-transcript-gutter: clamp(var(--space-3), 4vw, var(--space-10));
 
+  /* === agents shell ======================================================
+     Flat neutral shell/backplate. This must never be a gradient; the
+     white content surface reads through radius + shadow on top. */
+  --agents-layout-bg: var(--surface-canvas);
+  /* Visual System 2.0 (T2): the three floating plates (.mainColumn,
+     .maka-session-workbar, .settingsMainPane) all read this one handle, so
+     pointing it at the ladder's `raised` tier is what "the plates are raised"
+     means in one edit rather than three. It used to route through
+     `--color-bg-container`, whose darwin-dark override lifted the card a
+     hand-rolled +0.035L: measured L 0.240 against a `--surface-overlay` of
+     0.223, i.e. the content plate outranked the tier that floats ABOVE it and
+     the ladder was non-monotonic at the top. See "DARWIN GLASS" below for why
+     that lift is gone rather than retuned. */
+  --agents-content-area-bg: var(--surface-raised);
+  /* reference layout-derived values (2026-06-20 WAWQAQ ef6b2852).
+     The original 8px/12px we shipped at 7013f0f read too loose vs the
+     real bundle's 4px gap + 6px radius.
+     PR-CHAT-CHROME-FIX-1 (WAWQAQ msg `4a1b8c13`): bumped radius
+     6 → 12 so the floating surface's bottom corners actually read.
+     6px was geometrically present but optically invisible against a
+     same-color shell. */
+  --agents-content-area-gap: 4px;
+
+  /* === conversation layout contract =====================================
+     The Desktop and WorkHub renderers are separate documents, but both load
+     this token sheet. Keep the minimum conversation footprint in one place so
+     their host and live surface cannot drift apart when the native viewport
+     becomes narrower than the layout. This is a layout floor, not a native
+     window minimum: narrow windows clip the right edge of the fixed layout.
+     400px is measured, not assumed: below it the shell's own narrow-window
+     policy stops shrinking the columns. At this width the composer footer
+     still holds its controls without overlap, the placeholder wraps to two
+     lines and the model label is down to a few characters; its own container
+     query drops the context-usage action at this floor. */
+  --maka-conversation-min-width: 400px;
+
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value
      and the control cluster share it, so the two kinds of row end stop at
@@ -1010,7 +1039,7 @@
    The glass MATERIAL rules (backdrop-filter, transparency) were always
    separate and stay in styles/theme-glass.css — this block was color only, so
    removing it does not touch vibrancy. Plate fill now resolves through
-   `--agents-content-area-bg` → `--surface-raised` (reference-shell.css).
+   `--agents-content-area-bg` → `--surface-raised` (agents shell tokens above).
 ============================================================================= */
 
 /* =============================================================================
@@ -1166,8 +1195,7 @@
    no --info hue: "info" is a semantic slot (Banner status), so it paints with
    the accent at 0.24 like its three siblings. It has to be the
    same CONSTRUCTION and not just the same weight — an opaque tint does not
-   compose, so a tinted chip on a tinted panel (deep-research's count pill,
-   plan-mode's in-progress marker) resolves to the parent's exact pixel and
+   compose, so a tinted chip on a tinted panel (plan-mode's in-progress marker) resolves to the parent's exact pixel and
    disappears. Alpha is also what upstream ships this token as (#0082FB33,
    0.20); theme-neutral is what flattens it to an opaque #f1f1f1.
 
@@ -1222,57 +1250,10 @@
 }
 
 /* =============================================================================
-   BASE STYLES
+   TYPE ROLES
 ============================================================================= */
 
 @layer base {
-  * { box-sizing: border-box; border-color: var(--border); }
-
-  /* One scrollbar for the whole app (visual system 2.0 T5-F): the platform
-     thin bar, coloured with `--border-strong` over a transparent gutter. The
-     universal selector is intentional because `scrollbar-width` is not
-     inherited. This base-layer default yields to element-owned declarations
-     in the higher Astryx and product component layers, such as a TabList
-     strip's `none` (#2538). */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border-strong) transparent;
-  }
-
-  *::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-
-  *::-webkit-scrollbar-track,
-  *::-webkit-scrollbar-corner {
-    background: transparent;
-  }
-
-  *::-webkit-scrollbar-thumb {
-    border: 2px solid transparent;
-    border-radius: var(--radius-pill);
-    background: var(--border-strong);
-    background-clip: content-box;
-  }
-
-  *::-webkit-scrollbar-thumb:hover {
-    /* One step above --border-strong's 16%, scoped to the thumb only. */
-    background-color: oklch(from var(--foreground) l c h / 0.28);
-  }
-
-  /* The root font-size stays at the browser default (16px) ON PURPOSE.
-     It used to be pinned to 13px to express Maka's density, but the root is
-     not a density knob: it is an implicit multiplier on every rem in the
-     document, including Astryx's Icon size atoms, which it authors as the
-     px-equivalents at a 16px root — the pin rendered the icon set at
-     9.75/13/16.25/19.5 instead of 12/16/20/24, measured in the live app.
-     (Astryx's spacing and radius tokens are px literals and never moved.)
-     Density now lives in the Astryx type scale
-     (astryx-theme/makaTheme.ts), which sets the body tier directly without
-     dragging every other rem down with it. Keep rem out of product CSS —
-     the spacing scale below is absolute px for the same reason. */
-
   /* Astryx's reset hard-codes a monospace stack on :where(code, kbd, samp,
      pre) that never consults --font-family-code, so every code element —
      Markdown code blocks included — silently opted out of the theme and out
@@ -1328,208 +1309,5 @@
   :where(code, kbd, samp, pre) {
     --maka-font-family: var(--font-family-code);
     font-family: var(--font-family-code);
-  }
-
-  html {
-    /* The application's ground, declared on the root rather than on `body`.
-       Either one propagates to the canvas, so the two paint identically — but
-       the root is the surface the native Windows titlebar strip has to match,
-       and theme.ts samples it from here. It has to sample a painted element:
-       a token's declared value is a `light-dark()` recipe, not a colour
-       (DESIGN.md §8). On `body` this left the root transparent, with nothing
-       for the sampler to read. */
-    background: var(--background);
-  }
-
-  body {
-    /* The document's default text role, and the one site where declaring it
-       matters most: Astryx's reset puts `line-height: 1.5` on `:where(html)`,
-       so before this line every element that did not declare a leading of its
-       own inherited that ratio — measured 21px at the 14px body tier, off the
-       grid, on hundreds of nodes no stylesheet in this repo names. Declared
-       here rather than on `html` because the role it names is the document's,
-       not the root's; the root stays free of typography, per the contract
-       above. Naming the role here is also what makes the deletions in this
-       branch safe: measured across 86 surfaces, 79 of the 371 role-declaring
-       rules change nothing when removed, and they inherit their role from
-       this line. */
-    font: var(--maka-text-body);
-    color: var(--foreground);
-    overflow: hidden;          /* main shell handles its own scrolling */
-  }
-
-  ::selection { background: var(--selection); }
-
-  /* Subtle film-grain overlay. Per the taste-skill and frontend-design
-     skill, fixed pointer-events-none noise breaks the digital flatness
-     without costing GPU repaints (it never enters a scroll container). */
-  body::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: var(--z-overlay);
-    opacity: var(--opacity-overlay);
-    mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.9'/></svg>");
-    background-size: 200px 200px;
-  }
-  .dark body::after { opacity: var(--opacity-overlay); }
-  @media (prefers-reduced-motion: reduce) {
-    body::after { display: none; }
-  }
-
-}
-
-/* =============================================================================
-   COMPONENT RECIPES — drop-in classes for our V0.1 UI
-
-   These are literal class names used by the React components. Layout stays in JSX; this file
-   owns colors / borders / shadows / typography.
-============================================================================= */
-
-@layer components {
-
-  /* ---- Main column ------------------------------------------------ */
-
-  .maka-main {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    /* Transparent, NOT var(--background): the right panel already paints
-       its own surface (--agents-content-area-bg = #fafafa on darwin
-       glass). A solid white here covered only the chat scroll area, so
-       the composer region below read as a THIRD color band (shell /
-       chat / composer). One panel, one surface. */
-    background: transparent;
-  }
-
-  /* ---- Chat surface ----------------------------------------------- */
-
-  /* Turn grouping (per kenji UI-04): user msg + tools + assistant answer
-   * cluster into one visual unit. The section is a flex container; both the
-   * between-turn and within-turn gaps are uniform (CHAT-TURN-SPACING-0), so
-   * a turn reads as one unit by grouping, not by tighter internal spacing. */
-  .maka-turn {
-    display: flex;
-    flex-direction: column;
-    /* The content wrapper owns between-turn flex layout. */
-    flex: 0 0 auto;
-    /* PR5 CHAT-TURN-SPACING-0: uniform 12px within-turn gap, matching the
-       between-turn gap (.maka-chatContent) — one density, no between/within
-       split. */
-    gap: var(--space-3);
-    max-width: var(--maka-reading-measure);
-    margin: 0 auto;
-    width: 100%;
-    box-sizing: border-box;
-  }
-
-  /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
-     Core's atom sheet already contains every compiled StyleX atom except the
-     five shimmer declarations below; these are copied verbatim from lab.css. */
-  @keyframes x1ofn8cw-B {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-  }
-  .xct3ic7:not(#\#):not(#\#):not(#\#) { background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%); }
-  .xakli9p:not(#\#):not(#\#):not(#\#) { background-size: 200% 100%; }
-  .x1ta4xzc:not(#\#):not(#\#):not(#\#) { background-clip: text; }
-  .x3mlza6:not(#\#):not(#\#):not(#\#) { animation-name: x1ofn8cw-B; }
-  .xeaay5l:not(#\#):not(#\#):not(#\#) { animation-duration: 4s; }
-
-  /* ---- Tool activity ---------------------------------------------- */
-
-  /* ---- Composer --------------------------------------------------- */
-
-  .maka-composer[data-drag-active="true"] .maka-composer-astryx {
-    border-color: oklch(from var(--focus-ring) l c h / 0.46);
-    background: oklch(from var(--focus-ring) 0.98 calc(c * 0.20) h / 0.35);
-    box-shadow:
-      0 0 0 1px oklch(from var(--focus-ring) l c h / 0.22),
-      0 0 0 4px oklch(from var(--focus-ring) l c h / 0.08),
-      0 1px 3px oklch(from var(--foreground) l c h / 0.04);
-  }
-
-  /* ---- Code blocks (used in args preview inside permission prompt) --- */
-
-  .maka-code {
-    font: var(--maka-text-code);
-    /* Geist Mono ships programming ligatures on by default, which collapse a
-       run like `=== 目录 ===` into a strikethrough-looking rule. Code and
-       command surfaces read literally, so ligatures stay off. */
-    font-variant-ligatures: none;
-    background: var(--foreground-3);
-    border: var(--border-width-hairline) solid var(--border);
-    border-radius: var(--radius-surface);
-    padding: var(--space-2) var(--space-2-5);
-    color: var(--foreground);
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-  }
-}
-
-/* =============================================================================
-   ANIMATIONS
-============================================================================= */
-
-/* `maka-text-shimmer` and the `TextShimmer` primitive it drove are gone. The
-   sweep-across-glyphs idiom is Astryx's: its `ChatReasoning` shimmers its own
-   streaming label off `x1ofn8cw-B` above, and that atom is the one this repo
-   copies from lab.css. A second, faster sweep on the turn's status line put two
-   of them a few pixels apart at different speeds, which read as two things
-   competing rather than one turn working. */
-
-/* Shared short opacity entrance used by continuing and tool-settle cues. */
-@keyframes maka-stream-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-/* #642: the footer settle-entrance keyframe (`maka-footer-fade-in`) is gone.
-   The footer no longer "appears" on settle — it is hidden by default and
-   revealed on hover / focus-within of the answer block (see the `footer`
-   marker variant in packages/ui/src/primitives/chat.tsx), so there is no live
-   mount transition to animate. */
-
-/* =============================================================================
-   Icon stroke governance: call sites had
-   accumulated EIGHT different strokeWidth values (1.5 → 2) across 143
-   usages, plus the lucide default of 2 wherever unspecified — the
-   classic "can't say why it looks unpolished" tell. One CSS rule beats
-   every SVG presentation attribute, so all lucide glyphs render at a
-   single weight without touching call sites. Stroke is the only thing
-   hammered globally: width/height stay per call site, because a global
-   size rule would also catch the icons Astryx sizes through its own slot
-   props (Icon `size`, SideNavItem's `renderIconSlot`), and those are the
-   component's decision, not the product's. If a surface ever needs a
-   heavier stroke, scope a more specific selector with a comment.
-============================================================================= */
-svg.lucide {
-  stroke-width: 1.75;
-}
-
-/* =============================================================================
-   REDUCED-MOTION
-
-   Users with `prefers-reduced-motion: reduce` get instant transitions and
-   animations everywhere — but we keep opacity/color changes meaningful (per
-   emil-design-eng: "Reduced motion means fewer and gentler animations, not
-   zero").
-
-   Strategy: cap durations to ~0.01ms so transitions still fire (state changes
-   are still observable to assistive tech) but feel instantaneous. Looping
-   animations get capped to a single iteration.
-============================================================================= */
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
   }
 }

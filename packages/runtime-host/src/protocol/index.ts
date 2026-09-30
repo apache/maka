@@ -65,6 +65,7 @@ import {
   type ResponseFrame,
 } from './operations.js';
 import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
+import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
 export * from './agent-graph.js';
@@ -83,6 +84,7 @@ export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
 export * from './message.js';
+export * from './queue-mutation.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
@@ -96,12 +98,63 @@ export * from './session-todo.js';
 export * from './workspace.js';
 export * from './workhub-coordination.js';
 export * from './websocket-path.js';
+export { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 169 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 199 as const;
+// 199: `storage.usage.query` and `storage.usage.sessions.query` report storage
+// usage. An epoch-198 Host rejects the unknown operation and drops the
+// connection, so the pair must fail admission instead.
+// 198: Executor readiness exposes explicit restore, restore-failed and history-gap states.
+// 197: Queue reorder requests carry the expected queue revision. Epoch-196
+// peers reject the required field or send an unfenced reorder request.
+// 196: `turn.start` carries an optional durable external-message origin; older
+// peers would drop activation provenance and misclassify automated turns.
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
+// 194: Session catalog live run state may carry the runtime's run epoch, which
+// lets clients order same-revision reads. Epoch-193 peers reject the unknown
+// key, so a newer Desktop against an older Host loses session catalog reads.
+// 193: Queue reorder requests require at least one entry identity. Epoch-192
+// peers can send an empty reorder request that the current Host rejects.
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
+// 191: Session catalog change frames can carry attention events.
+// 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
+// 189: Remove form_interaction transcript messages and the transcript_changed close reason.
+// 188: Session capability replacement can require an atomic idle root check;
+// complete MCP configuration identities fence conflicting providers across ACP clients.
+// 187: transcript_changed closes a subscription for automatic bounded-tail reseeding.
+// 186: Settled form/question history adds form_interaction transcript messages.
+// 185: Add the bounded next-prompt suggestion operation.
+// 184: the unified `custom` provider type and its defaultApiProtocol require matching peers.
+// 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
+// 182: Executor catalogs expose structured model families and thinking variant IDs.
+// 181: Canonical executor models and retained provider stop reasons after cancellation.
+// 180: Reject contradictory executor configuration and legacy model targets.
+// 179: Generic executor discovery and confirmed per-Session configuration.
+// 178: WorkHub result turns carry a Host-owned workhub_result origin. Older
+// Clients reject that origin and cannot render the result notification.
+// 177: External Session import input may carry an optional Host-resolved
+// workspace target. Epoch-176 peers reject the unknown `workspace` key.
+// 176: Session-scoped capability publication and MCP admission require compatible
+// Client and Host builds; older peers do not enforce their isolation contract.
+// 175: WorkHub coordinator model configuration again accepts only native
+// explicit targets. Epoch-174 peers may send an executor target it must reject.
+// 174: WorkHub new-Work defaults may select an executor-specific model and
+// thinking level. Epoch-173 peers reject these fields on strict action shapes.
+// 173: Plugin executor Sessions may select an executor-specific model at
+// creation and configuration time, and propagate its reasoning effort.
+// 172: Usage screen requests and results accept fractional timestamps in the
+// persisted domain. Older peers reject these otherwise valid wire values.
+// 171: Removed the `connection.usage.read` operation along with the Command
+// Code GO provider it served. A peer older than this epoch may still advertise
+// or submit that operation, which this Host no longer answers.
 // 169: The message execution query reports an identity the Host can prove was
 // never admitted as a positive `not_admitted` resolution instead of omitting
 // it, so silence stops meaning both "not admitted" and "cannot say yet".
@@ -407,8 +460,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 169 as const;
 // 41: Context compaction returns a typed terminal outcome on both Turn
 // snapshots and context.compact results. Epoch-40 peers reject these closed
 // shapes after admission, so mixed peers must fail during the handshake.
-// 40: The message queue gains per-entry mutation operations
-// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
+// 40: Queue entries become independently addressable for promotion,
+// retraction, and ordering. Epoch-39 peers do not recognize those commands.
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a
@@ -441,7 +494,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 169 as const;
 // one transport message; narrower domains retain their own encoded limits.
 export const RUNTIME_HOST_MAX_MESSAGE_BYTES = 768 * 1024;
 export const RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS = 64;
-export const INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID = 'maka.interactive' as const;
 
 declare const encodedProtocolMessageBrand: unique symbol;
 

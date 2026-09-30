@@ -23,6 +23,10 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { applyTheme } from './theme';
 import type { SessionWorkbarTabKind } from './features/workbar';
+import {
+  waitForCatalogSession,
+  type SessionCatalogController,
+} from './application/contracts/session-catalog/session-catalog-state.js';
 
 export interface AppShellE2eFixtureActions {
   applyE2eFixture(): Promise<void>;
@@ -31,13 +35,13 @@ export interface AppShellE2eFixtureActions {
 export function createAppShellE2eFixtureActions(options: {
   openSettingsSection: (section: SettingsSection) => void;
   refreshSessions: () => Promise<unknown>;
+  sessionCatalog: SessionCatalogController;
   setActiveId: (sessionId: string | undefined) => void;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
   openSearchModal(): void;
   setSessionListCollapsed(collapsed: boolean): void;
   workbar: {
-    rightCollapsed: boolean;
-    toggleRight(): void;
+    setWorkbarCollapsed(collapsed: boolean): void;
     openTool(
       kind: SessionWorkbarTabKind,
       placement?: 'right' | 'bottom',
@@ -49,6 +53,7 @@ export function createAppShellE2eFixtureActions(options: {
   const {
     openSettingsSection,
     refreshSessions,
+    sessionCatalog,
     setActiveId,
     setNavSelection,
     openSearchModal,
@@ -110,26 +115,25 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.timezone) {
       document.documentElement.setAttribute('data-maka-e2e-fixture-tz', state.timezone);
     }
-    await refreshSessions();
     if (state.activeSessionId) {
+      // A runtime-host-profiles change triggers a retire sweep that drops an
+      // active Session missing from the committed catalog. With the Host
+      // still starting, that sweep can land before the seeded row reaches the
+      // catalog — activate only once the catalog has observed it.
+      await waitForCatalogSession(sessionCatalog, state.activeSessionId);
       setActiveId(state.activeSessionId);
     }
+    // Workbar collapse state is keyed per Session and drops writes issued
+    // before the reducer has activated that Session — the IPC round trip
+    // inside refreshSessions lets the selection commit render first.
+    await refreshSessions();
     if (state.sidebarCollapsed !== undefined) {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
-    if (
-      state.workbarCollapsed !== undefined &&
-      state.workbarCollapsed !== workbar.rightCollapsed
-    ) {
-      workbar.toggleRight();
+    if (state.workbarCollapsed !== undefined) {
+      workbar.setWorkbarCollapsed(state.workbarCollapsed);
     }
-    if (
-      state.workbarTab === 'review' ||
-      state.workbarTab === 'terminal' ||
-      state.workbarTab === 'browser' ||
-      state.workbarTab === 'files' ||
-      state.workbarTab === 'inspector'
-    ) {
+    if (state.workbarTab && state.workbarTab !== 'tasks') {
       workbar.openTool(state.workbarTab, 'right');
     }
     if (state.openSettingsSection) {
@@ -143,16 +147,18 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.searchModalOpen) {
       openSearchModal();
     }
-    if (state.sidebarSection === 'automations') {
-      setNavSelection({ section: 'automations', module: 'scheduled-tasks' });
-    } else if (state.sidebarSection === 'skills') {
-      setNavSelection({ section: 'extensions', module: 'skills' });
-    } else if (state.sidebarSection === 'mcp') {
-      setNavSelection({ section: 'extensions', module: 'mcp' });
-    } else if (state.sidebarSection === 'daily-review') {
-      setNavSelection({ section: 'automations', module: 'daily-review' });
-    } else if (state.sidebarSection === 'sessions') {
-      setNavSelection({ section: 'sessions' });
+    if (state.sidebarSection) {
+      const navForSidebarSection: Record<
+        NonNullable<typeof state.sidebarSection>,
+        NavSelection
+      > = {
+        automations: { section: 'automations', module: 'scheduled-tasks' },
+        skills: { section: 'extensions', module: 'skills' },
+        mcp: { section: 'extensions', module: 'mcp' },
+        'daily-review': { section: 'automations', module: 'daily-review' },
+        sessions: { section: 'sessions' },
+      };
+      setNavSelection(navForSidebarSection[state.sidebarSection]);
     }
   }
 

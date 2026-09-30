@@ -57,6 +57,7 @@ tag and staging directory for the bytes selected by the Release Manager.
 Normal PR and main CI create and validate an unsigned archive of the checked-out commit on every run, including documentation and asset changes. This install-free check catches source inventory and dependency-boundary drift before a Release Manager dispatches the full candidate workflow. It does not sign, stage or publish an RC. The reviewed external website build dependency boundary is recorded in [`docs/code-origin-audit.md`](../docs/code-origin-audit.md#website-build-dependency-boundary).
 
 Run **Prepare ASF source candidate** from `main`, supplying the exact version.
+This workflow does not depend on npm or Desktop Nightly publication. Select the source commit after any release-document fixes have landed and its normal CI has passed; there is no need to wait for a scheduled Nightly.
 The workflow:
 
 1. builds the archive from the dispatched Git commit rather than the working
@@ -173,7 +174,7 @@ Check each third-party entry against the archive's actual files. Dependency patc
 
 Before using `DISCLAIMER-WIP`, verify each stated outstanding item against secretary acknowledgments or mentor-confirmed records. A stale incubation checklist or existing disclaimer is not proof that a software grant or ICLA remains outstanding. Describe the actual gap without claiming completion from an account roster alone.
 
-Publish the signing public key at `https://dist.apache.org/repos/dist/release/incubator/maka/KEYS` and check that URL before the vote. Publishing KEYS does not publish or approve candidate artifacts. Download the staged files again and verify their signatures and identity against the signed tag; an uploaded workflow artifact or a locally verified copy alone does not establish what reviewers receive.
+Publish the signing public key at `https://dist.apache.org/repos/dist/release/incubator/maka/KEYS`. Link voters to `https://downloads.apache.org/incubator/maka/KEYS` and verify that the signing key is available there before the vote. Publishing KEYS does not publish or approve candidate artifacts. Download the staged files again and verify their signatures and identity against the signed tag; an uploaded workflow artifact or a locally verified copy alone does not establish what reviewers receive.
 
 Before casting a binding `+1`, every voter must download all signed source
 packages and the published `KEYS` over HTTPS onto their own hardware, validate

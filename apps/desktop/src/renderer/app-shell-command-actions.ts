@@ -25,11 +25,10 @@ import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from "@maka/ui";
 import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
-import type { SessionStartMode } from './application/contracts/session-start-mode.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
+} from './platform/desktop/default-runtime-host-operation.js';
 import { buildCommandList } from "./command-palette-commands.js";
 import type { Command } from './features/overlays/index.js';
 import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';
@@ -80,7 +79,6 @@ export interface AppShellCommandListOptions {
   captureComposerImportOwner: () => ComposerImportOwner;
   createSession: () => void;
   openSideConversation: () => void;
-  startModeSession: (mode: SessionStartMode) => Promise<boolean>;
   openHelp: () => void;
   openScheduledTaskCreate: () => void;
   openProjectFolder: () => Promise<void>;
@@ -137,10 +135,6 @@ export function buildAppShellCommandList(
     defaultSlug: options.defaultConnection,
     onNewChat: () => optionsRef.current.createSession(),
     onOpenSideChat: () => optionsRef.current.openSideConversation(),
-    onStartDeepResearch: async () => {
-      const { startModeSession } = optionsRef.current;
-      await startModeSession("deep_research");
-    },
     onStartScheduledTask: () => optionsRef.current.openScheduledTaskCreate(),
     onOpenSettings: () => optionsRef.current.openSettings(),
     onOpenSettingsSection: (section) =>

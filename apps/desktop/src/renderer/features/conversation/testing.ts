@@ -17,8 +17,56 @@
  * under the License.
  */
 
+import type { ConversationServices } from './ports.js';
+
 export {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
+export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
+export {
+  type ActiveExecutionBoundarySnapshot,
+  activeExecutionBoundaryOf,
+  activeExecutionBoundaryUnreadable,
+  startActiveExecutionBoundaryRead,
+} from './controller/use-active-execution-boundary.js';
+export { useSessionMessageQueue } from './controller/use-session-message-queue.js';
+
+/** Inert conversation services; a test overrides only the calls it observes. */
+export function stubConversationServices(
+  overrides: Partial<Omit<ConversationServices, 'sessions'>> & {
+    readonly sessions?: Partial<ConversationServices['sessions']>;
+  } = {},
+): ConversationServices {
+  const { sessions, ...rest } = overrides;
+  return {
+    listMessages: async () => [],
+    cancelMessage: async () => undefined,
+    reconcileMessage: async () => undefined,
+    subscribeChanges: () => () => undefined,
+    skills: { listInvocable: async () => [] },
+    runtimeHosts: { subscribeChanges: () => () => undefined },
+    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
+    newTasks: {
+      subscribeChanges: () => () => undefined,
+      listInvocableSkills: async () => [],
+      searchFiles: async () => ({ ok: false, reason: 'no_project' }),
+    },
+    mcp: { subscribeChanges: () => () => undefined },
+    ...rest,
+    sessions: {
+      readSnapshot: async () => {
+        throw new Error('Session snapshot is not stubbed');
+      },
+      readExecutionBoundary: async () => {
+        throw new Error('Execution boundary is not stubbed');
+      },
+      promoteQueueEntry: async () => undefined,
+      retractQueueEntry: async () => undefined,
+      updateQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
+      ...sessions,
+    },
+  };
+}

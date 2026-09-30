@@ -126,12 +126,20 @@ describe('external Session protocol', () => {
       decodeClientFrame({
         requestId: 'request-import',
         operation: 'external-session.import',
-        input: { adapterId: 'codex', sourceSessionId: 'source-session-1' },
+        input: {
+          adapterId: 'codex',
+          sourceSessionId: 'source-session-1',
+          workspace: { kind: 'project', projectId: 'project-1' },
+        },
       }),
       {
         requestId: 'request-import',
         operation: 'external-session.import',
-        input: { adapterId: 'codex', sourceSessionId: 'source-session-1' },
+        input: {
+          adapterId: 'codex',
+          sourceSessionId: 'source-session-1',
+          workspace: { kind: 'project', projectId: 'project-1' },
+        },
       },
     );
   });

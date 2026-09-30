@@ -26,7 +26,7 @@ import {
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { useAppShellSessionList } from './use-app-shell-session-list.js';
 import { createBootstrapSelectionLease } from './bootstrap-selection-lease.js';
-import { hasNewTaskReloadIntent } from './new-task-reload-intent.js';
+import { hasNewTaskReloadIntent } from './application/contracts/new-task-reload-intent.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import {
   createSessionWorkspaceActions,

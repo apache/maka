@@ -60,7 +60,7 @@ describe('model discovery', () => {
         output: false,
       },
       {
-        providerType: 'openai-compatible',
+        providerType: 'custom',
         row: (id: string, value: unknown, fallback?: number) => ({
           id,
           context_length: value,
@@ -97,12 +97,18 @@ describe('model discovery', () => {
     ] as const;
     for (const fixture of cases) {
       const fallbacks =
-        fixture.providerType === 'openai-compatible' || fixture.providerType === 'github-copilot'
+        fixture.providerType === 'custom' || fixture.providerType === 'github-copilot'
           ? [undefined, 32768]
           : [undefined];
       for (const fallback of fallbacks) {
         const outcome = await runConnectionModelDiscoveryEffect(
-          { providerType: fixture.providerType, baseUrl: 'https://fixture.invalid/v1' },
+          {
+            providerType: fixture.providerType,
+            ...(fixture.providerType === 'custom'
+              ? { defaultApiProtocol: 'openai-chat' as const }
+              : {}),
+            baseUrl: 'https://fixture.invalid/v1',
+          },
           'fixture-key',
           {
             fetch: async (input) =>
@@ -132,6 +138,42 @@ describe('model discovery', () => {
           fixture.providerType,
         );
       }
+    }
+  });
+
+  test('custom connections list models on the wire of their default protocol', async () => {
+    for (const [defaultApiProtocol, expected] of [
+      ['anthropic-messages', { path: '/v1/models', xApiKey: 'custom-key', authorization: null }],
+      [
+        'openai-responses',
+        { path: '/v1/models', xApiKey: null, authorization: 'Bearer custom-key' },
+      ],
+    ] as const) {
+      const requests: { url: string; headers: Headers }[] = [];
+      const outcome = await runConnectionModelDiscoveryEffect(
+        { providerType: 'custom', defaultApiProtocol, baseUrl: 'https://relay.example/v1' },
+        'custom-key',
+        {
+          fetch: async (input, init) => {
+            requests.push({ url: String(input), headers: new Headers(init?.headers) });
+            return Response.json({ data: [{ id: 'relay-model' }] });
+          },
+        },
+      );
+      assert.ok(outcome.ok, defaultApiProtocol);
+      assert.deepEqual(
+        outcome.models.map(({ id }) => id),
+        ['relay-model'],
+      );
+      assert.equal(requests.length, 1, defaultApiProtocol);
+      const [request] = requests;
+      assert.equal(new URL(request!.url).pathname, expected.path, defaultApiProtocol);
+      assert.equal(request!.headers.get('x-api-key'), expected.xApiKey, defaultApiProtocol);
+      assert.equal(
+        request!.headers.get('authorization'),
+        expected.authorization,
+        defaultApiProtocol,
+      );
     }
   });
 
@@ -312,7 +354,7 @@ describe('model discovery', () => {
     assert.equal(repeatedRequests, 2);
   });
 
-  test('Meta discovery preserves provider-listed models absent from the bundled fallback', async () => {
+  test('Meta discovery preserves future chat models and excludes incompatible families', async () => {
     const requests: Array<{ url: string; authorization: string | undefined }> = [];
     const server = await startJsonServer((request, response) => {
       requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
@@ -327,6 +369,8 @@ describe('model discovery', () => {
             owned_by: 'meta',
           },
           { id: 'muse-spark-1.4', object: 'model', created: 1, owned_by: 'meta' },
+          { id: 'muse-image-1.0', object: 'model', created: 1, owned_by: 'meta' },
+          { id: 'muse-voice-transcribe-1.0', object: 'model', created: 1, owned_by: 'meta' },
         ],
       });
     });

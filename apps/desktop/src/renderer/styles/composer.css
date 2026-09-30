@@ -38,15 +38,50 @@
 .maka-composer-astryx {
   width: min(var(--maka-reading-measure), 100%);
   max-width: var(--maka-reading-measure);
+  container: maka-composer / inline-size;
 }
 
-.maka-return-workhub {
-  --_button-radius: var(--radius-chat);
-  display: flex;
-  width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
-  min-height: var(--space-10);
-  margin: 0 auto;
-  text-align: center;
+/* A narrow conversation column cannot keep both text selectors and the
+   persistent footer actions readable at the floor. The context-usage action is
+   the control that yields — it stays reachable through the Workbar's tool
+   list — and returns as soon as the Composer card has room for it again.
+   Container sizing matters here because a desktop viewport can stay wide
+   while a right workbar squeezes this card.
+
+   The 400px literal is `--maka-conversation-min-width`: container queries
+   cannot read custom properties, so the value is repeated here and pinned to
+   the token by shell-layout-widths.test. */
+@container maka-composer (max-width: 400px) {
+  .maka-composer-astryx .maka-model-selection-controls .maka-context-usage-action {
+    display: none;
+  }
+}
+
+.maka-composer-editor {
+  --maka-editor-padding-block: var(--space-1);
+}
+
+/* Astryx's placeholder is an absolutely positioned overlay inside the editor
+   root (`aria-hidden` div before the editable): it paints over the input but
+   contributes nothing to layout, so the empty card still sizes itself for one
+   line. Any wrap spills the hint over the footer controls and past the card's
+   bottom edge — a narrow Workbar composer wraps it four deep. Keep it to one
+   line; the full hint is a nicety, not content the composer owes room to. */
+.maka-composer-editor > [aria-hidden='true'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* An empty scrolling contenteditable can lose its line box when shown under
+   an inert session-switching parent (#5264). Astryx's outer minimum does not
+   protect the caret inside it. Keep one line plus the actual block padding,
+   including compact WorkHub's override, without fixing the multiline height.
+   Match only the editor, not nested contenteditable=false reference tokens;
+   keep the minimum while the editor itself is disabled, too. */
+.maka-composer-editor > [contenteditable] {
+  padding-block: var(--maka-editor-padding-block);
+  min-height: calc(1lh + 2 * var(--maka-editor-padding-block));
 }
 
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
@@ -56,37 +91,48 @@
    visibly hops by a device pixel. Keep the fading control in its own small
    paint/compositing boundary. `astryx-chat-layout-scroll-button` is Astryx's
    published theme class; the child is its fixed 32px transition container. */
+/* Astryx's dock is [scroll button, blur layer, composer]. Its 36px mask
+   finishes before Maka's card: the button reserves 32px + spacing-3, then
+   .composer adds space-2. Fade all the way to the card instead of leaving
+   a fully blurred strip above it. Scope this to docks with the scroll control;
+   floating WorkHub presentations can omit that control entirely. */
+.maka-chat-layout > div:has(> .astryx-chat-layout-scroll-button) > div:nth-last-child(2) {
+  mask-image: linear-gradient(to bottom, transparent, black calc(32px + var(--spacing-3) + var(--space-2)));
+}
+
 .astryx-chat-layout-scroll-button > div {
   contain: layout style paint;
   will-change: opacity, transform;
 }
 
 .maka-composer-queue {
-  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
-  max-width: var(--maka-reading-measure);
-  margin: 0 auto var(--space-1);
-  padding: var(--space-1);
   box-sizing: border-box;
-  border-radius: var(--radius-chat);
+  width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-6)));
+  max-width: var(--maka-reading-measure);
+  margin-inline: auto;
+  margin-block-end: var(--space-1);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-1);
+  border-radius: var(--radius-chat, 8px);
   background: var(--background-elevated);
   box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border);
-  /* Concentric with the plate, mirroring what ChatComposer derives for its
-     own footer buttons: max(--radius-element, radius - padding). The plate
-     sits outside the card, so the row ghost buttons must read it here. */
-  --_button-radius: max(var(--radius-element), calc(var(--radius-chat) - var(--spacing-3)));
+  --_button-radius: max(
+    var(--radius-element),
+    calc(var(--radius-chat) - var(--spacing-3))
+  );
 }
 
 .maka-composer-queue-list {
   min-width: 0;
   max-height: 132px;
-  overflow-y: auto;
+  overflow: hidden auto;
 }
 
 .maka-composer-queue-text {
   display: block;
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 
@@ -101,7 +147,7 @@
   width: 100%;
   min-width: 0;
   border: 0;
-  border-bottom: var(--border-width-hairline) solid var(--border-strong);
+  border-block-end: var(--border-width-hairline) solid var(--border-strong);
   outline: 0;
   background: transparent;
   color: inherit;
@@ -110,28 +156,9 @@
   resize: vertical;
 }
 
-.maka-composer-queue-grip {
-  display: grid;
-  place-items: center;
-  width: 16px;
-  color: var(--muted-foreground);
-  cursor: grab;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.maka-composer-queue-list li:hover .maka-composer-queue-grip,
-.maka-composer-queue-grip:focus-visible {
-  opacity: 1;
-}
-
-.maka-composer-queue-grip:active {
-  cursor: grabbing;
-}
-
 @media (max-width: 640px) {
   .maka-composer-queue {
-    width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-3))));
+    width: min(var(--maka-reading-measure), calc(100% - 2 * var(--space-3)));
   }
 
   .maka-composer-queue-actions {
@@ -261,9 +288,20 @@
   min-width: 0;
 }
 
+/* Chromium can omit an empty editable's line box when it mounts beneath
+   an inert ancestor, then keep that collapsed layout until the first edit.
+   Generate the empty line in CSS so its height and caret space exist from
+   the first paint, without adding a character to the draft or undo history. */
+.maka-composer-editor > [contenteditable]:empty::before {
+  content: "\200b";
+}
+
 .maka-composer-left-controls {
   display: flex;
   align-items: center;
+  /* Text controls shrink; icon actions and the send slot retain their size. */
+  flex: 1 1 0;
+  min-width: 0;
   /* PR-REFERENCE-PIXEL-8 (WAWQAQ msg `f79de85f` round 8): reference implementation's
      bundle uses gap values centered on 4-8px (extracted from
      `globals-UfMzAdiO.css` — 4px is the most common gap, 12px never
@@ -272,17 +310,23 @@
      individual controls separable while pulling them into one
      coherent toolbar group. */
   gap: var(--space-1-5);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
-/* Shrinkable so the `flex-wrap: wrap` above can actually engage. At
-   `flex: 0 0 auto` this box sizes to max-content, which means it never has a
-   width to wrap inside — it just overflows, and the overflow runs under the
-   send button and past the card's right edge. That stayed invisible while the
-   row held four controls; the project picker adds to it and a 480px window has
-   nowhere to put the overflow. `min-width: 0` because the default
-   `auto` floor would keep the same overflow for a long model name. */
-.maka-composer-left-controls {
+/* Give the leading slot only the space left after the fixed trailing actions
+   and send slots. The class is owned by Maka so this does not depend on
+   Astryx's footer wrapper structure. */
+.maka-composer-footer-leading {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Astryx owns the footer-left wrapper around footerActions. Its default
+   min-content floor otherwise lets the leading controls push the fixed send
+   slot outside the Composer card. The Maka-owned slot marker is the stable
+   boundary here; keep the wrapper shrinkable on every Composer surface. */
+.maka-composer-astryx
+  div:has(> .maka-composer-footer-leading) {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -292,6 +336,15 @@
 .maka-composer-left-controls .maka-composer-plus-menu {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
+}
+
+/* Boundary reads briefly disable the permission action on every session
+   switch. Keep the quiet toolbar icon visually stable while Astryx continues
+   to enforce aria-disabled, block activation, and expose the reason tooltip. */
+.maka-composer-left-controls .permissionModeIcon [aria-disabled='true'],
+.maka-composer-left-controls .permissionModeIcon button:disabled {
+  opacity: 1;
 }
 
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
@@ -392,13 +445,71 @@
 }
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
+  flex: 1 1 0;
   min-width: 0;
-  max-width: min(420px, 52vw);
+  max-width: 100%;
 }
+/* Selector's className belongs to the trigger INSIDE its Field. The Field
+   is the model group's flex item, so its automatic content minimum must be
+   released here for the label to yield space to usage, branch, and send. */
+.maka-composer-left-controls .maka-model-selection-controls .astryx-field:has(.maka-model-switcher-trigger, .maka-new-chat-model-selector) {
+  /* Hug the model label when space is available, but release that width
+     before the adjacent thinking and usage controls when the footer narrows. */
+  flex: 0 1 auto;
+  min-width: 0;
+  width: max-content;
+  max-width: 220px;
+}
+/* Not every model trigger sits in a Selector Field: the executor selector and
+   the wheel presentation put `maka-model-switcher-trigger` on a bare control,
+   so the Field cap above cannot reach them. Keep the trigger's own cap too;
+   `100%` is what lets a Field narrowed under 220px pass that shrink through. */
 .maka-composer-left-controls .maka-model-switcher-trigger,
 .maka-composer-left-controls .maka-new-chat-model-selector {
-  min-width: 100px;
-  max-width: min(220px, 28vw);
+  min-width: 0;
+  max-width: min(220px, 28vw, 100%);
+  justify-content: flex-start;
+  text-align: left;
+}
+.maka-composer-model-label {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.maka-composer-left-controls .maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector) {
+  /* Keep the thinking control readable when Plan/Swarm marks consume the
+     toolbar. The model field is the compressible text control beside it. */
+  flex: 0 1 auto;
+  min-width: 0;
+  width: max-content;
+  max-width: min(180px, 100%);
+}
+.maka-composer-left-controls .maka-thinking-level-selector > button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+/* Keep the model family and version visible in the closed Composer picker. */
+.maka-composer-left-controls .maka-model-switcher-trigger .modelPickerOptionLabel,
+.maka-composer-left-controls .maka-new-chat-model-selector .modelPickerOptionLabel {
+  direction: ltr;
+}
+/* External model names share this row with an executor selector. Size the
+   trigger to its label and let the pair wrap instead of squeezing the model
+   into the native model + thinking pair's width budget. */
+.maka-composer-left-controls .maka-model-selection-controls:has(.maka-external-model-selector) {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+.maka-composer-left-controls .maka-external-model-selector {
+  width: max-content;
+  max-width: 100%;
+  flex: 0 1 auto;
 }
 .maka-composer-model-chip-text {
   min-width: 0;
@@ -659,3 +770,26 @@
   font-size: 11px;
   color: var(--muted-foreground);
 }
+
+/* Share a grid cell so a wrapping suggestion reserves exactly the same height
+   as the accepted draft, without measuring layout or mutating the editor. */
+.maka-composer-input-suggestion-wrap { display: grid; min-width: 0; }
+.maka-composer-input-suggestion-wrap > .maka-composer-editor,
+.maka-composer-next-prompt { grid-area: 1 / 1; min-width: 0; }
+.maka-composer-next-prompt {
+  position: relative; z-index: 1; align-self: start; overflow: hidden;
+  display: block; width: 100%; height: auto; margin: 0; border: 0;
+  /* Match ChatComposerInput's editable and placeholder typography tokens. */
+  padding: var(--spacing-1);
+  font-family: var(--font-family-body); font-size: var(--text-body-size);
+  font-weight: inherit; font-style: inherit; letter-spacing: inherit; line-height: 22px;
+  white-space: pre-wrap; word-break: break-word; text-align: start;
+  background: transparent; color: var(--color-text-secondary); pointer-events: none;
+}
+@media (pointer: coarse) {
+  .maka-composer-next-prompt { font-size: max(1rem, var(--text-body-size)); }
+}
+.maka-composer-next-prompt-key {
+  color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs);
+}
+.maka-composer-next-prompt:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }

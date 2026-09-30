@@ -45,7 +45,7 @@ test('display and copy share reply identity across process, steering and interru
     const projection = foldTimeline(timeline);
     assert.equal(projection.finalReply, expected, 'preserves the source message identity');
     if (expected) assert.ok(projection.entries.includes(expected));
-    const turn = { timeline, assistant: { text: 'obsolete aggregate' } } as TurnViewModel;
+    const turn = { timeline } as TurnViewModel;
     assert.equal(finalAssistantReplyText(turn), expected?.kind === 'text' ? expected.text : '');
   }
 });

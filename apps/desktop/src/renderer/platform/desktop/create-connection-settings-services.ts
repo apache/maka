@@ -28,7 +28,7 @@ import type {
 
 type DesktopConnectionSettingsBridge = Pick<
   MakaBridge,
-  'connections' | 'openAiCodex' | 'xaiOAuth' | 'githubCopilotSubscription' | 'commandCodeLogin'
+  'connections' | 'openAiCodex' | 'xaiOAuth' | 'githubCopilotSubscription'
 >;
 type DesktopOAuthProviderBridge =
   | MakaBridge['openAiCodex']
@@ -60,11 +60,6 @@ export function createDesktopConnectionSettingsServices(
                 bridge().githubCopilotSubscription.connectExistingLogin(host),
             },
           },
-          commandCodeBrowserLogin: {
-            start: (input) => bridge().commandCodeLogin.start(input),
-            complete: (attemptId) => bridge().commandCodeLogin.complete(attemptId),
-            cancel: (attemptId) => bridge().commandCodeLogin.cancel(attemptId),
-          },
           getSnapshot: () => bridge().connections.getSnapshot(undefined, host),
           setDefault: (connection) => bridge().connections.setDefault(connection, host),
           setDefaultModel: (input) => bridge().connections.setDefaultModel(input, host),
@@ -74,7 +69,6 @@ export function createDesktopConnectionSettingsServices(
           test: (connection, options) => bridge().connections.test(connection, options, host),
           fetchModels: (connection) => bridge().connections.fetchModels(connection, host),
           hasSecret: (connection) => bridge().connections.hasSecret(connection, host),
-          usage: (connection) => bridge().connections.usage(connection, host),
           getRequestHeaders: (connection) => bridge().connections.getRequestHeaders(connection, host),
           setRequestHeaders: (connection, headers) =>
             bridge().connections.setRequestHeaders(connection, headers, host),

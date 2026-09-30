@@ -22,6 +22,7 @@ import test from 'node:test';
 import {
   mergePromptAnchorRailTurns,
   observeActivePromptRailVisibility,
+  reusePromptAnchorRailTurns,
   selectPromptRailTick,
 } from '../prompt-anchor-rail.js';
 
@@ -40,6 +41,23 @@ test('indexed Turns outside the loaded range precede it, and loaded Turns keep t
   ]);
   assert.equal(mergePromptAnchorRailTurns(loaded, undefined, new Set()), loaded);
   assert.equal(mergePromptAnchorRailTurns(loaded, index.slice(1), new Set(['turn-3'])), loaded);
+});
+
+test('a streaming reply delta hands back every other entry, and the list when nothing moved', () => {
+  const previous = [
+    { turnId: 'turn-1', sequence: 8, label: 'Prompt 1' },
+    { turnId: 'turn-2', label: 'Prompt 2', reply: 'Answer 2', highlighted: true },
+    { turnId: 'turn-3', label: 'Prompt 3', reply: 'Answer' },
+  ];
+  const delta = previous.map((turn) => ({ ...turn, ...(turn.turnId === 'turn-3' ? { reply: 'Answer 3' } : {}) }));
+  const next = reusePromptAnchorRailTurns(previous, delta);
+  assert.notEqual(next, previous);
+  assert.equal(next[0], previous[0]);
+  assert.equal(next[1], previous[1]);
+  assert.equal(next[2], delta[2]);
+  assert.equal(reusePromptAnchorRailTurns(next, next.map((turn) => ({ ...turn }))), next);
+  assert.deepEqual(reusePromptAnchorRailTurns(next, next.slice(1)), next.slice(1));
+  assert.notEqual(reusePromptAnchorRailTurns(next, [next[0]!, { ...next[1]!, highlighted: undefined }, next[2]!])[1], next[1]);
 });
 
 const orderedTurnIds = Array.from({ length: 120 }, (_, index) => `turn-${index + 1}`);

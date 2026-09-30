@@ -17,7 +17,16 @@
  * under the License.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Button, Grid, HStack, SelectableCard, Text, VStack } from '@astryxdesign/core';
+import {
+  Button,
+  Grid,
+  HStack,
+  SegmentedControl,
+  SegmentedControlItem,
+  SelectableCard,
+  Text,
+  VStack,
+} from '@astryxdesign/core';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import {
   isAppIcon,
@@ -29,6 +38,7 @@ import {
   TERMINAL_FONT_SIZE_MIN,
   type ThemePalette,
   type ThemePreference,
+  type WorkbarTogglePosition,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
   type UpdateAppSettingsResult,
@@ -154,6 +164,7 @@ const appIconGroupLabelId = (group: string) => `settings-appearance-app-icon-${g
 const FONT_SIZE_SECTION_HEADING_ID = 'settings-appearance-font-size-heading';
 
 export function AppearanceSettingsPage(props: {
+  workbarTogglePosition?: WorkbarTogglePosition;
   themePref: ThemePreference;
   themePalette: ThemePalette;
   appIcon: AppIconChoice;
@@ -468,8 +479,21 @@ export function AppearanceSettingsPage(props: {
           </VStack>
         ))}
       </SettingsSection>
+      <SettingsSection title={copy.workbar.title}>
+        <SettingsRow
+          label={copy.workbar.titlebarToggle}
+          description={copy.workbar.help}
+          end={
+            <Switch
+              label={copy.workbar.titlebarToggle}
+              isLabelHidden
+              value={props.workbarTogglePosition === 'titlebar'}
+              onChange={(enabled) => void persistAppearance({ workbarTogglePosition: enabled ? 'titlebar' : 'edge' })}
+            />
+          }
+        />
+      </SettingsSection>
       <SettingsSection
-        variant="bare"
         titleId={FONT_SIZE_SECTION_HEADING_ID}
         title={sections.fontSize}
         description={sections.fontSizeHelp}
@@ -518,43 +542,55 @@ export function AppearanceSettingsPage(props: {
         titleId={APP_ICON_SECTION_HEADING_ID}
         title={sections.appIcon}
         description={sections.appIconHelp}
+        action={appIconLoadFailed ? undefined : (
+          <Button
+            variant="secondary"
+            size="sm"
+            isDisabled={appIconBusy}
+            label={appIconBusy ? copy.appIconImporting : copy.appIconImport}
+            onClick={() => void importAppIcon()}
+          />
+        )}
       >
         {appIconLoadFailed ? (
           <Text type="supporting" size="sm" color="secondary">{copy.appIconUnavailable}</Text>
         ) : (
           <VStack gap={3}>
-            <HStack gap={2} align="center">
-              <Switch
-                label={copy.appIconSplitLabel}
-                value={appIconSplit}
-                isDisabled={appIconBusy}
-                onChange={(enabled) => void setAppIconSplit(enabled)}
-              />
-              <Text type="supporting" size="sm" color="secondary">
-                {copy.appIconSplitHelp}
-              </Text>
-            </HStack>
-            {appIconSplit ? (
-              /* Which slot the grid below edits. Two buttons rather than a
-                 second grid: 43 tiles twice over is a wall, and the choice
-                 being made is the same one either way. */
-              <HStack gap={1} role="group" aria-label={copy.appIconSplitLabel}>
-                {(['light', 'dark'] as const).map((target) => (
-                  <Button
-                    key={target}
-                    size="sm"
-                    variant={appIconTarget === target ? 'primary' : 'ghost'}
-                    label={copy.appIconTargets[target]}
-                    onClick={() => setAppIconTarget(target)}
+            <SettingsRow
+              label={copy.appIconSplitLabel}
+              description={copy.appIconSplitHelp}
+              end={(
+                <>
+                  {appIconSplit ? (
+                    /* Which slot the grid below edits. One control rather than
+                       a second grid: 43 tiles twice over is a wall, and the
+                       choice being made is the same one either way. */
+                    <SegmentedControl
+                      size="sm"
+                      label={copy.appIconSplitLabel}
+                      value={appIconTarget}
+                      onChange={(target) => setAppIconTarget(target as 'light' | 'dark')}
+                    >
+                      {(['light', 'dark'] as const).map((target) => (
+                        <SegmentedControlItem key={target} value={target} label={copy.appIconTargets[target]} />
+                      ))}
+                    </SegmentedControl>
+                  ) : null}
+                  <Switch
+                    label={copy.appIconSplitLabel}
+                    isLabelHidden
+                    value={appIconSplit}
+                    isDisabled={appIconBusy}
+                    onChange={(enabled) => void setAppIconSplit(enabled)}
                   />
-                ))}
-              </HStack>
-            ) : null}
+                </>
+              )}
+            />
             {appIconGroupsToRender.map((group) => (
               <VStack key={group.id} gap={1.5}>
                 <Text
                   id={appIconGroupLabelId(group.id)}
-                  type="label"
+                  type="supporting"
                   size="sm"
                   color="secondary"
                   weight="medium"
@@ -610,15 +646,7 @@ export function AppearanceSettingsPage(props: {
                 </Grid>
               </VStack>
             ))}
-            <HStack gap={2} align="center">
-              <Button
-                variant="secondary"
-                isDisabled={appIconBusy}
-                label={appIconBusy ? copy.appIconImporting : copy.appIconImport}
-                onClick={() => void importAppIcon()}
-              />
-              <Text type="supporting" size="sm" color="secondary">{copy.appIconImportHelp}</Text>
-            </HStack>
+            <Text type="supporting" size="sm" color="secondary">{copy.appIconImportHelp}</Text>
           </VStack>
         )}
       </SettingsSection>

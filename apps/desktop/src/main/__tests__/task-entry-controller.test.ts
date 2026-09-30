@@ -316,8 +316,8 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
     });
     assert.equal(addCalls, 1);
     assert.equal(controller().selectors.workspacePicker.pending, true);
@@ -725,7 +725,7 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services, errors));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
       await Promise.resolve();
     });
     assert.equal(controller().selectors.workspacePicker.pending, true);
@@ -736,6 +736,35 @@ describe('useTaskEntryController', () => {
     assert.deepEqual(errors, [{
       title: 'Could not update project',
       description: 'The project could not be updated. Try again later.',
+      profileId: 'local',
+    }]);
+  });
+
+  it('explains that a running Session must settle before workspace recovery', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => catalog(),
+      },
+      sessions: {
+        relocateWorkspace: async () => ({ ok: false, reason: 'session_busy' }),
+      },
+    });
+
+    await act(async () => renderController(root, services, errors));
+    await act(async () => {
+      await controller().commands.relocateSessionWorkspace({
+        sessionId: 'session-1',
+        profileId: 'local',
+        projectId: 'project-a',
+      });
+    });
+
+    assert.deepEqual(errors, [{
+      title: 'Could not move task',
+      description: 'A task is running. Wait for it to finish before moving this one.',
       profileId: 'local',
     }]);
   });

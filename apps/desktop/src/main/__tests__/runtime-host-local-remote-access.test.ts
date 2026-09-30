@@ -37,8 +37,8 @@ import type { createDesktopRuntimeHostLocalOperator } from '../runtime-host-loca
 
 const testOperator = (modulePath: string) => ({
   kind: 'node' as const,
-  platform: 'posix' as const,
-  nodePath: '/usr/bin/node',
+  platform: process.platform === 'win32' ? 'win32' as const : 'posix' as const,
+  nodePath: process.execPath,
   modulePath,
 });
 
@@ -344,7 +344,6 @@ test('repairs an existing managed Host with the current setup package and restar
     directPeerAvailable: true,
     manager: () => undefined,
     resolveSetupPackage: async () => setupPackage,
-    onUpdateProgress: (phase) => phases.push(phase),
     operator: {
       async runUpdate(input: {
         readonly setupPackage: unknown;
@@ -353,6 +352,13 @@ test('repairs an existing managed Host with the current setup package and restar
         readonly allowInterruptActiveTasks?: boolean;
       }, onProgress: (phase: 'staging') => void) {
         actions.push('update');
+        if (actions.length > 2) {
+          return {
+            kind: 'error',
+            action: 'update',
+            error: { code: 'target_mismatch', message: 'The installed Runtime Host package changed' },
+          } as never;
+        }
         onProgress('staging');
         assert.equal(input.setupPackage, setupPackage);
         assert.equal(input.target.rootId, rootId);
@@ -382,11 +388,62 @@ test('repairs an existing managed Host with the current setup package and restar
   });
   t.after(() => service.close());
 
-  assert.deepEqual(await service.repairManagedStartup({ allowManualUpdate: true }), {
+  assert.deepEqual(await service.repairManagedStartup({
+    allowManualUpdate: true,
+    onProgress: (phase) => phases.push(phase),
+  }), {
     kind: 'repaired',
   });
   assert.deepEqual(actions, ['update', 'restart']);
   assert.deepEqual(phases, ['checking', 'staging', 'restart']);
+  await assert.rejects(
+    service.repairManagedStartup({ allowManualUpdate: true }),
+    /installed Runtime Host package changed/u,
+  );
+});
+
+test('preserves service readiness evidence in the managed repair blocker', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-repair-diagnostic-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
+  const diagnostic = [
+    'Runtime Host service did not become ready: Host state is failed',
+    'service state: failed; active: false; pid: none; last exit code: 78',
+    'service logs (tail):\nstartup failed: [redacted]',
+  ].join('\n');
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () => undefined,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    resolveManagedDeploymentAuthority: async () => ({
+      kind: 'active',
+      lifecycleMode: 'supervised',
+      deploymentRoot: join(base, 'deployment'),
+      target: {
+        schemaVersion: 2,
+        serviceId: 'b'.repeat(64),
+        rootPath,
+        rootId,
+        operator: testOperator(join(base, 'operator.mjs')),
+        deploymentId: RECOVERY_DEPLOYMENT_ID,
+      },
+    }),
+    inspectHost: async () => ({ kind: 'unavailable' as const, reason: 'connect_failed' as const }),
+    operator: { async close() {} } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const blocker = await service.resolveStartupRepair(new Error(diagnostic), new AbortController().signal);
+  assert.equal(blocker?.reason, 'repair');
+  assert.equal(blocker?.diagnostic, diagnostic);
 });
 
 test('replaces a conflicting supervised Host with the requested active-work policy', async (t) => {
@@ -442,6 +499,16 @@ test('replaces a conflicting supervised Host with the requested active-work poli
             update: { kind: 'already_current', version: '0.2.0' },
           } as never;
         }
+        if (policies.length === 4) {
+          return {
+            kind: 'error' as const,
+            action: 'update' as const,
+            error: {
+              code: 'target_mismatch',
+              message: 'This update would downgrade the shared Runtime Host. Update the Client instead.',
+            },
+          } as never;
+        }
         return {
           kind: 'result' as const,
           action: 'update' as const,
@@ -464,7 +531,8 @@ test('replaces a conflicting supervised Host with the requested active-work poli
     replacement.replace('interrupt_active_work'),
     /did not replace the observed Host/u,
   );
-  assert.deepEqual(policies, [undefined, true, true]);
+  await assert.rejects(replacement.replace('interrupt_active_work'), /Update the Client instead/u);
+  assert.deepEqual(policies, [undefined, true, true, true]);
 });
 
 test('does not persist recoverable setup authority before Desktop ownership commits', async (t) => {
@@ -518,7 +586,9 @@ test('does not persist recoverable setup authority before Desktop ownership comm
   assert.equal(setupCalls, 0);
 });
 
-test('adopts a released handoff through its existing legacy operator', async (t) => {
+test('adopts a released handoff through its existing legacy operator', {
+  skip: process.platform === 'win32' && 'Legacy POSIX handoff requires POSIX deployment paths',
+}, async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-prestart-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
@@ -593,7 +663,8 @@ test('migrates a released managed receipt before exposing it to lifecycle operat
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
   const rootId = 'a'.repeat(64);
-  const operatorPath = join(base, 'installed', 'operator');
+  // The released schema describes a POSIX executable, regardless of the test host.
+  const operatorPath = '/opt/maka/installed/operator';
   const lifecyclePath = join(clientDataRoot, 'runtime-host-local-service.json');
   await mkdir(rootPath, { recursive: true });
   await writeFile(

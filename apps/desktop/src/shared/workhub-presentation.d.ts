@@ -25,6 +25,7 @@ export interface WorkHubHostRect {
 }
 
 export interface WorkHubWorkbarState {
+  readonly togglePosition?: import('@maka/core/settings').WorkbarTogglePosition;
   readonly collapsed: boolean;
   readonly placement: 'right' | 'bottom';
 }

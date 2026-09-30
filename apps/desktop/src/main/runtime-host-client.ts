@@ -77,6 +77,7 @@ import {
   type ExternalSessionCatalogQueryResult,
   type ExternalSessionImportResult,
   type ExternalSessionSourceQueryResult,
+  type WorkspaceTarget,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type InteractionAnswerInput,
@@ -100,11 +101,6 @@ import {
   PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
-  type QueueEntriesReorderInput,
-  type QueueEntryPromoteInput,
-  type QueueEntryRetractInput,
-  type QueueEntryUpdateInput,
-  type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -164,6 +160,17 @@ const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
+
+type QueueMutationOperation =
+  | "queue.entry.promote"
+  | "queue.entry.retract"
+  | "queue.entry.update"
+  | "queue.entries.reorder";
+
+type QueueMutationInput<K extends QueueMutationOperation> = Omit<
+  OperationInput<K>,
+  "originHostEpoch"
+>;
 
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
@@ -545,12 +552,6 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  readConnectionUsage(
-    connectionId: string,
-  ): Promise<OperationOutput<"connection.usage.read">> {
-    return this.request("connection.usage.read", { connectionId });
-  }
-
   verifyConnectionOnboarding(
     input: OperationInput<"connection.onboarding.verify">,
   ): Promise<OperationOutput<"connection.onboarding.verify">> {
@@ -721,6 +722,17 @@ export class DesktopRuntimeHostClient {
     } catch {
       return { kind: "saved_refresh_failed", disposition: result.kind };
     }
+  }
+
+  /**
+   * Recall over this Host's own corpus.
+   *
+   * Recall runs inside the Host — the Session manager, fact store, and
+   * material fetch are all Host-owned — so this is a request, not a scan.
+   * Desktop issues one per Host and merges; it never reads the transcripts.
+   */
+  queryRecall(input: OperationInput<'recall.query'>): Promise<OperationOutput<'recall.query'>> {
+    return this.request('recall.query', input);
   }
 
   async listSessions(): Promise<SessionCatalogProjection[]> {
@@ -1041,6 +1053,7 @@ export class DesktopRuntimeHostClient {
   async importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
+    readonly workspace?: WorkspaceTarget;
   }): Promise<ExternalSessionImportResult<SessionCatalogProjection>> {
     const result = await this.request("external-session.import", input);
     return result.kind === 'imported'
@@ -1091,6 +1104,30 @@ export class DesktopRuntimeHostClient {
         patch: definedPatch,
       }),
     );
+  }
+
+  /**
+   * Re-point an existing Session at another workspace, at the revision the
+   * caller read.
+   *
+   * Deliberately a single attempt. The target can carry a working directory the
+   * caller read from that same revision — a `host_path` taken from the Session
+   * while detaching it from every project — and retrying against a fresher one
+   * would commit that stale directory under the new revision, undoing whatever
+   * the concurrent write did. A conflict is the answer, not a replay.
+   */
+  async relocateSessionWorkspace(
+    sessionId: string,
+    expectedRevision: number,
+    workspace: WorkspaceTarget,
+  ): Promise<SessionCatalogProjection> {
+    const result = await this.request("session.workspace.relocate", {
+      sessionId,
+      expectedRevision,
+      workspace,
+    });
+    if (result.kind === "committed") return requireSessionProjection(result.session);
+    throw revisionConflict("relocate", sessionId);
   }
 
   async setSessionReadMarker(
@@ -1294,39 +1331,37 @@ export class DesktopRuntimeHostClient {
   }
 
   retractQueueEntry(
-    input: Omit<QueueEntryRetractInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.retract", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.retract">,
+  ): Promise<OperationOutput<"queue.entry.retract">> {
+    return this.#mutateQueue("queue.entry.retract", input);
   }
 
   promoteQueueEntry(
-    input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.promote", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.promote">,
+  ): Promise<OperationOutput<"queue.entry.promote">> {
+    return this.#mutateQueue("queue.entry.promote", input);
   }
 
   updateQueueEntry(
-    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.update", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.update">,
+  ): Promise<OperationOutput<"queue.entry.update">> {
+    return this.#mutateQueue("queue.entry.update", input);
   }
 
   reorderQueueEntries(
-    input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entries.reorder", {
+    input: QueueMutationInput<"queue.entries.reorder">,
+  ): Promise<OperationOutput<"queue.entries.reorder">> {
+    return this.#mutateQueue("queue.entries.reorder", input);
+  }
+
+  #mutateQueue<K extends QueueMutationOperation>(
+    operation: K,
+    input: QueueMutationInput<K>,
+  ): Promise<OperationOutput<K>> {
+    return this.request(operation, {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
-    });
+    } as OperationInput<K>);
   }
 
   interruptTurn(
@@ -1565,12 +1600,6 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"agent.graph.stop">,
   ): Promise<OperationOutput<"agent.graph.stop">> {
     return this.request("agent.graph.stop", input);
-  }
-
-  queryDeepResearch(
-    sessionId: string,
-  ): Promise<OperationOutput<"deep-research.query">> {
-    return this.request("deep-research.query", { sessionId });
   }
 
   async listRuntimeResources(sessionId: string): Promise<ShellRunUpdate[]> {
@@ -1815,6 +1844,10 @@ export class DesktopRuntimeHostClient {
       "session_not_found",
       `Runtime Host Session not found: ${sessionId}`,
     );
+  }
+
+  generatePromptSuggestion(sessionId: string) {
+    return this.request('session.prompt-suggestion.generate', { sessionId }, 7000);
   }
 
   request<K extends DirectRequestOperationKey>(

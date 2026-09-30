@@ -134,8 +134,6 @@ after(async () => {
 const localeCases = [
   {
     locale: 'zh-CN', direct: '直连', transit: '成员转发', save: '保存供应商',
-    transportNotice: '这个供应商走官方 CLI 的私有通道',
-    transportRequired: '请先勾选上面的确认再添加。',
     slugErrors: {
       required: '请填写连接标识',
       format: '连接标识只能包含小写字母、数字和连字符',
@@ -145,8 +143,6 @@ const localeCases = [
   },
   {
     locale: 'zh-TW', direct: '直接連線', transit: '成員轉送', save: '儲存供應商',
-    transportNotice: '這個供應商走官方 CLI 的私有通道',
-    transportRequired: '請先勾選上面的確認再新增。',
     slugErrors: {
       required: '請填寫連線標識',
       format: '連線標識只能包含小寫字母、數字和連字號',
@@ -156,8 +152,6 @@ const localeCases = [
   },
   {
     locale: 'en', direct: 'Direct', transit: 'Member transit', save: 'Save provider',
-    transportNotice: "This provider uses the official CLI's private transport",
-    transportRequired: 'Tick the acknowledgement above before adding.',
     slugErrors: {
       required: 'Enter a connection identifier',
       format: 'Connection identifiers use lowercase letters, digits, and hyphens',
@@ -242,7 +236,7 @@ for (const copy of localeCases) {
         fetchModels: async () => { calls.push('fetchModels'); throw new Error('unexpected discovery'); },
       } as unknown as ConnectionsBridge;
       await harness.render(copy.locale, createElement(components.AddProviderForm, {
-        bridge, providerType: 'openai-compatible', existingSlugs: ['taken'],
+        bridge, providerType: 'custom', existingSlugs: ['taken'],
         onCancel: unexpectedCall, onCreated: unexpectedCall,
       }));
       const input = harness.document.querySelector<HTMLInputElement>('input[placeholder="my-provider"]');
@@ -270,52 +264,6 @@ for (const copy of localeCases) {
     });
   }
 
-  /**
-   * Mounted rather than asserted through the draft rule alone: Command Code GO
-   * takes the quick API-key dialog, which returns its own subtree and submits
-   * through a route that returns before that rule runs. A test of the rule
-   * stays green while the notice never renders and the check never fires.
-   */
-  test(`${copy.locale}: Command Code GO states its transport and refuses until answered`, async () => {
-    const harness = installRenderer();
-    const calls: string[] = [];
-    const bridge = {
-      create: async () => { calls.push('create'); throw new Error('unexpected create'); },
-      fetchModels: async () => { calls.push('fetchModels'); throw new Error('unexpected discovery'); },
-    } as unknown as ConnectionsBridge;
-    await harness.render(copy.locale, createElement(components.AddProviderForm, {
-      bridge, providerType: 'commandcode-go', existingSlugs: [],
-      onCancel: unexpectedCall, onCreated: unexpectedCall,
-    }));
-
-    const checkbox = harness.document.querySelector<HTMLInputElement>('input[type="checkbox"]');
-    assert.ok(checkbox, 'the transport acknowledgement never rendered');
-    assert.equal(checkbox.checked, false);
-    assert.ok(
-      harness.document.body.textContent?.includes(copy.transportNotice),
-      'the transport notice never rendered',
-    );
-
-    // This route submits through the form rather than an `onClick`, and a
-    // bare `button.click()` does not submit here — asserting on it would pass
-    // while nothing ran.
-    const form = harness.document.querySelector('form');
-    assert.ok(form, 'missing add-provider form');
-    assert.ok(
-      [...harness.document.querySelectorAll('button')].some(
-        (button) => button.textContent === copy.save,
-      ),
-      'missing save button',
-    );
-    await act(async () => {
-      form.dispatchEvent(new globalThis.Event('submit', { bubbles: true, cancelable: true }));
-    });
-    assert.deepEqual(calls, [], 'an unanswered acknowledgement must not reach the provider bridge');
-    assert.ok(
-      harness.document.body.textContent?.includes(copy.transportRequired),
-      'refusing the add must say why',
-    );
-  });
 }
 
 test('zh-TW: expanded Peer Mesh members render localized route states', async () => {
@@ -351,6 +299,117 @@ test('zh-TW: expanded Peer Mesh members render localized route states', async ()
     assert.ok(heading);
     assert.equal(heading.nextElementSibling?.textContent, expected[index], states[index]);
   }
+});
+
+test('custom connection creation updates and clears the request URL preview while typing', async () => {
+  const harness = installRenderer();
+  await harness.render('en', createElement(components.AddProviderForm, {
+    bridge: connectionDetailBridge({}),
+    providerType: 'custom', existingSlugs: [],
+    onCancel: unexpectedCall, onCreated: unexpectedCall,
+  }));
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input, 'missing service URL input');
+  for (const [draft, expected] of [
+    ['https://relay.example/proxy/chat/completions', 'https://relay.example/proxy/chat/completions'],
+    ['https://relay.example/team', 'https://relay.example/team/chat/completions'],
+    ['https://', null],
+    ['', null],
+  ] as const) {
+    await act(async () => {
+      input.value = draft;
+      const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+      assert.ok(key, 'missing React input props');
+      const props = (input as unknown as Record<string, unknown>)[key] as {
+        onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+      };
+      props.onChange({ target: input, defaultPrevented: false });
+    });
+    const preview = harness.document.querySelector('.providerRequestUrlPreview');
+    if (expected) {
+      assert.ok(preview);
+      assert.ok(preview.textContent.endsWith(expected));
+      assert.equal(input.getAttribute('aria-description'), preview.textContent);
+    } else {
+      assert.equal(preview, null);
+      assert.equal(input.getAttribute('aria-description'), null);
+    }
+  }
+});
+
+test('endpoint editing previews the default model protocol override', async () => {
+  const harness = installRenderer();
+  const base = relayConnection();
+  const connection: ProjectedLlmConnection = {
+    ...base,
+    defaultApiProtocol: 'openai-chat',
+    modelOverrides: { [base.defaultModel]: { apiProtocol: 'openai-responses' } },
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = [...harness.document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.getAttribute('aria-label') === 'Edit: Service URL',
+  );
+  assert.ok(edit, 'missing service URL edit action');
+  await act(async () => edit.click());
+  const preview = harness.document.querySelector('.providerRequestUrlPreview');
+  assert.ok(preview);
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  assert.equal(
+    harness.document.querySelector('.providerEndpointField input')?.getAttribute('aria-description'),
+    preview.textContent,
+  );
+});
+
+test('legacy credential endpoint editing shows one preview and retains its accessible description', async () => {
+  const harness = installRenderer();
+  const connection: ProjectedLlmConnection = {
+    ...relayConnection(),
+    baseUrl: 'https://relay.example/v1?token=legacy-secret',
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = harness.document.querySelector<HTMLButtonElement>('button[aria-label="Edit: Service URL"]');
+  assert.ok(edit);
+  await act(async () => edit.click());
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input);
+  assert.equal(input.type, 'password');
+  assert.equal(harness.document.querySelector('.providerRequestUrlPreview'), null);
+  await act(async () => {
+    input.value = 'https://relay.example/v1';
+    const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key);
+    const props = (input as unknown as Record<string, unknown>)[key] as {
+      onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+    };
+    props.onChange({ target: input, defaultPrevented: false });
+  });
+  const previews = harness.document.querySelectorAll('.providerRequestUrlPreview');
+  assert.equal(previews.length, 1);
+  const preview = previews[0]!;
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  const descriptions = describedElements(input);
+  assert.ok(descriptions.some((element) => element.textContent.includes(preview.textContent)));
+  assert.ok(descriptions.some((element) =>
+    element.querySelector('.maka-visually-hidden')?.textContent.trim() === preview.textContent,
+  ), 'the accessible copy of the URL must not render a second visible preview');
 });
 
 test('credential probing does not flash a page-level loading warning', async () => {
@@ -469,9 +528,10 @@ function relayConnection(): ProjectedLlmConnection {
   const modelId = 'gpt-5.6-sol-joybuilder';
   return {
     connectionId: 'relay-connection',
-    slug: 'openai-responses-compatible-2',
+    slug: 'custom-2',
     name: '自定义中转站（OpenAI Responses）',
-    providerType: 'openai-responses-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-responses',
     baseUrl: 'https://relay.example/v1',
     defaultModel: modelId,
     enabledModelIds: [modelId],
@@ -516,6 +576,12 @@ function managementServices(): RuntimeHostManagementServices {
       readClipboardText: unexpectedCall, writeClipboardText: unexpectedCall,
     },
     resources: { query: unexpectedCall, schedule: unexpectedCall },
+    handoff: {
+      current: async () => null,
+      subscribe: () => () => {},
+      decide: unexpectedCall,
+      copyText: unexpectedCall,
+    },
     peerMesh: {
       execute: unexpectedCall, cancel: unexpectedCall,
       getConnectivityPolicy: unexpectedCall, setConnectivityPolicy: unexpectedCall,

@@ -19,12 +19,126 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { RetryError } from 'ai';
+import { convertArrayToReadableStream, MockLanguageModelV4 } from 'ai/test';
 
 import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
+  test('shrinks a provider output limit when the persisted request is near the window', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-6',
+        models: [
+          {
+            id: 'claude-sonnet-4-6',
+            contextWindow: 200_000,
+            maxOutputTokens: 128_000,
+          },
+        ],
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-6',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.equal(adapter.maxOutputTokensForInput(undefined), 128_000);
+    assert.equal(adapter.maxOutputTokensForInput(100_000), 92_000);
+    assert.equal(adapter.maxOutputTokensForInput(191_999), 8_000);
+    assert.equal(adapter.maxOutputTokensForInput(192_000), 8_000);
+  });
+
+  test('sends no output limit on a Codex subscription, even a configured one', () => {
+    const adapterFor = (providerType: 'openai' | 'openai-codex') =>
+      new ModelAdapter({
+        connection: {
+          slug: providerType,
+          providerType,
+          defaultModel: 'gpt-6-astra',
+          modelOverrides: { 'gpt-6-astra': { maxOutputTokens: 4_096 } },
+        },
+        apiKey: 'token',
+        modelId: 'gpt-6-astra',
+        modelFactory: () => ({}),
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+
+    // The Codex backend rejects max_output_tokens, so a turn carrying the
+    // configured limit would fail with HTTP 400 on every request.
+    const codex = adapterFor('openai-codex');
+    assert.equal(codex.acceptsOutputTokenLimit(), false);
+    assert.equal(codex.maxOutputTokens(), undefined);
+    assert.equal(codex.maxOutputTokensForInput(100_000), undefined);
+
+    const openai = adapterFor('openai');
+    assert.equal(openai.acceptsOutputTokenLimit(), true);
+    assert.equal(openai.maxOutputTokens(), 4_096);
+  });
+
+  test('startStream sends a Codex subscription request no output limit from any source', async () => {
+    const sentLimit = async (
+      providerType: 'openai' | 'openai-codex',
+      callerLimit: number | undefined,
+    ) => {
+      const model = new MockLanguageModelV4({
+        doStream: {
+          stream: convertArrayToReadableStream([
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 1, text: 1, reasoning: 0 },
+              },
+            },
+          ] satisfies LanguageModelV4StreamPart[]),
+        },
+      });
+      const adapter = new ModelAdapter({
+        connection: {
+          slug: providerType,
+          providerType,
+          defaultModel: 'gpt-6-astra',
+          modelOverrides: { 'gpt-6-astra': { maxOutputTokens: 4_096 } },
+        },
+        apiKey: 'token',
+        modelId: 'gpt-6-astra',
+        modelFactory: () => model,
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+      const result = await adapter.startStream({
+        model,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: {},
+        activeTools: [],
+        abortSignal: new AbortController().signal,
+        repairToolCall: async () => null,
+        onStreamActivity: () => {},
+        ...(callerLimit === undefined ? {} : { maxOutputTokens: callerLimit }),
+      });
+      for await (const _event of result.events) {
+        // Drain so the provider call settles.
+      }
+      return model.doStreamCalls[0]?.maxOutputTokens;
+    };
+
+    // The configured limit, and a caller-supplied cap such as overflow
+    // recovery's 8K, would both be rejected by the Codex backend with HTTP 400.
+    assert.equal(await sentLimit('openai-codex', undefined), undefined);
+    assert.equal(await sentLimit('openai-codex', 8_000), undefined);
+    assert.equal(await sentLimit('openai', undefined), 4_096);
+    assert.equal(await sentLimit('openai', 8_000), 8_000);
+  });
+
   test('forwards the stable Session identity to the model factory', () => {
     let observedSessionId: string | undefined;
     const model = {};
@@ -678,7 +792,8 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'openai-chat',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         defaultModel: 'chat-model',
       },
       apiKey: 'sk-test',

@@ -20,7 +20,7 @@
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import type { PendingAttachment } from '../../renderer/composer-attachments.js';
+import type { PendingAttachment } from '@maka/ui/composer-attachments';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import {
@@ -124,4 +124,23 @@ test('a main-side attachment rejection refuses the send instead of leaving it un
     restoreWindow();
   }
   assert.equal(errorLog.mock.callCount(), 0, 'an expected attachment rejection logs no diagnostic');
+});
+
+
+test('unsupported executor attachments preserve the pending draft before any Session is created', async () => {
+  const restore = installWindow({ newTasks: { create: async () => assert.fail('must reject before creation') } });
+  const pending = [fileAttachment(10, 0)];
+  const errors: string[] = [];
+  try {
+    const actions = createAppShellChatActions({
+      ...createActionsDeps(),
+      executorSelection: { executorId: 'external', configuration: { model: 'chosen' } },
+      executorEntry: { readiness: 'ready', supportsAttachments: false },
+      toastApi: { error: (message) => { errors.push(message); }, info() {} },
+    });
+    assert.equal(await actions.send('keep my instructions', pending), false);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].stagingKey, 'staged-file-0');
+    assert.match(errors[0], /Remove unsupported attachments/);
+  } finally { restore(); }
 });

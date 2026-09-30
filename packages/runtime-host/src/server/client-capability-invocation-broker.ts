@@ -135,7 +135,7 @@ export interface PreparedClientCapabilityInvocation {
 export interface ClientCapabilityInvocationBrokerOptions<
   Registration extends ClientCapabilityInvocationRegistration,
 > {
-  readonly senderFor: (connectionId: string) => ClientCapabilityConnectionSender | undefined;
+  readonly senderFor: (registration: Registration) => ClientCapabilityConnectionSender | undefined;
   readonly onRegistrationIdle: (registration: Registration) => void;
   readonly scheduleTimeout?: (callback: () => void, timeoutMs: number) => () => void;
 }
@@ -268,7 +268,7 @@ export class ClientCapabilityInvocationBroker<
     requestInteraction: ClientCapabilityInteractionHandler | undefined,
     frameFor: (invocationId: string) => ClientCapabilityHostFrame,
   ): PreparedClientCapabilityInvocation {
-    const sender = this.#senderFor(registration.connectionId);
+    const sender = this.#senderFor(registration);
     if (!sender) {
       throw new ClientCapabilityInvocationError(
         'capability_lost',
@@ -363,7 +363,7 @@ export class ClientCapabilityInvocationBroker<
           invocation.requestInteraction = requestInteraction ?? invocation.requestInteraction;
           invocation.phase = 'admitted';
           this.#armTimer(invocation);
-          const currentSender = this.#senderFor(invocation.registration.connectionId);
+          const currentSender = this.#senderFor(invocation.registration);
           if (!currentSender) {
             this.#settle(
               invocation,
@@ -396,7 +396,7 @@ export class ClientCapabilityInvocationBroker<
       cancel: () => {
         const invocation = this.#invocations.get(invocationId);
         if (!invocation) return;
-        const currentSender = this.#senderFor(invocation.registration.connectionId);
+        const currentSender = this.#senderFor(invocation.registration);
         void currentSender
           ?.send({ kind: 'client.capability.cancel', invocationId })
           .catch(() => {});
@@ -538,10 +538,18 @@ export class ClientCapabilityInvocationBroker<
     }
   }
 
-  async releaseConnection(connectionId: string): Promise<void> {
+  releaseConnection(connectionId: string): Promise<void> {
+    return this.#releaseWhere((registration) => registration.connectionId === connectionId);
+  }
+
+  releaseRegistration(registration: Registration): Promise<void> {
+    return this.#releaseWhere((candidate) => candidate === registration);
+  }
+
+  async #releaseWhere(matches: (registration: Registration) => boolean): Promise<void> {
     const interactions: Promise<void>[] = [];
     for (const invocation of [...this.#invocations.values()]) {
-      if (invocation.registration.connectionId !== connectionId) continue;
+      if (!matches(invocation.registration)) continue;
       if (invocation.phase === 'dispatched' || invocation.phase === 'accepted') {
         invocation.providerAvailability.abort(
           new ClientCapabilityInvocationError(
@@ -684,7 +692,7 @@ export class ClientCapabilityInvocationBroker<
         );
         return;
       }
-      const sender = this.#senderFor(invocation.registration.connectionId);
+      const sender = this.#senderFor(invocation.registration);
       if (!sender) {
         this.#settle(
           invocation,
@@ -761,7 +769,7 @@ export class ClientCapabilityInvocationBroker<
     invocation.cancelTimer = this.#scheduleTimeout(() => {
       const current = this.#invocations.get(invocation.invocationId);
       if (current !== invocation) return;
-      const sender = this.#senderFor(current.registration.connectionId);
+      const sender = this.#senderFor(current.registration);
       void sender
         ?.send({ kind: 'client.capability.cancel', invocationId: current.invocationId })
         .catch(() => {});
@@ -798,7 +806,7 @@ export class ClientCapabilityInvocationBroker<
     }
     this.#rememberRetired(invocation.invocationId);
     if (releaseRemote) {
-      const sender = this.#senderFor(invocation.registration.connectionId);
+      const sender = this.#senderFor(invocation.registration);
       void sender
         ?.send({
           kind: 'client.capability.release',

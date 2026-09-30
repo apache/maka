@@ -22,7 +22,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { userFacingText } from '@maka/core/session';
 import type { ComposerHandle } from '@maka/ui';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   isSessionWorkspaceUnavailableError,
@@ -36,8 +36,6 @@ import {
   type SessionCopyAttemptPhase,
   type SessionCopyAttemptKey,
 } from './session-copy-attempt.js';
-import { readSettledMessages } from './platform/desktop/session-message-settlement.js';
-import type { MessageListUpdater } from './session-workspace-actions.js';
 
 type RefBox<T> = { current: T };
 
@@ -59,7 +57,6 @@ export type TurnRevisionDraft = {
   copyPhase: SessionCopyAttemptPhase;
   /** Active owner of the draft. Changes to the branch child after prepare. */
   draftSessionId: string;
-  originalText: string;
   /** Composer text that was present before edit began; restored on cancel.
    *  Staged Skills ride along inside it as `/skill:<id>` chips. */
   previousComposerText: string;
@@ -95,7 +92,6 @@ export function createAppShellRevisionActions(deps: {
   hasPendingAttachments: () => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
-  setMessages: MessageListUpdater;
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
   revisionDraftRef: RefBox<TurnRevisionDraft | null>;
   toastApi: ToastApi;
@@ -109,13 +105,11 @@ export function createAppShellRevisionActions(deps: {
     hasPendingAttachments,
     openSessionInChat,
     refreshSessions,
-    setMessages,
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
-  let revisionPreparationAbort: AbortController | undefined;
 
   function revisionCopyKey(sourceSessionId: string, sourceTurnId: string): SessionCopyAttemptKey {
     return {
@@ -178,7 +172,6 @@ export function createAppShellRevisionActions(deps: {
       copyId: copyAttempt.copyId,
       copyPhase: copyAttempt.phase,
       draftSessionId: sessionId,
-      originalText: prompt,
       previousComposerText: composerRef.current?.getText() ?? '',
     });
     composerRef.current?.setText(prompt);
@@ -299,9 +292,6 @@ export function createAppShellRevisionActions(deps: {
     }
     const sourceSessionId = startedDraft.sourceSessionId;
     let preparedSessionId: string | undefined;
-    const preparationAbort = new AbortController();
-    revisionPreparationAbort?.abort();
-    revisionPreparationAbort = preparationAbort;
     try {
       const newSession = await window.maka.sessions.reviseBeforeTurn(sourceSessionId, {
         sourceTurnId: startedDraft.sourceTurnId,
@@ -318,49 +308,40 @@ export function createAppShellRevisionActions(deps: {
       commitRevisionDraft(prepared);
       openSessionInChat(newSession.id);
       selectionIsCurrent = captureSelection();
-      const { messages: preparedMessages, settled } = await readSettledMessages(newSession.id, {
-        signal: preparationAbort.signal,
-      });
-      if (!settled) throw new Error('Revised Session transcript did not become ready');
-      if (
-        !selectionIsCurrent() || activeIdRef.current !== newSession.id ||
-        revisionDraftRef.current !== prepared
-      ) {
+      await refreshSessions();
+      if (!selectionIsCurrent() || revisionDraftRef.current !== prepared) {
         await rollbackPreparedRevision(startedDraft, newSession.id, text, selectionIsCurrent);
         return false;
       }
-      setMessages(preparedMessages);
       composerRef.current?.focus();
       toastApi.info(copy.revisionReadyTitle, copy.revisionReadyDescription);
-      await refreshSessions();
       return true;
     } catch (error) {
-      if (preparationAbort.signal.aborted) return false;
+      // Rollback itself navigates back to the source Session, so the failure
+      // must be surfaced before it runs — checking after it is always stale.
+      if (selectionIsCurrent()) {
+        if (isSessionWorkspaceUnavailableError(error)) {
+          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+            sessionId: sourceSessionId,
+          });
+        } else {
+          toastApi.error(
+            copy.operationFailedTitle,
+            localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+            undefined,
+            { sessionId: sourceSessionId },
+          );
+        }
+      }
       if (preparedSessionId) {
         await rollbackPreparedRevision(startedDraft, preparedSessionId, text, selectionIsCurrent);
       }
-      if (!selectionIsCurrent()) return false;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
-          sessionId: sourceSessionId,
-        });
-      } else {
-        toastApi.error(
-          copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-          undefined,
-          { sessionId: sourceSessionId },
-        );
-      }
       return false;
-    } finally {
-      if (revisionPreparationAbort === preparationAbort) revisionPreparationAbort = undefined;
     }
   }
 
   async function cancelRevisionDraft(): Promise<void> {
     let selectionIsCurrent = captureSelection();
-    revisionPreparationAbort?.abort();
     const draft = revisionDraftRef.current;
     if (!draft) return;
     const cleanupSessionId = draft.copyPhase !== 'reserved'

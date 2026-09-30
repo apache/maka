@@ -72,7 +72,6 @@ type HostConnectionsClient = Pick<
   | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
   | 'queryCredential'
-  | 'readConnectionUsage'
   | 'removeConnection'
   | 'replaceConnectionRequestHeaders'
   | 'setCredential'
@@ -120,16 +119,6 @@ export function registerRuntimeHostConnectionsIpc(
       const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
       if (result.kind !== 'found') throw new Error('Connection no longer exists');
       return { names: result.names } satisfies SavedRequestHeaders;
-    },
-  );
-  // Read-only: resolves the credential Host-side and never returns it, so the
-  // renderer learns the usage figures and nothing more.
-  handleReconnectableRead(
-    deps.ipcMain,
-    'connections:usage',
-    async (_event, identity: unknown) => {
-      const connection = requireConnectionIdentity(await snapshot(), identity);
-      return deps.client.readConnectionUsage(connection.connectionId);
     },
   );
   deps.ipcMain.handle(
@@ -218,6 +207,9 @@ export function registerRuntimeHostConnectionsIpc(
       name: input.name,
       providerType: input.providerType,
       ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
+      ...(input.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: input.defaultApiProtocol }),
       enabled: true,
       enabledModelIds: connectionEnabledModelIds({
         defaultModel: input.defaultModel,
@@ -416,6 +408,9 @@ export function projectHostConnections(
       name: connection.name,
       providerType: connection.providerType,
       ...(connection.baseUrl === undefined ? {} : { baseUrl: connection.baseUrl }),
+      ...(connection.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: connection.defaultApiProtocol }),
       enabled: connection.enabled,
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],

@@ -45,6 +45,8 @@ export interface LocalStagedAttachment {
 export interface LocalMessageIntent {
   readonly command: Omit<TurnMessageSubmitInput, 'originHostEpoch'>;
   readonly staged: readonly LocalStagedAttachment[];
+  /** The renderer's initial position, distinct from the Host placement request. */
+  readonly localDisplayPlacement?: 'current_turn' | 'next_turn';
   /** Written durably before the first dispatch, and immutable thereafter. */
   readonly originHostEpoch?: string;
   readonly attachmentsPrepared?: true;

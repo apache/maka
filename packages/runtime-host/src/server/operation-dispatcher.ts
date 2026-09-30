@@ -44,7 +44,6 @@ import { CONFIGURATION_OPERATION_SPECS } from '../protocol/configuration.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from '../protocol/connection-effects.js';
 import { CONTEXT_OPERATION_SPECS } from '../protocol/context.js';
 import { DAILY_REVIEW_OPERATION_SPECS } from '../protocol/daily-review.js';
-import { DEEP_RESEARCH_OPERATION_SPECS } from '../protocol/deep-research.js';
 import { EXECUTION_INSPECT_OPERATION_SPECS } from '../protocol/execution-inspect.js';
 import { EXTERNAL_SESSION_OPERATION_SPECS } from '../protocol/external-session.js';
 import { SESSION_BUNDLE_OPERATION_SPECS } from '../protocol/session-bundle.js';
@@ -69,9 +68,11 @@ import { SESSION_TODO_OPERATION_SPECS } from '../protocol/session-todo.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from '../protocol/session-transcript.js';
 import { SESSION_TURNS_OPERATION_SPECS } from '../protocol/session-turns.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from '../protocol/skill-catalog.js';
+import { STORAGE_USAGE_OPERATION_SPECS } from '../protocol/storage-usage.js';
 import { TURN_OPERATION_SPECS } from '../protocol/turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from '../protocol/usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from '../protocol/web-search.js';
+import { RECALL_OPERATION_SPECS } from '../protocol/recall.js';
 import { WORKHUB_COORDINATION_OPERATION_SPECS } from '../protocol/workhub-coordination.js';
 import { PLUGIN_PLATFORM_OPERATION_SPECS } from '../protocol/plugin-platform.js';
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
@@ -90,6 +91,11 @@ export interface ConnectionContext {
   inputClosedSignal?: AbortSignal;
   turnAdmissionAuthorization?: RootTurnAdmissionAuthorization;
   acquireResidency(): OperationResidency;
+}
+
+/** Host-owned operations have no Client Capability initiating connection. */
+export function capabilityInitiatingConnectionId(context: ConnectionContext): string {
+  return context.principal === 'runtime_host' ? '' : context.connectionId;
 }
 
 export interface OperationResidency {
@@ -148,6 +154,7 @@ export type SessionCatalogOperationKey =
 export type ArtifactOperationKey = keyof typeof ARTIFACT_OPERATION_SPECS;
 export type SkillCatalogOperationKey = keyof typeof SKILL_CATALOG_OPERATION_SPECS;
 export type UsagePricingOperationKey = keyof typeof USAGE_PRICING_OPERATION_SPECS;
+export type StorageUsageOperationKey = keyof typeof STORAGE_USAGE_OPERATION_SPECS;
 export type MemoryOperationKey = keyof typeof MEMORY_OPERATION_SPECS;
 export type OAuthOperationKey = keyof typeof OAUTH_OPERATION_SPECS;
 export type RuntimeResourceOperationKey = keyof typeof RUNTIME_RESOURCE_OPERATION_SPECS;
@@ -155,7 +162,6 @@ export type ClientCapabilityOperationKey = keyof typeof CLIENT_CAPABILITY_OPERAT
 export type ScheduledTaskOperationKey = keyof typeof SCHEDULED_TASK_OPERATION_SPECS;
 export type PlanOperationKey = keyof typeof PLAN_OPERATION_SPECS;
 export type ProjectCatalogOperationKey = keyof typeof PROJECT_CATALOG_OPERATION_SPECS;
-export type DeepResearchOperationKey = keyof typeof DEEP_RESEARCH_OPERATION_SPECS;
 export type DailyReviewOperationKey = keyof typeof DAILY_REVIEW_OPERATION_SPECS;
 export type WebSearchOperationKey = keyof typeof WEB_SEARCH_OPERATION_SPECS;
 export type NetworkProxyOperationKey = keyof typeof NETWORK_PROXY_OPERATION_SPECS;
@@ -208,6 +214,7 @@ export type SessionTodoOperationHandlerMap = Pick<OperationHandlerMap, SessionTo
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
+export type StorageUsageOperationHandlerMap = Pick<OperationHandlerMap, StorageUsageOperationKey>;
 export type MemoryOperationHandlerMap = Pick<OperationHandlerMap, MemoryOperationKey>;
 export type OAuthOperationHandlerMap = Pick<OperationHandlerMap, OAuthOperationKey>;
 export type RuntimeResourceOperationHandlerMap = Pick<
@@ -224,9 +231,10 @@ export type ProjectCatalogOperationHandlerMap = Pick<
   OperationHandlerMap,
   ProjectCatalogOperationKey
 >;
-export type DeepResearchOperationHandlerMap = Pick<OperationHandlerMap, DeepResearchOperationKey>;
 export type DailyReviewOperationHandlerMap = Pick<OperationHandlerMap, DailyReviewOperationKey>;
 export type WebSearchOperationHandlerMap = Pick<OperationHandlerMap, WebSearchOperationKey>;
+export type RecallOperationKey = keyof typeof RECALL_OPERATION_SPECS;
+export type RecallOperationHandlerMap = Pick<OperationHandlerMap, RecallOperationKey>;
 export type NetworkProxyOperationHandlerMap = Pick<OperationHandlerMap, NetworkProxyOperationKey>;
 export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, ConfigurationOperationKey>;
 export type WorkHubCoordinationOperationHandlerMap = Pick<

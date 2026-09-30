@@ -62,8 +62,9 @@ export interface SharedUiCopy {
     optional: string;
   };
   modelPicker: {
+    empty: string;
+    noResults: string;
     searchPlaceholder: string;
-    knowledgeCutoff: (date: string) => string;
   };
   moduleHubs: {
     extensions: {
@@ -104,10 +105,8 @@ export interface SharedUiCopy {
     cancel: string;
   };
   stream: {
-    assistantChunkTruncated: string;
     assistantTailTruncated: string;
     thinkingHeadTruncated: string;
-    thinkingChunkTruncated: string;
     toolChunkTruncated: string;
   };
   artifact: { unknownSize: string };
@@ -158,8 +157,9 @@ const SHARED_UI_COPY = {
       optional: '可选',
     },
     modelPicker: {
+      empty: '暂无可用模型',
+      noResults: '没有匹配的模型',
       searchPlaceholder: '搜索模型…',
-      knowledgeCutoff: (date) => `知识截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -190,7 +190,7 @@ const SHARED_UI_COPY = {
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
     toast: { notifications: '通知', closeNotification: '关闭通知', confirm: '确定', cancel: '取消' },
-    stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
+    stream: { assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中国站', custom: '自定义', claudeSubscription: 'Claude 订阅' },
   },
@@ -237,8 +237,9 @@ const SHARED_UI_COPY = {
       optional: '可選',
     },
     modelPicker: {
+      empty: '暫無可用模型',
+      noResults: '沒有符合的模型',
       searchPlaceholder: '搜尋模型…',
-      knowledgeCutoff: (date) => `知識截止：${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -269,7 +270,7 @@ const SHARED_UI_COPY = {
     },
     primitives: { loading: '載入中', close: '關閉', resizeHandle: '調整寬度' },
     toast: { notifications: '通知', closeNotification: '關閉通知', confirm: '確定', cancel: '取消' },
-    stream: { assistantChunkTruncated: '\n[…單條 delta 已截斷]\n', assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', thinkingChunkTruncated: '\n[…單條 delta 已截斷]\n', toolChunkTruncated: '\n[…已截斷]\n' },
+    stream: { assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', toolChunkTruncated: '\n[…已截斷]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中國站', custom: '自訂', claudeSubscription: 'Claude 訂閱' },
   },
@@ -316,8 +317,9 @@ const SHARED_UI_COPY = {
       optional: 'Optional',
     },
     modelPicker: {
+      empty: 'No models available',
+      noResults: 'No matching models',
       searchPlaceholder: 'Search models…',
-      knowledgeCutoff: (date) => `Knowledge cutoff: ${date}`,
     },
     moduleHubs: {
       extensions: {
@@ -348,7 +350,7 @@ const SHARED_UI_COPY = {
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
     toast: { notifications: 'Notifications', closeNotification: 'Close notification', confirm: 'Confirm', cancel: 'Cancel' },
-    stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
+    stream: { assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },
     providers: { minimaxChina: 'MiniMax China', custom: 'Custom', claudeSubscription: 'Claude subscription' },
   },

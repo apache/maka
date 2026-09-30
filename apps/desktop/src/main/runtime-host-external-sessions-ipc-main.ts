@@ -28,6 +28,7 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionSourceQueryResult,
   SessionCatalogProjection,
+  WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import {
   decodeExternalSessionCatalogQueryInput,
@@ -52,12 +53,15 @@ type ExternalSessionClient = {
   importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
+    readonly workspace?: WorkspaceTarget;
   }): Promise<ExternalSessionImportResult<SessionCatalogProjection>>;
 };
 
 export interface RuntimeHostExternalSessionsIpcDeps {
   readonly client: ExternalSessionClient;
   readonly emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
+  /** Resolves the Desktop-selected workspace on the target Host. */
+  readonly resolveImportWorkspace: () => Promise<WorkspaceTarget>;
 }
 
 export function registerRuntimeHostExternalSessionsIpc(
@@ -80,8 +84,12 @@ export function registerRuntimeHostExternalSessionsIpc(
   });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
     const request = decodeExternalSessionImportInput(input);
+    const workspace = await deps.resolveImportWorkspace();
     try {
-      const result = await deps.client.importExternalSession(request);
+      const result = await deps.client.importExternalSession({
+        ...request,
+        workspace,
+      });
       if (result.kind === 'source_limit_exceeded') {
         return {
           ok: false,

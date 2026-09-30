@@ -28,7 +28,7 @@ import {
   readNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from '../../renderer/new-task-reload-intent.js';
+} from '../../renderer/application/contracts/new-task-reload-intent.js';
 
 type Summary = { id: string; lastMessageAt?: number; isArchived: boolean };
 
@@ -140,6 +140,15 @@ describe('bootstrap selection lease', () => {
     state.lease.reconcile([session('a', 1)]);
     assert.equal(state.lease.reconcile([]), true);
     assert.equal(state.activeId(), undefined);
+  });
+
+  it('skips an archived bootstrap-owned selection', () => {
+    const state = harness('archived');
+    assert.equal(
+      state.lease.reconcile([session('archived', 2, true), session('active', 1)]),
+      true,
+    );
+    assert.equal(state.activeId(), 'active');
   });
 
   it('does not reconcile after release', () => {

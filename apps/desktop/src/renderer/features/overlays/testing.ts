@@ -37,7 +37,10 @@ export function createFakeOverlaysServices(
   overrides: Partial<OverlaysServices> = {},
 ): OverlaysServices {
   return {
-    search: { thread: async () => [], cancelThread: async () => undefined },
+    search: {
+      recall: async () => ({ passages: [], gaps: '', searchedEverySession: true }),
+      cancelRecall: async () => undefined,
+    },
     settingsSection: { persist: () => undefined },
     focus: { blurActiveElement: () => undefined },
     ...overrides,

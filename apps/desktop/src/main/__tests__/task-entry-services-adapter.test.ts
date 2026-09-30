@@ -60,7 +60,13 @@ describe('createDesktopTaskEntryServices', () => {
         restore: async (...args: unknown[]) =>
           calls.push({ name: 'restoreProject', args }),
       },
-    } as unknown as Pick<MakaBridge, 'newTasks' | 'projects'>;
+      sessions: {
+        moveToProject: async (...args: unknown[]) => {
+          calls.push({ name: 'moveToProject', args });
+          return { ok: true, session: {} };
+        },
+      },
+    } as unknown as Pick<MakaBridge, 'newTasks' | 'projects' | 'sessions'>;
     const services = createDesktopTaskEntryServices(bridge);
     const host = { profileId: 'remote', hostId: 'host-1' };
 
@@ -74,6 +80,10 @@ describe('createDesktopTaskEntryServices', () => {
     await services.catalog.renameProject(host, 'project-1', 'Renamed');
     await services.catalog.archiveProject(host, 'project-1');
     await services.catalog.restoreProject(host, 'project-1');
+    assert.deepEqual(
+      await services.sessions.relocateWorkspace('session-1', 'project-1'),
+      { ok: true },
+    );
     unsubscribe();
 
     assert.deepEqual(calls, [
@@ -84,6 +94,10 @@ describe('createDesktopTaskEntryServices', () => {
       { name: 'renameProject', args: ['project-1', 'Renamed', host] },
       { name: 'archiveProject', args: ['project-1', host] },
       { name: 'restoreProject', args: ['project-1', host] },
+      {
+        name: 'moveToProject',
+        args: ['session-1', 'project-1'],
+      },
     ]);
     assert.equal(changes, 1);
     assert.equal(disposed, 1);

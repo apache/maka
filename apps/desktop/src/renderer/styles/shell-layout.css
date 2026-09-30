@@ -18,25 +18,56 @@
  */
 
 /* Shell layout — app frame, panels, topbar rail, main column, workspace top actions. */
+[data-agents-page] {
+  --sidebar-width: 240px;
+  position: relative;
+}
+
+.agents-layout-root {
+  height: 100dvh;
+  background: var(--agents-layout-bg);
+}
+
+.agents-layout-body {
+  min-height: 0;
+}
+
+.maka-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Transparent, NOT var(--background): the right panel already paints
+     its own surface (--agents-content-area-bg = #fafafa on darwin
+     glass). A solid white here covered only the chat scroll area, so
+     the composer region below read as a THIRD color band (shell /
+     chat / composer). One panel, one surface. */
+  background: transparent;
+}
+
+.agents-chat-panel,
+.agents-chat-view-root {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .appFrame {
   font: var(--maka-text-body);
   position: relative;
   height: 100dvh;
   width: 100%;
+  /* The query container for the column caps `appShellFrameStyle` publishes
+     (`100cqi`), so they measure the frame rather than the viewport — the same
+     thing in the app, and the story's own frame width in Storybook. */
+  container-type: inline-size;
   padding: 0;
-  /* PR-APPFRAME-FILL-0: `#root` (index.html) is `display:flex;
-     align-items:center; justify-content:center` so the preload
-     skeleton (`.maka-preload`, rendered before React mounts) sits
-     centered. Once React mounts, `.appFrame` is that flex container's
-     only child, and without an explicit main-axis size a flex item
-     shrinks to its content width and gets centered — so on the
-     first-run hero (onboarding content is narrower than the window) the whole
-     app frame floated mid-window with large left/right gutters, while
-     long-message sessions filled the width. Pin `width:100%` so the
-     frame always spans the window regardless of inner content's
-     max-content. The preload centering is unaffected (it's the only
-     child at that point and still centers). */
-  /* The backplate under the preload skeleton and behind the shell before it
+  /* PR-APPFRAME-FILL-0: pin `width:100%` so the frame always spans the
+     window regardless of inner content's max-content — without it, narrow
+     surfaces like the first-run hero can leave the frame short of the
+     window's width. */
+  /* The backplate under the preload surface and behind the shell before it
      mounts. AppShell paints both columns over this, so it is not a shell
      surface — it is what the window shows when there is no shell yet. */
   background: var(--surface-canvas);
@@ -56,7 +87,11 @@
    paint to the window top (Codex / Claude Desktop / Cursor). */
 .maka-shell-astryx {
   width: 100%;
-  min-width: 0;
+  /* Include the nav column. The published column widths are already capped so
+     this sum fits the frame; the floor only engages if the frame itself is
+     narrower than the conversation minimum, which the native window minimum
+     rules out. */
+  min-width: calc(var(--maka-sidenav-width) + var(--maka-conversation-min-width) + var(--agents-content-area-gap));
   min-height: 0;
   overflow: hidden;
 }
@@ -65,6 +100,15 @@
    step, and the plate edge is the single seam. */
 .maka-shell-astryx .astryx-app-shell-sidenav {
   background: var(--agents-layout-bg);
+  /* AppShell's LayoutPanel otherwise sizes itself from its child's intrinsic
+     width. SideNav also carries its own resizable width, so the two boxes can
+     diverge and the panel clips the wider nav on a narrow window. Both must
+     consume the frame-published sidebar width, including the animated target
+     while the rail opens or closes. */
+  width: var(--maka-sidenav-width);
+  max-width: var(--maka-sidenav-max-width);
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 
@@ -168,6 +212,10 @@
    the ease dead for every collapse after the handle had once been touched. */
 .maka-shell-astryx .maka-sidenav-motion {
   display: flex;
+  /* The sidebar is the coordinate origin for the Desktop content and the
+     native WorkHub host. Its width is the frame-published one, which already
+     yields to the conversation minimum; flex must not shrink it further. */
+  flex: 0 0 auto;
   min-width: 0;
   min-height: 0;
   /* The nav sizes itself against a definite height (`.maka-session-panel`
@@ -175,7 +223,13 @@
      content and the footer leaves the window — the geometry
      the OverflowingSidebar shell story locks. */
   height: 100%;
-  width: var(--maka-sidenav-width);
+  /* The user's width eases; the room the frame leaves does not, so a window
+     resize moves the rail with the window edge. The width therefore reads the
+     UNCAPPED preference: folding the cap into this transitioned property made
+     every resize tick restart the ease, the rail trailed the window edge, and
+     the conversation column sawtoothed under it (frame-style.ts). */
+  width: var(--maka-sidenav-user-width, var(--maka-sidenav-width));
+  max-width: var(--maka-sidenav-max-width);
   /* Clip the expanded content while the sidebar width catches up. */
   overflow: clip;
   transition: width var(--duration-large) var(--ease-out-strong);
@@ -210,6 +264,18 @@
   /* !important: beats SideNav's inline width — see the note above. */
   width: 100% !important;
   min-width: 0;
+}
+
+/* When SideNav is resizable, Astryx puts the nav inside an additional handle
+   container and writes the dragged width on the nav itself. Constraining only
+   the motion wrapper's direct child leaves that inline width wider than the
+   LayoutPanel, so the panel clips the nav at the narrow breakpoint. The nav
+   root must follow the same box as its wrapper. */
+.maka-shell-astryx .maka-sidenav-motion .astryx-side-nav {
+  width: 100% !important;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .maka-panel {
@@ -318,9 +384,21 @@
   .appFrame:has(.maka-session-workbar[data-placement='right']:not([data-collapsed]))
 )
   .maka-window-titlebar {
+  /* The reserve owes the DRAWN column: on a window too narrow for the
+     configured Workbar the frame caps the element, and reserving the
+     configured width would squeeze the identity against space nobody
+     occupies. */
   --maka-titlebar-workbar-reserve: calc(
-    var(--maka-session-workbar-width) + var(--agents-content-area-gap)
+    min(var(--maka-session-workbar-width), var(--maka-session-workbar-max-width)) +
+      var(--agents-content-area-gap)
   );
+}
+
+/* Native window dragging consumes clicks before the DOM can dismiss a menu
+   or blur the rename input. Return the blank titlebar to ordinary hit testing
+   only for the duration of that interaction. */
+.maka-window-titlebar:has(.maka-titlebar-identity[data-interacting]) {
+  -webkit-app-region: no-drag;
 }
 
 .appFrame:has(.maka-workbar-resize-handle[data-resizing]) .maka-window-titlebar {
@@ -356,6 +434,14 @@ dialog:modal {
   color: var(--muted-foreground);
 }
 
+.maka-workspace-top-actions {
+  grid-column: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  -webkit-app-region: no-drag;
+}
+
 /* The title hugs its controls; the remaining track stays draggable. */
 .maka-titlebar-identity {
   grid-column: 2;
@@ -382,6 +468,9 @@ dialog:modal {
 }
 
 .maka-titlebar-identity__segment--session {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -406,23 +495,10 @@ dialog:modal {
 .maka-titlebar-identity__rename-input {
   min-width: 2rem;
   max-width: 100%;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  padding: 0;
 }
 
 .maka-titlebar-identity__rename-input input {
-  font: var(--maka-text-body);
-  font-weight: var(--font-weight-medium);
-  color: var(--foreground);
-  background: transparent;
-  border: 0;
-  outline: 0;
-  box-shadow: 0 1px 0 var(--focus-ring);
   field-sizing: content;
-  padding-block: 0;
-  padding-inline: var(--space-1);
   min-width: 2rem;
   max-width: 100%;
 }
@@ -443,7 +519,7 @@ dialog:modal {
 }
 
 /* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
-   (app-shell-chrome-actions.tsx) renders Astryx Icon with `color="secondary"`,
+   (shell/window-titlebar.tsx) renders Astryx Icon with `color="secondary"`,
    and Icon puts `color: var(--color-icon-secondary)` on the svg ITSELF. A
    button-level rule cannot reach past that — a child's own `color` always beats
    an inherited one — so the ghost variant's primary text never applied to these
@@ -454,20 +530,6 @@ dialog:modal {
    buttons lives inside `.maka-shell-topbar-rail`, which carves out a rect covering
    its children. A per-button rule (plus a `*` descendant rule for the icons)
    only duplicated that. */
-
-
-/* Focus rings inside the titlebar strip go inset (T5 geometry probe): the
-   strip sits 4px under the window edge and body's overflow clips the top
-   pixel of an outward 2px+offset ring. An inset ring paints whole. */
-.maka-window-titlebar :is(button, [role="button"]):focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
-}
-
-.sessionTurnRequestSurface {
-  border-top: var(--border-width-hairline) solid var(--border);
-  background: var(--background);
-}
 
 .sessionTurnRequestApproval {
   display: grid;
@@ -517,67 +579,8 @@ dialog:modal {
   text-align: end;
 }
 
-.sessionTurnRequestComposer {
-  padding-block-start: var(--space-2);
-}
-
-.sessionTurnRequestReconnectButton {
-  display: inline-flex;
-}
-
 .sessionCollaborationReadOnly {
   padding: var(--space-3);
   color: var(--muted-foreground);
   text-align: center;
-}
-
-.sessionTurnRequestQueue {
-  margin-block-start: var(--space-2);
-}
-
-.sessionTurnRequestQueueToggle {
-  width: 100%;
-  justify-content: space-between;
-}
-
-.sessionTurnRequestQueueToggle svg {
-  transition: transform var(--duration-fast) var(--ease-standard);
-}
-
-.sessionTurnRequestQueueToggle svg.isExpanded {
-  transform: rotate(180deg);
-}
-
-.sessionTurnRequestHistory {
-  display: grid;
-  max-height: 12rem;
-  overflow-y: auto;
-  margin-block-start: var(--space-1);
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.sessionTurnRequestHistoryRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-2);
-}
-
-.sessionTurnRequestHistoryRow + .sessionTurnRequestHistoryRow {
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.sessionTurnRequestHistoryBody {
-  display: grid;
-  gap: var(--space-0-5);
-  min-width: 0;
-  flex: 1;
-}
-
-.sessionTurnRequestHistoryText {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

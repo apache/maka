@@ -522,3 +522,34 @@ test("compound config operations share the lane without re-entering it", async (
     "config:end",
   ]);
 });
+
+test('Jev settings write Host policy and vault, project only a mask, and never persist the key locally', async () => {
+  let policy = createDefaultRuntimePolicy();
+  let secret: string | undefined;
+  const local = createDefaultSettings();
+  const module = createRuntimeHostSettingsModule({
+    client: {
+      queryRuntimePolicy: async () => ({ revision: 1, policy }),
+      queryCredential: async (locator: { scope: string }) => locator.scope === 'jev' && secret
+        ? { configured: true, credentialId: 'jev-key', revision: 1, updatedAt: 1, locator } : null,
+      setCredential: async (input: { locator: { scope: string }; secret: string }) => {
+        assert.equal(input.locator.scope, 'jev'); secret = input.secret; return { kind: 'committed' };
+      },
+      deleteCredential: async () => { secret = undefined; return { kind: 'committed' }; },
+      updateRuntimePolicy: async (mutation: () => { kind: string; value: { enabled: boolean } }) => {
+        const operation = mutation(); assert.equal(operation.kind, 'set_jev');
+        policy = { ...policy, jev: operation.value }; return { revision: 2, policy };
+      },
+    } as never,
+    settingsStore: { get: async () => local, update: async () => { assert.fail('Host settings must not write Desktop settings'); } } as never,
+    applyClientSettings: async () => {},
+  });
+  const saved = await module.update({ jev: { apiKey: 'jev-secret', enabled: true } });
+  assert.deepEqual(saved.jev, { enabled: true, apiKey: '••••••••' });
+  assert.equal(JSON.stringify(local).includes('jev-secret'), false);
+  await module.update({ jev: { apiKey: '••••••••', enabled: false } });
+  assert.equal(secret, 'jev-secret');
+  const removed = await module.update({ jev: { apiKey: '', enabled: true } });
+  assert.deepEqual(removed.jev, { enabled: false, apiKey: '' });
+  assert.equal(secret, undefined);
+});

@@ -142,3 +142,53 @@ for (const count of [1, 3]) {
     }
   });
 }
+
+test('WorkHub feedback admission preserves its receipt and source across SQLite restart', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-feedback-'));
+  let store = createSqliteAgentRunStore(root);
+  try {
+    const feedback = {
+      kind: 'workhub_result' as const,
+      eventId: 'whf_one',
+      actionId: 'action',
+      delegationId: 'delegation',
+      targetSessionId: 'target',
+      targetTurnId: 'target-turn',
+    };
+    const input = {
+      sessionId: 'coordination-session',
+      turnId: feedback.eventId,
+      proposedRunId: 'feedback-run',
+      proposedUserMessageId: feedback.eventId,
+      execution: {
+        kind: 'workhub_coordination' as const,
+        inputDigest: `sha256:${'a'.repeat(64)}` as const,
+        feedback,
+      },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Result content', displayText: 'Task result' },
+      sourceMessages: [],
+      admittedAt: 50,
+    };
+    const first = await store.admitRootTurn(input);
+    store.close?.();
+    store = createSqliteAgentRunStore(root);
+    assert.deepEqual(
+      await store.readRootTurnAdmission(input.sessionId, input.turnId),
+      first.admission,
+    );
+    const retry = await store.admitRootTurn({ ...input, proposedRunId: 'retry-run' });
+    assert.equal(retry.admission.runId, first.admission.runId);
+    await assert.rejects(
+      store.admitRootTurn({
+        ...input,
+        turnId: 'invalid-feedback',
+        execution: { ...input.execution, operation: 'action', actionId: 'action' },
+      }),
+      /Invalid root execution descriptor/u,
+    );
+  } finally {
+    store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -28,7 +28,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
@@ -54,6 +53,7 @@ import {
   SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   type ClientFrame,
   type SessionCatalogItem,
+  type SessionCatalogLiveRunState,
   type SessionCatalogProjection,
   type SessionCreateInput,
   type SubscriptionFrame,
@@ -70,7 +70,24 @@ const WIRE_OVERSIZED_MODEL_ID = '😀'.repeat(256);
 const KNOWN_EMPTY_LIVE_RUN_STATE = {
   schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   runningTurnIds: [],
+  runEpoch: 0,
 } as const;
+
+// The host generation is unique per Host process, so it cannot be spelled in
+// advance: assert its shape, then compare the known-empty remainder.
+function expectKnownEmptyLiveRunState(actual: SessionCatalogLiveRunState | undefined): void {
+  assert.ok(actual !== undefined, 'the live run state must be present');
+  const { hostGeneration, ...knownEmpty } = actual;
+  if (typeof hostGeneration !== 'string' || hostGeneration.length === 0) {
+    assert.fail('the host generation must be a non-empty string');
+  }
+  assert.deepEqual(knownEmpty, KNOWN_EMPTY_LIVE_RUN_STATE);
+}
+
+function querySessionReconciled(summary: SessionCatalogProjection): SessionCatalogProjection {
+  expectKnownEmptyLiveRunState(summary.liveRunState);
+  return { ...summary, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE };
+}
 
 test('two Clients share stable Session creation, CAS configuration, and catalog continuity', {
   skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
@@ -215,20 +232,6 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       if ('kind' in planSession) assert.fail('Plan Session must be wire-representable');
       assert.equal(planSession.collaborationMode, 'plan');
-      const researchSession = requireSessionProjection(
-        await desktop.request('session.create', {
-          sessionId: 'deep-research-session',
-          workspace: { kind: 'host_path', path: root },
-          mode: 'deep_research',
-          name: 'Caller override',
-          labels: ['customer-label'],
-          modelTarget: { kind: 'default' },
-          permissionMode: 'bypass',
-        }),
-      );
-      assert.equal(researchSession.name, DEEP_RESEARCH_SESSION_NAME);
-      assert.deepEqual(researchSession.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-      assert.equal(researchSession.permissionMode, 'explore');
 
       const sandboxChoice = requireSessionProjection(
         await desktop.request('session.create', {
@@ -318,7 +321,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         assert.fail('One Session configuration must commit');
       }
       const configuredSession = requireSessionProjection(committedConfiguration.session);
-      assert.deepEqual(await querySession(desktop, created.id), {
+      assert.deepEqual(querySessionReconciled(await querySession(desktop, created.id)), {
         ...configuredSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
       });
@@ -374,7 +377,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         relocatedSession.workspace.hostCwd === (await realpath(firstCwd)) ||
           relocatedSession.workspace.hostCwd === (await realpath(secondCwd)),
       );
-      assert.deepEqual(await querySession(tui, narrowedSession.id), {
+      assert.deepEqual(querySessionReconciled(await querySession(tui, narrowedSession.id)), {
         ...relocatedSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
       });
@@ -412,7 +415,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         (error: unknown) =>
           error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
       );
-      assert.deepEqual(await querySession(desktop, relocatedSession.id), {
+      assert.deepEqual(querySessionReconciled(await querySession(desktop, relocatedSession.id)), {
         ...relocatedSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
       });
@@ -801,7 +804,7 @@ test('stable Session creation survives response loss and Host restart', {
     try {
       const retried = requireSessionProjection(await retrying.request('session.create', input));
       const { liveRunState, ...persistedCommitted } = committed;
-      assert.deepEqual(liveRunState, KNOWN_EMPTY_LIVE_RUN_STATE);
+      expectKnownEmptyLiveRunState(liveRunState);
       assert.deepEqual(retried, persistedCommitted);
     } finally {
       await retrying.close();

@@ -76,9 +76,10 @@ export function registerAppClientIpc(
   targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
     mainWindowController.setTitlebarControlsVisible(event.sender, visible);
   });
-  targetIpc.handle('window:notifyRendererReady', (event): void => {
-    mainWindowController.notifyRendererReady(event.sender, event.senderFrame);
-  });
+  // `window:notifyRendererReady` is registered directly on ipcMain by
+  // early-window.js: it is a window-lifecycle signal that must exist before
+  // this scoped router does, or the first React commit can outrun it.
+
   targetIpc.handle('window:setThemeSource', (event, themePref: unknown): void => {
     mainWindowController.setThemeSource(event.sender, themePref);
   });
@@ -136,8 +137,11 @@ export function registerAppIpc(
   handleReconnectableRead(targetIpc, 'projects:getSnapshot', () =>
     deps.projectManagement.getSnapshot(),
   );
-  targetIpc.handle('projects:add', (_event, options?: { select?: unknown }) =>
-    deps.projectManagement.add({ select: options?.select !== false }));
+  targetIpc.handle('projects:add', (_event, options?: { select?: unknown; name?: unknown }) =>
+    deps.projectManagement.add({
+      select: options?.select !== false,
+      ...(options?.name === undefined ? {} : { name: requireProjectName(options.name) }),
+    }));
   handleReconnectableRead(targetIpc, 'projects:directoryRoots', () =>
     deps.projectManagement.directoryRoots());
   handleReconnectableRead(targetIpc, 'projects:listDirectory', (_event, input: unknown) =>
@@ -220,4 +224,20 @@ function isAppUpdateInstallRequest(input: unknown): input is AppUpdateInstallReq
     input !== null &&
     'allowInterruptActiveTasks' in input &&
     typeof input.allowInterruptActiveTasks === 'boolean';
+}
+
+/**
+ * A project name the user typed in the New project dialog.
+ *
+ * Bounded the same way the catalog's own validation is: a name is a label, not
+ * a document. Rejecting rather than silently truncating keeps the dialog's
+ * promise — what you typed is what the project is called. The service trims and
+ * treats a blank name as "no name given", so this only has to reject a
+ * non-string.
+ */
+function requireProjectName(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 200 || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new TypeError('Invalid project name.');
+  }
+  return value;
 }

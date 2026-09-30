@@ -32,7 +32,8 @@ import {
   type ComposerHandle,
 } from '@maka/ui';
 import { SessionHealthRecoveryNotice } from '../../renderer/chat-recovery-notice.js';
-import { useShellChatModel } from '../../renderer/use-shell-chat-model.js';
+import { ConversationServicesProvider, type ConversationServices } from '../../renderer/features/conversation/index.js';
+import { useShellChatModel } from '../../renderer/features/conversation/index.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -179,7 +180,8 @@ async function renderFlow(props: Parameters<typeof RecoveryFlow>[0]) {
   const container = document.querySelector('#root');
   assert.ok(container);
   mountedRoot = createRoot(container);
-  await act(() => mountedRoot?.render(createElement(RecoveryFlow, props)));
+  const services = { subscribeChanges: () => () => {}, sessions: {}, newTasks: {subscribeChanges: () => () => {}} } as unknown as ConversationServices;
+  await act(() => mountedRoot?.render(createElement(ConversationServicesProvider, {services, children: createElement(RecoveryFlow, props)})));
   const action = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.includes(
       props.snapshotReady

@@ -66,11 +66,8 @@ export function ModelPicker(props: ModelPickerProps) {
 
   const options = useMemo(
     () =>
-      buildModelPickerOptions(props.groups, props.leadingOption, slugScopedValue, {
-        locale,
-        renderProviderMark: props.renderProviderMark,
-      }),
-    [props.groups, props.leadingOption, locale, props.renderProviderMark],
+      buildModelPickerOptions(props.groups, props.leadingOption, slugScopedValue, props.renderProviderMark),
+    [props.groups, props.leadingOption, props.renderProviderMark],
   );
 
   // Reflect the pick immediately and hold it until the caller's write settles,

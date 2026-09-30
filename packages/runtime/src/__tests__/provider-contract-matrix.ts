@@ -71,9 +71,6 @@ export type ProviderContractWire =
 export const SUBSCRIPTION_WIRE_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
   'openai-codex',
   'github-copilot',
-  // Not a subscription, but the same shape of exception: a provider-specific
-  // wire (the CLI's `/alpha/generate`) no generated executor can drive.
-  'commandcode-go',
 ]);
 
 /**
@@ -115,6 +112,7 @@ export interface ProviderContractDiscoveryPlan {
   query?: Readonly<Record<string, string>>;
   responseShape?: 'array-or-data';
   filter?: 'fallback-models' | 'language-models' | 'tool-capable';
+  excludeModelIdPrefixes?: readonly string[];
 }
 
 /** Derived expectation for a generated `reasoning-replay` cell. */
@@ -298,6 +296,9 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
             ? { responseShape: discovery.responseShape }
             : {}),
           ...(discovery.filter !== undefined ? { filter: discovery.filter } : {}),
+          ...(discovery.excludeModelIdPrefixes !== undefined
+            ? { excludeModelIdPrefixes: discovery.excludeModelIdPrefixes }
+            : {}),
         },
       };
   }

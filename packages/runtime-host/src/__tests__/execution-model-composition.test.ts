@@ -107,6 +107,7 @@ import {
   createHostGoalEvaluator,
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
+  createHostPromptSuggestionModel,
   createHostWorkHubRoutingModel,
 } from '../server/execution-model-authority.js';
 import {
@@ -157,9 +158,9 @@ const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const HEADLESS_CODING_V1_PROMPT_HASH =
-  'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
+  'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:9ef90b13f64829ae5baba777e929177838b59c9ed73e12a8c0b24c418ea2e473';
+  'sha256:b4fd61c4eeec3ed41f22d36b61c800331e6c18a9704f5b7806acafea919945b0';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -974,11 +975,17 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
   const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
     assert.ok(body);
     assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
-    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
+    const toolText = latestToolResultText(body);
+    assert.ok(toolText);
+    assert.equal(toolText.includes(pngBytes.toString('base64')), false);
+    const images = (Array.isArray(body.messages) ? body.messages : [])
+      .filter((message) => message.role === 'user' && Array.isArray(message.content))
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'image_url');
+    assert.deepEqual(images, [
       {
-        type: 'file',
-        mediaType: 'image/png',
-        data: { type: 'data', data: pngBytes.toString('base64') },
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${pngBytes.toString('base64')}` },
       },
     ]);
   };
@@ -1254,7 +1261,7 @@ test('a failed Run Composition commit can recover on a later dispatch', async ()
   }
 });
 
-test('Run Composition keeps the immutable composer Tool baseline', async () => {
+test('Run Composition keeps the Tool baseline while dispatch preserves dynamic context', async () => {
   const provider = await startProvider();
   const makeTool = (name: string): MakaTool => ({
     name,
@@ -1279,7 +1286,11 @@ test('Run Composition keeps the immutable composer Tool baseline', async () => {
           composerRevision: '1',
           tools: [initial],
           resolveTools: () => currentTools,
-          resolveSystemPrompt: async () => ({ text: 'test prompt', sourceRevisions: [] }),
+          resolveSystemPrompt: async () => ({
+            text: 'test prompt',
+            contexts: [{ name: 'test.context', text: 'HOST_DYNAMIC_CONTEXT' }],
+            sourceRevisions: [],
+          }),
         }),
         recordRunComposition: async (_runId, snapshot) => {
           committedToolNames = decodeRunCompositionSnapshot(snapshot).toolNames;
@@ -1299,6 +1310,7 @@ test('Run Composition keeps the immutable composer Tool baseline', async () => {
     }
 
     assert.deepEqual(committedToolNames, ['initial_tool']);
+    assert.match(JSON.stringify(provider.requests[0]?.body.messages), /HOST_DYNAMIC_CONTEXT/u);
     const requestTools = provider.requests[0]?.body.tools as Array<{
       function?: { name?: string };
     }>;
@@ -2396,6 +2408,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         .slice(requestsBeforeRecovery)
         .filter((request) => Array.isArray(request.body.tools));
       assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
+      assert.equal(
+        runtimeEnvironment(requests[0]!.body).cwd,
+        (await recoveredStores.sessionStore.readHeader(sessionId)).cwd,
+      );
+      assert.match(responsesDeveloperPrompt(requests[0]!.body) ?? '', /WorkHub/u);
       for (const name of [
         'mcp__desktop_workhub__control',
         'mcp__desktop_workhub__tasks',
@@ -2582,14 +2599,25 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
     assert.deepEqual(responsesToolNames(request?.body), [
       'Bash',
-      'Edit',
       'Glob',
       'Grep',
       'Read',
       'StopBackgroundTask',
-      'Write',
       'WriteStdin',
+      'apply_patch',
     ]);
+    // DeepSeek defaults to portable ApplyPatch instead of Write/Edit, including
+    // hosted headless sessions. Freeze its actual function-call wire format.
+    const patch = tools.find((tool) => tool.name === 'apply_patch');
+    assert.ok(patch);
+    assert.equal(patch.type, 'function');
+    assert.deepEqual(patch.parameters, {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      properties: { patch: { type: 'string' } },
+      required: ['patch'],
+      additionalProperties: false,
+    });
     const bash = (tools as Array<Record<string, unknown>>).find((tool) => tool.name === 'Bash');
     assert.ok(bash);
     // The Eval session runs with Full access: the product Bash, minus the
@@ -2852,6 +2880,14 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
     );
     assert.equal(mainRequests.length, 5);
+    const environments = mainRequests.map((request) => runtimeEnvironment(request.body));
+    for (const environment of environments) {
+      assert.equal(environment.cwd, root);
+      assert.equal(environment.platform, process.platform);
+      assert.equal(environment.timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+      assert.equal(new Date(environment.sampledAt).toISOString(), environment.sampledAt);
+    }
+    assert.equal(new Set(environments.map(({ sampledAt }) => sampledAt)).size, 5);
     assert.ok(compactRequests.length >= 1);
     assert.ok(memoryRequests.length >= 1);
     assert.ok(memoryRequests.every((memoryRequest) => toolNames(memoryRequest.body).length === 0));
@@ -3375,6 +3411,11 @@ test('production Host executes a durable runnable child with an exact tool ceili
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(requests.length, 4);
+    const environments = requests.map((request) => runtimeEnvironment(request.body));
+    assert.ok(environments.every(({ cwd }) => cwd === project));
+    assert.deepEqual(environments[0], environments[1]);
+    assert.deepEqual(environments[0], environments[3]);
+    assert.match(JSON.stringify(requests[2]?.body.messages), /foreground local-read child agent/u);
     assert.ok(toolNames(requests[0]?.body).includes('tool_search'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
@@ -3988,6 +4029,67 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       }),
       '## Goal',
     );
+    let suggestionCall = 0;
+    const suggestionModel = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => String(++suggestionCall),
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.equal(
+        await suggestionModel(
+          {
+            sessionId: session.id,
+            turnId: 'suggestion-turn',
+            terminalEventId: 'suggestion-terminal',
+            header: session,
+            messages: [
+              {
+                type: 'user',
+                id: 'suggestion-user',
+                ts: 1,
+                turnId: 'suggestion-turn',
+                text: '先设计，再实现',
+              },
+            ],
+          },
+          new AbortController().signal,
+        ),
+        SUMMARY_TEXT,
+      );
+    }
+    const suggestionRows = (await usage.telemetry.logs({ range: 'all' })).rows.filter(
+      (row) => row.callKind === 'prompt_suggestion',
+    );
+    assert.equal(suggestionRows.length, 2);
+    assert.equal(new Set(suggestionRows.map((row) => row.callId)).size, 2);
+    const suggestionRequest = provider.requests.at(-1)!;
+    assert.equal(suggestionRequest.authorization, `Bearer ${API_KEY}`);
+    assert.equal((suggestionRequest.body as Record<string, unknown>).tools, undefined);
+    const suggestionLog = (await usage.telemetry.logs({ range: 'all' })).rows.find(
+      (row) => row.callKind === 'prompt_suggestion',
+    );
+    assert.equal(suggestionLog?.inputTokens, 7);
+    assert.equal(suggestionLog?.outputTokens, 3);
+    assert.equal(suggestionLog?.status, 'success');
+    const providerRequestsBeforePluginTitle = provider.requests.length;
+    assert.equal(
+      await sessionEffects.generateTitle({
+        sessionId: session.id,
+        header: {
+          ...session,
+          backend: 'plugin-executor',
+          executorId: 'codex.app-server',
+          llmConnectionId: undefined,
+          llmConnectionSlug: 'executor:codex.app-server',
+          model: 'gpt-5.6-sol',
+          thinkingLevel: 'high',
+        },
+        sourceText: 'Run this task through the Codex plugin executor',
+        abortSignal: new AbortController().signal,
+      }),
+      undefined,
+    );
+    assert.equal(provider.requests.length, providerRequestsBeforePluginTitle);
     const recap = await sessionEffects.generateRecap({
       sessionId: session.id,
       effectId: 'recap-effect-1',
@@ -4835,7 +4937,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     ).text,
     [
       'Complete the task by acting with the available tools, not by narrating.',
-      'Prefer Read, Glob, and Grep for inspection, Edit and Write for file changes, and Bash for shell commands and tests.',
+      'Prefer Read, Glob, and Grep for inspection, the available file-editing tool for file changes, and Bash for shell commands and tests.',
       'Verify the result when practical.',
       'Stop when the task is complete.',
     ].join('\n'),
@@ -5371,6 +5473,26 @@ function responsesToolNames(body: Record<string, unknown> | undefined): string[]
       return typeof name === 'string' ? [name] : [];
     })
     .sort();
+}
+
+function runtimeEnvironment(body: Record<string, unknown>): {
+  cwd: string;
+  platform: string;
+  sampledAt: string;
+  timeZone: string;
+} {
+  const messages = (body.messages ?? body.input) as Array<{
+    role?: string;
+    content?: string | Array<{ text?: string }>;
+  }>;
+  const contexts = messages
+    .filter(({ role }) => role === 'user')
+    .flatMap(({ content }) =>
+      typeof content === 'string' ? [content] : (content ?? []).map(({ text }) => text ?? ''),
+    )
+    .filter((text) => text.startsWith('Runtime Host environment for this turn'));
+  assert.equal(contexts.length, 1, JSON.stringify(body));
+  return JSON.parse(contexts[0]!.slice(contexts[0]!.indexOf('\n') + 1));
 }
 
 function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
@@ -6090,3 +6212,264 @@ function closeServer(server: Server): Promise<void> {
     server.close((error) => (error ? reject(error) : resolve()));
   });
 }
+
+test('prompt suggestions use the least reasoning each model accepts, reject truncation and do not retry', async () => {
+  const MODEL_ID = 'gpt-5.2';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'goal-evaluator-provider',
+        name: 'Goal evaluator provider',
+        providerType: 'openai',
+        modelOverrides: { [MODEL_ID]: { apiProtocol: 'openai-chat' } },
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'goal-evaluator-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const evaluatorInput = {
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
+      readSessionHeader: (sessionId: string) =>
+        execution.sessionStore.readHeaderSnapshot(sessionId),
+      newId: () => 'call-1',
+    };
+
+    let fetches = 0;
+    let mode = 'length';
+    let requestBody: Record<string, unknown> = {};
+    const suggest = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => `suggestion-${fetches}`,
+      createFetchTransport: () => ({
+        close: async () => {},
+        fetch: (async (url, init) => {
+          fetches++;
+          requestBody = JSON.parse(String(init?.body));
+          if (mode === 'failure') return new Response('unavailable', { status: 503 });
+          if (String(url).endsWith('/responses')) {
+            return Response.json({
+              id: 'reply',
+              object: 'response',
+              created_at: 1,
+              model: 'gpt-5',
+              status: 'incomplete',
+              incomplete_details: { reason: 'max_output_tokens' },
+              output: [
+                {
+                  type: 'message',
+                  id: 'message',
+                  role: 'assistant',
+                  status: 'incomplete',
+                  content: [{ type: 'output_text', text: 'partial', annotations: [] }],
+                },
+              ],
+              usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+            });
+          }
+          return Response.json({
+            id: 'reply',
+            object: 'chat.completion',
+            created: 1,
+            model: MODEL_ID,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'partial' },
+                finish_reason: 'length',
+              },
+            ],
+            usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+          });
+        }) as typeof fetch,
+      }),
+    });
+    const source = {
+      sessionId: session.id,
+      turnId: 'turn',
+      terminalEventId: 'terminal',
+      header: session,
+      messages: [],
+    };
+    assert.equal(await suggest(source, new AbortController().signal), undefined);
+    assert.equal(requestBody.reasoning_effort, 'none');
+    assert.equal(fetches, 1);
+    mode = 'failure';
+    await assert.rejects(suggest(source, new AbortController().signal));
+    assert.equal(fetches, 2, 'a failed paid call must not retry');
+    const currentConnection = (await policy.connectionCatalog.getSnapshot()).connections.find(
+      (entry) => entry.connectionId === connection.connectionId,
+    )!;
+    const changed = await policy.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: currentConnection.revision },
+      changes: {
+        name: connection.name,
+        enabled: true,
+        enabledModelIds: ['gpt-5'],
+      },
+    });
+    assert.equal(changed.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'gpt-5');
+    mode = 'length';
+    assert.equal(
+      await suggest(
+        { ...source, header: { ...session, model: 'gpt-5' } },
+        new AbortController().signal,
+      ),
+      undefined,
+    );
+    assert.equal(fetches, 3);
+    assert.equal(
+      (requestBody.reasoning as { effort?: unknown } | undefined)?.effort,
+      'minimal',
+      'a model without off must be asked for its least effort, not left on the provider default',
+    );
+    assert.equal(
+      requestBody.max_output_tokens,
+      1_024,
+      'reasoning at the least effort needs room before the visible line',
+    );
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('prompt suggestions ask Kimi K3 for its lowest effort instead of its default thinking', async () => {
+  const MODEL_ID = 'k3';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'kimi-coding-plan',
+        name: 'Kimi Coding Plan',
+        providerType: 'kimi-coding-plan',
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'kimi-coding-plan',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+
+    let requestBody: Record<string, unknown> = {};
+    const suggest = createHostPromptSuggestionModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('prompt suggestion telemetry must not drain the Host'),
+      newId: () => 'kimi-suggestion',
+      createFetchTransport: () => ({
+        close: async () => {},
+        fetch: (async (_url, init) => {
+          requestBody = JSON.parse(String(init?.body));
+          return Response.json({
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            model: MODEL_ID,
+            content: [{ type: 'text', text: 'Yes, add the tests next.' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 7, output_tokens: 6 },
+          });
+        }) as typeof fetch,
+      }),
+    });
+
+    const text = await suggest(
+      {
+        sessionId: session.id,
+        turnId: 'turn',
+        terminalEventId: 'terminal',
+        header: session,
+        messages: [],
+      },
+      new AbortController().signal,
+    );
+
+    assert.equal(text, 'Yes, add the tests next.');
+    assert.deepEqual(
+      requestBody.thinking,
+      { type: 'adaptive' },
+      'K3 must be sent an explicit thinking mode, not left on its default',
+    );
+    assert.match(
+      JSON.stringify(requestBody),
+      /"effort":"low"/,
+      'K3 must be asked for its lowest effort, not its default maximum',
+    );
+    assert.equal(requestBody.max_tokens, 1_024);
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});

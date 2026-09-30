@@ -47,7 +47,6 @@ import * as skillFeedback from './skill-invocation-feedback.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 import * as Conversation from './features/conversation/index.js';
-import type { PendingAttachment } from './composer-attachments.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -72,11 +71,7 @@ type RefBox<T> = { current: T };
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
-type PendingNewChatModel = {
-  llmConnectionId: string;
-  llmConnectionSlug: string;
-  model: string;
-} | null;
+type PendingNewChatModel = Conversation.NewChatExecutionTarget | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
 type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
@@ -103,6 +98,7 @@ type MessageContextOptions = {
 };
 type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
+  targetSessionId?: string;
   turnOrchestration?: TurnOrchestration;
   displayText?: string;
   onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
@@ -118,7 +114,7 @@ function copiedArray<K extends string, T>(
 export interface AppShellChatActions {
   send(
     text: string,
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options?: SendOptions,
   ): Promise<boolean>;
   /**
@@ -130,7 +126,7 @@ export interface AppShellChatActions {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options?: MessageContextOptions,
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
@@ -154,7 +150,7 @@ export function createAppShellChatActions(deps: {
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   messageRetryPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
-  activateSessionForFirstSend: (sessionId: string) => Promise<void>;
+  activateSessionForFirstSend: (session: DesktopSessionSummary) => Promise<void>;
   retireSession: (sessionId: string) => void;
   setMessageLoadErrorBySession: MessageLoadErrorUpdater;
   addTransientMessage: (
@@ -183,6 +179,8 @@ export function createAppShellChatActions(deps: {
   ) => void;
   toastApi: ToastApi;
   newChatModel: PendingNewChatModel;
+  executorSelection?: { executorId: string; configuration: import('@maka/core/executor-catalog').ExecutorConfiguration };
+  executorEntry?: Conversation.ExecutorSubmission['executorEntry'];
   /** Undefined applies the Host's model default; null explicitly keeps the provider default. */
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
@@ -223,12 +221,8 @@ export function createAppShellChatActions(deps: {
     respondToUserForm: submitUserForm,
     showModelSetupToast,
     toastApi,
-    newChatModel,
-    pendingNewChatThinkingLevel,
     newChatPermissionChoice,
     clearNewChatPermissionChoice,
-    newChatCollaborationMode,
-    newChatOrchestrationMode,
     newTaskTarget,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
@@ -254,14 +248,12 @@ export function createAppShellChatActions(deps: {
     >;
     displayText?: string;
     quotes?: readonly QuoteRef[];
-    pendingSteering?: boolean;
     waitForHostAdmission?: boolean;
     /** Whether this Session's surface is on screen to receive Skill feedback. */
     isSurfaceVisible?: () => boolean;
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
     const directoryReferences = input.command.directoryReferences;
-    const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
       messageId,
@@ -288,27 +280,27 @@ export function createAppShellChatActions(deps: {
       id: messageId,
       text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
       attachments: [...result.attachments],
-      transientPlacement: placement,
-      pendingSteering: result.disposition === 'turn_started' ? false : input.pendingSteering,
+      transientPlacement: result.disposition !== 'turn_started' && placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...(result.turnId ? { hostTurnId: result.turnId } : {}),
       ...copiedArray('directoryReferences', directoryReferences),
-      ...copiedArray('quotes', quotes),
+      ...copiedArray('quotes', input.quotes ?? []),
       inlineReferences: [...(result.inlineReferences ?? [])],
     }, true);
     return {
       kind: 'projected',
       skillInvocation: result.skillInvocation,
-      ...(result.turnId ? { turnId: result.turnId } : {}),
+      ...(result.turnId ? { turnId: result.turnId } : {})
     };
   }
 
   async function send(
     text: string,
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options: SendOptions = {},
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
-    const initialSessionId = activeIdRef.current;
+    const initialSessionId = options.targetSessionId ?? activeIdRef.current;
+    if (!Conversation.canSubmitExecutor(deps, pending?.length ?? 0)) return false;
     const sendOwner = captureComposerImportOwner();
     const selectionIsCurrent = captureSelection();
     if (!initialSessionId && !newTaskTarget) return false;
@@ -344,19 +336,13 @@ export function createAppShellChatActions(deps: {
     };
     try {
       async function submitIntoSession(sessionId: string, messageId: string) {
-        const attachmentItems =
-          pending?.length
-            ? Conversation.toComposerIngestItems(pending)
-            : undefined;
-        const retainedAttachments =
-          pending?.length
-            ? Conversation.retainedAttachmentRefs(pending)
-            : undefined;
+        const attachments = Conversation.toSubmittedAttachments(pending ?? []);
         const sendCommand = {
           text,
+          localDisplayPlacement: 'current_turn' as const,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray('attachmentItems', attachmentItems),
-          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray('attachmentItems', attachments.attachmentItems),
+          ...copiedArray('retainedAttachments', attachments.retainedAttachments),
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
@@ -371,7 +357,6 @@ export function createAppShellChatActions(deps: {
           },
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...copiedArray('quotes', quotes),
-          pendingSteering: false,
           waitForHostAdmission: options.waitForHostAdmission,
           isSurfaceVisible: () => activeIdRef.current === sessionId,
         });
@@ -381,17 +366,7 @@ export function createAppShellChatActions(deps: {
         if (pending?.length) preflightAttachmentItems(pending);
         const session = await window.maka.newTasks.create(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
-          ...(newChatModel
-            ? {
-                llmConnectionId: newChatModel.llmConnectionId,
-                llmConnectionSlug: newChatModel.llmConnectionSlug,
-                model: newChatModel.model,
-              }
-            : {}),
-          thinkingLevel: pendingNewChatThinkingLevel,
-          ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
-          collaborationMode: newChatCollaborationMode,
-          orchestrationMode: newChatOrchestrationMode,
+          ...Conversation.newTaskConfiguration(deps),
         });
         unsentSessionId = session.id;
         // Creation can also yield while a same-target New Task is reopened.
@@ -406,14 +381,13 @@ export function createAppShellChatActions(deps: {
         // the new-chat surface, so the empty-session Maka hero cannot paint
         // between observation settling and the submitted content appearing.
         publishTransientUserMessage(session.id, {
-          id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+          id: messageId, text: options.displayText ?? text, transientPlacement: 'transcript',
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
-          inlineReferences: [],
         });
         // Main owns observation-before-dispatch. This only selects the local
         // surface; saving a draft never waits for the Host's event stream.
-        await activateSessionForFirstSend(session.id);
+        await activateSessionForFirstSend(session);
         if (activeIdRef.current !== session.id) {
           removeTransientMessage(session.id, messageId);
           await discardUnsentSession();
@@ -436,13 +410,12 @@ export function createAppShellChatActions(deps: {
         void refreshSessions().catch(() => undefined);
         return true;
       }
-      if (!onFollowLatest(initialSessionId)) return false;
+      if (!options.targetSessionId && !onFollowLatest(initialSessionId)) return false;
       optimisticSessionId = initialSessionId;
       publishTransientUserMessage(initialSessionId, {
-        id: messageId, text: options.displayText ?? text, transientPlacement: 'current_turn',
+        id: messageId, text: options.displayText ?? text, transientPlacement: 'transcript',
         ...copiedArray('directoryReferences', directoryReferences),
         ...copiedArray('quotes', quotes),
-        inlineReferences: [],
       });
       const submitted = await submitIntoSession(initialSessionId, messageId);
       // An existing-Session send never reports a resolved Session.
@@ -506,30 +479,27 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly PendingAttachment[],
+    pending?: readonly Conversation.PendingAttachment[],
     options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
     const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
     const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
+    const { attachmentItems, retainedAttachments = [] } = Conversation.toSubmittedAttachments(pending ?? []);
     publishTransientUserMessage(sessionId, {
-      id: messageId, text, attachments: Conversation.retainedAttachmentRefs(pending ?? []),
-      pendingSteering: placement === 'current_turn',
+      id: messageId, text, attachments: retainedAttachments,
       ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
-      transientPlacement: placement,
+      transientPlacement: placement === 'next_turn' ? 'follow_up' : 'transcript',
       ...copiedArray('directoryReferences', directoryReferences),
       ...copiedArray('quotes', quotes),
       inlineReferences: [],
     });
     try {
-      const attachmentItems = pending?.length ? Conversation.toComposerIngestItems(pending) : [];
-      const retainedAttachments = pending?.length ? Conversation.retainedAttachmentRefs(pending) : [];
       const submitted = await submitAndProject({
         sessionId,
         messageId,
         placement,
-        pendingSteering: placement === 'current_turn',
         command: {
           text,
           ...copiedArray('attachmentItems', attachmentItems),

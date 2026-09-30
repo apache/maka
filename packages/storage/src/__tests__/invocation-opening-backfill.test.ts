@@ -230,6 +230,19 @@ describe('invocation opening fact backfill', () => {
         );
         assert.equal(migrated?.turnId, 'turn-with-events');
         assert.equal(migrated?.terminalEvent, undefined);
+        const recoveryInventory = await store.listInvocationRecoveryInventory(['session-1']);
+        assert.deepEqual(
+          recoveryInventory.map((entry) => ({
+            invocationId: entry.invocationId,
+            candidate: entry.candidate?.invocationId ?? null,
+          })),
+          [
+            { invocationId: 'run-legacy-route', candidate: null },
+            { invocationId: 'run-scheduled', candidate: null },
+            { invocationId: 'run-with-events', candidate: 'run-with-events' },
+          ],
+          'the narrow inventory keeps migrated openings but decodes only recovery candidates',
+        );
       } finally {
         store.close();
       }
@@ -500,6 +513,10 @@ function headerEraComposition() {
  * header the migration under test has to read.
  */
 function rewindToHeaderEra(db: DatabaseSync): void {
+  db.exec('DROP INDEX IF EXISTS runtime_events_recovery_user_message');
+  db.exec('DROP INDEX IF EXISTS runtime_events_steering_message');
+  db.exec('DROP INDEX IF EXISTS runtime_events_tool_dispatch_operation');
+  db.exec('DROP INDEX IF EXISTS tool_operations_unsettled');
   db.exec('DROP INDEX IF EXISTS runtime_events_by_session_kind');
   db.exec('DROP INDEX IF EXISTS runtime_events_one_opening_per_invocation');
   db.exec('DROP INDEX IF EXISTS runtime_legacy_invocation_openings_by_session');

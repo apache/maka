@@ -27,6 +27,7 @@ import {
   isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventUserMessage,
 } from '@maka/runtime/runtime-event-read-model';
+import { RuntimeReadModelError } from '@maka/runtime/runtime-read-model';
 import {
   type CanonicalPermissionOutcomeReader,
   type CanonicalPermissionOutcomeRecord,
@@ -94,6 +95,21 @@ export function createSessionTranscriptReader(input: {
   };
 }
 
+/** Reads only the delegated Turn's projected assistant output. The indexed
+ * Turn extent avoids materializing every earlier message in its Session.
+ */
+export function createTurnResultReader(input: {
+  stores: ExecutionStoresWriter<'interactive'>;
+  canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader;
+  ensureTranscriptLedger?: (sessionId: string) => Promise<void>;
+}): (sessionId: string, turnId: string) => Promise<string> {
+  const ledger = createDurableLedgerTranscriptReader(input);
+  return async (sessionId, turnId) => {
+    await input.ensureTranscriptLedger?.(sessionId);
+    return ledger.readLatestAssistantForTurn(sessionId, turnId);
+  };
+}
+
 export interface SessionTurnLandmarkRequest {
   readonly maxLandmarks: number;
   readonly turnId: string | null;
@@ -157,8 +173,26 @@ function createDurableLedgerTranscriptReader(input: {
     turn: PendingTranscriptRun,
   ): Promise<{ sequence: number; message: StoredMessage }[]> => {
     const projected = await turn.projection.finish(input.canonicalPermissionOutcomes);
-    if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
-      throw new Error('Durable RuntimeEvent transcript projection is incomplete');
+    const hardDiagnostics = projected.diagnostics.filter(isHardRuntimeEventReadModelDiagnostic);
+    if (hardDiagnostics.length > 0) {
+      // Host diagnostics format the Error stack, so keep the failure's location
+      // and reasons in its message without serializing raw diagnostic detail.
+      throw new RuntimeReadModelError(
+        `Durable RuntimeEvent transcript projection is incomplete: ${JSON.stringify({
+          sessionId: turn.invocation.sessionId,
+          invocationId: turn.invocation.invocationId,
+          runId: turn.invocation.runId,
+          turnId: turn.invocation.turnId,
+          diagnostics: hardDiagnostics.map(({ code, eventId, runId, turnId, message }) => ({
+            code,
+            eventId,
+            runId,
+            turnId,
+            message,
+          })),
+        })}`,
+        hardDiagnostics,
+      );
     }
     const admission =
       turn.invocation.sessionId === WORKHUB_COORDINATION_SESSION_ID
@@ -273,6 +307,28 @@ function createDurableLedgerTranscriptReader(input: {
     readHighWater: highWater,
 
     ...pagedTranscriptReads(source),
+
+    async readLatestAssistantForTurn(sessionId: string, turnId: string): Promise<string> {
+      const extents = await store.readTranscriptTurns(sessionId, { turnId });
+      let result = '';
+      for (const extent of extents) {
+        for (let ordinal = extent.firstOrdinal; ordinal <= extent.lastOrdinal; ) {
+          const run = await readRun(sessionId, {
+            direction: 'newer',
+            throughOrdinal: extent.lastOrdinal,
+            position: ordinal,
+          });
+          if (!run) break;
+          if (run.invocation.turnId === turnId) {
+            for (const { message } of await projectTurn(run)) {
+              if (message.type === 'assistant' && message.text.trim()) result = message.text;
+            }
+          }
+          ordinal = run.lastOrdinal + 1;
+        }
+      }
+      return result;
+    },
 
     /** One row per Turn, folded from the Turn's own projected messages. */
     async readTurnContributions(

@@ -188,6 +188,50 @@ describe('Work Board IPC', () => {
     });
   });
 
+  test('registers handlers before the schema-gated store resolves', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      let resolved = false;
+      let resolveCalls = 0;
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        resolveStore: async () => {
+          resolved = true;
+          resolveCalls += 1;
+          return createWorkBoardStore(root);
+        },
+        validateLinkedSession: async () => true,
+      });
+      try {
+        assert.equal(resolved, false);
+        assert.deepEqual(ipc.channels, [
+          'workBoard:list',
+          'workBoard:create',
+          'workBoard:update',
+          'workBoard:archive',
+          'workBoard:unarchive',
+          'workBoard:remove',
+          'workBoard:linkSession',
+        ]);
+        const listed = await Promise.all([
+          ipc.invoke<WorkBoardIpcResult<{ items: unknown[] }>>('workBoard:list', {}),
+          ipc.invoke<WorkBoardIpcResult<{ items: unknown[] }>>('workBoard:list', {}),
+        ]);
+        assert.equal(resolved, true);
+        assert.equal(resolveCalls, 1);
+        assert.deepEqual(listed, [
+          { ok: true, value: { items: [] } },
+          { ok: true, value: { items: [] } },
+        ]);
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
   test('applies lifecycle mutations and fails closed on invalid input', async () => {
     await withTempRoot(async (root) => {
       const ipc = createFakeIpcMain();

@@ -244,7 +244,7 @@ describe('Overlays feature boundary', () => {
     const violations: string[] = [];
     for (const path of productionRendererSources()) {
       const analysis = analysisOf(path);
-      for (const capability of ['window.maka.search.thread', 'window.maka.search.*']) {
+      for (const capability of ['window.maka.search.recall', 'window.maka.search.*']) {
         if ((analysis.bridgePaths[capability] ?? 0) > 0) {
           violations.push(`${relativeSource(path)}: ${capability}`);
         }

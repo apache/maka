@@ -66,6 +66,7 @@ describe('SQLite SessionStore', () => {
         makeInput({
           cwd: root,
           executorId: 'codex',
+          executorConfig: { model: 'account-model-v2' },
           llmConnectionSlug: 'executor:codex',
           model: 'codex',
         }),
@@ -80,6 +81,8 @@ describe('SQLite SessionStore', () => {
       assert.equal(reloaded.backend, 'plugin-executor');
       assert.equal(reloaded.executorId, 'codex');
       assert.equal((await store.list())[0]?.executorId, 'codex');
+      assert.deepEqual(reloaded.executorConfig, { model: 'account-model-v2' });
+      assert.deepEqual((await store.list())[0]?.executorConfig, { model: 'account-model-v2' });
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

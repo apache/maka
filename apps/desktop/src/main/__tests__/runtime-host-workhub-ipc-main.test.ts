@@ -43,6 +43,57 @@ test('registers the WorkHub Session projection as a reconnectable read', () => {
   assert.equal(ordinary.has('workhub:getSession'), false);
 });
 
+test('stores new-work execution defaults separately from the coordination Session', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  const client = { hostId: 'host-defaults' } as Parameters<
+    typeof registerRuntimeHostWorkHubIpc
+  >[0];
+  registerRuntimeHostWorkHubIpc(
+    client,
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    {},
+  );
+  const event = { sender: { id: 7 } } as Parameters<IpcHandler>[0];
+  const read = handlers.get('workhub:getNewWorkDefaults');
+  const write = handlers.get('workhub:setNewWorkDefaults');
+  assert.ok(read);
+  assert.ok(write);
+  assert.deepEqual(await read(event), {});
+  const defaults = {
+    executorId: 'codex.app-server',
+    executorModel: 'gpt-6-astra',
+    thinkingLevel: 'high',
+  };
+  await write(event, defaults);
+  assert.deepEqual(await read(event), defaults);
+  assert.throws(
+    () => write(event, { ...defaults, permissionMode: 'bypass' }),
+    /Invalid WorkHub new-work defaults/u,
+  );
+
+  const replacementHandlers = new Map<string, IpcHandler>();
+  registerRuntimeHostWorkHubIpc(
+    { hostId: client.hostId } as Parameters<typeof registerRuntimeHostWorkHubIpc>[0],
+    {
+      handle(channel, handler) {
+        replacementHandlers.set(channel, handler);
+      },
+    },
+    {},
+  );
+  const replacementRead = replacementHandlers.get('workhub:getNewWorkDefaults');
+  assert.ok(replacementRead);
+  assert.deepEqual(
+    await replacementRead(event),
+    defaults,
+    'replacement clients for the same Host retain the execution defaults',
+  );
+});
+
 test('returns a structured WorkHub attachment rejection across IPC', async () => {
   const handlers = new Map<string, IpcHandler>();
   registerRuntimeHostWorkHubIpc(

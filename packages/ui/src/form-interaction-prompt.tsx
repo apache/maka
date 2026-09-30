@@ -231,7 +231,6 @@ function modelPickerOptions(
     modelMenuGroups([...choices], locale),
     undefined,
     (choice) => exactModelChoiceValue(choice.connectionId, choice.connectionSlug, choice.model),
-    { locale },
   );
 }
 

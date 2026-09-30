@@ -52,7 +52,6 @@ export {
 } from './runtime-policy/errors.js';
 export type {
   BeginConnectionTestResult,
-  BeginConnectionUsageResult,
   BeginInteractiveOAuthLoginResult,
   BeginModelFetchResult,
   CompareAndSetOAuthCredentialInput,
@@ -66,7 +65,6 @@ export type {
   ConnectionEffectPreparationFailure,
   ConnectionOnboardingTicket,
   ConnectionTestTicket,
-  ConnectionUsageTicket,
   InteractiveOAuthLoginCompletionResult,
   InteractiveOAuthLoginProvider,
   InteractiveOAuthLoginInput,
@@ -269,8 +267,6 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
         coordinator.beginConnectionTest(connectionId, modelId),
       completeConnectionTest: (ticket, result) =>
         coordinator.completeConnectionTest(ticket, result),
-      beginConnectionUsage: (connectionId) => coordinator.beginConnectionUsage(connectionId),
-      completeConnectionUsage: (ticket) => coordinator.completeConnectionUsage(ticket),
     },
   };
   freezeFacade(stores);

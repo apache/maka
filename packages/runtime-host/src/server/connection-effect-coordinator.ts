@@ -29,7 +29,6 @@ import {
   effectiveBaseUrl,
   providerFallbackModelIds,
 } from '@maka/core/llm-connections';
-import type { ConnectionUsageReport } from '@maka/core/connection-usage';
 import {
   createConnectionEffectFetchTransport,
   type ConnectionEffectFetchTransport,
@@ -42,7 +41,6 @@ import {
 } from '@maka/runtime/subscription-credentials';
 import { runConnectionModelDiscoveryEffect } from '@maka/runtime/model-fetcher';
 import { runConnectionTestEffect } from '@maka/runtime/test-connection';
-import { fetchConnectionUsage } from '@maka/runtime/connection-usage';
 import {
   type ConnectionEffectErrorKind,
   type ConnectionModelDiscoveryEffectOutcome,
@@ -53,7 +51,6 @@ import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,
   type BeginConnectionTestResult,
-  type BeginConnectionUsageResult,
   type BeginModelFetchResult,
   type ConnectionEffectCompletionResult,
   type ConnectionOnboardingTicket,
@@ -71,9 +68,6 @@ import type {
   ConnectionTestProjection,
   ConnectionTestRunInput,
   ConnectionTestRunResult,
-  ConnectionUsageReadInput,
-  ConnectionUsageReadResult,
-  ConnectionUsageReportProjection,
   OperationOutcome,
 } from '../protocol/index.js';
 import type { ConnectionEffectOperationHandlerMap } from './operation-dispatcher.js';
@@ -114,7 +108,6 @@ export class HostConnectionEffectCoordinator {
     'connection.onboarding.verify': (input) => this.#verifyOnboarding(input),
     'connection.models.fetch': (input) => this.#fetchModels(input),
     'connection.test.run': (input) => this.#testConnection(input),
-    'connection.usage.read': (input) => this.#readConnectionUsage(input),
   };
 
   readonly #stores: RuntimePolicyStoresWriter;
@@ -393,40 +386,10 @@ export class HostConnectionEffectCoordinator {
     });
   }
 
-  /**
-   * Read-only: fetch the account's usage and project it. Nothing is committed,
-   * so no superseded branch exists — the ticket is spent and the report
-   * returned.
-   */
-  #readConnectionUsage(
-    input: ConnectionUsageReadInput,
-  ): Promise<OperationOutcome<'connection.usage.read'>> {
-    return this.#admit(input.connectionId, 'connection.usage.read', async () => {
-      const prepared = await this.#stores.operations.beginConnectionUsage(input.connectionId);
-      if (prepared.kind !== 'ready') return preparationResult(prepared);
-      try {
-        const result = await this.#withTransport(prepared, (fetch, secret) =>
-          fetchConnectionUsage({
-            providerType: prepared.connection.providerType,
-            apiKey: secret,
-            baseUrl: effectiveBaseUrl(prepared.connection),
-            fetch,
-          }),
-        );
-        return result.kind === 'report'
-          ? { kind: 'report', report: projectUsageReport(result.report) }
-          : { kind: 'unavailable', reason: result.reason };
-      } finally {
-        await this.#stores.operations.completeConnectionUsage(prepared.ticket);
-      }
-    });
-  }
-
   #admit<
     K extends
       | 'connection.models.fetch'
       | 'connection.test.run'
-      | 'connection.usage.read'
       | 'connection.onboarding.verify'
       | 'connection.onboarding.save',
   >(
@@ -560,13 +523,7 @@ function preparationResult(
   prepared: Exclude<BeginConnectionTestResult, { readonly kind: 'ready' }>,
 ): Extract<ConnectionTestRunResult, { readonly kind: 'rejected' }>;
 function preparationResult(
-  prepared: Exclude<BeginConnectionUsageResult, { readonly kind: 'ready' }>,
-): Extract<ConnectionUsageReadResult, { readonly kind: 'rejected' }>;
-function preparationResult(
-  prepared: Exclude<
-    BeginModelFetchResult | BeginConnectionTestResult | BeginConnectionUsageResult,
-    { readonly kind: 'ready' }
-  >,
+  prepared: Exclude<BeginModelFetchResult | BeginConnectionTestResult, { readonly kind: 'ready' }>,
 ): Extract<ConnectionModelFetchResult, { readonly kind: 'rejected' }> {
   return {
     kind: 'rejected',
@@ -580,35 +537,6 @@ function projectSuperseded(
   return {
     kind: 'superseded',
     changed: completion.changed.map((domain) => domain satisfies ConnectionEffectChangedDomain),
-  };
-}
-
-function projectUsageReport(report: ConnectionUsageReport): ConnectionUsageReportProjection {
-  return {
-    accountLabel: report.accountLabel ?? null,
-    planLabel: report.planLabel ?? null,
-    stats: report.stats
-      ? {
-          requests: report.stats.requests ?? null,
-          failed: report.stats.failed ?? null,
-          successRate: report.stats.successRate ?? null,
-          cost: report.stats.cost ?? null,
-          tokensIn: report.stats.tokensIn ?? null,
-          tokensOut: report.stats.tokensOut ?? null,
-        }
-      : null,
-    windows: report.windows.map((window) => ({
-      id: window.id,
-      label: window.label ?? null,
-      used: window.used,
-      cap: window.cap,
-      unit: window.unit,
-      resetsAt: window.resetsAt ?? null,
-      unlimited: window.unlimited ?? null,
-    })),
-    periodEnd: report.periodEnd ?? null,
-    partiallyUnauthorized: report.partiallyUnauthorized === true,
-    fetchedAt: report.fetchedAt,
   };
 }
 
@@ -663,7 +591,6 @@ function storeFailure<
   K extends
     | 'connection.models.fetch'
     | 'connection.test.run'
-    | 'connection.usage.read'
     | 'connection.onboarding.verify'
     | 'connection.onboarding.save',
 >(error: unknown): OperationOutcome<K> {
@@ -690,7 +617,6 @@ function operationFailure<
   K extends
     | 'connection.models.fetch'
     | 'connection.test.run'
-    | 'connection.usage.read'
     | 'connection.onboarding.verify'
     | 'connection.onboarding.save',
 >(
@@ -701,7 +627,10 @@ function operationFailure<
 }
 
 function transientConnection(
-  identity: Pick<ConnectionCatalogEntry, 'connectionId' | 'slug' | 'providerType'>,
+  identity: Pick<
+    ConnectionCatalogEntry,
+    'connectionId' | 'slug' | 'providerType' | 'defaultApiProtocol'
+  >,
   baseUrl: string | null = null,
 ): ConnectionCatalogEntry {
   const { providerType } = identity;
@@ -714,6 +643,9 @@ function transientConnection(
     name: definition.label,
     providerType,
     ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
+    ...(identity.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: identity.defaultApiProtocol }),
     enabled: true,
     enabledModelIds: models.map(({ id }) => id),
     models,

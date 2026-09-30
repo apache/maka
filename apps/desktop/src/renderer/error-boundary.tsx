@@ -166,7 +166,7 @@ export function ErrorBoundaryFallback({
   const CopyIcon = copyState === 'copied' ? Check : Clipboard;
 
   return (
-    <div className="maka-error-surface" role="alert" aria-live="assertive">
+    <div className="maka-error-surface" role="alert" aria-live="assertive" data-maka-content-ready>
       {/* Astryx Card owns the card face: red tint for the destructive
           surface, high elevation for the former shadow-modal. The class
           keeps only the icon/copy grid geometry. */}

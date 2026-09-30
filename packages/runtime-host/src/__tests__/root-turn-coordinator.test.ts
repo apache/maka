@@ -54,6 +54,7 @@ import {
 } from '@maka/runtime/agent-catalog';
 import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import {
+  admittedPromptEventId,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
   RuntimeMessageAuthorityInvariantError,
@@ -71,7 +72,11 @@ import type {
   BackendCompactHistoryInput,
   BackendSendInput,
 } from '@maka/core/backend-types';
-import { messageContentDigest, type SessionEvent } from '@maka/core/events';
+import {
+  aggregateMessageContents,
+  messageContentDigest,
+  type SessionEvent,
+} from '@maka/core/events';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
@@ -95,6 +100,8 @@ import { HostAgentGraphExecutionCoordinator } from '../server/agent-graph-execut
 import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
+import { prepareHostedExecutionRecovery } from '../server/hosted-execution-recovery.js';
+import { HostedExecutionProjectionReader } from '../server/hosted-execution-projection.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { ClientCapabilityInvocationError } from '../server/client-capability-invocation-broker.js';
 import { HostContextCoordinator } from '../server/context-coordinator.js';
@@ -511,6 +518,48 @@ test('turn.start enforces the admitted step cap at the backend boundary', async 
   }
 });
 
+test('turn.start retains an external trigger origin for runtime authority and recovery', async () => {
+  let backend: StepCapProbeBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new StepCapProbeBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const origin = { kind: 'cloud_activation' as const, activationId: 'activation-1' };
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-activation-origin',
+        content: { text: 'Inspect the workspace' },
+        origin,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      'turn-activation-origin',
+    );
+    assert.deepEqual(admission?.execution, { kind: 'external_message', origin });
+    assert.equal(backend?.sendInputs[0]?.allowPriorUnknownToolOutcomes, undefined);
+    const userMessage = (
+      await readLedgerMessages(fixture.stores.runtimeEventStore, fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.turnId === 'turn-activation-origin');
+    assert.ok(userMessage?.type === 'user');
+    if (userMessage?.type === 'user') assert.deepEqual(userMessage.origin, origin);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('does not advance a finished graph for an ordinary default Turn', async () => {
   let cutovers = 0;
   const fixture = await createFailureFixture({
@@ -567,6 +616,333 @@ test('uses the submitted Turn identity for the canonical external user message',
     assert.equal(user?.id, turnId);
   } finally {
     await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('startup recovery fails closed when message evidence exceeds its bounded read', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  let observedBudget: { maxRecords: number; maxBytes: number } | undefined;
+  try {
+    await fixture.coordinator.close();
+    const admitted = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId: 'bounded-evidence-turn',
+      proposedRunId: 'bounded-evidence-run',
+      proposedUserMessageId: 'bounded-evidence-message',
+      execution: { kind: 'external_message' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Require bounded recovery evidence.' },
+      sourceMessages: [],
+      admittedAt: Date.now(),
+    });
+    assert.equal(admitted.kind, 'admitted');
+    const runtimeEventStore = {
+      ...fixture.stores.runtimeEventStore,
+      listSessionInvocations: (
+        ...args: Parameters<typeof fixture.stores.runtimeEventStore.listSessionInvocations>
+      ) => fixture.stores.runtimeEventStore.listSessionInvocations(...args),
+      readRecoveryMessageEvents: async (input: {
+        budget: { maxRecords: number; maxBytes: number };
+      }) => {
+        observedBudget = input.budget;
+        return { status: 'limit_exceeded' as const };
+      },
+    };
+    const stores = {
+      ...fixture.stores,
+      sessionStore: fixture.stores.sessionStore,
+      runtimeEventStore,
+    };
+    const rootAdmissions = new RootAdmissionOwner(fixture.stores.agentRunStore);
+
+    await assert.rejects(
+      prepareHostedExecutionRecovery({
+        stores,
+        rootAdmissions,
+        projection: new HostedExecutionProjectionReader(stores),
+        runtime: fixture.manager,
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeMessageAuthorityInvariantError &&
+        error.message.includes('exceeds the bounded read budget'),
+    );
+    assert.deepEqual(observedBudget, {
+      maxRecords: 16,
+      maxBytes: 2 * 1024 * 1024,
+    });
+  } finally {
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('startup preparation does not read recovery evidence for Sessions without admissions', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  try {
+    await fixture.coordinator.close();
+    const sessionStore = {
+      ...fixture.stores.sessionStore,
+      listMessageAdmissions: async () => {
+        assert.fail('message admissions are evidence and must not be read without an obligation');
+      },
+    };
+    const runtimeEventStore = {
+      ...fixture.stores.runtimeEventStore,
+      listSessionInvocations: async () => {
+        assert.fail('Run invocations are evidence and must not be read without an obligation');
+      },
+      readRecoveryMessageEvents: async () => {
+        assert.fail('RuntimeEvents are evidence and must not be read without an obligation');
+      },
+    };
+    const stores = { ...fixture.stores, sessionStore, runtimeEventStore };
+
+    assert.deepEqual(
+      await prepareHostedExecutionRecovery({
+        stores,
+        rootAdmissions: new RootAdmissionOwner(fixture.stores.agentRunStore),
+        projection: new HostedExecutionProjectionReader(stores),
+        runtime: fixture.manager,
+      }),
+      [],
+    );
+  } finally {
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('startup preparation does not load settled Run bodies before selecting recovery work', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'settled-prepare-control',
+        content: { text: 'Complete without becoming recovery work.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    await fixture.coordinator.close();
+
+    let fullEventReads = 0;
+    let prefixProofReads = 0;
+    const runtimeEventStore = {
+      ...fixture.stores.runtimeEventStore,
+      listSessionInvocations: (
+        ...args: Parameters<typeof fixture.stores.runtimeEventStore.listSessionInvocations>
+      ) => fixture.stores.runtimeEventStore.listSessionInvocations(...args),
+      readImmutableRuntimeEvents: (
+        ...args: Parameters<typeof fixture.stores.runtimeEventStore.readImmutableRuntimeEvents>
+      ) => {
+        fullEventReads += 1;
+        return fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(...args);
+      },
+      readImmutableRuntimePrefixProof: (
+        ...args: Parameters<typeof fixture.stores.runtimeEventStore.readImmutableRuntimePrefixProof>
+      ) => {
+        prefixProofReads += 1;
+        return fixture.stores.runtimeEventStore.readImmutableRuntimePrefixProof(...args);
+      },
+    };
+    const stores = { ...fixture.stores, runtimeEventStore };
+    const plans = await prepareHostedExecutionRecovery({
+      stores,
+      rootAdmissions: new RootAdmissionOwner(fixture.stores.agentRunStore),
+      projection: new HostedExecutionProjectionReader(stores),
+      runtime: fixture.manager,
+    });
+
+    assert.deepEqual(plans, []);
+    assert.equal(fullEventReads, 0);
+    assert.equal(prefixProofReads, 0);
+  } finally {
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('startup preparation skips a settled multi-source successor after queue handoff', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  try {
+    await fixture.coordinator.close();
+    const session = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    const turnId = 'settled-queue-successor-turn';
+    const runId = 'settled-queue-successor-run';
+    const admittedAt = Date.now();
+    const sourceMessages = [
+      {
+        messageId: 'settled-queue-source-a',
+        content: { text: 'first queued source' },
+        placement: 'next_turn' as const,
+        disposition: 'followup' as const,
+      },
+      {
+        messageId: 'settled-queue-source-b',
+        content: { text: 'second queued source' },
+        placement: 'next_turn' as const,
+        disposition: 'followup' as const,
+      },
+    ];
+    const normalizedInput = aggregateMessageContents(
+      sourceMessages.map((source) => source.content),
+    );
+    const admitted = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: null,
+      execution: { kind: 'external_message' },
+      previousRootTurnId: null,
+      normalizedInput,
+      sourceMessages,
+      admittedAt,
+    });
+    assert.equal(admitted.kind, 'admitted');
+    const run = await seedInvocation(fixture.stores.runtimeEventStore, {
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      openedAt: admittedAt,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: session.llmConnectionId!,
+          llmConnectionSlug: session.llmConnectionSlug,
+          modelId: session.model,
+        },
+        configuration: {
+          cwd: session.cwd,
+          permissionMode: session.permissionMode,
+          collaborationMode: session.collaborationMode ?? 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'user' },
+      },
+    });
+    await fixture.stores.runtimeEventStore.appendRuntimeEvent(fixture.sessionId, runId, {
+      id: admittedPromptEventId(runId, null),
+      sessionId: fixture.sessionId,
+      invocationId: runId,
+      runId,
+      turnId,
+      ts: admittedAt,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', ...normalizedInput },
+    });
+    await commitTerminalRunWithRuntimeFact({
+      runtimeEventStore: fixture.stores.runtimeEventStore,
+      newId: randomUUID,
+      sessionId: fixture.sessionId,
+      runId,
+      turnId,
+      status: 'completed',
+      ts: admittedAt + 1,
+      terminalEvent: buildRecoveredTerminalRuntimeEvent({
+        id: 'settled-queue-successor-terminal',
+        run,
+        status: 'completed',
+        ts: admittedAt + 1,
+        recoveryReason: 'test_settled_queue_successor',
+      }),
+    });
+    assert.deepEqual(
+      await fixture.stores.sessionStore.listMessageAdmissions(fixture.sessionId),
+      [],
+    );
+
+    const plans = await prepareHostedExecutionRecovery({
+      stores: fixture.stores,
+      rootAdmissions: new RootAdmissionOwner(fixture.stores.agentRunStore),
+      projection: new HostedExecutionProjectionReader(fixture.stores),
+      runtime: fixture.manager,
+    });
+
+    assert.deepEqual(plans, []);
+  } finally {
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('startup recovery budgets the legal 64-source admission from write ceilings', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  let observedBudget: { maxRecords: number; maxBytes: number } | undefined;
+  try {
+    await fixture.coordinator.close();
+    const sourceMessages = Array.from({ length: 64 }, (_, index) => ({
+      messageId: `bounded-source-${index}`,
+      content: { text: `${index}:`.padEnd(900, 'x') },
+      placement: 'next_turn' as const,
+      disposition: 'followup' as const,
+    }));
+    const normalizedInput = aggregateMessageContents(
+      sourceMessages.map((source) => source.content),
+    );
+    const admitted = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId: 'bounded-source-turn',
+      proposedRunId: 'bounded-source-run',
+      proposedUserMessageId: null,
+      execution: { kind: 'external_message' },
+      previousRootTurnId: null,
+      normalizedInput,
+      sourceMessages,
+      admittedAt: Date.now(),
+    });
+    assert.equal(admitted.kind, 'admitted');
+    const runtimeEventStore = {
+      ...fixture.stores.runtimeEventStore,
+      listSessionInvocations: (
+        ...args: Parameters<typeof fixture.stores.runtimeEventStore.listSessionInvocations>
+      ) => fixture.stores.runtimeEventStore.listSessionInvocations(...args),
+      readRecoveryMessageEvents: (
+        input: Parameters<typeof fixture.stores.runtimeEventStore.readRecoveryMessageEvents>[0],
+      ) => {
+        observedBudget = input.budget;
+        return fixture.stores.runtimeEventStore.readRecoveryMessageEvents(input);
+      },
+    };
+    const stores = { ...fixture.stores, runtimeEventStore };
+
+    const plans = await prepareHostedExecutionRecovery({
+      stores,
+      rootAdmissions: new RootAdmissionOwner(fixture.stores.agentRunStore),
+      projection: new HostedExecutionProjectionReader(stores),
+      runtime: fixture.manager,
+    });
+
+    assert.equal(plans.length, 1);
+    assert.deepEqual(observedBudget, {
+      maxRecords: 67,
+      maxBytes: 2 * 1024 * 1024,
+    });
+  } finally {
     await fixture.messages.close();
     await fixture.dispose();
   }
@@ -875,7 +1251,7 @@ test('a failed exact Capability retry does not poison the parked continuation bi
       'inspect',
       'unexpected',
     ]);
-    capabilities.retireSessions([fixture.sessionId]);
+    await capabilities.retireSessions([fixture.sessionId]);
     recovery = fixture.createRecoveryCoordinator();
     await recovery.prepareRecovery();
     await recovery.recover();
@@ -3545,6 +3921,46 @@ test('successor admission failure retains the terminal transition and its confir
   }
 });
 
+test('Host close records its own stop source on an active root Turn', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-host-shutdown-source',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    assert.ok(backend);
+    await backend.externalHoldStarted.promise;
+    await fixture.coordinator.close();
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
+    const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
+    const terminal = classifyTerminalRuntimeLedger(run, events);
+    assert.equal(terminal.kind, 'fact');
+    if (terminal.kind === 'fact') {
+      assert.equal(terminal.fact.runStatus, 'cancelled');
+      assert.equal(terminal.fact.abortSource, 'runtime_host.shutdown');
+    }
+  } finally {
+    backend?.release();
+    await fixture.dispose();
+  }
+});
+
 test('shutdown contains a successor backend start rejected by Interaction drain', {
   timeout: 20_000,
 }, async () => {
@@ -3949,7 +4365,7 @@ test('active WorkHub authority reads the admitted v2 input and refuses other or 
   }
 });
 
-test('Client Capability ambiguity fails before durable root admission', async () => {
+test('unrelated Client Capability publishers do not block a root Turn', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
@@ -3972,6 +4388,10 @@ test('Client Capability ambiguity fails before durable root admission', async ()
     {
       send: async () => {},
     },
+  );
+  const observer = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('observer'),
+    { send: async () => {} },
   );
 
   try {
@@ -4009,19 +4429,89 @@ test('Client Capability ambiguity fails before durable root admission', async ()
       {
         sessionId: fixture.sessionId,
         turnId,
-        content: { text: 'must not be admitted' },
+        content: { text: 'start without unrelated MCP tools' },
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
     );
-    assert.equal(started.ok, false);
-    if (!started.ok) assert.equal(started.error.code, 'operation_conflict');
-    assert.equal(
-      await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
-      undefined,
-    );
+    assert.equal(started.ok, true);
+    assert.equal(clientCapabilities.snapshotForSession(fixture.sessionId), undefined);
+    assert.ok(await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId));
   } finally {
+    observer.close();
     first.close();
     second.close();
+    await clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('Host-owned idle message submission starts a Turn without a Client initiator', async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
+    activation: new RuntimePolicyActivationGate(),
+    onModelToolsChanged: () => undefined,
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => new FakeBackend(context));
+    },
+  });
+  const provider = clientCapabilities.attachConnection(
+    clientCapabilityConnectionIdentity('provider-a'),
+    { send: async () => {} },
+  );
+
+  try {
+    const replaced = await clientCapabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'plugin-agent-provider',
+        offers: [
+          {
+            offerId: 'opaque',
+            version: '0',
+            affinity: 'session',
+            hostPathAccess: 'cwd',
+            label: 'Opaque',
+            tools: [{ serverId: 'opaque', name: 'inspect', inputSchema: { type: 'object' } }],
+          },
+        ],
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(replaced.ok, true);
+    const submitted = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'plugin-agent-followup',
+        content: { text: 'Continue the agent task.' },
+        placement: 'current_turn',
+      },
+      {
+        hostEpoch: fixture.hostEpoch,
+        connectionId: 'plugin-agent',
+        principal: 'runtime_host',
+        acquireResidency: fixture.acquireResidency,
+      },
+    );
+    assert.equal(submitted.ok, true, JSON.stringify(submitted));
+    if (!submitted.ok) return;
+    assert.equal(submitted.result.disposition, 'turn_started');
+    if (submitted.result.disposition !== 'turn_started') return;
+    const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(snapshot?.registrationIds, ['plugin-agent-provider']);
+    snapshot?.release();
+    assert.ok(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        submitted.result.turnId,
+      ),
+    );
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+  } finally {
+    await fixture.coordinator.close();
+    provider.close();
     await clientCapabilities.close();
     await fixture.dispose();
   }
@@ -6089,6 +6579,41 @@ for (const decision of ['cancel', 'resume', 'detach', 'blocked'] as const) {
           await fixture.coordinator.close();
           assert.equal((await fixture.coordinator.read(identity)).status, 'running');
           assert.equal(dispatches, 1);
+          let fullEventReads = 0;
+          let prefixProofReads = 0;
+          const runtimeEventStore = {
+            ...fixture.stores.runtimeEventStore,
+            listSessionInvocations: (
+              ...args: Parameters<typeof fixture.stores.runtimeEventStore.listSessionInvocations>
+            ) => fixture.stores.runtimeEventStore.listSessionInvocations(...args),
+            readImmutableRuntimeEvents: (
+              ...args: Parameters<
+                typeof fixture.stores.runtimeEventStore.readImmutableRuntimeEvents
+              >
+            ) => {
+              fullEventReads += 1;
+              return fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(...args);
+            },
+            readImmutableRuntimePrefixProof: (
+              ...args: Parameters<
+                typeof fixture.stores.runtimeEventStore.readImmutableRuntimePrefixProof
+              >
+            ) => {
+              prefixProofReads += 1;
+              return fixture.stores.runtimeEventStore.readImmutableRuntimePrefixProof(...args);
+            },
+          };
+          const stores = { ...fixture.stores, runtimeEventStore };
+          const plans = await prepareHostedExecutionRecovery({
+            stores,
+            rootAdmissions: new RootAdmissionOwner(fixture.stores.agentRunStore),
+            projection: new HostedExecutionProjectionReader(stores),
+            runtime: fixture.manager,
+          });
+          assert.equal(plans.length, 1);
+          assert.equal(plans[0]?.rootReplayAdmission?.runId, identity.runId);
+          assert.equal(fullEventReads, 0);
+          assert.ok(prefixProofReads > 0);
           recovery = fixture.createRecoveryCoordinator();
           await recovery.prepareRecovery();
           await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
@@ -6144,7 +6669,7 @@ async function createFailureFixture(options: {
   ): Promise<void>;
   prepareWorkHubRoutingDecision?(
     input: HostWorkHubRoutingDecisionPreparation,
-  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision>;
+  ): Promise<import('@maka/core/workhub-routing').WorkHubRoutingDecision | undefined>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -7543,3 +8068,70 @@ async function waitForContinuityFrame(
     description,
   );
 }
+
+test('WorkHub action admission skips routing and undefined decisions preserve unbound admission', async () => {
+  for (const action of [true, false]) {
+    let calls = 0;
+    const fixture = await createFailureFixture({
+      withInteractions: true,
+      prepareWorkHubRoutingDecision: async () => {
+        calls++;
+        return action ? { kind: 'routing', disposition: 'clarify' } : undefined;
+      },
+      registerBackend: (backends) =>
+        backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    });
+    try {
+      const ordinary = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+      await fixture.stores.sessionStore.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          cwd: ordinary.cwd,
+          llmConnectionId: ordinary.llmConnectionId,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+          toolProfile: 'workhub-coordination-v1',
+          permissionMode: 'explore',
+        },
+      });
+      const turnId = 'routing-admission-test';
+      const started = await fixture.coordinator.startWorkHubCoordinationMessage(
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          turnId,
+          execution: {
+            kind: 'workhub_coordination',
+            inputDigest: `sha256:${'b'.repeat(64)}`,
+            ...(action ? { operation: 'action' as const } : {}),
+          },
+          ...(action
+            ? {
+                operation: async () => ({
+                  actionId: 'test-action',
+                  userText: 'Hello',
+                  result: { disposition: 'answer_here' as const, coordinationTurnId: turnId },
+                }),
+              }
+            : {}),
+          archivedMessage: 'Archived',
+          prepareFreshContent: async () => ({ kind: 'ready', content: { text: 'Hello' } }),
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'desktop'),
+      );
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+        WORKHUB_COORDINATION_SESSION_ID,
+        turnId,
+      );
+      assert.ok(admission);
+      assert.equal('routingDecision' in admission.execution, false);
+      assert.equal(calls, action ? 0 : 1);
+      assert.equal(fixture.drainRequested(), false);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.dispose();
+    }
+  }
+});

@@ -88,7 +88,6 @@ test('verified copy rejects conflicting ownership and every retained metadata fi
         { sizeBytes: original.sizeBytes + 1 },
         { createdAt: original.createdAt + 1 },
         { summary: 'different summary' },
-        { deepResearchRole: 'report' },
       ];
       for (const patch of variants) {
         const changed = { ...original, ...patch };

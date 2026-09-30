@@ -133,6 +133,7 @@ const BIG_RESULT = 'x'.repeat(20_000) + 'BIG_RESULT_';
 interface ReactiveFixtureOptions {
   script: CallKind[];
   contextWindow?: number;
+  modelMaxOutputTokens?: number;
   declareContextWindow?: boolean;
   /**
    * A model that declares no context window, on a provider whose default
@@ -166,10 +167,10 @@ interface ReactiveFixtureOptions {
   providerNative?: boolean;
   /** Explicit send-level step budget forwarded to the backend. */
   maxSteps?: number;
+  /** Per provider-call reported usage, keyed by 1-based call number. */
+  usageByCall?: Record<number, { input: number; output: number }>;
   /** The FIRST tool step reports an unusable usage object (no token counts). */
   firstStepUsageMissing?: boolean;
-  /** Per provider-call input tokens, keyed by 1-based call number. */
-  inputTokensByCall?: Record<number, number>;
   /** Tool-search availability with the deferred `Big` tool. */
   gatedToolGroup?: boolean;
   /**
@@ -243,6 +244,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
     outputTokens: { total: output, text: output, reasoning: 0 },
   });
+  const usageOverride = (call: number): ReturnType<typeof usage> | undefined => {
+    const override = options.usageByCall?.[call];
+    return override ? usage(override.input, override.output) : undefined;
+  };
   const toolCallChunks = (
     call: number,
     toolName: string,
@@ -264,9 +269,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       // An unusable first-step usage: the SDK accepts the object but the
       // adapter's normalization fails closed (undefined), the #972 shape.
       usage:
-        options.firstStepUsageMissing && call === 1
+        usageOverride(call) ??
+        (options.firstStepUsageMissing && call === 1
           ? ({ inputTokens: {}, outputTokens: {} } as ReturnType<typeof usage>)
-          : usage(options.inputTokensByCall?.[call] ?? 100, 20),
+          : usage(100, 20)),
     },
   ];
   const doneChunks = (call: number): LanguageModelV4StreamPart[] => [
@@ -277,7 +283,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     {
       type: 'finish',
       finishReason: { unified: 'stop', raw: 'stop' },
-      usage: usage(options.inputTokensByCall?.[call] ?? 120, 10),
+      usage: usageOverride(call) ?? usage(120, 10),
     },
   ];
   const streamForCall = (call: number): ReadableStream<LanguageModelV4StreamPart> => {
@@ -682,7 +688,13 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       models: [
         options.withoutContextWindow
           ? { id: 'mock-model-id' }
-          : { id: 'mock-model-id', contextWindow },
+          : {
+              id: 'mock-model-id',
+              contextWindow,
+              ...(options.modelMaxOutputTokens !== undefined
+                ? { maxOutputTokens: options.modelMaxOutputTokens }
+                : {}),
+            },
       ],
       ...(options.declareContextWindow
         ? { modelOverrides: { 'mock-model-id': { compactionThreshold: contextWindow } } }
@@ -1239,27 +1251,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(lastCall?.totalTokens, 250);
   });
 
-  test('a fold-shrunk retry input is not reported as provider dropping', async () => {
-    // The retry of step 1 is the folded request, so its input is smaller than
-    // step 0's by construction. Blaming the provider for that would be wrong
-    // and it is a once-per-session note, so the real one could never be shown.
+  test('lowers a 128K output cap on the request after overflow recovery', async () => {
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow', 'done'],
       bigPriors: true,
-      inputTokensByCall: { 3: 80 },
+      modelMaxOutputTokens: 128_000,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[1]?.maxOutputTokens, 128_000);
+    assert.equal(fixture.model.doStreamCalls[2]?.maxOutputTokens, 8_000);
+  });
+
+  test('sends no output cap on a Codex subscription retry after overflow recovery', async () => {
+    // Elsewhere recovery caps the retry at 8K; the Codex backend rejects any
+    // max_output_tokens, so the recovered request would fail with HTTP 400.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      modelMaxOutputTokens: 128_000,
+      providerNative: true,
     });
     await runTurn(fixture);
 
     assert.equal(complete(fixture)?.stopReason, 'end_turn');
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(
-      fixture.messages.some(
-        (message) =>
-          (message as { type?: string; kind?: string }).type === 'system_note' &&
-          (message as { kind?: string }).kind === 'context_provider_dropping',
-      ),
-      false,
-    );
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    for (const call of fixture.model.doStreamCalls) {
+      assert.equal(call?.maxOutputTokens, undefined);
+    }
   });
 
   test('drops hydrated images before the single overflow retry without rerunning tools', async () => {
@@ -1930,6 +1951,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // One write lost, one kept: the fold that rescued the rejected request.
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.summarizerCalls(), 2);
+  });
+
+  test('a no_safe_completed_span fail-open does not block overflow recovery once the pool grows (#5790)', async () => {
+    // Step 1's large usage fires the proactive trigger while the durable pool
+    // is only the anchor plus one tool pair — a miss that never reached the
+    // summarizer yet (before the fix) latched the turn's failure flag. Step 2
+    // lands a second pair and reports a small usage so the proactive trigger
+    // stays quiet, then the third request overflows: recovery must re-read
+    // the grown ledger and fold instead of inheriting the earlier miss.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'tool', 'overflow', 'done'],
+      withoutPriorTurns: true,
+      declareContextWindow: true,
+      contextWindow: 190,
+      usageByCall: { 1: { input: 1_000, output: 50 }, 2: { input: 10, output: 5 } },
+    });
+    await runTurn(fixture);
+
+    // Recovery folded the grown pool and resent: the turn completes for real.
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length, 4);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.summarizerCalls(), 1);
+    assert.equal(fixture.recorded.length, 1);
+    // The resent request carries the folded checkpoint, not the raw span.
+    const resent = JSON.stringify(fixture.model.doStreamCalls[3]?.prompt);
+    assert.match(resent, /REACTIVE_SUMMARY_SENTINEL/);
   });
 
   test('a later step that overflows again folds again after real progress', async () => {

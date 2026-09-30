@@ -20,15 +20,50 @@
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ConversationServices } from '../../features/conversation/index.js';
 
+
+const PROMPT_SUGGESTIONS_KEY = 'maka.promptSuggestions.enabled';
+
 export function createDesktopConversationServices(
   bridge: Pick<
     MakaBridge,
-    'sessionLocal' | 'sessions' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
+    'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
   > = window.maka,
 ): ConversationServices {
   return {
     ...bridge.sessionLocal,
-    sessions: bridge.sessions,
+    promptSuggestions: {
+      generate: async (sessionId) => {
+        const result = await bridge.sessions.generatePromptSuggestion(sessionId);
+        return result.kind === 'generated' ? result.text : undefined;
+      },
+      // Browser storage belongs to this adapter; legacy renderer helpers cannot
+      // be imported across the platform boundary.
+      readEnabled: () => {
+        try { return localStorage.getItem(PROMPT_SUGGESTIONS_KEY) === 'true'; }
+        catch { return false; }
+      },
+      writeEnabled: (enabled) => {
+        try { localStorage.setItem(PROMPT_SUGGESTIONS_KEY, String(enabled)); }
+        catch { /* Storage can be unavailable in restricted renderers. */ }
+      },
+      subscribeEnabled: (handler) => {
+        const onStorage = (event: StorageEvent) => {
+          if (event.key === null || event.key === PROMPT_SUGGESTIONS_KEY) handler();
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+      },
+    },
+    sessions: {
+      ...bridge.sessions,
+      updateQueueEntry: (sessionId: string, entryId: string, expectedQueueRevision: number, text: string) =>
+        bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
+      reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds, expectedQueueRevision),
+    },
+    runtimeHosts: {
+      subscribeChanges: (handler) => bridge.runtimeHostProfiles.subscribeChanges(handler),
+    },
     skills: bridge.skills,
     workspace: bridge.workspace,
     newTasks: bridge.newTasks,

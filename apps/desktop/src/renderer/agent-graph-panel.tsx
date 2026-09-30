@@ -34,7 +34,6 @@ import {
   isAgentGraphPanelDismissible,
   reconcileAgentGraphPanelDismissals,
   shouldShowAgentGraphPanel,
-  type AgentGraphPanelDismissals,
 } from './agent-graph-panel-visibility.js';
 import {
   createAgentGraphRefreshScheduler,
@@ -69,7 +68,7 @@ export function AgentGraphPanel(props: {
     error: false,
   });
   const [collapsed, setCollapsed] = useState<boolean>();
-  const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
+  const [dismissedBySession, setDismissedBySession] = useState<Readonly<Record<string, string>>>({});
   const contentId = useId();
   const refreshRef = useRef<AgentGraphRefreshScheduler>(noopAgentGraphRefreshScheduler);
   const selectedGraphIdRef = useRef<string | undefined>(undefined);
@@ -77,7 +76,8 @@ export function AgentGraphPanel(props: {
   const stopRequestIdRef = useRef(0);
   const copy = getAgentGraphPanelCopy(props.locale);
   const stopFeedbackMatchesSelection =
-    stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
+    stopState.rootSessionId === props.rootSessionId &&
+    stopState.graphId === selectedGraphId;
   const stopPending = stopFeedbackMatchesSelection && stopState.pending;
   const stopError = stopFeedbackMatchesSelection && stopState.error;
   // One liveness judgment gates both animated signals.
@@ -87,7 +87,6 @@ export function AgentGraphPanel(props: {
     setSnapshot(undefined);
     setEpochs([]);
     setEpochsTruncated(false);
-    setSelectedGraphId(undefined);
     selectedGraphIdRef.current = undefined;
     followCurrentRef.current = true;
     setError(false);
@@ -98,8 +97,9 @@ export function AgentGraphPanel(props: {
       pending: false,
       error: false,
     });
-    setCollapsed(undefined);
     setLoading(props.enabled);
+    setSelectedGraphId(undefined);
+    setCollapsed(undefined);
     let cachedDirectory: AgentGraphEpochDirectory | undefined;
 
     const scheduler = createAgentGraphRefreshScheduler(async (fence) => {
@@ -107,7 +107,7 @@ export function AgentGraphPanel(props: {
       try {
         let directory: AgentGraphEpochDirectory;
         if (!cachedDirectory) {
-          directory = await window.maka.graphs.listEpochs(props.rootSessionId);
+            directory = await window.maka.graphs.listEpochs(props.rootSessionId);
         } else {
           const currentPage = await window.maka.graphs.listCurrentEpochs(props.rootSessionId);
           directory = sameEpochPage(cachedDirectory, currentPage)
@@ -260,9 +260,9 @@ export function AgentGraphPanel(props: {
               onChange={(graphId: SelectorOptionType) => {
                 if (typeof graphId !== 'string') return;
                 selectedGraphIdRef.current = graphId;
+                const current = epochs.find((entry) => entry.graphId === graphId)?.current === true;
+                followCurrentRef.current = current;
                 setSelectedGraphId(graphId);
-                followCurrentRef.current =
-                  epochs.find((entry) => entry.graphId === graphId)?.current === true;
                 refreshRef.current.invalidateAndRefresh();
               }}
             />

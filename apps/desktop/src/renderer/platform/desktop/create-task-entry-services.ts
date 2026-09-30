@@ -20,7 +20,7 @@
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { TaskEntryServices } from '../../features/task-entry';
 
-export type DesktopTaskEntryBridge = Pick<MakaBridge, 'newTasks' | 'projects'>;
+export type DesktopTaskEntryBridge = Pick<MakaBridge, 'newTasks' | 'projects' | 'sessions'>;
 
 /** The only Desktop-to-Task Entry adapter. */
 export function createDesktopTaskEntryServices(
@@ -37,6 +37,14 @@ export function createDesktopTaskEntryServices(
       },
       async restoreProject(host, projectId) {
         await bridge.projects.restore(projectId, host);
+      },
+    },
+    sessions: {
+      async relocateWorkspace(sessionId, projectId) {
+        const result = await bridge.sessions.moveToProject(sessionId, projectId);
+        return result.ok
+          ? { ok: true as const }
+          : { ok: false as const, reason: result.code };
       },
     },
   };

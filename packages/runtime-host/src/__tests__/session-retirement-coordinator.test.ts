@@ -1385,7 +1385,9 @@ async function withHarness(
         },
       },
       capabilities: {
-        retireSessions: (sessionIds) => actions.retiredCapabilities.push(...sessionIds),
+        retireSessions: async (sessionIds) => {
+          actions.retiredCapabilities.push(...sessionIds);
+        },
       },
       continuity: {
         refreshCanonical: async (sessionId) => {

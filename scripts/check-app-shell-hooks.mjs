@@ -108,7 +108,6 @@ export const ALLOWED = {
     useActiveExecutionBoundary: 1,
     useActiveSessionEvents: 1,
     useAppShellBootstrapSubscriptions: 1,
-    useAppShellComposerQuotes: 1,
     useAppShellHostEffects: 1,
     useAppShellNavRefSync: 1,
     useAppShellPersistenceEffects: 1,
@@ -118,7 +117,7 @@ export const ALLOWED = {
     useAppShellTurnPresentation: 1,
     useComposerAttachments: 1,
     useEffect: 6,
-    useLayoutEffect: 2,
+    useLayoutEffect: 1,
     useNewTaskChoice: 1,
     useOnboardingSnapshot: 1,
     usePlanModeState: 1,
@@ -133,7 +132,8 @@ export const ALLOWED = {
     // replaces put three `useState`, four effects and a `useStableActions`
     // facade on this fiber.
     useSessionNavigationReads: 1,
-    useSessionCollaborationDialog: 1,
+    // A selected-Session overlay read only; SessionSettingsProvider owns the
+    // write controller. The shell still derives its model and mode controls.
     useSessionSettingIntent: 1,
     useShellAppearance: 1,
     useShellChatModel: 1,
@@ -142,7 +142,7 @@ export const ALLOWED = {
     useShellMemoryPill: 1,
     useShellResume: 1,
     useShellRunUpdates: 1,
-    useStableActions: 6,
+    useStableActions: 5,
     useState: 11,
     useTaskSubmissionReadiness: 1,
     useToast: 1,
@@ -152,7 +152,6 @@ export const ALLOWED = {
     // one stays because the shell body reads `keys` to build the turn footer's
     // disabled mask.
     useTurnActionRegistry: 1,
-    useWorkbarController: 1,
   },
 };
 

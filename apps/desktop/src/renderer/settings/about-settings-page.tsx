@@ -41,7 +41,7 @@ import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
-} from '../default-runtime-host-operation.js';
+} from '../platform/desktop/default-runtime-host-operation.js';
 
 type AppInfo = Awaited<ReturnType<typeof window.maka.app.info>>;
 

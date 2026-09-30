@@ -18,7 +18,6 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
 import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
@@ -31,38 +30,96 @@ import { lookupCopy } from '@maka/core/ui-locale';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { useUiLocale } from './locale-context.js';
 
+/**
+ * One passage recall returned, as the modal renders it.
+ *
+ * Recall answers with ranked passages that already carry their surrounding
+ * exchange, so a result is a piece of a conversation rather than a single
+ * line. `sequence` is the anchor's index in its Session transcript, which is
+ * what navigation scrolls to.
+ */
+export interface RecallSearchPassage {
+  readonly sessionId: string;
+  readonly sessionTitle: string;
+  readonly turnId?: string;
+  readonly anchorMessageId: string;
+  readonly sequence: number;
+  readonly messages: readonly {
+    readonly messageId: string;
+    readonly role: 'user' | 'assistant' | 'tool';
+    readonly matchKind: string;
+    readonly text: string;
+    readonly timestamp: number;
+    readonly isAnchor: boolean;
+  }[];
+  readonly matchedTerms: readonly string[];
+  readonly score: number;
+  readonly lastMessageAt?: number;
+}
+
+export interface RecallSearchRequest {
+  readonly terms: readonly string[];
+  readonly limit?: number;
+}
+
+export interface RecallSearchOutcome {
+  readonly passages: readonly RecallSearchPassage[];
+  readonly gaps: string;
+  readonly searchedEverySession: boolean;
+}
+
+export interface RecallSearchFailure {
+  readonly ok: false;
+  readonly reason: string;
+  readonly message: string;
+}
+
 interface SearchModalDeps {
-  searchThread(
-    request: SearchRequest,
+  searchRecall(
+    request: RecallSearchRequest,
     requestId?: string,
-  ): Promise<
-    SearchResult[] | {
-      ok: false;
-      reason: SearchErrorReason;
-      message: string;
-    }
-  >;
-  cancelThread?(requestId: string): Promise<void>;
+  ): Promise<RecallSearchOutcome | RecallSearchFailure>;
+  cancelRecall?(requestId: string): Promise<void>;
 }
 
 interface SearchItemAuxiliaryData {
-  result: SearchResult;
+  passage: RecallSearchPassage;
 }
 
 type SearchItem = SearchableItem<SearchItemAuxiliaryData>;
 
-interface ThreadSearchSourceInput {
-  searchThread?: SearchModalDeps['searchThread'];
-  cancelThread?: SearchModalDeps['cancelThread'];
+interface RecallSearchSourceInput {
+  searchRecall?: SearchModalDeps['searchRecall'];
+  cancelRecall?: SearchModalDeps['cancelRecall'];
   canNavigate: boolean;
   resultsLabel: string;
   onQueryChange(query: string): void;
-  onErrorChange(error: { reason: SearchErrorReason } | null): void;
+  onErrorChange(error: { reason: string } | null): void;
   onItemsChange(items: SearchItem[]): void;
 }
 
-export function createThreadSearchSource(
-  input: ThreadSearchSourceInput,
+/**
+ * Turns a phrase into the literal terms recall matches.
+ *
+ * Recall matches case-insensitive substrings, OR-combined, and ranks a passage
+ * higher when it contains more of them — so a sentence works best as its
+ * distinct words rather than as one string. Splitting on whitespace keeps the
+ * user's typed phrase intact as a query while giving recall terms it can act
+ * on; a single word is passed through unchanged.
+ */
+export function recallTermsFor(query: string): string[] {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const words = trimmed.split(/\s+/u).filter((word) => word.length > 0);
+  const unique: string[] = [];
+  for (const word of words) {
+    if (!unique.includes(word)) unique.push(word);
+  }
+  return unique.slice(0, 8);
+}
+
+export function createRecallSearchSource(
+  input: RecallSearchSourceInput,
 ): SearchSource<SearchItem> {
   let generation = 0;
   let cancelPending: (() => void) | undefined;
@@ -80,7 +137,8 @@ export function createThreadSearchSource(
       const requestGeneration = generation;
       const trimmed = query.trim();
       input.onQueryChange(trimmed);
-      if (!trimmed || !input.searchThread) {
+      const terms = recallTermsFor(trimmed);
+      if (terms.length === 0 || !input.searchRecall) {
         input.onErrorChange(null);
         input.onItemsChange([]);
         return [];
@@ -91,41 +149,43 @@ export function createThreadSearchSource(
           // React's palette transition must finish even if the Host is slow
           // or disconnected. Ignoring its eventual result alone leaves it busy.
           resolve(undefined);
-          void input.cancelThread?.(requestId).catch((error) => {
+          void input.cancelRecall?.(requestId).catch((error) => {
             console.error('[search] cancellation failed', error);
           });
         };
       });
       try {
         const response = await Promise.race([
-          input.searchThread({ source: 'thread', query: trimmed, limit: 10 }, requestId),
+          input.searchRecall({ terms, limit: 10 }, requestId),
           cancelled,
         ]);
         if (generation !== requestGeneration || response === undefined) return [];
-        if (!Array.isArray(response)) {
-          console.error('[search] thread search failed', response);
-          input.onErrorChange({ reason: response.reason });
+        if (!Array.isArray((response as RecallSearchOutcome).passages)) {
+          console.error('[search] recall search failed', response);
+          input.onErrorChange({ reason: (response as RecallSearchFailure).reason });
           input.onItemsChange([]);
           return [];
         }
         input.onErrorChange(null);
-        const items = response.flatMap<SearchItem>((result, index) => {
-          if (!input.canNavigate || result.target?.kind !== 'thread') {
-            return [];
-          }
-          return [
-            {
-              id: `${result.target.sessionId}:${result.target.turnId ?? ''}:${index}`,
-              label: result.title ?? result.summary ?? input.resultsLabel,
-              auxiliaryData: { result },
-            },
-          ];
-        });
+        const items = (response as RecallSearchOutcome).passages.flatMap<SearchItem>(
+          (passage, index) => {
+            if (!input.canNavigate) return [];
+            return [
+              {
+                // Two Hosts can name the same Session id, so the index and the
+                // anchor id are part of the identity, not decoration.
+                id: `${passage.sessionId}:${passage.anchorMessageId}:${index}`,
+                label: passage.sessionTitle || input.resultsLabel,
+                auxiliaryData: { passage },
+              },
+            ];
+          },
+        );
         input.onItemsChange(items);
         return items;
       } catch (caught) {
         if (generation !== requestGeneration) return [];
-        console.error('[search] thread search failed', caught);
+        console.error('[search] recall search failed', caught);
         input.onErrorChange({ reason: 'provider_error' });
         input.onItemsChange([]);
         return [];
@@ -137,14 +197,28 @@ export function createThreadSearchSource(
 }
 
 export function searchErrorText(
-  reason: SearchErrorReason,
+  reason: string,
   copy: ReturnType<typeof getShellControlsCopy>['search'],
 ): string {
   return lookupCopy(copy.errorByReason, reason) ?? copy.errorFallback;
 }
 
 /**
- * Thread search is an asynchronous result picker. Astryx CommandPalette owns
+ * A passage's anchor text, used as the result's snippet. The anchor is the
+ * message recall matched on, so it is the line that explains the hit; falling
+ * back to the first non-empty message keeps a file-only anchor visible.
+ */
+export function passageSnippet(passage: RecallSearchPassage): string {
+  const anchor = passage.messages.find((message) => message.isAnchor);
+  if (anchor && anchor.text.trim().length > 0) return anchor.text;
+  for (const message of passage.messages) {
+    if (message.text.trim().length > 0) return message.text;
+  }
+  return '';
+}
+
+/**
+ * Recall search is an asynchronous result picker. Astryx CommandPalette owns
  * the dialog, search input, listbox, keyboard navigation, focus, and
  * dismissal. Maka only adapts the product search boundary and renders result
  * content.
@@ -163,7 +237,7 @@ export function SearchModal(props: {
     }),
     [copy.resultsLabel],
   );
-  const [error, setError] = useState<{ reason: SearchErrorReason } | null>(null);
+  const [error, setError] = useState<{ reason: string } | null>(null);
   const [activeQuery, setActiveQuery] = useState('');
   const itemByIdRef = useRef(new Map<string, SearchItem>());
   const pendingNavigationRef = useRef<{
@@ -189,9 +263,9 @@ export function SearchModal(props: {
 
   const searchSource = useMemo<SearchSource<SearchItem>>(
     () =>
-      createThreadSearchSource({
-        searchThread: props.deps?.searchThread,
-        cancelThread: props.deps?.cancelThread,
+      createRecallSearchSource({
+        searchRecall: props.deps?.searchRecall,
+        cancelRecall: props.deps?.cancelRecall,
         canNavigate: Boolean(props.onNavigateToSession),
         resultsLabel: copy.resultsLabel,
         onQueryChange: setActiveQuery,
@@ -224,47 +298,47 @@ export function SearchModal(props: {
         width={560}
         maxHeight="64vh"
         data-maka-contract="search-modal"
-        input={(
+        input={
           <CommandPaletteInput
             placeholder={copy.placeholder}
             label={copy.conversationsLabel}
           />
-        )}
-        footer={(
+        }
+        footer={
           <CommandPaletteFooter>
             {copy.resultsLabel}
           </CommandPaletteFooter>
-        )}
+        }
         emptyBootstrapText={
-          props.deps?.searchThread ? copy.introduction : copy.unavailable
+          props.deps?.searchRecall ? copy.introduction : copy.unavailable
         }
         emptySearchText={emptySearchText}
         onValueChange={(itemId) => {
-          const result =
-            itemByIdRef.current.get(itemId)?.auxiliaryData?.result;
-          if (result?.target?.kind !== 'thread') return;
+          const passage =
+            itemByIdRef.current.get(itemId)?.auxiliaryData?.passage;
+          if (!passage) return;
           pendingNavigationRef.current = {
-            sessionId: result.target.sessionId,
-            turnId: result.target.turnId,
-            sequence: result.target.sequence,
+            sessionId: passage.sessionId,
+            ...(passage.turnId ? { turnId: passage.turnId } : {}),
+            sequence: passage.sequence,
           };
         }}
         renderItem={(item) => {
-          const result = item.auxiliaryData?.result;
-          if (!result) return item.label;
+          const passage = item.auxiliaryData?.passage;
+          if (!passage) return item.label;
+          const snippet = passageSnippet(passage);
           return (
             <div className="maka-search-modal-result">
               <div className="maka-search-modal-result-title">
-                {result.title}
+                {passage.sessionTitle || item.label}
               </div>
-              {result.summary && (
-                <div className="maka-search-modal-result-meta">
-                  {result.summary}
-                </div>
-              )}
-              {result.snippet && (
+              <div className="maka-search-modal-result-meta">
+                {passage.messages.find((message) => message.isAnchor)?.matchKind ??
+                  ''}
+              </div>
+              {snippet && (
                 <div className="maka-search-modal-result-snippet">
-                  {renderSearchSnippet(result.snippet, activeQuery)}
+                  {renderSearchSnippet(snippet, activeQuery)}
                 </div>
               )}
             </div>

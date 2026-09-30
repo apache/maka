@@ -20,18 +20,14 @@
 import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { StoredMessage, SessionSummary } from '@maka/core/session';
+import type { StoredMessage, SessionSummary, WorkHubCreateDefaults } from '@maka/core/session';
 import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 import type { SessionEvent, AttachmentRef, MessageQueuePlacement } from '@maka/core/events';
-import type { OperationInput, OperationOutput } from '@maka/runtime-host/protocol';
+import type { OperationInput, OperationOutput, TurnMessageExecutionQueryResult } from '@maka/runtime-host/protocol';
 import type { WorkHubAnswerInput, WorkHubAnswerResult } from '../../../shared/workhub-conversation.js';
 import type { WorkHubControlBridge } from '../../../shared/workhub-control.js';
 import type { WorkHubPresentationBridge } from '../../../shared/workhub-presentation.js';
 import type { WorkHubWorkspaceServices } from '../../application/contracts/workhub-workspace/use-workhub-workspace.js';
-import type {
-  WorkHubDelegationFeedback,
-  WorkHubDelegationReference,
-} from './model/linked-work.js';
 
 export interface WorkHubTranscriptSnapshot {
   readonly messages: readonly StoredMessage[];
@@ -54,9 +50,6 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
   getSession(sessionId: string): Promise<SessionSummary & { revision: number }>;
   subscribeSessions(handler: () => void): () => void;
   listSessions(): Promise<(SessionSummary & { revision: number })[]>;
-  delegationFeedback(
-    references: readonly WorkHubDelegationReference[],
-  ): Promise<readonly WorkHubDelegationFeedback[]>;
   modelChoices(sessionId?: string): Promise<ChatModelChoice[]>;
   setDefaultModel(input: {
     llmConnectionSlug: string;
@@ -71,14 +64,20 @@ export interface WorkHubServices extends WorkHubWorkspaceServices {
   respondToUserQuestion(sessionId: string, response: import('@maka/core/user-question').UserQuestionResponse): Promise<void>;
   answer(sessionId: string, input: WorkHubAnswerInput): Promise<WorkHubAnswerResult>;
   enqueueMessage(sessionId: string, messageId: string, text: string, attachments: AttachmentRef[], placement: MessageQueuePlacement): Promise<'admitted' | 'unknown' | 'rejected'>;
+  queryMessageExecutions(sessionId: string, messageIds: readonly string[]): Promise<TurnMessageExecutionQueryResult>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
   promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
   updateQueueEntry(sessionId: string, entryId: string, expectedQueueRevision: number, text: string): Promise<void>;
-  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[], expectedQueueRevision: number): Promise<void>;
   configureModel(
     sessionId: string,
     input: OperationInput<'workhub.coordination.configureModel'>,
   ): Promise<OperationOutput<'workhub.coordination.configureModel'>>;
+  getNewWorkDefaults(sessionId: string): Promise<Omit<WorkHubCreateDefaults, 'permissionMode'>>;
+  setNewWorkDefaults(
+    sessionId: string,
+    defaults: Omit<WorkHubCreateDefaults, 'permissionMode'>,
+  ): Promise<void>;
   observe(
     sessionId: string,
     handler: (event: SessionEvent) => void,

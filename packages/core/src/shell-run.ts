@@ -181,6 +181,8 @@ export interface ShellRunStore {
   ): Promise<ShellRunRecord>;
   readShellRun(sessionId: string, shellRunId: string): Promise<ShellRunRecord>;
   listSessionShellRuns(sessionId: string): Promise<ShellRunRecord[]>;
+  /** Sessions with a durable active ShellRun that may need restart recovery. */
+  listShellRunRecoverySessionIds?(): Promise<string[]>;
 }
 
 export function isShellRunStatus(value: unknown): value is ShellRunStatus {

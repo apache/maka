@@ -34,7 +34,6 @@ import type { WorkHubPrepareAttachmentsResult } from '../../shared/workhub-conve
 import { encodeDesktopTranscriptBatches, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import type { AttachmentRef } from '@maka/core/events';
-import { MESSAGE_QUEUE_MAX_ENTRIES } from '@maka/runtime-host/protocol';
 
 test('WorkHub upload references round-trip through idle answers, both queue modes and attachment reads', async (t) => {
   const owner = {
@@ -64,8 +63,10 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
       ipcRenderer: {
         on() {}, off() {}, send() {},
         async invoke(channel: string, ...args: unknown[]) {
-          if (channel === 'runtime-host:activeIdentity') return owner;
-          if (channel === 'runtime-host:identities') return [owner];
+          if (channel === 'runtime-host:identities') {
+            return [{ ...owner, epoch: owner.targetEpoch, isDefault: true }];
+          }
+          if (channel === 'runtime-host:awaitReady') return { ready: true };
           assert.equal((args[0] as typeof owner).hostId, owner.hostId);
           if (channel === 'workhub:prepareAttachments') {
             assert.deepEqual(structuredClone(args[1]), [{ name: 'brief.txt', mimeType: 'text/plain', base64: 'aGVsbG8=' }]);
@@ -124,125 +125,6 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
   await assert.rejects(services.enqueueMessage(sessionId, 'foreign', 'read this', foreign, 'next_turn'), /another Host or Session/);
 });
 
-test('WorkHub projects a delegated Turn result from one Turn read without opening the target transcript', async (t) => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
-  t.after(() => {
-    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
-    else Reflect.deleteProperty(globalThis, 'window');
-  });
-  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
-  const intermediate: StoredMessage = {
-    type: 'assistant', id: 'intermediate', turnId: 'owned-turn', ts: 1,
-    modelId: 'model', text: 'Intermediate answer that must not be cached.',
-  };
-  const final: StoredMessage = {
-    type: 'assistant', id: 'final', turnId: 'owned-turn', ts: 2,
-    modelId: 'model', text: 'The delegated task finished with this exact result.',
-  };
-  const turnReads: string[] = [];
-  const services = createDesktopWorkHubServices({
-    attachments: {},
-    sessions: {
-      async list() {
-        return [{
-          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
-          labels: [], hasUnread: true, status: 'active', runningTurnIds: [], revision: 1,
-        }];
-      },
-      async listTurns() {
-        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'completed', statusSource: 'recorded' }];
-      },
-      async queryMessageExecutions() {
-        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
-      },
-    },
-    transcripts: {
-      async readTurn(requestedSessionId: string, turnId: string) {
-        assert.equal(requestedSessionId, sessionId);
-        turnReads.push(turnId);
-        return [intermediate, final];
-      },
-      async open() {
-        assert.fail('a result projection is not a reader of the target Session');
-      },
-    },
-  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
-  const reference = {
-    id: 'delegation-record', targetSessionId: sessionId,
-    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
-  };
-
-  assert.deepEqual(await services.delegationFeedback([reference]), [{
-    id: 'delegation-record', state: 'completed', resultPreview: final.text,
-  }]);
-  assert.equal((await services.delegationFeedback([reference]))[0]?.resultPreview, final.text);
-  assert.deepEqual(turnReads, ['owned-turn'], 'the final result is cached');
-});
-
-test('WorkHub batches more than the message execution query limit per target Session', async (t) => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
-  t.after(() => {
-    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
-    else Reflect.deleteProperty(globalThis, 'window');
-  });
-  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
-  const querySizes: number[] = [];
-  const services = createDesktopWorkHubServices({
-    attachments: {},
-    sessions: {
-      async list() {
-        return [{
-          id: sessionId, name: 'Target task', isFlagged: false, isArchived: false,
-          labels: [], hasUnread: false, status: 'active', runningTurnIds: [], revision: 1,
-        }];
-      },
-      async listTurns() { return []; },
-      async queryMessageExecutions(_sessionId: string, messageIds: string[]) {
-        querySizes.push(messageIds.length);
-        if (messageIds.length > MESSAGE_QUEUE_MAX_ENTRIES) throw new Error('query limit exceeded');
-        return { resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })) };
-      },
-    },
-  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
-  const references = Array.from({ length: MESSAGE_QUEUE_MAX_ENTRIES + 1 }, (_, index) => ({
-    id: `delegation-${index}`, targetSessionId: sessionId,
-    targetMessageId: `message-${index}`, targetTurnId: `turn-${index}`,
-  }));
-
-  assert.deepEqual((await services.delegationFeedback(references)).map(({ state }) => state),
-    references.map(() => 'accepted'));
-  assert.deepEqual(querySizes, [MESSAGE_QUEUE_MAX_ENTRIES, 1]);
-});
-
-test('WorkHub does not infer live running when the Session catalog is unavailable', async (t) => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search: '?surface=workhub' } } });
-  t.after(() => {
-    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
-    else Reflect.deleteProperty(globalThis, 'window');
-  });
-  const sessionId = desktopSessionKey({ hostId: 'owner-host', sessionId: 'target-session' });
-  const services = createDesktopWorkHubServices({
-    attachments: {},
-    sessions: {
-      async list() { throw new Error('catalog unavailable'); },
-      async listTurns() {
-        return [{ turnId: 'owned-turn', firstSequence: 1, status: 'running', statusSource: 'recorded' }];
-      },
-      async queryMessageExecutions() {
-        return { resolutions: [{ messageId: 'delegated-message', state: 'owned', turnId: 'owned-turn', runId: 'run' }] };
-      },
-    },
-  } as unknown as Parameters<typeof createDesktopWorkHubServices>[0]);
-
-  assert.equal((await services.delegationFeedback([{
-    id: 'delegation-record', targetSessionId: sessionId,
-    targetMessageId: 'delegated-message', targetTurnId: 'initial-turn',
-  }]))[0]?.state, 'recovering');
-});
-
 // Keep the real preload in this consumer regression; the IPC stub models the
 // observer's earlier-history answer to a load-earlier command.
 test('WorkHub loads earlier history through the preload with a fragmented answer', { timeout: 5_000 }, async (t) => {
@@ -278,8 +160,10 @@ test('WorkHub loads earlier history through the preload with a fragmented answer
     off(channel: string) { listeners.delete(channel); },
     send() {},
     async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
-      if (channel === 'runtime-host:activeIdentity') return owner;
-      if (channel === 'runtime-host:identities') return [owner];
+      if (channel === 'runtime-host:identities') {
+        return [{ ...owner, epoch: owner.targetEpoch, isDefault: true }];
+      }
+      if (channel === 'runtime-host:awaitReady') return { ready: true };
       if (channel === 'session-local:transcript') return null;
       if (channel === 'sessions:transcript:open') {
         consumerId = args[2] as string;

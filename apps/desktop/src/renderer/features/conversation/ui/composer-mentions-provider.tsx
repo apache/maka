@@ -25,6 +25,14 @@ import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type { ConversationSession } from '../ports.js';
 import { useConversationServices } from '../services.js';
 import {
+  selectSessionById,
+  selectSessions,
+  useSessionCatalogController,
+  type SessionCatalogState,
+} from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
+import { shellSessionRowEqual } from '../controller/use-app-shell-session-ui-state.js';
+import {
   useSessionReferenceComposer,
   type SessionReferenceSession,
 } from '../controller/use-session-reference-composer.js';
@@ -82,6 +90,17 @@ function skillListsEqual(
   });
 }
 
+/**
+ * Mention targets come from the catalog the shell already holds — not a
+ * `sessions.list()` per `sessions:changed`, which paid a full-catalog IPC for
+ * every event. Locally staged rows are excluded: a pending session has no
+ * Host-side data for the reference to resolve yet.
+ */
+const selectMentionableSessions = (
+  state: SessionCatalogState,
+): readonly ConversationSession[] =>
+  state.sessions.filter((session) => session.localState !== 'pending');
+
 function conversationSessionListsEqual(
   current: readonly ConversationSession[],
   next: readonly ConversationSession[],
@@ -107,6 +126,32 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
   const services = useConversationServices();
   const locale = useUiLocale();
   const mentionCopy = getConversationCopy(locale).mentions;
+  const sessionCatalog = useSessionCatalogController();
+  const sessions = useExternalStoreSelector(
+    sessionCatalog,
+    selectMentionableSessions,
+    undefined,
+    conversationSessionListsEqual,
+  );
+  // The skills reload is driven by the active row's published content, not by
+  // `sessions:changed` reasons: a flag/rename/activity bump republishes nothing
+  // here, while any field a skill could key on still refreshes the list.
+  const skillRelevantRow = useExternalStoreSelector(
+    sessionCatalog,
+    selectSessionById,
+    surface.sessionId,
+    shellSessionRowEqual,
+  );
+  const automaticQueryBlocked = useExternalStoreSelector(
+    sessionCatalog,
+    (state, sessionId: string | undefined) =>
+      sessionId !== undefined
+      && (
+        state.automaticQueryBlockedSessionIds.has(sessionId)
+        || state.sessions.some((session) => session.id === sessionId && session.isArchived)
+      ),
+    surface.sessionId,
+  );
   const [catalog, setCatalog] = useState<{
     contextKey: string;
     loading: boolean;
@@ -117,7 +162,6 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     loading: true,
     skills: EMPTY_SKILLS,
   });
-  const [sessions, setSessions] = useState<readonly ConversationSession[]>([]);
   const contextKey = surface.sessionId ? `session\u0000${surface.sessionId}` : [
     surface.sessionId ?? '',
     surface.projectPath ?? '',
@@ -138,29 +182,6 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
 
   useEffect(() => {
     let cancelled = false;
-    const refreshSessions = () => {
-      void services.sessions.list().then((next) => {
-        if (!cancelled) {
-          setSessions((previous) =>
-            conversationSessionListsEqual(previous, next) ? previous : next,
-          );
-        }
-      }).catch(() => {
-        if (!cancelled) {
-          setSessions((previous) => (previous.length === 0 ? previous : []));
-        }
-      });
-    };
-    refreshSessions();
-    const unsubscribe = services.sessions.subscribeChanges(refreshSessions);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [services]);
-
-  useEffect(() => {
-    let cancelled = false;
     let requestVersion = 0;
     const context = {
       ...(surface.newSessionModel ?? {}),
@@ -171,6 +192,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     };
     const refresh = () => {
       const version = ++requestVersion;
+      if (automaticQueryBlocked) return;
       const request = surface.sessionId
         ? services.skills.listInvocable(surface.sessionId)
         : surface.newTaskTarget
@@ -182,7 +204,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
           : { contextKey, loading: true, settled: undefined, skills: EMPTY_SKILLS },
       );
       void request.then((next) => {
-        if (cancelled || version !== requestVersion) return;
+        if (cancelled || version !== requestVersion || automaticQueryBlocked) return;
         setCatalog((previous) => ({
           contextKey,
           loading: false,
@@ -193,7 +215,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
               : [...next],
         }));
       }).catch(() => {
-        if (!cancelled && version === requestVersion) {
+        if (!cancelled && version === requestVersion && !automaticQueryBlocked) {
           setCatalog({ contextKey, loading: false, settled: 'empty', skills: EMPTY_SKILLS });
         }
       });
@@ -202,28 +224,16 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     const unsubscribeContext = surface.sessionId
       ? services.mcp.subscribeChanges(refresh)
       : services.newTasks.subscribeChanges(refresh);
-    const unsubscribeSession = surface.sessionId
-      ? services.sessions.subscribeChanges((event) => {
-          if (
-            event.sessionId === surface.sessionId &&
-            (event.reason === 'updated' ||
-              event.reason === 'mode-change' ||
-              event.reason === 'turn-status-change' ||
-              event.reason === 'rebound')
-          ) {
-            refresh();
-          }
-        })
-      : () => undefined;
     return () => {
       cancelled = true;
       requestVersion += 1;
       unsubscribeContext();
-      unsubscribeSession();
     };
   }, [
+    automaticQueryBlocked,
     contextKey,
     services,
+    skillRelevantRow,
     surface.sessionId ? undefined : surface.newSessionModel?.llmConnectionSlug,
     surface.sessionId ? undefined : surface.newSessionModel?.model,
     surface.sessionId ? undefined : surface.newSessionCollaborationMode,
@@ -312,7 +322,9 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
   ]);
 }
 
-export function ComposerMentionsProvider(props: ComposerMentionsSurface & { readonly children: ReactNode }) {
+export function ComposerMentionsProvider(
+  props: ComposerMentionsSurface & { readonly children: ReactNode },
+) {
   const mentions = useConversationMentions(props);
   return <ComposerMentionsContext.Provider value={mentions}>{props.children}</ComposerMentionsContext.Provider>;
 }

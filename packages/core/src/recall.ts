@@ -62,7 +62,7 @@ import { redactSecrets } from './redaction.js';
 import { SEARCH_QUERY_MAX_CHARS } from './search.js';
 import { collapseSessionRevisions } from './session-revisions.js';
 import type { SessionSummary, StoredMessage } from './session.js';
-import { foldForMatch, MAX_SESSIONS_SCANNED, threadSearchMatchKind } from './thread-search.js';
+import { foldForMatch, MAX_SESSIONS_SCANNED, threadSearchMatchKind } from './transcript-search.js';
 
 /** Okapi BM25 term-frequency saturation, Lucene's default. */
 export const RECALL_BM25_K1 = 1.2;
@@ -360,6 +360,21 @@ export interface RecallPassage {
   readonly sessionTitle: string;
   readonly turnId?: string;
   readonly anchorMessageId: string;
+  /**
+   * Zero-based index of the anchor message within its Session transcript, the
+   * same coordinate a transcript reader scrolls by.
+   *
+   * A UI that navigates into a Session needs a position, not just an identity:
+   * the transcript reader scrolls by sequence, and a message id alone would
+   * force it to page the whole transcript to find the anchor. Recall already
+   * has the index — it locates the anchor by `findIndex` — so carrying it costs
+   * nothing and spares every consumer a second lookup.
+   *
+   * Present only when the anchor was located in the transcript it was
+   * assembled from; `buildPassage` returns undefined in the other case, so
+   * this is always defined on a passage that exists.
+   */
+  readonly sequence: number;
   readonly messages: readonly RecallPassageMessage[];
   readonly matchedTerms: readonly string[];
   readonly score: number;
@@ -1318,6 +1333,10 @@ function buildPassage(
     sessionTitle: redactSecrets(session?.name ?? ''),
     ...(anchor.turnId ? { turnId: anchor.turnId } : {}),
     anchorMessageId: anchor.message.id,
+    // The anchor's position in the transcript this passage was built from.
+    // `anchorIndex` is already `findIndex` over that exact array, so this is
+    // the same coordinate the transcript reader addresses.
+    sequence: anchorIndex,
     messages,
     matchedTerms: anchor.matchedTerms,
     score: Number(anchor.score.toFixed(4)),

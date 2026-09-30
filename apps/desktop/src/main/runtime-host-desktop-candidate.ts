@@ -21,6 +21,8 @@ import { randomUUID } from "node:crypto";
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
+import type { RunNotificationEvent } from './notifications-policy.js';
+import { observeRuntimeHostNotifications } from './runtime-host-notifications.js';
 import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import { isSideConversationSession } from '@maka/core/side-conversation';
@@ -149,6 +151,10 @@ export interface DesktopRuntimeHostCandidateDeps {
     input: Pick<CreateSessionRequestInput, "cwd" | "projectId">,
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
+  /** Resolves the selected import destination on the target Host. */
+  readonly resolveExternalSessionImportWorkspace: (
+    target: DesktopRuntimeHostTargetPolicy,
+  ) => Promise<WorkspaceTarget>;
   readonly emitSessionsChanged: (
     scope: DesktopTargetScope,
     reason: SessionChangedReason,
@@ -158,6 +164,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeDesktopInteractionTurn: (
     sessionId: string,
   ) => void | Promise<void>;
+  readonly notifyRun: (input: RunNotificationEvent) => Promise<void>;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly transcriptHistoryBytes?: number;
   readonly renderer?: {
@@ -216,6 +223,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   extends Omit<DesktopRuntimeHostCandidateDeps, "ipcMain"> {
   readonly ipcMain: CandidateIpcMain;
   readonly rootPath: string;
+  readonly rootId: string;
   readonly clientInstanceId?: string;
   readonly electionDeadlineMs?: number;
   readonly connectTimeoutMs?: number;
@@ -406,6 +414,26 @@ export async function startDesktopRuntimeHostCandidate(
     await connection.connection.close().catch(() => undefined);
     throw error;
   }
+}
+
+async function restoreSessionObservations(input: {
+  sessionIds(): string[];
+  announcePending(sessionId: string): void;
+  attach(): Promise<string[]>;
+}): Promise<string[]> {
+  const requested = input.sessionIds();
+  for (const sessionId of requested) input.announcePending(sessionId);
+
+  const restored = await input.attach();
+  const restoredSet = new Set(restored);
+  const registeredSet = new Set(input.sessionIds());
+  const failed = requested.filter(
+    (sessionId) => registeredSet.has(sessionId) && !restoredSet.has(sessionId),
+  );
+  if (failed.length > 0) {
+    throw new Error(`Failed to restore Session observations: ${failed.join(', ')}`);
+  }
+  return restored;
 }
 
 function noGuestBotService(): BotIncomingMainService {
@@ -637,6 +665,7 @@ export async function createDesktopRuntimeHostCandidate(
   let closeSessionDomains: (() => Promise<void>) | undefined;
   let sharedShellRuns: RuntimeHostShellRunQueriesIpcHandle | undefined;
   let disposeClientIpc: (() => void | Promise<void>) | undefined;
+  let disposeNotifications: (() => void) | undefined;
   let observationsAttached = false;
   let capabilitiesRegistered = false;
   try {
@@ -738,37 +767,27 @@ export async function createDesktopRuntimeHostCandidate(
         }
       }
     }
-    const observedSessionIds = sessionObservations.observedSessionIds();
-    for (const sessionId of observedSessionIds) {
-      sendToRenderer(`sessions:event:${sessionId}`, { type: 'host_observation_pending' });
-    }
-    observationsAttached = true;
-    const restoredSessionIds = await sessionObservations.attach(
-      sessionObserver,
-      (target) => ({
-        id: target.id,
-        send: (channel, payload) =>
-          (target.send as (channel: string, ...args: unknown[]) => void)(
-            channel,
-            scope,
-            payload,
-          ),
-        once: target.once.bind(target),
-        off: target.off.bind(target),
-      }),
-      (missingSessionId) => emitSessionsChanged("deleted", missingSessionId),
-    );
-    const restoredSessionIdSet = new Set(restoredSessionIds);
-    // Attach forgets Sessions the Host no longer serves, so only Sessions
-    // that are still registered but failed to restore count as failures.
-    const failedSessionIds = sessionObservations
-      .observedSessionIds()
-      .filter((sessionId) => !restoredSessionIdSet.has(sessionId));
-    if (failedSessionIds.length > 0) {
-      throw new Error(
-        `Failed to restore Session observations: ${failedSessionIds.join(', ')}`,
-      );
-    }
+    observationsAttached = Boolean(sessionObserver);
+    const restoredSessionIds = await restoreSessionObservations({
+      sessionIds: () => sessionObservations.observationSessionIds(),
+      announcePending: (sessionId) =>
+        sendToRenderer(`sessions:event:${sessionId}`, { type: 'host_observation_pending' }),
+      attach: () => sessionObservations.attach(
+        sessionObserver,
+        (target) => ({
+          id: target.id,
+          send: (channel, payload) =>
+            (target.send as (channel: string, ...args: unknown[]) => void)(
+              channel,
+              scope,
+              payload,
+            ),
+          once: target.once.bind(target),
+          off: target.off.bind(target),
+        }),
+        (missingSessionId) => emitSessionsChanged("deleted", missingSessionId),
+      ),
+    });
     for (const sessionId of restoredSessionIds) {
       emitSessionsChanged("message-appended", sessionId);
       emitSessionsChanged("goal-change", sessionId);
@@ -872,6 +891,7 @@ export async function createDesktopRuntimeHostCandidate(
       registerRuntimeHostSessionCatalogIpc(
         {
           client,
+          queryExecutors: (input) => client.request('plugin.executor.query', input),
           runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
           resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
           emitSessionsChanged,
@@ -897,6 +917,7 @@ export async function createDesktopRuntimeHostCandidate(
         {
           client,
           emitSessionsChanged,
+          resolveImportWorkspace: () => deps.resolveExternalSessionImportWorkspace(target),
         },
         ipc,
       );
@@ -945,6 +966,9 @@ export async function createDesktopRuntimeHostCandidate(
           }),
         })
       : noGuestBotService();
+    disposeNotifications = observeRuntimeHostNotifications(
+      client, deps.notifyRun, reportError, target.access === 'session_guest',
+    );
     return new DesktopRuntimeHostCandidateImpl({
       client,
       observer: sessionObserver,
@@ -952,7 +976,10 @@ export async function createDesktopRuntimeHostCandidate(
       botIncoming,
       closeNativeCapabilities,
       closeSessionDomains: domains?.close ?? (() => Promise.resolve()),
-      disposeClientIpc,
+      disposeClientIpc: async () => {
+        disposeNotifications?.();
+        await disposeClientIpc?.();
+      },
       detachSessionObservations: () =>
         sessionObservations.detach(sessionObserver),
       closeSessionObservations: () =>
@@ -968,6 +995,7 @@ export async function createDesktopRuntimeHostCandidate(
     });
   } catch (error) {
     ipc.close();
+    disposeNotifications?.();
     if (observationsAttached && observer) sessionObservations.detach(observer);
     await Promise.resolve(disposeClientIpc?.()).catch(() => undefined);
     await closeSessionDomains?.().catch(() => undefined);

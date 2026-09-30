@@ -176,7 +176,13 @@ async function runGeneratedDiscovery(
         respondJson(
           response,
           200,
-          discoveryPayload(discovery.protocol, sample, discovery.filter, shape),
+          discoveryPayload(
+            discovery.protocol,
+            sample,
+            discovery.filter,
+            discovery.excludeModelIdPrefixes,
+            shape,
+          ),
         );
       });
       const connection = baseConnection(row, server.url);
@@ -281,6 +287,7 @@ function discoveryPayload(
   protocol: string,
   sample: string,
   filter: string | undefined,
+  excludeModelIdPrefixes: readonly string[] | undefined,
   shape: 'data-object' | 'bare-array',
 ): unknown {
   if (protocol === 'anthropic') return { data: [{ id: sample }] };
@@ -308,6 +315,15 @@ function discoveryPayload(
     return {
       object: 'list',
       data: [{ id: sample }, { id: 'contract-decoy-not-in-fallback' }],
+    };
+  }
+  if (excludeModelIdPrefixes?.length) {
+    return {
+      object: 'list',
+      data: [
+        { id: sample },
+        ...excludeModelIdPrefixes.map((prefix) => ({ id: `${prefix}contract-decoy` })),
+      ],
     };
   }
   if (shape === 'bare-array') return [{ id: sample }];

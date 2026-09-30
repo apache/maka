@@ -21,13 +21,99 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { act, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, type ComposerHandle } from '../composer.js';
 import { ThinkingLevelSelector } from '../chat-model-switcher.js';
+import { MakaClientSlotCore, MakaClientSlotProvider } from '../client-plugin-slots.js';
 import { deriveComposerModelSwitchAvailability } from '../composer-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
+
+test('the native model pair remains the model-selection slot fallback', () => {
+  const session = {
+    id: 'codex-session',
+    llmConnectionSlug: 'executor:codex.app-server',
+    model: 'gpt-6-astra',
+  } as SessionSummary;
+  const choice: ChatModelChoice = {
+    connectionId: 'native-connection',
+    connectionSlug: 'native',
+    connectionName: 'Native',
+    providerType: 'openai',
+    providerLabel: 'OpenAI',
+    model: 'native-model',
+    label: 'Native model',
+    isDefault: true,
+    thinkingLevels: ['low', 'high'],
+  };
+  const render = (executor: boolean) => renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        activeSession={session}
+        activeModelConnectionId={choice.connectionId}
+        activeModelConnectionSlug={choice.connectionSlug}
+        activeModel={choice.model}
+        activeModelLabel={choice.label}
+        activeThinkingLevels={choice.thinkingLevels}
+        modelChoices={[choice]}
+        {...(executor
+          ? { executorTarget: { executorId: 'codex.app-server', model: 'gpt-6-astra', thinkingLevel: 'high' } }
+          : {})}
+        onModelChange={() => undefined}
+        onThinkingLevelChange={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  const native = render(false);
+  assert.match(native, /maka-model-switcher-trigger/u);
+  assert.match(native, /maka-thinking-level-selector/u);
+
+  const pluginExecutorWithoutClientContribution = render(true);
+  assert.match(pluginExecutorWithoutClientContribution, /maka-model-switcher-trigger/u);
+  assert.match(pluginExecutorWithoutClientContribution, /maka-thinking-level-selector/u);
+  assert.match(pluginExecutorWithoutClientContribution, /conversation\.composer\.model-selection/u);
+});
+
+test('a client model contribution remains inside the unified executor picker', () => {
+  const core = new MakaClientSlotCore();
+  core.register(
+    { name: 'conversation.composer.model-selection', select: () => ({}) },
+    () => <span>Client model control</span>,
+  );
+  const markup = renderToStaticMarkup(
+    <MakaClientSlotProvider core={core}>
+      <LocaleProvider locale="en">
+        <Composer
+          executorPicker={{
+            catalog: [
+              {
+                id: 'antigravity',
+                displayName: 'Antigravity',
+                readiness: 'ready',
+                models: [{ id: 'fast', name: 'Fast' }],
+                supportsAttachments: false,
+                supportsModelChange: true,
+              },
+            ],
+            onSelect: () => undefined,
+            onSetup: () => undefined,
+            onRetry: () => undefined,
+            onNewTask: () => undefined,
+          }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>
+    </MakaClientSlotProvider>,
+  );
+
+  assert.match(markup, /maka-executor-selector/u);
+});
 
 test('model switch availability has one priority-ordered contract', () => {
   assert.deepEqual(

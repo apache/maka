@@ -48,12 +48,18 @@ import { createDesktopRuntimeHostManagementServices } from '../platform/desktop/
 import { createDesktopSessionCollaborationServices } from '../platform/desktop/create-session-collaboration-services';
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
 import { SessionBundleServicesProvider } from '../features/session-bundle';
+import { StorageUsageServicesProvider } from '../features/storage-usage';
+import { createDesktopStorageUsageServices } from '../platform/desktop/create-storage-usage-services.js';
 import { createDesktopSessionBundleServices } from '../platform/desktop/create-session-bundle-services.js';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
 import { createDesktopOverlaysServices } from '../platform/desktop/create-overlays-services';
 import { observeReactPerformanceMeasures } from '../platform/desktop/react-performance-measures';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../application/contracts/session-catalog/session-catalog-state.js';
 
 if (import.meta.env.DEV) {
   const stopObserving = observeReactPerformanceMeasures();
@@ -62,6 +68,11 @@ if (import.meta.env.DEV) {
 
 export function createDesktopFeatureServices() {
   return {
+    // The session catalog is renderer-owned shared state, not a bridge
+    // service — it is created once with the other app singletons and read
+    // through `useSessionCatalogController` so providers below do not need it
+    // drilled through the shell.
+    sessionCatalog: createSessionCatalogController(),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
     workHub: createDesktopWorkHubServices(),
@@ -76,6 +87,7 @@ export function createDesktopFeatureServices() {
     sessionNavigation: createDesktopSessionNavigationServices(),
     sessionBundle: createDesktopSessionBundleServices(),
     sessionSettings: createDesktopSessionSettingsServices(),
+    storageUsage: createDesktopStorageUsageServices(),
     taskEntry: createDesktopTaskEntryServices(),
     workbar: createDesktopWorkbarServices(),
   };
@@ -86,6 +98,7 @@ export function DesktopFeatureServicesProvider(props: {
   readonly children?: ReactNode;
 }) {
   return (
+    <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
     <ClientPluginServicesProvider services={props.services.clientPlugins}>
       <ClientPluginRoot>
         <AppUpdateServicesProvider services={props.services.appUpdate}>
@@ -103,7 +116,9 @@ export function DesktopFeatureServicesProvider(props: {
                           <WorkHubServicesProvider services={props.services.workHub}>
                             <SessionBundleServicesProvider services={props.services.sessionBundle}>
                               <OverlaysServicesProvider services={props.services.overlays}>
-                                {props.children}
+                                <StorageUsageServicesProvider services={props.services.storageUsage}>
+                                  {props.children}
+                                </StorageUsageServicesProvider>
                               </OverlaysServicesProvider>
                             </SessionBundleServicesProvider>
                           </WorkHubServicesProvider>
@@ -121,5 +136,6 @@ export function DesktopFeatureServicesProvider(props: {
         </AppUpdateServicesProvider>
       </ClientPluginRoot>
     </ClientPluginServicesProvider>
+    </SessionCatalogContext.Provider>
   );
 }

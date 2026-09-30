@@ -111,6 +111,24 @@ test('cancels settlement while transcript open is pending', async () => {
   }
 });
 
+test('an unopened transcript still fails settlement by default', async () => {
+  await assert.rejects(
+    readSettledMessagesFrom(
+      {
+        transcripts: {
+          readTurn: async () => [],
+          open: async (_sessionId, _handler, registerCancellation) =>
+            new Promise<never>((_resolve, reject) => {
+              registerCancellation?.(() => reject(new Error('open cancelled')));
+            }),
+        },
+      },
+      JSON.stringify(['host-1', 'session-1']),
+    ),
+    /timed out while opening/,
+  );
+});
+
 test('reads one Host-owned Turn outside the bounded transcript tail', async () => {
   const sessionKey = JSON.stringify(['host-1', 'session-1']);
   const turnB: StoredMessage[] = [
@@ -1327,6 +1345,8 @@ test('cached fallback remains readable and retries once per observation generati
   await settle();
   assert.equal(opens, 1);
   assert.equal(store.range().generation, 'cached:generation');
+  assert.equal(store.range().hasOlder, false, 'a cached transcript offers no earlier history to load');
+  assert.equal(store.snapshot().hasOlder, false);
   await controller.loadEarlier();
   assert.equal(earlierReads, 0, 'a cached transcript has no Host to read earlier history from');
   controller.observationChanged('ready');
@@ -1341,6 +1361,7 @@ test('cached fallback remains readable and retries once per observation generati
   await settle();
   assert.equal(opens, 3);
   assert.equal(store.range().generation, 'live-generation');
+  assert.equal(store.range().hasOlder, true);
   assert.deepEqual(errors, []);
   await controller.close();
 });

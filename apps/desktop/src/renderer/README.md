@@ -25,9 +25,9 @@ For the main/preload/renderer split and the IPC contract, see `apps/desktop/READ
 
 ## Entry
 
-`main.tsx` → `app.tsx` → `AppShell` (`app-shell.tsx`). `index.html` is the Vite HTML shell. `main.tsx` prefetches the onboarding snapshot before mounting React so the normal-path first commit paints the real surface (if the prefetch times out it mounts with `null` and a fail-soft loading state); `app.tsx` wraps `AppShell` in `ToastProvider` + `ErrorBoundary`.
+`main.tsx` → `app.tsx` → `AppShell` (`app-shell.tsx`). `index.html` is the Vite HTML shell. `main.tsx` mounts React immediately — the `.maka-preload` launch overlay covers the load gap and stays until a surface commits `data-maka-content-ready`; `app.tsx` wraps `AppShell` in `ToastProvider` + `ErrorBoundary`.
 
-`styles.css` is the **only** bundled style entry: it imports Astryx, fonts, `maka-tokens.css`, `reference-shell.css`, and every `styles/*.css`. It contains only top-level orchestration; real selector rules go in `styles/*.css`. One contract-pinned exception: `index.html` carries an inline `.maka-preload` skeleton with hardcoded colors (no CSS variables — `maka-tokens.css` hasn't loaded yet) so there's no blank window during the CSS + JS load gap; `createRoot` replaces it on mount.
+`styles.css` is the **only** bundled style entry: it imports Astryx, fonts, `maka-tokens.css`, and every `styles/*.css`. It contains only top-level orchestration; real selector rules go in `styles/*.css`. One contract-pinned exception: `index.html` carries an inline `.maka-preload` launch overlay with hardcoded colors (no CSS variables — `maka-tokens.css` hasn't loaded yet) so there's no blank window during the CSS + JS load gap; it retires once a surface commits `data-maka-content-ready`.
 
 ## Renderer ownership boundary
 
@@ -215,8 +215,8 @@ Composer mount semantics, Session switching, or Workbar resource lifecycles.
 |---|---|
 | `astryx-theme/makaTheme.ts` | Source for the Astryx type scale, neutral remaps, and theme-level component overrides. |
 | `astryx-theme/maka.css` | Generated Astryx theme imported by `styles.css`; regenerate it from `makaTheme.ts`, never edit it directly. |
-| `maka-tokens.css` | The main source of product CSS tokens (color / shadow / typography aliases / radius / spacing / motion / z / layout), plus a large recipe section at the tail. Transitional: tokens and recipes coexist in one file. |
-| `reference-shell.css` | A target-layout shell rebuild, hand-authored from a reference-implementation extract (its header comment documents the provenance). **Transitional** — meant to be folded back into the token/style system and removed. |
+| `maka-tokens.css` | The source of product CSS tokens (color / shadow / typography roles / radius / spacing / motion / z / layout), including the type-role table. Tokens only. |
+| `styles/document.css` | Document-level defaults: box sizing, scrollbars, the html/body ground, selection, film grain, lucide stroke, global reduced motion. |
 | `styles/*.css` | Per-surface hand-written recipes (e.g. `chat-*`, `sidebar`, `composer`, `palette`, `settings/*`, `module-pages/*`). |
 
 Token authoring rule: custom CSS variables go in `maka-tokens.css`. New component-local vars should carry `/* local: ... */` (existing ones don't all have it yet). No new hardcoded color / radius / z-index.
@@ -234,8 +234,6 @@ Note the `--foreground-N` split: the wash stops (`-2/-3/-5/-8/-10`) are surface 
 Acknowledged transitional states — not TODOs; track work in issues/PRs.
 
 - Existing hand-written `styles/*.css` recipes and internal-DOM overrides on Astryx-backed `@maka/ui` primitives are acknowledged transitional states, not precedent for new work. New styling uses published props, tokens, or stable `themeProps` extension points; track concrete retirement work in GitHub issues and PRs.
-- `reference-shell.css`: end state is folded into the token/style system and the file removed.
-- `maka-tokens.css` mixing tokens + recipes: end state is tokens-only here, recipes living on primitives / `styles/`.
 
 ## Contracts & guardrails
 

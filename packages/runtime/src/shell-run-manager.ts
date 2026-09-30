@@ -510,14 +510,19 @@ export class ShellRunProcessManager
         }),
       );
     }
-    // A real PTY can exit while that persist is still in flight, leaving a
-    // running snapshot here even though finalizeOnce has already started.
-    if (live.driverExit || live.finalizeOnce) {
-      record = await this.markObserved(await live.finished.join());
-      return shellRunContent(record, operation);
-    }
-    if (isTerminalShellRunStatus(record.status)) record = await this.markObserved(record);
+    // The snapshot was captured before persistence. Exit can begin during that
+    // await, so every control response goes through the same final-record
+    // reconciliation rather than returning a stale running snapshot.
+    record = await this.reconcilePtyControlRecord(live, record);
     return clientControl ? compactShellRunContent(record) : shellRunContent(record, operation);
+  }
+
+  private async reconcilePtyControlRecord(
+    live: LiveShellRun,
+    snapshot: ShellRunRecord,
+  ): Promise<ShellRunRecord> {
+    const record = live.driverExit || live.finalizeOnce ? await live.finished.join() : snapshot;
+    return isTerminalShellRunStatus(record.status) ? this.markObserved(record) : record;
   }
 
   async readRuntimeResource(
@@ -589,6 +594,10 @@ export class ShellRunProcessManager
   async listSessionUpdates(sessionId: string): Promise<ShellRunUpdate[]> {
     const records = await this.input.store.listSessionShellRuns(sessionId);
     return records.map(shellRunUpdate);
+  }
+
+  listRecoverySessionIds(): Promise<string[] | undefined> {
+    return this.input.store.listShellRunRecoverySessionIds?.() ?? Promise.resolve(undefined);
   }
 
   async getSessionUpdate(sessionId: string, ref: string): Promise<ShellRunUpdate | undefined> {

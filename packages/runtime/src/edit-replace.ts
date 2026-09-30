@@ -111,14 +111,14 @@ export function computeEditedSource(
     throw new Error(`old_string must not be empty in ${where}`);
   }
 
-  // Exact match first — counted via indexOf so a large file is not split into an
-  // array of substrings just to count. Short-circuits before any fuzzy work.
-  const exactCount = countOccurrences(source, oldString);
-  if (exactCount === 1) {
+  // A second starting position already proves ambiguity, including an overlap.
+  // Stop there instead of repeatedly scanning long, repetitive snippets.
+  const exactIndex = source.indexOf(oldString);
+  if (exactIndex !== -1) {
+    if (source.indexOf(oldString, exactIndex + 1) !== -1) {
+      throw new Error(`old_string is not unique in ${where} (at least 2 matches)`);
+    }
     return finish(source, oldString, newString, 'exact');
-  }
-  if (exactCount > 1) {
-    throw new Error(`old_string is not unique in ${where} (${exactCount} matches)`);
   }
 
   // Exact failed — entering fuzzy territory. Apply fuzzy-only guards up front so

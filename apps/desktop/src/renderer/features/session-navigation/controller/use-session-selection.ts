@@ -58,7 +58,8 @@ export function useSessionSelection(input: {
   }, [listedIds]);
 
   /**
-   * The set drops when the open task is not one of its members.
+   * The set drops when the open task is not one of its members, including when
+   * no task is open.
    *
    * A picked row and the open row are painted on the same ground, so a set that
    * does not hold the open row can be read as a set around it, and the next ⋯
@@ -80,9 +81,10 @@ export function useSessionSelection(input: {
    * equal the open row would be a second way to say the same thing.
    */
   useEffect(() => {
-    if (activeId === undefined) return;
     setSelection((current) =>
-      current.selectedIds.has(activeId) ? current : EMPTY_SESSION_SELECTION,
+      activeId !== undefined && current.selectedIds.has(activeId)
+        ? current
+        : EMPTY_SESSION_SELECTION,
     );
   }, [activeId]);
 

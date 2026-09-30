@@ -21,15 +21,22 @@ import { resolve, sep } from 'node:path';
 import type { Plugin } from 'vite';
 
 const SOURCE_FILE = /\.(?:(?:c|m)?(?:js|ts)x?)$/u;
+// svg/g/path exist for the static preload wordmark in index.html — the tag
+// whitelist stays closed to anything that can navigate or execute (a, img,
+// iframe, foreignObject, svg script/animate): the single-module script check
+// and the `on*=` handler scan still apply inside allowed tags.
 const ALLOWED_HTML_TAGS = new Set([
   'body',
   'div',
+  'g',
   'head',
   'html',
   'link',
   'meta',
+  'path',
   'script',
   'style',
+  'svg',
   'title',
 ]);
 const CONTENT_SECURITY_POLICY =

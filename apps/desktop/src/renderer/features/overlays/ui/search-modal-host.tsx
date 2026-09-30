@@ -27,7 +27,7 @@ import { useOverlays } from './overlays-context.js';
  * shell action. Astryx restores the opener for ordinary closes.
  *
  * `deps` keeps one identity for the life of the controller. The modal's
- * debounce effect lists `searchThread` in its dependencies, and a fresh
+ * debounce effect lists `searchRecall` in its dependencies, and a fresh
  * identity per render tore the timer down before it fired while a turn was
  * streaming, which made search dead exactly then.
  */
@@ -36,8 +36,8 @@ export function SearchModalHost(props: {
 }) {
   const { commands, selectors } = useOverlays();
   const deps = useMemo(() => ({
-    searchThread: commands.searchThread,
-    cancelThread: commands.cancelSearchThread,
+    searchRecall: commands.searchRecall,
+    cancelRecall: commands.cancelSearchRecall,
   }), [commands]);
   return (
     <SearchModal

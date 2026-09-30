@@ -69,7 +69,7 @@ import type {
   NormalizedUsage,
   ToolCallPart,
 } from './model-protocol.js';
-import { providerRetryReason } from './provider-error-classification.js';
+import { providerRetryReason } from './provider-retry-policy.js';
 import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019.js';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -121,6 +121,7 @@ import {
   type ContextDiagnosticsCompaction,
 } from './context-diagnostics.js';
 import { AiSdkCompaction, hasBlockingReplayDiagnostics } from './ai-sdk-compaction.js';
+import { portableApplyPatchTool } from './apply-patch-profile.js';
 import { RunTrace } from './run-trace.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
@@ -129,15 +130,19 @@ import {
 } from './sandbox-boundary-tool.js';
 import {
   buildRuntimeEventModelReplayPlan,
+  appendPriorUnknownToolResponses,
   buildSteeringEnvelope,
   collectToolActivityTurnIds,
   compatibleProviderReasoningReplayEventIds,
   formatTextWithInlineRefs,
+  inspectPriorUnknownToolOutcomes,
   steeringMessagesMissingFromBase,
   steeringModelMessage,
+  type PriorUnknownToolOutcomeProjection,
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
+import type { ContextBudgetPolicy } from './context-budget.js';
 import {
   toolSchemaCharsForDiagnostics,
   requestCompositionToolSchemas,
@@ -179,7 +184,6 @@ import {
 } from './ai-sdk-tool-repair.js';
 
 export interface AiSdkSessionState {
-  contextProviderDroppingReported: boolean;
   cumulativeUsageCheckpoint?: NormalizedAiSdkUsage;
 }
 
@@ -453,6 +457,12 @@ function nestableToolSnapshot(
   const active = new Set(activeToolNames);
   return new Map(
     providerTools
+      .map((tool) =>
+        tool.providerTool?.kind === 'openai-apply-patch' ||
+        tool.providerTool?.kind === 'codex-apply-patch'
+          ? portableApplyPatchTool(tool)
+          : tool,
+      )
       .filter(
         (tool) =>
           active.has(tool.name) &&
@@ -572,6 +582,7 @@ function joinPromptFragments(fragments: readonly (string | undefined)[]): string
 const MAX_WAITING_CODE_MODE_CELLS = 1;
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
+const CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS = 8_000;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -622,6 +633,7 @@ export class AiSdkTurn {
   readonly runId: string | undefined;
   readonly orchestration: EffectiveOrchestration;
   readonly toolRuntime: ToolRuntime;
+  private readonly startedAt: number;
 
   constructor(
     private readonly deps: AiSdkTurnDependencies,
@@ -629,6 +641,7 @@ export class AiSdkTurn {
   ) {
     this.turnId = request.turnId;
     this.runId = request.runId;
+    this.startedAt = deps.now();
     this.orchestration =
       request.orchestration ??
       resolveEffectiveOrchestration(deps.backend.header.orchestrationMode, undefined);
@@ -848,7 +861,30 @@ export class AiSdkTurn {
     const toolRuntime = this.toolRuntime;
     const turnAbortController = this.abortController;
 
-    const midTurnState = this.deps.compaction.buildMidTurnCapacityCompactState(input);
+    const priorEvents = (input.runtimeContext ?? []).filter(
+      (event) => input.continuation !== undefined || event.turnId !== input.turnId,
+    );
+    const observedPriorUnknownProjection: PriorUnknownToolOutcomeProjection = !input.continuation
+      ? inspectPriorUnknownToolOutcomes(priorEvents, input.runtimeContextInvocations)
+      : { kind: 'none' };
+    if (observedPriorUnknownProjection.kind === 'blocked') {
+      throw new Error(`Cannot use prior tool history: ${observedPriorUnknownProjection.reason}`);
+    }
+    if (
+      observedPriorUnknownProjection.kind === 'projected' &&
+      !input.allowPriorUnknownToolOutcomes
+    ) {
+      throw new Error(
+        'Cannot continue an automated turn while a prior tool outcome is unknown; an explicit user message is required',
+      );
+    }
+    const priorUnknownProjection = input.allowPriorUnknownToolOutcomes
+      ? observedPriorUnknownProjection
+      : { kind: 'none' as const };
+    const preservingUnknownHistory = priorUnknownProjection.kind === 'projected';
+    const midTurnState = preservingUnknownHistory
+      ? undefined
+      : this.deps.compaction.buildMidTurnCapacityCompactState(input);
     const queue = new AsyncEventQueue<SessionEvent>();
     const codeModeExecTool = this.createCodeModeExecTool(queue);
 
@@ -963,8 +999,6 @@ export class AiSdkTurn {
     // result.usage.inputTokens is cumulative across steps and would produce
     // misleading >100% percentages, so the per-step value is captured here.
     let lastStepInputTokens: number | undefined;
-    /** Tool count of the request that produced `lastStepInputTokens`. */
-    let lastStepActiveToolCount: number | undefined;
     // Output tokens of the same step: with the input they are the baseline the
     // next request is judged from (everything the model produced is re-sent).
     let lastStepOutputTokens: number | undefined;
@@ -1126,7 +1160,7 @@ export class AiSdkTurn {
     let systemPrompt: string | undefined;
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
-    const priorReplayResult = await this.buildPriorMessages(input);
+    const priorReplayResult = await this.buildPriorMessages(input, priorUnknownProjection);
     if (this.aborted) {
       queue.push({
         type: 'abort',
@@ -1278,9 +1312,12 @@ export class AiSdkTurn {
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
           const turnEvents = await loadDurableTurnEvents();
+          // Prior unknown call/result pairs are outside this current-turn event
+          // set and are preserved separately in priorReplay. Continue pruning
+          // new tool results from this turn so one unknown predecessor does not
+          // make an unrelated large result permanently unprunable.
           const pruned = await this.deps.compaction.pruneToolResults(turnEvents, turnId);
           if (pruned.stats) {
-            if (pruned.stats.prunedToolResults > 0) midTurnState?.stepShaping.add('prune');
             contextBudgetForTelemetry = addToolResultPruneStats(
               contextBudgetForTelemetry ?? minimalContextBudgetDiagnostic(),
               pruned.stats,
@@ -1464,6 +1501,9 @@ export class AiSdkTurn {
           }
           const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
+            priorUnknownProjection.kind === 'projected'
+              ? priorUnknownProjection.systemNotice
+              : undefined,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
@@ -1497,20 +1537,16 @@ export class AiSdkTurn {
           const dynamicContextMessages: ModelMessage[] = (resolvedSystemPrompt.contexts ?? []).map(
             ({ text }) => ({ role: 'user', content: text }),
           );
-          const contextualRequestMessages =
-            dynamicContextMessages.length === 0
-              ? requestMessages
-              : [...requestMessages, ...dynamicContextMessages];
           const shaped = requestProjection
             ? await requestProjection({
                 completedSteps: completedProviderSteps,
                 stepNumber: runtimeSteps,
                 model,
-                messages: contextualRequestMessages,
+                messages: requestMessages,
                 resolveDispatch,
               })
             : undefined;
-          const projectedMessages = shaped?.messages ?? contextualRequestMessages;
+          const projectedMessages = shaped?.messages ?? requestMessages;
           const activeToolsForRequest = resolveDispatch(shaped?.activeTools).activeTools;
           const requestSystemPrompt = joinPromptFragments([
             requestSystemPromptBase,
@@ -1518,16 +1554,6 @@ export class AiSdkTurn {
               ? codeModeCatalogPrompt
               : undefined,
           ]);
-          // A finalization step resolves an empty tool set, so its request
-          // legitimately drops several thousand schema tokens with no fold,
-          // prune or image omission. Maka shaped that request; the provider did
-          // not drop anything.
-          if (
-            lastStepActiveToolCount !== undefined &&
-            activeToolsForRequest.length < lastStepActiveToolCount
-          ) {
-            midTurnState?.stepShaping.add('tools');
-          }
           const requestCompositionId =
             this.runId && this.deps.backend.recordRequestComposition
               ? await this.deps.backend.recordRequestComposition(this.runId, {
@@ -1544,6 +1570,7 @@ export class AiSdkTurn {
               : undefined;
           providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
+          let overflowRecoveryMaxOutputTokens: number | undefined;
           let providerAttempt = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           const providerToolInputs = new Map<string, unknown>();
@@ -1566,9 +1593,11 @@ export class AiSdkTurn {
             const attemptHasNoObservableOutput = () =>
               !attemptSawVisibleContent && !attemptSawToolActivity && !attemptSawReplayBarrier;
             const attemptCanReplay = () => !attemptSawToolActivity && !attemptSawReplayBarrier;
-            this.memorySourceMessages = [...attemptMessages];
+            // Request-only facts must survive history replacement and overflow recovery.
+            const dispatchMessages = [...attemptMessages, ...dynamicContextMessages];
+            this.memorySourceMessages = dispatchMessages;
             this.memorySourceEventMessagePositions =
-              this.deps.messageProjection.memoryEventMessagePositions(attemptMessages);
+              this.deps.messageProjection.memoryEventMessagePositions(dispatchMessages);
             this.memorySourceSystemPrompt = requestSystemPrompt;
             this.memorySourceTools = modelTools;
             this.memorySourceActiveTools = [...activeToolsForRequest];
@@ -1582,13 +1611,18 @@ export class AiSdkTurn {
                 ? nestedTools
                 : undefined;
             const requestWatchdog = watchdogState.current;
+            const requestMaxOutputTokens =
+              overflowRecoveryMaxOutputTokens ??
+              this.deps.modelAdapter.maxOutputTokensForInput(
+                midTurnState?.baselineTokens ?? midTurnState?.lastAcceptedTotalTokens,
+              );
             // Read here, beside the messages it describes: `attemptMessages` is
             // rebuilt in place by overflow recovery, and the boundary it folded
             // under must travel with that rebuild, not with the step.
             const historyCompactBoundary = requestHistoryCompactBoundary();
             result = await this.deps.modelAdapter.startStream({
               model,
-              messages: attemptMessages,
+              messages: dispatchMessages,
               tools: modelTools,
               activeTools: activeToolsForRequest,
               onStreamActivity: () => requestWatchdog?.markActivity(),
@@ -1617,6 +1651,9 @@ export class AiSdkTurn {
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
               ...(historyCompactBoundary ? { historyCompactBoundary } : {}),
               continuationKey: this.turnId,
+              ...(requestMaxOutputTokens !== undefined
+                ? { maxOutputTokens: requestMaxOutputTokens }
+                : {}),
             });
 
             for await (const event of result.events) {
@@ -1805,67 +1842,15 @@ export class AiSdkTurn {
             consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
             if (providerOutcome.kind === 'completed') {
+              // A compacted overflow retry only needs the conservative cap for
+              // that one request. Once the provider accepts the request, the
+              // next step can use the fresh provider count to derive a larger
+              // safe cap again.
+              overflowRecoveryMaxOutputTokens = undefined;
               runtimeSteps += 1;
               const stepUsage = providerOutcome.usage;
               providerStepUsage = stepUsage;
               if (!stepUsage) sawUnusableStepUsage = true;
-              // Silent eviction / rewrite check (#4559): this step only
-              // appended (no fold, no prune, no image omission) yet the
-              // provider counted no more input tokens than for the previous
-              // request. Not-greater, not strictly-fewer: a provider that
-              // truncates to a fixed window (Ollama's `num_ctx`) reports the
-              // same total on every later request while Maka keeps
-              // appending, so a plateau is the signal, and an equal count
-              // after an append is already impossible without provider-side
-              // eviction or rewriting. Input against input: the previous
-              // reply's reasoning may not be resent, so input + output is
-              // not the floor of the next input on every wire.
-              const completedRequestIndex = runtimeSteps - 1;
-              // Across the send boundary the comparison is the same one,
-              // against the last request a provider accepted before this
-              // send. A provider that truncates to a fixed window reports
-              // the same input on every later request while the user keeps
-              // adding turns, and a send of one or two steps never sees
-              // that from the inside: the live evidence plateaus at 3,716
-              // input tokens across eight turns with nothing reported
-              // (#4623). The first request of a send therefore compares
-              // against the persisted anchor, which is route-validated
-              // where it is read.
-              const acrossSends = completedRequestIndex === 0;
-              const priorInput = acrossSends
-                ? midTurnState?.priorAcceptedInputTokens
-                : lastStepInputTokens;
-              if (
-                !this.deps.session.contextProviderDroppingReported &&
-                midTurnState &&
-                priorInput !== undefined &&
-                midTurnState.stepShaping.size === 0 &&
-                stepUsage !== undefined &&
-                Number.isFinite(stepUsage.inputTokens) &&
-                stepUsage.inputTokens > 0 &&
-                // Across sends the test is equality, not "did not grow".
-                // Inside a send Maka knows it only appended, so any
-                // shortfall is the provider's. Across the boundary it does
-                // not: a manual compaction leaves the pre-compaction anchor
-                // behind, a turn can carry a smaller tool set, and a user
-                // can edit or branch history. All three shrink the input
-                // legitimately, and none of them lands on exactly the same
-                // count. A provider truncating to a fixed window does, on
-                // every later request.
-                (acrossSends
-                  ? stepUsage.inputTokens === priorInput
-                  : stepUsage.inputTokens <= priorInput)
-              ) {
-                this.deps.session.contextProviderDroppingReported = true;
-                await this.recordSystemNote('context_provider_dropping', turnId, {
-                  inputTokens: stepUsage.inputTokens,
-                  priorInputTokens: priorInput,
-                });
-              }
-              // Clear here, not at the top of the next step: the continuation
-              // lane archives its prune below, after this point, and archiving
-              // is idempotent — the next step's re-projection reports no prune,
-              // so a clear above it would lose the only record of this one.
               midTurnState?.stepShaping.clear();
               // Fail closed: reset on every step boundary so a missing final
               // step's usage does not leave a stale value from an earlier step.
@@ -1893,9 +1878,9 @@ export class AiSdkTurn {
               }
               // Nothing declared, and the provider accepted a request past
               // the window this model reports. Every other signal in this
-              // design stays dark there: no rejection to recover from, no
-              // plateau to read, and no declaration to arm the proactive
-              // threshold, so the session degrades quietly and
+              // design stays dark there: no rejection to recover from and
+              // no declaration to arm the proactive threshold, so the
+              // session degrades quietly and
               // indefinitely (#4634). Report the two real numbers and
               // leave the decision with the user: a reported window is a
               // hint, and Maka still declares nothing on their behalf.
@@ -1939,7 +1924,6 @@ export class AiSdkTurn {
               }
               lastStepInputTokens = stepUsage?.inputTokens;
               lastStepOutputTokens = stepUsage?.outputTokens;
-              lastStepActiveToolCount = activeToolsForRequest.length;
               // A `finishReason: length` is deliberately not a trigger. The
               // reply may have been cut because the provider ran out of
               // window room, or because the provider's own output cap is
@@ -1998,6 +1982,7 @@ export class AiSdkTurn {
               // nothing left to grant it, so the error is terminal.
               const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
               const recovered =
+                !preservingUnknownHistory &&
                 stepBudgetRemains &&
                 failure.kind === 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
@@ -2024,6 +2009,10 @@ export class AiSdkTurn {
                   : undefined;
               if (recovered) {
                 attemptMessages = recovered.messages;
+                overflowRecoveryMaxOutputTokens = Math.min(
+                  this.deps.modelAdapter.maxOutputTokens() ?? CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
+                  CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS,
+                );
                 continue;
               }
               // Window suggestion (#4559): the provider rejected a request and
@@ -2724,7 +2713,10 @@ export class AiSdkTurn {
   }
 
   /** Materialize canonical RuntimeEvent history into ai-sdk's message format. */
-  private async buildPriorMessages(input: BackendSendInput): Promise<PriorReplayResult> {
+  private async buildPriorMessages(
+    input: BackendSendInput,
+    priorUnknownProjection: PriorUnknownToolOutcomeProjection,
+  ): Promise<PriorReplayResult> {
     if (!input.runtimeContext) {
       return {
         status: 'ready',
@@ -2742,40 +2734,81 @@ export class AiSdkTurn {
     // the durable projection-transition reducer (#4283). Replay, budgeting and
     // compaction share one input, so no RuntimeEvent replay path can resurrect
     // content a committed transition removed.
-    const preparedContextBudget = await this.deps.compaction.prepareContextBudgetPolicy(
-      rawPriorRuntimeContext,
-      input.turnId,
-    );
-    const priorRuntimeContext = preparedContextBudget.events;
+    const preservingUnknownHistory = priorUnknownProjection.kind === 'projected';
+    let priorRuntimeContext: RuntimeEvent[];
+    let runtimeContext: RuntimeEvent[];
+    let contextBudget: ContextBudgetPolicy | undefined;
+    let contextBudgetDiagnostic: ContextBudgetDiagnostic | undefined;
+    let projectedHistoryCompactCheckpoint: HistoryCompactCheckpoint | undefined;
+    if (priorUnknownProjection.kind === 'projected') {
+      const preparedContextBudget = await this.deps.compaction.prepareContextBudgetPolicy(
+        rawPriorRuntimeContext,
+        input.turnId,
+      );
+      priorRuntimeContext = preparedContextBudget.events;
+      contextBudget = preparedContextBudget.policy;
+      const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+      const budgetedEvents = budgeted?.events ?? rawPriorRuntimeContext;
+      const preservesUnknownCalls = priorUnknownProjection.outcomes.every((outcome) =>
+        budgetedEvents.some((event) => event.id === outcome.callEventId),
+      );
+      // Existing checkpoints and durable result pruning are safe when they
+      // leave every unknown call available to pair with its temporary result.
+      // Otherwise replay the full effective ledger: a summary that erases T1
+      // would make the request-local T2 orphaned or hide the uncertainty.
+      const selectedEvents = preservesUnknownCalls ? budgetedEvents : rawPriorRuntimeContext;
+      const effectiveEvents = await this.deps.compaction.foldEffectiveModelHistory(
+        selectedEvents,
+        preparedContextBudget.projectionSnapshot,
+      );
+      runtimeContext = appendPriorUnknownToolResponses(effectiveEvents, priorUnknownProjection);
+      if (preservesUnknownCalls) {
+        contextBudgetDiagnostic = budgeted?.diagnostic;
+        projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
+      }
+      if (preparedContextBudget.diagnosticPatch) {
+        contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
+          contextBudgetDiagnostic ??
+            buildContextBudgetDiagnosticShell(priorRuntimeContext, effectiveEvents, contextBudget),
+          preparedContextBudget.diagnosticPatch,
+        );
+      }
+    } else {
+      const preparedContextBudget = await this.deps.compaction.prepareContextBudgetPolicy(
+        rawPriorRuntimeContext,
+        input.turnId,
+      );
+      priorRuntimeContext = preparedContextBudget.events;
+      contextBudget = preparedContextBudget.policy;
+      // Match the durable checkpoint against the RAW ledger prefix: every
+      // creation path (standalone compactHistory and the mid-turn state) pins
+      // its coverage digest on raw events, so matching the folded view here
+      // lets any durable projection transition inside the covered prefix orphan
+      // the checkpoint and silently fail open into a full-history replay
+      // (#4842). The projected [block, tail] is then folded through the
+      // transition reducer before it becomes messages, so a committed
+      // transition still cannot resurrect content for the model (#4283).
+      const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
+      runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
+        budgeted?.events ?? rawPriorRuntimeContext,
+        preparedContextBudget.projectionSnapshot,
+      );
+      contextBudgetDiagnostic = budgeted?.diagnostic;
+      projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
+      if (preparedContextBudget.diagnosticPatch) {
+        contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
+          contextBudgetDiagnostic ??
+            buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
+          preparedContextBudget.diagnosticPatch,
+        );
+      }
+    }
     const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
       priorRuntimeContext,
       input.runtimeContextInvocations,
       this.deps.backend.providerStateIdentity,
       this.deps.backend.modelId,
     );
-    let contextBudget = preparedContextBudget.policy;
-    // Match the durable checkpoint against the RAW ledger prefix: every
-    // creation path (standalone compactHistory and the mid-turn state) pins
-    // its coverage digest on raw events, so matching the folded view here
-    // lets any durable projection transition inside the covered prefix orphan
-    // the checkpoint and silently fail open into a full-history replay
-    // (#4842). The projected [block, tail] is then folded through the
-    // transition reducer before it becomes messages, so a committed
-    // transition still cannot resurrect content for the model (#4283).
-    const budgeted = applyRuntimeEventContextBudget(rawPriorRuntimeContext, contextBudget);
-    let runtimeContext = await this.deps.compaction.foldEffectiveModelHistory(
-      budgeted?.events ?? rawPriorRuntimeContext,
-      preparedContextBudget.projectionSnapshot,
-    );
-    let contextBudgetDiagnostic = budgeted?.diagnostic;
-    let projectedHistoryCompactCheckpoint = budgeted?.historyCompactCheckpoint;
-    if (preparedContextBudget.diagnosticPatch) {
-      contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
-        contextBudgetDiagnostic ??
-          buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
-        preparedContextBudget.diagnosticPatch,
-      );
-    }
 
     // No pre-turn estimate gate: the turn's first request is judged by the
     // request-projection hook from the previous request's real usage, and by
@@ -2902,6 +2935,7 @@ export class AiSdkTurn {
         sessionId: this.deps.backend.sessionId,
         turnId,
         cwd: this.deps.backend.header.cwd,
+        turnStartedAt: this.startedAt,
         emitSkillCatalogTrace: (message, data) =>
           this.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });

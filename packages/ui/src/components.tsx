@@ -27,6 +27,12 @@ export { CapabilityAuditStrip } from './capability-audit-strip.js';
 export { ModuleHubSelector } from './module-hub-selector.js';
 export type { ModuleHubHeader } from './module-hub-selector.js';
 export { SearchModal } from './search-modal.js';
+export type {
+  RecallSearchFailure,
+  RecallSearchOutcome,
+  RecallSearchPassage,
+  RecallSearchRequest,
+} from './search-modal.js';
 export { SessionListPanel } from './session-list-panel.js';
 export { SessionRailProvider, useSessionRailData } from './session-rail-context.js';
 export type {
@@ -54,6 +60,7 @@ export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
 export {
   ChatView,
   type ChatViewGoalIndicatorProps,
+  type ChatViewHandle,
   type LiveContentActivationSnapshot,
   type TransientUserMessageProjection,
 } from './chat-view.js';

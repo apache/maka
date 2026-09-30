@@ -40,19 +40,42 @@
   max-width: 100%;
 }
 
-/* The project picker's trigger is now a ghost-button DropdownMenu like the
-   model and thinking chips beside it (workspace-picker.tsx), so resting,
-   hover, focus, disabled and tooltip chrome all derive from Astryx Button —
-   no field overlay needed here.
+/* The project picker stays a DropdownMenu because its menu carries actions
+   (new, manage, no project, retry), not just options. It still has to read as
+   the model and thinking Selectors beside it: a Selector keeps the element
+   radius and ignores the concentric --_button-radius the composer gives its
+   footer buttons.
    Geometry sizes to the project name rather than holding the model pair's
    column width: it is the last control in a row that already wraps, so a
    fixed width would spend space the model chip beside it needs. The cap is
    what keeps a long directory name from pushing the send button off the
    row. */
 .maka-workspace-picker {
+  --_button-radius: var(--radius-element);
   min-width: 0;
   max-width: min(280px, 60vw);
   flex: 0 0 auto;
+}
+
+.maka-workspace-picker-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Turns over while open, as the Selector chevrons do. */
+.maka-workspace-picker-chevron {
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.maka-workspace-picker[aria-expanded="true"] .maka-workspace-picker-chevron {
+  transform: rotate(180deg);
+}
+
+/* A loading Button hides its content by making it transparent text; the
+   badge and chevron paint their own colors, so they have to be hidden with it. */
+.maka-workspace-picker[aria-busy="true"] .maka-workspace-picker-end {
+  visibility: hidden;
 }
 
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
@@ -123,4 +146,147 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.maka-executor-selector {
+  min-width: 0;
+  max-width: min(300px, 48vw);
+  flex: 0 0 auto;
+}
+
+.maka-executor-picker-panel {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(260px, 1.3fr);
+  width: 100%;
+  height: min(320px, calc(70vh - 56px));
+  min-height: 240px;
+  overflow: hidden;
+}
+
+.maka-executor-picker-rail,
+.maka-executor-picker-models {
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-executor-picker-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  border-right: var(--border-width-hairline) solid var(--border);
+  overflow-y: auto;
+}
+
+.maka-executor-picker-panel .maka-executor-picker-entry,
+.maka-executor-picker-panel .maka-executor-picker-model {
+  height: auto;
+  min-height: 28px;
+  flex-shrink: 0;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+
+.maka-executor-picker-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.maka-executor-picker-entry[data-active='true'],
+.maka-executor-picker-model[aria-selected='true'] {
+  background: var(--muted);
+}
+
+.maka-executor-picker-entry-status {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.maka-executor-picker-manage {
+  margin-top: auto;
+}
+
+.maka-executor-picker-models {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: var(--space-3);
+}
+
+.maka-executor-picker-search {
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.maka-executor-picker-model-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.maka-executor-picker-model small {
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-executor-picker-native {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-executor-picker-option {
+  flex-shrink: 0;
+}
+
+.maka-executor-picker-option .maka-executor-picker-model {
+  width: 100%;
+}
+
+.maka-executor-picker-group {
+  padding: var(--space-1) var(--space-2);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.maka-executor-picker-readiness {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: var(--space-1);
+}
+
+.maka-executor-picker-readiness {
+  flex-direction: column;
+}
+
+@media (max-width: 640px) {
+  .maka-executor-picker-panel {
+    grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.2fr);
+  }
+}
+
+.maka-executor-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 12px;
+  line-height: 1.5;
 }

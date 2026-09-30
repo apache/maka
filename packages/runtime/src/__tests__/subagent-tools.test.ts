@@ -60,7 +60,7 @@ import {
   buildSubagentOutputTool,
   buildSubagentSpawnTool,
 } from '../subagent-tools.js';
-import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { ToolRuntime, type MakaTool, type MakaToolContext } from '../tool-runtime.js';
 
 describe('subagent tools', () => {
   test('parent-facing agent tools declare permission hints and names', () => {
@@ -109,8 +109,10 @@ describe('subagent tools', () => {
     };
 
     assert.deepStrictEqual(Object.keys(await advertisedProperties(buildSubagentSpawnTool())), [
+      'target_kind',
       'profile',
       'subagent_id',
+      'executor_mode',
       'executor_id',
       'task',
       'write_back',
@@ -167,6 +169,233 @@ describe('subagent tools', () => {
           'No child selector was provided. Call agent_list and pass a returned subagent_id to agent_spawn, or pass one legacy profile: local_read, web_research.',
         ),
     );
+  });
+
+  for (const { targetKind, selector, value, inactive } of [
+    {
+      targetKind: 'profile',
+      selector: 'profile',
+      value: LOCAL_READ_AGENT_PROFILE,
+      inactive: { subagent_id: 'fast-reader' },
+    },
+    {
+      targetKind: 'preset',
+      selector: 'subagent_id',
+      value: 'fast-reader',
+      inactive: { profile: LOCAL_READ_AGENT_PROFILE },
+    },
+  ] as const) {
+    test(`agent_spawn identifies the missing ${selector} in ${targetKind} mode and accepts the correction`, () => {
+      const schema = buildSubagentSpawnTool().parameters as {
+        safeParse(input: unknown): {
+          success: boolean;
+          data?: Record<string, unknown>;
+          error?: { issues: Array<{ message: string; path: PropertyKey[] }> };
+        };
+      };
+      const input = { target_kind: targetKind, task: 'Inspect the repo.' };
+      for (const args of [input, { ...input, ...inactive }]) {
+        const rejected = schema.safeParse(args);
+        assert.strictEqual(rejected.success, false);
+        assert.strictEqual(rejected.error?.issues.length, 1);
+        const issue = rejected.error!.issues[0]!;
+        assert.deepStrictEqual(issue.path, [selector]);
+        assert.match(issue.message, new RegExp(`target_kind=${targetKind} requires ${selector}`));
+        assert.match(issue.message, /spawn_args/);
+        // Follow the reported field while keeping the mode and inactive field unchanged.
+        const corrected = schema.safeParse({ ...args, [String(issue.path[0])]: value });
+        assert.strictEqual(corrected.success, true);
+        assert.deepStrictEqual(corrected.data, { ...input, [selector]: value });
+      }
+    });
+  }
+
+  test('explicit spawn modes discard provider-filled inactive fields and validate active fields', () => {
+    const schema = buildSubagentSpawnTool().parameters as {
+      safeParse(input: unknown): { success: boolean; data?: Record<string, unknown> };
+    };
+    const inherited = {
+      target_kind: 'profile',
+      profile: 'implementation',
+      subagent_id: { placeholder: true },
+      executor_mode: 'inherit',
+      executor_id: '',
+      task: 'Read the fixture.',
+    };
+    assert.deepStrictEqual(schema.safeParse(inherited).data, {
+      target_kind: 'profile',
+      profile: 'implementation',
+      executor_mode: 'inherit',
+      task: 'Read the fixture.',
+    });
+    assert.strictEqual(schema.safeParse({ ...inherited, profile: 'invented' }).success, false);
+    assert.strictEqual(schema.safeParse({ ...inherited, executor_mode: 'plugin' }).success, false);
+    assert.strictEqual(
+      schema.safeParse({ ...inherited, executor_mode: 'plugin', executor_id: undefined }).success,
+      false,
+    );
+    assert.strictEqual(
+      schema.safeParse({ ...inherited, executor_mode: 'plugin', executor_id: 'codex' }).data
+        ?.executor_id,
+      'codex',
+    );
+    assert.strictEqual(
+      schema.safeParse({ ...inherited, executor_mode: undefined, executor_id: 'default' }).data
+        ?.executor_id,
+      'default',
+    );
+    assert.strictEqual(schema.safeParse({ ...inherited, target_kind: 'preset' }).success, false);
+  });
+
+  test('empty presets still expose a callable implementation profile and recover a mistaken preset selector', async () => {
+    const calls: Array<Parameters<NonNullable<MakaToolContext['spawnChildSession']>>[0]> = [];
+    const ctx: MakaToolContext = {
+      sessionId: 'session-1',
+      turnId: 'parent-turn',
+      cwd: '/tmp/cwd',
+      toolCallId: 'tool-spawn',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+      listChildAgents: async () => ({
+        definitions: [
+          { ...IMPLEMENTATION_AGENT_DEFINITION, availability: { status: 'available' } },
+        ],
+        presets: [],
+      }),
+      spawnChildSession: async (input) => {
+        calls.push(input);
+        return {
+          childSessionId: 'child-session',
+          agentId: IMPLEMENTATION_AGENT_ID,
+          agentName: 'Implementation',
+          turnId: 'child-turn',
+          runId: 'child-run',
+          status: 'completed',
+          permissionMode: 'ask',
+          summary: 'done',
+          artifactIds: [],
+        };
+      },
+    };
+    const spawn = buildSubagentSpawnTool({ definitions: [IMPLEMENTATION_AGENT_DEFINITION] });
+    const schema = spawn.parameters as {
+      parse(input: unknown): Parameters<typeof spawn.impl>[0];
+    };
+    // The real failure: three tasks reused the same mistaken selector and invented executor.
+    await Promise.all(
+      ['Shared validation', 'Storage lifecycle', 'Desktop UI'].map((task) =>
+        assert.rejects(
+          async () =>
+            spawn.impl(
+              schema.parse({
+                subagent_id: 'implementation',
+                executor_id: 'default',
+                isolation: 'worktree',
+                write_back: 'patch',
+                task,
+              }),
+              ctx,
+            ),
+          (error: Error) => {
+            assert.match(error.message, /No child was started/);
+            assert.match(error.message, /"target_kind":"profile"/);
+            assert.match(error.message, /"profile":"implementation"/);
+            assert.match(error.message, /"executor_mode":"inherit"/);
+            assert.match(error.message, /"default" is not a default selector/);
+            return true;
+          },
+        ),
+      ),
+    );
+    assert.strictEqual(calls.length, 0);
+
+    const catalog = (await buildSubagentListTool().impl({}, ctx)) as {
+      presets: unknown[];
+      legacy_profiles: Array<{ spawn_args: Record<string, string> }>;
+    };
+    assert.deepStrictEqual(catalog.presets, []);
+    await spawn.impl(
+      schema.parse({
+        ...catalog.legacy_profiles[0]!.spawn_args,
+        subagent_id: 'unused',
+        executor_id: '',
+        task: 'Shared validation',
+      }),
+      ctx,
+    );
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0]!.agentProfile, IMPLEMENTATION_AGENT_PROFILE);
+    assert.strictEqual(calls[0]!.prompt, 'Shared validation');
+    assert.strictEqual('subagentId' in calls[0]!, false);
+    assert.strictEqual('executorId' in calls[0]!, false);
+  });
+
+  test('preset selectors remain authoritative even when their id matches a built-in profile', async () => {
+    const calls: unknown[] = [];
+    let availability = { status: 'available' };
+    const ctx: MakaToolContext = {
+      sessionId: 'session-1',
+      turnId: 'parent-turn',
+      cwd: '/tmp/cwd',
+      toolCallId: 'tool-spawn',
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+      listChildAgents: async () => ({
+        definitions: [{ ...LOCAL_READ_AGENT_DEFINITION, availability: { status: 'available' } }],
+        presets: [
+          {
+            id: 'implementation',
+            name: 'Custom reader',
+            description: 'Read-only preset with a name shared by a built-in profile.',
+            profile: LOCAL_READ_AGENT_PROFILE,
+            model: 'mock-model',
+            availability,
+          },
+        ],
+      }),
+      spawnChildSession: async (input) => {
+        calls.push(input);
+        return {
+          childSessionId: 'child-session',
+          agentId: LOCAL_READ_AGENT_ID,
+          agentName: 'Custom reader',
+          turnId: 'child-turn',
+          runId: 'child-run',
+          status: 'completed',
+          permissionMode: 'explore',
+          summary: 'done',
+          artifactIds: [],
+        };
+      },
+    };
+    const spawn = buildSubagentSpawnTool();
+    const schema = spawn.parameters as {
+      parse(input: unknown): Parameters<typeof spawn.impl>[0];
+    };
+    const catalog = (await buildSubagentListTool().impl({}, ctx)) as {
+      presets: Array<{ spawn_args: Record<string, string> }>;
+    };
+    const input = schema.parse({
+      ...catalog.presets[0]!.spawn_args,
+      profile: IMPLEMENTATION_AGENT_PROFILE,
+      task: 'Inspect files',
+    });
+    await spawn.impl(input, ctx);
+    assert.partialDeepStrictEqual(calls[0], {
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      subagentId: 'implementation',
+    });
+    availability = { status: 'unavailable' };
+    await assert.rejects(
+      async () => spawn.impl(input, ctx),
+      /Subagent preset "implementation" is unavailable/,
+    );
+    assert.strictEqual(calls.length, 1);
+    await assert.rejects(
+      async () => spawn.impl({ subagent_id: 'invented-preset', task: 'Inspect files' }, ctx),
+      /copy an available choice's spawn_args/,
+    );
+    assert.strictEqual(calls.length, 1);
   });
 
   test('built-in catalog exposes local-read without shell, web, nested, or write tools', () => {
@@ -836,6 +1065,11 @@ describe('subagent tools', () => {
       presets: [
         {
           subagent_id: 'fast-reader',
+          spawn_args: {
+            target_kind: 'preset',
+            subagent_id: 'fast-reader',
+            executor_mode: 'inherit',
+          },
           name: 'Fast reader',
           description: 'Cheap repository inspection.',
           profile: LOCAL_READ_AGENT_PROFILE,
@@ -849,6 +1083,11 @@ describe('subagent tools', () => {
           agent_id: LOCAL_READ_AGENT_ID,
           profile: LOCAL_READ_AGENT_PROFILE,
           name: 'Local Read',
+          spawn_args: {
+            target_kind: 'profile',
+            profile: LOCAL_READ_AGENT_PROFILE,
+            executor_mode: 'inherit',
+          },
           description: 'Read-only repository exploration.',
           workspace: 'same_workspace',
           write_back: 'summary',
@@ -899,6 +1138,14 @@ describe('subagent tools', () => {
           contract: { workspace: 'same_workspace', defaultWriteBack: 'summary' },
           availability: { status: 'available' },
         },
+        {
+          id: 'web-research',
+          profile: 'web_research',
+          name: 'Web Research',
+          description: 'Read-only web research.',
+          contract: { workspace: 'same_workspace', defaultWriteBack: 'summary' },
+          availability: { status: 'unavailable', reason: 'missing_tools' },
+        },
       ],
       presets: Array.from({ length: 11 }, (_, index) => ({
         id: `reader-${index}`,
@@ -947,6 +1194,16 @@ describe('subagent tools', () => {
       status: 'unavailable',
       reason: 'connection_disabled',
     });
+    assert.strictEqual(
+      'spawn_args' in (diagnosticTail.presets as Array<Record<string, unknown>>)[2]!,
+      false,
+    );
+    const unavailableProfile = (
+      diagnosticTail.legacy_profiles as Array<Record<string, unknown>>
+    ).find((profile) => profile.status === 'unavailable');
+    assert.ok(unavailableProfile);
+    assert.strictEqual(unavailableProfile.reason, 'missing_tools');
+    assert.strictEqual('spawn_args' in unavailableProfile, false);
 
     const worstCase = await call(
       {},

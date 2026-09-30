@@ -69,6 +69,13 @@ export class HostPluginPlatformCoordinator {
   readonly #pendingStreamOpens = new Map<string, number>();
 
   readonly handlers: PluginPlatformOperationHandlerMap = {
+    'plugin.executor.query': async (input) => {
+      try {
+        return { ok: true, result: { items: await this.queryExecutors(input) } };
+      } catch (error) {
+        return failure(error);
+      }
+    },
     'plugin.client.query': (input) => this.#client(input),
     'plugin.client.remote.call': (input, context) => this.#remoteCall(input, context),
     'plugin.client.remote.stream.open': (input, context) => this.#remoteStreamOpen(input, context),
@@ -84,7 +91,14 @@ export class HostPluginPlatformCoordinator {
     'plugin.platform.reconcile': () => this.#reconcile(),
   };
 
-  constructor(readonly platform: HostPluginPlatform) {}
+  constructor(
+    readonly platform: HostPluginPlatform,
+    readonly queryExecutors: (
+      input: import('../protocol/plugin-platform.js').PluginExecutorQueryInput,
+    ) => Promise<
+      readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]
+    > = async () => [],
+  ) {}
 
   releaseConnection(connectionId: string): void {
     for (const [streamId, stream] of this.#streams) {

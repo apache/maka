@@ -18,6 +18,7 @@
  */
 
 import type { UiLocale } from '@maka/core/ui-locale';
+import { LOCAL_RUNTIME_HOST_PROFILE } from '@maka/runtime-host/client';
 import type {
   MessageBoxOptions,
   MessageBoxReturnValue,
@@ -47,19 +48,24 @@ interface FatalStartupDiagnosticDialogDeps {
 
 export function defaultRuntimeHostRecoveryDialog(input: {
   readonly locale: UiLocale;
+  readonly profileId: string;
   readonly profileName: string;
   readonly error: Error;
 }): { readonly options: MessageBoxOptions; readonly diagnosticDetails: string } {
   const copy = getNativeDiagnosticDialogCopy(input.locale).defaultRuntimeHostRecovery;
+  const isLocal = input.profileId === LOCAL_RUNTIME_HOST_PROFILE.id;
   return {
     options: {
       type: 'warning',
       title: copy.title,
       message: copy.connectFailed(input.profileName),
       detail: copy.detail,
-      buttons: [copy.retry, copy.useLocal, copy.keepOffline],
+      // "Use Local" is meaningless when Local itself is the one that failed.
+      buttons: isLocal
+        ? [copy.retry, copy.keepOffline]
+        : [copy.retry, copy.useLocal, copy.keepOffline],
       defaultId: 0,
-      cancelId: 2,
+      cancelId: isLocal ? 1 : 2,
       noLink: true,
     },
     diagnosticDetails: input.error.stack ?? `${input.error.name}: ${input.error.message}`,

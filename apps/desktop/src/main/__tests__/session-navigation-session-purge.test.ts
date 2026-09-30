@@ -125,6 +125,7 @@ function installService(
       if (options.rejectPreviewIds?.includes(id)) throw new Error(`preview-unavailable:${id}`);
       return options.previewSubtasks?.[id] ?? 0;
     },
+    moveToProject: async () => ({ ok: true }),
   };
 }
 
@@ -140,6 +141,7 @@ function createActions(input: {
 }) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
+    acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
     clearSessionRendererState: (id) => {
       input.harness.cleared.push(id);
     },

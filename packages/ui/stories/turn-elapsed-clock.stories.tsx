@@ -21,7 +21,7 @@ import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { StoredMessage } from '@maka/core/session';
-import { ProcessingBlock, TurnView } from '../src/chat-turn.js';
+import { TurnView } from '../src/chat-turn.js';
 import { useUiLocale } from '../src/locale-context.js';
 import { applyLiveTurnEvent, armLiveTurn } from '../src/live-turn-projection.js';
 import { materializeTurns, overlayLiveTurn, type TurnViewModel } from '../src/materialize.js';
@@ -160,26 +160,22 @@ export const AdoptsTheRecordedStart: Story = {
   },
 };
 
-// The same Turn once it settles. The duration lives on the turn's footer row
-// with its finish time, NOT on the process disclosure: the disclosure scrolls
-// away as the answer grows, and the settled state is what a reader comes back
-// for. The zh number needs a space before its unit.
+// The same Turn once it settles. The outcome word and the duration stay in
+// the status row at the top of the answer — the same row that carried the
+// running cue — while the finish time drops to the footer as a semantic
+// timestamp. The zh number needs a space before its unit.
 export const SettledDuration: Story = {
   render: () => <SettledTurn />,
   play: async ({ canvasElement }) => {
-    const status = canvasElement.querySelector('.maka-turn-footer-meta .maka-turn-status-line');
-    await expect(status).toHaveTextContent('完成 · 用时 3 分 33 秒');
-    // The finish time is what makes the row worth reading later; the exact clock
-    // depends on the fixture's start, so assert its shape, not a literal.
-    await expect(status?.textContent ?? '').toMatch(/\d{1,2}:\d{2}/);
-    // The disclosure names itself and no longer restates the clock.
-    await expect(canvasElement.querySelector('.maka-processing-summary')).toHaveTextContent(
-      '执行过程',
-    );
+    const statusbar = canvasElement.querySelector('.maka-turn-statusbar');
+    await expect(statusbar).toHaveTextContent('已完成 · 用时 3 分 33 秒');
+    // The finish time lives in the footer as a semantic <time>; the exact
+    // reading depends on the fixture's start, so assert the element exists.
+    await expect(canvasElement.querySelector('.maka-turn-footer time')).not.toBeNull();
   },
 };
 
-/** A settled Turn, so its footer row — which owns the state — is mounted. */
+/** A settled Turn, so its status row states the outcome. */
 function SettledTurn() {
   const turn: TurnViewModel = {
     turnId: TURN_ID,

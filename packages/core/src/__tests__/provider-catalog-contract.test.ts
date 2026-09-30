@@ -32,6 +32,7 @@ import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
   isRetiredProvider,
+  providerAcceptsOutputTokenLimit,
   providerFallbackModelIds,
 } from '../provider-registry.js';
 import { buildConnectionModelCatalogEntries } from '../model-catalog.js';
@@ -72,10 +73,12 @@ describe('Meta Model API provider', () => {
     assert.deepEqual(meta.fallbackModels, ['muse-spark-1.3', 'muse-spark-1.3-contributor']);
     assert.deepEqual(meta.runtimeAdapter, {
       kind: 'openai-compatible',
-      name: 'provider',
       responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     });
-    assert.deepEqual(meta.modelDiscovery, { kind: 'protocol' });
+    assert.deepEqual(meta.modelDiscovery, {
+      kind: 'protocol',
+      excludeModelIdPrefixes: ['muse-image-', 'muse-voice-'],
+    });
     assert.equal(meta.signupUrl, 'https://dev.meta.ai/');
   });
 });
@@ -195,8 +198,8 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
         },
       },
       {
-        providerType: 'openai-responses-compatible',
-        via: 'runtimeAdapter',
+        providerType: 'custom',
+        via: 'protocolAdapters.openai-responses',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
       {
@@ -249,7 +252,7 @@ describe('retired provider contract', () => {
   );
 
   it('pins the entries this catalog retires', () => {
-    assert.deepEqual(retired, ['opencode-free', 'claude-subscription']);
+    assert.deepEqual(retired, ['opencode-free', 'commandcode-go', 'claude-subscription']);
   });
 
   it('keeps a retired provider registered but unwired', () => {
@@ -350,5 +353,17 @@ describe('provider catalog contract — fallback lifecycle', () => {
       }
     }
     assert.deepEqual(regressed, []);
+  });
+});
+
+describe('providerAcceptsOutputTokenLimit', () => {
+  it('refuses an output limit only where the backend rejects max_output_tokens', () => {
+    // The ChatGPT Codex backend answers max_output_tokens with HTTP 400.
+    assert.equal(providerAcceptsOutputTokenLimit('openai-codex'), false);
+    for (const providerType of ['openai', 'anthropic', 'google', 'kimi-coding-plan'] as const) {
+      assert.equal(providerAcceptsOutputTokenLimit(providerType), true, providerType);
+    }
+    // An unknown provider keeps today's behaviour.
+    assert.equal(providerAcceptsOutputTokenLimit('not-a-provider'), true);
   });
 });

@@ -35,7 +35,10 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
-import { clearNewTaskReloadIntent, markNewTaskReloadIntent } from './new-task-reload-intent.js';
+import {
+  clearNewTaskReloadIntent,
+  markNewTaskReloadIntent,
+} from './application/contracts/new-task-reload-intent.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
 import {
   mergeTransientMessageProjection,

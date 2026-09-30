@@ -161,10 +161,6 @@ export interface ConnectionTestTicket {
  * consumed at completion and never validated against the catalog, because there
  * is no state to guard.
  */
-export interface ConnectionUsageTicket {
-  readonly [operationTicketBrand]: 'connection_usage';
-}
-
 export interface InteractiveOAuthLoginTicket {
   readonly [operationTicketBrand]: 'interactive_oauth_login';
 }
@@ -271,16 +267,6 @@ export type BeginConnectionTestResult =
       readonly ticket: ConnectionTestTicket;
       readonly connection: ConnectionCatalogEntry;
       readonly modelId: string | null;
-      readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
-      readonly networkProxy: RuntimePolicy['networkProxy'];
-    };
-
-export type BeginConnectionUsageResult =
-  | ConnectionEffectPreparationFailure
-  | {
-      readonly kind: 'ready';
-      readonly ticket: ConnectionUsageTicket;
-      readonly connection: ConnectionCatalogEntry;
       readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
       readonly networkProxy: RuntimePolicy['networkProxy'];
     };
@@ -465,12 +451,6 @@ export interface RuntimePolicyOperationCoordinator {
     ticket: ConnectionTestTicket,
     result: ConnectionTestSummary,
   ): Promise<ConnectionEffectCompletionResult>;
-  beginConnectionUsage(connectionId: string): Promise<BeginConnectionUsageResult>;
-  /**
-   * Read-only: the usage report is returned to the caller and nothing is
-   * written, so there is nothing to revalidate. The ticket is simply spent.
-   */
-  completeConnectionUsage(ticket: ConnectionUsageTicket): Promise<void>;
 }
 
 export function connectionCredentialLocator(

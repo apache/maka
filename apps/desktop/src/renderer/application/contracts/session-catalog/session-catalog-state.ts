@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useRef } from 'react';
+import { createContext, useContext, useRef } from 'react';
 import { valuesEqual } from '@maka/ui';
 import {
   compareDesktopSessionCatalogSummaries,
@@ -44,6 +44,7 @@ export interface SessionCatalogState {
   readonly sessions: readonly DesktopSessionSummary[];
   readonly revision: number;
   readonly activeSessionId: string | undefined;
+  readonly automaticQueryBlockedSessionIds: ReadonlySet<string>;
   /**
    * Ids a targeted row read reported as gone (`sessions.get` → null). A list
    * omission never lands here: a snapshot taken before a session existed
@@ -58,15 +59,56 @@ export function createSessionCatalogController() {
     sessions: [],
     revision: 0,
     activeSessionId: undefined,
+    automaticQueryBlockedSessionIds: new Set(),
     removedIds: new Set(),
   });
   // Catalog revision at which each row's existence was last confirmed by a
   // patch — the fence a stale list commit is measured against.
   const existenceConfirmedAt = new Map<string, number>();
+  const automaticQueryBlockCounts = new Map<string, number>();
+  const publishAutomaticQueryBlocks = () => {
+    const current = state.getState();
+    const next = new Set(automaticQueryBlockCounts.keys());
+    if (
+      current.automaticQueryBlockedSessionIds.size === next.size
+      && [...next].every((id) => current.automaticQueryBlockedSessionIds.has(id))
+    ) {
+      return;
+    }
+    state.replaceState({ ...current, automaticQueryBlockedSessionIds: next });
+  };
 
   return {
     getState: state.getState,
     subscribe: state.subscribe,
+    isAutomaticQueryBlocked(sessionId: string): boolean {
+      const current = state.getState();
+      return (
+        current.automaticQueryBlockedSessionIds.has(sessionId)
+        || current.sessions.some((session) => session.id === sessionId && session.isArchived)
+      );
+    },
+    acquireAutomaticQueryBlock(sessionIds: readonly string[]): { release(): void } {
+      const ids = [...new Set(sessionIds)];
+      for (const id of ids) {
+        automaticQueryBlockCounts.set(id, (automaticQueryBlockCounts.get(id) ?? 0) + 1);
+      }
+      publishAutomaticQueryBlocks();
+
+      let released = false;
+      return {
+        release(): void {
+          if (released) return;
+          released = true;
+          for (const id of ids) {
+            const count = automaticQueryBlockCounts.get(id) ?? 0;
+            if (count <= 1) automaticQueryBlockCounts.delete(id);
+            else automaticQueryBlockCounts.set(id, count - 1);
+          }
+          publishAutomaticQueryBlocks();
+        },
+      };
+    },
     commitSessions(
       next: readonly DesktopSessionSummary[],
       options?: { observedAtRevision?: number },
@@ -171,9 +213,56 @@ export function createSessionCatalogController() {
 
 export type SessionCatalogController = ReturnType<typeof createSessionCatalogController>;
 
-/** A committed row at a newer revision is authoritative over an older snapshot of it. */
+/** Resolve once the catalog holds `sessionId` — a selection is only durable after the authority has observed the row. */
+export function waitForCatalogSession(
+  catalog: Pick<SessionCatalogController, 'getState' | 'subscribe'>,
+  sessionId: string,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const check = () => {
+      if (catalog.getState().sessions.some((s) => s.id === sessionId)) {
+        unsubscribe();
+        resolve();
+      }
+    };
+    const unsubscribe = catalog.subscribe(check);
+    check();
+  });
+}
+
+/**
+ * A committed row at a newer revision is authoritative over an older snapshot
+ * of it. Equal revisions tie on the live run state's own order: a turn
+ * starting or ending does not move `revision`, so two same-revision reads can
+ * disagree about `runningTurnIds` — the run epoch says which observation is
+ * older, and the stale one must not overwrite the fresher (#5713).
+ *
+ * The epoch counter only orders observations of one Host generation.
+ * Generations themselves are not ordered, so a read from a different
+ * generation is never stale: a restarted Host must take the row over from its
+ * predecessor whatever the two counters read (#5713 review). A successful
+ * cross-generation response cannot exist on the wire, either: closing a
+ * connection rejects every in-flight request with `connection_lost`
+ * (client/connection.ts), so a lagging predecessor read never delivers after
+ * the successor's row has landed.
+ */
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
-  return prior.revision > next.revision;
+  if (prior.revision !== next.revision) return prior.revision > next.revision;
+  const priorGeneration = prior.runHostGeneration;
+  const nextGeneration = next.runHostGeneration;
+  if (
+    priorGeneration !== undefined &&
+    nextGeneration !== undefined &&
+    priorGeneration !== nextGeneration
+  ) {
+    return false;
+  }
+  const priorEpoch = prior.runEpoch;
+  const nextEpoch = next.runEpoch;
+  if (priorEpoch === undefined || nextEpoch === undefined || priorEpoch === nextEpoch) {
+    return false;
+  }
+  return priorEpoch > nextEpoch;
 }
 
 export const selectSessions = (state: SessionCatalogState): readonly DesktopSessionSummary[] =>
@@ -199,11 +288,15 @@ export const selectAuthoritativeSessionIds = (
   state.revision > 0 ? new Set(state.sessions.map(({ id }) => id)) : undefined;
 
 /**
- * Owns the controller for the component's lifetime. Deliberately does NOT
- * subscribe: readers select what they need through `useExternalStoreSelector`.
+ * The shell's catalog instance, mounted once above the feature services.
+ * Providers that need the catalog read it here instead of receiving it as a
+ * prop drilled through the shell. Deliberately does NOT subscribe: readers
+ * select what they need through `useExternalStoreSelector`.
  */
+export const SessionCatalogContext = createContext<SessionCatalogController | null>(null);
+
 export function useSessionCatalogController(): SessionCatalogController {
-  const controllerRef = useRef<SessionCatalogController | null>(null);
-  if (!controllerRef.current) controllerRef.current = createSessionCatalogController();
-  return controllerRef.current;
+  const catalog = useContext(SessionCatalogContext);
+  if (catalog === null) throw new Error('SessionCatalogContext.Provider is missing');
+  return catalog;
 }

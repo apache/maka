@@ -2179,6 +2179,7 @@ export class SqliteSessionMetadataStore {
   async readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
     this.assertOpen();
     for (const sessionId of targetSessionIds) assertSafeSessionId(sessionId);
@@ -2289,11 +2290,11 @@ export class SqliteSessionMetadataStore {
         ) {
           continue;
         }
-        const stopResolution = this.readMessageByIdSync(
-          WORKHUB_COORDINATION_SESSION_ID,
-          `whz_${terminalSuffix}`,
-        );
+        const stopResolution =
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whzt_${terminalSuffix}`) ??
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whz_${terminalSuffix}`);
         if (
+          !includeStopped &&
           stopResolution?.type === 'workhub_coordination' &&
           stopResolution.kind === 'delegation_stop_resolved' &&
           stopResolution.outcome !== 'not_owned'
@@ -3299,6 +3300,23 @@ export class SqliteSessionMetadataStore {
     return rows.map(decodeAgentGraphScheduleUpdateRow);
   }
 
+  async listAgentGraphScheduleRecoveryGraphIds(): Promise<string[]> {
+    this.assertOpen();
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT graph_id
+        FROM agent_graph_schedule_updates
+        ORDER BY graph_id
+      `)
+      .all() as Array<{ graph_id?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.graph_id !== 'string') {
+        throw new Error('Invalid Agent Graph schedule identity');
+      }
+      return row.graph_id;
+    });
+  }
+
   async claimAgentGraphSupervisorWake(
     request: ClaimAgentGraphSupervisorWakeRequest,
   ): Promise<{ wake: AgentGraphSupervisorWakeRecord; created: boolean }> {
@@ -3359,12 +3377,20 @@ export class SqliteSessionMetadataStore {
   }> {
     this.assertOpen();
     assertAgentGraphSupervisorWakeAttempt(request);
+    if (
+      request.maxAttempts !== undefined &&
+      (!Number.isSafeInteger(request.maxAttempts) || request.maxAttempts < 1)
+    ) {
+      throw new Error('Agent graph supervisor wake max attempts must be positive');
+    }
     return this.transaction(() => {
       const wake = this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
       if (
         wake.status === 'delivered' ||
         wake.status === 'running' ||
-        wake.status === 'waiting_permission'
+        wake.status === 'waiting_permission' ||
+        wake.status === 'exhausted' ||
+        (request.maxAttempts !== undefined && wake.attemptCount >= request.maxAttempts)
       ) {
         return { wake, acquired: false };
       }
@@ -3382,9 +3408,18 @@ export class SqliteSessionMetadataStore {
           WHERE graph_id = ?
             AND wake_id = ?
             AND status IN ('pending', 'retryable_failed')
+            AND (? IS NULL OR attempt_count < ?)
         `,
         )
-        .run(request.attemptId, request.turnId, now, request.graphId, request.wakeId);
+        .run(
+          request.attemptId,
+          request.turnId,
+          now,
+          request.graphId,
+          request.wakeId,
+          request.maxAttempts ?? null,
+          request.maxAttempts ?? null,
+        );
       if (updated.changes !== 1) {
         return {
           wake: this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId),
@@ -3485,6 +3520,36 @@ export class SqliteSessionMetadataStore {
           wake.status,
         );
       return this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
+    });
+  }
+
+  async exhaustAgentGraphSupervisorWake(
+    graphId: string,
+    wakeId: string,
+    reason: string,
+  ): Promise<AgentGraphSupervisorWakeRecord> {
+    this.assertOpen();
+    assertGraphLookupIdentity(graphId, 'graph id');
+    assertGraphLookupIdentity(wakeId, 'supervisor wake id');
+    if (!reason.trim() || reason.length > 4_000) {
+      throw new Error(
+        'Agent graph supervisor wake exhaustion reason must be non-empty and bounded',
+      );
+    }
+    return this.transaction(() => {
+      const wake = this.requireAgentGraphSupervisorWakeSync(graphId, wakeId);
+      if (wake.status === 'exhausted') return wake;
+      if (wake.status !== 'retryable_failed') {
+        throw new SessionMetadataConflictError('Agent graph supervisor wake is not retryable');
+      }
+      this.db
+        .prepare(`
+        UPDATE agent_graph_supervisor_wakes
+        SET status = 'exhausted', failure_reason = ?, updated_at = ?
+        WHERE graph_id = ? AND wake_id = ? AND status = 'retryable_failed'
+      `)
+        .run(reason, this.now(), graphId, wakeId);
+      return this.requireAgentGraphSupervisorWakeSync(graphId, wakeId);
     });
   }
 
@@ -6201,6 +6266,7 @@ function decodeAgentGraphSupervisorWakeRow(
       'waiting_permission',
       'delivered',
       'superseded',
+      'exhausted',
       'retryable_failed',
     ].includes(row.status) ||
     !Number.isSafeInteger(row.attemptCount) ||

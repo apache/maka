@@ -27,7 +27,7 @@ import {
   McpClientManager,
 } from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
-import { normalizeMcpConfig } from '@maka/storage/mcp-config-store';
+import { normalizeMcpConfig, subscribeMcpConfigFileChanges } from '@maka/storage/mcp-config-store';
 import {
   connectRemoteRuntimeHost,
   loadOrCreateRuntimeHostClientInstanceId,
@@ -71,11 +71,14 @@ export async function runRuntimeHostCapabilityProviderCli(
   if (!credential)
     throw new Error(`Runtime Host access credential is missing from ${credentialEnv}`);
 
-  const configText = await readFile(configPath, 'utf8');
-  if (Buffer.byteLength(configText, 'utf8') > MAX_MCP_CONFIG_BYTES) {
-    throw new Error('MCP config exceeds 1 MiB');
-  }
-  const config = normalizeMcpConfig(JSON.parse(configText));
+  const readConfig = async () => {
+    const configText = await readFile(configPath, 'utf8');
+    if (Buffer.byteLength(configText, 'utf8') > MAX_MCP_CONFIG_BYTES) {
+      throw new Error('MCP config exceeds 1 MiB');
+    }
+    return normalizeMcpConfig(JSON.parse(configText));
+  };
+  const config = await readConfig();
   const clientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(identityPath);
   const manager = new McpClientManager({
     clientName: 'maka-capability-provider',
@@ -87,6 +90,21 @@ export async function runRuntimeHostCapabilityProviderCli(
     oauthStorage: createCredentialMcpOAuthStorage(createFileCredentialStore(dirname(configPath))),
   });
   await manager.sync(config);
+  // Desktop and the TUI edit this file while the provider runs. One change is
+  // read and applied at a time, so an older read never lands last.
+  let following = Promise.resolve();
+  const stopFollowing = subscribeMcpConfigFileChanges(configPath, (error) => {
+    if (error) {
+      process.stderr.write(`MCP config is no longer followed: ${error.message}\n`);
+      return;
+    }
+    following = following
+      .then(async () => manager.sync(await readConfig()))
+      .catch((failure: unknown) => {
+        const message = failure instanceof Error ? failure.message : String(failure);
+        process.stderr.write(`MCP config change was not applied: ${message}\n`);
+      });
+  });
 
   let service: Awaited<ReturnType<typeof startRuntimeHostCapabilityProviderService>> | undefined;
   let publishedRevision = manager.toolSnapshot().revision;
@@ -133,6 +151,7 @@ export async function runRuntimeHostCapabilityProviderCli(
     return 0;
   } finally {
     clearInterval(reconnectTimer);
+    stopFollowing();
     disposeChanges();
     await service?.close().catch(() => undefined);
     await manager.close();

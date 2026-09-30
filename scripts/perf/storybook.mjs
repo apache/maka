@@ -52,7 +52,77 @@ async function scrollSteps(page) {
     return result;
   });
 }
+async function browserPanelIdle() {
+  const page = await browser.newPage({
+    viewport: { width: 1400, height: 900 },
+    colorScheme: 'light',
+    reducedMotion: 'no-preference',
+  });
+  await page.addInitScript(() => {
+    window.__storyDone = new Promise((resolve, reject) => {
+      const hook = () => {
+        const channel = window.__STORYBOOK_PREVIEW__?.channel;
+        if (!channel) return setTimeout(hook, 20);
+        channel.on('storyFinished', (payload) =>
+          payload?.status === 'error'
+            ? reject(new Error('storyFinished: ' + JSON.stringify(payload)))
+            : resolve(),
+        );
+        for (const event of ['storyThrewException', 'playFunctionThrewException', 'storyErrored'])
+          channel.on(event, (error) => reject(new Error(event + ': ' + (error?.message ?? ''))));
+      };
+      hook();
+    });
+  });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const metrics = async () =>
+    Object.fromEntries(
+      (await cdp.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]),
+    );
+  const taskMs = [];
+  for (let trial = 0; trial < 3; trial++) {
+    await page.goto(
+      server.baseUrl + '/iframe.html?id=product-session-workbar--browser-loaded&viewMode=story',
+    );
+    await page.evaluate(() => window.__storyDone);
+    await page.locator('.maka-browser-strip').waitFor();
+    await page.waitForTimeout(1000);
+    let before = await metrics();
+    for (let sample = 0; sample < 5; sample++) {
+      await page.waitForTimeout(1000);
+      const after = await metrics();
+      const seconds = after.Timestamp - before.Timestamp;
+      taskMs.push(((after.TaskDuration - before.TaskDuration) * 1000) / seconds);
+      before = after;
+    }
+  }
+  await report(
+    'frontend-storybook-browser-idle',
+    {
+      fixture: 'SessionWorkbar BrowserLoaded story (mocked browser service, page loaded)',
+      chromium: browser.version(),
+      viewport: '1400x900',
+      theme: 'light',
+      motion: 'no-preference',
+      repetitions: 3,
+      conditions:
+        'Three fresh story navigations; after the play function finishes and 1s settles, five one-second samples of an idle Workbar with the browser strip showing.',
+      limits:
+        'Synthetic Workbar with no native view or Host; measures the renderer work the strip does to mirror its rect, not the main-process IPC it causes.',
+    },
+    [
+      {
+        scenario: 'browser-panel-idle',
+        metric: 'renderer-task-ms-per-second',
+        ...summarize(taskMs),
+      },
+    ],
+  );
+  await page.close();
+}
 try {
+  await browserPanelIdle();
   const page = await browser.newPage({
     viewport: { width: 1400, height: 900 },
     colorScheme: 'light',

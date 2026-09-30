@@ -116,6 +116,8 @@ export interface AgentGraphScheduleStore {
     request: AgentGraphScheduleUpdateRequest,
   ): Promise<AgentGraphScheduleUpdateResult>;
   listAgentGraphScheduleUpdates(graphId: string): Promise<AgentGraphScheduleUpdate[]>;
+  /** Graphs with durable schedule intent that still requires reconciliation. */
+  listAgentGraphScheduleRecoveryGraphIds?(): Promise<string[]>;
 }
 
 export type AgentGraphIntentAdmissionState = 'claimed' | 'executing' | 'cancelled';

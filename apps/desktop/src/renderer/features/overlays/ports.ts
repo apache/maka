@@ -20,15 +20,15 @@
 import type { SettingsSection } from '@maka/core/settings';
 import type { SearchModal } from '@maka/ui';
 
-/** The thread search the Search modal runs; the type is the modal's own. */
-export type OverlaySearchThread = NonNullable<
+/** The recall search the Search modal runs; the type is the modal's own. */
+export type OverlaySearchRecall = NonNullable<
   Parameters<typeof SearchModal>[0]['deps']
->['searchThread'];
+>['searchRecall'];
 
 /** The minimum environment capabilities the overlays need. */
 export interface OverlaySearchService {
-  thread: OverlaySearchThread;
-  cancelThread(requestId: string): Promise<void>;
+  recall: OverlaySearchRecall;
+  cancelRecall(requestId: string): Promise<void>;
 }
 
 export interface OverlaySettingsSectionStore {

@@ -34,7 +34,7 @@ import {
   buildSyntheticTerminalRuntimeEvent,
 } from '@maka/core/runtime-invocation';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 19;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 20;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -638,6 +638,79 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     CREATE INDEX IF NOT EXISTS runtime_session_turn_extents_by_first
       ON runtime_session_turn_extents(session_id, first_ordinal, last_ordinal);
   `,
+  ],
+  [
+    20,
+    `
+    CREATE INDEX runtime_events_recovery_user_message
+      ON runtime_events(
+        session_id,
+        turn_id,
+        event_id,
+        event_kind,
+        CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.partial')
+        END,
+        CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.role')
+        END,
+        coalesce(CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.content.steering')
+        END, 0)
+      )
+      WHERE event_kind = 'text'
+        AND CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.partial')
+        END = 0
+        AND CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.role')
+        END = 'user'
+        AND coalesce(CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.content.steering')
+        END, 0) = 0;
+
+    -- Historical duplicates must remain readable so the affected identity can
+    -- fail closed. This is intentionally non-unique. CASE keeps a malformed
+    -- legacy payload from aborting the whole schema migration.
+    CREATE INDEX runtime_events_steering_message
+      ON runtime_events(
+        session_id,
+        CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.refs.providerEventId')
+        END
+      )
+      WHERE event_kind = 'text'
+        AND CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.partial')
+        END = 0
+        AND CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.content.steering')
+        END = 1;
+
+    CREATE INDEX runtime_events_tool_dispatch_operation
+      ON runtime_events(
+        CASE
+          WHEN json_valid(payload_json)
+          THEN json_extract(payload_json, '$.actions.toolDispatch.operationId')
+        END
+      )
+      WHERE event_kind = 'tool_dispatch';
+
+    CREATE INDEX tool_operations_unsettled
+      ON tool_operations(invocation_id, operation_id)
+      WHERE current_state = 'prepared'
+        AND result_event_id IS NULL
+        AND dispatch_event_id IS NOT NULL;
+    `,
   ],
 ]);
 

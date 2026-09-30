@@ -20,10 +20,16 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
-import { LocaleProvider } from '@maka/ui';
+import { LocaleProvider, ToastProvider } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { useAppShellSessionWorkspace } from '../../renderer/use-app-shell-session-workspace.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 
@@ -58,15 +64,25 @@ describe('session workspace action identity', () => {
     const sessionB = JSON.stringify(['local', 'b']);
     const sessionC = JSON.stringify(['local', 'c']);
     const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
     let workspace!: Workspace;
     const displays: Array<{ id: string | undefined; messages: StoredMessage[] }> = [];
+    const services = stubConversationServices();
     function Probe(): null {
       workspace = useAppShellSessionWorkspace({ error: () => {} });
       displays.push({ id: workspace.activeId, messages: workspace.messages });
       return null;
     }
     act(() => root.render(createElement(LocaleProvider, {
-      locale: 'en', children: createElement(Probe),
+      locale: 'en',
+      children: createElement(ToastProvider, {
+        children: createElement(ConversationServicesProvider, {
+          services,
+          children: createElement(SessionCatalogContext.Provider, {
+            value: catalog, children: createElement(Probe),
+          }),
+        }),
+      }),
     })));
     act(() => workspace.seedSessions([sessionA, sessionB, sessionC].map((id) => ({
       id, name: id, isFlagged: false, isArchived: false, labels: [],
@@ -166,6 +182,7 @@ describe('session workspace action identity', () => {
 
   it('keeps every action identity fixed across re-renders', () => {
     const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
     const reads: Workspace[] = [];
 
     function Probe(): null {
@@ -175,7 +192,17 @@ describe('session workspace action identity', () => {
 
     act(() => {
       root.render(
-        createElement(LocaleProvider, { locale: 'en', children: createElement(Probe) }),
+        createElement(LocaleProvider, {
+          locale: 'en',
+          children: createElement(ToastProvider, {
+            children: createElement(ConversationServicesProvider, {
+              services: stubConversationServices(),
+              children: createElement(SessionCatalogContext.Provider, {
+                value: catalog, children: createElement(Probe),
+              }),
+            }),
+          }),
+        }),
       );
     });
     assert.equal(reads.length, 1);

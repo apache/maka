@@ -29,10 +29,12 @@ import {
   useComposerMentionsContext,
   type ComposerMentions,
 } from '../../renderer/composer-mentions.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import {
-  ConversationServicesProvider,
-  type ConversationServices,
-} from '../../renderer/features/conversation/index.js';
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 interface CatalogObservation {
   sessionId: string;
@@ -76,32 +78,15 @@ function installCatalogRenderer(t: TestContext) {
     sessionId: string;
     resolve(skills: InvocableSkillEntry[]): void;
   }> = [];
-  const services: ConversationServices = {
-    listMessages: async () => [],
-    cancelMessage: async () => undefined,
-    reconcileMessage: async () => undefined,
-    subscribeChanges: () => () => undefined,
+  const services = stubConversationServices({
     skills: {
       listInvocable: (sessionId: string) => new Promise<InvocableSkillEntry[]>((resolve) => {
         pending.push({ sessionId, resolve });
       }),
     },
-    sessions: {
-      list: () => new Promise(() => undefined),
-      readSnapshot: async () => {
-        throw new Error('Session snapshot is not used in catalog tests');
-      },
-      subscribeChanges: () => () => undefined,
-    },
-    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
-    newTasks: {
-      subscribeChanges: () => () => undefined,
-      listInvocableSkills: async () => [],
-      searchFiles: async () => ({ ok: false, reason: 'no_project' }),
-    },
-    mcp: { subscribeChanges: () => () => undefined },
-  };
+  });
 
+  const sessionCatalog = createSessionCatalogController();
   const observations: CatalogObservation[] = [];
   function Consumer({ sessionId }: { sessionId: string }) {
     const mentions = useComposerMentionsContext();
@@ -145,11 +130,14 @@ function installCatalogRenderer(t: TestContext) {
         locale: 'en',
         children: createElement(ConversationServicesProvider, {
           services,
-          children: createElement(ComposerMentionsProvider, {
-            sessionId,
-            projectPath,
-            skillCatalogRevision,
-            children: createElement(Consumer, { sessionId }),
+          children: createElement(SessionCatalogContext.Provider, {
+            value: sessionCatalog,
+            children: createElement(ComposerMentionsProvider, {
+              sessionId,
+              projectPath,
+              skillCatalogRevision,
+              children: createElement(Consumer, { sessionId }),
+            }),
           }),
         }),
       })));
