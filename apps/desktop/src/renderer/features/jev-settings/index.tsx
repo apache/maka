@@ -17,25 +17,25 @@
  * under the License.
  */
 
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { JEV_COPY } from '../../locales/settings-jev-copy.js';
-import { useActionGuard } from '../../application/contracts/settings-presentation/index.js';
+import {
+  SettingsActions,
+  SettingsField,
+  SettingsRow,
+  SettingsSection,
+  useActionGuard,
+} from '../../application/contracts/settings-presentation/index.js';
 import type { AppSettings, UpdateAppSettingsInput, UpdateAppSettingsResult } from '@maka/core/settings';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 
-
-export function JevSettingsController(props: {
+export function JevSettingsSection(props: {
+  settings: AppSettings['jev'];
   isInteractive: boolean;
   onUpdate(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
-  children(state: {
-    copy: typeof JEV_COPY.en;
-    key: string;
-    setKey(value: string): void;
-    saving: boolean;
-    save(patch: Partial<AppSettings['jev']>): Promise<void>;
-  }): ReactNode;
 }) {
-
+  const { settings, isInteractive } = props;
   const locale = useUiLocale();
   const copy = JEV_COPY[locale];
   const [key, setKey] = useState('');
@@ -44,7 +44,7 @@ export function JevSettingsController(props: {
   const mounted = useMountedRef();
   const toast = useToast();
   async function save(patch: Partial<AppSettings['jev']>) {
-    if (!props.isInteractive || !guard.begin('save')) return;
+    if (!isInteractive || !guard.begin('save')) return;
     setSaving(true);
     try {
       await props.onUpdate({ jev: patch });
@@ -56,5 +56,27 @@ export function JevSettingsController(props: {
       if (mounted.current) setSaving(false);
     }
   }
-  return props.children({ copy, key, setKey, saving, save });
+  return (
+    <Collapsible trigger={copy.advanced} defaultIsOpen={false}>
+      <SettingsSection>
+        <SettingsRow label={copy.title} description={copy.help} align="start" end={(
+          <Switch label={copy.title} isLabelHidden value={settings.enabled}
+            isDisabled={!isInteractive || saving || !settings.apiKey}
+            onChange={(enabled) => void save({ enabled })} />
+        )} />
+        <SettingsField>
+          <TextInput label={copy.key} type="password" value={key}
+            placeholder={settings.apiKey ? copy.saved : 'TypeSafe API Key'}
+            description={copy.behavior} isDisabled={!isInteractive || saving}
+            width="100%" onChange={setKey} />
+        </SettingsField>
+        <SettingsActions>
+          <Button label={saving ? copy.saving : copy.save} variant="secondary"
+            isDisabled={!isInteractive || saving || !key.trim()} onClick={() => void save({ apiKey: key.trim() })} />
+          {settings.apiKey && <Button label={copy.clear} variant="secondary"
+            isDisabled={!isInteractive || saving} onClick={() => void save({ apiKey: '', enabled: false })} />}
+        </SettingsActions>
+      </SettingsSection>
+    </Collapsible>
+  );
 }

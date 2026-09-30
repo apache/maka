@@ -88,7 +88,20 @@ interface PlanControlRetries {
   resume?: PlanResumeRetry;
 }
 
-export function usePlanModeState(session: SessionSummary | undefined): PlanModeState {
+interface AutomaticQueryGate {
+  subscribe(listener: () => void): () => void;
+  isAutomaticQueryBlocked(sessionId: string): boolean;
+}
+
+const UNBLOCKED_QUERY_GATE: AutomaticQueryGate = {
+  subscribe: () => () => undefined,
+  isAutomaticQueryBlocked: () => false,
+};
+
+export function usePlanModeState(
+  session: SessionSummary | undefined,
+  automaticQueryGate: AutomaticQueryGate = UNBLOCKED_QUERY_GATE,
+): PlanModeState {
   const toastApi = useToast();
   const locale = useUiLocale();
   const copy = getPlanModeCopy(locale);
@@ -109,8 +122,10 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
     setPending(false);
   }
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options: { automatic?: boolean } = {}) => {
+    const { automatic = true } = options;
     if (!session) return;
+    if (automatic && automaticQueryGate.isAutomaticQueryBlocked(session.id)) return;
     const owner = scopeRef.current;
     // A read belongs to the Session this render was made for, and must not even
     // claim a sequence for a Session the panel has already left — that would
@@ -129,20 +144,33 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       if (scopeRef.current !== owner || owner.sequence !== sequence) return;
       throw cause;
     }
-    if (scopeRef.current !== owner || owner.sequence !== sequence) return;
+    if (
+      scopeRef.current !== owner
+      || owner.sequence !== sequence
+      || (automatic && automaticQueryGate.isAutomaticQueryBlocked(session.id))
+    ) return;
     setState(next);
-  }, [session?.id]);
+  }, [automaticQueryGate, session?.id]);
 
   useEffect(() => {
     const scope = scopeRef.current;
     setState(undefined);
     setError(undefined);
     if (!session) return;
+    let queryBlocked = automaticQueryGate.isAutomaticQueryBlocked(session.id);
     const refreshOrReport = () => void refresh().catch((cause) => {
+      if (queryBlocked) return;
       reportUnexpectedError('plan-mode:refresh', cause);
       setError(copy.operationFailed);
     });
     refreshOrReport();
+    const unsubscribeQueryGate = automaticQueryGate.subscribe(() => {
+      const next = automaticQueryGate.isAutomaticQueryBlocked(session.id);
+      if (next === queryBlocked) return;
+      queryBlocked = next;
+      scope.sequence += 1;
+      if (!queryBlocked) refreshOrReport();
+    });
     const unsubscribeEvents = window.maka.sessions.subscribeEvents(session.id, (event: SessionEvent) => {
       if (
         event.type === 'plan_submitted'
@@ -160,10 +188,11 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
       // Supersedes every read this run started: a Session switch, a close and an
       // unmount all pass through here, and the next effect refreshes again.
       scope.sequence += 1;
+      unsubscribeQueryGate();
       unsubscribeEvents();
       unsubscribePlanChanges();
     };
-  }, [copy.operationFailed, session?.id, session?.collaborationMode, refresh]);
+  }, [automaticQueryGate, copy.operationFailed, session?.id, session?.collaborationMode, refresh]);
 
   const run = useCallback(
     async (
@@ -186,7 +215,7 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
           setError(planControlFailureCopy(result.error, copy));
           return;
         }
-        await refresh();
+        await refresh({ automatic: false });
       } catch (cause) {
         if (scopeRef.current !== owner) return;
         reportUnexpectedError('plan-mode:action', cause);

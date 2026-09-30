@@ -487,10 +487,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: WorkHubMessageAssignmentRequest,
   ): Promise<WorkHubMessageAssignmentResult>;
   readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
-  /** Newest active assignment first, across every requested target. */
+  /** Newest assignment first. includeStopped retains stopped links for lineage-aware controls; superseded links remain excluded. */
   readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readWorkHubReplacement(
     delegationId: string,
@@ -503,9 +504,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   ): Promise<WorkHubDelegationSupersededMessage | undefined>;
   readWorkHubStopRequest(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
   readWorkHubStopResolution(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
   /**
    * Durably binds one action identity to one exact WorkHub operation before its

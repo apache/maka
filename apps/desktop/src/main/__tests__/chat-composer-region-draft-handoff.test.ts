@@ -85,6 +85,12 @@ async function mountRegion(): Promise<{
   Object.assign(document, { getSelection });
   Object.assign(window, {
     getSelection,
+    getComputedStyle: () =>
+      ({
+        direction: 'ltr',
+        writingMode: 'horizontal-tb',
+        getPropertyValue: () => '',
+      }) as unknown as CSSStyleDeclaration,
     matchMedia: () =>
       ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
   });

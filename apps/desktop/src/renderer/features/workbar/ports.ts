@@ -21,6 +21,7 @@ import type { SessionInspectorService } from '../../application/contracts/sessio
 export type { SessionInspectorService, SessionTracePage, SessionUsageSummary } from '../../application/contracts/session-inspector/service.js';
 
 import type {
+  AttachmentRef,
   MessageQueuePlacement,
   QuoteRef,
   SessionEvent,
@@ -32,6 +33,7 @@ import type {
   ArtifactSaveResult,
   ArtifactTextReadResult,
 } from '@maka/core/artifacts';
+import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSource } from '@maka/core/git-review';
 import type { PermissionMode } from '@maka/core/permission';
@@ -60,6 +62,12 @@ export type WorkbarUnsubscribe = () => void;
 export type WorkbarIngestInput =
   | { approvalId: string; name: string; mimeType?: string }
   | { file: File };
+
+/** A send's attachments: new files to ingest, and Host attachments a restored draft already owns. */
+export interface WorkbarSubmittedAttachments {
+  attachmentItems?: WorkbarIngestInput[];
+  retainedAttachments?: AttachmentRef[];
+}
 
 export interface WorkbarReviewService {
   read(input: {
@@ -167,6 +175,7 @@ export interface WorkbarAttachmentsService {
     | { ok: true; base64: string; mimeType: string }
     | { ok: false; reason: string }
   >;
+  detectDirectories?(files: readonly File[]): Promise<readonly boolean[]>;
 }
 
 export interface WorkbarWorkBoardService {
@@ -183,6 +192,7 @@ export type SideChatSendResult =
   | { ok: true; turnId: string; steered?: false }
   | { ok: true; turnId: string; steered: true; messageId: string }
   | { ok: false; reason: 'outcome_unknown'; messageId: string }
+  | { ok: false; reason: 'attachment_blocked'; code: AttachmentIngestBlockedCode; messageId?: never }
   | { ok: false; reason?: string; messageId?: never };
 
 export type SideChatFollowUpResult =
@@ -223,8 +233,7 @@ export interface SideChatSessionPort {
       turnId: string;
       text: string;
       quotes?: QuoteRef[];
-      attachmentItems?: WorkbarIngestInput[];
-    },
+    } & WorkbarSubmittedAttachments,
   ): Promise<SideChatSendResult>;
   stop(
     sessionId: string,
@@ -235,7 +244,7 @@ export interface SideChatSessionPort {
     placement: MessageQueuePlacement,
     text: string,
     admissionId: string,
-    content?: { quotes?: QuoteRef[]; attachmentItems?: WorkbarIngestInput[] },
+    content?: { quotes?: QuoteRef[] } & WorkbarSubmittedAttachments,
   ): Promise<SideChatFollowUpResult>;
   queryMessageExecutions(
     sessionId: string,
@@ -243,13 +252,7 @@ export interface SideChatSessionPort {
   ): Promise<TurnMessageExecutionQueryResult>;
   retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
   promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
-  updateQueueEntry(
-    sessionId: string,
-    entryId: string,
-    expectedQueueRevision: number,
-    text: string,
-  ): Promise<void>;
-  reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
+  reorderQueueEntries(sessionId: string, entryIds: readonly string[], expectedQueueRevision: number): Promise<void>;
   setPermissionMode(
     sessionId: string,
     mode: PermissionMode,
@@ -284,6 +287,15 @@ export interface SideChatSessionPort {
 export interface WorkbarServices {
   popupMenu(input: import('../../../shared/native-menu.js').NativeMenuRequest): Promise<string | null>;
   readonly review: WorkbarReviewService;
+  /**
+   * Explicit qualified refs persist per Session across panel/app restarts.
+   * `null` means unpinned: new Sessions follow their repository's current default.
+   * Unavailable persistence reads as null; writes are best-effort and never throw.
+   */
+  readonly reviewBaseBranchPreference: {
+    read(sessionId: string): string | null;
+    write(sessionId: string, branch: string | null): void;
+  };
   readonly terminal: WorkbarTerminalService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;

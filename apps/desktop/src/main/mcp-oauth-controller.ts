@@ -131,7 +131,6 @@ export function createMcpOAuthController(deps: McpOAuthControllerDeps): McpOAuth
   const boundedAbandon = (serverId: string): Promise<void> =>
     new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, abandonGraceMs);
-      timer.unref?.();
       void deps.manager
         .abandonAuthorization(serverId)
         .catch(() => {})
@@ -355,7 +354,6 @@ function createLoginDeadline(timeoutMs: number): {
       round.abort(new Error('Timed out waiting for the browser login'));
       reject(new Error('Timed out waiting for the browser login'));
     }, timeoutMs);
-    timer.unref();
     cancel = () => clearTimeout(timer);
     // A user cancellation ends the round the same way a timeout does: the
     // race rejects and the signal fences the round's late writes.

@@ -44,6 +44,20 @@
   color: var(--muted-foreground);
 }
 
+.providerEndpointField {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.providerRequestUrlPreview {
+  margin: 0;
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 980px) {
   .app {
     grid-template-columns: 1fr;

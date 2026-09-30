@@ -1,0 +1,79 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Windows ACP integration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-acp.yml'
+      - 'packages/cli/src/acp/**'
+      - 'packages/cli/src/__tests__/acp-*.ts'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-acp.yml'
+      - 'packages/cli/src/acp/**'
+      - 'packages/cli/src/__tests__/acp-*.ts'
+  # Exercise Windows ACP when a shared dependency changes outside the ACP paths.
+  schedule:
+    - cron: '41 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-acp-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  windows_acp:
+    name: windows_acp
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm.cmd ci
+
+      - name: Build test artifacts
+        run: npm.cmd run build:test
+
+      - name: Verify copied ACP sessions on Windows
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="branch and revision targets continue with their own Artifacts and Session Memory" `
+            packages/cli/dist/__tests__/acp-artifact-memory-child-process.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/acp-copy-integration.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/acp-copy-integration.tap"
+          if ($output -notcontains '# pass 1' -or $output -notcontains '# fail 0') {
+            Write-Error 'The ACP copy integration case did not pass exactly once on Windows'
+            exit 1
+          }

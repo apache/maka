@@ -22,7 +22,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { userFacingText } from '@maka/core/session';
 import type { ComposerHandle } from '@maka/ui';
-import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   isSessionWorkspaceUnavailableError,
@@ -57,7 +57,6 @@ export type TurnRevisionDraft = {
   copyPhase: SessionCopyAttemptPhase;
   /** Active owner of the draft. Changes to the branch child after prepare. */
   draftSessionId: string;
-  originalText: string;
   /** Composer text that was present before edit began; restored on cancel.
    *  Staged Skills ride along inside it as `/skill:<id>` chips. */
   previousComposerText: string;
@@ -173,7 +172,6 @@ export function createAppShellRevisionActions(deps: {
       copyId: copyAttempt.copyId,
       copyPhase: copyAttempt.phase,
       draftSessionId: sessionId,
-      originalText: prompt,
       previousComposerText: composerRef.current?.getText() ?? '',
     });
     composerRef.current?.setText(prompt);

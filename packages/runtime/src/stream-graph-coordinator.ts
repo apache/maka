@@ -47,7 +47,7 @@ import {
   hydrateAgentGraphInputHandoffs,
   renderAgentGraphScheduledWorkPrompt,
 } from './stream-graph-handoff.js';
-import { buildAgentGraphReadinessSnapshot } from './stream-graph-readiness.js';
+import { buildAgentGraphReadinessSnapshot as buildReadinessSnapshot } from './stream-graph-readiness.js';
 import type {
   AgentGraphSupervisorObservation,
   AgentGraphSupervisorObserver,
@@ -622,10 +622,10 @@ export class AgentGraphCoordinator {
     assertUniqueClaims(graphId, claims);
     return {
       projection,
-      readiness: buildAgentGraphReadinessSnapshot({
+      readiness: buildReadinessSnapshot({
         topology,
         records: projection.records,
-        policies: [],
+        policies: Object.freeze([]),
       }),
       claims,
     };

@@ -39,6 +39,8 @@
 import { createRequire } from 'node:module';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
 import { resolveOverlayAssetDir } from '../overlay-assets.js';
+import { auxiliaryWindowRegistry } from '../auxiliary-window-registry.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 import {
   PIP_DEFAULT_EDGE,
   PIP_MARGIN,
@@ -203,10 +205,9 @@ export function pipWindowOptions(
 export function defaultCreateWindow(
   options: BrowserWindowConstructorOptions,
   htmlPath: string,
+  revealMode: WindowRevealMode,
 ): PipWindowLike {
-  const require = createRequire(import.meta.url);
-  const { BrowserWindow } = require('electron') as typeof import('electron');
-  const w = new BrowserWindow(options);
+  const w = auxiliaryWindowRegistry.create('pip', options);
   // Click-through with moves forwarded: the page still sees the pointer cross
   // it, which is how it knows to ask for the clicks back.
   w.setIgnoreMouseEvents(true, { forward: true });
@@ -263,9 +264,9 @@ export function defaultCreateWindow(
     },
     setBounds: (bounds) => w.setBounds(bounds),
     getBounds: () => w.getBounds(),
-    showInactive: () => w.showInactive(),
+    showInactive: () => auxiliaryWindowRegistry.show('pip', w, revealMode),
     setIgnoreMouseEvents: (ignore) => w.setIgnoreMouseEvents(ignore, { forward: true }),
     isDestroyed: () => w.isDestroyed(),
-    destroy: () => w.destroy(),
+    destroy: () => auxiliaryWindowRegistry.destroy(w),
   };
 }

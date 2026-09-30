@@ -21,7 +21,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { QUOTE_COMMENT_MAX_LENGTH, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
@@ -134,6 +134,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
   });
 
+  test('publishes a new compatibility epoch for durable external turn origins', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 189);
+  });
+
   test('publishes a new compatibility epoch for mandatory submit Skill outcomes', () => {
     // Submit Skill outcomes and explicit OAuth Connection targets independently
     // claimed epoch 78, so their merge requires a distinct compatibility boundary.
@@ -237,6 +241,10 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('publishes a new compatibility epoch for queued message editing', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
+  });
+
+  test('publishes a new compatibility epoch for queue reorder revision fencing', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 192);
   });
 
   test('publishes a new compatibility epoch for the project registration preference', () => {
@@ -519,38 +527,6 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeSessionContinuitySnapshot(waiting), waiting);
-    const retrying = {
-      ...continuitySnapshot('epoch-1'),
-      rootTurn: {
-        ...continuitySnapshot('epoch-1').rootTurn,
-        providerRetry: {
-          phase: 'scheduled' as const,
-          attempt: 8,
-          maxAttempts: 10,
-          delayMs: 40_000,
-          reason: 'rate_limit' as const,
-        },
-      },
-    };
-    assert.deepEqual(decodeSessionContinuitySnapshot(retrying), retrying);
-    // Snapshots written after #3393 carry the host-clock schedule time so a
-    // re-projection can recompute the remaining wait; the field is optional
-    // for older snapshots.
-    const retryingWithTs = {
-      ...continuitySnapshot('epoch-1'),
-      rootTurn: {
-        ...continuitySnapshot('epoch-1').rootTurn,
-        providerRetry: {
-          phase: 'scheduled' as const,
-          attempt: 8,
-          maxAttempts: 10,
-          delayMs: 40_000,
-          ts: 1_700_000_000_000,
-          reason: 'rate_limit' as const,
-        },
-      },
-    };
-    assert.deepEqual(decodeSessionContinuitySnapshot(retryingWithTs), retryingWithTs);
     assert.throws(
       () =>
         decodeSessionContinuitySnapshot({
@@ -1602,92 +1578,6 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
-    const entryRetract = {
-      requestId: 'entry-retract-request-1',
-      operation: 'queue.entry.retract' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        retractId: 'retract-2',
-      },
-    };
-    const entryPromote = {
-      requestId: 'entry-promote-request-1',
-      operation: 'queue.entry.promote' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        promoteId: 'promote-1',
-      },
-    };
-    const entryUpdate = {
-      requestId: 'entry-update-request-1',
-      operation: 'queue.entry.update' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        entryId: 'entry-1',
-        updateId: 'update-1',
-        expectedQueueRevision: 7,
-        text: 'updated message',
-      },
-    };
-    const entriesReorder = {
-      requestId: 'entries-reorder-request-1',
-      operation: 'queue.entries.reorder' as const,
-      input: {
-        originHostEpoch: 'epoch-1',
-        sessionId: 'session-1',
-        reorderId: 'reorder-1',
-        entryIds: ['entry-2', 'entry-1'],
-      },
-    };
-    assert.deepEqual(decodeClientFrame(entryRetract), entryRetract);
-    assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
-    assert.deepEqual(decodeClientFrame(entryUpdate), entryUpdate);
-    assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entryUpdate,
-          input: { ...entryUpdate.input, text: '   ' },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entriesReorder,
-          input: { ...entriesReorder.input, entryIds: ['entry-1', 'entry-1'] },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entriesReorder,
-          input: { ...entriesReorder.input, entryIds: ['not/a/semantic/id'] },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entryRetract,
-          input: { ...entryRetract.input, generation: 1 },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeClientFrame({
-          ...entryPromote,
-          input: { ...entryPromote.input, entryId: 'not/a/semantic/id' },
-        }),
-      isInvalidFrame,
-    );
     assert.throws(
       () =>
         decodeClientFrame({ ...submit, input: { ...submit.input, originHostEpoch: undefined } }),
@@ -1773,6 +1663,49 @@ describe('Runtime Host bootstrap protocol', () => {
         content: { text: 'plain' },
       },
     });
+  });
+
+  test('allows only cloud activation as an external-message origin on turn.start', () => {
+    const start = {
+      requestId: 'activation-start',
+      operation: 'turn.start' as const,
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-activation',
+        content: { text: 'Inspect the workspace' },
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      },
+    };
+    assert.deepEqual(decodeClientFrame(start), start);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...start,
+          input: { ...start.input, origin: { kind: 'cloud_activation', extra: true } },
+        }),
+      isInvalidFrame,
+    );
+    for (const origin of [
+      { kind: 'goal', goalId: 'goal-1' },
+      { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
+      { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },
+      {
+        kind: 'workhub_result',
+        eventId: 'event-1',
+        actionId: 'action-1',
+        delegationId: 'delegation-1',
+        targetSessionId: 'session-2',
+        targetTurnId: 'turn-2',
+      },
+      { kind: 'legacy_automation', automationId: 'automation-1' },
+      { kind: 'automation', automationId: 'automation-2' },
+    ]) {
+      assert.throws(
+        () => decodeClientFrame({ ...start, input: { ...start.input, origin } }),
+        isInvalidFrame,
+        `external turn.start must reject ${origin.kind}`,
+      );
+    }
   });
 
   test('bounds turn.start feedback as one transport-safe result', () => {
@@ -1910,6 +1843,7 @@ describe('Runtime Host bootstrap protocol', () => {
         quotes: Array.from({ length: TURN_MESSAGE_QUOTE_MAX_COUNT }, (_, index) => ({
           text: `excerpt-${index}`,
           label: 'Assistant',
+          comment: 'why this matters',
           sourceTurnId: `turn-${index}`,
         })),
       }),
@@ -1922,6 +1856,8 @@ describe('Runtime Host bootstrap protocol', () => {
       [{ text: 'excerpt', label: 'x'.repeat(TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', sourceTurnId: 'bad/id' }],
       [{ text: 'excerpt', sourceTurnId: 'x'.repeat(129) }],
+      [{ text: 'excerpt', comment: '' }],
+      [{ text: 'excerpt', comment: 'x'.repeat(QUOTE_COMMENT_MAX_LENGTH + 1) }],
       [{ text: 'excerpt', extra: true }],
     ]) {
       assert.throws(() => submit({ text: 'valid', quotes }), isInvalidFrame);
@@ -2105,31 +2041,6 @@ describe('Runtime Host bootstrap protocol', () => {
             operation: 'turn.message.submit',
             ok: true,
             result: { disposition: 'blocked', skillInvocation },
-          }),
-        isInvalidFrame,
-      );
-    }
-    for (const [operation, requestId] of [
-      ['queue.entry.retract', 'entry-retract-response'],
-      ['queue.entry.promote', 'entry-promote-response'],
-      ['queue.entry.update', 'entry-update-response'],
-      ['queue.entries.reorder', 'entries-reorder-response'],
-    ] as const) {
-      assert.doesNotThrow(() =>
-        decodeHostFrame({
-          requestId,
-          operation,
-          ok: true,
-          result: { queueRevision: 8 },
-        }),
-      );
-      assert.throws(
-        () =>
-          decodeHostFrame({
-            requestId,
-            operation,
-            ok: true,
-            result: { queueRevision: 8, retracted: [] },
           }),
         isInvalidFrame,
       );

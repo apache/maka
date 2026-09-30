@@ -142,6 +142,15 @@ describe('bootstrap selection lease', () => {
     assert.equal(state.activeId(), undefined);
   });
 
+  it('skips an archived bootstrap-owned selection', () => {
+    const state = harness('archived');
+    assert.equal(
+      state.lease.reconcile([session('archived', 2, true), session('active', 1)]),
+      true,
+    );
+    assert.equal(state.activeId(), 'active');
+  });
+
   it('does not reconcile after release', () => {
     const state = harness();
     state.lease.release();

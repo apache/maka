@@ -35,6 +35,7 @@ export interface DesktopLocalMessage {
   readonly state: DesktopLocalMessageState;
   readonly canCancel: boolean;
   readonly placement: 'current_turn' | 'next_turn';
+  readonly localDisplayPlacement?: 'current_turn' | 'next_turn';
   readonly text: string;
   readonly attachments: readonly AttachmentRef[];
   readonly directoryReferences?: readonly DirectoryReference[];
@@ -42,6 +43,8 @@ export interface DesktopLocalMessage {
   readonly inlineReferences: readonly InlineReference[];
   readonly turnId?: string;
   readonly error?: string;
+  /** Main can reach the Host, so it delivers the message without the user. */
+  readonly delivering?: true;
 }
 
 export interface DesktopCachedTranscript {

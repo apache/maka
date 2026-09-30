@@ -21,12 +21,15 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type CSSProperties,
   type ReactNode,
+  type Ref,
   type RefObject,
 } from 'react';
 import { Virtualizer, type CustomContainerComponentProps, type VirtualizerHandle } from 'virtua';
@@ -43,6 +46,8 @@ import {
   type PromptAnchorRailTurn,
 } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
+import { findQuoteTextRange } from './selection-quote-target.js';
+import { QuoteCommentPanel } from './quote-comment-panel.js';
 import type { ProviderType } from '@maka/core/llm-connections';
 import { isUserVisibleSessionSystemNote, type SessionSummary, type StoredMessage } from '@maka/core/session';
 import type {
@@ -57,12 +62,10 @@ import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText } from './materialize.js';
 import { selectTailTransientMessages } from './transient-placement.js';
 import { useTranscriptProjection } from './use-transcript-projection.js';
-import type { LiveProviderRetry, LiveTurnProjection } from './live-turn-projection.js';
+import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
-  ModelProviderRetryIndicator,
-  LocalizedChatMessage,
-  TurnStatusBar,
   TurnView,
+  PendingTurnAnswer,
   TransientUserMessage,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
@@ -91,29 +94,25 @@ import {
  * left to push the reader. virtua's default is 200px and a wheel notch travels
  * 600, so a row went from unmounted to straddling within one notch and was
  * always measured too late: reading upwards through the 24-Turn geometry scene
- * jumped 13 times, by 5 to 194px.
- *
- * 2000px fixed the tall-Turn cases it was measured against but not the tallest
- * ones: a Turn whose real height exceeds the margin still reaches the reader
- * unmeasured, and the correction that lands then is the one virtua does not
- * absorb. On the 24-Turn geometry scene that row is ~3000px, so the cold sweep
- * slipped twice, displacing the reading anchor by 365px — and the gate caught it
- * in most runs, not rarely.
- *
- * The value is bounded on BOTH sides, which is why it is 4000 and not "as large
- * as possible". Under the tallest Turn, the gate fails as described. Far above
- * it — 6000 made the first upward reader step mount enough rows at once to move
- * the anchor by a full step (`per-step drift: -200` in
- * `upward-traversal-holds-turn-geometry`, a story that walks the transcript in
- * 200px reader steps). 4000 leaves the tall Turn measured before the reader
- * arrives while the first step still mounts a viewport's worth of rows, not a
- * page: the gate now slips at most once and displaces the anchor by ≤25px, and
- * the traversal story stays within its 1px budget.
- *
- * Mounting further ahead costs layout but not responsiveness: the gate's own
- * `layoutMs` reads 27–33ms here, no higher than at 2000px.
+ * jumped 13 times, by 5 to 194px. Mounting 2000px ahead leaves the measurement
+ * room to land before the row reaches the reader.
  */
-const MEASURE_AHEAD_MARGIN = 4000;
+const MEASURE_AHEAD_MARGIN = 2000;
+
+/** The note panel at its tallest (the input grows to four rows); decides
+ *  whether it fits below its excerpt. */
+const QUOTE_ANNOTATION_PANEL_HEIGHT = 160;
+// Half the panel's fixed 320px width plus an edge margin — the panel is
+// center-anchored, so x must stay this far inside the window.
+const QUOTE_ANNOTATION_PANEL_HALF = 168;
+/** The note panel hangs centred below its excerpt, or above it when the window
+ *  has no room below, so the text it annotates stays readable. */
+const excerptAnchor = (box: DOMRect) => ({
+  x: box.left + box.width / 2,
+  top: box.top,
+  bottom: box.bottom,
+});
+
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -143,11 +142,9 @@ export interface ChatViewGoalIndicatorProps {
  * plus `hostTurnId` for the grouping once the Host names one.
  */
 export interface TransientUserMessageProjection {
-  /** Held above the composer until Runtime emits steering_message. */
-  pendingSteering?: boolean;
   deliveryStatus?: string;
   deliveryDetail?: string;
-  deliveryActions?: readonly { label: string; onClick(): void }[];
+  deliveryActions?: readonly { label: string; icon: ReactNode; onClick(): void | Promise<void> }[];
   id: string;
   text: string;
   ts: number;
@@ -155,17 +152,24 @@ export interface TransientUserMessageProjection {
   directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
-  /**
-   * Presentation-only placement until canonical transcript grouping arrives.
-   * Pending steering and next-turn messages stay in the composer queue; an
-   * unresolved current-turn root prompt can render beside its live Turn.
-   */
-  transientPlacement: 'current_turn' | 'next_turn';
+  /** Follow-ups stay in the composer queue until the Host takes them. */
+  transientPlacement: 'transcript' | 'follow_up';
   /** The Host Turn this Message is already bound to, once the Host named one. */
   hostTurnId?: string;
 }
 
+export interface ChatViewHandle {
+  /**
+   * Re-open the note editor for `pendingQuotes[index]` over its own excerpt.
+   * Returns false when the excerpt is not in this transcript — the caller
+   * falls back to editing beside the composer's token.
+   */
+  openQuoteAnnotation(index: number): boolean;
+}
+
 export function ChatView(props: {
+  /** Imperative handle for host-driven transcript gestures. */
+  handleRef?: Ref<ChatViewHandle>;
   messages: StoredMessage[];
   transientMessages?: readonly TransientUserMessageProjection[];
   messageLoading?: boolean;
@@ -215,7 +219,7 @@ export function ChatView(props: {
    */
   emptyOverride?: ReactNode;
   /** Optional host-owned identity beside a turn; absent for ordinary transcripts. */
-  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; promptStatus?: ReactNode; messageRail?: ReactNode }>;
+  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; messageRail?: ReactNode }>;
   /** Session-owned records anchored after a durable conversation turn. */
   conversationItems?: ReadonlyArray<{
     id: string;
@@ -244,7 +248,7 @@ export function ChatView(props: {
    * imply it: a deriver rebuilt in the render body satisfies both and silently
    * gives back every re-render this projection exists to avoid, with no test
    * turning red. Supply it from a hook that holds the derivation in a ref (see
-   * `useAppShellTurnPresentation`); the one-shot form is for callers with no
+   * `useChatTurnPresentation`); the one-shot form is for callers with no
    * render loop at all, such as stories.
    */
   deriveTurnPresentation?: TurnPresentationDeriver;
@@ -288,28 +292,8 @@ export function ChatView(props: {
   /** Loads `messages` back to the start of an indexed Turn. */
   onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
   /** Optional identity decorations shared with a host's work navigation. */
-  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'highlighted'>>;
+  promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'accentBackground' | 'highlighted'>>;
   onPromptRailHighlight?(turnId: string | undefined): void;
-  /**
-   * PR109f: when the active session is a branched session
-   * (`parentSessionId` set on its summary), show a banner above the
-   * chat surface so the user knows they're in a derived conversation
-   * and can jump back to the parent.
-   *
-   * Renderer (main.tsx) resolves the parent name from the connections /
-   * sessions list — @maka/ui never queries the storage layer directly.
-   */
-  branchBanner?: {
-    parentSessionId: string;
-    parentSessionName: string;
-    /**
-     * Set when the branch starting point was an aborted turn. UI shows
-     * "从中断前分支" copy so the user understands the branch starts
-     * from before the cancel point, not from the abort itself.
-     */
-    fromAbortedTurn?: boolean;
-  };
-  onBranchBannerClick?: (parentSessionId: string) => void;
   /** Edit-and-resend versions stay in one conversation slot. */
   revisionNavigation?: {
     current: number;
@@ -335,12 +319,14 @@ export function ChatView(props: {
   onPromptSuggestion?(prompt: string): void;
   /**
    * Codex/Cursor-style "quote this": when set, selecting text in the transcript
-   * surfaces a floating action that hands the excerpt (+ its turn) to the host,
-   * which stages it as a quote chip on the composer. Omitted by hosts that
-   * don't compose quotes. Only selections that resolve to a turn are offered,
-   * so `turnId` always arrives.
+   * surfaces 引用, which opens a note panel under the selection; submitting
+   * hands the excerpt, its turn and any note to the host, which stages it on
+   * the composer (an empty note stages the bare quote). An excerpt already in
+   * `pendingQuotes` is never handed over again — 引用 reopens its note instead.
+   * Omitted by hosts that don't compose quotes. Only selections that resolve
+   * to a turn are offered, so `turnId` always arrives.
    */
-  onQuoteSelection?(input: { text: string; turnId: string }): void;
+  onQuoteSelection?(input: { text: string; turnId: string; comment?: string }): void;
   /**
    * Codex/Cursor-style "ask in side panel": when set, selecting text in the
    * transcript surfaces a second floating action that hands the excerpt (+ its
@@ -348,6 +334,17 @@ export function ChatView(props: {
    * seeded with the quote. Omitted by hosts that don't support the side panel.
    */
   onAskAboutSelection?(input: { text: string; turnId: string }): void;
+  /**
+   * The transcript-side note editor saved a comment for the staged quote at
+   * `index` in the host's quote list. Only fires for edits opened through
+   * {@link ChatViewHandle.openQuoteAnnotation}.
+   */
+  onQuoteAnnotationSubmit?(index: number, comment: string): void;
+  /**
+   * The host's staged quotes. Each one whose excerpt still lives in this
+   * transcript stays highlighted there.
+   */
+  pendingQuotes?: readonly QuoteRef[];
 } & ChatViewGoalIndicatorProps) {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
@@ -375,7 +372,7 @@ export function ChatView(props: {
     ),
     [visibleMessages],
   );
-  const transientMessages = (props.transientMessages ?? []).filter((message) => !message.pendingSteering && message.transientPlacement !== 'next_turn');
+  const transientMessages = (props.transientMessages ?? []).filter((message) => message.transientPlacement === 'transcript');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -397,10 +394,7 @@ export function ChatView(props: {
   // #642 single render path: the in-flight answer is injected into the tail
   // turn's TurnView (the SAME node as the eventual committed turn) instead of a
   // separate streaming <section>, so live→settled is a data-source swap, not an
-  // unmount/mount. The streaming turn is always the last turn: the user message
-  // is committed optimistically (showOptimisticUserMessage) before streaming
-  // starts, so `materializeTurns` already emits it — with an empty assistant
-  // timeline — as `turns[last]`. Only the tail TurnView gets a fresh
+  // unmount/mount. Only the tail TurnView gets a fresh
   // `liveStreaming` object per delta (→ it alone re-renders); every sibling
   // gets a stable `undefined` and its memo skips. That the sibling's `turn`
   // prop is also stable is the projection's tested contract, not a property
@@ -425,10 +419,6 @@ export function ChatView(props: {
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
-  const preTurnRetry =
-    activeContent !== undefined && activeContent.turnId === tailTurnId
-      ? activeContent.providerRetry
-      : undefined;
   const boundaryOverlayTurnId = activeContent?.turnId
     ?? (streamingActive ? tailTurnId : undefined);
   const transformedUserTurnIds = useMemo(
@@ -525,8 +515,7 @@ export function ChatView(props: {
   for (const message of transientMessages) {
     const turn = message.hostTurnId ? turnsById.get(message.hostTurnId) : undefined;
     if (
-      message.transientPlacement !== 'current_turn'
-      || turn === undefined
+      turn === undefined
       || turn.user !== undefined
       || turn.timeline.some((item) => item.kind === 'user' && item.messageId === message.id)
     ) continue;
@@ -542,6 +531,34 @@ export function ChatView(props: {
     inlineTransientMessageIds,
     turns,
   );
+  const awaitingHost = props.activeTurn === undefined
+    && tailTransientMessages.length > 0
+    && tailTransientMessages.some((message) => message.deliveryStatus === undefined);
+  const pendingTurnId = !hasRenderedLiveTurn ? tailTurnId : undefined;
+  const hasPendingAnswer = awaitingHost || pendingTurnId !== undefined;
+  // Tail rows have no Turn ancestor, so the reading measure that `.maka-turn`
+  // owns would not reach them: without it the bubble spans the full window.
+  const tail = hasPendingAnswer || tailTransientMessages.length > 0 ? (
+    <section
+      className={hasPendingAnswer ? 'maka-turn maka-pending-turn' : 'maka-turn'}
+      data-awaiting-host={awaitingHost || undefined}
+    >
+      {tailTransientMessages.map((message) => (
+        <TransientUserMessage
+          key={message.id}
+          message={message}
+        />
+      ))}
+      {hasPendingAnswer && (
+        <PendingTurnAnswer
+          turnId={pendingTurnId}
+          startedAt={activeContent?.startedAt}
+          running={runningStatus}
+          providerRetry={activeContent?.providerRetry}
+        />
+      )}
+    </section>
+  ) : null;
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
   const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
@@ -595,15 +612,74 @@ export function ChatView(props: {
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
   );
+  // The note being written: on a fresh excerpt (`annotate`) or on a staged
+  // quote reopened through the handle (`edit`). A staged quote is held by
+  // identity, not index, because removing another token shifts the indexes.
+  // `anchor` places the panel until the excerpt's range has been measured.
+  const [quoteAnnotation, setQuoteAnnotation] = useState<{
+    kind: 'annotate' | 'edit';
+    text: string;
+    turnId: string;
+    anchor: { x: number; top: number; bottom: number };
+  } | null>(null);
+  const stagedQuoteIndex = (text: string, turnId: string): number =>
+    props.pendingQuotes?.findIndex(
+      (quote) => !quote.sourceSessionId && quote.text === text && quote.sourceTurnId === turnId,
+    ) ?? -1;
+  const annotationIndex = !quoteAnnotation
+    ? -1
+    : quoteAnnotation.kind === 'annotate'
+      ? (props.pendingQuotes?.length ?? 0)
+      : stagedQuoteIndex(quoteAnnotation.text, quoteAnnotation.turnId);
+  // Re-selecting an excerpt that is already staged edits that quote rather
+  // than staging it twice.
+  const selectionStaged =
+    selectionQuote !== null && stagedQuoteIndex(selectionQuote.text, selectionQuote.turnId) !== -1;
+  // Once the note input takes the DOM selection, selectionEnds no longer
+  // keeps this turn mounted; unmounting it would drop the excerpt mid-write.
+  {
+    const index = quoteAnnotation ? orderedTurnIds.indexOf(quoteAnnotation.turnId) : -1;
+    if (index !== -1) keepMountedIndexes.add(index);
+  }
+  const quoteRangesRef = useRef<{ index: number; range: Range }[]>([]);
+  const barVisible = selectionQuote !== null && quoteAnnotation === null;
+  const panelVisible = quoteAnnotation !== null;
+  // The bar and the panel are separate layers on purpose: useLayer maps
+  // lightDismiss onto the popover attribute, and flipping auto↔manual on an
+  // open popover closes it (the browser fires toggle:closed). A single layer
+  // that disables dismissal while annotating would therefore tear itself down
+  // the moment the 引用 button opens the panel. Constant values per layer keep
+  // the attribute stable for each one's lifetime: the bar still light-dismisses
+  // and answers Escape; the panel stays up until its own buttons close it.
   const selectionActionsLayer = useLayer({
     mode: 'fixed',
     lightDismiss: true,
     onHide: clearSelectionQuote,
   });
+  const annotationLayer = useLayer({
+    mode: 'fixed',
+    lightDismiss: false,
+    onHide: () => {
+      setQuoteAnnotation(null);
+      clearSelectionQuote();
+    },
+  });
   useEffect(() => {
-    if (selectionQuote) selectionActionsLayer.show();
+    if (barVisible) selectionActionsLayer.show();
     else selectionActionsLayer.hide();
-  }, [selectionQuote, selectionActionsLayer.show, selectionActionsLayer.hide]);
+  }, [barVisible, selectionActionsLayer.show, selectionActionsLayer.hide]);
+  // Layout, not passive: the panel focuses its note input in its own mount
+  // effect, which only lands once the layer is already showing.
+  useLayoutEffect(() => {
+    if (panelVisible) annotationLayer.show();
+    else annotationLayer.hide();
+  }, [panelVisible, annotationLayer.show, annotationLayer.hide]);
+  // A note being written belongs to the session its excerpt came from: the
+  // staged list is per-draft, and ChatView survives a session switch unkeyed,
+  // so an annotation left open would submit into the wrong session's bucket.
+  useEffect(() => {
+    setQuoteAnnotation(null);
+  }, [props.activeSession?.id]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
@@ -611,6 +687,113 @@ export function ChatView(props: {
   const hasConversationHeaderActions = useMakaClientSlotOccupied(
     'conversation.header.actions',
   );
+  /** Ends the gesture: the layer closes and the excerpt the host just took is
+   *  no longer selected, so the bar cannot offer it a second time. */
+  function dismissSelectionActions(): void {
+    setQuoteAnnotation(null);
+    clearSelectionQuote();
+    window.getSelection()?.removeAllRanges();
+  }
+
+  useImperativeHandle(props.handleRef, () => ({
+    openQuoteAnnotation(index) {
+      const root = scrollRef.current;
+      const quote = props.pendingQuotes?.[index];
+      const range = quoteRangesRef.current.find((found) => found.index === index)?.range;
+      // Taking over an in-flight annotation would discard the note already
+      // typed into it, so the token falls back to its own popover instead.
+      if (!root || !quote?.sourceTurnId || !range || quoteAnnotation !== null) return false;
+      const band = root.getBoundingClientRect();
+      let box = range.getBoundingClientRect();
+      if (box.top < band.top || box.bottom > band.bottom) {
+        root.scrollBy({
+          top: box.top + box.height / 2 - (band.top + band.height / 2),
+          behavior: 'instant',
+        });
+        box = range.getBoundingClientRect();
+      }
+      if (box.width === 0 && box.height === 0) return false;
+      setQuoteAnnotation({
+        kind: 'edit',
+        text: quote.text,
+        turnId: quote.sourceTurnId,
+        anchor: excerptAnchor(box),
+      });
+      return true;
+    },
+  }));
+
+  // Every excerpt carrying a quote — each staged one and the excerpt a fresh
+  // note is written on — stays painted. It is painted rather than selected
+  // because the note input owns the DOM selection while a note is written.
+  // Ranges are re-found after every commit because the virtualizer remounts
+  // turns underneath us.
+  const measureQuoteRanges = (): { index: number; range: Range }[] => {
+    const found: { index: number; range: Range }[] = [];
+    const root = scrollRef.current;
+    const collect = (index: number, turnId: string | undefined, text: string) => {
+      if (!root || !turnId || typeof CSS === 'undefined' || !CSS.escape) return;
+      const turn = root.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
+      const range = turn ? findQuoteTextRange(turn, text) : null;
+      if (range) found.push({ index, range });
+    };
+    props.pendingQuotes?.forEach((quote, index) => {
+      // Cross-session snapshots stage in the references row, not on this
+      // transcript — a colliding turn id must not paint them here.
+      if (!quote.sourceSessionId) collect(index, quote.sourceTurnId, quote.text);
+    });
+    if (quoteAnnotation?.kind === 'annotate') {
+      collect(annotationIndex, quoteAnnotation.turnId, quoteAnnotation.text);
+    }
+    return found;
+  };
+
+  useLayoutEffect(() => {
+    const found = measureQuoteRanges();
+    quoteRangesRef.current = found;
+    const highlights = typeof CSS !== 'undefined' ? CSS.highlights : undefined;
+    let highlight: Highlight | null = null;
+    if (found.length > 0 && typeof Highlight !== 'undefined' && highlights) {
+      highlight = new Highlight(...found.map(({ range }) => range));
+      highlights.set('maka-quote-mark', highlight);
+    }
+    // The registry is document-global: only remove an entry this ChatView
+    // still owns, never one a co-mounted transcript painted over it.
+    return () => {
+      if (highlight && highlights?.get('maka-quote-mark') === highlight) {
+        highlights.delete('maka-quote-mark');
+      }
+    };
+  });
+
+  // A scroll moves the excerpt without a commit; while the panel hangs from
+  // it, re-render so the panel follows.
+  const [, followScroll] = useReducer((tick: number) => tick + 1, 0);
+  useEffect(() => {
+    if (!panelVisible) return;
+    const follow = () => followScroll();
+    document.addEventListener('scroll', follow, { capture: true, passive: true });
+    window.addEventListener('resize', follow);
+    return () => {
+      document.removeEventListener('scroll', follow, { capture: true });
+      window.removeEventListener('resize', follow);
+    };
+  }, [panelVisible]);
+
+  // Removing the edited quote's token, or sending, leaves nothing to save to.
+  useLayoutEffect(() => {
+    if (quoteAnnotation?.kind === 'edit' && annotationIndex === -1) setQuoteAnnotation(null);
+  });
+
+  // The panel follows the excerpt's measured range, so it tracks scrolling;
+  // the stored anchor only covers the commit before the range is measured.
+  const annotationBox = quoteRangesRef.current
+    .find((found) => found.index === annotationIndex)
+    ?.range.getBoundingClientRect();
+  const annotationAnchor = annotationBox ? excerptAnchor(annotationBox) : quoteAnnotation?.anchor;
+  const annotationBelow =
+    annotationAnchor !== undefined &&
+    annotationAnchor.bottom + 8 + QUOTE_ANNOTATION_PANEL_HEIGHT <= window.innerHeight - 8;
 
   if (!props.activeSession) {
     const conversationItems = props.conversationItems ?? [];
@@ -620,7 +803,7 @@ export function ChatView(props: {
     // content here too — otherwise the first question stays invisible for the
     // whole fork round trip (#4654). Once the fork commits `activeSession`
     // arrives and the full transcript below takes over.
-    const hasOptimisticContent = transientMessages.length > 0 || runningStatus;
+    const hasOptimisticContent = tail !== null;
     const emptyContent = props.emptyOverride ?? (
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
@@ -666,19 +849,7 @@ export function ChatView(props: {
                   ))}
                 </>
               ) : null}
-              {/* Tail rows have no Turn ancestor, so the reading measure that
-                  `.maka-turn` owns would not reach them: without the wrapper
-                  the bubble stretches across the full window width. */}
-              {transientMessages.length > 0 && (
-                <section className="maka-turn">
-                  {transientMessages.map((message) => (
-                    <TransientUserMessage key={message.id} message={message}
-                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined} />
-                  ))}
-                </section>
-              )}
-              {/* The pre-Turn cue is the same status row the Turn will show. */}
-              {runningStatus && <PreTurnCue running />}
+              {tail}
             </>
           ) : null}
         </ChatMessageList>
@@ -753,9 +924,6 @@ export function ChatView(props: {
         aria-label={copy.conversationAriaLabel(props.activeSession.name)}
       >
       <SessionContextLayer
-        sessionName={props.activeSession.name}
-        branch={props.branchBanner}
-        onBranchNavigate={props.onBranchBannerClick}
         revision={props.revisionNavigation}
         onRevisionNavigate={props.onRevisionNavigate}
         memoryActive={props.memoryActive}
@@ -820,7 +988,11 @@ export function ChatView(props: {
                         data-turn-accent={decoration?.accentColor ? 'true' : undefined}
                         style={{
                           // The list's row gap does not reach inside the virtualizer.
-                          paddingBlockEnd: index < turns.length - 1 ? 'var(--spacing-4)' : undefined,
+                          // A tail transient is the next Turn before it lands, outside
+                          // the virtualizer, where that gap supplies part of the space.
+                          paddingBlockEnd: index < turns.length - 1
+                            ? 'var(--space-10)'
+                            : tailTransientMessages.length > 0 ? 'calc(var(--space-10) - var(--spacing-4))' : undefined,
                           ...(decoration?.accentColor
                             ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
                         }}
@@ -830,7 +1002,6 @@ export function ChatView(props: {
                           activityObserved={turn.turnId === props.activeTurn?.turnId}
                           messageHeader={decoration?.header}
                           messageRail={decoration?.messageRail}
-                          promptStatus={decoration?.promptStatus}
                           transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                           userLabel={props.userLabel}
                           footerActions={turnPresentation?.footerActionsByTurn[turn.turnId]}
@@ -846,7 +1017,7 @@ export function ChatView(props: {
                           safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
                             ? props.safeResumeAction
                             : undefined}
-                          lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
+                          lineageBadges={props.onLineageBadgeClick ? turnPresentation?.lineageBadgesByTurn[turn.turnId] : undefined}
                           onLineageBadgeClick={stableLineageBadgeClick}
                           onOpenLinkedSession={
                             props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
@@ -874,32 +1045,7 @@ export function ChatView(props: {
                   }}
                 </Virtualizer>
               </div>
-              {/* A local copy the transcript already shows as the tail Turn's
-                  own user row must not render again below the running status;
-                  the inline slot drops it, so the tail slot drops it too.
-                  Same reading-measure reasoning as the optimistic path above. */}
-              {tailTransientMessages.length > 0 && (
-                <section className="maka-turn">
-                  {tailTransientMessages.map((message) => (
-                    <TransientUserMessage
-                      key={message.id}
-                      message={message}
-                      status={message.hostTurnId ? props.turnDecorations?.get(message.hostTurnId)?.promptStatus : undefined}
-                    />
-                  ))}
-                </section>
-              )}
-              {/* A send arm already names its Turn, but the transcript may not
-                  contain it yet. Keep feedback below the pending prompt until
-                  that same TurnView can take over — and show it the way the
-                  TurnView will, so the handoff does not shift the row. */}
-              {streamingActive && !hasRenderedLiveTurn && (
-                preTurnRetry ? (
-                  <PreTurnCue providerRetry={preTurnRetry} />
-                ) : runningStatus ? (
-                  <PreTurnCue running />
-                ) : null
-              )}
+              {tail}
               {conversationItemPlacement.orphan && (
                 <Fragment key={conversationItemPlacement.orphan.id}>
                   {conversationItemPlacement.orphan.content}
@@ -908,58 +1054,108 @@ export function ChatView(props: {
             </>
           )}
         </ChatMessageList>
-        {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
-          selectionActionsLayer.render(
-            <div
-              className="maka-quote-actions"
-              // Keep the live selection alive while clicking an action.
-              onMouseDown={(event) => event.preventDefault()}
-            >
-              {/* No icons: the labels already name the actions, so an icon
-                  beside each one encodes the same thing twice and buys the
-                  width back from the text the layer is covering. */}
-              <ButtonGroup
-                label={selectionActionsLabel}
-                size="sm"
-                elevation="med"
-              >
-                {props.onQuoteSelection ? (
-                  <Button
-                    type="button"
-                    label={copy.quoteSelection}
-                    onClick={() => {
+        {quoteAnnotation && annotationAnchor
+          ? annotationLayer.render(
+              <div className="maka-quote-annotation-layer">
+                <QuoteCommentPanel
+                  comment={
+                    quoteAnnotation.kind === 'edit'
+                      ? props.pendingQuotes?.[annotationIndex]?.comment
+                      : undefined
+                  }
+                  title={conversationCopy.composer.quoteCommentTitle}
+                  submitLabel={
+                    quoteAnnotation.kind === 'edit'
+                      ? conversationCopy.composer.quoteCommentSave
+                      : copy.quoteSelection
+                  }
+                  cancelLabel={conversationCopy.composer.quoteCommentCancel}
+                  onSubmit={(comment) => {
+                    if (quoteAnnotation.kind === 'edit') {
+                      props.onQuoteAnnotationSubmit?.(annotationIndex, comment);
+                    } else {
                       props.onQuoteSelection?.({
-                        text: selectionQuote.text,
-                        turnId: selectionQuote.turnId,
+                        text: quoteAnnotation.text,
+                        turnId: quoteAnnotation.turnId,
+                        comment,
                       });
-                      clearSelectionQuote();
-                      window.getSelection()?.removeAllRanges();
-                    }}
-                  />
-                ) : null}
-                {props.onAskAboutSelection ? (
-                  <Button
-                    type="button"
-                    label={copy.askInSidePanel}
-                    onClick={() => {
-                      props.onAskAboutSelection?.({
-                        text: selectionQuote.text,
-                        turnId: selectionQuote.turnId,
-                      });
-                      clearSelectionQuote();
-                      window.getSelection()?.removeAllRanges();
-                    }}
-                  />
-                ) : null}
-              </ButtonGroup>
-            </div>,
-            {
-              x: selectionQuote.anchor.x,
-              y: Math.max(8, selectionQuote.anchor.y - 42),
-              style: { transform: 'translateX(-50%)' },
-            },
-          )
-        ) : null}
+                    }
+                    dismissSelectionActions();
+                  }}
+                  onCancel={dismissSelectionActions}
+                />
+              </div>,
+              {
+                // The layer closes only through its own buttons, so the whole
+                // panel is clamped into the window.
+                x: Math.min(
+                  Math.max(annotationAnchor.x, QUOTE_ANNOTATION_PANEL_HALF),
+                  Math.max(QUOTE_ANNOTATION_PANEL_HALF, window.innerWidth - QUOTE_ANNOTATION_PANEL_HALF),
+                ),
+                y: annotationBelow
+                  ? Math.max(8, annotationAnchor.bottom + 8)
+                  : Math.max(8 + QUOTE_ANNOTATION_PANEL_HEIGHT, annotationAnchor.top - 8),
+                style: { transform: annotationBelow ? 'translateX(-50%)' : 'translate(-50%, -100%)' },
+              },
+            )
+          : null}
+        {barVisible
+          ? selectionActionsLayer.render(
+              <div
+                className="maka-quote-actions"
+                // Keep the live selection alive while clicking an action.
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                {/* No icons: the labels already name the actions, so an icon
+                    beside each one encodes the same thing twice and buys the
+                    width back from the text the layer is covering. */}
+                <ButtonGroup
+                  label={selectionActionsLabel}
+                  size="sm"
+                  elevation="med"
+                >
+                  {props.onQuoteSelection ? (
+                    <Button
+                      type="button"
+                      label={copy.quoteSelection}
+                      onClick={() => {
+                        const selection = window.getSelection();
+                        setQuoteAnnotation({
+                          kind: selectionStaged ? 'edit' : 'annotate',
+                          text: selectionQuote.text,
+                          turnId: selectionQuote.turnId,
+                          anchor: excerptAnchor(
+                            selection?.rangeCount
+                              ? selection.getRangeAt(0).getBoundingClientRect()
+                              : new DOMRect(selectionQuote.anchor.x, selectionQuote.anchor.y),
+                          ),
+                        });
+                      }}
+                    />
+                  ) : null}
+                  {props.onAskAboutSelection ? (
+                    <Button
+                      type="button"
+                      label={copy.askInSidePanel}
+                      onClick={() => {
+                        props.onAskAboutSelection?.({
+                          text: selectionQuote.text,
+                          turnId: selectionQuote.turnId,
+                        });
+                        clearSelectionQuote();
+                        window.getSelection()?.removeAllRanges();
+                      }}
+                    />
+                  ) : null}
+                </ButtonGroup>
+              </div>,
+              {
+                x: selectionQuote.anchor.x,
+                y: Math.max(8, selectionQuote.anchor.y - 42),
+                style: { transform: 'translateX(-50%)' },
+              },
+            )
+          : null}
       </div>
       </section>
       </SessionAttachmentProvider>
@@ -968,28 +1164,6 @@ export function ChatView(props: {
 }
 
 /** Turns holding document focus or a selection endpoint; virtualization must not unmount them. */
-/**
- * The cue shown before the transcript contains the Turn: the same status row
- * the TurnView will render, so the handoff does not shift the row.
- */
-function PreTurnCue(props: { running?: boolean; providerRetry?: LiveProviderRetry }) {
-  const copy = getConversationCopy(useUiLocale()).messages;
-  return (
-    <section className="maka-turn" data-live-streaming="true">
-      <LocalizedChatMessage
-        accessibleLabel={copy.assistantAriaLabel}
-        sender="assistant"
-        className="maka-chat-message maka-assistant-answer"
-      >
-        <div className="maka-assistant-answer-content">
-          <TurnStatusBar status="running" running={props.running} providerRetry={props.providerRetry} />
-          {props.providerRetry ? <ModelProviderRetryIndicator retry={props.providerRetry} /> : null}
-        </div>
-      </LocalizedChatMessage>
-    </section>
-  );
-}
-
 /**
  * virtua disables pointer events while its scroller moves, and a streaming
  * answer moves the pinned scroller every frame, which would leave every Turn

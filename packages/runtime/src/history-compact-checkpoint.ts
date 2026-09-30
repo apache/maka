@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import type { ExecutionLogCoverage } from '@maka/core/execution-log-coverage';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { nonEmpty, sha256 } from './context-budget-helpers.js';
 import type { ModelMessage } from './model-protocol.js';
 import { stableStringify } from './request-shape.js';
 import {
@@ -796,14 +797,6 @@ function effectiveDigestEvent(event: RuntimeEvent): unknown {
     return { ...event, content: { ...identity, modelProjection } };
   }
   return { ...event, content: { ...identity, result } };
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-function nonEmpty(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 function validHistoryCompactProviderState(value: unknown): value is HistoryCompactProviderState {

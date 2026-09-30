@@ -140,8 +140,14 @@ export type {
   TurnMessageSubmitResult,
 } from './message.js';
 export type {
+  QueueEntriesReorderInput,
+  QueueEntryPromoteInput,
+  QueueEntryRetractInput,
+  QueueEntryUpdateInput,
+  QueueMutationResult,
+} from './message.js';
+export type {
   LiveTurnSnapshot,
-  TurnProviderRetry,
   TurnQueryInput,
   TurnResumeParkReason,
   TurnResumePlan,
@@ -154,6 +160,7 @@ export type {
   TurnStartResult,
   TurnStopInput,
 } from './turn.js';
+export type { TurnProviderRetry } from './turn-provider-retry.js';
 export * from './connection-effects.js';
 export * from './access-authority.js';
 export * from './configuration.js';

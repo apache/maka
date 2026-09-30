@@ -175,7 +175,12 @@ describe('openAiAdapterApiProtocol', () => {
       openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode-go'),
       'openai-responses',
     );
+    assert.equal(
+      openAiAdapterApiProtocol('muse-spark-1.3-contributor', 'opencode-go'),
+      'openai-responses',
+    );
     assert.equal(openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode'), 'openai-chat');
+    assert.equal(openAiAdapterApiProtocol('muse-spark-1.3-contributor', 'opencode'), 'openai-chat');
     assert.equal(openAiAdapterApiProtocol('minimax-m3', 'opencode-go'), 'openai-chat');
   });
 

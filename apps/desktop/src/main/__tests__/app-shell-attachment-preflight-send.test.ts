@@ -20,7 +20,7 @@
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import type { PendingAttachment } from '../../renderer/composer-attachments.js';
+import type { PendingAttachment } from '@maka/ui/composer-attachments';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import {
