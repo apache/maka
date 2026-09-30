@@ -266,6 +266,15 @@ describe('Host Session retirement coordinator', () => {
       if ('kind' in archived.result) assert.fail('Expected a supported Session projection');
       assert.equal(archived.result.id, harness.revisionId);
       assert.equal(archived.result.isArchived, true);
+      // The whole family entered the archive in one write, at one time.
+      const archivedAt = archived.result.archivedAt;
+      assert.equal(typeof archivedAt, 'number');
+      for (const sessionId of harness.familyIds) {
+        assert.equal(
+          (await harness.store.readCatalogRecord(sessionId)).summary.archivedAt,
+          archivedAt,
+        );
+      }
       await assertFamilyLifecycle(harness, true);
       assert.deepEqual(new Set(harness.actions.disposed), new Set(harness.familyIds));
       assert.deepEqual(new Set(harness.actions.refreshed), new Set(harness.familyIds));
@@ -280,6 +289,13 @@ describe('Host Session retirement coordinator', () => {
       if (!restored.ok) return;
       if ('kind' in restored.result) assert.fail('Expected a supported Session projection');
       assert.equal(restored.result.isArchived, false);
+      assert.equal(Object.hasOwn(restored.result, 'archivedAt'), false);
+      for (const sessionId of harness.familyIds) {
+        assert.equal(
+          (await harness.store.readCatalogRecord(sessionId)).summary.archivedAt,
+          undefined,
+        );
+      }
       await assertFamilyLifecycle(harness, false);
       assert.deepEqual(harness.actions.disposed, []);
       assert.deepEqual(new Set(harness.actions.refreshed), new Set(harness.familyIds));

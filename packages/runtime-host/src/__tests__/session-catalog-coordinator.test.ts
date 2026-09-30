@@ -61,6 +61,7 @@ import { HostWorkspaceResolver } from '../server/workspace-resolver.js';
 import {
   HostSessionCatalogCoordinator,
   NoUsableImportModelError,
+  projectSessionCatalogRecord,
   SessionOperationFailure,
   WorkHubDefaultModelRequiredError,
   type HostSessionCatalogCoordinatorOptions,
@@ -2630,4 +2631,26 @@ test('reselecting the persisted executor model still confirms the Agent state an
     assert.equal(confirmations, busy ? 0 : 1);
     assert.equal(fixture.header().executorConfig?.model, 'same');
   }
+});
+
+test('projects the archive time of an archived Session and drops one on an active Session', () => {
+  const archivedHeader = { ...sessionHeader('archived', []), isArchived: true };
+  const archived = catalogRecord(archivedHeader, 2);
+  const projected = projectSessionCatalogRecord({
+    ...archived,
+    summary: { ...archived.summary, archivedAt: 1_234 },
+  });
+  if ('kind' in projected) assert.fail('Expected a supported Session projection');
+  assert.equal(projected.archivedAt, 1_234);
+
+  // A time left on an active row must not turn the task into an
+  // unsupported-record placeholder.
+  const active = catalogRecord(sessionHeader('active', []), 2);
+  const stray = projectSessionCatalogRecord({
+    ...active,
+    summary: { ...active.summary, archivedAt: 1_234 },
+  });
+  if ('kind' in stray) assert.fail('Expected a supported Session projection');
+  assert.equal(stray.isArchived, false);
+  assert.equal(Object.hasOwn(stray, 'archivedAt'), false);
 });

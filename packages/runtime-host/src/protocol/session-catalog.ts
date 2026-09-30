@@ -115,6 +115,7 @@ const PROJECTION_REQUIRED_FIELDS = [
 ] as const;
 const PROJECTION_FIELDS = [
   ...PROJECTION_REQUIRED_FIELDS,
+  'archivedAt',
   'lastMessageAt',
   'lastMessagePreview',
   'blockedReason',
@@ -254,6 +255,11 @@ export interface SessionCatalogProjection {
   readonly name: string;
   readonly isFlagged: boolean;
   readonly isArchived: boolean;
+  /**
+   * When the Session last entered the archive. Absent when it is not archived,
+   * and when the Host has no record of the time (archived before it was kept).
+   */
+  readonly archivedAt?: number;
   readonly labels: readonly string[];
   readonly labelsTruncated: boolean;
   readonly hasUnread: boolean;
@@ -843,6 +849,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     name: sessionName(record.name),
     isFlagged: boolean(record.isFlagged, 'Session flagged state'),
     isArchived: boolean(record.isArchived, 'Session archived state'),
+    ...optionalArchivedAt(record),
     labels: labels(record.labels),
     labelsTruncated: boolean(record.labelsTruncated, 'Session labels truncated state'),
     hasUnread: boolean(record.hasUnread, 'Session unread state'),
@@ -881,6 +888,9 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
   };
   if ((projection.backend === 'plugin-executor') !== (projection.executorId !== undefined)) {
     throw invalidProtocolFrame('Session executor identity does not match its backend');
+  }
+  if (projection.archivedAt !== undefined && !projection.isArchived) {
+    throw invalidProtocolFrame('Session archive time requires an archived Session');
   }
   requireEncodedByteLimit(
     projection,
@@ -971,6 +981,16 @@ function optionalTimestamp<Field extends 'lastMessageAt' | 'statusUpdatedAt'>(
         SessionCatalogProjection,
         Field
       >)
+    : {};
+}
+
+// One object type with an optional key rather than a union, so this spread
+// does not multiply the projection literal's inferred union past TS2590.
+function optionalArchivedAt(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'archivedAt'> {
+  return Object.hasOwn(record, 'archivedAt')
+    ? { archivedAt: timestamp(record.archivedAt, 'Session archivedAt') }
     : {};
 }
 

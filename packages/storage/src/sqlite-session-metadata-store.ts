@@ -282,6 +282,11 @@ export interface SessionMetadataRecord {
 export interface SessionMetadataCatalogRecord extends SessionMetadataRecord {
   readonly activityAt: number;
   readonly lastMessagePreview?: string;
+  /**
+   * When the Session last entered the archive. Absent while it is not
+   * archived, and for a Session archived before the time was recorded.
+   */
+  readonly archivedAt?: number;
 }
 
 export interface SessionCatalogRevisionState {
@@ -1203,6 +1208,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          metadata.archived_at,
           projection.activity_at,
           projection.last_message_preview
         FROM session_catalog_projection projection
@@ -1447,6 +1453,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          metadata.archived_at,
           COALESCE(projection.activity_at, 0) AS activity_at,
           projection.last_message_preview
         FROM session_metadata metadata
@@ -4494,8 +4501,11 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     const identities = uniqueVersionedSessionIdentities(sessions);
     return this.transaction(() => {
+      // One instant for the whole set, so a family archived together reads as
+      // archived together.
+      const archivedAt = this.now();
       const records = identities.map(({ sessionId, expectedVersion }) =>
-        this.setArchivedSync(sessionId, expectedVersion, isArchived),
+        this.setArchivedSync(sessionId, expectedVersion, isArchived, archivedAt),
       );
       if (isArchived) this.deleteGoalAuthorities(identities);
       return records;
@@ -4550,7 +4560,7 @@ export class SqliteSessionMetadataStore {
       }
       const deletedAt = this.now();
       for (const { sessionId, expectedVersion } of archiveIdentities) {
-        this.setArchivedSync(sessionId, expectedVersion, true);
+        this.setArchivedSync(sessionId, expectedVersion, true, deletedAt);
       }
       for (const { sessionId } of present) {
         const deleted = this.db
@@ -4899,6 +4909,7 @@ export class SqliteSessionMetadataStore {
     sessionId: string,
     expectedVersion: number,
     isArchived: boolean,
+    archivedAt: number,
   ): SessionMetadataRecord {
     const current = this.readRecordSync(sessionId);
     if (!current) throw new SessionNotFoundError(sessionId);
@@ -4910,7 +4921,13 @@ export class SqliteSessionMetadataStore {
       );
     }
     const next = normalizeSessionHeader({ ...current.header, isArchived }, sessionId);
-    return this.persistHeaderSync(sessionId, current, next, { skipNoop: true });
+    // A Session already in the requested state is a no-op below, so an
+    // archived Session keeps the time it was first archived; only a real
+    // transition writes the column. Every other writer leaves it alone.
+    return this.persistHeaderSync(sessionId, current, next, {
+      skipNoop: true,
+      archivedAt: isArchived ? archivedAt : null,
+    });
   }
 
   private persistHeaderSync(
@@ -4920,6 +4937,8 @@ export class SqliteSessionMetadataStore {
     options: {
       skipNoop?: boolean;
       catalogPreview?: { readonly kind: 'replace'; readonly value?: string };
+      /** Set only by the archive lifecycle writer; null clears the column. */
+      archivedAt?: number | null;
     } = {},
   ): SessionMetadataRecord {
     if (next.id !== sessionId) {
@@ -4954,7 +4973,8 @@ export class SqliteSessionMetadataStore {
           llm_connection_slug = ?,
           model = ?,
           metadata_version = ?,
-          committed_at = ?
+          committed_at = ?,
+          archived_at = CASE WHEN ? = 1 THEN ? ELSE archived_at END
         WHERE session_id = ? AND metadata_version = ?
       `,
       )
@@ -4975,6 +4995,8 @@ export class SqliteSessionMetadataStore {
         next.model,
         metadataVersion,
         committedAt,
+        options.archivedAt === undefined ? 0 : 1,
+        options.archivedAt ?? null,
         sessionId,
         current.metadataVersion,
       );
@@ -6061,6 +6083,7 @@ interface OrphanedAgentGraphOperatorRow extends OwnedAgentGraphOperatorRow {
 }
 
 interface SessionMetadataCatalogRow extends SessionMetadataRow {
+  archived_at: number | null;
   activity_at: number;
   last_message_preview: string | null;
 }
@@ -6371,11 +6394,21 @@ function decodeCatalogRecord(row: SessionMetadataCatalogRow): SessionMetadataCat
     throw new Error(`Invalid SQLite Session catalog activity for ${row.session_id}`);
   }
   const lastMessagePreview = decodeCatalogPreview(row.last_message_preview, row.session_id);
+  const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
   return {
     ...decodeRecord(row),
     activityAt: row.activity_at,
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+    ...(archivedAt === undefined ? {} : { archivedAt }),
   };
+}
+
+function decodeCatalogArchivedAt(value: unknown, sessionId: string): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Invalid SQLite Session archive time for ${sessionId}`);
+  }
+  return value;
 }
 
 function decodeCatalogPreview(value: unknown, sessionId: string): string | undefined {
