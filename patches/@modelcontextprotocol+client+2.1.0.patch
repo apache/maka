@@ -1,8 +1,8 @@
-diff --git a/node_modules/@modelcontextprotocol/client/dist/src-D_zzAWoS.mjs b/node_modules/@modelcontextprotocol/client/dist/src-D_zzAWoS.mjs
-index 6ac3d53..641f9ae 100644
---- a/node_modules/@modelcontextprotocol/client/dist/src-D_zzAWoS.mjs
-+++ b/node_modules/@modelcontextprotocol/client/dist/src-D_zzAWoS.mjs
-@@ -5552,6 +5552,22 @@ function requestStateAccessor(value) {
+diff --git a/node_modules/@modelcontextprotocol/client/dist/src-D0qEN74R.cjs b/node_modules/@modelcontextprotocol/client/dist/src-D0qEN74R.cjs
+index 534b4b6..2046548 100644
+--- a/node_modules/@modelcontextprotocol/client/dist/src-D0qEN74R.cjs
++++ b/node_modules/@modelcontextprotocol/client/dist/src-D0qEN74R.cjs
+@@ -5625,6 +5625,22 @@ function requestStateAccessor(value) {
  /** Shared no-state accessor: the common case allocates nothing per request. */
  const NO_REQUEST_STATE = requestStateAccessor(void 0);
  let writeNegotiatedProtocolVersion;
@@ -25,7 +25,7 @@ index 6ac3d53..641f9ae 100644
  /**
  * Implements MCP protocol framing on top of a pluggable transport, including
  * features like request/response linking, notifications, and progress.
-@@ -6055,6 +6071,7 @@ var Protocol = class {
+@@ -6128,6 +6144,7 @@ var Protocol = class {
  		const flowStartedAt = Date.now();
  		let onAbort;
  		let cleanupMessageId;
@@ -33,16 +33,16 @@ index 6ac3d53..641f9ae 100644
  		return new Promise((resolve, reject) => {
  			const earlyReject = (error) => {
  				reject(error);
-@@ -6107,7 +6124,7 @@ var Protocol = class {
- 					relatedRequestId,
- 					resumptionToken,
- 					onresumptiontoken
--				}).catch((error) => this._onerror(/* @__PURE__ */ new Error(`Failed to send cancellation: ${error}`)));
-+				}).catch(makaCancellationErrorObserver(this));
- 				else requestAbort.abort();
+@@ -6181,7 +6198,7 @@ var Protocol = class {
+ 						relatedRequestId,
+ 						resumptionToken,
+ 						onresumptiontoken
+-					}).catch((error) => this._onerror(/* @__PURE__ */ new Error(`Failed to send cancellation: ${error}`)));
++					}).catch(makaCancellationErrorObserver(this));
+ 				} else requestAbort.abort();
  				reject(reason instanceof SdkError ? reason : new SdkError(SdkErrorCode.RequestTimeout, String(reason)));
  			};
-@@ -6148,17 +6165,17 @@ var Protocol = class {
+@@ -6222,17 +6239,17 @@ var Protocol = class {
  			const timeout = options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
  			const timeoutHandler = () => cancel(new SdkError(SdkErrorCode.RequestTimeout, "Request timed out", { timeout }));
  			this._setupTimeout(messageId, timeout, options?.maxTotalTimeout, timeoutHandler, options?.resetTimeoutOnProgress ?? false);
@@ -64,11 +64,11 @@ index 6ac3d53..641f9ae 100644
  			if (onAbort) options?.signal?.removeEventListener("abort", onAbort);
  			if (cleanupMessageId !== void 0) {
  				this._responseHandlers.delete(cleanupMessageId);
-diff --git a/node_modules/@modelcontextprotocol/client/dist/src-NAgB4Mp8.cjs b/node_modules/@modelcontextprotocol/client/dist/src-NAgB4Mp8.cjs
-index e8f2499..cc129ff 100644
---- a/node_modules/@modelcontextprotocol/client/dist/src-NAgB4Mp8.cjs
-+++ b/node_modules/@modelcontextprotocol/client/dist/src-NAgB4Mp8.cjs
-@@ -5553,6 +5553,22 @@ function requestStateAccessor(value) {
+diff --git a/node_modules/@modelcontextprotocol/client/dist/src-DDAAhLnO.mjs b/node_modules/@modelcontextprotocol/client/dist/src-DDAAhLnO.mjs
+index 0801440..e84e02d 100644
+--- a/node_modules/@modelcontextprotocol/client/dist/src-DDAAhLnO.mjs
++++ b/node_modules/@modelcontextprotocol/client/dist/src-DDAAhLnO.mjs
+@@ -5624,6 +5624,22 @@ function requestStateAccessor(value) {
  /** Shared no-state accessor: the common case allocates nothing per request. */
  const NO_REQUEST_STATE = requestStateAccessor(void 0);
  let writeNegotiatedProtocolVersion;
@@ -91,7 +91,7 @@ index e8f2499..cc129ff 100644
  /**
  * Implements MCP protocol framing on top of a pluggable transport, including
  * features like request/response linking, notifications, and progress.
-@@ -6056,6 +6072,7 @@ var Protocol = class {
+@@ -6127,6 +6143,7 @@ var Protocol = class {
  		const flowStartedAt = Date.now();
  		let onAbort;
  		let cleanupMessageId;
@@ -99,16 +99,16 @@ index e8f2499..cc129ff 100644
  		return new Promise((resolve, reject) => {
  			const earlyReject = (error) => {
  				reject(error);
-@@ -6108,7 +6125,7 @@ var Protocol = class {
- 					relatedRequestId,
- 					resumptionToken,
- 					onresumptiontoken
--				}).catch((error) => this._onerror(/* @__PURE__ */ new Error(`Failed to send cancellation: ${error}`)));
-+				}).catch(makaCancellationErrorObserver(this));
- 				else requestAbort.abort();
+@@ -6180,7 +6197,7 @@ var Protocol = class {
+ 						relatedRequestId,
+ 						resumptionToken,
+ 						onresumptiontoken
+-					}).catch((error) => this._onerror(/* @__PURE__ */ new Error(`Failed to send cancellation: ${error}`)));
++					}).catch(makaCancellationErrorObserver(this));
+ 				} else requestAbort.abort();
  				reject(reason instanceof SdkError ? reason : new SdkError(SdkErrorCode.RequestTimeout, String(reason)));
  			};
-@@ -6149,17 +6166,17 @@ var Protocol = class {
+@@ -6221,17 +6238,17 @@ var Protocol = class {
  			const timeout = options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
  			const timeoutHandler = () => cancel(new SdkError(SdkErrorCode.RequestTimeout, "Request timed out", { timeout }));
  			this._setupTimeout(messageId, timeout, options?.maxTotalTimeout, timeoutHandler, options?.resetTimeoutOnProgress ?? false);

@@ -54,6 +54,59 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
+  test('decodes completed DeepSeek web search output without changing Alibaba Responses', async () => {
+    const item = {
+      type: 'web_search_call',
+      id: 'ws-1',
+      status: 'completed',
+      action: { type: 'search', queries: ['Maka'] },
+    };
+    const requests: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({
+        id: 'response-1',
+        object: 'response',
+        status: 'completed',
+        model: 'test-model',
+        output: [item],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as typeof globalThis.fetch;
+    const prompt = [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'search' }] },
+    ];
+    const deepseek = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'offline-only',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    const deepseekOutput = await deepseek.doGenerate({ prompt });
+    assert.equal(deepseekOutput.content.filter((part) => part.type === 'tool-call').length, 1);
+    assert.equal(deepseekOutput.content.filter((part) => part.type === 'tool-result').length, 1);
+    assert.equal(requests[0]?.tools, undefined);
+
+    const alibaba = getAIModel({
+      connection: {
+        ...conn('alibaba-token-plan-cn'),
+        models: [{ id: 'qwen3.8-max', apiProtocol: 'openai-responses' }],
+      },
+      apiKey: 'offline-only',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+    const alibabaOutput = await alibaba.doGenerate({ prompt });
+    assert.equal(
+      alibabaOutput.content.some((part) => part.type === 'tool-call'),
+      false,
+    );
+    assert.equal(
+      alibabaOutput.content.some((part) => part.type === 'tool-result'),
+      false,
+    );
+  });
+
   test('GPT-6 catalog thinking levels reach Responses for API and Codex OAuth', async () => {
     for (const providerType of ['openai', 'openai-codex'] as const) {
       for (const modelId of ['gpt-6-sol', 'gpt-6-luna']) {

@@ -117,6 +117,22 @@ async function receive(stream: ResumablePeerStream, expected: Buffer) {
   assert.equal(count, expected.length);
 }
 
+async function settleWithin<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+  label: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} did not settle`)), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 test('seeded fragmented full-duplex faults retain byte order and release every raw path', {
   timeout: 180_000,
 }, async (t) => {
@@ -379,8 +395,11 @@ test('one-way blackhole triggers automatic recovery and preserves the pending re
     remainder: Buffer.alloc(0),
   });
   const writing = left.write(Buffer.from('survives'));
-  assert.deepEqual(await right.read(), Buffer.from('survives'));
-  await writing;
+  assert.deepEqual(
+    await settleWithin(right.read(), 1_000, 'blackhole recovery read'),
+    Buffer.from('survives'),
+  );
+  await settleWithin(writing, 1_000, 'blackhole recovery write');
   assert.equal(reattachments, 1);
 });
 

@@ -19,6 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
 import {
   createAgentGraphPanelModel,
   isAgentGraphLive,
@@ -27,166 +28,133 @@ import {
   shouldShowAgentGraphPanel,
 } from '../../renderer/agent-graph-panel-visibility.js';
 
-describe('isAgentGraphLive', () => {
-  it('treats in-flight statuses as live and settled ones as not', () => {
-    for (const status of ['active', 'waiting', 'closing'] as const) {
-      assert.equal(isAgentGraphLive(status), true, status);
+type Status = AgentGraphClientSnapshot['status'];
+
+const STATUS_CONTRACT: ReadonlyArray<{
+  status: Status | undefined;
+  live: boolean;
+  dismissible: boolean;
+}> = [
+  { status: undefined, live: false, dismissible: false },
+  { status: 'empty', live: false, dismissible: false },
+  { status: 'active', live: true, dismissible: false },
+  { status: 'waiting', live: true, dismissible: false },
+  { status: 'closing', live: true, dismissible: false },
+  { status: 'completed', live: false, dismissible: true },
+  { status: 'stopped', live: false, dismissible: true },
+  { status: 'failed', live: false, dismissible: true },
+];
+
+const commit = (
+  state: ReturnType<typeof createAgentGraphPanelModel>,
+  rootSessionId: string,
+  graphId: string,
+  status: Status,
+  current = true,
+) =>
+  reduceAgentGraphPanelModel(state, {
+    type: 'commit-snapshot',
+    current,
+    snapshot: { rootSessionId, graphId, status },
+  });
+
+describe('Agent Graph status partition', () => {
+  it('classifies every protocol status into disjoint live and dismissible sets', () => {
+    for (const row of STATUS_CONTRACT) {
+      assert.equal(isAgentGraphLive(row.status), row.live, String(row.status));
+      assert.equal(isAgentGraphPanelDismissible(row.status), row.dismissible, String(row.status));
+      assert.equal(row.live && row.dismissible, false, String(row.status));
     }
-    for (const status of ['empty', 'stopped', 'failed', 'completed'] as const) {
-      assert.equal(isAgentGraphLive(status), false, status);
-    }
-    assert.equal(isAgentGraphLive(undefined), false);
   });
 });
 
-describe('isAgentGraphPanelDismissible', () => {
-  it('allows hiding a graph that no longer has active work', () => {
-    assert.equal(isAgentGraphPanelDismissible('completed'), true);
-    assert.equal(isAgentGraphPanelDismissible('stopped'), true);
-    assert.equal(isAgentGraphPanelDismissible('failed'), true);
-  });
+describe('Agent Graph visibility invariant', () => {
+  it('depends on a dismissal only for the same terminal graph in the same session', () => {
+    for (const row of STATUS_CONTRACT) {
+      const hidden = shouldShowAgentGraphPanel({
+        enabled: true,
+        hasGraphActivity: true,
+        sessionId: 'session-a',
+        graphId: 'graph-a',
+        status: row.status,
+        dismissedBySession: { 'session-a': 'graph-a' },
+      });
+      assert.equal(hidden, !row.dismissible, String(row.status));
 
-  it('keeps the panel while the graph is still in flight', () => {
-    for (const status of ['empty', 'active', 'closing', 'waiting'] as const) {
-      assert.equal(isAgentGraphPanelDismissible(status), false, status);
+      for (const changedIdentity of [
+        { sessionId: 'session-b', graphId: 'graph-a' },
+        { sessionId: 'session-a', graphId: 'graph-b' },
+      ]) {
+        assert.equal(
+          shouldShowAgentGraphPanel({
+            enabled: true,
+            hasGraphActivity: true,
+            ...changedIdentity,
+            status: row.status,
+            dismissedBySession: { 'session-a': 'graph-a' },
+          }),
+          true,
+        );
+      }
     }
-    assert.equal(isAgentGraphPanelDismissible(undefined), false);
+  });
+
+  it('is monotone when graph activity or graph mode is added', () => {
+    for (const enabled of [false, true]) {
+      for (const hasGraphActivity of [false, true]) {
+        const visible = shouldShowAgentGraphPanel({
+          enabled,
+          hasGraphActivity,
+          sessionId: 'session-a',
+          dismissedBySession: {},
+        });
+        assert.equal(visible, enabled || hasGraphActivity);
+      }
+    }
   });
 });
 
-describe('shouldShowAgentGraphPanel', () => {
-  it('hides a dismissed completed graph for that session', () => {
-    assert.equal(
-      shouldShowAgentGraphPanel({
-        enabled: true,
-        hasGraphActivity: true,
-        sessionId: 'session-1',
-        graphId: 'graph-1',
-        status: 'completed',
-        dismissedBySession: { 'session-1': 'graph-1' },
-      }),
-      false,
-    );
+describe('Agent Graph presentation state machine', () => {
+  it('retains a matching terminal dismissal and clears it for every revival', () => {
+    for (const terminal of ['completed', 'stopped', 'failed'] as const) {
+      let state = createAgentGraphPanelModel('session-a');
+      state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-a' });
+      state = commit(state, 'session-a', 'graph-a', terminal);
+      assert.deepEqual(state.dismissedBySession, { 'session-a': 'graph-a' });
+
+      for (const live of ['active', 'waiting', 'closing'] as const) {
+        const revived = commit(state, 'session-a', 'graph-a', live);
+        assert.deepEqual(revived.dismissedBySession, {}, `${terminal} -> ${live}`);
+      }
+    }
   });
 
-  it('shows a new graph after the previous one was dismissed', () => {
-    assert.equal(
-      shouldShowAgentGraphPanel({
-        enabled: true,
-        hasGraphActivity: true,
-        sessionId: 'session-1',
-        graphId: 'graph-2',
-        status: 'active',
-        dismissedBySession: { 'session-1': 'graph-1' },
-      }),
-      true,
-    );
-  });
-
-  it('shows the same graph again if it leaves a terminal state', () => {
-    assert.equal(
-      shouldShowAgentGraphPanel({
-        enabled: true,
-        hasGraphActivity: true,
-        sessionId: 'session-1',
-        graphId: 'graph-1',
-        status: 'active',
-        dismissedBySession: { 'session-1': 'graph-1' },
-      }),
-      true,
-    );
-  });
-
-  it('does not apply another session\'s dismissal', () => {
-    assert.equal(
-      shouldShowAgentGraphPanel({
-        enabled: true,
-        hasGraphActivity: true,
-        sessionId: 'session-2',
-        graphId: 'graph-1',
-        status: 'completed',
-        dismissedBySession: { 'session-1': 'graph-1' },
-      }),
-      true,
-    );
-  });
-
-  it('keeps the existing empty-state hide when graph mode is off', () => {
-    assert.equal(
-      shouldShowAgentGraphPanel({
-        enabled: false,
-        hasGraphActivity: false,
-        sessionId: 'session-1',
-        dismissedBySession: {},
-      }),
-      false,
-    );
-  });
-
-  it('still shows an enabled graph that has not produced activity yet', () => {
-    assert.equal(
-      shouldShowAgentGraphPanel({
-        enabled: true,
-        hasGraphActivity: false,
-        sessionId: 'session-1',
-        dismissedBySession: {},
-      }),
-      true,
-    );
-  });
-});
-
-describe('dismiss and reconcile', () => {
-  it('records the dismissed graph for the session', () => {
-    const state = reduceAgentGraphPanelModel(createAgentGraphPanelModel('session-1'), {
-      type: 'dismiss',
-      graphId: 'graph-1',
-    });
-    assert.deepEqual(state.dismissedBySession, { 'session-1': 'graph-1' });
-  });
-
-  it('drops a stale dismissal when a later snapshot is a different graph', () => {
-    let state = createAgentGraphPanelModel('session-1');
-    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-1' });
-    state = reduceAgentGraphPanelModel(state, {
-      type: 'commit-snapshot',
-      current: true,
-      snapshot: { rootSessionId: 'session-1', graphId: 'graph-2', status: 'active' },
-    });
-    assert.deepEqual(state.dismissedBySession, {});
-  });
-
-  it('drops a stale dismissal when the same graph becomes active again', () => {
-    let state = createAgentGraphPanelModel('session-1');
-    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-1' });
-    state = reduceAgentGraphPanelModel(state, {
-      type: 'commit-snapshot',
-      current: true,
-      snapshot: { rootSessionId: 'session-1', graphId: 'graph-1', status: 'active' },
-    });
-    assert.deepEqual(state.dismissedBySession, {});
-  });
-
-  it('keeps a matching terminal dismissal', () => {
-    let state = createAgentGraphPanelModel('session-1');
-    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-1' });
-    state = reduceAgentGraphPanelModel(state, {
-      type: 'commit-snapshot',
-      current: true,
-      snapshot: { rootSessionId: 'session-1', graphId: 'graph-1', status: 'completed' },
-    });
-    assert.deepEqual(state.dismissedBySession, { 'session-1': 'graph-1' });
-  });
-
-  it('does not clear a dismissal against a snapshot still owned by the previous session', () => {
+  it('treats graph rollover as a new identity regardless of terminal status', () => {
     let state = createAgentGraphPanelModel('session-a');
     state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-a' });
-    state = reduceAgentGraphPanelModel(state, { type: 'enter-session', rootSessionId: 'session-b' });
+    for (const status of ['active', 'completed', 'failed'] as const) {
+      assert.deepEqual(commit(state, 'session-a', 'graph-b', status).dismissedBySession, {});
+    }
+  });
+
+  it('ignores stale snapshots after a session transition', () => {
+    let state = createAgentGraphPanelModel('session-a');
+    state = reduceAgentGraphPanelModel(state, { type: 'dismiss', graphId: 'graph-a' });
     state = reduceAgentGraphPanelModel(state, {
-      type: 'commit-snapshot',
-      current: true,
-      snapshot: { rootSessionId: 'session-a', graphId: 'graph-a', status: 'completed' },
+      type: 'enter-session',
+      rootSessionId: 'session-b',
     });
-    assert.deepEqual(state.dismissedBySession, { 'session-a': 'graph-a' });
+    const before = state;
+    state = commit(state, 'session-a', 'graph-a', 'active');
+    assert.strictEqual(state, before);
+  });
+
+  it('initializes collapse once, then preserves explicit user intent', () => {
+    let state = commit(createAgentGraphPanelModel('session-a'), 'session-a', 'graph-a', 'completed');
+    assert.equal(state.collapsed, true);
+    state = reduceAgentGraphPanelModel(state, { type: 'toggle-collapse' });
+    assert.equal(state.collapsed, false);
+    state = commit(state, 'session-a', 'graph-a', 'completed');
+    assert.equal(state.collapsed, false);
   });
 });
