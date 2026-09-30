@@ -45,7 +45,6 @@ import {
 type ComposerDefaults = { model: NewChatModelCandidate | null };
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { useNewTaskChoice } from './use-new-task-choice.js';
-import { useComposerModelOptions } from './use-composer-model-options.js';
 
 export type { NewChatModel } from '../model/shell-chat-model-selection.js';
 export type NewChatExecutionTarget = NewChatModel | { executorId: string; model: string };
@@ -88,8 +87,7 @@ export function useShellChatModel(options: {
   executorTarget?: import('../ports.js').ConversationNewTaskTarget;
   executorCwd?: string;
   activationCandidate?: NewChatModelCandidate;
-  /** The Host fields ride along on the Desktop catalog row and address per-model writes. */
-  activeSession: (SessionSummary & { readonly profileId?: string; readonly runtimeHostId?: string }) | undefined;
+  activeSession: SessionSummary | undefined;
   sessionHealthSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
   usePersistedComposerDefaults: boolean;
@@ -101,7 +99,7 @@ export function useShellChatModel(options: {
   setSessionExecutor?(sessionId: string, target: MakaClientExecutorTarget): Promise<boolean>;
 }): {
   executor: ReturnType<typeof useExecutorSelection>;
-  composerModelProps: Pick<ComposerProps, 'modelLabel' | 'activeModelConnectionId' | 'activeModelConnectionSlug' | 'activeModel' | 'activeModelLabel' | 'activeProviderType' | 'modelChoices' | 'hideUnavailableCurrentModel' | 'activeThinkingLevels' | 'activeThinkingLevel' | 'newChatModel' | 'newChatProviderType' | 'newChatThinkingLevels' | 'newChatThinkingLevel' | 'onFastChange'>;
+  composerModelProps: Pick<ComposerProps, 'modelLabel' | 'activeModelConnectionId' | 'activeModelConnectionSlug' | 'activeModel' | 'activeModelLabel' | 'activeProviderType' | 'modelChoices' | 'hideUnavailableCurrentModel' | 'activeThinkingLevels' | 'activeThinkingLevel' | 'newChatModel' | 'newChatProviderType' | 'newChatThinkingLevels' | 'newChatThinkingLevel'>;
   chatModelChoices: ChatModelChoice[];
   activeConnection: IdentifiedLlmConnection | undefined;
   activeConnectionLabel: string | undefined;
@@ -284,24 +282,6 @@ export function useShellChatModel(options: {
     newChatModel?.llmConnectionSlug,
     newChatModel?.model,
   );
-  const { onFastChange } = useComposerModelOptions({
-    uiLocale,
-    connections,
-    model: activeSession
-      ? (activeSession.llmConnectionId && activeModel
-        ? { connectionId: activeSession.llmConnectionId, slug: activeSession.llmConnectionSlug, model: activeModel }
-        : undefined)
-      : (newChatModel
-        ? { connectionId: newChatModel.llmConnectionId, slug: newChatModel.llmConnectionSlug, model: newChatModel.model }
-        : undefined),
-    host: activeSession
-      ? (activeSession.profileId && activeSession.runtimeHostId
-        ? { profileId: activeSession.profileId, hostId: activeSession.runtimeHostId }
-        : undefined)
-      : (options.executorTarget
-        ? { profileId: options.executorTarget.profileId, hostId: options.executorTarget.hostId }
-        : undefined),
-  });
   const composerSupportsVision = composerModelSupportsVision({
     active: activeSession
       ? {
@@ -378,7 +358,6 @@ export function useShellChatModel(options: {
       activeThinkingLevels, activeThinkingLevel,
       newChatModel, newChatProviderType: connections.find((connection) => connection.slug === newChatModel?.llmConnectionSlug)?.providerType,
       newChatThinkingLevels, newChatThinkingLevel,
-      onFastChange,
     },
     chatModelChoices,
     activeConnection,

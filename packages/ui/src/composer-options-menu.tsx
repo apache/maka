@@ -20,7 +20,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -49,8 +48,8 @@ function OptionRow(props: { label: string; value: string }) {
 }
 
 /**
- * One footer menu for the native model: thinking effort and the model. Fast is
- * a row only when this model can use that service tier.
+ * One footer menu for the native model: thinking effort and the model. The
+ * trigger shows the context window read-only beside the model name.
  */
 export function ComposerOptionsMenu(props: {
   label: string;
@@ -68,7 +67,6 @@ export function ComposerOptionsMenu(props: {
   thinkingLevels?: readonly ThinkingLevel[];
   thinkingLevel?: ThinkingLevel;
   onThinkingLevelChange?(level: ThinkingLevel | undefined): void | Promise<void>;
-  onFastChange?(enabled: boolean): void | Promise<void>;
   hasConversationHistory?: boolean;
   sessionId?: string;
   renderProviderMark?(type: ProviderType): ReactNode;
@@ -94,10 +92,6 @@ export function ComposerOptionsMenu(props: {
     props.thinkingLevel ?? DEFAULT_EFFORT,
     (value) => props.onThinkingLevelChange?.(value === DEFAULT_EFFORT ? undefined : (value as ThinkingLevel)),
   );
-  const fastSelection = usePendingSelection(
-    choice?.fastEnabled ? 'on' : 'off',
-    (value) => props.onFastChange?.(value === 'on'),
-  );
   const modelSelection = usePendingSelection(props.currentModelValue ?? '', async (value) => {
     const next = props.choices.find(
       (candidate) => exactModelChoiceValue(candidate.connectionId, candidate.connectionSlug, candidate.model) === value,
@@ -120,7 +114,6 @@ export function ComposerOptionsMenu(props: {
   const triggerDetails = [
     choice?.contextWindow ? formatCompactTokenCount(choice.contextWindow) : undefined,
     effortValue ? copy.level[effortValue] : undefined,
-    choice?.supportsFast && fastSelection.value === 'on' ? copy.fast : undefined,
   ].filter((detail): detail is string => detail !== undefined).join(' ');
   const triggerLabel = triggerDetails ? `${props.label} ${triggerDetails}` : props.label;
   const modelRow = props.choices.find(
@@ -154,13 +147,6 @@ export function ComposerOptionsMenu(props: {
         ),
       }}
     >
-      {choice?.supportsFast && props.onFastChange ? (
-        <DropdownMenuCheckboxItem
-          label={copy.fast}
-          value={fastSelection.value === 'on'}
-          onChange={(checked) => { void fastSelection.onChange(checked ? 'on' : 'off'); }}
-        />
-      ) : null}
       {props.thinkingLevels && props.thinkingLevels.length > 0 && props.onThinkingLevelChange ? (
         <DropdownMenuSubMenu label={<OptionRow label={copy.effort} value={effortRow} />}>
           <DropdownMenuRadioGroup

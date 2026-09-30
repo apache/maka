@@ -32,7 +32,6 @@ export {
   startActiveExecutionBoundaryRead,
 } from './controller/use-active-execution-boundary.js';
 export { useSessionMessageQueue } from './controller/use-session-message-queue.js';
-export { useComposerModelOptions } from './controller/use-composer-model-options.js';
 
 /** Inert conversation services; a test overrides only the calls it observes. */
 export function stubConversationServices(

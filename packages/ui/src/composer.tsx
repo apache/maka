@@ -444,8 +444,6 @@ export const Composer = forwardRef<
     newChatThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
     newChatThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
     onNewChatThinkingLevelChange?(level: import('@maka/core/model-thinking').ThinkingLevel | undefined): void | Promise<void>;
-    /** Fast service tier, only offered when the current model supports it. */
-    onFastChange?(enabled: boolean): void | Promise<void>;
     /**
      * Home / empty-state composer only (no active session yet): the model
      * the next new chat will start with, and the picker callback. When set,
@@ -1889,7 +1887,6 @@ export const Composer = forwardRef<
       thinkingLevels={props.activeSession ? props.activeThinkingLevels : props.newChatThinkingLevels}
       thinkingLevel={props.activeSession ? props.activeThinkingLevel : props.newChatThinkingLevel}
       onThinkingLevelChange={props.activeSession ? props.onThinkingLevelChange : props.onNewChatThinkingLevelChange}
-      onFastChange={props.onFastChange}
       hasConversationHistory={props.modelSwitchHasHistory}
       sessionId={props.activeSession?.id}
       renderProviderMark={props.renderProviderMark}

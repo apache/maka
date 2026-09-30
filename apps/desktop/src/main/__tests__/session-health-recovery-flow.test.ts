@@ -29,7 +29,6 @@ import {
   Composer,
   deriveComposerModelSwitchAvailability,
   LocaleProvider,
-  ToastProvider,
   type ComposerHandle,
 } from '@maka/ui';
 import { SessionHealthRecoveryNotice } from '../../renderer/chat-recovery-notice.js';
@@ -183,10 +182,7 @@ async function renderFlow(props: Parameters<typeof RecoveryFlow>[0]) {
   assert.ok(container);
   mountedRoot = createRoot(container);
   const services = { subscribeChanges: () => () => {}, sessions: {}, newTasks: {subscribeChanges: () => () => {}} } as unknown as ConversationServices;
-  // AppShell mounts useShellChatModel inside its ToastProvider; the harness does the same.
-  await act(() => mountedRoot?.render(createElement(ToastProvider, {
-    children: createElement(ConversationServicesProvider, {services, children: createElement(RecoveryFlow, props)}),
-  })));
+  await act(() => mountedRoot?.render(createElement(ConversationServicesProvider, {services, children: createElement(RecoveryFlow, props)})));
   const action = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.includes(
       props.snapshotReady

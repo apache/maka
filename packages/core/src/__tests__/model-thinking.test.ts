@@ -25,7 +25,6 @@ import {
   normalizeModelOverrides,
   modelApplyPatchEnabled,
   modelOverride,
-  modelOverrideForServiceTier,
   resolveThinkingLevel,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
@@ -284,17 +283,4 @@ test('ApplyPatch defaults are model-specific and explicit choices win', () => {
     assert.equal(modelApplyPatchEnabled(model), false, model);
     assert.equal(modelApplyPatchEnabled(model, { applyPatch: true }), true, model);
   }
-});
-
-test('the fast tier toggle keeps the rest of the model override', () => {
-  assert.deepEqual(modelOverrideForServiceTier({ contextWindow: 256_000 }, true), {
-    contextWindow: 256_000,
-    serviceTier: 'fast',
-  });
-  assert.deepEqual(
-    modelOverrideForServiceTier({ contextWindow: 256_000, serviceTier: 'fast' }, false),
-    {
-      contextWindow: 256_000,
-    },
-  );
 });

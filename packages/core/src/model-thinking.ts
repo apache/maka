@@ -482,17 +482,6 @@ export function modelLimitsConflict(limits: ModelLimits): boolean {
   );
 }
 
-/** Toggle the custom-model Fast service tier without dropping the rest of the override. */
-export function modelOverrideForServiceTier(
-  current: ModelOverride | undefined,
-  enabled: boolean,
-): ModelOverride {
-  if (enabled) return { ...(current ?? {}), serviceTier: 'fast' };
-  if (!current?.serviceTier) return { ...(current ?? {}) };
-  const { serviceTier: _tier, ...rest } = current;
-  return rest;
-}
-
 export function applyConnectionModelOverrides<
   T extends { readonly models?: readonly ModelInfo[]; readonly modelOverrides?: ModelOverrides },
 >(connection: T): T {

@@ -26,7 +26,7 @@ const PROMPT_SUGGESTIONS_KEY = 'maka.promptSuggestions.enabled';
 export function createDesktopConversationServices(
   bridge: Pick<
     MakaBridge,
-    'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp' | 'connections'
+    'sessionLocal' | 'sessions' | 'runtimeHostProfiles' | 'skills' | 'workspace' | 'newTasks' | 'mcp'
   > = window.maka,
 ): ConversationServices {
   return {
@@ -69,16 +69,6 @@ export function createDesktopConversationServices(
     newTasks: bridge.newTasks,
     mcp: {
       subscribeChanges: (handler) => bridge.mcp.subscribeChanges(handler),
-    },
-    connections: {
-      updateModelOverride: async ({ host, connection, modelId, expected, value }) => {
-        const saved = await bridge.connections.update(
-          connection,
-          { modelOverride: { modelId, expected, value } },
-          host,
-        );
-        return saved.modelOverrides?.[modelId] ?? null;
-      },
     },
   };
 }
