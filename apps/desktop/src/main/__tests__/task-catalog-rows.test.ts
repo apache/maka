@@ -107,6 +107,49 @@ describe('archivedTaskRows', () => {
   });
 });
 
+describe('archived task order', () => {
+  /**
+   * Store order here is deliberately none of the orders under test: not
+   * archive order, not activity order, and the two unknown rows sit on either
+   * side of known ones. Only an archive-time sort with unknowns last and a
+   * stable tie-break yields the expected list.
+   */
+  it('puts the most recently archived first, unknown times last, ties in store order', () => {
+    const sessions = [
+      summary('unknown-a', { isArchived: true, lastMessageAt: 900 }),
+      summary('older', { isArchived: true, lastMessageAt: 800, archivedAt: 1_000 }),
+      summary('tie-first', { isArchived: true, lastMessageAt: 100, archivedAt: 3_000 }),
+      summary('unknown-b', { isArchived: true, lastMessageAt: 50 }),
+      summary('newest', { isArchived: true, lastMessageAt: 10, archivedAt: 5_000 }),
+      summary('tie-second', { isArchived: true, lastMessageAt: 700, archivedAt: 3_000 }),
+    ];
+
+    assert.deepEqual(
+      archivedTaskRows(sessions).map((session) => session.id),
+      ['newest', 'tie-first', 'tie-second', 'older', 'unknown-a', 'unknown-b'],
+    );
+  });
+
+  it('orders a revision family by the archive time of the row that represents it', () => {
+    const sessions = [
+      summary('solo', { isArchived: true, lastMessageAt: 900, archivedAt: 2_000 }),
+      summary('v1', { isArchived: true, lastMessageAt: 100, archivedAt: 4_000 }),
+      summary('v2', {
+        isArchived: true,
+        lastMessageAt: 200,
+        archivedAt: 4_000,
+        revisionRootSessionId: 'v1',
+        revisionParentSessionId: 'v1',
+      }),
+    ];
+
+    assert.deepEqual(
+      archivedTaskRows(sessions).map((session) => session.id),
+      ['v2', 'solo'],
+    );
+  });
+});
+
 describe('matchesArchivedTaskQuery', () => {
   const projectLabelOf = (session: SessionSummary) =>
     session.projectId === 'p1' ? 'astryx-design' : undefined;

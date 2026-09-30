@@ -28,6 +28,10 @@ export type SettingsTasksCopy = {
   listAria: string;
   noProject: string;
   deletedParent: string;
+  /** Row detail: when the task was archived, from a compact timestamp. */
+  archivedAt(when: string): string;
+  /** Row detail for a task archived before the time was recorded. */
+  archiveTimeUnknown: string;
   searchLabel: string;
   purgeAll: string;
   purgeMatches(count: number): string;
@@ -64,6 +68,8 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     listAria: '已归档任务',
     noProject: '无项目',
     deletedParent: '原父任务已删除',
+    archivedAt: (when: string) => `${when}归档`,
+    archiveTimeUnknown: '归档时间未知',
     searchLabel: '搜索已归档任务',
     purgeAll: '清空全部',
     purgeMatches: (count: number) => `删除这 ${count} 条`,
@@ -91,6 +97,8 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     listAria: '已歸檔任務',
     noProject: '無專案',
     deletedParent: '原父任務已刪除',
+    archivedAt: (when: string) => `${when}歸檔`,
+    archiveTimeUnknown: '歸檔時間未知',
     searchLabel: '搜尋已歸檔任務',
     purgeAll: '清空全部',
     purgeMatches: (count: number) => `刪除這 ${count} 條`,
@@ -118,6 +126,8 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     listAria: 'Archived tasks',
     noProject: 'No project',
     deletedParent: 'Parent task deleted',
+    archivedAt: (when: string) => `Archived ${when}`,
+    archiveTimeUnknown: 'Archive time unknown',
     searchLabel: 'Search archived tasks',
     purgeAll: 'Clear all',
     purgeMatches: (count: number) => (count === 1 ? 'Delete this 1' : `Delete these ${count}`),
