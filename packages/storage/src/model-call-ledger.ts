@@ -21,6 +21,7 @@ import {
   decodeModelCallAttempt,
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   type ModelCallAttempt,
+  type ModelCallAttemptStatus,
   type ModelCallCoverage,
 } from '@maka/core/model-call-attempt';
 import {
@@ -31,6 +32,7 @@ import {
 } from '@maka/core/model-call-usage-projection';
 import { usageBucketKey } from '@maka/core/usage-stats/bucket-key';
 import type {
+  ModelCallKind,
   UsageBucket,
   UsageGroupBy,
   UsageLogRow,
@@ -133,11 +135,48 @@ export interface CatchUpModelCallProjectionResult {
   readonly unreadableEvents: number;
 }
 
+/**
+ * One canonical row for a call no AgentRun owns (#5691).
+ *
+ * Auxiliary Host model calls run outside any run, so nothing projects them
+ * from an event stream — the caller carries the row's identity itself. Usage
+ * cannot be known for these calls (the provider never reported it), so the
+ * record cannot express token counts or a cost: it lands as
+ * `usageBasis: 'missing'` / `costBasis: 'unpriced'`, the same facts the
+ * run-path projection records and the same rule the table's CHECK enforces on
+ * every other writer.
+ */
+export interface UsageUnknownModelCallRecord {
+  /** Idempotency key: recording the same attempt twice stores one row. */
+  readonly attemptId: string;
+  readonly completedAt: number;
+  readonly sessionId?: string;
+  readonly logicalCallId: string;
+  /**
+   * Calls outside any run's turn carry a stable sentinel (`'auxiliary'` at the
+   * Host authority) — the table requires the column for every countable row.
+   */
+  readonly turnId: string;
+  readonly callKind: ModelCallKind;
+  readonly connectionSlug?: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly latencyMs: number;
+  readonly status: ModelCallAttemptStatus;
+  readonly errorClass?: string;
+}
+
 export interface ModelCallLedgerWriter extends ModelCallLedgerReader {
   /** Advances the read model from the AgentRun authority's durable sequence. */
   catchUpProjection(
     input?: CatchUpModelCallProjectionInput,
   ): Promise<CatchUpModelCallProjectionResult>;
+  /**
+   * Records one usage-unknown row for a call outside any AgentRun. The single
+   * write that does not come from the event stream: the caller owns the
+   * attempt's identity, and re-recording an `attemptId` upserts in place.
+   */
+  recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void>;
 }
 
 export interface ModelCallLedger extends ModelCallLedgerWriter {
@@ -207,6 +246,11 @@ class SqliteModelCallLedger implements ModelCallLedger {
     return this.write(() =>
       catchUpModelCallProjection(this.#lease.database, input, limit, eventsPerRun),
     );
+  }
+
+  recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void> {
+    if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
+    return this.write(() => writeUsageUnknownModelCallAttempt(this.#lease.database, record));
   }
 
   summary(query: UsageQuery, now: number): ModelCallLedgerResult<ModelCallUsageSummary> {
@@ -469,6 +513,46 @@ function bindModelCallAttempt(attempt: ModelCallAttempt): (string | number | nul
 
 function writeModelCallAttempt(db: DatabaseSync, attempt: ModelCallAttempt): void {
   db.prepare(MODEL_CALL_UPSERT).run(...bindModelCallAttempt(attempt));
+}
+
+/**
+ * The usage-unknown binding: no token counts and no cost exist to record, and
+ * the table's CHECKs refuse any row that claimed otherwise.
+ */
+function bindUsageUnknownModelCallAttempt(
+  record: UsageUnknownModelCallRecord,
+): (string | number | null)[] {
+  const values: Record<(typeof MODEL_CALL_COLUMNS)[number], string | number | null> = {
+    attempt_id: record.attemptId,
+    completed_at: record.completedAt,
+    session_id: record.sessionId ?? null,
+    logical_call_id: record.logicalCallId,
+    turn_id: record.turnId,
+    call_kind: record.callKind,
+    connection_slug: record.connectionSlug ?? null,
+    provider_id: record.providerId,
+    model_id: record.modelId,
+    latency_ms: record.latencyMs,
+    status: record.status,
+    error_class: record.errorClass ?? null,
+    usage_basis: 'missing',
+    input_tokens: null,
+    output_tokens: null,
+    cache_read_input_tokens: null,
+    cache_miss_input_tokens: null,
+    cache_write_input_tokens: null,
+    reasoning_tokens: null,
+    cost_basis: 'unpriced',
+    cost_usd: null,
+  };
+  return MODEL_CALL_COLUMNS.map((column) => values[column]);
+}
+
+function writeUsageUnknownModelCallAttempt(
+  db: DatabaseSync,
+  record: UsageUnknownModelCallRecord,
+): void {
+  db.prepare(MODEL_CALL_UPSERT).run(...bindUsageUnknownModelCallAttempt(record));
 }
 
 interface LaggingRunRow {

@@ -41,6 +41,7 @@ import {
   ModelCallLedgerPublicationError,
   type ModelCallLedger,
   type ModelCallLedgerReader,
+  type UsageUnknownModelCallRecord,
 } from './model-call-ledger.js';
 import {
   PricingCommitUnknownError,
@@ -133,6 +134,12 @@ export interface ModelCallIndexWriter extends ModelCallIndexReader {
   catchUpModelCallProjection(
     input?: CatchUpModelCallProjectionInput,
   ): Promise<CatchUpModelCallProjectionResult>;
+  /**
+   * Records one usage-unknown row for a model call outside any AgentRun
+   * (#5691) — auxiliary Host calls the event stream cannot project. The owning
+   * Session, when known, is published after the write.
+   */
+  recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void>;
 }
 
 export interface PricingAuthorityReader {
@@ -527,6 +534,10 @@ function createWriterFacade(
       modelCallLogs: (query, now, offset, limit) =>
         read(() => modelCalls.logs(query, now, offset, limit)),
       catchUpModelCallProjection: admitModelCallProjectionCatchUp,
+      recordUsageUnknownAttempt: (record) =>
+        admitSessionUsageMutation(record.sessionId, () =>
+          modelCalls.recordUsageUnknownAttempt(record),
+        ),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),

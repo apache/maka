@@ -76,6 +76,8 @@ import { resolveModelRuntime } from '@maka/runtime/model-runtime';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
 import { type ModelMessage } from '@maka/runtime/model-protocol';
+import { type ModelCallAttemptStatus } from '@maka/core/model-call-attempt';
+import { type UsageUnknownModelCallRecord } from '@maka/storage/model-call-ledger';
 import {
   memoryExtractionMaxOutputTokens,
   type MemoryExtractionSourceSnapshot,
@@ -560,6 +562,9 @@ interface AuxiliaryModelCallAuthority {
       record: Parameters<InteractiveUsageStoresWriter['telemetry']['recordLlmCall']>[0],
     ): Promise<void>;
   };
+  readonly modelCalls: {
+    recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void>;
+  };
   readonly requestDrain: () => void;
   readonly now: () => number;
   readonly newId: () => string;
@@ -605,6 +610,12 @@ interface HostAuxiliaryModelCallInput {
   ) => AuxiliaryModelRequest;
 }
 
+/**
+ * Turn placeholder for canonical rows of calls no run owns: auxiliary calls
+ * happen outside any turn, and the ledger's countable rows require the column.
+ */
+const AUXILIARY_TURN_ID = 'auxiliary';
+
 function createAuxiliaryModelCallAuthority(
   input: AuxiliaryModelCallAuthorityInput,
 ): AuxiliaryModelCallAuthority {
@@ -623,6 +634,16 @@ function createAuxiliaryModelCallAuthority(
       insertLlmCall: async (record) => {
         try {
           await input.usage.telemetry.recordLlmCall(record);
+        } catch (error) {
+          requestDrain();
+          throw error;
+        }
+      },
+    },
+    modelCalls: {
+      recordUsageUnknownAttempt: async (record) => {
+        try {
+          await input.usage.modelCalls.recordUsageUnknownAttempt(record);
         } catch (error) {
           requestDrain();
           throw error;
@@ -703,6 +724,34 @@ async function runHostAuxiliaryModelCall(
       modelId: target.model,
       startedAt,
     };
+    // Abort and no-usage paths know no token counts: their canonical row says
+    // usage-unknown (`usageBasis: 'missing'`, no tokens) instead of posing as a
+    // free call (#5691). Auxiliary calls run outside any AgentRun, so the
+    // canonical writer is this store seam, not the run's event stream.
+    const recordUsageUnknown = async (
+      status: ModelCallAttemptStatus,
+      errorClass?: string,
+    ): Promise<void> => {
+      const completedAt = authority.now();
+      try {
+        await authority.modelCalls.recordUsageUnknownAttempt({
+          attemptId: input.callId,
+          completedAt,
+          ...(input.telemetrySessionId ? { sessionId: input.telemetrySessionId } : {}),
+          logicalCallId: input.callId,
+          turnId: AUXILIARY_TURN_ID,
+          callKind: input.callKind,
+          connectionSlug: target.connection.slug,
+          providerId: target.connection.providerType,
+          modelId: target.model,
+          latencyMs: Math.max(0, completedAt - startedAt),
+          status,
+          ...(errorClass ? { errorClass } : {}),
+        });
+      } catch (accountingError) {
+        throw new AuxiliaryModelCallLocalError('accounting', accountingError);
+      }
+    };
     let result:
       | Awaited<ReturnType<typeof generateToolFreeModelCall>>
       | Awaited<ReturnType<typeof generateProviderPrefixModelCall>>;
@@ -743,38 +792,28 @@ async function runHostAuxiliaryModelCall(
       if (oauthFailure) throw oauthFailure;
     } catch (error) {
       const effectiveError = readDeferredOAuthFailure?.() ?? error;
+      await recordUsageUnknown(
+        input.abortSignal.aborted ? 'aborted' : 'failed',
+        evaluatorErrorClass(effectiveError),
+      );
+      throw effectiveError;
+    }
+    if (result.usage) {
       try {
         await recordLlmCallStrict(
           { repo: authority.telemetry, lookupPricing: pricing },
           {
             ...baseRecord,
-            inputTokens: 0,
-            outputTokens: 0,
+            ...llmCallUsageFields(result.usage),
             latencyMs: Math.max(0, authority.now() - startedAt),
-            status: input.abortSignal.aborted ? 'aborted' : 'error',
-            errorClass: evaluatorErrorClass(effectiveError),
+            status: 'success',
           },
         );
       } catch (accountingError) {
         throw new AuxiliaryModelCallLocalError('accounting', accountingError);
       }
-      throw effectiveError;
-    }
-    try {
-      await recordLlmCallStrict(
-        { repo: authority.telemetry, lookupPricing: pricing },
-        {
-          ...baseRecord,
-          ...(result.usage
-            ? llmCallUsageFields(result.usage)
-            : { inputTokens: 0, outputTokens: 0 }),
-          ...(result.finishReason && !result.usage ? { rawFinishReason: result.finishReason } : {}),
-          latencyMs: Math.max(0, authority.now() - startedAt),
-          status: 'success',
-        },
-      );
-    } catch (accountingError) {
-      throw new AuxiliaryModelCallLocalError('accounting', accountingError);
+    } else {
+      await recordUsageUnknown('completed');
     }
     return {
       text: result.text,
