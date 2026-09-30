@@ -37,7 +37,7 @@ import {
   type SessionCopyAttemptKey,
 } from './session-copy-attempt.js';
 
-type RefBox<T> = { current: T };
+type ReadonlyRef<T> = { readonly current: T };
 
 type ToastApi = {
   info(title: string, description?: string): void;
@@ -85,15 +85,15 @@ export interface AppShellRevisionActions {
  */
 export function createAppShellRevisionActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: ReadonlyRef<string | undefined>;
   captureSelection(): () => boolean;
-  composerRef: RefBox<ComposerHandle | null>;
+  composerRef: ReadonlyRef<ComposerHandle | null>;
   readMessages(): readonly StoredMessage[];
   hasPendingAttachments: () => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
-  revisionDraftRef: RefBox<TurnRevisionDraft | null>;
+  revisionDraftRef: ReadonlyRef<TurnRevisionDraft | null>;
   toastApi: ToastApi;
 }): AppShellRevisionActions {
   const {

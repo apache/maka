@@ -19,9 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement, Fragment, useEffect, useState } from 'react';
+import { act, createElement, Fragment, Profiler, useEffect, useState, type ComponentProps } from 'react';
 import { LocaleProvider, ToastProvider, type TransientUserMessageProjection } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices } from '../../renderer/features/conversation/index.js';
@@ -36,7 +37,11 @@ const row = (id: string): DesktopSessionSummary => ({
 });
 const message = (id: string): StoredMessage => ({ type: 'user', id, text: id, turnId: id, ts: 1 });
 
-function harness() {
+function harness(options: {
+  locale?: UiLocale;
+  hasOlder?: boolean;
+  listTurnLandmarks?: ComponentProps<typeof ConversationLifecycle>['listTurnLandmarks'];
+} = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
   catalog.commitSessions(['A', 'B', 'C'].map(row));
@@ -57,7 +62,7 @@ function harness() {
     opened.push(resource);
     return {
       store: {
-        range: () => ({ sessionId, hasOlder: false, ready, generation: 'range' }),
+        range: () => ({ sessionId, hasOlder: options.hasOlder ?? false, ready, generation: 'range' }),
         snapshot: () => {
           if (!ready) throw new Error('Desktop transcript range is not initialized');
           return { sessionId, messages, ready };
@@ -85,6 +90,7 @@ function harness() {
   let composerRenders = 0;
   let composerMounts = 0;
   let composerUnmounts = 0;
+  let lifecycleCommits = 0;
   let setVisible!: (visible: boolean) => void;
   function Transcript(props: NonNullable<typeof transcript>) { transcript = props; transcriptRenders += 1; return null; }
   function Composer(_props: { processing: boolean; pendingMessages?: readonly TransientUserMessageProjection[]; latestRequestUsageTokens?: number }) {
@@ -99,16 +105,16 @@ function harness() {
     const [visible, updateVisible] = useState(true);
     setVisible = updateVisible;
     return createElement(Fragment, null,
-      createElement(ConversationLifecycle, {
+      createElement(Profiler, { id: 'conversation-lifecycle', onRender: () => { lifecycleCommits += 1; } }, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
         onContextCompactionOutcome() {}, showModelSetupToast() {}, onTurnCompleted() {},
-        searchTarget: null, clearSearchTarget() {}, listTurnLandmarks: async () => ({ landmarks: [] }),
-      }),
+        searchTarget: null, clearSearchTarget() {}, listTurnLandmarks: options.listTurnLandmarks ?? (async () => ({ landmarks: [] })),
+      })),
       visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript }) : null,
       createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer }),
     );
   }
-  act(() => root.render(createElement(LocaleProvider, { locale: 'en', children:
+  act(() => root.render(createElement(LocaleProvider, { locale: options.locale ?? 'en', children:
     createElement(ToastProvider, { children:
       createElement(SessionCatalogContext.Provider, { value: catalog, children:
         createElement(ConversationServicesProvider, { services, children:
@@ -120,13 +126,60 @@ function harness() {
   return {
     root, catalog, opened, observations,
     get owner() { return owner; }, get target() { return target; }, get transcript() { return transcript; },
-    get counts() { return { shellRenders, transcriptRenders, composerRenders, composerMounts, composerUnmounts }; },
+    get counts() { return { shellRenders, transcriptRenders, composerRenders, composerMounts, composerUnmounts, lifecycleCommits }; },
     showTranscript(visible: boolean) { setVisible(visible); },
   };
 }
 
 describe('Conversation ownership', () => {
   afterEach(cleanupFakeDom);
+  it('ignores catalog bookkeeping for both requested and displayed rows while retaining lifecycle updates', async () => {
+    const h = harness();
+    const patchRow = (id: string, patch: Partial<DesktopSessionSummary>) => h.catalog.commitSessions(
+      h.catalog.getState().sessions.map((session) => session.id === id
+        ? { ...session, ...patch, revision: session.revision + 1 }
+        : session),
+    );
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.opened[0]!.publish([message('a')]));
+    await act(async () => h.target.setActiveId('B'));
+    const before = h.counts.lifecycleCommits;
+    for (const id of ['A', 'B']) {
+      await act(async () => patchRow(id, { activityAt: 2, lastMessagePreview: 'streaming', hasUnread: true }));
+      assert.equal(h.counts.lifecycleCommits, before, `${id}: rail bookkeeping does not render the lifecycle`);
+    }
+    assert.equal(h.opened.length, 2);
+    await act(async () => patchRow('A', { status: 'running' }));
+    assert.ok(h.counts.lifecycleCommits > before, 'displayed status remains observable to health recovery');
+    await act(async () => patchRow('B', { profileId: 'replacement-profile' }));
+    assert.equal(h.opened.length, 3, 'requested profile replacement reopens observation');
+    assert.ok(h.opened[1]!.closed);
+    await act(async () => h.root.unmount());
+  });
+
+  for (const [locale, fallback] of [
+    ['en', 'The task action failed. Try again later.'],
+    ['zh-CN', '任务操作失败，请稍后重试。'],
+    ['zh-TW', '任務操作失敗，請稍後重試。'],
+  ] as const) {
+    it(`preserves the reading-position failure copy and desktop diagnostic scope (${locale})`, async (context) => {
+      const errors = context.mock.method(console, 'error', () => undefined);
+      const h = harness({ locale, hasOlder: true, listTurnLandmarks: async (_sessionId, turnId) => {
+        if (turnId) throw new Error('opaque landmark failure');
+        return { landmarks: [] };
+      } });
+      await act(async () => {
+        h.owner.workspace.ui.setTranscriptReadingAnchor('A', { turnId: 'older' });
+        h.target.setActiveId('A');
+      });
+      await act(async () => h.opened[0]!.publish([message('a')]));
+      assert.equal(h.owner.workspace.ui.reads.load('A').getSnapshot().messageLoadError, fallback);
+      assert.equal(errors.mock.callCount(), 1);
+      assert.equal(errors.mock.calls[0]!.arguments[0], '[desktop] operation failed:');
+      await act(async () => h.root.unmount());
+    });
+  }
+
   it('publishes only to regional readers and preserves the persistent composer across transcript remounts', async () => {
     const h = harness();
     await act(async () => h.target.setActiveId('A'));

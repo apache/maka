@@ -24,7 +24,7 @@ type RefBox<T> = { current: T };
 export function handleSessionChangedEvent(
   event: SessionChangedEvent,
   options: {
-    activeIdRef: RefBox<string | undefined>;
+    activeIdRef: Readonly<RefBox<string | undefined>>;
     clearPendingTurnActionsForSession: (sessionId: string) => void;
     refreshMessages: (sessionId: string) => Promise<boolean>;
     refreshProjects: () => Promise<unknown>;

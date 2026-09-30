@@ -23,7 +23,6 @@
     "src/renderer/astryx-theme/maka.js",
     "src/renderer/astryx-theme/makaTheme.ts",
     "src/renderer/attachment-preflight.ts",
-    "src/renderer/bootstrap-selection-lease.ts",
     "src/renderer/browser-storage.ts",
     "src/renderer/cached-theme-bootstrap.ts",
     "src/renderer/chat-composer-region.tsx",
@@ -171,7 +170,6 @@
     "src/renderer/settings/use-optimistic-settings-draft.ts",
     "src/renderer/settings/web-search-settings-page.tsx",
     "src/renderer/settled-message-merge.ts",
-    "src/renderer/shell-run-update-state.ts",
     "src/renderer/side-chat-command.ts",
     "src/renderer/skill-invocation-feedback.ts",
     "src/renderer/task-readiness-notice.ts",
@@ -345,7 +343,7 @@
           "@maka/core/session-name": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 2928
+        "nonTriviaTokens": 2931
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 1,
@@ -426,7 +424,7 @@
           "@maka/core/redaction": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 391
+        "nonTriviaTokens": 311
       },
       "src/renderer/app-shell-detail-panel.tsx": {
         "importDeclarations": 0,
@@ -494,7 +492,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 1358
+        "nonTriviaTokens": 1361
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -577,7 +575,7 @@
           "@maka/core/session": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2019
+        "nonTriviaTokens": 2020
       },
       "src/renderer/app-shell-stop-action.ts": {
         "importDeclarations": 0,
@@ -596,7 +594,7 @@
           "./locales/shell-copy.js": 1
         },
         "importSpecifiers": 0,
-        "nonTriviaTokens": 302
+        "nonTriviaTokens": 292
       },
       "src/renderer/app-shell-turn-actions.ts": {
         "importDeclarations": 2,
@@ -617,7 +615,7 @@
           "./session-workspace-errors.js": 1
         },
         "importSpecifiers": 3,
-        "nonTriviaTokens": 571
+        "nonTriviaTokens": 561
       },
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 53,

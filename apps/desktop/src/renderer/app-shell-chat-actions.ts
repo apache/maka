@@ -127,7 +127,7 @@ export interface AppShellChatActions {
 export function createAppShellChatActions(deps: {
   uiLocale: UiLocale;
   getRunningTurnId?: (sessionId: string) => string | undefined;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   captureComposerImportOwner: () => ComposerImportOwner;
   captureSelection: () => () => boolean;
   checkTaskSubmissionReadiness: () => Promise<boolean>;

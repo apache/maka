@@ -37,11 +37,14 @@ never return a full model or a render-prop result to AppShell. The private
 context contains stable capabilities, not a changing publication. A content
 publication does not notify Shell when its target and finite chrome facts are
 unchanged, or Composer when its pending/usage projection is unchanged.
+Catalog preview/activity bookkeeping also leaves the lifecycle reader unchanged;
+status and profile changes still reach recovery and observation ownership.
 
 `useAppShellSessionUiState` is now a transitional **reader/command adapter**,
 not a construction hook. It exposes published/Host target identity, empty/history
 facts, fixed Session reads, a keyed Stop claim, and semantic commands. Its
-published Session reference is a frozen getter. It has no map setters, range
+published Session reference is a frozen getter, and consuming contracts declare
+it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
 `readMessages()` is an invocation-time, readonly view of the **published range**;
 it is used by Copy/Save and revision commands and is not a full-history promise.

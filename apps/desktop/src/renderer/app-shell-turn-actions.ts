@@ -29,8 +29,6 @@ import {
 } from './session-workspace-errors.js';
 import { acquireSessionCopyAttempt } from './session-copy-attempt.js';
 
-type RefBox<T> = { current: T };
-
 type ToastApi = {
   info(title: string, description?: string): void;
   success(title: string, description?: string): void;
@@ -48,7 +46,7 @@ export interface AppShellTurnActions {
 
 export function createAppShellTurnActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: { readonly current: string | undefined };
   captureSelection(): () => boolean;
   turnActionRegistry: {
     addKey(key: string): boolean;

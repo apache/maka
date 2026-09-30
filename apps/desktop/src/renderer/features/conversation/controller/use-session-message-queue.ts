@@ -47,7 +47,7 @@ export function useSessionMessageQueue(options: {
   sessionId: string | undefined;
   queue: MessageQueueUiState | undefined;
   transientMessages: readonly TransientUserMessageProjection[];
-  activeSessionId: RefObject<string | undefined>;
+  activeSessionId: Readonly<RefObject<string | undefined>>;
 }): {
   composer: RefObject<ComposerHandle | null>;
   transientMessages: TransientUserMessageProjection[];

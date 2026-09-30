@@ -28,6 +28,7 @@ import { createAppShellSessionEventHandlers, createAppShellSessionDisplayBatch }
 import { useShellRunUpdates, useSessionEventHealthPolling } from '../controller/use-conversation-recovery.js';
 import { useSessionUiRead } from '../controller/use-session-ui-read.js';
 import { activeHostTurn } from '../../../application/contracts/session-execution.js';
+import { shellSessionRowEqual } from '../model/conversation-catalog-row.js';
 import { useConversationServices } from '../services.js';
 import { useConversationObservation } from '../controller/use-conversation-observation.js';
 import { TranscriptReadingPositionController } from '../controller/transcript-reading-position-controller.js';
@@ -51,8 +52,8 @@ export function ConversationLifecycle(props: {
   const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
   const catalog = useSessionCatalogController();
   const requestedId = useExternalStoreSelector(catalog, selectActiveSessionId);
-  const requested = useExternalStoreSelector(catalog, selectSessionById, requestedId);
-  const displayed = useExternalStoreSelector(catalog, selectSessionById, view.sessionId);
+  const requested = useExternalStoreSelector(catalog, selectSessionById, requestedId, shellSessionRowEqual);
+  const displayed = useExternalStoreSelector(catalog, selectSessionById, view.sessionId, shellSessionRowEqual);
   const authority = useRef(INITIAL_OBSERVATION_AUTHORITY);
   authority.current = reconcileObservationAuthority(authority.current, { sessionId: requestedId, profileId: requested?.profileId });
   const seed = useRef(INITIAL_LIVE_CONTENT_SEED);
@@ -147,7 +148,7 @@ export function ConversationLifecycle(props: {
       searchTarget={props.searchTarget} clearSearchTarget={props.clearSearchTarget} sessionUi={ui}
       landmarkSessionId={displayed?.shared || displayed?.localState === 'pending' ? null : displayed?.id ?? null}
       listTurnLandmarks={props.listTurnLandmarks} setTurnIndex={workspace.setTurnIndex}
-      onRestoreError={(error, sessionId) => ui.setMessageLoadErrorBySession((current) => ({ ...current, [sessionId]: transcriptErrorMessage(error, uiLocale, 'read') }))}
+      onRestoreError={(error, sessionId) => ui.setMessageLoadErrorBySession((current) => ({ ...current, [sessionId]: transcriptErrorMessage(error, uiLocale, 'restore') }))}
     />
     <LiveTurnReconciler readLiveTurns={ui.reads.liveTurns} activeId={view.sessionId} messages={view.messages} reconcile={handlers.reconcilePersistedMessages} />
   </>;

@@ -72,7 +72,7 @@ export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch
 
 export function createAppShellSessionEventHandlers(options: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   liveTurnBySessionRef: RefBox<Record<string, LiveTurnBuffer>>;
   refreshMessages: (sessionId: string, options?: RefreshMessagesOptions) => Promise<boolean>;
   refreshSessions: () => Promise<unknown>;

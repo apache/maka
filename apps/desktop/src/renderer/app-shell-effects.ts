@@ -121,7 +121,7 @@ export function useAppShellPersistenceEffects(options: {
 
 export function useAppShellBootstrapSubscriptions(options: {
   uiLocale: UiLocale;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   applyE2eFixture: () => Promise<void>;
   bootstrapSessions: () => Promise<void>;
   clearPendingTurnActionsForSession: (sessionId: string) => void;

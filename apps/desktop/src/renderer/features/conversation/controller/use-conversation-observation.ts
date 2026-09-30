@@ -35,7 +35,7 @@ export function useConversationObservation(options: {
   uiLocale: UiLocale;
   activeId: string | undefined;
   observationAuthorityRevision: number;
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
   setExecution: import('../model/session-ui-state.js').AppShellSessionUiStateController['setExecution'];
   endObservation(sessionId: string): void;
