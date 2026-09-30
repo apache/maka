@@ -79,3 +79,107 @@ through `SessionNavigationPorts`, which the shell composes.
   semantics, and renderer state is cleared only after the Host confirms removal.
 - Width persistence remains trailing-debounced; width, collapse, and grouping
   reuse the existing local-storage keys and hydration rules.
+
+## Session visit history
+
+`SessionHistoryNavigation` owns a window-local, bounded history of the last 100
+Session visits. It observes the catalog's requested selection synchronously, so
+rapid selections are recorded even before a transcript finishes loading. It
+does not observe the displayed transcript as a second selection authority.
+The shell supplies visibility, modal blocking, and its existing Session-open
+command. Settings, WorkHub, module pages and an empty new-task surface are not
+history entries. Restarting or reloading the window clears this history.
+
+On the main conversation surface, a horizontal touchpad scroll moves backward
+(`deltaX < 0`) or forward (`deltaX > 0`) through visits, not sidebar order.
+Opening the current Session again is a no-op; opening another Session after
+going back discards the forward branch. Confirmed catalog removals erase the
+Session's visits. Missing or pending rows are skipped without erasing them:
+temporary Host/catalog unavailability is not proof of deletion.
+
+The gesture chooses its axis after 18 pixels, requires horizontal movement at
+least 1.5 times the vertical movement, and triggers at 80 horizontal pixels.
+This allows a small diagonal start without locking out the entire horizontal
+gesture. A white arrow on a theme-accent tab sits flush with the corresponding
+conversation edge, widening with the pull and fading in/out. Crossing the threshold requests a move
+and acknowledges only a confirmed selection. An unfinished pull begins its
+return after 500 ms idle. Slow pulls retain the 180 ms expansion, 200 ms fade-in,
+200 ms completion hold and 320 ms return. Fast pulls (at least 40 px at 1 px/ms)
+use 280/300/320/420 ms respectively, making a quick flick readable without
+delaying selection. A continuous tail cannot extend or revive it; a history
+boundary shows a muted arrow. The gesture model owns
+settlement phases and deadlines; the view schedules them and renders feedback
+locally, honoring reduced-motion preferences. Deadlines use monotonic elapsed
+time, so clock changes and the sample preview's frozen date cannot prolong them.
+
+Wheel `cancelable` controls only whether the view calls `preventDefault`.
+Chromium can make only the first frame cancelable, so non-cancelable frames still
+contribute displacement when the target and modifiers are eligible. They do not
+bypass input exclusions. A completed gesture keeps its acknowledgement if a
+Session swap detaches the original target; it cannot navigate on that excluded
+tail or lock out a deliberate reverse on the new surface. During inert transcript
+replacement, ancestor-retargeted input inside the conversation is suspended,
+not rejected as an excluded control. After loading, an ancestor-latched stream
+uses the actual element under the pointer and applies all normal exclusions.
+The view owns this DOM resolution; the gesture model alone owns stroke boundaries.
+Explicit
+modal/visibility/blur cancellation still removes it.
+
+The recognizer stays latched through same-direction momentum until 250 ms
+without wheel input or a renewed stroke. The Windows capture merges physical
+strokes without that idle gap: at least 180 ms after commitment, a quiet tail
+(frames no larger than 8 px for at least 40 ms) followed by two strong frames
+(at least 12 px each, totaling 40 px within 80 ms) starts a new pull. A single
+coalesced spike cannot restart navigation. After completion, 24 pixels of consecutive opposite input
+starts a new pull, so an intentional return does not have to wait for idle;
+small recoil does not reset the latch. Modals, leaving the Session surface,
+excluded targets and window blur cancel a pull. Listeners and animation timers
+are released on unmount.
+Vertical/diagonal input, modifiers, non-pixel wheel input, editable controls,
+dialogs and horizontally overflowing content keep their gesture. Scrollable
+code and tables retain horizontal scrolling even at either edge. Workbar,
+terminal and embedded-browser surfaces are outside the marked conversation
+surface. A nested interactive surface may also opt out with
+`data-session-history-ignore`.
+
+### Ownership, atomicity and failure
+
+- **Owner:** Session Navigation owns history/cursor and gesture state. The
+  existing catalog remains the only writer/read authority for the selected
+  Session; the shell composes the existing open command.
+- **Invariant:** one accepted gesture requests at most one history traversal.
+  Traversal never records itself as a new visit or truncates forward history.
+- **Atomicity boundary:** the synchronous open command and catalog selection
+  acknowledgement. Re-entrant catalog notifications during that command are
+  suppressed as new visits; the cursor advances only after acknowledgement.
+  A rejected or throwing open leaves the cursor in place. Subsequent asynchronous
+  transcript-load failures retain the selected target and existing error/retry
+  behavior; they do not select a different Session silently.
+- **State safety:** history stores IDs only. Drafts, transcripts and in-flight
+  turns continue through the existing Session-open/lifecycle owners. No storage,
+  runtime protocol, Host lifecycle or filesystem contract changes.
+- **Rollback:** revert the navigation component's shell wiring and its supporting
+  implementation. No migration or persistent-state cleanup is required.
+
+### Platform scope and verification
+
+| Platform | Input contract | Limitation |
+| --- | --- | --- |
+| Windows | Chromium pixel-mode horizontal wheel input, normally from a precision touchpad | Driver/system gestures must deliver input to the app |
+| macOS | Same renderer input path | System gesture configuration and inertia need physical-device verification |
+| Linux | Same renderer input path | Availability depends on touchpad driver and desktop configuration |
+
+Wheel input does not expose finger count or a reliable momentum-end flag. This
+is horizontal touchpad-style navigation, not a guarantee that only two fingers
+can trigger it; a horizontal mouse wheel producing pixel events may also do so.
+The idle timeout, renewal pattern and opposite-input threshold are gesture heuristics, not native
+phase detection.
+
+Node tests cover history branching, removal, selection ordering, rejected opens,
+gesture latching, diagonal starts, immediate reversal, feedback lifecycle,
+the captured Windows first-frame-only cancelability sequence, repeated strokes,
+ancestor retargeting during inert loading, adaptive animation speed and input
+exclusion. The focused Storybook interaction checks actual Chromium
+overflow geometry, arrow placement and event propagation using the production
+component, catalog, open command, ChatSurfaceLayout and MarkdownBody. Automated
+input does not replace physical touchpad tuning on each platform.

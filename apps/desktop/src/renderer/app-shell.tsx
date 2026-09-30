@@ -1169,19 +1169,15 @@ function AppShellContent({
     [toastApi],
   );
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
-  const selectSessionSurface = useCallback(
-    () => setNavSelection({ section: 'sessions' }),
-    [setNavSelection],
-  );
   const openSession = useMemo(
     () =>
       createSessionOpenCommand({
         activateSession: setActiveId,
         exitWorkHub,
-        selectSessionSurface,
+        selectSessionSurface: () => setNavSelection({ section: 'sessions' }),
         setSearchTarget: setSearchScrollTarget,
       }),
-    [exitWorkHub, selectSessionSurface, setActiveId, setSearchScrollTarget],
+    [exitWorkHub, setNavSelection, setActiveId, setSearchScrollTarget],
   );
   useLayoutEffect(() => {
     openSessionInChatRef.current = openSession;
@@ -1991,6 +1987,7 @@ function AppShellContent({
           <ModuleHub.ModuleHubScheduledTasksBoundary
             render={(scheduledTasks) => (
               <SessionNavigationProvider
+                historyBlocked={shellObscured}
                 scheduledTasks={scheduledTasks}
                 catalog={sessionCatalogController}
                 activeSessionId={activeId}
@@ -2048,6 +2045,7 @@ function AppShellContent({
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
               <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
+                data-session-history-surface="true"
                 // ChatView positions this transcript: switching conversations,
                 // following the tail and the moves the reader asks for are one
                 // authority there, and the composer never remounts for any of
