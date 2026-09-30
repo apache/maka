@@ -1330,6 +1330,114 @@ test('leaving an initial bookmark does not report its cancellation or reopen the
   }
 });
 
+test('returning to latest cancels a pending seek even while the old view covers the tail', async () => {
+  const store = transcriptStore();
+  const errors: unknown[] = [];
+  const identity = { sessionId: 'session-1', generation: 'live', hostEpoch: 'host-1' };
+  let seeking: AbortSignal | undefined;
+  let opens = 0;
+  const controller = createDesktopTranscriptRangeController(store, async (signal, _floor, position) => {
+    opens++;
+    if (position) {
+      seeking = signal;
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('superseded')), { once: true }));
+    }
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 30, hasOlder: true, beginsAtTurnBoundary: true,
+      durable: [{ sequence: 30, message: assistantMessage('latest') }],
+    })) store.accept(batch);
+    return transcriptHandle(identity);
+  }, { onError: (error) => errors.push(error) });
+  try {
+    await controller.ready();
+    const seek = controller.seek(10);
+    await waitFor(() => seeking !== undefined, { timeoutMs: 1000 });
+    assert.equal(store.range().hasNewer, false);
+    await controller.showLatest();
+    await seek;
+    assert.equal(seeking?.aborted, true);
+    assert.equal(opens, 3);
+    assert.deepEqual(errors, []);
+  } finally { await controller.close(); }
+});
+
+for (const phase of ['opening', 'waiting'] as const) {
+  test(`navigation cancels a background durability check without an error while ${phase}`, async () => {
+    const store = transcriptStore();
+    const errors: unknown[] = [];
+    const identity = { sessionId: 'session-1', generation: 'live', hostEpoch: 'host-1' };
+    let detachedSignal: AbortSignal | undefined;
+    let detachedClosed = false;
+    const controller = createDesktopTranscriptRangeController(store, async (signal, _floor, position, receive) => {
+      if (receive) {
+        detachedSignal = signal;
+        if (phase === 'opening') {
+          return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
+        }
+      }
+      for (const batch of encodeDesktopTranscriptBatches(identity, {
+        durableThrough: 10, hasOlder: true, hasNewer: Boolean(position), beginsAtTurnBoundary: true,
+        durable: [{ sequence: 10, message: assistantMessage('held') }], reset: true, ready: true,
+      })) (receive ?? ((value) => store.accept(value)))({ ...batch, deliverySequence: 1 });
+      return transcriptHandle(identity, { async close() { if (receive) detachedClosed = true; } });
+    }, { initialTurnId: 'old', onError: (error) => errors.push(error) });
+    try {
+      await controller.ready();
+      const result = controller.waitForDurableMessage('future', 50).then(
+        (value) => ({ value }), (error: unknown) => ({ error }),
+      );
+      await waitFor(() => detachedSignal !== undefined, { timeoutMs: 1000 });
+      await controller.showLatest();
+      assert.deepEqual(await result, { value: false });
+      assert.equal(detachedSignal?.aborted, true);
+      if (phase === 'waiting') assert.equal(detachedClosed, true);
+      assert.deepEqual(errors, []);
+    } finally { await controller.close(); }
+  });
+}
+
+test('a real detached durability failure still rejects', async () => {
+  const store = transcriptStore();
+  const failure = new Error('Host read failed');
+  const identity = { sessionId: 'session-1', generation: 'live', hostEpoch: 'host-1' };
+  const controller = createDesktopTranscriptRangeController(store, async (_signal, _floor, _position, receive) => {
+    if (receive) throw failure;
+    for (const batch of encodeDesktopTranscriptBatches(identity, {
+      durableThrough: 10, hasOlder: true, hasNewer: true, beginsAtTurnBoundary: true,
+      durable: [{ sequence: 10, message: assistantMessage('held') }], reset: true, ready: true,
+    })) store.accept(batch);
+    return transcriptHandle(identity);
+  }, { initialTurnId: 'old', onError(error) { throw error; } });
+  try {
+    await controller.ready();
+    await assert.rejects(controller.waitForDurableMessage('future', 50), (error) => error === failure);
+  } finally { await controller.close(); }
+});
+
+test('navigation still rejects a cancelled complete export instead of returning partial history', async () => {
+  const store = transcriptStore();
+  const identity = { sessionId: 'session-1', generation: 'live', hostEpoch: 'host-1' };
+  let exporting = false;
+  const controller = createDesktopTranscriptRangeController(store, async (signal, _floor, position, receive) => {
+    if (receive) {
+      exporting = true;
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled export')), { once: true }));
+    }
+    for (const batch of encodeDesktopTranscriptBatches(identity, {
+      durableThrough: 10, hasOlder: true, hasNewer: Boolean(position), beginsAtTurnBoundary: true,
+      durable: [{ sequence: 10, message: assistantMessage('held') }], reset: true, ready: true,
+    })) store.accept(batch);
+    return transcriptHandle(identity);
+  }, { initialTurnId: 'old', onError(error) { throw error; } });
+  try {
+    await controller.ready();
+    const rejected = assert.rejects(controller.readComplete(), /cancelled export/);
+    await waitFor(() => exporting, { timeoutMs: 1000 });
+    await controller.showLatest();
+    await rejected;
+  } finally { await controller.close(); }
+});
+
 for (const navigation of ['seek', 'latest'] as const) {
   test(`a failed ${navigation} reports its error and recovers the held window after reconnection`, async () => {
     const store = transcriptStore();

@@ -154,7 +154,7 @@ export function createDesktopTranscriptRangeController(
   options: { onError(error: unknown): void; initialTurnId?: string },
 ): DesktopTranscriptRangeController {
   let closed = false;
-  let positioned = Boolean(options.initialTurnId);
+  let positioning = Boolean(options.initialTurnId);
   let latest: Promise<void> | undefined;
   let openController = new AbortController();
   let handle = open(openController.signal, undefined,
@@ -194,7 +194,7 @@ export function createDesktopTranscriptRangeController(
     })();
   };
   const replace = async (resumeFrom?: number, position?: DesktopTranscriptPosition) => {
-    positioned = position !== undefined;
+    positioning = position !== undefined;
     const previous = handle;
     acknowledged = undefined;
     openController.abort();
@@ -210,7 +210,10 @@ export function createDesktopTranscriptRangeController(
     handle = replacement;
     try {
       await replacement;
-      if (!cancellation.signal.aborted) requireLive();
+      if (!cancellation.signal.aborted) {
+        requireLive();
+        positioning = false;
+      }
     } catch (error) {
       if (!cancellation.signal.aborted) throw error;
     }
@@ -243,7 +246,10 @@ export function createDesktopTranscriptRangeController(
   });
   const initial = handle;
   void initial.then(() => {
-    if (!closed && handle === initial) requireLive();
+    if (!closed && handle === initial) {
+      requireLive();
+      positioning = false;
+    }
   }).catch((error) => {
     if (!closed && handle === initial) recovery.transcriptFailed(error);
   });
@@ -302,11 +308,19 @@ export function createDesktopTranscriptRangeController(
     store,
     async ready() { await current(); },
     async waitForDurableMessage(messageId, timeoutMs) {
-      await current();
-      if (range()?.hasNewer) {
-        return (await readDetached(undefined, { messageId, timeoutMs })).messages.some((message) => message.id === messageId);
+      const signal = openController.signal;
+      try {
+        await current();
+        if (signal.aborted) return false;
+        if (range()?.hasNewer) {
+          return (await readDetached(undefined, { messageId, timeoutMs })).messages.some((message) => message.id === messageId);
+        }
+        return store.waitForDurableMessage(messageId, timeoutMs);
+      } catch (error) {
+        // Navigation supersedes this background confirmation, not the send.
+        if (signal.aborted) return false;
+        throw error;
       }
-      return store.waitForDurableMessage(messageId, timeoutMs);
     },
     loadEarlier,
     loadNewer() {
@@ -328,7 +342,7 @@ export function createDesktopTranscriptRangeController(
     },
     showLatest() {
       if (latest) return latest;
-      if (!positioned && !range()?.hasNewer) return current().then(() => undefined);
+      if (!positioning && !range()?.hasNewer) return current().then(() => undefined);
       const task = replace().catch(readFailed).finally(() => { if (latest === task) latest = undefined; });
       latest = task;
       return task;

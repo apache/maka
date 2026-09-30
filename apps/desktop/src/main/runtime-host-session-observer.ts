@@ -1619,7 +1619,7 @@ export class RuntimeHostSessionObserver {
     restoreThrough?: number,
     opening = false,
   ): Promise<void> {
-    const newer = history.newer;
+    let newer = history.newer;
     if (!newer) return;
     const isCurrent = () => state.replica === replica &&
       state.transcriptConsumers.get(consumer.consumerId) === consumer && !consumer.resetRequested;
@@ -1643,13 +1643,21 @@ export class RuntimeHostSessionObserver {
       await this.#sendWindowRows(consumer, replica, history, page.durable, { reset, ready: false, coversFrom });
       reset = false;
       if (!isCurrent()) return;
-      if (newer.cursor === null || (boundary && bytes >= budget &&
-        (restoreThrough === undefined || (history.coveredThrough ?? -1) >= restoreThrough))) break;
-    }
-    if (newer.cursor === null) {
-      const high = replica.durableThrough;
-      history.newer = high !== null && high > newer.throughSequence
-        ? { throughSequence: high, cursor: null } : undefined;
+      if (newer.cursor === null) {
+        const high = replica.durableThrough;
+        history.newer = high !== null && high > newer.throughSequence
+          ? { throughSequence: high, cursor: null } : undefined;
+        // Tail changes are withheld while reading a historical window. Close
+        // a gap created during delivery within this answer's remaining budget,
+        // but keep a reconnect's explicitly restored bounds fixed.
+        if (history.newer && restoreThrough === undefined && bytes < budget) {
+          newer = history.newer;
+          continue;
+        }
+        break;
+      }
+      if (boundary && bytes >= budget &&
+        (restoreThrough === undefined || (history.coveredThrough ?? -1) >= restoreThrough)) break;
     }
     rememberTranscriptWindow(history);
     await this.#sendWindowRows(consumer, replica, history, [], { reset, ready: true, coversFrom });

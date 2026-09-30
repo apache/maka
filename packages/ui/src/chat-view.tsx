@@ -1048,7 +1048,7 @@ export function ChatView(props: {
                           failedExecutionStateLabel={
                             turnPresentation?.failedExecutionStateLabels[turn.turnId]
                           }
-                          safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
+                          safeResumeAction={!props.hasLaterHistory && turnPresentation?.resumeCandidateTurnId === turn.turnId
                             ? props.safeResumeAction
                             : undefined}
                           lineageBadges={props.onLineageBadgeClick ? turnPresentation?.lineageBadgesByTurn[turn.turnId] : undefined}

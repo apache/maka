@@ -232,3 +232,22 @@ test('shared turn presentation only exposes lineage when the surface supports na
     assert.equal(document.querySelectorAll('.maka-turn-lineage-badge').length, canNavigate ? 1 : 0);
   }
 });
+
+test('Resume is offered only when the displayed window covers the session tail', async () => {
+  for (const hasLaterHistory of [true, false]) {
+    const markup = await renderChat(undefined, {
+      messages: [
+        { type: 'user', id: 'ask', turnId: 'stopped', text: 'Ask', ts: 1 },
+        { type: 'turn_state', id: 'stopped-state', turnId: 'stopped', status: 'aborted', abortSource: 'renderer.stop_button', ts: 2 },
+      ],
+      hasLaterHistory,
+      safeResumeAction: { pending: false, onResume() {} },
+      deriveTurnPresentation: () => ({
+        footerActionsByTurn: {}, failedReasonLabels: {}, failedSeverities: {}, failedExecutionStateLabels: {},
+        resumeCandidateTurnId: 'stopped',
+        lineageBadgesByTurn: {},
+      }),
+    });
+    assert.equal(markup.includes('Continue this turn'), !hasLaterHistory);
+  }
+});

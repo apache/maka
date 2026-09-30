@@ -40,7 +40,7 @@ function turn(id: string): StoredMessage[] {
   ];
 }
 
-async function harness(t: TestContext, source: StoredMessage[], initialTurnId: string, checkpoint = source.at(-1)!.id) {
+async function harness(t: TestContext, source: StoredMessage[], initialTurnId: string, checkpoint = source.at(-1)!.id, initialBytes = 600) {
   const ledger = await openTranscriptLedger(source);
   await ledger.appendThrough(checkpoint);
   const { reader, sessionId } = ledger;
@@ -49,6 +49,8 @@ async function harness(t: TestContext, source: StoredMessage[], initialTurnId: s
   const markers: string[] = [];
   const errors: unknown[] = [];
   const observers: RuntimeHostSessionObserver[] = [];
+  let replicaThrough: number | null = null;
+  let beforeAcknowledge: ((batch: DesktopTranscriptBatch) => Promise<void>) | undefined;
   let currentSubscription: ClientSessionSubscription;
   let currentState: Awaited<ReturnType<typeof createSessionTranscriptBootstrap>>['state'];
   let frameSequence = 1;
@@ -95,7 +97,8 @@ async function harness(t: TestContext, source: StoredMessage[], initialTurnId: s
           return undefined as never;
         },
       },
-      emitSessionsChanged() {}, transcriptHistoryBytes: 1200, transcriptInitialHistoryBytes: 600,
+      cacheTranscript(snapshot) { replicaThrough = snapshot.durableThrough; },
+      emitSessionsChanged() {}, transcriptHistoryBytes: 1200, transcriptInitialHistoryBytes: initialBytes,
     });
     observers.push(observer);
     return observer;
@@ -117,7 +120,10 @@ async function harness(t: TestContext, source: StoredMessage[], initialTurnId: s
         send(_channel, batch) {
           if (!signal.aborted) receive(batch);
           queueMicrotask(() => {
-            if (!signal.aborted) registry.acknowledgeTranscript(consumerId, batch.generation, batch.deliverySequence, 9);
+            void (async () => {
+              await beforeAcknowledge?.(batch);
+              if (!signal.aborted) registry.acknowledgeTranscript(consumerId, batch.generation, batch.deliverySequence, 9);
+            })().catch((error) => errors.push(error));
           });
         },
       }, 'history', resumeFrom, position);
@@ -142,12 +148,16 @@ async function harness(t: TestContext, source: StoredMessage[], initialTurnId: s
   await controller.ready();
   return {
     store, controller, ledger, requests, markers, errors,
+    beforeAcknowledge(callback: (batch: DesktopTranscriptBatch) => Promise<void>) {
+      beforeAcknowledge = callback;
+    },
     acknowledgeAs(targetId: number) {
       observer.acknowledgeTranscriptTail({
         consumerId: 'window-1', sessionId, hostEpoch: 'host-1', through: Number.MAX_SAFE_INTEGER,
       }, targetId);
     },
-    async reconnect() {
+    async reconnect(budget = initialBytes) {
+      initialBytes = budget;
       const previous = observer;
       registry.detach(previous);
       observer = newObserver();
@@ -163,7 +173,7 @@ async function harness(t: TestContext, source: StoredMessage[], initialTurnId: s
         kind: 'subscription.transcript_advanced', sessionId, hostEpoch: 'host-1',
         subscriptionId: `subscription-${sessionId}`, sequence: frameSequence++, throughSequence: throughSequence!,
       });
-      await new Promise((resolve) => setImmediate(resolve));
+      await waitFor(() => replicaThrough === throughSequence, { timeoutMs: 1000 });
     },
   };
 }
@@ -196,6 +206,74 @@ test('opens an indexed window, reads both directions, and exports without replac
   assert.equal(h.store.range().hasNewer, false);
   assert.ok(h.store.snapshot().messages.some((message) => message.turnId === 't99'));
   await waitFor(() => h.markers.length > 0, { timeoutMs: 1000 });
+  assert.deepEqual(h.errors, []);
+});
+
+for (const budget of [600, 4000]) {
+  test(`a seek catches concurrent tail growth only within its ${budget}-byte answer budget`, async (t) => {
+    const h = await harness(t, Array.from({ length: 10 }, (_, i) => turn(`t${i}`)).flat(), 't0', 'done-t6', budget);
+    const rows = await h.ledger.durableRecords();
+    const high = await h.ledger.reader.readDurableHighWater(h.ledger.sessionId);
+    let appended = false;
+    h.beforeAcknowledge(async (batch) => {
+      if (appended || batch.ready || batch.durableThrough !== high) return;
+      appended = true;
+      await h.append('done-t7');
+    });
+    await h.controller.seek(rows.find(({ message }) => message.id === 'user-t6')!.sequence);
+    assert.equal(appended, true, 'tail growth must happen before the historical answer finishes');
+    if (budget === 600) {
+      assert.equal(h.store.range().hasNewer, true, 'a full answer must not chase an advancing tail');
+      assert.equal(h.store.hasDurableMessage('answer-t7'), false);
+      assert.deepEqual(h.markers, []);
+      await h.controller.loadNewer();
+    }
+    assert.equal(h.store.range().hasNewer, false);
+    assert.equal(h.store.hasDurableMessage('answer-t7'), true);
+    await waitFor(() => h.markers.length > 0, { timeoutMs: 1000 });
+    // After closing the delivery gap, later appends follow without reader input.
+    await h.append('done-t8');
+    await waitFor(() => h.store.hasDurableMessage('answer-t8'), { timeoutMs: 1000 });
+    assert.equal(h.store.range().hasNewer, false);
+    assert.deepEqual(h.errors, []);
+  });
+}
+
+test('reconnecting a parked window keeps its bounds despite concurrent tail growth', async (t) => {
+  const h = await harness(t, Array.from({ length: 20 }, (_, i) => turn(`t${i}`)).flat(), 't0', 'done-t18');
+  const held = h.store.snapshot();
+  assert.equal(held.hasNewer, true);
+  let appended = false;
+  h.beforeAcknowledge(async (batch) => {
+    if (appended || batch.ready || batch.durableThrough !== held.durableThrough) return;
+    appended = true;
+    await h.append('done-t19');
+  });
+  // A larger read allowance must not override the saved window's exact bounds.
+  await h.reconnect(4000);
+  assert.equal(appended, true);
+  assert.deepEqual(h.store.snapshot().messages, held.messages);
+  assert.equal(h.store.range().durableThrough, held.durableThrough);
+  assert.equal(h.store.range().hasNewer, true);
+  assert.deepEqual(h.markers, []);
+  assert.deepEqual(h.errors, []);
+});
+
+test('returning to latest preserves a positioned window that already reached the tail', async (t) => {
+  const h = await harness(t, Array.from({ length: 8 }, (_, i) => turn(`t${i}`)).flat(), 't3');
+  for (const navigation of ['bookmark', 'seek']) {
+    if (navigation === 'seek') {
+      const rows = await h.ledger.durableRecords();
+      await h.controller.seek(rows.find(({ message }) => message.id === 'user-t2')!.sequence);
+    }
+    await h.controller.loadEarlier();
+    while (h.store.range().hasNewer) await h.controller.loadNewer();
+    const held = h.store.snapshot();
+    const requests = h.requests.length;
+    await h.controller.showLatest();
+    assert.equal(h.store.snapshot(), held, 'sending at the tail must not discard previously loaded history');
+    assert.equal(h.requests.length, requests, 'no reopen or additional history read is needed');
+  }
   assert.deepEqual(h.errors, []);
 });
 
