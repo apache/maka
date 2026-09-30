@@ -43,6 +43,11 @@ test('settings-usage fixture folds the canonical usage projection until no run i
         platform: null,
       },
       now: E2E_FIXTURE_NOW,
+      // The scenario seeds five model-call runs, under the ledger's default
+      // 16-run pass bound, so a single-pass seed would satisfy the assertions
+      // below. Capping each pass at 2 forces the fold to loop (2 + 2 + 1), which
+      // makes a reverted single-pass seed fail the first-read assertion.
+      projectionCatchUpLimit: 2,
     });
 
     const storageRoot = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
