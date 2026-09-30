@@ -339,6 +339,73 @@ describe('plan context compaction', () => {
     ]);
   });
 
+  test('a mid-turn retreat with no safe span reports the summarizer failure', async () => {
+    // The proven boundary is a prior-run reply before the head anchor, so the
+    // retreat has no mid_turn coverage. The summarizer was still called and
+    // refused, so the result must say so rather than look like a pool that was
+    // never summarized.
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        orderedEvents: [
+          user('old-user', 'turn-0'),
+          modelOnRun('old-model', 'turn-0', 'run-0', 'accepted by this route'),
+          ...longTurnEvents().slice(2),
+        ],
+        invocations: [runOn('run-0', 'model-a', 'conn-a')],
+        acceptedRoute: ROUTE_A,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 1);
+    assert.deepEqual(result, {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'input_too_large',
+    });
+  });
+
+  test('a mid-turn retreat still tries a proven span handoff put after the anchor', async () => {
+    // Handoff replay keeps the same logical turn's predecessor events — and the
+    // predecessor run's record — in the pool, so a reply after the head anchor
+    // can be the proven boundary. The retreat must still try it (#5790 review).
+    const attemptedCoverage: string[][] = [];
+    const plan = await planHistoryCompaction(
+      planInput({
+        orderedEvents: [
+          user('old-user', 'turn-0'),
+          modelOnRun('old-model', 'turn-0', 'run-0', 'old reply'),
+          user('anchor', 'turn-1'),
+          modelOnRun('handoff-reply', 'turn-1', 'run-0', 'source-run reply'),
+          call('call-x', 'cx', 'turn-1'),
+          result('res-x', 'cx', 'turn-1'),
+        ],
+        invocations: [runOn('run-0', 'model-a', 'conn-a')],
+        acceptedRoute: ROUTE_A,
+        summarize: ({ coveredRuntimeEvents }) => {
+          attemptedCoverage.push(coveredRuntimeEvents.map((event) => event.id));
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    // First attempt covers through the reserved tail cut; the retreat then
+    // retries the proven prefix ending on the predecessor run's reply.
+    assert.deepEqual(attemptedCoverage, [
+      ['old-user', 'old-model', 'anchor', 'handoff-reply'],
+      ['old-user', 'old-model', 'anchor'],
+    ]);
+    assert.deepEqual(plan, {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'input_too_large',
+    });
+  });
+
   test('fails open when only another route has ever been accepted', async () => {
     let attempts = 0;
     const result = await planHistoryCompaction(

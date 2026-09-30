@@ -37,6 +37,7 @@ import {
   type SessionRowActions,
 } from '@maka/ui';
 import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
+import { SessionHistoryNavigation } from './session-history-navigation.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
 import { useSessionSelection } from '../controller/use-session-selection.js';
 import {
@@ -84,6 +85,8 @@ export interface SessionNavigationChromeInput {
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
+  /** Settings and modal overlays suspend conversation history input. */
+  historyBlocked?: boolean;
   /** The rail subscribes the catalog itself: its rows are the churn it displays. */
   catalog: SessionCatalogController;
   activeSessionId: string | undefined;
@@ -318,6 +321,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       chrome={chrome}
       selection={selection}
     >
+      <SessionHistoryNavigation
+        catalog={props.catalog}
+        visible={!props.historyBlocked && props.selection.section === 'sessions' && !props.workHubActive}
+        blocked={props.historyBlocked ?? false}
+        openSession={props.onSelectSession}
+      />
       {props.children}
     </SessionRailProvider>
   );

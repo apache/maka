@@ -568,7 +568,7 @@
           "@maka/core/session": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2028
+        "nonTriviaTokens": 2020
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
@@ -783,7 +783,7 @@
           "react": 1
         },
         "importSpecifiers": 91,
-        "nonTriviaTokens": 12127
+        "nonTriviaTokens": 11126
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -3108,6 +3108,7 @@
         "dependencyPaths": {
           "../../shared/settings-ownership.js": 1,
           "../application/contracts/session-catalog/catalog-sessions.js": 1,
+          "../application/contracts/shell-layout-contract.js": 1,
           "../browser-storage": 1,
           "../features/connection-settings": 1,
           "../features/external-agent-settings/index.js": 1,

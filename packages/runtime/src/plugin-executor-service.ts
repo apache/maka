@@ -175,6 +175,10 @@ export interface PluginExecutorProvider {
     signal: AbortSignal,
   ): Promise<void>;
   inspectConversation?(input: PluginExecutorConversationInput): Promise<ExecutorCatalogEntry>;
+  /** Confirm terminal consumption for any result; the provider decides whether it can checkpoint. */
+  acknowledgeExecution?(conversationKey: string, turnId: string): Promise<void>;
+  /** Mark a settled result uncertain when its terminal event was not durably consumed. */
+  abandonExecution?(conversationKey: string, turnId: string): Promise<void>;
   execute(
     request: Readonly<PluginExecutorRequest>,
     context: PluginExecutorContext,
@@ -203,6 +207,8 @@ export interface PluginExecutorBinding {
     request: PluginExecutorRequest,
     options?: PluginExecutorExecutionOptions,
   ): Promise<PluginExecutorResult>;
+  acknowledgeExecution?(conversationKey: string, turnId: string): Promise<void>;
+  abandonExecution?(conversationKey: string, turnId: string): Promise<void>;
 }
 
 export interface PluginExecutorServiceOptions {
@@ -272,6 +278,12 @@ export class PluginExecutorService extends Service {
         ...(provider.discover ? { discover: provider.discover.bind(provider) } : {}),
         ...(provider.inspectConversation
           ? { inspectConversation: provider.inspectConversation.bind(provider) }
+          : {}),
+        ...(provider.acknowledgeExecution
+          ? { acknowledgeExecution: provider.acknowledgeExecution.bind(provider) }
+          : {}),
+        ...(provider.abandonExecution
+          ? { abandonExecution: provider.abandonExecution.bind(provider) }
           : {}),
       });
       const entry: RegisteredExecutor = {
@@ -443,6 +455,29 @@ export class PluginExecutorService extends Service {
         }
         return this.executeEntry(entry, request, options);
       },
+      ...(entry.provider.acknowledgeExecution
+        ? {
+            acknowledgeExecution: (conversationKey: string, turnId: string) =>
+              conversationKey !== sessionId
+                ? Promise.reject(new Error('Executor binding cannot cross Session scope'))
+                : this.withActiveOperation(entry, { conversationKey }, async (signal) => {
+                    signal.throwIfAborted();
+                    if (entry.retired) throw new ExecutorRetiredAbort(entry.provider.id);
+                    await entry.provider.acknowledgeExecution!(conversationKey, turnId);
+                  }),
+          }
+        : {}),
+      ...(entry.provider.abandonExecution
+        ? {
+            abandonExecution: (conversationKey: string, turnId: string) =>
+              conversationKey !== sessionId
+                ? Promise.reject(new Error('Executor binding cannot cross Session scope'))
+                : this.withActiveOperation(entry, { conversationKey }, async () => {
+                    if (entry.retired) throw new ExecutorRetiredAbort(entry.provider.id);
+                    await entry.provider.abandonExecution!(conversationKey, turnId);
+                  }),
+          }
+        : {}),
     });
   }
 
@@ -563,6 +598,15 @@ function validateProvider(provider: PluginExecutorProvider): void {
   if (!isExecutorId(provider.id)) throw new TypeError('Executor id is invalid');
   if (typeof provider.execute !== 'function') {
     throw new TypeError(`Executor implementation is invalid: ${provider.id}`);
+  }
+  if (
+    provider.acknowledgeExecution !== undefined &&
+    typeof provider.acknowledgeExecution !== 'function'
+  ) {
+    throw new TypeError(`Executor acknowledgement is invalid: ${provider.id}`);
+  }
+  if (provider.abandonExecution !== undefined && typeof provider.abandonExecution !== 'function') {
+    throw new TypeError(`Executor abandonment is invalid: ${provider.id}`);
   }
   if (
     provider.displayName !== undefined &&

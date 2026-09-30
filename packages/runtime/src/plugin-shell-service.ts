@@ -20,6 +20,7 @@
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
 import type { PluginShellEnvService } from './plugin-shell-env-service.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -45,7 +46,7 @@ export interface PluginShellRuntime {
 
 /** Streaming, cancellable foreground/background/PTY shell surface. */
 export class PluginShellService extends Service {
-  private shellRuntime?: PluginShellRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginShellRuntime>;
 
   constructor(
     ctx: Context,
@@ -53,18 +54,11 @@ export class PluginShellService extends Service {
     private readonly shellEnv?: PluginShellEnvService,
   ) {
     super(ctx, 'shell');
+    this.runtimeBinding = new PluginRuntimeBinding('shell', 'Shell');
   }
 
   bindRuntime(runtime: PluginShellRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Shell Runtime');
-    if (this.shellRuntime) throw new Error('Plugin Shell Runtime is already bound');
-    this.shellRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.shellRuntime === runtime) this.shellRuntime = undefined;
-      },
-      'shell.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   async run(options: PluginShellRunOptions): Promise<unknown> {
@@ -99,7 +93,6 @@ export class PluginShellService extends Service {
   }
 
   private runtime(): PluginShellRuntime {
-    if (!this.shellRuntime) throw new Error('Plugin Shell Runtime is unavailable');
-    return this.shellRuntime;
+    return this.runtimeBinding.get();
   }
 }
