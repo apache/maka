@@ -60,6 +60,11 @@ export interface InteractiveContextOffloadWriter extends Omit<ContextOffloadStor
   readonly kind: 'interactive';
   readonly access: 'write';
   readonly [writerBrand]: true;
+  reclaimFreePages(input: { readonly maxPages: number }): Promise<{
+    readonly reclaimedPages: number;
+    readonly reclaimedBytes: number;
+    readonly hasMore: boolean;
+  }>;
   close(): Promise<void>;
 }
 
@@ -237,6 +242,10 @@ function createWriterFacade(
     collectGarbage: (input) => {
       const accepted = Object.freeze({ ...input });
       return run(() => store.collectGarbage(accepted));
+    },
+    reclaimFreePages: (input) => {
+      const accepted = Object.freeze({ ...input });
+      return run(() => store.reclaimFreePages(accepted));
     },
     usage: (sessionId) => run(() => store.usage(sessionId)),
     close: () => {

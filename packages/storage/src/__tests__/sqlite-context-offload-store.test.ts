@@ -1079,6 +1079,34 @@ test('lifecycle queries use Session and garbage eligibility indexes', async (t) 
   assert.match(JSON.stringify(fileDeletionPlan), /context_file_deletions_pending/u);
 });
 
+test('reclaimFreePages reclaims free pages and shrinks the database file', async (t) => {
+  const fixture = await createFixture(t);
+  const inlineBytes = 1_000_000;
+  const blob = new Uint8Array(inlineBytes).fill(1);
+  for (let index = 0; index < 4; index += 1) {
+    const stored = await fixture.store.put({
+      sessionId: 'session-1',
+      owner: { kind: 'tool_result_archive', ownerId: `tool-${index}` },
+      bytes: blob,
+      mediaType: 'application/octet-stream',
+    });
+    assert.equal(stored.ok, true);
+    if (!stored.ok) return;
+    await fixture.store.releaseReference({ sessionId: 'session-1', refId: stored.record.refId });
+  }
+  await fixture.store.collectGarbage({
+    olderThan: 1_001,
+    maxBlobs: 64,
+    maxBytes: inlineBytes * 4,
+  });
+  const { readSqliteDatabaseFileSetBytes } = await import('../sqlite-file-set.js');
+  const beforeBytes = await readSqliteDatabaseFileSetBytes(fixture.path);
+  const result = await fixture.store.reclaimFreePages({ maxPages: 64 });
+  const afterBytes = await readSqliteDatabaseFileSetBytes(fixture.path);
+  assert.ok(result.reclaimedPages > 0);
+  assert.equal(result.reclaimedBytes, Math.max(0, beforeBytes - afterBytes));
+});
+
 function putInput(sessionId: string, ownerId: string, bytes: Uint8Array) {
   return {
     sessionId,

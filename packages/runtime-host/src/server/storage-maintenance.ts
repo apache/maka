@@ -24,6 +24,7 @@ const ACTIVE_DELAY_MS = 100;
 const IDLE_DELAY_MS = 60_000;
 const MAX_BATCH_ITEMS = 64;
 const MAX_BATCH_BYTES = 16 * 1024 * 1024;
+const MAX_VACUUM_PAGES = 64;
 // Archive retention deletes user data, so it moves slower than reclamation:
 // one bounded batch a second while work remains, otherwise a check every
 // quarter hour.
@@ -49,7 +50,7 @@ export class HostStorageMaintenance {
 
   constructor(input: {
     artifacts: Pick<InteractiveArtifactStoreWriter, 'reclaimUpgradeResidue'>;
-    contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage'>;
+    contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage' | 'reclaimFreePages'>;
     /** The opt-in archived-task retention sweep; true while candidates remain. */
     retention?: { sweep(): Promise<boolean> };
     onError: (name: string, error: unknown) => void;
@@ -79,7 +80,7 @@ export class HostStorageMaintenance {
       },
     ];
     const context = input.contextOffload;
-    if (context)
+    if (context) {
       this.#lanes.push({
         name: 'context garbage collection',
         failures: 0,
@@ -94,6 +95,17 @@ export class HostStorageMaintenance {
             })
           ).hasMore,
       });
+      this.#lanes.push({
+        name: 'context-offload page reclamation',
+        failures: 0,
+        activeDelay: ACTIVE_DELAY_MS,
+        idleDelay: IDLE_DELAY_MS,
+        run: async () => {
+          const result = await context.reclaimFreePages({ maxPages: MAX_VACUUM_PAGES });
+          return result.hasMore;
+        },
+      });
+    }
     const retention = input.retention;
     if (retention)
       this.#lanes.push({

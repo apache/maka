@@ -50,6 +50,7 @@ test('maintenance waits for start, yields between bounded batches, and stops on 
         collections += 1;
         return { deletedBlobs: 64, deletedBytes: 1024, hasMore: true };
       },
+      reclaimFreePages: async () => ({ reclaimedPages: 0, reclaimedBytes: 0, hasMore: false }),
     },
     onError: assert.fail,
   });
@@ -95,6 +96,7 @@ test('failed lanes back off independently, retry, and reset after success', asyn
         if (attempts < 3) throw new Error('disk failure');
         return { deletedBlobs: 0, deletedBytes: 0, hasMore: false };
       },
+      reclaimFreePages: async () => ({ reclaimedPages: 0, reclaimedBytes: 0, hasMore: false }),
     },
     onError: (name) => {
       errors.push(name);
@@ -222,5 +224,40 @@ test('the retention lane sweeps a second apart while work remains and every quar
   t.mock.timers.tick(1);
   await settle();
   assert.equal(sweeps, 4);
+  await maintenance.close();
+});
+
+test('context-offload page reclamation lane runs with bounded batches', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let reclaimCalls = 0;
+  const maintenance = new HostStorageMaintenance({
+    artifacts: {
+      reclaimUpgradeResidue: async () => ({
+        nextAfter: null,
+        processedPaths: 0,
+        failedPaths: 0,
+      }),
+    },
+    contextOffload: {
+      collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
+      reclaimFreePages: async (input) => {
+        assert.equal(input.maxPages, 64);
+        reclaimCalls += 1;
+        return {
+          reclaimedPages: reclaimCalls === 1 ? 32 : 0,
+          reclaimedBytes: reclaimCalls === 1 ? 131_072 : 0,
+          hasMore: reclaimCalls === 1,
+        };
+      },
+    },
+    onError: assert.fail,
+  });
+  maintenance.start();
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(reclaimCalls, 1);
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(reclaimCalls, 2);
   await maintenance.close();
 });

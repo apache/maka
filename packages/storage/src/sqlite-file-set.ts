@@ -17,7 +17,23 @@
  * under the License.
  */
 
+import { stat } from 'node:fs/promises';
+
 /** The files SQLite may keep beside a database, in any journal mode. */
 export function sqliteDatabaseSidecars(path: string): readonly string[] {
   return [`${path}-wal`, `${path}-shm`, `${path}-journal`];
+}
+
+/** Total on-disk bytes for a database file and its SQLite sidecars. */
+export async function readSqliteDatabaseFileSetBytes(databasePath: string): Promise<number> {
+  if (databasePath === ':memory:') return 0;
+  let total = 0;
+  for (const path of [databasePath, ...sqliteDatabaseSidecars(databasePath)]) {
+    try {
+      total += (await stat(path)).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return total;
 }
