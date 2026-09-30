@@ -2316,6 +2316,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         parentDraft: editor.getText(),
         sideDraft: '',
       };
+      // The drain may have restored the parent's recovered text into the
+      // editor before the re-key; it is captured as parentDraft above, and the
+      // editor switches to the side view's own (empty) draft — pressing Enter
+      // here must not resubmit the parent's message inside the side
+      // conversation (#5265 review).
+      editor.setText(sideConversation.sideDraft);
       await startSideParentObserver(sideConversation);
       opened = true;
       state.entries.push({
@@ -2358,6 +2364,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // onto the parent, the close's session fence discards the text and quotes
     // the Host already removed from the side queue (#5265 review).
     await settleRetractions();
+    // The close is only admitted from an empty draft, so anything in the
+    // editor here was restored by the drain (or typed under it): aborting
+    // keeps the recovered side text visible instead of overwriting it with
+    // the parent draft below, and a later Ctrl+C clears it like any draft
+    // (#5265 review).
+    if (editor.getText().length > 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Side conversation kept open — the retracted message was restored to the draft.',
+      });
+      requestRender();
+      return;
+    }
     const result = await input.driver.closeSideConversation(
       pair.sideSessionId,
       pair.parentSessionId,

@@ -8805,13 +8805,27 @@ Slug openai-work<cursor>
         openDone !== -1 && retractDone < openDone,
         'the side open re-keys only after the retraction lands: ' + driver.eventLog.join(','),
       );
-      assert.ok(
-        editorInputText(terminal)?.includes('queued resend') === true,
-        'the retracted text must reach the editor instead of being discarded by the side-session fence',
+      assert.equal(
+        editorInputText(terminal) ?? '',
+        '',
+        'the side editor must open on the side draft, not the recovered parent text',
       );
       assert.deepEqual(driver.retractedQuoteLoads.at(-1), [
         { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
       ]);
+
+      // Closing again returns to the parent, whose draft owns the recovered
+      // text: it was captured while the drain's restore was still in the
+      // editor, and the side view never sees it (#5265 review).
+      terminal.input('\x03');
+      await waitFor(() => driver.getSessionId() === 'session-branch');
+      assert.equal(driver.closedSides.length, 1);
+      // The editor restore lands after the driver re-keys, so wait for the
+      // content itself rather than asserting behind the session-id wait.
+      await waitFor(
+        () => editorInputText(terminal)?.includes('queued resend') === true,
+        'the recovered parent text must survive the side round trip in the parent draft',
+      );
     } finally {
       exitMaka(terminal);
       await Promise.race([
@@ -8879,9 +8893,10 @@ Slug openai-work<cursor>
         'the mid-turn side open re-keys only after the retraction lands: ' +
           driver.eventLog.join(','),
       );
-      assert.ok(
-        editorInputText(terminal)?.includes('queued resend') === true,
-        'the retracted text must reach the editor instead of being discarded by the side-session fence',
+      assert.equal(
+        editorInputText(terminal) ?? '',
+        '',
+        'the mid-turn side editor must open on the side draft, not the recovered parent text',
       );
       assert.deepEqual(driver.retractedQuoteLoads.at(-1), [
         { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
@@ -8951,16 +8966,28 @@ Slug openai-work<cursor>
       );
 
       driver.retractGate.resolve();
-      await waitFor(() => driver.closedSides.length === 1);
+      await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('retract-done:')));
 
-      const retractDone = driver.eventLog.findIndex((entry) => entry.startsWith('retract-done:'));
-      const closeDone = driver.eventLog.findIndex((entry) => entry.startsWith('close:'));
-      assert.ok(retractDone !== -1, 'the retraction completed');
-      assert.ok(
-        closeDone !== -1 && retractDone < closeDone,
-        'the side close re-keys only after the retraction lands: ' + driver.eventLog.join(','),
+      // The close was admitted against an empty draft, so the text the drain
+      // restored must abort it: closing here would overwrite the recovered
+      // side message with the parent draft and lose it (#5265 review).
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Side conversation kept open'),
       );
-      assert.equal(driver.getSessionId(), 'session-branch');
+      assert.equal(
+        driver.closedSides.length,
+        0,
+        'the close must not proceed once the drain restored a draft',
+      );
+      assert.ok(
+        !driver.eventLog.some((entry) => entry.startsWith('close:')),
+        'no close re-key may happen after the drain restored text: ' + driver.eventLog.join(','),
+      );
+      assert.equal(driver.getSessionId(), 'side-1');
+      assert.ok(
+        editorInputText(terminal)?.includes('side follow-up') === true,
+        'the recovered side text stays visible in the side editor',
+      );
     } finally {
       exitMaka(terminal);
       await Promise.race([
