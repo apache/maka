@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useToast } from '@maka/ui';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
@@ -40,12 +40,34 @@ export interface ComposerModelOptionTarget {
 const normalizedOverride = (entry: ModelOverride | null | undefined) =>
   JSON.stringify(normalizeModelOverrides({ model: entry ?? {} })?.model ?? {});
 
+const writeKey = (host: ConversationRuntimeHost, model: ComposerModelOptionTarget) =>
+  [host.profileId, host.hostId, model.connectionId, model.model].join('\u0000');
+
+/** The override the connection list shows for `key`, or `undefined` when the list is for another target. */
+function shownOverride(
+  options: {
+    connections: readonly ProjectedLlmConnection[];
+    model: ComposerModelOptionTarget | undefined;
+    host: ConversationRuntimeHost | undefined;
+  },
+  key: string,
+): ModelOverride | null | undefined {
+  const { model, host } = options;
+  if (!model || !host || writeKey(host, model) !== key) return undefined;
+  const connection = options.connections.find(
+    (candidate) => candidate.connectionId === model.connectionId && candidate.slug === model.slug,
+  );
+  return connection ? (modelOverride(connection, model.model) ?? null) : undefined;
+}
+
 /**
  * Writes the composer's Fast toggle onto the connection's model override — the
  * value the runtime already reads for the next request. Picks are serialized.
  * A pick made before the previous save's refresh reached the connection list
  * still sees that save's `before`; only then is its `after` the expected value.
- * Any other difference is an edit made elsewhere, and the list is authoritative.
+ * Once the list has shown `after`, the refresh has landed and that memory is
+ * dropped: from then on the list is authoritative, including an edit made
+ * elsewhere that restores `before`.
  */
 export function useComposerModelOptions(options: {
   uiLocale: UiLocale;
@@ -65,6 +87,15 @@ export function useComposerModelOptions(options: {
     before: ModelOverride | null;
     after: ModelOverride | null;
   } | null>(null);
+  const forgetIfShown = useCallback(() => {
+    const remembered = rememberedRef.current;
+    if (!remembered) return;
+    const shown = shownOverride(latest.current, remembered.key);
+    if (shown !== undefined && normalizedOverride(shown) === normalizedOverride(remembered.after)) {
+      rememberedRef.current = null;
+    }
+  }, []);
+  useEffect(forgetIfShown, [options.connections, forgetIfShown]);
 
   const onFastChange = useCallback((enabled: boolean) => {
     // Everything this write targets is fixed at click time: a queued write must
@@ -75,10 +106,12 @@ export function useComposerModelOptions(options: {
     const connection = latest.current.connections.find(
       (candidate) => candidate.connectionId === model.connectionId && candidate.slug === model.slug,
     );
-    const key = [host.profileId, host.hostId, model.connectionId, model.model].join('\u0000');
+    const key = writeKey(host, model);
     const task = tailRef.current.then(async () => {
       if (!connection) throw new Error(`Connection is no longer available: ${model.slug}`);
-      const stored = modelOverride(connection, model.model) ?? null;
+      // The live list is fresher than the click-time snapshot, but only while it
+      // still describes the same Host, connection and model.
+      const stored = shownOverride(latest.current, key) ?? modelOverride(connection, model.model) ?? null;
       const remembered = rememberedRef.current?.key === key ? rememberedRef.current : undefined;
       const expected = remembered && normalizedOverride(stored) === normalizedOverride(remembered.before)
         ? remembered.after
@@ -93,6 +126,8 @@ export function useComposerModelOptions(options: {
         value,
       });
       rememberedRef.current = { key, before: expected, after: saved };
+      // The refresh may have landed before the save resolved.
+      forgetIfShown();
     });
     tailRef.current = task.then(() => undefined, () => undefined);
     return task.catch((error: unknown) => {
@@ -103,7 +138,7 @@ export function useComposerModelOptions(options: {
       );
       throw error;
     });
-  }, []);
+  }, [forgetIfShown]);
 
   // Without a known Host the write could land on a Host whose connections the
   // menu is not showing, so Fast is not offered at all.

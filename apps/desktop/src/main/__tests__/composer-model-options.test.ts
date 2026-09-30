@@ -158,6 +158,45 @@ test('a Fast toggle after an edit made elsewhere is based on the edited override
   assert.deepEqual(hosts.stored.get(HOST_A.hostId), { contextWindow: 256_000, serviceTier: 'fast' });
 });
 
+test('an edit elsewhere that restores the pre-save override is written over, not skipped', async () => {
+  const hosts = fakeHosts();
+  const probe = await mount(hosts.update, options(HOST_A, undefined));
+  await act(() => probe.onFastChange?.(true));
+  await probe.render(options(HOST_A, { serviceTier: 'fast' }));
+
+  // Settings turns Fast back off: the list now shows the override this composer saved over.
+  hosts.stored.set(HOST_A.hostId, null);
+  await probe.render(options(HOST_A, undefined));
+
+  await act(() => probe.onFastChange?.(true));
+  assert.equal(hosts.calls.length, 2, 'turning Fast on again reaches the Host');
+  assert.deepEqual(hosts.calls.at(-1)?.expected, null);
+  assert.deepEqual(hosts.stored.get(HOST_A.hostId), { serviceTier: 'fast' });
+});
+
+test('a refresh that lands before the save resolves still lets an edit elsewhere win', async () => {
+  const hosts = fakeHosts();
+  const probe = await mount(hosts.update, options(HOST_A, undefined));
+  const release = hosts.holdNext();
+  let save: Promise<void> | undefined;
+  await act(async () => { save = probe.onFastChange?.(true); });
+  // The connection-changed refresh arrives before the save's own reply.
+  await probe.render(options(HOST_A, { serviceTier: 'fast' }));
+  await act(async () => {
+    release();
+    await save;
+  });
+  assert.deepEqual(hosts.stored.get(HOST_A.hostId), { serviceTier: 'fast' });
+
+  hosts.stored.set(HOST_A.hostId, null);
+  await probe.render(options(HOST_A, undefined));
+
+  await act(() => probe.onFastChange?.(true));
+  assert.equal(hosts.calls.length, 2, 'turning Fast on again reaches the Host');
+  assert.deepEqual(hosts.calls.at(-1)?.expected, null);
+  assert.deepEqual(hosts.stored.get(HOST_A.hostId), { serviceTier: 'fast' });
+});
+
 test('a toggle queued behind a pending save stays on the Host it was clicked on', async () => {
   const hosts = fakeHosts();
   const probe = await mount(hosts.update, options(HOST_A, undefined));
