@@ -146,6 +146,12 @@ export function UserQuestionPrompt(props: {
     else moveTo(questionIndex + 1, committed);
   }
 
+  function stop() {
+    completedRef.current = true;
+    clearUserQuestionWizardState(requestId);
+    void props.onStop();
+  }
+
   async function submit(committed: QuestionAnswerDraft[]) {
     if (responsePendingRef.current) return;
     const requestId = props.request.requestId;
@@ -212,7 +218,7 @@ export function UserQuestionPrompt(props: {
           <Button
             variant="ghost"
             isDisabled={props.stopPending}
-            onClick={() => void props.onStop()}
+            onClick={stop}
             label={props.stopPending ? copy.stopping : copy.stop}
           />
           {questionIndex > 0 ? (

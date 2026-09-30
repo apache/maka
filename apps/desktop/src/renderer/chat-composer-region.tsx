@@ -17,11 +17,12 @@
  * under the License.
  */
 
-import { useLayoutEffect, useRef, type ComponentProps, type ComponentType, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, type ComponentProps, type ComponentType, type ReactNode, type RefObject } from 'react';
 import {
   Banner,
   Button,
   ClientCapabilityPrompt,
+  clearUserQuestionWizardState,
   Composer,
   type ComposerInteraction,
   ComposerGoalProjectionConsumer,
@@ -193,6 +194,14 @@ export function ChatComposerRegion({
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
+  const activeQuestionRef = useRef({ sessionId: activeId, question: activeQuestion });
+  useEffect(() => {
+    const previous = activeQuestionRef.current;
+    activeQuestionRef.current = { sessionId: activeId, question: activeQuestion };
+    if (previous.question && !activeQuestion && previous.sessionId === activeId) {
+      clearUserQuestionWizardState(previous.question.requestId);
+    }
+  }, [activeId, activeQuestion]);
   const activeModelChoice = composerRest.activeModel
     ? composerRest.modelChoices?.find(
         (choice) =>
