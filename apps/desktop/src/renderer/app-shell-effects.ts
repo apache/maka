@@ -288,6 +288,7 @@ export function useAppShellBootstrapSubscriptions(options: {
 export function useActiveSessionEvents(options: {
   uiLocale: UiLocale;
   activeId: string | undefined;
+  initialTranscriptTurnId?: string;
   observationAuthorityRevision: number;
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
@@ -304,8 +305,7 @@ export function useActiveSessionEvents(options: {
   setSessionEventHealthBySession: SessionEventHealthUpdater;
   toastApi: Pick<ToastApi, 'error'>;
 }) {
-  const activeId = options.activeId;
-  const clearMessageLoadError = useEffectEvent(options.clearMessageLoadError);
+  const { activeId, initialTranscriptTurnId } = options;
   // Publication rechecks both the requested Session and the effect instance
   // after any reader input wait before handing over the displayed transcript.
   const applyTranscript = useEffectEvent((
@@ -314,7 +314,7 @@ export function useActiveSessionEvents(options: {
     effectIsCurrent: () => boolean,
   ) => {
     options.publishTranscript(sessionId, controller, effectIsCurrent, () => {
-      clearMessageLoadError(sessionId);
+      options.clearMessageLoadError(sessionId);
       options.setMessageLoadPending(false);
     });
   });
@@ -371,7 +371,7 @@ export function useActiveSessionEvents(options: {
     let observationRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let unsubscribeSessionEvents = () => {};
     const transcript = new desktopTranscript.DesktopTranscriptRangeStore(activeId);
-    clearMessageLoadError(activeId);
+    options.clearMessageLoadError(activeId);
     options.setSessionEventHealthBySession((current) => ({
       ...current,
       [activeId]: createSessionEventStreamSubscription({
@@ -382,7 +382,6 @@ export function useActiveSessionEvents(options: {
     const controller = desktopTranscript.createDesktopTranscriptRangeController(
       transcript,
       desktopTranscript.openDesktopTranscriptHistory(window.maka.transcripts.open, activeId, (batch) => {
-        if (disposed) return;
         try {
           transcript.accept(batch);
         } catch (error) {
@@ -391,6 +390,7 @@ export function useActiveSessionEvents(options: {
       }),
       {
         onError: (error) => { if (!disposed) applyReadError(activeId, error); },
+        initialTurnId: initialTranscriptTurnId,
       },
     );
     const unsubscribeTranscript = transcript.subscribe(() =>

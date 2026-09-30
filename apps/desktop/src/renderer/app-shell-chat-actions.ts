@@ -555,7 +555,6 @@ export function createAppShellChatActions(deps: {
       const controller = transcriptRangeRef.current;
       if (!controller) return false;
       await controller.ready();
-      if (activeIdRef.current !== sessionId || transcriptRangeRef.current !== controller) return false;
       const requiredMessageId = options.requiredAssistantMessageId;
       if (
         requiredMessageId !== undefined &&
@@ -579,7 +578,9 @@ export function createAppShellChatActions(deps: {
       });
       // The live answer stays visible until the durable answer reaches the
       // published view. Its existing publication effect retries this handoff.
-      return requiredMessageId === undefined || snapshot.messages.some(
+      // A parked reader has no live bubble; the bounded read above proves
+      // durability without navigation or acknowledging an unseen tail.
+      return requiredMessageId === undefined || snapshot.hasNewer || snapshot.messages.some(
         (message) => message.id === requiredMessageId && deps.isMessagePublished(message),
       );
     } catch (error) {

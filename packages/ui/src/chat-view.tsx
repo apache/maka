@@ -287,9 +287,12 @@ export function ChatView(props: {
   hasEarlierHistory?: boolean;
   /** Prepends whole earlier Turns to `messages`. */
   onLoadEarlierHistory?(): void | Promise<void>;
+  hasLaterHistory?: boolean;
+  onLoadLaterHistory?(): void | Promise<void>;
+  onLoadLatestHistory?(): void | Promise<void>;
   /** Turns outside `messages`, from the Session's Turn index, oldest first. */
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
-  /** Loads `messages` back to the start of an indexed Turn. */
+  /** Opens a reading range containing an indexed Turn. */
   onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
   /** Optional identity decorations shared with a host's work navigation. */
   promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'accentBackground' | 'highlighted'>>;
@@ -349,7 +352,8 @@ export function ChatView(props: {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
-  const drainingStepIdsKey = (props.liveTurns ?? [])
+  const visibleLiveTurns = props.hasLaterHistory ? undefined : props.liveTurns;
+  const drainingStepIdsKey = (visibleLiveTurns ?? [])
     .flatMap((turn) => turn.steps.flatMap((step) => (step.text ? [step.stepId] : [])))
     .join('\u0000');
   const drainingMessageIds = useMemo(
@@ -372,7 +376,7 @@ export function ChatView(props: {
     ),
     [visibleMessages],
   );
-  const transientMessages = (props.transientMessages ?? []).filter((message) => message.transientPlacement === 'transcript');
+  const transientMessages = (props.hasLaterHistory ? [] : props.transientMessages ?? []).filter((message) => message.transientPlacement === 'transcript');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -381,7 +385,7 @@ export function ChatView(props: {
     sessionId: props.activeSession?.id,
     locale,
     messages: visibleMessages,
-    liveTurns: props.liveTurns,
+    liveTurns: visibleLiveTurns,
     shellRunUpdates: props.shellRunUpdates,
   });
   // Derived FROM the projected turns, not beside them: the consumer keys its
@@ -407,15 +411,15 @@ export function ChatView(props: {
   // footer on a still-running answer (review P2-B). A tool-only tail renders the
   // running tool from its timeline with no empty live bubble.
   // Execution identity comes from the Host. Buffered output can outlive it.
-  const activeContent = props.liveTurns?.find((turn) => turn.turnId === props.activeTurn?.turnId);
-  const isCompactionLive = props.activeTurn?.compacting === true;
+  const activeContent = visibleLiveTurns?.find((turn) => turn.turnId === props.activeTurn?.turnId);
+  const isCompactionLive = !props.hasLaterHistory && props.activeTurn?.compacting === true;
   // overlayLiveTurn renders one "compacting" system row for a live compaction
   // Turn that has no assistant steps — including in a session with no settled
   // chat messages yet. The empty-state decision (below) keys off
   // `hasVisibleChatContent`, which does not see that overlaid row, so it must
   // treat this as visible content or the row is hidden behind the empty hero.
   const hasLiveCompactionRow = isCompactionLive && (activeContent?.steps.length ?? 0) === 0;
-  const streamingActive = props.activeTurn !== undefined && !isCompactionLive;
+  const streamingActive = !props.hasLaterHistory && props.activeTurn !== undefined && !isCompactionLive;
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
@@ -603,6 +607,13 @@ export function ChatView(props: {
     viewportNavigation: props.viewportNavigation,
     onReadingAnchorChange: props.onReadingAnchorChange,
     onReadEarlier: loadEarlierHistory,
+    hasLaterHistory: props.hasLaterHistory,
+    onReadLater: () => {
+      if (!props.hasLaterHistory || !props.onLoadLaterHistory) return false;
+      void Promise.resolve(props.onLoadLaterHistory()).catch(() => undefined);
+      return true;
+    },
+    onReadLatest: () => { void Promise.resolve(props.onLoadLatestHistory?.()).catch(() => undefined); },
     behavior: props.scrollBehavior,
   });
   const onLoadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);

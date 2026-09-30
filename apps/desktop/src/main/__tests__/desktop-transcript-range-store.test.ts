@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { getEventListeners } from 'node:events';
 import type { StoredMessage } from '@maka/core/session';
 import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import { SESSION_CONTINUITY_SCHEMA_VERSION } from '@maka/runtime-host/protocol';
@@ -38,6 +39,7 @@ import {
   createDesktopTranscriptReconnectRecovery,
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
+  openDesktopTranscriptHistory,
 } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { mergeSettledMessages } from '../../renderer/settled-message-merge.js';
 import {
@@ -1300,6 +1302,120 @@ test('reports each tail watermark the reader reaches once', async () => {
   await settle();
   assert.deepEqual(acknowledged, [1, 2], 'earlier history moves no tail watermark');
   await controller.close();
+});
+
+test('leaving an initial bookmark does not report its cancellation or reopen the newer intent', async () => {
+  const store = transcriptStore();
+  const errors: unknown[] = [];
+  let opens = 0;
+  const identity = { sessionId: 'session-1', generation: 'live', hostEpoch: 'host-1' };
+  const controller = createDesktopTranscriptRangeController(store, async (signal) => {
+    if (++opens === 1) {
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('superseded')), { once: true }));
+    }
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 1, hasOlder: false, beginsAtTurnBoundary: true,
+      durable: [{ sequence: 1, message: assistantMessage('latest') }],
+    })) store.accept(batch);
+    return transcriptHandle(identity);
+  }, { initialTurnId: 'old', onError: (error) => errors.push(error) });
+  controller.observationChanged('ready');
+  try {
+    await controller.showLatest();
+    assert.equal(opens, 2);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(store.snapshot().messages, [assistantMessage('latest')]);
+  } finally {
+    await controller.close();
+  }
+});
+
+for (const navigation of ['seek', 'latest'] as const) {
+  test(`a failed ${navigation} reports its error and recovers the held window after reconnection`, async () => {
+    const store = transcriptStore();
+    const failure = new Error('Host disconnected during navigation');
+    const errors: unknown[] = [];
+    let opens = 0;
+    let online = true;
+    const controller = createDesktopTranscriptRangeController(store, async () => {
+      if (!online) throw failure;
+      const identity = { sessionId: 'session-1', generation: `live-${++opens}`, hostEpoch: 'host-1' };
+      for (const batch of encodeDesktopTranscriptBatches(identity, {
+        durableThrough: 10, hasOlder: true, hasNewer: true, beginsAtTurnBoundary: true,
+        durable: [{ sequence: 10, message: assistantMessage('held window') }], reset: true, ready: true,
+      })) store.accept(batch);
+      return transcriptHandle(identity);
+    }, { initialTurnId: 'old', onError: (error) => errors.push(error) });
+    try {
+      await controller.ready();
+      const held = store.snapshot();
+      online = false;
+      await assert.rejects(navigation === 'seek' ? controller.seek(20) : controller.showLatest(), /Host disconnected/);
+      assert.deepEqual(errors, [failure]);
+      assert.equal(store.snapshot(), held);
+      online = true;
+      controller.observationChanged('pending');
+      controller.observationChanged('ready');
+      await waitFor(() => store.range().generation === 'live-2', { timeoutMs: 1000 });
+      assert.deepEqual(store.snapshot().messages, held.messages);
+      assert.equal(store.range().hasNewer, true);
+      assert.deepEqual(errors, [failure]);
+    } finally {
+      await controller.close();
+    }
+  });
+}
+
+test('a complete visible transcript exports without opening another consumer', async () => {
+  const store = transcriptStore();
+  const identity = { sessionId: 'session-1', generation: 'live', hostEpoch: 'host-1' };
+  let opens = 0;
+  const controller = createDesktopTranscriptRangeController(store, async () => {
+    opens++;
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 1, hasOlder: false, beginsAtTurnBoundary: true,
+      durable: [{ sequence: 1, message: assistantMessage('complete') }],
+    })) store.accept(batch);
+    return transcriptHandle(identity);
+  }, { onError(error) { throw error; } });
+  try {
+    await controller.ready();
+    assert.equal(await controller.readComplete(), store.snapshot().messages);
+    assert.equal(opens, 1);
+  } finally {
+    await controller.close();
+  }
+});
+
+test('complete reads release their cancellation listeners without retaining the detached transcript', async () => {
+  const store = transcriptStore();
+  const signals: AbortSignal[] = [];
+  const identity = { sessionId: 'session-1', generation: 'live', hostEpoch: 'host-1' };
+  const open = openDesktopTranscriptHistory(async (_sessionId, receive, registerCancellation, _mode, resumeFrom) => {
+    registerCancellation?.(() => {});
+    for (const batch of encodeDesktopTranscriptSnapshot({
+      ...identity, durableThrough: 1, hasOlder: resumeFrom !== 0, beginsAtTurnBoundary: true,
+      durable: [{ sequence: 1, message: assistantMessage('complete') }],
+    })) receive({ ...batch, deliverySequence: 1 });
+    return transcriptHandle(identity);
+  }, store.sessionId, (batch) => store.accept(batch));
+  const controller = createDesktopTranscriptRangeController(store, (signal, ...args) => {
+    signals.push(signal);
+    return open(signal, ...args);
+  }, { onError(error) { throw error; } });
+  try {
+    await controller.ready();
+    const parent = signals[0]!;
+    const listeners = getEventListeners(parent, 'abort').length;
+    for (let i = 0; i < 3; i++) {
+      assert.deepEqual(await controller.readComplete(), [assistantMessage('complete')]);
+      assert.equal(getEventListeners(parent, 'abort').length, listeners);
+      assert.equal(signals.at(-1)!.aborted, true);
+      assert.equal(parent.aborted, false);
+    }
+  } finally {
+    await controller.close();
+  }
 });
 
 test('cancels a transcript open that is still waiting for a Host', async () => {

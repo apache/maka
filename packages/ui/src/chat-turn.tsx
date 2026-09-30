@@ -1451,6 +1451,10 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
   // A failed tool is an ordinary row: no label and no reveal of its own.
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const open = props.running || manualOpen === true;
+  // A settled history row needs only its summary until it is opened. Keep
+  // work already shown (including live work) mounted across later collapses.
+  const [hasOpened, setHasOpened] = useState(open);
+  if (open && !hasOpened) setHasOpened(true);
   const chevron = props.running ? null : (
     <Icon icon="chevronRight" size="xsm" color="inherit" className="maka-processing-chevron" />
   );
@@ -1483,7 +1487,7 @@ const ProcessingBlock = memo(function ProcessingBlock(props: {
         )}
       </summary>
       <div className="maka-processing-body">
-        {props.entries.map((entry, index) => (
+        {(open || hasOpened) && props.entries.map((entry, index) => (
           <TurnTimelineEntry
             key={timelineEntryKey(entry, index)}
             activityObserved={open && props.activityObserved !== false}

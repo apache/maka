@@ -49,6 +49,7 @@ import {
   type DesktopTranscriptBatch,
   type DesktopTranscriptBatchPayload,
   type DesktopTranscriptOpenMode,
+  type DesktopTranscriptPosition,
   type DesktopTranscriptOpenResult,
   type DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
@@ -158,6 +159,7 @@ interface TranscriptConsumer {
   resetRequested: boolean;
   /** An earlier read to send, reading down to `floor` when it is set. */
   earlierRequested: false | { readonly floor: number | null };
+  newerRequested?: boolean;
   readonly history?: TranscriptHistory;
   pendingChange?: PendingTranscriptChange;
   readonly pendingDeliveries: Map<number, {
@@ -175,6 +177,10 @@ interface TranscriptHistory {
   cursor: string | null;
   /** The oldest sequence delivered so far; a reset reads down to it again. */
   oldestSequence: number | null;
+  /** Upper coverage of the displayed window, independent of the page snapshot. */
+  coveredThrough: number | null;
+  newer?: { throughSequence: number; cursor: string | null };
+  position?: DesktopTranscriptPosition;
 }
 
 interface PendingTranscriptChange {
@@ -285,6 +291,7 @@ export class RuntimeHostSessionObserver {
      * the first answer reads back down to here instead of to one budget.
      */
     resumeFrom?: number,
+    position?: DesktopTranscriptPosition,
   ): Promise<DesktopTranscriptOpenResult> {
     this.#assertOpen();
     if (
@@ -347,6 +354,8 @@ export class RuntimeHostSessionObserver {
               started: false,
               cursor: null,
               oldestSequence: resumeFrom ?? null,
+              coveredThrough: null,
+              position,
             },
           }
         : {}),
@@ -404,6 +413,20 @@ export class RuntimeHostSessionObserver {
     await this.#scheduleTranscriptDelivery(state, consumer);
     // The loop may have been finishing when the request arrived.
     if (consumer.earlierRequested) await this.#scheduleTranscriptDelivery(state, consumer);
+    this.#touchReplica(state);
+  }
+
+  /** Continue a reading window toward the tail without filling the entire gap. */
+  async loadNewerTranscript(consumerId: string, targetId?: number): Promise<void> {
+    const state = this.#transcriptConsumers.get(consumerId);
+    const consumer = state?.transcriptConsumers.get(consumerId);
+    if (!state || !consumer?.history) throw new Error('Desktop transcript history consumer does not exist');
+    if (targetId !== undefined && consumer.target.id !== targetId) {
+      throw new Error('Desktop transcript consumer belongs to another renderer');
+    }
+    consumer.newerRequested = true;
+    await this.#scheduleTranscriptDelivery(state, consumer);
+    if (consumer.newerRequested) await this.#scheduleTranscriptDelivery(state, consumer);
     this.#touchReplica(state);
   }
 
@@ -465,6 +488,7 @@ export class RuntimeHostSessionObserver {
     if (targetId !== undefined && consumer.target.id !== targetId) {
       throw new Error('Desktop transcript consumer belongs to another renderer');
     }
+    if (consumer.history?.newer) return;
     // Sequences only name the same rows within one Session and Host epoch.
     if (state.sessionId !== request.sessionId || replica.hostEpoch !== request.hostEpoch) return;
     const durableThrough = replica.durableThrough;
@@ -1362,6 +1386,14 @@ export class RuntimeHostSessionObserver {
             }
             continue;
           }
+          if (consumer.newerRequested) {
+            consumer.newerRequested = false;
+            const replica = state.replica;
+            if (consumer.history?.newer && replica?.resident && replica.generation === consumer.generation) {
+              await this.#sendNewerHistory(state, consumer, consumer.history, replica);
+            }
+            continue;
+          }
           const pending = consumer.pendingChange;
           if (!pending) return;
           consumer.pendingChange = undefined;
@@ -1386,6 +1418,7 @@ export class RuntimeHostSessionObserver {
                 },
               ),
             );
+            if (consumer.history) consumer.history.coveredThrough = pending.durableThrough;
           } finally {
             this.#adjustTranscriptDeliveryBytes(consumer, -pending.encodedBytes);
           }
@@ -1429,6 +1462,7 @@ export class RuntimeHostSessionObserver {
   ): Promise<void> {
     let earlierThan: number | undefined;
     if (reset) {
+      if (history.position && await this.#sendTranscriptWindow(state, consumer, history, replica, history.position)) return;
       const snapshot = replica.snapshot();
       floor = history.oldestSequence;
       Object.assign(history, {
@@ -1436,6 +1470,8 @@ export class RuntimeHostSessionObserver {
         started: false,
         cursor: null,
         oldestSequence: null,
+        coveredThrough: snapshot.durableThrough,
+        newer: undefined,
       });
     } else {
       if (history.oldestSequence === null || !historyHasOlder(history)) return;
@@ -1460,9 +1496,10 @@ export class RuntimeHostSessionObserver {
       await this.#sendTranscriptBatches(
         consumer,
         encodeDesktopTranscriptBatches(identity, {
-          durableThrough: history.throughSequence,
+          durableThrough: history.coveredThrough,
           durable,
           hasOlder: historyHasOlder(history),
+          hasNewer: history.newer !== undefined,
           beginsAtTurnBoundary,
           ...(earlierThan === undefined ? {} : { earlierThan }),
           reset: reset && first,
@@ -1511,7 +1548,133 @@ export class RuntimeHostSessionObserver {
       // however much of the budget has already been spent.
       if (bytes >= budget && reachedFloor && page.endsAtTurnBoundary) break;
     }
-    if (isCurrent()) await send([], true);
+    if (isCurrent()) {
+      rememberTranscriptWindow(history);
+      await send([], true);
+    }
+  }
+
+  /** Seek with the existing page protocol. The backward prefix closes any
+   * enclosing Turn before the forward read, including interleaved history. */
+  async #sendTranscriptWindow(
+    state: ObservedSessionState,
+    consumer: TranscriptConsumer,
+    history: TranscriptHistory,
+    replica: DesktopTranscriptReplica,
+    position: DesktopTranscriptPosition,
+  ): Promise<boolean> {
+    const high = replica.durableThrough;
+    if (high === null) return false;
+    const isCurrent = () => state.replica === replica &&
+      state.transcriptConsumers.get(consumer.consumerId) === consumer && !consumer.resetRequested;
+    history.newer = { throughSequence: high, cursor: null };
+    const sequence = 'turnId' in position
+      ? (await this.#client.listSessionTurnLandmarks?.(state.sessionId, position.turnId))?.landmarks[0]?.sequence
+      : position.sequence;
+    if (!isCurrent()) return true;
+    if (sequence === undefined || sequence > high) {
+      history.position = undefined;
+      history.newer = undefined;
+      return false;
+    }
+    const restoring = 'throughSequence' in position && position.throughSequence !== undefined;
+    if (restoring) history.newer.throughSequence = Math.min(high, position.throughSequence);
+    Object.assign(history, {
+      throughSequence: sequence > 0 ? sequence - 1 : null,
+      started: restoring && position.hasOlder === false,
+      cursor: null,
+      oldestSequence: null,
+      coveredThrough: sequence > 0 ? sequence - 1 : null,
+    });
+    let reset = true;
+    if (!restoring) {
+      // Even a nested Turn needs a safe start. One backward page (continued to
+      // a Turn boundary) supplies context without traversing from the tail.
+      let boundary = false;
+      while (history.throughSequence !== null && historyHasOlder(history) && !boundary) {
+        const page = await replica.readOlderPage(history.throughSequence, history.cursor, this.#transcriptInitialHistoryBytes);
+        if (!isCurrent()) return true;
+        history.started = true;
+        history.cursor = page.nextCursor;
+        boundary = page.endsAtTurnBoundary;
+        if (page.durable.length) history.oldestSequence = page.durable[0]!.sequence;
+        await this.#sendWindowRows(consumer, replica, history, page.durable, { reset, ready: false });
+        reset = false;
+      }
+    }
+    await this.#sendNewerHistory(
+      state, consumer, history, replica, reset,
+      restoring ? position.throughSequence : undefined,
+      true,
+    );
+    return true;
+  }
+
+  async #sendNewerHistory(
+    state: ObservedSessionState,
+    consumer: TranscriptConsumer,
+    history: TranscriptHistory,
+    replica: DesktopTranscriptReplica,
+    reset = false,
+    restoreThrough?: number,
+    opening = false,
+  ): Promise<void> {
+    const newer = history.newer;
+    if (!newer) return;
+    const isCurrent = () => state.replica === replica &&
+      state.transcriptConsumers.get(consumer.consumerId) === consumer && !consumer.resetRequested;
+    const coversFrom = opening ? undefined : history.coveredThrough;
+    let bytes = 0;
+    let boundary = true;
+    const budget = opening ? this.#transcriptInitialHistoryBytes : this.#transcriptHistoryBytes;
+    while (true) {
+      const page = await replica.readNewerPage(
+        newer.throughSequence, newer.cursor, history.coveredThrough,
+        boundary ? budget : this.#transcriptHistoryBytes,
+      );
+      if (!isCurrent()) return;
+      newer.cursor = page.nextCursor;
+      boundary = page.endsAtTurnBoundary;
+      bytes += page.durable.reduce((sum, row) => sum + encodedTranscriptMessageBytes(row.message), 0);
+      const first = page.durable[0];
+      if (first && history.oldestSequence === null) history.oldestSequence = first.sequence;
+      history.coveredThrough = newer.cursor === null
+        ? newer.throughSequence : page.durable.at(-1)?.sequence ?? history.coveredThrough;
+      await this.#sendWindowRows(consumer, replica, history, page.durable, { reset, ready: false, coversFrom });
+      reset = false;
+      if (!isCurrent()) return;
+      if (newer.cursor === null || (boundary && bytes >= budget &&
+        (restoreThrough === undefined || (history.coveredThrough ?? -1) >= restoreThrough))) break;
+    }
+    if (newer.cursor === null) {
+      const high = replica.durableThrough;
+      history.newer = high !== null && high > newer.throughSequence
+        ? { throughSequence: high, cursor: null } : undefined;
+    }
+    rememberTranscriptWindow(history);
+    await this.#sendWindowRows(consumer, replica, history, [], { reset, ready: true, coversFrom });
+  }
+
+  async #sendWindowRows(
+    consumer: TranscriptConsumer,
+    replica: DesktopTranscriptReplica,
+    history: TranscriptHistory,
+    durable: readonly DesktopSequencedTranscriptMessage[],
+    flags: { reset: boolean; ready: boolean; coversFrom?: number | null },
+  ): Promise<void> {
+    const bytes = durable.reduce((sum, row) => sum + encodedTranscriptMessageBytes(row.message), 0);
+    if (!this.#adjustTranscriptDeliveryBytes(consumer, bytes)) {
+      throw new Error('Desktop transcript delivery capacity was reached');
+    }
+    try {
+      await this.#sendTranscriptBatches(consumer, encodeDesktopTranscriptBatches(replica, {
+        durable, durableThrough: history.coveredThrough,
+        hasOlder: historyHasOlder(history), hasNewer: history.newer !== undefined,
+        beginsAtTurnBoundary: true, ...flags,
+      }));
+    } finally {
+      this.#adjustTranscriptDeliveryBytes(consumer, -bytes);
+    }
   }
 
   /** Coalesces tail growth for one consumer; a change that does not join the pending one needs a reset. */
@@ -1520,6 +1683,9 @@ export class RuntimeHostSessionObserver {
     change: DesktopTranscriptReplicaChange,
   ): boolean {
     if (consumer.resetRequested) return true;
+    // A window before the tail must not receive a disconnected append. The
+    // subscription continues observing execution; reading forward closes the gap.
+    if (consumer.history?.newer) return true;
     const existing = consumer.pendingChange;
     if (existing && existing.durableThrough !== change.coversFrom) return false;
     const pending = existing ?? {
@@ -1726,6 +1892,12 @@ function encodedTranscriptMessageBytes(message: StoredMessage): number {
 
 function historyHasOlder(history: TranscriptHistory): boolean {
   return history.started ? history.cursor !== null : history.throughSequence !== null;
+}
+
+function rememberTranscriptWindow(history: TranscriptHistory): void {
+  history.position = history.newer && history.oldestSequence !== null && history.coveredThrough !== null
+    ? { sequence: history.oldestSequence, throughSequence: history.coveredThrough, hasOlder: historyHasOlder(history) }
+    : undefined;
 }
 
 function resetDeliveryWorkingSetBytes(residentBytes: number): number {

@@ -96,16 +96,17 @@ async function restoreFromEarlierHistory(lookupTurn?: (sessionId: string, turnId
     ...IDENTITY, durableThrough: 30, durable: [{ sequence: 30, message: answer('c') }], hasOlder: true,
   })) store.accept(batch);
   const reads: (number | undefined)[] = [];
-  const controller = createDesktopTranscriptRangeController(store, async () => handle({
-    async loadEarlier(throughSequence) {
-      reads.push(throughSequence);
+  const controller = createDesktopTranscriptRangeController(store, async (_signal, _resume, position) => {
+    if (position && 'sequence' in position) {
+      reads.push(position.sequence);
       for (const batch of encodeDesktopTranscriptBatches(IDENTITY, {
-        durableThrough: 30,
+        durableThrough: 20,
         durable: [{ sequence: 10, message: answer('a') }, { sequence: 20, message: answer('b') }],
-        hasOlder: false, earlierThan: 30, reset: false, ready: true,
+        hasOlder: false, hasNewer: true, reset: true, ready: true,
       })) store.accept(batch);
-    },
-  }), { onError: (error) => assert.fail(String(error)) });
+    }
+    return handle();
+  }, { onError: (error) => assert.fail(String(error)) });
   let anchor: { turnId: string } | undefined = { turnId: 'a' };
   const unavailable: string[] = [];
   const lifecycle = createTranscriptRestoreLifecycle();
@@ -129,7 +130,7 @@ async function restoreFromEarlierHistory(lookupTurn?: (sessionId: string, turnId
   }
 }
 
-test('a bookmark older than the loaded history is read down to in one request located by the Turn index', async () => {
+test('a bookmark opens the indexed window without filling the gap to the tail', async () => {
   const lookups: string[] = [];
   const result = await restoreFromEarlierHistory(async (_sessionId, turnId) => {
     lookups.push(turnId);
@@ -137,7 +138,7 @@ test('a bookmark older than the loaded history is read down to in one request lo
   });
   assert.deepEqual(lookups, ['a']);
   assert.deepEqual(result.reads, [10], 'a restored bookmark reads nothing more');
-  assert.deepEqual(result.turns, ['a', 'b', 'c']);
+  assert.deepEqual(result.turns, ['a', 'b']);
   assert.deepEqual(result.anchor, { turnId: 'a' });
   assert.deepEqual(result.unavailable, []);
 });
@@ -160,16 +161,17 @@ test('a cached transcript keeps a stored bookmark pending until the live answer 
   })) store.accept(batch);
   const reads: (number | undefined)[] = [];
   const lookups: string[] = [];
-  const controller = createDesktopTranscriptRangeController(store, async () => handle({
-    async loadEarlier(throughSequence) {
-      reads.push(throughSequence);
+  const controller = createDesktopTranscriptRangeController(store, async (_signal, _resume, position) => {
+    if (position && 'sequence' in position) {
+      reads.push(position.sequence);
       for (const batch of encodeDesktopTranscriptBatches(IDENTITY, {
-        durableThrough: 30,
+        durableThrough: 20,
         durable: [{ sequence: 10, message: answer('a') }, { sequence: 20, message: answer('b') }],
-        hasOlder: false, earlierThan: 30, reset: false, ready: true,
+        hasOlder: false, hasNewer: true, reset: true, ready: true,
       })) store.accept(batch);
-    },
-  }), { onError: (error) => assert.fail(String(error)) });
+    }
+    return handle();
+  }, { onError: (error) => assert.fail(String(error)) });
   let anchor: { turnId: string } | undefined = { turnId: 'a' };
   const unavailable: string[] = [];
   const lifecycle = createTranscriptRestoreLifecycle();
@@ -202,7 +204,7 @@ test('a cached transcript keeps a stored bookmark pending until the live answer 
     await settle();
     assert.deepEqual(lookups, ['a']);
     assert.deepEqual(reads, [10]);
-    assert.deepEqual(store.snapshot().messages.map(({ turnId }) => turnId), ['a', 'b', 'c']);
+    assert.deepEqual(store.snapshot().messages.map(({ turnId }) => turnId), ['a', 'b']);
     assert.deepEqual(anchor, { turnId: 'a' });
     assert.deepEqual(unavailable, []);
   } finally {

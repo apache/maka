@@ -25,7 +25,7 @@ export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 /** Recent whole Turns needed to open a reader; older history remains available on demand. */
 export const DESKTOP_TRANSCRIPT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
-/** Projected message bytes per earlier read; restoring a held range also respects its oldest row. */
+/** Projected message bytes per continuation; reconnect restores the full held range. */
 export const DESKTOP_TRANSCRIPT_HISTORY_MAX_BYTES = 512 * 1024;
 
 export interface DesktopTranscriptFragment {
@@ -42,9 +42,9 @@ export interface DesktopTranscriptFragment {
  *
  * - `reset` starts a replacement of everything the consumer holds.
  * - `earlierThan` starts earlier history that ends just before that sequence.
- * - `coversFrom` names the watermark a tail change read forward from.
+ * - `coversFrom` names the covered endpoint a forward page or tail change starts from.
  *
- * One answer spans batches until `ready`; `hasOlder` is final only there.
+ * One answer spans batches until `ready`; `hasOlder` and `hasNewer` are final only there.
  */
 export interface DesktopTranscriptBatchPayload {
   readonly earlierThan?: number;
@@ -52,9 +52,12 @@ export interface DesktopTranscriptBatchPayload {
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
+  /** The displayed range's upper coverage, which may precede the subscription watermark. */
   readonly durableThrough: number | null;
   readonly fragments: readonly DesktopTranscriptFragment[];
   readonly hasOlder?: boolean;
+  /** The displayed range ends before the live tail. */
+  readonly hasNewer?: boolean;
   /**
    * Whether the oldest Turn in this answer has all its rows in it. A
    * byte-bounded answer can begin inside a Turn, and no local rule tells the
@@ -78,9 +81,14 @@ export interface DesktopTranscriptOpenResult {
 
 /**
  * Tail-only consumers get the Main tail cache; history consumers get the
- * newest whole Turns up to the history budget and may ask for earlier ones.
+ * newest whole Turns or an explicit indexed window, then page in either direction.
  */
 export type DesktopTranscriptOpenMode = 'tail' | 'history';
+
+/** A semantic target, or the contiguous range held across a reconnect. */
+export type DesktopTranscriptPosition =
+  | { readonly turnId: string }
+  | { readonly sequence: number; readonly throughSequence?: number; readonly hasOlder?: boolean };
 
 /**
  * The Renderer reporting that it now holds every durable row through
@@ -98,6 +106,7 @@ export interface DesktopTranscriptHandle extends DesktopTranscriptOpenResult {
   acknowledgeTail(through: number): Promise<void>;
   /** One budget of earlier history, continuing in the same answer down to `throughSequence`. */
   loadEarlier(throughSequence?: number): Promise<void>;
+  loadNewer?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -116,6 +125,7 @@ export function assertDesktopTranscriptBatch(value: unknown): DesktopTranscriptB
     (batch.durableThrough !== null && !isSequence(batch.durableThrough)) ||
     !Array.isArray(batch.fragments) ||
     (batch.hasOlder !== undefined && typeof batch.hasOlder !== 'boolean') ||
+    (batch.hasNewer !== undefined && typeof batch.hasNewer !== 'boolean') ||
     (batch.beginsAtTurnBoundary !== undefined &&
       typeof batch.beginsAtTurnBoundary !== 'boolean') ||
     typeof batch.reset !== 'boolean' ||

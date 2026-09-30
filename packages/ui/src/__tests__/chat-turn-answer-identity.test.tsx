@@ -106,6 +106,14 @@ function renderTurn(
   }) as unknown as Promise<void>;
 }
 
+async function openProcess(container: ReturnType<typeof domRoot>['container']) {
+  const process = container.querySelector('details.maka-processing-sequence');
+  const summary = process?.querySelector('summary');
+  if (summary && !process?.hasAttribute('open')) {
+    await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
+  }
+}
+
 const ANSWER: TurnTimelineItem = {
   kind: 'text',
   text: 'the answer',
@@ -222,6 +230,7 @@ test('keeps reasoning expanded when its last neighboring tool is projected away'
     kind: 'thinking', messageId: 'reason-1', text: 'First observation', live: false,
   };
   await renderTurn(root, turnWith([thinking, RUNNING_TOOL, ANSWER]));
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -243,7 +252,7 @@ test('redacts secrets before rendering a settled collapsed reasoning preview', a
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /<redacted>/);
@@ -260,7 +269,7 @@ test('preserves currency in a settled collapsed reasoning preview', async () => 
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
@@ -274,6 +283,7 @@ test('expanded truncated reasoning shows the current tail without replaying its 
     text: thinking.text, truncated: thinking.truncated,
   }]));
   await renderThinking();
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -297,7 +307,7 @@ test('preserves a model-authored single newline in plain reasoning', async () =>
       live: false,
     },
   ]));
-
+  await openProcess(container);
   const header = container.querySelector('[data-slot="activity-card-header"]');
   assert.ok(header);
   await act(() => { header.dispatchEvent(new window.Event('click', { bubbles: true })); });
@@ -774,16 +784,21 @@ test('collapses the whole completed process and leaves the final answer outside'
   // The finish time lives in the footer as a semantic timestamp — the fact
   // that makes a transcript reviewable after the fact.
   assert.ok(container.querySelector('.maka-turn-footer time'));
-  assert.match(process.textContent ?? '', /Checking the login state/);
+  assert.doesNotMatch(process.textContent ?? '', /Checking the login state/, 'unopened history does not mount hidden work');
   assert.doesNotMatch(process.textContent ?? '', /the answer/);
-  const answer = container.querySelectorAll('.maka-chat-message-bubble-assistant')[1];
+  const answer = container.querySelector('.maka-assistant-answer');
   assert.ok(answer);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), true);
   assert.equal(summary.getAttribute('aria-expanded'), 'true');
+  assert.match(process.textContent ?? '', /Checking the login state/);
+  const mounted = process.querySelector('.maka-processing-body')?.firstElementChild;
+  assert.ok(mounted);
   await act(() => { summary.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true })); });
   assert.equal(process.hasAttribute('open'), false);
-  assert.equal(container.querySelectorAll('.maka-chat-message-bubble-assistant')[1]?.isSameNode(answer), true);
+  assert.equal(container.querySelector('.maka-assistant-answer')?.isSameNode(answer), true);
+  assert.equal(process.querySelector('.maka-processing-body')?.firstElementChild?.isSameNode(mounted), true,
+    'collapsing an opened process preserves its mounted detail');
 });
 
 test('moves the live clock into the process and settles it to recorded duration without remounting the answer', async (context) => {
@@ -856,6 +871,7 @@ test('keeps running work expanded and allows manual disclosure after settlement'
   assert.equal(process.hasAttribute('open'), true);
   await renderTurn(root, { ...turnWith([PROCESS_TEXT, COMPLETED_TOOL, { ...ANSWER, live: false }]), status: 'completed' });
   assert.equal(process.hasAttribute('open'), false);
+  assert.match(process.textContent ?? '', /Checking the login state/, 'settlement keeps previously displayed live work mounted');
   assert.equal(summary.hasAttribute('aria-disabled'), false);
   assert.equal(summary.getAttribute('tabindex'), '0');
   await click();

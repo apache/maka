@@ -25,6 +25,7 @@ import type {
   DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
   DesktopTranscriptHandle,
+  DesktopTranscriptPosition,
 } from '../../../preload/transcript-contract.js';
 import { projectDesktopStoredMessage } from '../../../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../../../shared/runtime-host-identity.js';
@@ -39,6 +40,10 @@ export interface DesktopTranscriptRangeController {
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
   /** One budget of earlier history, or everything down to `throughSequence` in one answer. */
   loadEarlier(throughSequence?: number): Promise<void>;
+  loadNewer(): Promise<void>;
+  seek(sequence: number): Promise<void>;
+  showLatest(): Promise<void>;
+  readComplete(): Promise<readonly StoredMessage[]>;
   reload(): Promise<void>;
   observationChanged(phase: 'pending' | 'ready'): void;
   close(): Promise<void>;
@@ -119,11 +124,11 @@ export function openDesktopTranscriptHistory(
   open: MakaBridge['transcripts']['open'],
   sessionId: string,
   accept: (batch: DesktopTranscriptBatch) => void,
-): (signal: AbortSignal, resumeFrom?: number) => Promise<DesktopTranscriptHandle> {
-  return (signal, resumeFrom) => open(
+): DesktopTranscriptOpener {
+  return (signal, resumeFrom, position, receive = accept) => open(
     sessionId,
     (batch) => {
-      if (!signal.aborted) accept(batch);
+      if (!signal.aborted) receive(batch);
     },
     (cancel) => {
       if (signal.aborted) cancel();
@@ -131,18 +136,29 @@ export function openDesktopTranscriptHistory(
     },
     'history',
     resumeFrom,
+    position,
   );
 }
+
+type DesktopTranscriptOpener = (
+  signal: AbortSignal,
+  resumeFrom?: number,
+  position?: DesktopTranscriptPosition,
+  receive?: (batch: DesktopTranscriptBatch) => void,
+) => Promise<DesktopTranscriptHandle>;
 
 export function createDesktopTranscriptRangeController(
   store: DesktopTranscriptRangeStore,
   /** `resumeFrom` is the oldest sequence held, which a reopen must read back down to. */
-  open: (signal: AbortSignal, resumeFrom?: number) => Promise<DesktopTranscriptHandle>,
-  options: { onError(error: unknown): void },
+  open: DesktopTranscriptOpener,
+  options: { onError(error: unknown): void; initialTurnId?: string },
 ): DesktopTranscriptRangeController {
   let closed = false;
+  let positioned = Boolean(options.initialTurnId);
+  let latest: Promise<void> | undefined;
   let openController = new AbortController();
-  let handle = open(openController.signal);
+  let handle = open(openController.signal, undefined,
+    options.initialTurnId ? { turnId: options.initialTurnId } : undefined);
   const current = async () => {
     if (closed) throw new Error('Desktop transcript range is closed');
     return handle;
@@ -165,7 +181,7 @@ export function createDesktopTranscriptRangeController(
   let acknowledged: number | undefined;
   const acknowledgeTail = () => {
     const held = range();
-    if (!held?.ready || held.durableThrough === null || held.generation.startsWith('cached:')) return;
+    if (!held?.ready || held.hasNewer || held.durableThrough === null || held.generation.startsWith('cached:')) return;
     const through = held.durableThrough;
     if (acknowledged === through) return;
     acknowledged = through;
@@ -177,23 +193,33 @@ export function createDesktopTranscriptRangeController(
       }
     })();
   };
-  const reopen = async () => {
+  const replace = async (resumeFrom?: number, position?: DesktopTranscriptPosition) => {
+    positioned = position !== undefined;
     const previous = handle;
     acknowledged = undefined;
     openController.abort();
-    const held = range();
-    const resumeFrom = held?.ready ? held.oldestSequence ?? undefined : undefined;
+    const cancellation = new AbortController();
+    openController = cancellation;
     const replacement = previous
       .then((value) => value.close())
       .catch(() => undefined)
       .then(() => {
-        if (closed) throw new Error('Desktop transcript range is closed');
-        openController = new AbortController();
-        return open(openController.signal, resumeFrom);
+        if (closed || cancellation.signal.aborted) throw new Error('Desktop transcript read was superseded');
+        return open(cancellation.signal, resumeFrom, position);
       });
     handle = replacement;
-    await replacement;
-    requireLive();
+    try {
+      await replacement;
+      if (!cancellation.signal.aborted) requireLive();
+    } catch (error) {
+      if (!cancellation.signal.aborted) throw error;
+    }
+  };
+  const reopen = () => {
+    const held = range();
+    return held?.ready && held.hasNewer && held.oldestSequence !== null && held.durableThrough !== null
+      ? replace(undefined, { sequence: held.oldestSequence, throughSequence: held.durableThrough, hasOlder: held.hasOlder })
+      : replace(held?.ready ? held.oldestSequence ?? undefined : undefined);
   };
   const recovery = createDesktopTranscriptReconnectRecovery({
     reload: reopen,
@@ -201,11 +227,12 @@ export function createDesktopTranscriptRangeController(
       if (!cached()) options.onError(error);
     },
   });
-  // A reopen can land on the cached transcript; recovery must still hear of it.
-  const reload = () => reopen().catch((error: unknown) => {
+  // A read can fail or land on cached data; recovery must still hear of it.
+  const readFailed = (error: unknown): never => {
     recovery.transcriptFailed(error);
     throw error;
-  });
+  };
+  const reload = () => reopen().catch(readFailed);
   let gapReload: Promise<void> | undefined;
   const unsubscribe = store.subscribe(() => {
     acknowledgeTail();
@@ -214,8 +241,14 @@ export function createDesktopTranscriptRangeController(
       .catch(() => undefined)
       .finally(() => { gapReload = undefined; });
   });
-  void handle.then(requireLive).catch(recovery.transcriptFailed);
+  const initial = handle;
+  void initial.then(() => {
+    if (!closed && handle === initial) requireLive();
+  }).catch((error) => {
+    if (!closed && handle === initial) recovery.transcriptFailed(error);
+  });
   let earlier: Promise<void> | undefined;
+  let newer: Promise<void> | undefined;
   const loadEarlier = (throughSequence?: number): Promise<void> => {
     if (earlier) {
       return throughSequence === undefined ? earlier : earlier.then(() => loadEarlier(throughSequence));
@@ -237,14 +270,78 @@ export function createDesktopTranscriptRangeController(
     earlier = task;
     return task;
   };
+  // Explicit complete reads and off-window settlement reuse the same reader;
+  // they neither replace the visible window nor acknowledge the tail as read.
+  const readDetached = async (
+    floor?: number,
+    waitFor?: { messageId: string; timeoutMs: number },
+  ): Promise<DesktopTranscriptRangeSnapshot> => {
+    const detached = new DesktopTranscriptRangeStore(store.sessionId);
+    let reader: DesktopTranscriptHandle | undefined;
+    const parent = openController.signal;
+    const cancellation = new AbortController();
+    const cancel = () => cancellation.abort();
+    const signal = cancellation.signal;
+    if (parent.aborted) cancel();
+    else parent.addEventListener('abort', cancel, { once: true });
+    try {
+      reader = await open(signal, floor, undefined, (batch) => detached.accept(batch));
+      const result = detached.snapshot();
+      if (signal.aborted || !result.ready || result.hasNewer || result.generation.startsWith('cached:')) {
+        throw new Error('The requested task transcript is not available');
+      }
+      if (waitFor) await detached.waitForDurableMessage(waitFor.messageId, waitFor.timeoutMs);
+      if (signal.aborted) throw new Error('Desktop transcript read was superseded');
+      return detached.snapshot();
+    } finally {
+      parent.removeEventListener('abort', cancel);
+      try { await reader?.close(); } finally { cancel(); }
+    }
+  };
   return {
     store,
     async ready() { await current(); },
     async waitForDurableMessage(messageId, timeoutMs) {
       await current();
+      if (range()?.hasNewer) {
+        return (await readDetached(undefined, { messageId, timeoutMs })).messages.some((message) => message.id === messageId);
+      }
       return store.waitForDurableMessage(messageId, timeoutMs);
     },
     loadEarlier,
+    loadNewer() {
+      if (newer) return newer;
+      if (!range()?.hasNewer || cached()) return Promise.resolve();
+      const reading = handle;
+      const task = current().then((value) => {
+        if (!value.loadNewer) throw new Error('Forward transcript reading is unavailable');
+        return value.loadNewer();
+      }).catch((error: unknown) => {
+        if (!closed && reading === handle) { options.onError(error); throw error; }
+      }).finally(() => { if (newer === task) newer = undefined; });
+      newer = task;
+      return task;
+    },
+    seek(sequence) {
+      latest = undefined;
+      return replace(undefined, { sequence }).catch(readFailed);
+    },
+    showLatest() {
+      if (latest) return latest;
+      if (!positioned && !range()?.hasNewer) return current().then(() => undefined);
+      const task = replace().catch(readFailed).finally(() => { if (latest === task) latest = undefined; });
+      latest = task;
+      return task;
+    },
+    async readComplete() {
+      await current();
+      requireLive();
+      const held = store.snapshot();
+      if (held.ready && !held.hasOlder && !held.hasNewer) return held.messages;
+      const result = await readDetached(0);
+      if (result.hasOlder) throw new Error('The complete task transcript is not available');
+      return result.messages;
+    },
     reload,
     observationChanged: recovery.observationChanged,
     async close() {
@@ -277,6 +374,7 @@ export interface DesktopTranscriptRangeState {
   readonly oldestSequence: number | null;
   /** Earlier durable history exists that the Renderer has not loaded. */
   readonly hasOlder: boolean;
+  readonly hasNewer: boolean;
   /**
    * Whether the oldest Turn held has all its rows. An answer is bounded by
    * bytes, so it can begin inside a Turn, and no local rule says that it did.
@@ -294,6 +392,7 @@ interface TranscriptValue {
   readonly rows: ReadonlyMap<number, StoredRecord>;
   readonly order: readonly number[];
   readonly hasOlder: boolean;
+  readonly hasNewer: boolean;
   readonly beginsAtTurnBoundary: boolean;
   readonly through: number | null;
 }
@@ -311,6 +410,7 @@ interface TranscriptAssembly {
   readonly coversFrom: number | null | undefined;
   durableThrough: number | null;
   hasOlder: boolean | undefined;
+  hasNewer: boolean | undefined;
   beginsAtTurnBoundary: boolean | undefined;
   readonly fragments: Map<number, PendingRecord>;
   readonly rows: Map<number, StoredRecord>;
@@ -320,6 +420,7 @@ const EMPTY_VALUE: TranscriptValue = {
   rows: new Map(),
   order: [],
   hasOlder: false,
+  hasNewer: false,
   beginsAtTurnBoundary: true,
   through: null,
 };
@@ -377,6 +478,7 @@ export class DesktopTranscriptRangeStore {
         coversFrom: batch.coversFrom,
         durableThrough: batch.durableThrough,
         hasOlder: undefined,
+        hasNewer: undefined,
         beginsAtTurnBoundary: undefined,
         fragments: new Map(),
         rows: new Map(),
@@ -384,6 +486,7 @@ export class DesktopTranscriptRangeStore {
       this.#assembly = assembly;
     }
     if (batch.hasOlder !== undefined) assembly.hasOlder = batch.hasOlder;
+    if (batch.hasNewer !== undefined) assembly.hasNewer = batch.hasNewer;
     if (batch.beginsAtTurnBoundary !== undefined) {
       assembly.beginsAtTurnBoundary = batch.beginsAtTurnBoundary;
     }
@@ -423,6 +526,7 @@ export class DesktopTranscriptRangeStore {
         answer.hasOlder ?? false,
         answer.beginsAtTurnBoundary ?? true,
         answer.durableThrough,
+        answer.hasNewer ?? false,
       );
     }
     if (answer.kind === 'earlier') {
@@ -432,6 +536,7 @@ export class DesktopTranscriptRangeStore {
         answer.hasOlder ?? value.hasOlder,
         answer.beginsAtTurnBoundary ?? value.beginsAtTurnBoundary,
         value.through,
+        value.hasNewer,
       );
     }
     if (!this.#ready || answer.coversFrom !== value.through) return undefined;
@@ -440,6 +545,7 @@ export class DesktopTranscriptRangeStore {
       value.hasOlder,
       value.beginsAtTurnBoundary,
       answer.durableThrough ?? value.through,
+      answer.hasNewer ?? value.hasNewer,
     );
   }
 
@@ -477,6 +583,7 @@ export class DesktopTranscriptRangeStore {
       // A cached snapshot cannot serve earlier reads; the live answer replaces
       // it rather than continuing it.
       hasOlder: this.#value.hasOlder && !this.#generation.startsWith('cached:'),
+      hasNewer: this.#value.hasNewer,
       beginsAtTurnBoundary: this.#value.beginsAtTurnBoundary,
       ready: this.#ready,
     };
@@ -588,11 +695,13 @@ function makeValue(
   hasOlder: boolean,
   beginsAtTurnBoundary: boolean,
   through: number | null,
+  hasNewer = false,
 ): TranscriptValue {
   return {
     rows,
     order: [...rows.keys()].sort((left, right) => left - right),
     hasOlder,
+    hasNewer,
     beginsAtTurnBoundary,
     through,
   };

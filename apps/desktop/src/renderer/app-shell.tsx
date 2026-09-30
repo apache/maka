@@ -1547,6 +1547,11 @@ function AppShellContent({
     publishTranscript,
     uiLocale,
     activeId: requestedHostSession?.id,
+    initialTranscriptTurnId: searchScrollTarget?.sessionId === requestedHostSession?.id
+      ? searchScrollTarget?.turnId
+      : requestedHostSession?.id
+        ? sessionUiController.transcriptReadingAnchorBySessionRef.current[requestedHostSession.id]?.turnId
+        : undefined,
     observationAuthorityRevision: observationAuthorityRef.current.generation,
     activeIdRef,
     handleEvent,
@@ -2214,10 +2219,9 @@ function AppShellContent({
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
-                hasEarlierHistory={activeTranscriptRange?.hasOlder}
-                onLoadEarlierHistory={() => transcriptReadingCommands.current?.loadEarlier()}
-                transcriptTurnIndex={activeId && transcriptTurnIndex?.sessionId === activeId ? transcriptTurnIndex.turns : undefined}
-                onLoadTranscriptTurn={(turn) => transcriptReadingCommands.current?.loadEarlier(turn.sequence)}
+                {...Conversation.transcriptReadingSurfaceProps(
+                  transcriptReadingCommands, activeTranscriptRange, transcriptTurnIndex, activeId,
+                )}
                   liveContentSeedGeneration={Conversation.visibleLiveContentGeneration(liveContentSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}

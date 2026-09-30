@@ -286,6 +286,33 @@ export class DesktopTranscriptReplica {
     });
   }
 
+  /** A forward page for one contiguous reading window, including nested Turns. */
+  async readNewerPage(
+    throughSequence: number,
+    cursor: string | null,
+    afterSequence: number | null,
+    maxBytes = SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+  ): Promise<DesktopTranscriptHistoryPage> {
+    this.#assertLive();
+    const page = await this.#handle.loadTranscriptPage({
+      direction: 'newer', throughSequence, cursor,
+      anchorSequence: cursor === null ? afterSequence : null,
+      maxBytes: Math.min(maxBytes, SESSION_TRANSCRIPT_PAGE_MAX_BYTES),
+    });
+    return this.#withDecodedPage(page, (decoded) => {
+      this.#assertLive();
+      if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
+        throw correlationError('Desktop transcript window returned an empty continuation');
+      }
+      this.#acceptRange(decoded.messages);
+      return {
+        durable: decoded.messages.map((entry) => ({ sequence: entry.identity, message: entry.message })),
+        nextCursor: decoded.nextCursor,
+        endsAtTurnBoundary: page.endsAtTurnBoundary,
+      };
+    });
+  }
+
   /**
    * Every durable row of one Turn this replica's watermark covers, read
    * forward across the extent the Host's Turn index gives it. Only the Turn's

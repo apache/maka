@@ -29,6 +29,7 @@ export const transcriptReadingPosition = {
 
 export {
   TranscriptReadingPositionController,
+  transcriptReadingSurfaceProps,
   type TranscriptReadingPositionCommands,
   type TranscriptTurnIndex,
 } from './controller/transcript-reading-position-controller.js';

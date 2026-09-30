@@ -139,6 +139,7 @@ export function createDesktopWorkHubServices(
           historyComplete:
             snapshot.ready &&
             !snapshot.hasOlder &&
+            !snapshot.hasNewer &&
             !snapshot.generation.startsWith('cached:'),
         });
       });

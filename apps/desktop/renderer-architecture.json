@@ -318,7 +318,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 3525
+        "nonTriviaTokens": 3514
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 1,
@@ -485,7 +485,7 @@
           "react": 1
         },
         "importSpecifiers": 14,
-        "nonTriviaTokens": 3494
+        "nonTriviaTokens": 3493
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -783,7 +783,7 @@
           "react": 1
         },
         "importSpecifiers": 91,
-        "nonTriviaTokens": 11126
+        "nonTriviaTokens": 11119
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

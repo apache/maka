@@ -72,6 +72,7 @@ interface TranscriptSource {
   range(): {
     readonly sessionId: string;
     readonly hasOlder: boolean;
+    readonly hasNewer?: boolean;
     readonly ready: boolean;
     readonly generation?: string;
   };
