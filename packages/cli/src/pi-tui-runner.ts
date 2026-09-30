@@ -2300,6 +2300,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const previousActivity = currentActivityCompletion;
     let opened = false;
     const adopt = async () => {
+      // The window blocks only retractions asked inside it: one already in
+      // flight when the open started must drain here, while the driver still
+      // points at the parent — the Host removes the parent's queued entries as
+      // the retraction resolves, and a response landing after the re-key onto
+      // the side Session would be discarded by the side-session fence (#5265
+      // review).
+      await settleRetractions();
       const result = await input.driver.openSideConversation!();
       if (turnRunning) turnEpoch += 1;
       await applySwitchResult(result);
@@ -2346,6 +2353,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const runCloseSideConversation = async (): Promise<void> => {
     const pair = sideConversation;
     if (!pair || !input.driver.closeSideConversation) return;
+    // Same drain as the open: a retraction asked while the side Session was
+    // active must land while the driver still points at it — past the re-key
+    // onto the parent, the close's session fence discards the text and quotes
+    // the Host already removed from the side queue (#5265 review).
+    await settleRetractions();
     const result = await input.driver.closeSideConversation(
       pair.sideSessionId,
       pair.parentSessionId,
@@ -2398,10 +2410,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push(pendingNotice);
     requestRender();
     try {
-      // Same switch window as /session: rewind re-keys the driver through its
-      // own asynchronous branch-and-switch, and a retraction crossing that
-      // window would address the session being left (#5265 review).
       const result = await holdSwitchWindow(async () => {
+        // Same switch window as /session: rewind re-keys the driver through
+        // its own asynchronous branch-and-switch, and a retraction crossing
+        // that window would address the session being left (#5265 review).
+        // That window blocks only retractions asked inside it — one already in
+        // flight drains here, before the branch re-keys onto a fresh Session
+        // whose fence would otherwise discard the response (#5265 review).
+        await settleRetractions();
         const rewind = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
           // The driver refuses rewind with a machine code when the selected
           // turn carries structured context the TUI cannot restore (#5109).
