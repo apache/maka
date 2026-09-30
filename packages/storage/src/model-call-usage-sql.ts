@@ -43,6 +43,16 @@ export const PRICED_COST = `CASE WHEN cost_basis = 'priced' THEN COALESCE(cost_u
 /** Only a provider failure is an error. */
 const ERROR_ROW = `status = 'failed'`;
 
+/**
+ * The turn placeholder on rows recorded outside any AgentRun — failed and
+ * aborted auxiliary Host model calls (#5691). Such a row is honest accounting
+ * (real spend shape, unknown usage) but it is nobody's unsettled obligation:
+ * hosted execution settlement refuses a range over its run-owned usage-missing
+ * rows and must not let an auxiliary failure flip a run to indeterminate.
+ * Shared with the writer so the sentinel cannot drift between the two.
+ */
+export const NO_RUN_TURN_ID = 'auxiliary';
+
 export const TOKEN_SUMS = `
   SUM(COALESCE(input_tokens, 0)) AS input,
   SUM(COALESCE(output_tokens, 0)) AS output,
@@ -58,7 +68,7 @@ export const COVERAGE_SUMS = `
   SUM(cost_basis = 'unpriced') AS unpricedAttempts,
   SUM(usage_basis = 'reported') AS usageReportedAttempts,
   SUM(usage_basis = 'partial') AS usagePartialAttempts,
-  SUM(usage_basis = 'missing') AS usageMissingAttempts`;
+  SUM(usage_basis = 'missing' AND turn_id IS NOT '${NO_RUN_TURN_ID}') AS usageMissingAttempts`;
 
 export const REQUEST_SUMS = `
   COUNT(*) AS totalRequests,

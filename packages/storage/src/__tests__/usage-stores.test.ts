@@ -219,7 +219,12 @@ describe('InteractiveUsageStores', () => {
         assert.equal(summary.projection.totalRequests, 1);
         assert.equal(summary.projection.totalCostUsd, 0);
         assert.equal(summary.projection.totalTokens.total, 0);
-        assert.equal(summary.projection.coverage.usageMissingAttempts, 1);
+        // The row is recorded under the no-run sentinel turn, so settlement
+        // coverage — which a hosted run must be able to pass despite an
+        // auxiliary failure — does not count it as missing usage. The
+        // accounting facts stay in the row itself, asserted against the table
+        // below.
+        assert.equal(summary.projection.coverage.usageMissingAttempts, 0);
         assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
         assert.equal(summary.unreadableRecords, 0);
 

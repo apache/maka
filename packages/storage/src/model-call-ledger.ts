@@ -45,6 +45,7 @@ import {
   count,
   countableFilter,
   COVERAGE_SUMS,
+  NO_RUN_TURN_ID,
   PRICED_COST,
   REQUEST_SUMS,
   TOKEN_SUMS,
@@ -57,6 +58,8 @@ import {
 } from './operational-state-store.js';
 import { MODEL_CALL_COLUMNS } from './sqlite-usage-schema.js';
 import type { ModelCallLedgerResult } from './usage-stores.js';
+
+export { NO_RUN_TURN_ID };
 
 /**
  * Materialization of the canonical model-call accounting ledger (#1679).
@@ -153,8 +156,9 @@ export interface UsageUnknownModelCallRecord {
   readonly sessionId?: string;
   readonly logicalCallId: string;
   /**
-   * Calls outside any run's turn carry a stable sentinel (`'auxiliary'` at the
-   * Host authority) — the table requires the column for every countable row.
+   * Calls outside any run's turn carry the shared no-run sentinel
+   * (`NO_RUN_TURN_ID`) — the table requires the column for every countable
+   * row, and settlement coverage excludes rows recorded under it.
    */
   readonly turnId: string;
   readonly callKind: ModelCallKind;

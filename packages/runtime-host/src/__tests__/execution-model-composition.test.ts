@@ -4460,7 +4460,10 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
         { range: 'all', sessionId: session.id },
         Date.now(),
       );
-      assert.equal(abortedSummary.projection.coverage.usageMissingAttempts >= 1, true);
+      // The aborted call's row is recorded under the no-run sentinel turn, so
+      // settlement coverage does not count it as missing usage — a hosted run
+      // must still settle despite an auxiliary failure.
+      assert.equal(abortedSummary.projection.coverage.usageMissingAttempts, 0);
       const abortedLegacyLogs = await usage.telemetry.logs({ range: 'all' });
       assert.equal(
         abortedLegacyLogs.rows.some((row) => row.callId === `goal_evaluation_${session.id}_call-2`),
@@ -4572,6 +4575,9 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
         Date.now(),
       );
       assert.equal(summary.projection.totalRequests, expected.requests);
+      // Settlement coverage counts run-owned usage-missing rows only: the
+      // auxiliary rows under test are recorded under the no-run sentinel
+      // turn, so `missing` stays at whatever a run's own dispatch produced.
       assert.equal(summary.projection.coverage.usageMissingAttempts, expected.missing);
       assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
       assert.equal(summary.projection.errorRequests, expected.errors);
@@ -4600,7 +4606,7 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
     abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
     abortReleased.resolve();
     await assert.rejects(settleWithin(abortedCall));
-    await assertSummary({ requests: 1, missing: 1, errors: 0 });
+    await assertSummary({ requests: 1, missing: 0, errors: 0 });
     const abortedRow = await canonicalRow('call-1');
     assert.ok(abortedRow);
     assert.equal(abortedRow.status, 'aborted');
@@ -4618,7 +4624,7 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
         new AbortController().signal,
       ),
     );
-    await assertSummary({ requests: 2, missing: 2, errors: 1 });
+    await assertSummary({ requests: 2, missing: 0, errors: 1 });
     const failedRow = await canonicalRow('call-2');
     assert.ok(failedRow);
     assert.equal(failedRow.status, 'error');
@@ -4654,7 +4660,7 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
       ),
       RESPONSE_TEXT,
     );
-    await assertSummary({ requests: 2, missing: 2, errors: 1 });
+    await assertSummary({ requests: 2, missing: 0, errors: 1 });
     const silentLegacy = (await legacyGoalRows()).find((row) => row.callId === callId('call-3'));
     assert.ok(silentLegacy);
     assert.equal(silentLegacy.status, 'success');

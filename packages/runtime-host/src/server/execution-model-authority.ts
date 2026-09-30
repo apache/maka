@@ -77,7 +77,7 @@ import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
 import { type ModelMessage } from '@maka/runtime/model-protocol';
 import { type ModelCallAttemptStatus } from '@maka/core/model-call-attempt';
-import { type UsageUnknownModelCallRecord } from '@maka/storage/model-call-ledger';
+import { NO_RUN_TURN_ID, type UsageUnknownModelCallRecord } from '@maka/storage/model-call-ledger';
 import {
   memoryExtractionMaxOutputTokens,
   type MemoryExtractionSourceSnapshot,
@@ -613,8 +613,10 @@ interface HostAuxiliaryModelCallInput {
 /**
  * Turn placeholder for canonical rows of calls no run owns: auxiliary calls
  * happen outside any turn, and the ledger's countable rows require the column.
+ * The storage side excludes these rows from settlement coverage, so a failed
+ * auxiliary call cannot flip a hosted run to indeterminate (#5691).
  */
-const AUXILIARY_TURN_ID = 'auxiliary';
+const AUXILIARY_TURN_ID = NO_RUN_TURN_ID;
 
 function createAuxiliaryModelCallAuthority(
   input: AuxiliaryModelCallAuthorityInput,

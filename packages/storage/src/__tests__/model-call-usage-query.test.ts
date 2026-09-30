@@ -99,6 +99,45 @@ describe('Usage answers over the canonical ledger', () => {
     );
   });
 
+  test('settlement coverage ignores usage-unknown rows recorded outside any run', async () => {
+    // Hosted execution settlement refuses a range whose canonical coverage
+    // holds usage-missing rows: those are a run's unsettled usage, the thing
+    // settlement must not paper over. A failed auxiliary call (#5691) is
+    // accounted the same honest way, but it belongs to no run, so its row —
+    // the no-run sentinel turn — must not flip a run to indeterminate.
+    await withProjectedAttempts(
+      [
+        attempt({
+          attemptId: 'auxiliary-failure',
+          turnId: 'auxiliary',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+        attempt({
+          attemptId: 'run-dispatch',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      async (ledger) => {
+        const { projection } = ledger.summary(ALL, NOW);
+        assert.equal(projection.coverage.usageMissingAttempts, 1);
+        assert.equal(projection.coverage.usageReportedAttempts, 0);
+        // Both rows stay accounted: the exclusion changes settlement
+        // coverage, not the ledger.
+        assert.equal(projection.totalRequests, 2);
+      },
+    );
+  });
+
   test('one malformed cache reading cannot inflate the cache total', async () => {
     await withProjectedAttempts(
       [
