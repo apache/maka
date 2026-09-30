@@ -304,7 +304,7 @@ test('late rejection after unmount keeps remembered progress', async () => {
   }
 });
 
-test('stop clears saved wizard progress for the request', async () => {
+test('stop keeps wizard progress until the Host drops the prompt', async () => {
   const original = {
     document: globalThis.document,
     window: globalThis.window,
@@ -318,7 +318,6 @@ test('stop clears saved wizard progress for the request', async () => {
   assert.ok(container);
   const root = createRoot(container);
   clearUserQuestionWizardState(request.requestId);
-  let stopped = false;
 
   try {
     await act(() => root.render(
@@ -326,8 +325,8 @@ test('stop clears saved wizard progress for the request', async () => {
         <UserQuestionPrompt
           request={request}
           onRespond={() => undefined}
-          onStop={() => {
-            stopped = true;
+          onStop={async () => {
+            throw new Error('stop rejected');
           }}
         />
       </LocaleProvider>,
@@ -341,10 +340,11 @@ test('stop clears saved wizard progress for the request', async () => {
     const stopButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Stop');
     assert.ok(stopButton);
-    await act(() => stopButton.click());
+    await act(async () => {
+      await stopButton.click();
+    });
 
-    assert.equal(stopped, true);
-    assert.equal(readUserQuestionWizardState(request.requestId), undefined);
+    assert.equal(readUserQuestionWizardState(request.requestId)?.drafts[0]?.kind, 'option');
   } finally {
     clearUserQuestionWizardState(request.requestId);
     await act(() => root.unmount());

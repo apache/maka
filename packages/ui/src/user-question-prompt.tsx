@@ -146,10 +146,13 @@ export function UserQuestionPrompt(props: {
     else moveTo(questionIndex + 1, committed);
   }
 
-  function stop() {
-    completedRef.current = true;
-    clearUserQuestionWizardState(requestId);
-    void props.onStop();
+  async function stop() {
+    if (interactionDisabled) return;
+    try {
+      await props.onStop();
+    } catch {
+      // Adapters may reject Stop; keep wizard drafts until the Host drops the prompt.
+    }
   }
 
   async function submit(committed: QuestionAnswerDraft[]) {
@@ -218,7 +221,7 @@ export function UserQuestionPrompt(props: {
           <Button
             variant="ghost"
             isDisabled={props.stopPending}
-            onClick={stop}
+            onClick={() => void stop()}
             label={props.stopPending ? copy.stopping : copy.stop}
           />
           {questionIndex > 0 ? (
