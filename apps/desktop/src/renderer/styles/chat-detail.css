@@ -20,14 +20,11 @@
 /* A turn reads as one unit because its internal gap is well under the
    between-turn gap, which the transcript row in chat-view.tsx owns. */
 .maka-turn {
-  display: flex;
-  flex-direction: column;
+  /* local: VStack owns display/direction/gap/width; the reading measure and
+     flex-item behavior have no props to move onto. */
   flex: 0 0 auto;
-  gap: var(--space-3);
   max-width: var(--maka-reading-measure);
   margin: 0 auto;
-  width: 100%;
-  box-sizing: border-box;
 }
 
 /* Search-highlight ring on the turn the search panel just navigated to.
