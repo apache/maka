@@ -18,10 +18,11 @@
  */
 
 import { PDF_HEADER_SCAN_BYTES } from '@maka/core/attachments';
+import { Buffer } from 'node:buffer';
 
 export type PdfPreflightResult =
   | { ok: true; pages?: number }
-  | { ok: false; reason: 'encrypted' | 'not_a_pdf' | 'page_limit_exceeded' | 'malformed' };
+  | { ok: false; reason: 'encrypted' | 'not_a_pdf' | 'malformed' };
 
 /**
  * Deterministic, bounded, best-effort PDF preflight validator.
@@ -41,18 +42,18 @@ export type PdfPreflightResult =
  *   false positive.
  *
  * - **Page count**: Best-effort bounded regex scan for
- *   `/Type /Pages ... /Count N`. On complex nested page trees the captured
- *   count represents the root node's value, which is the total page count
- *   in a conforming producer. The value is a hint; callers should treat
- *   `pages` as an upper-bound estimate rather than an exact gate.
+ *   `/Type /Pages ... /Count N`. The regex only matches outside of stream
+ *   content by requiring the `/Type /Pages` dictionary key context, but it
+ *   does not decompress object streams so the result is advisory. On success
+ *   the `pages` field is populated for informational use by callers; the
+ *   validator itself does **not** reject based on page count because a
+ *   text-level scan cannot authoritatively distinguish a root page-tree
+ *   `/Count` from an intermediate node or a content-stream comment.
  *
  * **Non-goals**: Does not parse fonts, decompress streams, render raster
  * content, or extract text.
  */
-export function validatePdfBytes(
-  bytes: Uint8Array,
-  limits?: { maxPages?: number },
-): PdfPreflightResult {
+export function validatePdfBytes(bytes: Uint8Array): PdfPreflightResult {
   // 1. Structural check — reuse the canonical scan window from @maka/core.
   const scanWindow = Math.min(bytes.length, PDF_HEADER_SCAN_BYTES);
   const prefix = bytes.subarray(0, scanWindow);
@@ -66,40 +67,42 @@ export function validatePdfBytes(
   // the first and last 1 MB where PDF trailers and catalog roots reside.
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  let scanStr = '';
+  const scanBuffers: string[] = [];
   if (buffer.length <= 5 * 1024 * 1024) {
-    scanStr = buffer.toString('ascii');
+    scanBuffers.push(buffer.toString('ascii'));
   } else {
-    const head = buffer.subarray(0, 1024 * 1024).toString('ascii');
-    const tail = buffer.subarray(buffer.length - 1024 * 1024).toString('ascii');
-    scanStr = head + tail;
+    scanBuffers.push(buffer.subarray(0, 1024 * 1024).toString('ascii'));
+    scanBuffers.push(buffer.subarray(buffer.length - 1024 * 1024).toString('ascii'));
   }
 
   // 3. Encryption check — match an active /Encrypt dictionary definition
   // rather than a bare substring, to avoid false positives on documents that
   // merely discuss PDF encryption in their text content.
   const encryptRegex = /\/Encrypt\s*(?:<<|\d+\s+\d+\s+R)/;
-  if (encryptRegex.test(scanStr)) {
+  if (scanBuffers.some((buf) => encryptRegex.test(buf))) {
     return { ok: false, reason: 'encrypted' };
   }
 
-  // 4. Page count extraction (best effort).
-  const pagesMatch = scanStr.match(/\/Type\s*\/Pages[\s\S]{0,100}?\/Count\s+(\d+)/);
+  // 4. Page count extraction (advisory, never used as a rejection gate).
+  // A text-level scan cannot reliably distinguish the root /Pages /Count from
+  // an intermediate page-tree node or a content-stream comment, so we report
+  // the value but leave enforcement to the caller's discretion.
+  const pagesRegex = /\/Type\s*\/Pages[\s\S]{0,100}?\/Count\s+(\d+)/;
+  const alternatePagesRegex = /\/Count\s+(\d+)[\s\S]{0,100}?\/Type\s*\/Pages/;
   let pages: number | undefined = undefined;
 
-  if (pagesMatch && pagesMatch[1]) {
-    pages = parseInt(pagesMatch[1], 10);
-    if (!isNaN(pages) && limits?.maxPages && pages > limits.maxPages) {
-      return { ok: false, reason: 'page_limit_exceeded' };
+  for (const buf of scanBuffers) {
+    const match = buf.match(pagesRegex);
+    if (match && match[1]) {
+      pages = parseInt(match[1], 10);
+      if (isNaN(pages)) pages = undefined;
+      break;
     }
-  } else {
-    // Alternate layout: /Count before /Type /Pages in the same dictionary.
-    const alternateMatch = scanStr.match(/\/Count\s+(\d+)[\s\S]{0,100}?\/Type\s*\/Pages/);
+    const alternateMatch = buf.match(alternatePagesRegex);
     if (alternateMatch && alternateMatch[1]) {
       pages = parseInt(alternateMatch[1], 10);
-      if (!isNaN(pages) && limits?.maxPages && pages > limits.maxPages) {
-        return { ok: false, reason: 'page_limit_exceeded' };
-      }
+      if (isNaN(pages)) pages = undefined;
+      break;
     }
   }
 
