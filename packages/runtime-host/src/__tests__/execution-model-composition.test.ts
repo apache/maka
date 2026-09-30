@@ -4625,8 +4625,12 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
     assert.equal(failedRow.errorClass, 'Error');
     assert.deepEqual(await legacyGoalRows(), []);
 
-    // A completion the provider answered without usage is usage-unknown too —
-    // the call succeeded, but zero tokens were never reported.
+    // A completion the provider answered without usage stays on the legacy
+    // zero path: hosted execution settlement refuses any range containing
+    // usage-missing rows, so a canonical missing row here would mark every
+    // such hosted run indeterminate. This residual zero is pending a ruling
+    // on that settlement coverage semantics (#5691); aborted and failed calls
+    // keep their canonical usage-unknown rows above.
     const silentEvaluator = evaluator(async () =>
       Response.json({
         id: 'chatcmpl-usage-unknown',
@@ -4650,11 +4654,12 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
       ),
       RESPONSE_TEXT,
     );
-    await assertSummary({ requests: 3, missing: 3, errors: 1 });
-    const silentRow = await canonicalRow('call-3');
-    assert.ok(silentRow);
-    assert.equal(silentRow.status, 'success');
-    assert.deepEqual(await legacyGoalRows(), []);
+    await assertSummary({ requests: 2, missing: 2, errors: 1 });
+    const silentLegacy = (await legacyGoalRows()).find((row) => row.callId === callId('call-3'));
+    assert.ok(silentLegacy);
+    assert.equal(silentLegacy.status, 'success');
+    assert.equal(silentLegacy.inputTokens, 0);
+    assert.equal(silentLegacy.outputTokens, 0);
   } finally {
     await usage.close();
     await execution.sessionStore.close?.();

@@ -724,7 +724,7 @@ async function runHostAuxiliaryModelCall(
       modelId: target.model,
       startedAt,
     };
-    // Abort and no-usage paths know no token counts: their canonical row says
+    // Abort and error paths know no token counts: their canonical row says
     // usage-unknown (`usageBasis: 'missing'`, no tokens) instead of posing as a
     // free call (#5691). Auxiliary calls run outside any AgentRun, so the
     // canonical writer is this store seam, not the run's event stream.
@@ -798,22 +798,27 @@ async function runHostAuxiliaryModelCall(
       );
       throw effectiveError;
     }
-    if (result.usage) {
-      try {
-        await recordLlmCallStrict(
-          { repo: authority.telemetry, lookupPricing: pricing },
-          {
-            ...baseRecord,
-            ...llmCallUsageFields(result.usage),
-            latencyMs: Math.max(0, authority.now() - startedAt),
-            status: 'success',
-          },
-        );
-      } catch (accountingError) {
-        throw new AuxiliaryModelCallLocalError('accounting', accountingError);
-      }
-    } else {
-      await recordUsageUnknown('completed');
+    try {
+      await recordLlmCallStrict(
+        { repo: authority.telemetry, lookupPricing: pricing },
+        {
+          ...baseRecord,
+          // A completion without reported usage stays on the legacy zero path:
+          // hosted execution settlement refuses any range containing
+          // usage-missing rows ('missing_attempt_usage'), so routing these
+          // rows to the canonical ledger marked every such hosted run
+          // indeterminate. The residual zero is known dishonesty, pending a
+          // ruling on that settlement coverage semantics (#5691).
+          ...(result.usage
+            ? llmCallUsageFields(result.usage)
+            : { inputTokens: 0, outputTokens: 0 }),
+          ...(result.finishReason && !result.usage ? { rawFinishReason: result.finishReason } : {}),
+          latencyMs: Math.max(0, authority.now() - startedAt),
+          status: 'success',
+        },
+      );
+    } catch (accountingError) {
+      throw new AuxiliaryModelCallLocalError('accounting', accountingError);
     }
     return {
       text: result.text,
