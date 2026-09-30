@@ -94,3 +94,8 @@ export * from './controller/use-new-task-choice.js';
 export * from './controller/use-shell-chat-model.js';
 export * from './model/executor-submission.js';
 export * from './model/executor-composer.js';
+
+export { PlanProvider } from './ui/plan-provider.js';
+export { PlanChatView, PlanExecutionSurface } from './ui/plan-surfaces.js';
+export { PlanServicesProvider } from './plan-services.js';
+export type { PlanServices } from './plan-ports.js';

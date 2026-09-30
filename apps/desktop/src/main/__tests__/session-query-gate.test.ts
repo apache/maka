@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PlanServicesProvider } from '../../renderer/features/conversation/index.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { deferred } from '@maka/core/test-only/async-primitives';
@@ -34,7 +35,7 @@ import { stubConversationServices } from '../../renderer/features/conversation/t
 import {
   usePlanModeState,
   type PlanModeState,
-} from '../../renderer/plan-mode-panel.js';
+} from '../../renderer/features/conversation/testing.js';
 import {
   createSessionCatalogController,
   SessionCatalogContext,
@@ -110,7 +111,7 @@ test('query blocking pauses, resumes, and fences automatic Skills and Plan reads
             children: createElement(ComposerMentionsProvider, {
               skillCatalogRevision: 0,
               sessionId: session.id,
-              children: createElement(QueryProbe),
+              children: createElement(PlanServicesProvider, { services: window.maka.sessions, children: createElement(QueryProbe) }),
             }),
           }),
         }),

@@ -45,8 +45,9 @@ import {
 } from './session-workspace-errors.js';
 import * as skillFeedback from './skill-invocation-feedback.js';
 import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
-import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
+import type { SessionPendingClaim } from './features/conversation/index.js';
 import * as Conversation from './features/conversation/index.js';
+import type { NewChatExecutionTarget, PendingAttachment, ExecutorSubmission } from './features/conversation/index.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -71,7 +72,7 @@ type RefBox<T> = { current: T };
 type MessageLoadErrorUpdater = (updater: (current: Record<string, string>) => Record<string, string>) => void;
 type InteractionQueueUpdater = (updater: (current: InteractionQueues) => InteractionQueues) => void;
 
-type PendingNewChatModel = Conversation.NewChatExecutionTarget | null;
+type PendingNewChatModel = NewChatExecutionTarget | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
 type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
@@ -114,7 +115,7 @@ function copiedArray<K extends string, T>(
 export interface AppShellChatActions {
   send(
     text: string,
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options?: SendOptions,
   ): Promise<boolean>;
   /**
@@ -126,7 +127,7 @@ export interface AppShellChatActions {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options?: MessageContextOptions,
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
@@ -180,7 +181,7 @@ export function createAppShellChatActions(deps: {
   toastApi: ToastApi;
   newChatModel: PendingNewChatModel;
   executorSelection?: { executorId: string; configuration: import('@maka/core/executor-catalog').ExecutorConfiguration };
-  executorEntry?: Conversation.ExecutorSubmission['executorEntry'];
+  executorEntry?: ExecutorSubmission['executorEntry'];
   /** Undefined applies the Host's model default; null explicitly keeps the provider default. */
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
@@ -295,7 +296,7 @@ export function createAppShellChatActions(deps: {
 
   async function send(
     text: string,
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options: SendOptions = {},
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
@@ -479,7 +480,7 @@ export function createAppShellChatActions(deps: {
     sessionId: string,
     text: string,
     placement: 'current_turn' | 'next_turn',
-    pending?: readonly Conversation.PendingAttachment[],
+    pending?: readonly PendingAttachment[],
     options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();

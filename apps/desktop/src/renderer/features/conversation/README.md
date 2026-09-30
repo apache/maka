@@ -90,3 +90,25 @@ Remaining transitional capabilities have explicit consumers and removal work:
 
 This slice does not complete their regional ownership or introduce a second
 Catalog/Host observer.
+
+## Plan ownership
+
+`PlanProvider` alone calls the internal `usePlanModeState`. AppShell supplies
+only the existing Session target; it receives no Plan model or setters.
+`PlanChatView` owns the proposal projection at the transcript reader and
+`PlanExecutionSurface` reads execution state beside the persistent Composer.
+The provider retains its children across Plan updates, so those updates do not
+rebuild the shell/frame or remount the Composer.
+
+The public entry exports these components and `PlanServicesProvider`, not the
+controller or a full-state reader. `controllerOwners` fixes the production call
+site; controller access through `testing.ts` is test-only. Desktop composition
+injects the narrow Plan service contract through the existing bridge adapter.
+Session Settings continues to own entering/leaving Plan mode; the Plan owner
+observes and controls proposals/executions without duplicating those writes.
+
+Preserve the automatic-query gate, latest-read wins, captured Session scope,
+confirmation ownership, and exact approval/resume retry inputs. Plan remains
+Session-scoped and uses the existing observer/control APIs. Revisit this boundary
+if an accepted architecture decision changes that target or moves Plan into an
+independent domain; do not restore a full-model export to adapt callers.

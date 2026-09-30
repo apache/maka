@@ -31,7 +31,7 @@ import {
 import type { LiveTurnBuffer, LiveTurnProjection, InteractionQueues } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
 import { deriveMessageQueueProjection } from './application/contracts/message-queue-projection.js';
-import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
+import type { MessageQueueUiState } from './features/conversation/index.js';
 import * as modelConnectionErrors from './model-connection-errors.js';
 import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { createConversationDisplayFrameScheduler } from './features/conversation/index.js';

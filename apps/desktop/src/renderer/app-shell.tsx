@@ -69,6 +69,7 @@ import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
+import type { TranscriptReadingPositionCommands, TranscriptTurnIndex, LiveContentSeedState } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
@@ -97,11 +98,6 @@ import type { SessionCollaborationDialogProjection } from './features/session-co
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { desktopSlashCommandAvailability, parseDesktopSlashCommand } from './desktop-slash-command';
 import { mergeWorkspaceReferences, rebaseWorkspaceFileReferences } from './follow-up-submit-routing';
-import {
-  PlanExecutionPanel,
-  PlanProposalCard,
-  usePlanModeState,
-} from './plan-mode-panel';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
@@ -416,8 +412,8 @@ function AppShellContent({
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [newTaskPermissionChoice, setNewTaskPermissionMode, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
-  const transcriptReadingCommands = useRef<Conversation.TranscriptReadingPositionCommands>(null);
-  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<Conversation.TranscriptTurnIndex>();
+  const transcriptReadingCommands = useRef<TranscriptReadingPositionCommands>(null);
+  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<TranscriptTurnIndex>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
@@ -932,15 +928,6 @@ function AppShellContent({
     sessionSettingIntent.overlay.permissionMode,
   );
   const activePermissionMode = activeBoundarySurface.permissionMode;
-  const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
-  const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
-    id: proposal.proposalId,
-    afterTurnId: proposal.turnId,
-    renderWhenAnchorMissing:
-      proposal.status === 'pending_approval'
-      && proposal.proposalId === planMode.state?.latestProposalId,
-    content: <PlanProposalCard proposal={proposal} planMode={planMode} />,
-  }));
   const activeMessageLoading = Boolean(activeId && messageLoadPending);
   // Session switches clear the transcript projection before its async read.
   // Keep the switch warning anchored to the durable session summary, while
@@ -1511,7 +1498,7 @@ function AppShellContent({
     themePalette,
     themePref,
   });
-  const [liveContentSeed, setLiveContentSeed] = useState<Conversation.LiveContentSeedState>(
+  const [liveContentSeed, setLiveContentSeed] = useState<LiveContentSeedState>(
     Conversation.INITIAL_LIVE_CONTENT_SEED,
   );
   const liveContentSeedRef = useRef(liveContentSeed);
@@ -1785,6 +1772,7 @@ function AppShellContent({
     // readers. Composer mentions still wrap the frame so one projection serves
     // every composer, including side-chat panels, without rebuilding the frame
     // on catalog moves.
+    <Conversation.PlanProvider session={ownerActiveId ? activeHostSession : undefined}>
     <SessionSettingsProvider
       bridge={sessionSettingIntent.bridge}
       input={{
@@ -2073,7 +2061,7 @@ function AppShellContent({
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
-                    {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    {!sharedSessionActive && sessionsSelected ? <Conversation.PlanExecutionSurface /> : null}
                     <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}
                       activeSession={activeSession}
                     >
@@ -2329,7 +2317,6 @@ function AppShellContent({
                     );
                   }
                 }}
-                conversationItems={planConversationItems}
                   />
 
                 ) : null}
@@ -2392,5 +2379,6 @@ function AppShellContent({
     </ModuleHub.ModuleHubProvider>
     </Goals.GoalProvider>
     </SessionSettingsProvider>
+    </Conversation.PlanProvider>
   );
 }
