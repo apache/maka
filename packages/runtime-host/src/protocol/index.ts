@@ -136,7 +136,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 219 as const;
 // a newer Desktop against an older Host would lose session catalog reads.
 // 200: Agent Graph operator snapshots carry bounded output previews and metrics.
 // Older peers reject the additional `output` field on strict operator shapes.
-// 201: Artifact invalidation feed and guest routing require matching peers.
 // 199: `storage.usage.query` and `storage.usage.sessions.query` report storage
 // usage. An epoch-198 Host rejects the unknown operation and drops the
 // connection, so the pair must fail admission instead.
