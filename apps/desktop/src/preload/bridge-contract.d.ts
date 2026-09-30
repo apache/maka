@@ -154,7 +154,11 @@ import type {
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
-import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextDiagnosticsResult,
+  SessionStorageUsage,
+  StorageUsageQueryResult,
+} from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 /**
@@ -1833,6 +1837,15 @@ export interface MakaBridge {
       apiKey?: string;
     }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
     test(input: { provider?: WebSearchProvider; apiKey?: string }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
+  };
+  storage: {
+    /** One Runtime Host's State Root footprint. Read-only; nothing is reclaimed. */
+    usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult>;
+    /**
+     * Per-task storage keyed by Desktop session id. A task is absent when its
+     * Runtime Host is unavailable or fails, or when that Host no longer holds it.
+     */
+    sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
   };
   dailyReview: {
     day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;

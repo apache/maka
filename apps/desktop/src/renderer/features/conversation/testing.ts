@@ -18,6 +18,20 @@
  */
 
 import type { ConversationServices } from './ports.js';
+import { createSessionUiState, type AppShellSessionUiState } from './model/session-ui-state.js';
+
+export {
+  createAppShellSessionUiStateController as createProductionSessionUiStateController,
+  clearAppShellSessionUiStateForSession,
+  createInitialAppShellSessionUiState,
+  type AppShellSessionUiState,
+} from './model/session-ui-state.js';
+
+/** Production controller with inspection available only to tests. */
+export function createAppShellSessionUiStateController(initialState?: AppShellSessionUiState) {
+  const { controller, getState } = createSessionUiState(initialState);
+  return { ...controller, getState };
+}
 
 export {
   createTranscriptRestoreLifecycle,
@@ -70,3 +84,7 @@ export function stubConversationServices(
     },
   };
 }
+
+export { usePlanModeState } from './controller/use-plan-mode-state.js';
+export type { PlanModeState } from './model/plan-state.js';
+export { PlanExecutionPanel } from './ui/plan-panels.js';

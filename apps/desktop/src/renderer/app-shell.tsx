@@ -60,7 +60,6 @@ import {
   TitlebarSessionIdentity,
   type TurnFooterActionMeta,
   useToast,
-  activeInteractionFor,
   deriveComposerModelSwitchAvailability,
   deriveTitlebarProjectName,
   reconcileInteractions,
@@ -70,6 +69,7 @@ import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
+import type { TranscriptReadingPositionCommands, TranscriptTurnIndex, LiveContentSeedState } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
@@ -98,11 +98,6 @@ import type { SessionCollaborationDialogProjection } from './features/session-co
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { desktopSlashCommandAvailability, parseDesktopSlashCommand } from './desktop-slash-command';
 import { mergeWorkspaceReferences, rebaseWorkspaceFileReferences } from './follow-up-submit-routing';
-import {
-  PlanExecutionPanel,
-  PlanProposalCard,
-  usePlanModeState,
-} from './plan-mode-panel';
 import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
@@ -416,8 +411,8 @@ function AppShellContent({
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [newTaskPermissionChoice, setNewTaskPermissionMode, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
-  const transcriptReadingCommands = useRef<Conversation.TranscriptReadingPositionCommands>(null);
-  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<Conversation.TranscriptTurnIndex>();
+  const transcriptReadingCommands = useRef<TranscriptReadingPositionCommands>(null);
+  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<TranscriptTurnIndex>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
@@ -455,19 +450,18 @@ function AppShellContent({
       unsubscribe();
     };
   }, [setNavSelection]);
-  // #1985: the shell's complete read of session UI state. See the hook for why
-  // the two token-rate maps are absent.
+  // #4582: read only displayed/owner Session chrome. Token content and global
+  // streaming membership subscribe inside their consuming regions.
   const {
-    messageLoadErrorBySession,
-    messageRetryPendingBySession,
-    stopPendingBySession,
-    interactionBySession,
-    messageQueueBySession,
-    transcriptRestoreUnavailableBySession,
-    streamingSessionIds,
+    messageLoadError: activeMessageLoadError,
+    messageRetryPending,
+    stopPending,
+    activeInteraction,
+    activeMessageQueue,
+    unavailableTranscriptRestore: activeUnavailableTranscriptRestore,
     activeLiveTurnSnapshot,
     activeExecution,
-  } = useAppShellSessionUiReads(sessionUiController, activeId);
+  } = useAppShellSessionUiReads(sessionUiController.reads, activeId, ownerActiveId);
   // The chat surface follows the active Session's Host. Settings and global
   // commands remain owned by the default Host.
   const { memoryActive, refreshMemoryActive } = useShellMemoryPill({
@@ -639,7 +633,6 @@ function AppShellContent({
     resumeInterruptedSession,
   } = useShellResume({ activeId: ownerActiveId, toastApi, shellCopy, uiLocale });
   const rendererMountedRef = useRef(true);
-  const activeInteraction = activeInteractionFor(interactionBySession, ownerActiveId);
   const activeSession = activeCatalogSession;
   const sessionSettingIntent = useSessionSettingIntent(activeId);
   const { setPermissionMode, setSessionModel, setSessionThinkingLevel, setSessionExecutor } = sessionSettingIntent.commands;
@@ -657,7 +650,6 @@ function AppShellContent({
           : {}),
       }
     : undefined;
-  const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -935,15 +927,6 @@ function AppShellContent({
     sessionSettingIntent.overlay.permissionMode,
   );
   const activePermissionMode = activeBoundarySurface.permissionMode;
-  const planMode = usePlanModeState(ownerActiveId ? activeHostSession : undefined);
-  const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
-    id: proposal.proposalId,
-    afterTurnId: proposal.turnId,
-    renderWhenAnchorMissing:
-      proposal.status === 'pending_approval'
-      && proposal.proposalId === planMode.state?.latestProposalId,
-    content: <PlanProposalCard proposal={proposal} planMode={planMode} />,
-  }));
   const activeMessageLoading = Boolean(activeId && messageLoadPending);
   // Session switches clear the transcript projection before its async read.
   // Keep the switch warning anchored to the durable session summary, while
@@ -1256,7 +1239,7 @@ function AppShellContent({
     uiLocale,
     getRunningTurnId: (sessionId) => {
       if (sessionId !== activeId) return undefined;
-      return Conversation.activeHostTurn(sessionUiController.getState().executionBySession[sessionId])?.turnId;
+      return Conversation.activeHostTurn(sessionUiController.reads.summary(sessionId).getSnapshot().activeExecution)?.turnId;
     },
     activeIdRef,
     captureComposerImportOwner,
@@ -1514,7 +1497,7 @@ function AppShellContent({
     themePalette,
     themePref,
   });
-  const [liveContentSeed, setLiveContentSeed] = useState<Conversation.LiveContentSeedState>(
+  const [liveContentSeed, setLiveContentSeed] = useState<LiveContentSeedState>(
     Conversation.INITIAL_LIVE_CONTENT_SEED,
   );
   const liveContentSeedRef = useRef(liveContentSeed);
@@ -1715,12 +1698,8 @@ function AppShellContent({
     canStageComposerContext &&
     !(revisionDraft && activeId === revisionDraft.draftSessionId);
 
-  const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
   const activeTranscriptReadingAnchor = activeId
     ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
-    : undefined;
-  const activeUnavailableTranscriptRestore = activeId
-    ? transcriptRestoreUnavailableBySession[activeId]
     : undefined;
   const activeTranscriptRange = publishedTranscriptRange?.sessionId === activeId
     ? publishedTranscriptRange : undefined;
@@ -1787,6 +1766,7 @@ function AppShellContent({
     // readers. Composer mentions still wrap the frame so one projection serves
     // every composer, including side-chat panels, without rebuilding the frame
     // on catalog moves.
+    <Conversation.PlanProvider session={ownerActiveId ? activeHostSession : undefined}>
     <SessionSettingsProvider
       bridge={sessionSettingIntent.bridge}
       input={{
@@ -1907,7 +1887,7 @@ function AppShellContent({
         }))}
       />
       <Conversation.LiveTurnReconciler
-        controller={sessionUiController}
+        readLiveTurns={sessionUiController.reads.liveTurns}
         activeId={activeId}
         messages={messages}
         reconcile={reconcilePersistedMessages}
@@ -1993,7 +1973,7 @@ function AppShellContent({
                 activeSessionId={activeId}
                 hiddenSessionIds={selectors.hiddenSessionIds}
                 projectScopes={taskEntry.selectors.projectScopes}
-                streamingSessionIds={streamingSessionIds}
+                streamingSessions={sessionUiController.reads.streaming}
                 sessionSendOutcomes={onboarding.snapshot?.sessionSendOutcomes}
                 SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
                 NavigationExtras={SessionCollaboration.SessionCollaborationNavigation}
@@ -2075,7 +2055,7 @@ function AppShellContent({
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
-                    {!sharedSessionActive && sessionsSelected ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    {!sharedSessionActive && sessionsSelected ? <Conversation.PlanExecutionSurface /> : null}
                     <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}
                       activeSession={activeSession}
                     >
@@ -2098,7 +2078,7 @@ function AppShellContent({
                   activeId={activeId}
                   newTaskDraftKey={currentNewTaskDraftKey}
                   newTaskSendPending={newTaskSendPending}
-                  stopPendingBySession={stopPendingBySession}
+                  stopPending={stopPending}
                   respondToSandboxBoundary={respondToSandboxBoundary}
                   respondToClientCapability={commands.respondToClientCapability}
                   respondToUserQuestion={respondToUserQuestion}
@@ -2210,7 +2190,8 @@ function AppShellContent({
                 {sessionsSelected ? (
                   <ChatMessageSurface
                 {...chatViewQuoteProps}
-                sessionUiController={sessionUiController}
+                sessionUiReads={sessionUiController.reads}
+                viewportNavigation={sessionUiController.transcriptViewportNavigation}
                 activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
                 hasEarlierHistory={activeTranscriptRange?.hasOlder}
@@ -2236,8 +2217,8 @@ function AppShellContent({
                 userLabel={userLabel}
                 memoryActive={memoryActive}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
-                messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
-                messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
+                messageLoadError={activeMessageLoadError}
+                messageLoadRetryPending={messageRetryPending}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
                 deriveTurnPresentation={deriveTurnPresentation}
                 onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
@@ -2331,7 +2312,6 @@ function AppShellContent({
                     );
                   }
                 }}
-                conversationItems={planConversationItems}
                   />
 
                 ) : null}
@@ -2394,5 +2374,6 @@ function AppShellContent({
     </ModuleHub.ModuleHubProvider>
     </Goals.GoalProvider>
     </SessionSettingsProvider>
+    </Conversation.PlanProvider>
   );
 }

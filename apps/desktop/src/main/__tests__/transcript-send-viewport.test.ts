@@ -31,10 +31,10 @@ import {
   type TranscriptScrollAuthority,
 } from '@maka/ui/testing';
 import {
-  createAppShellSessionUiStateController,
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
 } from '../../renderer/features/conversation/index.js';
+import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 
 type VirtualizerHandle = NonNullable<Parameters<typeof useChatScroll>[0]['virtualizerRef']['current']>;
 

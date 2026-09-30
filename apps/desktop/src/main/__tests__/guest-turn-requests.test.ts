@@ -176,7 +176,7 @@ async function mountShell(services: SessionCollaborationServices) {
                   contextUsageSessionId: sessionId,
                   newTaskDraftKey: 'new-task:local',
                   newTaskSendPending: false,
-                  stopPendingBySession: {},
+                  stopPending: false,
                   respondToSandboxBoundary: () => {},
                   respondToClientCapability: () => {},
                   respondToUserQuestion: () => {},
