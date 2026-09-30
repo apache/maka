@@ -131,13 +131,14 @@ export function ComposerOptionsMenu(props: {
         setOpen(next);
       }}
       button={{
-        label: triggerLabel,
+        // With visible `children`, Astryx makes `label` the accessible name and
+        // overrides any `aria-label`, so the name must carry the action too.
+        label: `${copy.switchAriaLabel}: ${triggerLabel}`,
         variant: 'ghost',
         size: 'sm',
         isDisabled: props.disabled,
         tooltip: props.disabledReason ?? copy.switchAriaLabel,
         className: 'maka-model-switcher-trigger maka-composer-options-trigger',
-        'aria-label': `${copy.switchAriaLabel}: ${triggerLabel}`,
         endContent: <Icon icon="chevronDown" size="sm" color="secondary" />,
         children: (
           <span className="maka-composer-options-label">

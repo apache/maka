@@ -73,6 +73,11 @@ test('"Model default" in the effort submenu clears the level', async () => {
       </LocaleProvider>,
     );
     assert.equal(dom.document.querySelector('[role="menuitemcheckbox"]'), null, 'no Fast row in this menu');
+    assert.equal(
+      dom.document.querySelector('.maka-composer-options-trigger')?.getAttribute('aria-label'),
+      'Switch model for this task: GPT-5.5 High',
+      'the trigger is named by its action, not only the visible model details',
+    );
     await click(dom.document.querySelector('.maka-composer-options-trigger'));
     await click(row('menuitem', 'Effort'));
     await click(row('menuitemradio', 'Model default'));
