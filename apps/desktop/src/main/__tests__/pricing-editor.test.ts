@@ -443,7 +443,7 @@ describe('PricingEditor', () => {
     await click(buttonByText(harness.doc, copy.confirmReset));
 
     assert.equal(resetButton.isConnected, false, 'the reset trigger leaves with its override row');
-    assert.equal(focused, addButton, 'the committed row removal falls back to the stable Add action');
+    assert.ok(focused === addButton, 'the committed row removal falls back to the stable Add action');
     await act(async () => harness.root.unmount());
   });
 
@@ -526,7 +526,7 @@ describe('PricingEditor', () => {
     assert.ok(refresh, 'recovery is available inside the modal focus trap');
     await click(refresh);
 
-    assert.equal(openDialog(harness.doc), undefined, 'a successful refresh completes the saved draft');
+    assert.equal(openDialog(harness.doc) === undefined, true, 'a successful refresh completes the saved draft');
     assert.match(harness.container.textContent ?? '', /acme:draft/);
     assert.equal(harness.loadCalls(), 2);
     assert.equal(harness.mutations.length, 1, 'refresh never replays the upsert');
@@ -650,7 +650,7 @@ describe('PricingEditor', () => {
       await click(buttonByText(openDialog(harness.doc)!, copy.confirmReset));
       await clickWithoutSettling(buttonByText(openDialog(harness.doc)!, copy.refresh));
       await click(buttonByText(openDialog(harness.doc)!, copy.cancel));
-      assert.equal(openDialog(harness.doc), undefined);
+      assert.equal(openDialog(harness.doc) === undefined, true);
       assertButtonDisabled(buttonByText(harness.doc, copy.add));
 
       await act(async () => recovery.resolve(latest));
@@ -752,7 +752,7 @@ describe('PricingEditor', () => {
     assert.ok(dialog, 'the unreconciled draft stays open');
     await click(buttonByText(dialog, copy.refresh));
 
-    assert.equal(openDialog(harness.doc), undefined, 'the matched draft is complete');
+    assert.equal(openDialog(harness.doc) === undefined, true, 'the matched draft is complete');
     assert.equal(harness.mutations.length, 1, 'reconciliation never replays the upsert');
     await act(async () => harness.root.unmount());
   });
@@ -919,7 +919,7 @@ describe('PricingEditor', () => {
     await setInput(inputByLabel(harness.doc, copy.outputLabel), '2.75');
     await clickWithoutSettling(buttonByText(harness.doc, copy.save));
     await harness.hideView();
-    assert.equal(openDialog(harness.doc), undefined, 'the Settings gate actually unmounts the view');
+    assert.equal(openDialog(harness.doc) === undefined, true, 'the Settings gate actually unmounts the view');
     await harness.rerender('replacement-host:epoch-2');
     await act(async () => previousSave.resolve({ kind: 'saved', disposition: 'committed', snapshot: SNAPSHOT }));
 
@@ -1479,4 +1479,42 @@ function assertButtonEnabled(button: HTMLButtonElement | undefined): void {
   assert.ok(button, 'expected button');
   assert.equal(button.disabled, false);
   assert.notEqual(button.getAttribute('aria-disabled'), 'true');
+}
+
+
+it('a disposed view cannot dismiss the recovered draft on the same Host', async () => {
+  const pending = deferred<DesktopPricingMutationOutcome>();
+  const harness = await renderEditor({ load: async () => SNAPSHOT, mutate: async () => pending.promise });
+  try {
+    await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+    await typeInput(inputByLabel(harness.doc, copy.inputLabel), '7.25');
+    await clickWithoutSettling(buttonByText(harness.doc, copy.save));
+    await harness.hideView();
+    await harness.rerender(`${TEST_RUNTIME_HOST.profileId}:${TEST_RUNTIME_HOST.hostId}:e1`);
+    assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '7.25');
+    await act(async () => pending.resolve({ kind: 'saved', disposition: 'committed', snapshot: SNAPSHOT }));
+    assert.ok(openDialog(harness.doc), 'a disposed controller must not clear the scope-owned draft');
+    assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '7.25');
+  } finally { await act(async () => harness.root.unmount()); }
+});
+
+for (const staleFails of [false, true]) {
+  it(`newer refresh wins when the older read ${staleFails ? 'fails' : 'succeeds'}`, async () => {
+    const stale = deferred<DesktopPricingSnapshot>(), fresh = deferred<DesktopPricingSnapshot>();
+    const latest: DesktopPricingSnapshot = { ...SNAPSHOT, revision: 9, entries: SNAPSHOT.entries.map(row => ({...row, pricing: {...row.pricing,inputUsdPer1M: 987}})) };
+    let reads = 0;
+    const harness = await renderEditor({load: async () => ++reads === 1 ? SNAPSHOT : reads === 2 ? stale.promise : fresh.promise });
+    try {
+      const refresh = buttonByLabel(harness.doc, copy.refresh)!;
+      // Two requests dispatched before React commits the loading indicator.
+      await act(async () => { activateButton(refresh); activateButton(refresh); });
+      assert.equal(harness.loadCalls(), 3);
+      await act(async () => fresh.resolve(latest));
+      await act(async () => { if(staleFails) stale.reject(new Error('stale read disconnected')); else stale.resolve(SNAPSHOT); });
+      assert.ok(harness.container.textContent?.includes('$987'), 'the newest authority must remain visible');
+      assert.doesNotMatch(harness.container.textContent ?? '', new RegExp(copy.loadFailedTitle));
+      await click(buttonByLabel(harness.doc, copy.editAria('anthropic:claude')));
+      assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '987');
+    } finally { await act(async () => harness.root.unmount()); }
+  });
 }

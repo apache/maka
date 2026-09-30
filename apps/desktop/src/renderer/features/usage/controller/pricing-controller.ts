@@ -233,7 +233,6 @@ export function usePricingController(props: {
     try {
       const next = await services.loadPricing(host);
       if (!isCurrent(lifecycle) || ticket !== reloadTicketRef.current) return;
-      setLoadError(null);
       if (pendingWrite) {
         applyOutcome(
           {
@@ -378,9 +377,6 @@ export function usePricingController(props: {
     setEditor(null);
     setMutationBase(null);
     setNeedsReview(false);
-    if (writeState.kind === 'conflict') {
-      setWriteState({ kind: 'idle' });
-    }
     restoreTriggerFocus();
   }
 

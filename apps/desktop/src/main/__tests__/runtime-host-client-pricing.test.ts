@@ -465,3 +465,38 @@ function pricing(modelKey: string, inputUsdPer1M: number) {
     cacheWriteUsdPer1M: inputUsdPer1M * 1.5,
   };
 }
+
+
+for (const offsets of [[0], [1, 1], [1, 0], [2, 1]]) {
+  test(`rejects non-progressing Pricing offsets ${offsets.join(' -> ')} before dispatch`, async () => {
+    const responses = offsets.map((nextOffset, index) => page(1, index === 0 ? 0 : offsets[index-1]!, [builtin(`provider:model-${index}`, 1)], nextOffset));
+    const { client, requests } = clientWithResponses(responses);
+    await assert.rejects(() => client.loadPricingSnapshot(), (error: unknown) => error instanceof DesktopRuntimeHostClientError && error.code === 'pricing_unstable');
+    assert.equal(requests.length, offsets.length, 'invalid continuation must not cross the connection');
+  });
+}
+
+test('assembles three strictly progressing Pricing pages', async () => {
+  const entries = [builtin('provider:a', 1), builtin('provider:b', 2), builtin('provider:c', 3)];
+  const { client, requests } = clientWithResponses([page(8,0,[entries[0]!],1),page(8,1,[entries[1]!],2),page(8,2,[entries[2]!],null)]);
+  assert.deepEqual((await client.loadPricingSnapshot()).entries, entries);
+  assert.equal(requests.length, 3);
+});
+
+test('rejects a duplicated key at a Pricing page seam', async () => {
+  const { client } = clientWithResponses([page(1,0,[builtin('provider:a',1)],1),page(1,1,[builtin('provider:a',2)],null)]);
+  await assert.rejects(() => client.loadPricingSnapshot(), (error: unknown) => error instanceof DesktopRuntimeHostClientError && error.code === 'pricing_unstable');
+});
+
+test('a missing row does not confirm restoration of bundled pricing', async () => {
+  const { client, requests } = clientWithResponses([
+    {kind:'revision_conflict', expectedRevision:1, actualRevision:2},
+    page(2,0,[],null),
+  ]);
+  const result = await client.applyPricingMutation({
+    base: snapshot('host-current',1,[custom('provider:reset',2,'restore_builtin')]),
+    mutation:{kind:'delete',modelKey:'provider:reset'},
+  });
+  assert.equal(result.kind,'review_required');
+  assert.equal(requests.filter(request=>request.operation==='pricing.mutate').length,1);
+});

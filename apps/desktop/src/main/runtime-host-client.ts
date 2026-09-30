@@ -1750,17 +1750,17 @@ export class DesktopRuntimeHostClient {
       );
     }
     const entries = [...first.entries];
-    const offsets = new Set<number>([0]);
     let page: Extract<PricingQueryResult, { kind: "page" }> = first;
     while (page.nextOffset !== null) {
       const offset = page.nextOffset;
-      if (offset <= page.offset || offsets.has(offset)) {
+      // Every accepted page matches its requested offset, so strict progress
+      // also excludes every previously visited offset without a history set.
+      if (offset <= page.offset) {
         throw new DesktopRuntimeHostClientError(
           "pricing_unstable",
           "Runtime Host repeated a Pricing page offset",
         );
       }
-      offsets.add(offset);
       const next = await this.request("pricing.query", {
         kind: "continue",
         revision: first.revision,

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider } from '@maka/ui';
@@ -121,12 +121,13 @@ function EditablePricingPanel() {
   return <PricingTabPanel services={services} />;
 }
 
-function PricingTabPanel(props: { services: UsagePricingServices }) {
+function PricingTabPanel(props: { services: UsagePricingServices; generationKey?: string }) {
+  const generationKey = props.generationKey ?? GENERATION_KEY;
   return (
     <ToastProvider>
       <UsagePricingServicesProvider services={props.services}>
         <UsageFeatureScope
-          targetKey={GENERATION_KEY}
+          targetKey={generationKey}
           services={USAGE_SERVICES}
           loadErrorTitle="Usage load failed"
           describeError={describeError}
@@ -141,7 +142,7 @@ function PricingTabPanel(props: { services: UsagePricingServices }) {
             <div className="settingsUsageTabPanel">
               <PricingEditor
                 describeError={describeError}
-                target={{ host: STORY_HOST, generationKey: GENERATION_KEY, isCurrent: () => true }}
+                target={{ host: STORY_HOST, generationKey, isCurrent: () => true }}
               />
             </div>
           </div>
@@ -343,5 +344,38 @@ export const Uncertain: Story = {
     await expect(dialog.getByRole('button', { name: '保存' })).toHaveAttribute('aria-disabled', 'true');
     await expect(dialog.getByRole('button', { name: '刷新' })).toBeVisible();
     await expect(dialogElement.contains(document.activeElement)).toBe(true);
+  },
+};
+
+// Model the asynchronous Host event while the native modal makes outside UI inert.
+const hostReplacement = new EventTarget();
+function HostReviewPricingPanel() {
+  const [generation, setGeneration] = useState(1);
+  const [services] = useState(() => pricingServices(async () => MIXED_SNAPSHOT));
+  useEffect(() => {
+    const replace = () => setGeneration((current) => current + 1);
+    hostReplacement.addEventListener('replace', replace);
+    return () => hostReplacement.removeEventListener('replace', replace);
+  }, []);
+  return <PricingTabPanel services={services} generationKey={`${GENERATION_KEY}:${generation}`} />;
+}
+
+// Real path: edit a price → selected Host reconnects → review its fresh pricing.
+// The focused review action disappears; only a real browser exposes the resulting
+// native focus loss. State/recovery semantics are covered by the component tests.
+export const HostReview: Story = {
+  render: () => <HostReviewPricingPanel />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '编辑「zai:glm-4.7」定价' }));
+    const dialogElement = await canvas.findByRole('dialog', { name: '编辑定价' });
+    const dialog = within(dialogElement);
+    hostReplacement.dispatchEvent(new Event('replace'));
+    const review = await dialog.findByRole('button', { name: '已核对新主机定价' });
+    await waitFor(() => expect(review).not.toHaveAttribute('aria-disabled', 'true'));
+    await userEvent.click(review);
+    await waitFor(() => expect(review).not.toBeInTheDocument());
+    await expect(dialogElement.contains(document.activeElement)).toBe(true);
+    await expect(dialog.getByRole('textbox', { name: /输入价格/ })).toHaveValue('0.6');
   },
 };
