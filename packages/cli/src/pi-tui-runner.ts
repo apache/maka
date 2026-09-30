@@ -1496,6 +1496,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // restages them for the retry.
     const staged = effectiveStagedQuotes();
     const originSessionId = input.driver.getSessionId();
+    // The lane the quotes were staged in must be read before the dispatch's
+    // own clear: clearStagedQuotes() resets the flag, so a read after it
+    // always records turn-staged and a failed submit's restage would hand the
+    // quotes to the next switch's staging clear (#5265 review).
+    const originFollowDraft = stagedQuotesFollowDraft;
     if (staged.length > 0) clearStagedQuotes();
     else supersedePendingRestage();
     // The generation is read after the dispatch's own clear: the restore
@@ -1505,7 +1510,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // flight has since bumped it and must not inherit context meant for the
     // original conversation (#5109 review).
     const originGeneration = stagedGeneration;
-    const originFollowDraft = stagedQuotesFollowDraft;
     const restageForRetry = (): boolean => {
       if (!staged.length) return false;
       if (input.driver.getSessionId() !== originSessionId) return false;

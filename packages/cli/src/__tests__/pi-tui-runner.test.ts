@@ -9219,6 +9219,78 @@ Slug openai-work<cursor>
     }
   });
 
+  test('keeps a failed retraction-restored quote restage across a later session switch', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new FailingRetryRetractingDriver([
+      { turnId: 'turn-1', label: 'first question' },
+    ]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+    try {
+      terminal.input('/rewind');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+      driver.startBlockingTurn();
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+      terminal.input('queued resend');
+      terminal.input('\r');
+      await waitFor(() => driver.submittedQuotes.length === 1);
+      driver.turnGate.resolve();
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+
+      // The retraction restores the queued text and its quotes into the
+      // draft-following lane (#5265 review).
+      terminal.input('\x1b[1;3A'); // Alt+Up
+      await waitFor(() => driver.retractCalls === 1);
+      await waitFor(
+        () => editorInputText(terminal)?.includes('queued resend') === true,
+        'the retraction restores the queued text to the editor',
+      );
+
+      // The retry's admission fails: the restage must keep the quotes in the
+      // draft-following lane instead of demoting them to turn-staged — the
+      // next switch clears turn-staged quotes outright, stranding the
+      // recovered text without its context (#5265 review, second P2).
+      terminal.input('\r');
+      await waitFor(() => driver.submittedQuotes.length === 2);
+      driver.hold(new Error('admission outcome unknown'));
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('admission outcome unknown'),
+      );
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+      terminal.input('/session session-other');
+      terminal.input('\r');
+      await waitFor(() => driver.getSessionId() === 'session-other');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+      terminal.input('retry after switch');
+      terminal.input('\r');
+      await waitFor(() => driver.submittedQuotes.length === 3);
+      assert.deepEqual(driver.submittedQuotes[2], [
+        { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
+      ]);
+    } finally {
+      exitMaka(terminal);
+      await Promise.race([
+        run,
+        delay(CLOSE_BUDGET_MS).then(() => {
+          throw new Error('TUI did not close during test cleanup');
+        }),
+      ]);
+    }
+  });
+
   test('keeps drained quotes when a rewind branches without quotes of its own', async () => {
     const terminal = new FakeTerminal();
     const driver = new PerRewindBranchRetractingDriver([
@@ -15063,6 +15135,27 @@ class RetractingQuotesDriver extends MidTurnQuotesDriver {
     this.eventLog.push(`switch:${sessionId}`);
     this.sessionId = sessionId;
     return super.switchSession(sessionId);
+  }
+}
+
+/**
+ * The queued entry rides out normally; once a retraction has drained, every
+ * later submit hangs until the test rejects it — the failed admission must
+ * restage the restored quotes without dropping their draft-following
+ * provenance (#5265 review).
+ */
+class FailingRetryRetractingDriver extends RetractingQuotesDriver {
+  hold!: (error: Error) => void;
+
+  override submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    if (this.retractCalls === 0) return super.submitMessage(text, options);
+    this.submittedQuotes.push(options.quotes);
+    return new Promise((_, reject) => {
+      this.hold = () => reject(new Error('admission outcome unknown'));
+    });
   }
 }
 
