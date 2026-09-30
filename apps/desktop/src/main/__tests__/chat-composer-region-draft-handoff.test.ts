@@ -152,7 +152,7 @@ async function mountRegion(): Promise<{
               contextUsageSessionId: activeId,
               newTaskDraftKey,
               newTaskSendPending,
-              stopPendingBySession: {},
+              stopPending: false,
               respondToSandboxBoundary: () => {},
               respondToClientCapability: () => {},
               respondToUserQuestion: () => {},

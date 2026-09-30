@@ -292,7 +292,7 @@ function isStorybookPath(path) {
  * Electron e2e should pay cold install/boot only when the real window surface
  * or e2e driver changed — not when only packages/ui unit tests changed.
  */
-function isAstryxSurfaceInventoryPath(path) {
+function shouldRunAstryxSurfaceInventory(path) {
   if (ASTRYX_INVENTORY_CONTRACT_FILES.has(path)) return true;
   if (isDocumentation(path)) return false;
   const desktopRenderer =
@@ -536,7 +536,7 @@ export function planTests(changedFiles, options = {}) {
   return {
     appIcons: files.some((path) => isAppIconPath(path)),
     asfSource: files.some((path) => isAsfSourcePath(path)),
-    astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
+    astryxSurface: files.some((path) => shouldRunAstryxSurfaceInventory(path)),
     cliPackage,
     code,
     deepseekHarnessToolchain: files.some((path) => DEEPSEEK_HARNESS_TOOLCHAIN_FILES.has(path)),
@@ -573,7 +573,7 @@ export function formatGitHubOutputs(plan) {
   return [
     `app_icons=${plan.appIcons}`,
     `asf_source=${plan.asfSource}`,
-    `astryx_surface=${plan.astryxSurface}`,
+    `astryx_surface=${Boolean(plan.astryxSurface)}`,
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `deepseek_harness_toolchain=${plan.deepseekHarnessToolchain}`,

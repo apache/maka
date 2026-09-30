@@ -62,6 +62,7 @@ import {
   type SettleMemoryExtractionFailureRequest,
   type SettleMemoryExtractionFailureResult,
 } from '@maka/core/long-term-memory';
+import { sqliteDatabaseSidecars as databaseSidecars } from './sqlite-file-set.js';
 import {
   assertSupportedSqliteLongTermMemorySchemaVersion,
   configureSqliteLongTermMemoryDatabase,
@@ -2111,10 +2112,6 @@ function secureFile(path: string, create: boolean, allowUnlinked: boolean): void
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
-}
-
-function databaseSidecars(path: string): readonly string[] {
-  return [`${path}-wal`, `${path}-shm`, `${path}-journal`];
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

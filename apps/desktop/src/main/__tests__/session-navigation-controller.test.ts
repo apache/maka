@@ -45,6 +45,10 @@ import {
 } from '../../renderer/features/session-navigation/testing.js';
 import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
+import type { SnapshotReader } from '../../renderer/application/contracts/snapshot-reader.js';
+import { createProductionSessionUiStateController } from '../../renderer/features/conversation/testing.js';
+
+const EMPTY_STREAMING_SESSIONS = new Set<string>();
 
 function session(
   id: string,
@@ -191,6 +195,10 @@ function navigationTree(
   shell: { activeSessionId: string; workHubActive: boolean },
   sibling: ReactNode,
   child: ReactNode,
+  streamingSessions: SnapshotReader<ReadonlySet<string>> = {
+    getSnapshot: () => EMPTY_STREAMING_SESSIONS,
+    subscribe: () => () => undefined,
+  },
 ) {
   return createElement(LocaleProvider, {
     locale: 'en',
@@ -205,7 +213,7 @@ function navigationTree(
           catalog,
           hiddenSessionIds,
           projectScopes: [localProjectScope],
-          streamingSessionIds: new Set<string>(),
+          streamingSessions,
           sessionSendOutcomes: {},
           ports: ports(linkedCatalog, shell.activeSessionId),
           commandsRef: { current: null },
@@ -513,6 +521,54 @@ describe('useSessionNavigationReads', () => {
 });
 
 describe('SessionNavigationProvider selection', () => {
+  it('subscribes to streaming membership inside the rail without waking its parent', async () => {
+    const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const sessionUi = createProductionSessionUiStateController();
+    let parentRenders = 0;
+    let railRenders = 0;
+    let rail!: SessionRailData;
+    function Rail() {
+      railRenders += 1;
+      rail = useSessionRailData();
+      return null;
+    }
+    function Parent() {
+      parentRenders += 1;
+      return navigationTree(catalog, { activeSessionId: 'root', workHubActive: false },
+        null, createElement(Rail), sessionUi.reads.streaming);
+    }
+    await act(async () => root.render(createElement(Parent)));
+    const initialParent = parentRenders;
+    const initialRail = railRenders;
+    await act(async () => sessionUi.setExecution('remote', {
+      type: 'host_execution', available: true,
+      rootTurn: { sessionId: 'remote', turnId: 'turn', runId: 'run', status: 'running' },
+    }));
+    assert.equal(rail.streamingSessionIds?.has('remote'), false);
+    assert.equal(railRenders, initialRail);
+    assert.equal(parentRenders, initialParent);
+    await act(async () => sessionUi.setLiveTurnBySession((state) => ({
+      ...state,
+      remote: [{ turnId: 'turn', steps: [{ stepId: 'message', tools: [],
+        text: { text: 'a token', complete: false, truncated: false } }] }],
+    })));
+    assert.equal(rail.streamingSessionIds?.has('remote'), true);
+    assert.equal(railRenders, initialRail + 1);
+    await act(async () => sessionUi.setLiveTurnBySession((state) => ({
+      ...state,
+      remote: [{ turnId: 'turn', steps: [{ stepId: 'message', tools: [],
+        text: { text: 'another token', complete: false, truncated: false } }] }],
+    })));
+    assert.equal(railRenders, initialRail + 1);
+    await act(async () => sessionUi.clearSessionUiState('remote'));
+    assert.equal(rail.streamingSessionIds?.has('remote'), false);
+    assert.equal(railRenders, initialRail + 2);
+    assert.equal(parentRenders, initialParent);
+    await act(async () => root.unmount());
+  });
+
   it('drops the picks when WorkHub stops painting the open row', async () => {
     let latest: SessionRailSelection | null = null;
     function SelectionProbe() {

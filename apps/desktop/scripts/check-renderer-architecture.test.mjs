@@ -67,6 +67,7 @@ function emptyDebt(overrides = {}) {
 
 function architectureConfig({
   controllerOwners = [],
+  featurePrivateModules = [],
   legacyAppShellClosureDebt,
   legacyFeatureImports = [],
   legacyFiles = {},
@@ -88,6 +89,7 @@ function architectureConfig({
         `${right.implementation}#${right.symbol}`,
       ),
     ),
+    featurePrivateModules: [...featurePrivateModules].sort(),
     legacyAppShell: {
       files: legacyFiles,
       closure: legacyAppShellClosureDebt ?? {},
@@ -3665,6 +3667,73 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
         /the base checker could not be written or imported at .*--strict-base forbids skipping the cross-check/u,
       );
       assert.doesNotMatch(strict.stdout, /passed/u);
+    });
+  });
+});
+
+describe('private feature construction boundaries', () => {
+  const implementation = 'src/renderer/features/alpha/model/state.ts';
+  const privateSource = 'export interface State { value: number }; export function createState() { return { value: 0 }; }';
+  const config = () => architectureConfig({ featurePrivateModules: [implementation] });
+
+  it('allows internal construction, public types and test-only inspection', async () => {
+    await withDesktopFixture({
+      [implementation]: privateSource,
+      'src/renderer/features/alpha/controller/owner.ts': `
+        import { createState } from '../model/state.js';
+        export function readValue() { return createState().value; }
+      `,
+      'src/renderer/features/alpha/index.ts': `
+        export { readValue } from './controller/owner.js';
+        export type { State } from './model/state.js';
+      `,
+      'src/renderer/features/alpha/testing.ts': "export { createState } from './model/state.js';",
+    }, (desktopRoot) => {
+      assert.deepEqual(violationsFor(desktopRoot, config()), []);
+      assert.deepEqual(generateArchitectureConfig(desktopRoot, config()).featurePrivateModules, [implementation]);
+    });
+  });
+
+  for (const [name, source] of [
+    ['named re-export', "export { createState } from './model/state.js';"],
+    ['wildcard re-export', "export * from './model/state.js';"],
+    ['namespace re-export', "export * as raw from './model/state.js';"],
+    ['import alias', "import { createState as factory } from './model/state.js'; export { factory };"],
+    ['dynamic load', "export const raw = import('./model/state.js');"],
+  ]) {
+    it(`rejects a public ${name}`, async () => {
+      await withDesktopFixture({
+        [implementation]: privateSource,
+        'src/renderer/features/alpha/index.ts': source,
+      }, (desktopRoot) => {
+        assertHasViolation(violationsFor(desktopRoot, config()), /private feature module .* is not a public runtime capability/u);
+      });
+    });
+  }
+
+  it('rejects an intermediate barrel that republishes private construction', async () => {
+    await withDesktopFixture({
+      [implementation]: privateSource,
+      'src/renderer/features/alpha/model/barrel.ts': "import { createState as factory } from './state.js'; export { factory };",
+      'src/renderer/features/alpha/index.ts': "export { factory } from './model/barrel.js';",
+    }, (desktopRoot) => {
+      assertHasViolation(violationsFor(desktopRoot, config()), /model\/barrel\.ts: private feature module .* cannot be re-exported/u);
+    });
+  });
+
+  it('rejects outside construction and removal of a recorded boundary', async () => {
+    await withDesktopFixture({
+      [implementation]: privateSource,
+      'src/renderer/features/beta/index.ts': "import { createState } from '../alpha/model/state.js'; export const value = createState();",
+    }, (desktopRoot) => {
+      assertHasViolation(violationsFor(desktopRoot, config()), /beta\/index\.ts: private feature module .* is not a public runtime capability/u);
+      assertHasViolation(violationsFor(desktopRoot, architectureConfig(), config()), /historical private feature module boundaries cannot be removed/u);
+    });
+  });
+
+  it('validates private module policy paths', async () => {
+    await withDesktopFixture({}, (desktopRoot) => {
+      assertHasViolation(violationsFor(desktopRoot, architectureConfig({ featurePrivateModules: ['../state.ts'] })), /featurePrivateModules must contain normalized feature source paths/u);
     });
   });
 });

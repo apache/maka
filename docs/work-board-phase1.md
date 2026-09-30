@@ -56,10 +56,10 @@ suffice.
 We are betting that users will return to the board and start tasks from it.
 The 2026-09-28 run verified the start-task mechanism, but because creation and
 revisit happened in one sitting it has not yet demonstrated delayed return-use.
-The evidence and contributor request for a maintainer go/stop decision are in
-the [Phase 3 update comment on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5867638658).
-The maintainer decision remains pending on [#2560](https://github.com/apache/maka/issues/2560).
-Phases 2 and 4 remain paused pending that decision.
+The [Phase 3 maintainer decision on #2560](https://github.com/apache/maka/issues/2560#issuecomment-5873486343)
+records **mechanism verified (GO); delayed return-use pending; Phase 2/4
+paused**. The Phase 1 delayed return-use assumption still needs a later-day
+dogfooding run before Phases 2 and 4 can resume.
 
 ## Sequencing
 

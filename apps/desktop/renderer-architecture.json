@@ -76,6 +76,7 @@
     "src/renderer/locales/settings-web-search-copy.ts",
     "src/renderer/locales/shell-copy.ts",
     "src/renderer/locales/shell-remaining-copy.ts",
+    "src/renderer/locales/storage-usage-copy.ts",
     "src/renderer/locales/task-readiness-copy.ts",
     "src/renderer/locales/work-board-error-copy.ts",
     "src/renderer/main.tsx",
@@ -287,6 +288,10 @@
       "ownerSymbol": "WorkHubRoot",
       "count": 1
     }
+  ],
+  "featurePrivateModules": [
+    "src/renderer/features/conversation/model/session-ui-reads.ts",
+    "src/renderer/features/conversation/model/session-ui-state.ts"
   ],
   "legacyAppShell": {
     "files": {
@@ -568,7 +573,7 @@
           "@maka/core/session": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 2028
+        "nonTriviaTokens": 2020
       },
       "src/renderer/app-shell-session-events.ts": {
         "importDeclarations": 2,
@@ -782,8 +787,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 91,
-        "nonTriviaTokens": 12125
+        "importSpecifiers": 90,
+        "nonTriviaTokens": 11089
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -818,18 +823,15 @@
         "importDeclarations": 0,
         "bridgePaths": {},
         "environmentCapabilities": {},
-        "hookCalls": {
-          "useExternalStoreSelector": 7
-        },
+        "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./application/contracts/session-catalog/use-external-store-selector.js": 1,
           "./features/conversation/index.js": 1
         },
         "importSpecifiers": 0,
-        "nonTriviaTokens": 135
+        "nonTriviaTokens": 9
       },
       "src/renderer/use-app-shell-session-workspace.ts": {
         "importDeclarations": 4,
@@ -1022,7 +1024,6 @@
         "dependencyPaths": {
           "./application/contracts/session-catalog/use-external-store-selector.js": 1,
           "./chat-recovery-notice": 1,
-          "./features/conversation/index.js": 1,
           "./locales/shell-copy": 1,
           "./onboarding-hero": 1,
           "@maka/ui": 1,
@@ -1497,6 +1498,15 @@
         }
       },
       "src/renderer/locales/shell-remaining-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
+      "src/renderer/locales/storage-usage-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},
@@ -2107,6 +2117,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/storage-usage/index.js": 1,
           "../locales/settings-data-copy": 1,
           "../locales/settings-shared-copy.js": 1,
           "../open-path": 1,
@@ -3218,8 +3229,10 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/storage-usage/index.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "../locales/settings-tasks-copy.js": 1,
+          "../locales/storage-usage-copy.js": 1,
           "./settings-error-copy": 1,
           "./settings-section": 1,
           "./task-catalog-rows": 1,

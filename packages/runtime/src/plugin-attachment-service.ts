@@ -20,6 +20,7 @@
 import type { AttachmentRef } from '@maka/core/events';
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentInvocation, PluginAgentService } from './plugin-agent-service.js';
+import { PluginRuntimeBinding } from './plugin-internals.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -45,25 +46,18 @@ export interface PluginAttachmentRuntime {
 
 /** Session-owned rich result publication and retrieval. */
 export class PluginAttachmentService extends Service {
-  private attachmentRuntime?: PluginAttachmentRuntime;
+  private readonly runtimeBinding: PluginRuntimeBinding<PluginAttachmentRuntime>;
 
   constructor(
     ctx: Context,
     private readonly agents: PluginAgentService,
   ) {
     super(ctx, 'attachments');
+    this.runtimeBinding = new PluginRuntimeBinding('attachments', 'Attachment');
   }
 
   bindRuntime(runtime: PluginAttachmentRuntime): Disposable<Promise<void>> {
-    if (this.ctx.maka) throw new Error('Only the Host may bind the Attachment Runtime');
-    if (this.attachmentRuntime) throw new Error('Plugin Attachment Runtime is already bound');
-    this.attachmentRuntime = runtime;
-    return this.ctx.effect(
-      () => () => {
-        if (this.attachmentRuntime === runtime) this.attachmentRuntime = undefined;
-      },
-      'attachments.bindRuntime()',
-    );
+    return this.runtimeBinding.bind(this.ctx, runtime);
   }
 
   create(input: PluginAttachmentCreateInput) {
@@ -79,7 +73,6 @@ export class PluginAttachmentService extends Service {
   }
 
   private runtime(): PluginAttachmentRuntime {
-    if (!this.attachmentRuntime) throw new Error('Plugin Attachment Runtime is unavailable');
-    return this.attachmentRuntime;
+    return this.runtimeBinding.get();
   }
 }

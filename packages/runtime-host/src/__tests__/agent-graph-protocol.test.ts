@@ -142,17 +142,14 @@ describe('Agent Graph Client protocol', () => {
         operators: [{ ...snapshot.operators[0], privatePrompt: 'secret' }],
       }),
     );
-    assertInvalid(() =>
-      decodeAgentGraphClientSnapshot({
-        ...snapshot,
-        operators: [
-          {
-            ...snapshot.operators[0],
-            readiness: [{ ...snapshot.operators[0]!.readiness[0], policyKind: 'map' }],
-          },
-        ],
-      }),
-    );
+    const operatorWithPrivateReadiness = Object.assign({}, snapshot.operators[0], {
+      readiness: snapshot.operators[0]!.readiness.map((entry, index) =>
+        index === 0 ? { ...entry, policyKind: 'map' } : entry,
+      ),
+    });
+    const decodePrivateReadiness = () =>
+      decodeAgentGraphClientSnapshot({ ...snapshot, operators: [operatorWithPrivateReadiness] });
+    assertInvalid(decodePrivateReadiness);
     assertInvalid(() =>
       decodeAgentGraphClientSnapshot({
         ...snapshot,

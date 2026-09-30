@@ -39,7 +39,13 @@ export {
   resolveTaskReadinessModelTarget,
   type TaskReadinessNotice,
 } from './model/task-readiness-notice.js';
-export * from './model/session-ui-state.js';
+export type {
+  AppShellSessionUiStateController,
+  MessageQueueUiState,
+  SessionPendingClaim,
+} from './model/session-ui-state.js';
+export type { SessionUiReads } from './model/session-ui-reads.js';
+export { useAppShellSessionUiReads } from './controller/use-session-ui-reads.js';
 export type { ConversationHostChange, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
@@ -71,10 +77,13 @@ export {
 } from './ui/composer-mentions-provider.js';
 
 export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
-export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
 export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
+export {
+  createRevisionAwareOnSend,
+  type RevisionSendPorts,
+} from './controller/composer-submit.js';
 export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';

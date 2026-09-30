@@ -19,6 +19,7 @@
 
 export { SessionNavigationServicesProvider } from './services-context.js';
 export { SessionNavigationProvider } from './ui/session-navigation-provider.js';
+export { SessionHistoryNavigation } from './ui/session-history-navigation.js';
 export { createSessionOpenCommand } from './controller/session-open-command.js';
 export { useSessionNavigationReads } from './controller/use-session-navigation-reads.js';
 export { deriveSessionRail } from './model/session-rail.js';
