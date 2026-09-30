@@ -116,7 +116,7 @@ interface ChatComposerRegionProps
   newTaskDraftKey: string;
   /** True from the moment a new-task send starts until it has settled. */
   newTaskSendPending: boolean;
-  stopPendingBySession: Record<string, boolean>;
+  stopPending: boolean;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
@@ -172,7 +172,7 @@ export function ChatComposerRegion({
   contextUsageSessionId,
   newTaskDraftKey,
   newTaskSendPending,
-  stopPendingBySession,
+  stopPending,
   respondToSandboxBoundary,
   respondToClientCapability,
   respondToUserQuestion,
@@ -301,7 +301,7 @@ export function ChatComposerRegion({
             waitForSessionReference: mentions?.waitForSessionReference,
             ...directoryComposerProps,
             onPickDirectory: directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined,
-            stopPending: activeId ? stopPendingBySession[activeId] === true : false,
+            stopPending: stopPending,
             goalActive: goalProjection.goalActive,
             onSetGoal: goalProjection.onSetGoal,
           })}
@@ -367,7 +367,7 @@ export function ChatComposerRegion({
             request={activeQuestion}
             onRespond={respondToUserQuestion}
             onStop={stop}
-            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+            stopPending={stopPending}
           />
         )}
         {activeForm && (

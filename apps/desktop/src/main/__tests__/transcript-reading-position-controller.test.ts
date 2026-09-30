@@ -26,10 +26,10 @@ import type { DesktopTranscriptHandle } from '../../preload/transcript-contract.
 import { encodeDesktopTranscriptBatches, encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import {
-  createAppShellSessionUiStateController,
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
 } from '../../renderer/features/conversation/index.js';
+import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 import {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
