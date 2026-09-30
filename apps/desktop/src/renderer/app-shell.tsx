@@ -30,7 +30,6 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
-  FollowUpMode,
   InlineReference,
   QuoteRef,
 } from '@maka/core/events';
@@ -45,7 +44,6 @@ import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import {
   ChatSurfaceLayout,
   type ComposerHandle,
-  type ComposerSendMetadata,
   type ComposerSlashCommandOption,
   type MakaUriDest,
   MakaUriContext,
@@ -1211,32 +1209,17 @@ function AppShellContent({
       composerStaging.transferImageNotice(NEW_TASK_PENDING_KEY, createdSessionId);
   }
 
-  async function enqueueFollowUp(
-    sessionId: string,
-    text: string,
-    mode: FollowUpMode,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean> {
-    const staging = composerStaging.captureSubmission();
-    try {
-      const sent = await enqueueMessage(sessionId, text,
-        mode === 'steer' ? 'current_turn' : 'next_turn', staging.submittableAttachments, {
-          ...staging.directoryOptions, quotes: staging.quotesForSend(),
-          workspaceFileReferences: metadata?.workspaceFileReferences,
-        });
-      if (!sent) return false;
-      staging.clearSubmittedContext(staging.submittableAttachments);
-      staging.clearQuotes();
-      return true;
-    } catch (error) {
+  const enqueueFollowUp = Conversation.createStagedFollowUp({
+    captureStaging: composerStaging.captureSubmission,
+    enqueueMessage,
+    onError(sessionId, error) {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
         showSessionError(sessionId, copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale));
       }
-      return false;
-    }
-  }
+    },
+  });
 
   async function compactSession(sessionId: string): Promise<boolean> {
     try {

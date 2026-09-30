@@ -59,11 +59,6 @@ export function ComposerStagingProvider(props: {
           quotesForSend: () => quotes,
           clearSubmittedContext: staging.clearSubmittedContext,
           clearQuotes: () => staging.clearSubmittedQuotes(quotes ?? []),
-          restore: (content) => {
-            staging.restoreAttachments(props.draftKey, content.attachments ?? []);
-            staging.restoreDirectories(props.draftKey, content.directoryReferences ?? []);
-            staging.restoreQuotes(props.draftKey, content.quotes ?? []);
-          },
         };
       },
       addQuote: staging.addQuote,

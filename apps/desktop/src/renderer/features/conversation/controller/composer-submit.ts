@@ -129,6 +129,37 @@ export interface RevisionAwareOnSendPorts<TDraft extends RevisionDraftIdentity> 
   setNewTaskSendPending: (pending: boolean) => void;
 }
 
+/** Shared by Shell's follow-up callback and its production-owner tests. */
+export function createStagedFollowUp(ports: {
+  captureStaging(): ComposerStagingSubmission;
+  enqueueMessage(
+    sessionId: string,
+    text: string,
+    placement: 'current_turn' | 'next_turn',
+    pending: readonly PendingAttachment[] | undefined,
+    options: Pick<SubmitOptions, 'directoryReferences' | 'quotes' | 'workspaceFileReferences'>,
+  ): Promise<boolean>;
+  onError(sessionId: string, error: unknown): void;
+}): RevisionSendPorts<RevisionDraftIdentity>['enqueueFollowUp'] {
+  return async (sessionId, text, mode, metadata) => {
+    const staging = ports.captureStaging();
+    try {
+      const sent = await ports.enqueueMessage(sessionId, text,
+        mode === 'steer' ? 'current_turn' : 'next_turn', staging.submittableAttachments, {
+          ...staging.directoryOptions, quotes: staging.quotesForSend(),
+          workspaceFileReferences: metadata?.workspaceFileReferences,
+        });
+      if (!sent) return false;
+      staging.clearSubmittedContext(staging.submittableAttachments);
+      staging.clearQuotes();
+      return true;
+    } catch (error) {
+      ports.onError(sessionId, error);
+      return false;
+    }
+  };
+}
+
 /**
  * The exact callback AppShell hands to the composer, built by the same
  * factory in production and in tests. It wraps {@link revisionAwareSend} so

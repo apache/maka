@@ -166,11 +166,17 @@ context/binding modules and the controller owner entry seal this boundary.
 The Desktop attachment service is injected at the composition root.
 
 The shell holds only stable commands. Submission captures a draft-bound snapshot
-before awaiting revision preparation or delivery. Cleanup and restoration stay
-bound to that draft; directory references retain their originating Host. Quotes
+before awaiting revision preparation or delivery. Cleanup stays bound to that
+draft; directory references retain their originating Host. Quotes
 are copied at invocation, including session references added in the same tick.
 Accepted sends remove only captured quote entries, preserving later additions
-and edits. Failed sends keep their staging. This does not change Host admission,
+and edits: the submitted note is sent once, while a note edited during delivery
+remains an unsent draft for the user's next send. Failed sends keep their staging.
+`createStagedFollowUp` applies the same capture/cleanup rule to the Shell's actual
+follow-up callback; tests exercise it through the production enqueue action.
+There is no public restore command without a production consumer. Delivery
+recovery may introduce one when that later M3 slice defines its ownership.
+This does not change Host admission,
 queue routing, revision-copy ordering or the new-task text handoff.
 
 The existing file-picker rule still targets the visible draft when I/O completes;

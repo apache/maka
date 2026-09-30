@@ -85,6 +85,7 @@ export { ConversationLifecycle } from './ui/conversation-lifecycle.js';
 
 export { ConversationTranscriptRegion, ConversationComposerRegion, ConversationMessageConsumer } from './ui/conversation-readers.js';
 export { createComposerStagingCommands } from './controller/composer-staging-commands.js';
+export { createStagedFollowUp } from './controller/composer-submit.js';
 export type { ComposerStagingCommands, ComposerStagingSubmission } from './model/composer-staging-contract.js';
 export { ComposerStagingServicesProvider, type ComposerStagingServices } from './staging-services.js';
 export { ComposerStagingProvider } from './ui/composer-staging-provider.js';

@@ -249,7 +249,6 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     retractedWorkspaceReferencesRef: { current: {} },
     captureStaging: () => ({
       draftKey: 'draft',
-      restore: () => {},
       hasPendingContext: false,
       hasStagedQuotes: false,
       submittableAttachments: undefined,

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { AttachmentRef, DirectoryReference, QuoteRef } from '@maka/core/events';
+import type { DirectoryReference, QuoteRef } from '@maka/core/events';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
 
 /** A submission owns the staging it captured, even after navigation or another edit. */
@@ -30,11 +30,6 @@ export interface ComposerStagingSubmission {
   quotesForSend(): QuoteRef[] | undefined;
   clearSubmittedContext(submitted?: readonly PendingAttachment[]): void;
   clearQuotes(): void;
-  restore(content: {
-    readonly attachments?: readonly AttachmentRef[];
-    readonly directoryReferences?: readonly DirectoryReference[];
-    readonly quotes?: readonly QuoteRef[];
-  }): void;
 }
 
 /** Commands only: there is deliberately no subscription or controller getter. */
