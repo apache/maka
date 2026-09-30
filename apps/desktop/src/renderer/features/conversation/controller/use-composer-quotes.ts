@@ -102,6 +102,16 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [publish]);
 
+  // A captured submission clears exactly the entries it sent (#5868); the
+  // revision lifecycle's owner-keyed clearing lives in clearQuotes above.
+  const clearSubmittedQuotes = useCallback((submitted: readonly QuoteRef[]): void => {
+    for (let index = bucket.length - 1; index >= 0; index -= 1) {
+      if (submitted.includes(bucket[index]!)) bucket.splice(index, 1);
+    }
+    publish();
+  }, [bucket, publish]);
+
+
   // The composer's token asks the transcript to open the note editor over the
   // excerpt; a synchronous false means it falls back to its own popover.
   const chatViewRef = useRef<ChatViewHandle>(null);
@@ -125,6 +135,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     updateQuoteComment,
     removeQuote,
     clearQuotes,
+    clearSubmittedQuotes,
     restoreQuotes,
     quotesForSend,
     composerQuoteProps: (canStage: boolean) => ({

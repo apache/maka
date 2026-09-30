@@ -76,22 +76,24 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
       } as never,
     },
     readMessages: () => input.messages,
-    hasPendingAttachments: () => false,
-    stagedContext: () => ({
-      quotes: staged.quotes,
-      attachments: [],
-      restoreQuotes: (_ownerKey: string, quotes: unknown[]) => {
-        staged.restoredQuotes.push(quotes);
-        staged.quotes.push(...quotes);
-      },
-      restoreAttachments: (_ownerKey: string, attachments: unknown[]) => {
-        staged.restoredAttachments.push(attachments);
-      },
-      clearQuotes: (ownerKey: string) => {
-        staged.clearedKeys.push(ownerKey);
-        return staged.quotes.splice(0, staged.quotes.length);
-      },
-    }),
+    composerStaging: {
+      captureSubmission: () => ({ hasPendingContext: false }),
+      stagedContext: () => ({
+        quotes: staged.quotes,
+        attachments: [],
+        restoreQuotes: (_ownerKey: string, quotes: unknown[]) => {
+          staged.restoredQuotes.push(quotes);
+          staged.quotes.push(...quotes);
+        },
+        restoreAttachments: (_ownerKey: string, attachments: unknown[]) => {
+          staged.restoredAttachments.push(attachments);
+        },
+        clearQuotes: (ownerKey: string) => {
+          staged.clearedKeys.push(ownerKey);
+          return staged.quotes.splice(0, staged.quotes.length);
+        },
+      }),
+    },
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
       activeIdRef.current = sessionId;
@@ -318,13 +320,15 @@ describe('revision draft lifecycle over a prepared send', () => {
         },
       },
       readMessages: () => [userMessage('turn-1', 'original message')],
-      hasPendingAttachments: () => false,
-      stagedContext: () => ({
-        quotes: [],
-        attachments: [],
-        restoreQuotes: (_ownerKey: string, _quotes: unknown[]) => {},
-        clearQuotes: (_ownerKey: string) => [],
-      }),
+      composerStaging: {
+        captureSubmission: () => ({ hasPendingContext: false }),
+        stagedContext: () => ({
+          quotes: [],
+          attachments: [],
+          restoreQuotes: (_ownerKey: string, _quotes: unknown[]) => {},
+          clearQuotes: (_ownerKey: string) => [],
+        }),
+      },
       openSessionInChat: (sessionId: string) => {
         selectionRevision += 1;
         activeIdRef.current = sessionId;

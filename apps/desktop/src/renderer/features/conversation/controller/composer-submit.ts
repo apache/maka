@@ -28,6 +28,7 @@ import type {
   TransientUserMessageProjection,
 } from '@maka/ui';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
+import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
 
 type RefBox<T> = { current: T };
 type WorkspaceFileReference = NonNullable<ComposerSendMetadata['workspaceFileReferences']>[number];
@@ -83,19 +84,7 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
   revisionDraftRef: RefBox<TDraft | null>;
   composerRef: RefBox<ComposerHandle | null>;
   retractedWorkspaceReferencesRef: RefBox<Record<string, InlineReference[]>>;
-  hasPendingContext: boolean;
-  hasStagedQuotes: boolean;
-  submittableAttachments: readonly PendingAttachment[] | undefined;
-  directoryOptions: {
-    directoryReferences?: NonNullable<
-      TransientUserMessageProjection['directoryReferences']
-    >;
-  };
-  quotesForSend: (ownerKey?: string) => QuoteRef[] | undefined;
-  clearSubmittedContext: (
-    submitted?: readonly PendingAttachment[],
-  ) => void;
-  clearQuotes: (ownerKey?: string) => void;
+  captureStaging(): ComposerStagingSubmission;
   prepareRevisionSend: (text: string) => Promise<boolean>;
   send: (text: string, pending?: readonly PendingAttachment[], options?: SubmitOptions) => Promise<boolean>;
   enqueueFollowUp: (
@@ -140,6 +129,37 @@ export interface RevisionAwareOnSendPorts<TDraft extends RevisionDraftIdentity> 
   setNewTaskSendPending: (pending: boolean) => void;
 }
 
+/** Shared by Shell's follow-up callback and its production-owner tests. */
+export function createStagedFollowUp(ports: {
+  captureStaging(): ComposerStagingSubmission;
+  enqueueMessage(
+    sessionId: string,
+    text: string,
+    placement: 'current_turn' | 'next_turn',
+    pending: readonly PendingAttachment[] | undefined,
+    options: Pick<SubmitOptions, 'directoryReferences' | 'quotes' | 'workspaceFileReferences'>,
+  ): Promise<boolean>;
+  onError(sessionId: string, error: unknown): void;
+}): RevisionSendPorts<RevisionDraftIdentity>['enqueueFollowUp'] {
+  return async (sessionId, text, mode, metadata) => {
+    const staging = ports.captureStaging();
+    try {
+      const sent = await ports.enqueueMessage(sessionId, text,
+        mode === 'steer' ? 'current_turn' : 'next_turn', staging.submittableAttachments, {
+          ...staging.directoryOptions, quotes: staging.quotesForSend(),
+          workspaceFileReferences: metadata?.workspaceFileReferences,
+        });
+      if (!sent) return false;
+      staging.clearSubmittedContext(staging.submittableAttachments);
+      staging.clearQuotes();
+      return true;
+    } catch (error) {
+      ports.onError(sessionId, error);
+      return false;
+    }
+  };
+}
+
 /**
  * The exact callback AppShell hands to the composer, built by the same
  * factory in production and in tests. It wraps {@link revisionAwareSend} so
@@ -180,6 +200,7 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   text: string,
   metadata?: ComposerSendMetadata,
 ): Promise<boolean | void> {
+  const staging = ports.captureStaging();
   const revision = ports.revisionDraftRef.current;
   const revisionSend = Boolean(
     revision && ports.activeIdRef.current === revision.draftSessionId,
@@ -225,8 +246,8 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
       return false;
     }
     if (
-      ports.hasPendingContext ||
-      ports.hasStagedQuotes ||
+      staging.hasPendingContext ||
+      staging.hasStagedQuotes ||
       metadata?.workspaceFileReferences?.length
     ) {
       ports.toastApi.info(
@@ -264,11 +285,11 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
       }
       return changed;
     }
-    const pending = ports.submittableAttachments;
-    const quotes = ports.quotesForSend();
+    const pending = staging.submittableAttachments;
+    const quotes = staging.quotesForSend();
     const ok = await ports.send(swarmCommand.task, pending, {
       turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-      ...ports.directoryOptions,
+      ...staging.directoryOptions,
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
@@ -281,8 +302,8 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
         : {}),
     });
     if (ok !== false) {
-      ports.clearSubmittedContext(pending);
-      if (quotes) ports.clearQuotes();
+      staging.clearSubmittedContext(pending);
+      if (quotes) staging.clearQuotes();
       ports.settleNewTaskImageNoticeOwner(sessionId);
     }
     return ok;
@@ -313,11 +334,11 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
       }
       return changed;
     }
-    const pending = ports.submittableAttachments;
-    const quotes = ports.quotesForSend();
+    const pending = staging.submittableAttachments;
+    const quotes = staging.quotesForSend();
     const ok = await ports.send(graphCommand.task, pending, {
       turnOrchestration: { mode: 'graph', source: 'slash_command' },
-      ...ports.directoryOptions,
+      ...staging.directoryOptions,
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
@@ -330,36 +351,37 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
         : {}),
     });
     if (ok !== false) {
-      ports.clearSubmittedContext(pending);
-      if (quotes) ports.clearQuotes();
+      staging.clearSubmittedContext(pending);
+      if (quotes) staging.clearQuotes();
       ports.settleNewTaskImageNoticeOwner(sessionId);
     }
     return ok;
   }
-  const pending = ports.submittableAttachments;
+  const pending = staging.submittableAttachments;
   const expectedRevisionDraft = revisionSend
     ? ports.revisionDraftRef.current
     : undefined;
   // The re-key lands the plate's current quotes on the branch child before
-  // this send, while this invocation's closure still points at the emptied
-  // source bucket — read the re-keyed owner explicitly so the replacement
-  // carries exactly what the user staged, edits included (#5274 review).
-  const quotes = ports.quotesForSend(expectedRevisionDraft?.draftSessionId);
+  // this send, while this invocation's captured submission still holds the
+  // source bucket's snapshot — read the re-keyed owner explicitly so the
+  // replacement carries exactly what the user staged, edits included
+  // (#5274 review).
+  const quotes = staging.quotesForSend(expectedRevisionDraft?.draftSessionId);
   const ok = await ports.send(text, pending, {
     waitForHostAdmission: revisionSend,
     targetSessionId: expectedRevisionDraft?.draftSessionId,
     onSessionResolved: ports.resolveNewTaskSessionHandler(),
-    ...ports.directoryOptions,
+    ...staging.directoryOptions,
     ...(quotes ? { quotes } : {}),
     ...(workspaceFileReferences.length
       ? { workspaceFileReferences }
       : {}),
   });
   if (ok !== false) {
-    ports.clearSubmittedContext(pending);
+    staging.clearSubmittedContext(pending);
     // A revision's quotes now live under the branch child's bucket; clear
-    // that owner explicitly rather than the stale closure's default key.
-    if (quotes) ports.clearQuotes(expectedRevisionDraft?.draftSessionId);
+    // that owner explicitly rather than the snapshot the submission captured.
+    if (quotes) staging.clearQuotes(expectedRevisionDraft?.draftSessionId);
     ports.settleNewTaskImageNoticeOwner(sessionId);
     if (sessionId) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
   }

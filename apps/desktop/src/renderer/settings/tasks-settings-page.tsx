@@ -105,8 +105,7 @@ export function TasksSettingsPage(
     [copy.noProject, projectNames],
   );
 
-  // Store order is already recency-first with a stable id tie-break, and the
-  // projection preserves it, so there is nothing left to sort here.
+  // Most recently archived first; `archivedTaskRows` owns the order.
   const archived = useMemo(() => archivedTaskRows(props.sessions), [props.sessions]);
   const knownSessionIds = useMemo(
     () => new Set(props.sessions.map((session) => session.id)),
@@ -221,8 +220,9 @@ export function TasksSettingsPage(
         ) : (
           <List density="balanced" hasDividers aria-label={copy.listAria}>
             {visible.map((session) => {
+              const now = Date.now();
               const updated = session.lastMessageAt
-                ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
+                ? formatCompactTimestamp(session.lastMessageAt, now, locale)
                 : undefined;
               const description = [
                 isOrphanedSubagentTask(session, knownSessionIds)
@@ -230,6 +230,11 @@ export function TasksSettingsPage(
                   : undefined,
                 projectLabelOf(session),
                 updated,
+                // An unknown time is said as such, never borrowed from the
+                // last message, which the row already shows as its own fact.
+                session.archivedAt === undefined
+                  ? copy.archiveTimeUnknown
+                  : copy.archivedAt(formatCompactTimestamp(session.archivedAt, now, locale)),
               ]
                 .filter(Boolean)
                 .join(' · ');

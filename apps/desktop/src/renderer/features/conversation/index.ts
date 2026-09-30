@@ -34,7 +34,7 @@ export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
 
 
-export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
+export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 export { type PendingAttachment, toSubmittedAttachments } from '@maka/ui/composer-attachments';
 export {
   NEW_TASK_PENDING_KEY,
@@ -45,7 +45,6 @@ export {
   clearPending,
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
-export { useComposerQuotes } from './controller/use-composer-quotes.js';
 export { useActiveExecutionBoundary } from './controller/use-active-execution-boundary.js';
 export { useSessionReferenceComposer } from './controller/use-session-reference-composer.js';
 export {
@@ -85,3 +84,10 @@ export { useConversationTarget as useAppShellSessionUiState } from './controller
 export { ConversationLifecycle } from './ui/conversation-lifecycle.js';
 
 export { ConversationTranscriptRegion, ConversationComposerRegion, ConversationMessageConsumer } from './ui/conversation-readers.js';
+export { createComposerStagingCommands } from './controller/composer-staging-commands.js';
+export { createStagedFollowUp } from './controller/composer-submit.js';
+export type { ComposerStagingCommands, ComposerStagingSubmission } from './model/composer-staging-contract.js';
+export { ComposerStagingServicesProvider, type ComposerStagingServices } from './staging-services.js';
+export { ComposerStagingProvider } from './ui/composer-staging-provider.js';
+export { StagedComposer, type ComposerStagingProp } from './ui/staged-composer.js';
+export { StagedQuoteChatView } from './ui/staged-quote-chat-view.js';

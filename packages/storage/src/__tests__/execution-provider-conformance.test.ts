@@ -1666,6 +1666,38 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': the archive writer alone stamps and clears the archive time', async () => {
+    await withProvider(make(), async (stores, root) => {
+      const s = stores.sessionStore,
+        session = await s.create(sessionInput(root));
+      const archivedAt = async () => (await s.readCatalogRecord(session.id)).summary.archivedAt;
+      assert.equal(await archivedAt(), undefined);
+      const before = Date.now();
+      const [archived] = await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: 1 }],
+        true,
+      );
+      const first = await archivedAt();
+      assert.ok(first !== undefined && first >= before && first <= Date.now());
+      await s.updateHeader(session.id, { name: 'Renamed' });
+      const renamed = await s.readHeaderRecordSnapshot(session.id);
+      await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: renamed.revision }],
+        true,
+      );
+      assert.equal(await archivedAt(), first);
+      await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: renamed.revision }],
+        false,
+      );
+      assert.equal(await archivedAt(), undefined);
+      assert.equal(
+        Object.hasOwn((await s.readCatalogRecord(session.id)).summary, 'archivedAt'),
+        false,
+      );
+      assert.equal(archived!.header.isArchived, true);
+    });
+  });
   test(
     backend + ': active WorkHub linkage requires target evidence and enforces bounds',
     async () => {

@@ -22,7 +22,9 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import type { QuoteRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
-import { useComposerQuotes } from '../../renderer/features/conversation/index.js';
+// The feature index stopped re-exporting controller hooks (#5868); the test
+// support entry is the sanctioned channel for driving the quote bucket.
+import { useComposerQuotes } from '../../renderer/features/conversation/testing.js';
 import {
   createAppShellRevisionActions,
   type TurnRevisionDraft,
@@ -88,13 +90,15 @@ test('the in-flight revision send still reads the re-keyed plate (#5274 review)'
       } as never,
     },
     readMessages: () => [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
-    hasPendingAttachments: () => false,
-    stagedContext: () => ({
-      quotes: surface.pendingQuotes,
-      attachments: [],
-      restoreQuotes: surface.restoreQuotes,
-      clearQuotes: surface.clearQuotes,
-    }),
+    composerStaging: {
+      captureSubmission: () => ({ hasPendingContext: false }),
+      stagedContext: () => ({
+        quotes: surface.pendingQuotes,
+        attachments: [],
+        restoreQuotes: surface.restoreQuotes,
+        clearQuotes: surface.clearQuotes,
+      }),
+    },
     openSessionInChat: (sessionId: string) => {
       activeIdRef.current = sessionId;
     },

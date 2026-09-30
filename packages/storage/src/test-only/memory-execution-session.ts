@@ -230,15 +230,35 @@ function updatePublic(
   }
   return update(s, id, patch, version);
 }
+/**
+ * The archive lifecycle writer, mirroring SQLite: only a real transition moves
+ * the archive time, so an archived Session keeps the time it first entered.
+ */
+function setArchived(
+  s: MemoryState,
+  id: string,
+  isArchived: boolean,
+  archivedAt: number,
+  version?: number,
+): Header {
+  const current = requireHeader(s, id);
+  const next = update(s, id, { isArchived }, version, true);
+  if (next === current) return next;
+  if (isArchived) rows<number>(s, 'archivedAt').set(id, archivedAt);
+  else rows(s, 'archivedAt').delete(id);
+  return next;
+}
 function catalog(s: MemoryState, id: string): SessionCatalogRecord {
   const record = requireHeader(s, id);
   const preview = rows<string>(s, 'previews').get(id);
+  const archivedAt = rows<number>(s, 'archivedAt').get(id);
   return {
     ...record,
     activityAt: record.header.lastMessageAt ?? record.header.createdAt,
     summary: {
       ...toSummary(record.header),
       ...(preview === undefined ? {} : { lastMessagePreview: preview }),
+      ...(archivedAt === undefined ? {} : { archivedAt }),
     },
   };
 }
@@ -370,6 +390,7 @@ function remove(s: MemoryState, id: string, group: Set<string>): void {
     conflict('Session has live child Sessions outside retirement');
   headers(s).delete(id);
   messages(s).delete(id);
+  rows(s, 'archivedAt').delete(id);
   rows(s, 'tombstones').set(id, true);
   rows(s, 'cleanup').set(id, true);
   rows(s, 'goals').delete(id);
@@ -664,13 +685,14 @@ export function createMemorySessionStore(
       write('session.remove', (s) => remove(s, id, new Set([id])));
     },
     setSessionsArchivedVersioned: async (ids, isArchived) =>
-      write('session.archive', (s) =>
-        ids.map(({ sessionId, expectedVersion }) => {
-          const result = update(s, sessionId, { isArchived }, expectedVersion, true);
+      write('session.archive', (s) => {
+        const archivedAt = Date.now();
+        return ids.map(({ sessionId, expectedVersion }) => {
+          const result = setArchived(s, sessionId, isArchived, archivedAt, expectedVersion);
           if (isArchived) rows(s, 'goals').delete(sessionId);
           return result;
-        }),
-      ),
+        });
+      }),
     removeSessionsVersioned: async (ids, archive = []) =>
       write('session.retire', (s) => {
         const group = new Set(ids.map((i) => i.sessionId));
@@ -684,9 +706,10 @@ export function createMemorySessionStore(
               h.revision,
             );
         }
+        const archivedAt = Date.now();
         for (const i of archive) {
           if (group.has(i.sessionId)) conflict('Cannot archive and remove the same Session');
-          update(s, i.sessionId, { isArchived: true }, undefined, true);
+          setArchived(s, i.sessionId, true, archivedAt);
           rows(s, 'goals').delete(i.sessionId);
         }
         for (const i of ids) if (headers(s).has(i.sessionId)) remove(s, i.sessionId, group);

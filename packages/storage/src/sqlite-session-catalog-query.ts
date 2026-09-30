@@ -67,6 +67,7 @@ export function buildSqliteSessionCatalogPageQuery(
         metadata.payload_json,
         metadata.metadata_version,
         metadata.committed_at,
+        metadata.archived_at,
         projection.activity_at,
         projection.last_message_preview
       FROM session_catalog_projection projection

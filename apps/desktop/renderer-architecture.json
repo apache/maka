@@ -227,6 +227,13 @@
       "count": 1
     },
     {
+      "implementation": "src/renderer/features/conversation/controller/use-composer-attachments.ts",
+      "symbol": "useComposerAttachments",
+      "owner": "src/renderer/features/conversation/ui/composer-staging-provider.tsx",
+      "ownerSymbol": "ComposerStagingProvider",
+      "count": 1
+    },
+    {
       "implementation": "src/renderer/features/conversation/controller/use-conversation-controller.ts",
       "symbol": "useConversationController",
       "owner": "src/renderer/features/conversation/ui/conversation-provider.tsx",
@@ -306,13 +313,16 @@
   ],
   "featurePrivateModules": [
     "src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx",
+    "src/renderer/features/conversation/controller/use-composer-quotes.ts",
     "src/renderer/features/conversation/controller/use-conversation-observation.ts",
+    "src/renderer/features/conversation/model/composer-staging-binding.ts",
     "src/renderer/features/conversation/model/conversation-workspace.ts",
     "src/renderer/features/conversation/model/session-events.ts",
     "src/renderer/features/conversation/model/session-ui-reads.ts",
     "src/renderer/features/conversation/model/session-ui-state.ts",
     "src/renderer/features/conversation/model/session-workspace-actions.ts",
     "src/renderer/features/conversation/model/transcript-commands.ts",
+    "src/renderer/features/conversation/ui/composer-staging-context.ts",
     "src/renderer/features/conversation/ui/conversation-context.ts"
   ],
   "legacyAppShell": {
@@ -575,7 +585,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 3,
-        "nonTriviaTokens": 482
+        "nonTriviaTokens": 522
       },
       "src/renderer/app-shell-stop-action.ts": {
         "importDeclarations": 0,
@@ -620,7 +630,6 @@
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 52,
         "bridgePaths": {
-          "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
           "window.maka.diagnostics.copyPreviousMainProcessInterruption": 1,
           "window.maka.diagnostics.copyReport": 1,
@@ -644,7 +653,6 @@
           "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
-          "useComposerAttachments": 1,
           "useEffect": 3,
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
@@ -743,7 +751,7 @@
           "react": 1
         },
         "importSpecifiers": 70,
-        "nonTriviaTokens": 9767
+        "nonTriviaTokens": 9603
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,
@@ -945,6 +953,7 @@
           "./application/contracts/new-task-reload-intent.js": 1,
           "./application/contracts/session-inspector/latest-request-usage.js": 1,
           "./composer-mentions.js": 1,
+          "./features/conversation/index.js": 1,
           "@maka/ui": 1,
           "react": 1
         }

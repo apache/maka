@@ -32,6 +32,7 @@
  * the production submit path must fail this test.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
@@ -39,7 +40,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  AstryxLocaleProvider,
   LocaleProvider,
   type ComposerHandle,
   type ComposerSendMetadata,
@@ -212,13 +212,15 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     },
     composerRef: composer,
     readMessages: () => [userMessage('turn-1', ORIGINAL_TEXT)],
-    hasPendingAttachments: () => false,
-    stagedContext: () => ({
-      quotes: [],
-      attachments: [],
-      restoreQuotes: () => {},
-      clearQuotes: () => [],
-    }),
+    composerStaging: {
+      captureSubmission: () => ({ hasPendingContext: false }),
+      stagedContext: () => ({
+        quotes: [],
+        attachments: [],
+        restoreQuotes: () => {},
+        clearQuotes: () => [],
+      }),
+    },
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
       activeIdRef.current = sessionId;
@@ -253,13 +255,16 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     revisionDraftRef,
     composerRef: composer,
     retractedWorkspaceReferencesRef: { current: {} },
-    hasPendingContext: false,
-    hasStagedQuotes: false,
-    submittableAttachments: undefined,
-    directoryOptions: {},
-    quotesForSend: () => undefined,
-    clearSubmittedContext: () => {},
-    clearQuotes: () => {},
+    captureStaging: () => ({
+      draftKey: 'draft',
+      hasPendingContext: false,
+      hasStagedQuotes: false,
+      submittableAttachments: undefined,
+      directoryOptions: {},
+      quotesForSend: () => undefined,
+      clearSubmittedContext: () => {},
+      clearQuotes: () => {},
+    }),
     prepareRevisionSend: (text: string) => revisionActions.prepareRevisionSend(text),
     completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
     parseSlashCommand: parseDesktopSlashCommand,
@@ -314,7 +319,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     root.render(
       createElement(LocaleProvider, {
         locale: 'en',
-        children: createElement(AstryxLocaleProvider, {
+        children: createElement(ComposerStagingFixture, {
+          draftKey: SESSION_1,
           children: createElement(ChatComposerRegion, {
             composerRef: composer,
             active: true,
@@ -331,7 +337,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
             respondToUserForm: () => undefined,
             stop: () => undefined,
             onOpenContextUsage: () => undefined,
-            directoryComposerProps: {},
+            canStageContext: true,
+            contextPickEnabled: true,
             directoryPickerEnabled: false,
             onSend: (text: string, metadata?: ComposerSendMetadata) => {
               submittedTexts.push(text);

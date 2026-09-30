@@ -27,6 +27,7 @@ import {
   type RevisionActionsEnv,
   type TurnRevisionDraftBase,
 } from '@maka/ui';
+import type { ComposerStagingCommands } from './features/conversation/index.js';
 
 /**
  * The desktop revision draft: the shared staged-context source bound to the
@@ -46,9 +47,14 @@ type DesktopRevisionActionsDeps = Omit<
   | 'abandonCopyAttempt'
   | 'completeCopyAttempt'
   | 'commitRevisionDraft'
+  | 'hasPendingAttachments'
+  | 'stagedContext'
 > & {
   /** The shell's draft state is bound to the concrete desktop draft type. */
   commitRevisionDraft(draft: TurnRevisionDraft | null): void;
+  /** The persistent staging owner: the gate's pending-context probe and the
+   *  lifecycle's live plate reads both derive from this one handle. */
+  composerStaging: ComposerStagingCommands;
 };
 
 export interface AppShellRevisionActions {
@@ -75,6 +81,8 @@ export function createAppShellRevisionActions(
 ): AppShellRevisionActions {
   const actions = createRevisionActions({
     ...deps,
+    hasPendingAttachments: () => deps.composerStaging.captureSubmission().hasPendingContext,
+    stagedContext: deps.composerStaging.stagedContext,
     commitRevisionDraft: (draft) => deps.commitRevisionDraft(draft as TurnRevisionDraft),
     copy: getDesktopConversationCopy(deps.uiLocale).actions,
     reviseBeforeTurn: (sourceSessionId, input) =>
