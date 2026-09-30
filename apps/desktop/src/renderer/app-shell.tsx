@@ -62,17 +62,15 @@ import {
   useToast,
   deriveComposerModelSwitchAvailability,
   deriveTitlebarProjectName,
-  reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { ChatMessageSurface } from './chat-message-surface';
 import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
-import type { TranscriptReadingPositionCommands, TranscriptTurnIndex, LiveContentSeedState } from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { AgentGraphPanel } from './agent-graph-panel';
-import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
+import { ChatComposerRegion } from './chat-composer-region';
 import { WorkbarHost, WorkbarProvider, WorkbarShellRoot, type WorkbarShellProjection } from './features/workbar';
 import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
@@ -133,10 +131,6 @@ import {
   runOnDefaultRuntimeHost,
 } from './platform/desktop/default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
-import {
-  createAppShellSessionDisplayBatch,
-  createAppShellSessionEventHandlers,
-} from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import { createAppShellChatActions } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
@@ -153,13 +147,10 @@ import {
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors';
 import {
-  useActiveSessionEvents,
   useAppShellBootstrapSubscriptions,
   useAppShellHostEffects,
   useAppShellPersistenceEffects,
   useAppShellNavRefSync,
-  useSessionEventHealthPolling,
-  useShellRunUpdates,
 } from './app-shell-effects';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
@@ -189,11 +180,6 @@ type ComposerImportOwner = {
   newTaskDraftKey?: string;
 };
 
-/**
- * Grace period before the committed-history fallback force-settles an
- * assistant stream slot when the primary post-commit signal is missed.
- */
-const SETTLE_FALLBACK_GRACE_MS = 1000;
 export function AppShell() {
   const [uiLocalePreference, setUiLocalePreference] = useState<UiLocalePreference>('auto');
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
@@ -235,9 +221,11 @@ export function AppShell() {
                         {(sharedSessionDialog) => (
                           <WorkbarShellRoot>
                             {(workbar) => (
-                              <AppShellContent
-                                {...{ taskEntry, overlays, sharedSessionDialog, workbar, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                              />
+                              <Conversation.ConversationProvider>
+                                <AppShellContent
+                                  {...{ taskEntry, overlays, sharedSessionDialog, workbar, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                                />
+                              </Conversation.ConversationProvider>
                             )}
                           </WorkbarShellRoot>
                         )}
@@ -287,13 +275,18 @@ function AppShellContent({
   const toastApi = useToast();
   const previousInterruptionShownRef = useRef(false);
   const {
+    readMessages,
+    readCompleteTranscript,
+    refreshMessages,
+    prepareSend,
+    transcriptEmpty,
+    transcriptHasHistory,
     authoritativeSessionIds,
     sessionsRef,
     refreshSessions,
     refreshChangedSession,
     activeId,
     activeIdRef,
-    requestedSessionId,
     bootstrapSelectionLease,
     setActiveId,
     startNewSession,
@@ -302,28 +295,19 @@ function AppShellContent({
     captureSelection,
     isSessionSelected,
     retiredSessionIds,
-    messages,
-    transientMessages,
-    setMessages,
-    commitTranscript,
     addTransientMessage,
     updateTransientMessage,
-    retireCancelledTransientMessages,
     removeTransientMessage,
-    transcriptRangeRef,
-    publishedTranscriptRange,
-    publishTranscript,
-    isMessagePublished,
-    readCompleteTranscript,
-    messageLoadPending,
-    setMessageLoadPending,
-    sessionUiController,
+    sessionUiReads,
+    stopPendingClaims,
+    markInteractionChanged,
+    settleInteraction,
+    clearMessageLoadError,
+    recordSessionChange,
     sessionCatalogController,
     commitSession,
     activeCatalogSession,
     activeHostSession,
-    requestedCatalogSession,
-    requestedHostSession,
     sharedSessionActive,
     ownerActiveId,
     switchingSession,
@@ -333,12 +317,6 @@ function AppShellContent({
   // hook already publishes — background row churn belongs to the rail, which
   // subscribes the catalog inside SessionNavigationProvider (#4109).
   const sessionCount = authoritativeSessionIds?.size ?? 0;
-  // Only the outstanding read needs a fence; past Sessions leave no hydration metadata.
-  const interactionHydrationRef = useRef<{ sessionId: string } | null>(null);
-  const markInteractionChanged = useCallback((sessionId: string) => {
-    const pending = interactionHydrationRef.current;
-    if (pending?.sessionId === sessionId) interactionHydrationRef.current = null;
-  }, []);
 
   const {
     openHelp,
@@ -412,10 +390,8 @@ function AppShellContent({
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [newTaskPermissionChoice, setNewTaskPermissionMode, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
-  const transcriptReadingCommands = useRef<TranscriptReadingPositionCommands>(null);
-  const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<TranscriptTurnIndex>();
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
-  const [navigationState, setNavigationState] = useState(() => readNavigationState());
+  const [navigationState, setNavigationState] = useState(readNavigationState);
   const navSelection = navigationState.selection;
   const sessionsSelected = navSelection.section === 'sessions';
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
@@ -455,14 +431,12 @@ function AppShellContent({
   // streaming membership subscribe inside their consuming regions.
   const {
     messageLoadError: activeMessageLoadError,
-    messageRetryPending,
     stopPending,
     activeInteraction,
     activeMessageQueue,
-    unavailableTranscriptRestore: activeUnavailableTranscriptRestore,
     activeLiveTurnSnapshot,
     activeExecution,
-  } = useAppShellSessionUiReads(sessionUiController.reads, activeId, ownerActiveId);
+  } = useAppShellSessionUiReads(sessionUiReads, activeId, ownerActiveId);
   // The chat surface follows the active Session's Host. Settings and global
   // commands remain owned by the default Host.
   const { memoryActive, refreshMemoryActive } = useShellMemoryPill({
@@ -656,8 +630,6 @@ function AppShellContent({
   // semantic snapshot rather than the projection (#1985).
   const {
     activeStreamingLive,
-    activeStreamingMessageId,
-    hasInFlightLiveTools,
     hasLiveTurnContent,
     turnActive,
   } = useShellLiveTurn({
@@ -752,11 +724,7 @@ function AppShellContent({
   // model claims live in the session UI store.
   const turnActionRegistry = useTurnActionRegistry();
 
-  // A hoisted declaration on purpose: `discardDisplayEvents` is destructured
-  // hundreds of lines below, and the rail does not need this identity held
-  // still — the rail's controller reads it through `portsRef`.
   function clearSessionRendererState(sessionId: string): void {
-    discardDisplayEvents(sessionId);
     // `clearOwnedSessionState` ends in `clearSessionUiState`, which drops this
     // session from every session-UI map — the four pending claims included.
     clearOwnedSessionState(sessionId);
@@ -889,38 +857,6 @@ function AppShellContent({
     reading: activeExecutionBoundaryReading,
     reload: reloadActiveExecutionBoundary,
   } = useActiveExecutionBoundary(ownerActiveId, activeSessionForView?.permissionMode);
-  // The session view only subscribes to the session it shows, so a request
-  // raised while another session was active never reaches this surface as a
-  // live event — and neither does one raised before the window existed. The
-  // runtime holds every unanswered request, so read them back whenever the
-  // active session changes (#2072).
-  useEffect(() => {
-    if (!ownerActiveId) return;
-    const pending = { sessionId: ownerActiveId };
-    interactionHydrationRef.current = pending;
-    const release = () => {
-      if (interactionHydrationRef.current === pending) interactionHydrationRef.current = null;
-    };
-    void window.maka.sessions
-      .listActiveInteractions(ownerActiveId)
-      .then((requests) => {
-        if (interactionHydrationRef.current !== pending) return;
-        sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, ownerActiveId, requests));
-      })
-      .catch(() => {})
-      .finally(release);
-    return release;
-  }, [ownerActiveId, sessionUiController.setInteractionBySession]);
-  useEffect(
-    () =>
-      window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
-        markInteractionChanged(sessionId);
-        sessionUiController.setInteractionBySession((current) =>
-          reconcileInteractions(current, sessionId, interactions),
-        );
-      }),
-    [markInteractionChanged, sessionUiController.setInteractionBySession],
-  );
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
     activeExecutionBoundary,
@@ -928,14 +864,11 @@ function AppShellContent({
     sessionSettingIntent.overlay.permissionMode,
   );
   const activePermissionMode = activeBoundarySurface.permissionMode;
-  const activeMessageLoading = Boolean(activeId && messageLoadPending);
-  // Session switches clear the transcript projection before its async read.
-  // Keep the switch warning anchored to the durable session summary, while
-  // retaining the local projection for an optimistic first message that has
-  // not reached the catalog yet.
+  // The published target retains its picture during handoff. Pending local
+  // first messages can establish history before the durable row catches up.
   const modelSwitchHasHistory =
     activeSessionForView?.lastMessageAt !== undefined ||
-    messages.some((message) => message.type === 'user' || message.type === 'assistant');
+    transcriptHasHistory;
   // PR110c: OnboardingState is now the single source of truth for
   // first-run UI. The renderer never re-derives provider readiness;
   // `useOnboardingSnapshot()` pulls the derived state from the main
@@ -1234,13 +1167,11 @@ function AppShellContent({
     respondToSandboxBoundary,
     respondToUserQuestion,
     respondToUserForm,
-    refreshMessages,
-    retryMessages,
   } = useStableActions(createAppShellChatActions, {
     uiLocale,
     getRunningTurnId: (sessionId) => {
       if (sessionId !== activeId) return undefined;
-      return Conversation.activeHostTurn(sessionUiController.reads.summary(sessionId).getSnapshot().activeExecution)?.turnId;
+      return Conversation.activeHostTurn(sessionUiReads.summary(sessionId).getSnapshot().activeExecution)?.turnId;
     },
     activeIdRef,
     captureComposerImportOwner,
@@ -1248,7 +1179,6 @@ function AppShellContent({
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend: async (session) => {
       commitSession(session);
@@ -1256,14 +1186,12 @@ function AppShellContent({
       setActiveId(session.id);
     },
     retireSession: clearSessionRendererState,
-    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
+    clearMessageLoadError,
     addTransientMessage,
     updateTransientMessage,
     removeTransientMessage,
-    transcriptRangeRef,
-    onFollowLatest: (sessionId) => transcriptReadingCommands.current?.prepareSend(sessionId) ?? true,
-    isMessagePublished,
-    setInteractionBySession: sessionUiController.setInteractionBySession,
+    onFollowLatest: prepareSend,
+    settleInteraction,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     respondToUserForm: commands.respondToUserForm,
@@ -1298,7 +1226,7 @@ function AppShellContent({
     activeIdRef,
     captureSelection,
     composerRef,
-    messages,
+    readMessages,
     hasPendingAttachments: () => hasPendingContext,
     openSessionInChat,
     refreshSessions,
@@ -1408,56 +1336,10 @@ function AppShellContent({
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
-    stopPending: sessionUiController.stopPending,
+    stopPending: stopPendingClaims,
     removeTransientMessage,
     toastApi,
   });
-
-  const [sessionDisplayBatch] = useState(createAppShellSessionDisplayBatch);
-  const sessionEventHandlers = useStableActions(createAppShellSessionEventHandlers, {
-    uiLocale,
-    activeIdRef,
-    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
-    refreshMessages,
-    refreshSessions,
-    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
-    setInteractionBySession: sessionUiController.setInteractionBySession,
-    setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
-    removeTransientMessage,
-    displayBatch: sessionDisplayBatch,
-    onInteractionChanged: markInteractionChanged,
-    onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
-    onContextCompactionOutcome: (sessionId, turnId, outcome) =>
-      contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
-    showModelSetupToast,
-    toastApi,
-    onTurnCompleted: (sessionId) => {
-      if (activeIdRef.current === sessionId)
-        setPetCompletionNonce((current) => current + 1);
-    },
-  });
-  const handleEvent = sessionEventHandlers.handleEvent;
-  const reconcilePersistedMessages = sessionEventHandlers.reconcilePersistedMessages;
-  const settleAssistantStreaming = sessionEventHandlers.settleAssistantStreaming;
-  const holdDisplayEvents = sessionEventHandlers.holdDisplayEvents;
-  const releaseDisplayEvents = sessionEventHandlers.releaseDisplayEvents;
-  const discardDisplayEvents = sessionEventHandlers.discardDisplayEvents;
-
-  // Streaming-settle handoff, FALLBACK path only. The bubble's primary
-  // `onStreamingSettled` signal runs after Astryx commits the terminal text.
-  // Keep a delayed fallback because a stuck slot would otherwise hide the
-  // committed answer forever (`streamingMessageId` suppresses it while live).
-  useEffect(() => {
-    if (!activeId || !activeStreamingMessageId) return;
-    const committedAssistantArrived = messages.some(
-      (message) => message.type === 'assistant' && message.id === activeStreamingMessageId,
-    );
-    if (!committedAssistantArrived) return;
-    const timer = window.setTimeout(() => {
-      void settleAssistantStreaming(activeId, activeStreamingMessageId);
-    }, SETTLE_FALLBACK_GRACE_MS);
-    return () => window.clearTimeout(timer);
-  }, [activeId, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
   useAppShellNavRefSync({
     navSelection,
@@ -1490,78 +1372,13 @@ function AppShellContent({
     retiredSessionIds,
     isSessionRemoved: sessionCatalogController.isRemoved,
     sessionsRef,
-    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
+    recordSessionChange,
     toastApi,
   });
   useAppShellPersistenceEffects({
     navigationState,
     themePalette,
     themePref,
-  });
-  const [liveContentSeed, setLiveContentSeed] = useState<LiveContentSeedState>(
-    Conversation.INITIAL_LIVE_CONTENT_SEED,
-  );
-  const liveContentSeedRef = useRef(liveContentSeed);
-  liveContentSeedRef.current = liveContentSeed;
-  function beginObservationSeed(sessionId: string) {
-    const seed = Conversation.beginLiveContentSeed(liveContentSeedRef.current, sessionId);
-    liveContentSeedRef.current = seed.state;
-    holdDisplayEvents(sessionId);
-    setLiveContentSeed(seed.state);
-    function finishObservationSeed() {
-      if (!Conversation.ownsLiveContentSeed(liveContentSeedRef.current, seed.token)) return;
-      releaseDisplayEvents(sessionId);
-      const revealed = Conversation.revealLiveContentSeed(liveContentSeedRef.current, seed.token);
-      liveContentSeedRef.current = revealed;
-      setLiveContentSeed(revealed);
-      void retireCancelledTransientMessages(sessionId);
-    }
-    return finishObservationSeed;
-  }
-  const observationAuthorityRef = useRef(Conversation.INITIAL_OBSERVATION_AUTHORITY);
-  observationAuthorityRef.current = Conversation.reconcileObservationAuthority(
-    observationAuthorityRef.current,
-    {
-      sessionId: requestedSessionId,
-      profileId: requestedCatalogSession?.profileId,
-    },
-  );
-  useActiveSessionEvents({
-    publishTranscript,
-    uiLocale,
-    activeId: requestedHostSession?.id,
-    initialTranscriptTurnId: searchScrollTarget?.sessionId === requestedHostSession?.id
-      ? searchScrollTarget?.turnId
-      : requestedHostSession?.id
-        ? sessionUiController.transcriptReadingAnchorBySessionRef.current[requestedHostSession.id]?.turnId
-        : undefined,
-    observationAuthorityRevision: observationAuthorityRef.current.generation,
-    activeIdRef,
-    handleEvent,
-    beginObservationSeed: (sessionId) => beginObservationSeed(sessionId),
-    setExecution: sessionUiController.setExecution,
-    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
-    clearMessageLoadError: sessionUiController.clearMessageLoadError,
-    setMessageLoadPending,
-    commitTranscript,
-    transcriptRangeRef,
-    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
-    toastApi,
-  });
-  useShellRunUpdates({
-    activeId: ownerActiveId,
-    setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
-  });
-  useSessionEventHealthPolling({
-    activeId: activeHostSession?.id,
-    activeInteraction,
-    activeSession,
-    activeStreamingLive,
-    hasInFlightLiveTools,
-    refreshMessages,
-    refreshSessions,
-    sessionEventHealthBySessionRef: sessionUiController.sessionEventHealthBySessionRef,
-    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
   });
   function captureComposerImportOwner(): ComposerImportOwner {
     return {
@@ -1704,15 +1521,9 @@ function AppShellContent({
     canStageComposerContext &&
     !(revisionDraft && activeId === revisionDraft.draftSessionId);
 
-  const activeTranscriptReadingAnchor = activeId
-    ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
-    : undefined;
-  const activeTranscriptRange = publishedTranscriptRange?.sessionId === activeId
-    ? publishedTranscriptRange : undefined;
   const homeSurfaceActive =
     sessionsSelected &&
-    messages.length === 0 &&
-    transientMessages.length === 0 &&
+    transcriptEmpty &&
     !hasLiveTurnContent &&
     !activeMessageLoadError;
   const commandOptions: AppShellCommandListOptions = {
@@ -1874,29 +1685,14 @@ function AppShellContent({
         sessionListWidth,
       })}
     >
-      <Conversation.TranscriptReadingPositionController
-        commands={transcriptReadingCommands}
-        sessionId={activeId}
-        profileId={activeSession?.profileId}
-        currentSessionId={activeIdRef}
-        rangeController={transcriptRangeRef}
-        messages={messages}
-        searchTarget={searchScrollTarget}
-        clearSearchTarget={() => setSearchScrollTarget(null)}
-        sessionUi={sessionUiController}
-        landmarkSessionId={ownerActiveId ?? null}
+      <Conversation.ConversationLifecycle
+        refreshSessions={refreshSessions}
+        onExecutionBoundaryChanged={reloadActiveExecutionBoundary}
+        onContextCompactionOutcome={(sessionId, turnId, outcome) => contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale)}
+        showModelSetupToast={showModelSetupToast}
+        onTurnCompleted={(sessionId) => { if (activeIdRef.current === sessionId) setPetCompletionNonce((current) => current + 1); }}
+        searchTarget={searchScrollTarget} clearSearchTarget={() => setSearchScrollTarget(null)}
         listTurnLandmarks={(sessionId, turnId) => window.maka.sessions.listTurnLandmarks(sessionId, turnId)}
-        setTurnIndex={setTranscriptTurnIndex}
-        onRestoreError={(error, sessionId) => sessionUiController.setMessageLoadErrorBySession((current) => ({
-          ...current,
-          [sessionId]: localizedShellErrorMessage(error, desktopConversationCopy.actions.operationFailedFallback, uiLocale),
-        }))}
-      />
-      <Conversation.LiveTurnReconciler
-        readLiveTurns={sessionUiController.reads.liveTurns}
-        activeId={activeId}
-        messages={messages}
-        reconcile={reconcilePersistedMessages}
       />
       {/* Window chrome is frame-level hit-test only (not AppShell topNav): a
           transparent drag overlay so column surfaces paint to the window top.
@@ -1979,7 +1775,7 @@ function AppShellContent({
                 activeSessionId={activeId}
                 hiddenSessionIds={selectors.hiddenSessionIds}
                 projectScopes={taskEntry.selectors.projectScopes}
-                streamingSessions={sessionUiController.reads.streaming}
+                streamingSessions={sessionUiReads.streaming}
                 sessionSendOutcomes={onboarding.snapshot?.sessionSendOutcomes}
                 SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
                 NavigationExtras={SessionCollaboration.SessionCollaborationNavigation}
@@ -2044,9 +1840,8 @@ function AppShellContent({
                 composer={
                   <>
                     {ownerActiveId ? (
-                      <SessionCollaboration.SessionTurnRequestApprovalForSession
+                      <Conversation.ConversationMessageConsumer surface={SessionCollaboration.SessionTurnRequestApprovalForSession}
                         sessionId={ownerActiveId}
-                        messages={messages}
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
@@ -2071,7 +1866,7 @@ function AppShellContent({
                             composerRef={composerRef}
                           >
                             {(guest) => (
-                              <ChatComposerRegion
+                              <Conversation.ConversationComposerRegion surface={ChatComposerRegion}
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
                   guest={guest}
@@ -2098,10 +1893,8 @@ function AppShellContent({
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
                   streaming={turnActive}
-                  processing={transientMessages.length > 0}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
-                  pendingMessages={transientMessages}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? queueSurface.promoteQueuedEntry : undefined}
@@ -2128,7 +1921,8 @@ function AppShellContent({
                   {...Conversation.executorComposerProps(executor, {activeId, turnActive, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface})}
                   activeSession={activeSessionForView}
                   {...{ executorTarget, onExecutorTargetChange }}
-                  latestRequestUsageTokens={selectLatestRequestUsage(messages, activeModel, activeSessionForModelControls)}
+                  usageModel={activeModel}
+                  usageRoute={activeSessionForModelControls}
                   onOpenContextUsage={() => commands.toggleTool('inspector')}
                   LiveContextUsageProbe={LiveContextUsageProbe}
                   contextUsageSessionId={ownerActiveId}
@@ -2194,22 +1988,9 @@ function AppShellContent({
                 }
               >
                 {sessionsSelected ? (
-                  <ChatMessageSurface
+                  <Conversation.ConversationTranscriptRegion surface={ChatMessageSurface}
                 {...chatViewQuoteProps}
-                sessionUiReads={sessionUiController.reads}
-                viewportNavigation={sessionUiController.transcriptViewportNavigation}
-                activeSessionId={activeId}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
-                {...Conversation.transcriptReadingSurfaceProps(
-                  transcriptReadingCommands, activeTranscriptRange, transcriptTurnIndex, activeId,
-                )}
-                  liveContentSeedGeneration={Conversation.visibleLiveContentGeneration(liveContentSeed, activeId)}
-                messages={messages}
-                transientMessages={transientMessages}
-                messageLoading={activeMessageLoading}
-                    onStreamingSettled={
-                      activeId ? (messageId) => settleAssistantStreaming(activeId, messageId) : undefined
-                    }
                 activeSession={activeSessionForView}
                 activeConnectionLabel={activeConnectionLabel}
                 activeModelLabel={activeModelLabel}
@@ -2222,9 +2003,6 @@ function AppShellContent({
                 userLabel={userLabel}
                 memoryActive={memoryActive}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
-                messageLoadError={activeMessageLoadError}
-                messageLoadRetryPending={messageRetryPending}
-                onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
                 deriveTurnPresentation={deriveTurnPresentation}
                 onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
@@ -2244,13 +2022,6 @@ function AppShellContent({
                           }
                     : undefined
                 }
-                restoreTargetTurn={Conversation.transcriptReadingPosition.restoreTarget(
-                  activeTranscriptReadingAnchor,
-                  activeUnavailableTranscriptRestore,
-                )}
-                onReadingAnchorChange={activeId
-                  ? (turnId) => transcriptReadingCommands.current?.captureAnchor(turnId)
-                  : undefined}
                 scrollBehavior={readScrollMotionBehavior()}
                 revisionNavigation={revisionNavigation}
                 onRevisionNavigate={openSessionInChat}

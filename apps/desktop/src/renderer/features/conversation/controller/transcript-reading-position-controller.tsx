@@ -48,30 +48,12 @@ export interface TranscriptReadingPositionCommands {
   showLatest(): Promise<void>;
 }
 
-/** Keep the surface's paging callbacks under the reading controller's ownership. */
-export function transcriptReadingSurfaceProps(
-  commands: { current: TranscriptReadingPositionCommands | null },
-  range: { hasOlder: boolean; hasNewer?: boolean } | undefined,
-  index: TranscriptTurnIndex | undefined,
-  sessionId: string | undefined,
-) {
-  return {
-    hasEarlierHistory: range?.hasOlder,
-    hasLaterHistory: range?.hasNewer,
-    onLoadEarlierHistory: () => commands.current?.loadEarlier(),
-    onLoadLaterHistory: () => commands.current?.loadNewer(),
-    onLoadLatestHistory: () => commands.current?.showLatest(),
-    transcriptTurnIndex: sessionId && index?.sessionId === sessionId ? index.turns : undefined,
-    onLoadTranscriptTurn: (turn: TranscriptTurnLandmark) => commands.current?.loadEarlier(turn.sequence),
-  };
-}
-
 /** The conversation owns restoration lifetime; the shell supplies explicit ports. */
 export function TranscriptReadingPositionController(props: {
   commands: Ref<TranscriptReadingPositionCommands>;
   sessionId?: string;
   profileId?: string;
-  currentSessionId: { current: string | undefined };
+  currentSessionId: { readonly current: string | undefined };
   rangeController: { current: RangeController | undefined };
   messages: readonly StoredMessage[];
   searchTarget: Parameters<typeof restoreSessionTranscriptRange>[0]['searchTarget'];

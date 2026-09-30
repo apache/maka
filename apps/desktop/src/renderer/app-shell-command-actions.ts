@@ -204,17 +204,13 @@ export function buildAppShellCommandList(
         );
       }
     },
-    onOpenWorkspace: async () => {
-      await optionsRef.current.openWorkspaceFolder();
-    },
+    onOpenWorkspace: () => optionsRef.current.openWorkspaceFolder(),
     ...(options.clientPathsAccessible
       ? {
           onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
         }
       : {}),
-    onSelectModule: (selection) => {
-      optionsRef.current.setNavSelection(selection);
-    },
+    onSelectModule: (selection) => optionsRef.current.setNavSelection(selection),
     onExportActiveConversation: async () => {
       const { toastApi } = optionsRef.current;
       try {

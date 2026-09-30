@@ -26,6 +26,7 @@ import {
   TOOL_SEARCH_NAME,
   ToolAvailabilityRuntime,
   toolAvailabilityHash,
+  toolAvailabilityConnectorNames,
   type ToolSearchResult,
 } from '../tool-availability.js';
 import { bindToolActivationIdentity, toolActivationKey } from '../tool-activation-identity.js';
@@ -73,6 +74,17 @@ test('tool availability hash canonicalizes group members', () => {
 
 test('tool availability hash distinguishes full and search-enabled bindings', () => {
   assert.notEqual(toolAvailabilityHash(undefined), toolAvailabilityHash({}));
+});
+
+test('availability reports the synthetic connector only when Runtime generates it', () => {
+  assert.deepEqual(toolAvailabilityConnectorNames([tool('Read'), tool('docs_read')], {}), [
+    TOOL_SEARCH_NAME,
+  ]);
+  assert.deepEqual(
+    toolAvailabilityConnectorNames([tool('Read'), tool('docs_read')], undefined),
+    [],
+  );
+  assert.deepEqual(toolAvailabilityConnectorNames([tool('Read')], {}), []);
 });
 
 function runtime() {

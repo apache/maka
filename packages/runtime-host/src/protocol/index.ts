@@ -104,7 +104,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 199 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 200 as const;
+// 200: Agent Graph operator snapshots carry bounded output previews and metrics.
+// Older peers reject the additional `output` field on strict operator shapes.
 // 199: `storage.usage.query` and `storage.usage.sessions.query` report storage
 // usage. An epoch-198 Host rejects the unknown operation and drops the
 // connection, so the pair must fail admission instead.

@@ -25,7 +25,7 @@ import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, applyLiveTurnBufferEvent, reconcileLiveTurnBuffer } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { act, createElement } from 'react';
-import { LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
+import { LiveTurnReconciler } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { normalizeSessionSummaryForDisplay } from '../../renderer/application/contracts/session-status-presentation.js';
 import {

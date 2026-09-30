@@ -290,10 +290,9 @@
    The row's own box is 28px — the height of the action buttons, not of the
    12px time beside them — so it reads tighter against the bubble than its
    4px top margin suggests. Astryx's default is nudged one step to 6px to give
-   the row back some air without opening a visible gap. */
+   the row back some air without opening a visible gap. Flex direction and
+   centering are the primitive's own; what stays here is only that nudge. */
 .maka-message-meta {
-  display: inline-flex;
-  align-items: center;
   gap: var(--space-1-5);
   margin-top: var(--space-1-5);
 }
