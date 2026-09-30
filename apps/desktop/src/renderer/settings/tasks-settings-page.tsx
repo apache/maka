@@ -31,6 +31,8 @@ import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import type { SessionCatalogController } from '../application/contracts/session-catalog/session-catalog-state.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
+import { getStorageUsageCopy } from '../locales/storage-usage-copy.js';
+import { TaskStorageSize } from '../features/storage-usage/index.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
 import {
@@ -213,7 +215,7 @@ export function TasksSettingsPage(
           label={isSearching ? copy.purgeMatches(visible.length) : copy.purgeAll}
         />
       </HStack>
-      <SettingsSection>
+      <SettingsSection description={getStorageUsageCopy(locale).taskSizeNote}>
         {visible.length === 0 ? (
           <EmptyState isCompact title={copy.noMatchTitle} description={copy.noMatchBody} />
         ) : (
@@ -239,6 +241,7 @@ export function TasksSettingsPage(
                   startContent={<Archive size={ICON_SIZE.control} aria-hidden="true" />}
                   endContent={
                     <>
+                      <TaskStorageSize sessionId={session.id} />
                       <IconButton
                         variant="ghost"
                         size="sm"

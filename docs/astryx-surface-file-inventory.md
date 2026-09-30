@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 310 files — blocker 0, reimplementation 0, polish 4, aligned 306.
+**Totals:** 313 files — blocker 0, reimplementation 0, polish 4, aligned 309.
 
 ## Exclusions (explicit)
 
@@ -108,6 +108,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-settings/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-settings/ui/session-settings-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/storage-usage/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/storage-usage/ui/storage-usage-section.tsx` | other | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
+| `apps/desktop/src/renderer/features/storage-usage/ui/task-storage-size.tsx` | other | Text | aligned — uses Astryx (Text) | aligned |
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |

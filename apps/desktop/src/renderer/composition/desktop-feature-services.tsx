@@ -48,6 +48,8 @@ import { createDesktopRuntimeHostManagementServices } from '../platform/desktop/
 import { createDesktopSessionCollaborationServices } from '../platform/desktop/create-session-collaboration-services';
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
 import { SessionBundleServicesProvider } from '../features/session-bundle';
+import { StorageUsageServicesProvider } from '../features/storage-usage';
+import { createDesktopStorageUsageServices } from '../platform/desktop/create-storage-usage-services.js';
 import { createDesktopSessionBundleServices } from '../platform/desktop/create-session-bundle-services.js';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
@@ -85,6 +87,7 @@ export function createDesktopFeatureServices() {
     sessionNavigation: createDesktopSessionNavigationServices(),
     sessionBundle: createDesktopSessionBundleServices(),
     sessionSettings: createDesktopSessionSettingsServices(),
+    storageUsage: createDesktopStorageUsageServices(),
     taskEntry: createDesktopTaskEntryServices(),
     workbar: createDesktopWorkbarServices(),
   };
@@ -113,7 +116,9 @@ export function DesktopFeatureServicesProvider(props: {
                           <WorkHubServicesProvider services={props.services.workHub}>
                             <SessionBundleServicesProvider services={props.services.sessionBundle}>
                               <OverlaysServicesProvider services={props.services.overlays}>
-                                {props.children}
+                                <StorageUsageServicesProvider services={props.services.storageUsage}>
+                                  {props.children}
+                                </StorageUsageServicesProvider>
                               </OverlaysServicesProvider>
                             </SessionBundleServicesProvider>
                           </WorkHubServicesProvider>

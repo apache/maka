@@ -38,7 +38,7 @@ import {
   createAppShellSessionUiStateController,
   createInitialAppShellSessionUiState,
   type AppShellSessionUiState,
-} from '../../renderer/app-shell-session-ui-state.js';
+} from '../../renderer/features/conversation/testing.js';
 import {
   createTranscriptRestoreLifecycle,
   restoreSessionTranscriptRange,
@@ -79,7 +79,7 @@ it('reconciles late predecessor content after its durable answer is already load
       const next = reconcileLiveTurnBuffer(current.session!, durable);
       return next === current.session ? current : { ...current, session: next ?? [] };
     });
-    await act(async () => { root.render(createElement(LiveTurnReconciler, { controller, activeId: 'session', messages, reconcile })); });
+    await act(async () => { root.render(createElement(LiveTurnReconciler, { readLiveTurns: controller.reads.liveTurns, activeId: 'session', messages, reconcile })); });
     await act(async () => {
       controller.setLiveTurnBySession((current) => ({ ...current, session: applyLiveTurnBufferEvent(current.session, {
         type: 'text_delta', id: 'late-A', turnId: 'A', messageId: 'answer-A', ts: 1, text: 'Alpha',
@@ -166,7 +166,7 @@ describe('app shell session UI state controller', () => {
     controller.setExecution('session', projection);
     const state = controller.getState();
     let notifications = 0;
-    controller.subscribe(() => {
+    controller.reads.summary('session').subscribe(() => {
       notifications += 1;
     });
 
@@ -186,7 +186,8 @@ describe('app shell session UI state controller', () => {
   it('records event-stream health without notifying render subscribers', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    const state = controller.getState();
+    controller.reads.load('session').subscribe(() => {
       notifications += 1;
     });
     const snapshot = healthSnapshot('session');
@@ -194,6 +195,7 @@ describe('app shell session UI state controller', () => {
     controller.setSessionEventHealthBySession((current) => ({ ...current, session: snapshot }));
 
     assert.equal(controller.sessionEventHealthBySessionRef.current.session, snapshot);
+    assert.equal(controller.getState(), state, 'stream health must not replace observable state');
     assert.equal(notifications, 0, 'stream health has no render consumer, so it must not force one');
 
     controller.setMessageLoadErrorBySession((current) => ({ ...current, session: 'failed' }));
@@ -216,12 +218,15 @@ describe('app shell session UI state controller', () => {
   it('owns per-session transcript reading anchors without notifying render subscribers', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    const state = controller.getState();
+    controller.reads.load('drop').subscribe(() => {
       notifications += 1;
     });
 
     controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop' });
+    assert.equal(controller.getState(), state, 'setting an anchor must not replace observable state');
     controller.setTranscriptReadingAnchor('keep', { turnId: 'turn-keep' });
+    assert.equal(controller.getState(), state, 'setting another anchor must not replace observable state');
 
     assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {
       drop: { turnId: 'turn-drop' },
@@ -230,7 +235,9 @@ describe('app shell session UI state controller', () => {
     assert.equal(notifications, 0, 'reading anchors have no live render subscriber');
 
     controller.setTranscriptReadingAnchor('keep', undefined);
+    assert.equal(controller.getState(), state, 'removing an anchor must not replace observable state');
     controller.clearSessionUiState('drop');
+    assert.equal(controller.getState(), state, 'clearing a ref-only Session must not replace observable state');
 
     assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {});
     assert.equal(notifications, 0);
@@ -239,7 +246,7 @@ describe('app shell session UI state controller', () => {
   it('publishes unavailable transcript restores only until they are consumed', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    controller.reads.load('session').subscribe(() => {
       notifications += 1;
     });
 
