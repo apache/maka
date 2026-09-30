@@ -7,7 +7,6 @@
     "src/renderer/app-shell-chat-actions.ts",
     "src/renderer/app-shell-chrome-actions.tsx",
     "src/renderer/app-shell-command-actions.ts",
-    "src/renderer/app-shell-context-compaction.ts",
     "src/renderer/app-shell-copy.ts",
     "src/renderer/app-shell-detail-panel.tsx",
     "src/renderer/app-shell-e2e-fixture.ts",
@@ -316,6 +315,7 @@
     "src/renderer/features/conversation/controller/use-composer-quotes.ts",
     "src/renderer/features/conversation/controller/use-conversation-observation.ts",
     "src/renderer/features/conversation/model/composer-staging-binding.ts",
+    "src/renderer/features/conversation/model/context-compaction.ts",
     "src/renderer/features/conversation/model/conversation-workspace.ts",
     "src/renderer/features/conversation/model/session-events.ts",
     "src/renderer/features/conversation/model/session-ui-reads.ts",
@@ -405,20 +405,6 @@
         },
         "importSpecifiers": 8,
         "nonTriviaTokens": 2188
-      },
-      "src/renderer/app-shell-context-compaction.ts": {
-        "importDeclarations": 0,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-copy.js": 1
-        },
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 610
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 1,
@@ -628,14 +614,13 @@
         "nonTriviaTokens": 561
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 53,
+        "importDeclarations": 51,
         "bridgePaths": {
           "window.maka.attachments.readBytes": 1,
           "window.maka.diagnostics.copyPreviousMainProcessInterruption": 1,
           "window.maka.diagnostics.copyReport": 1,
           "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
           "window.maka.onboarding.setMilestone": 1,
-          "window.maka.sessions.compact": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
           "window.maka.settings.getClient": 1,
           "window.maka.settings.subscribeClientChanged": 1
@@ -680,7 +665,6 @@
           "./agent-graph-panel": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
-          "./app-shell-context-compaction": 1,
           "./app-shell-detail-panel": 1,
           "./app-shell-e2e-fixture": 1,
           "./app-shell-effects": 1,
@@ -722,7 +706,6 @@
           "./pending-session-view": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
-          "./session-workspace-errors": 1,
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
@@ -750,8 +733,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 80,
-        "nonTriviaTokens": 9614
+        "importSpecifiers": 76,
+        "nonTriviaTokens": 9385
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -1673,6 +1656,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./application/contracts/session-workspace-errors.js": 1,
           "./locales/shell-copy.js": 1
         }
       },
@@ -3892,7 +3876,6 @@
       "capability": "session-controls-and-turn-actions",
       "targetZone": "features/conversation",
       "legacyPaths": [
-        "src/renderer/app-shell-context-compaction.ts",
         "src/renderer/app-shell-revision-actions.ts",
         "src/renderer/app-shell-stop-action.ts",
         "src/renderer/app-shell-turn-actions.ts"

@@ -116,7 +116,6 @@ import { readNavigationState, selectNavigation } from './nav-selection';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
-import { createContextCompactionPresentation, presentContextCompactionResult } from './app-shell-context-compaction';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
@@ -140,10 +139,6 @@ import {
 } from './app-shell-revision-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
-import {
-  isSessionWorkspaceUnavailableError,
-  showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors';
 import {
   useAppShellBootstrapSubscriptions,
   useAppShellHostEffects,
@@ -300,6 +295,7 @@ function AppShellContent({
     settleInteraction,
     clearMessageLoadError,
     recordSessionChange,
+    compactSession,
     sessionCatalogController,
     commitSession,
     activeCatalogSession,
@@ -1036,20 +1032,6 @@ function AppShellContent({
 
   const hasModalOpen = overlays.selectors.anyModalOpen || sharedSessionDialog.isOpen;
   const shellObscured = hasModalOpen || settingsOpen;
-  const contextCompactionPresentation = useMemo(
-    () =>
-      createContextCompactionPresentation({
-        toastApi,
-        presentTerminal(sessionId, notice) {
-          if (notice.level === 'error') {
-            toastApi.error(notice.title, notice.description, undefined, { sessionId });
-            return;
-          }
-          toastApi[notice.level](notice.title, notice.description);
-        },
-      }),
-    [toastApi],
-  );
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
   const openSession = useMemo(
     () =>
@@ -1220,30 +1202,6 @@ function AppShellContent({
       }
     },
   });
-
-  async function compactSession(sessionId: string): Promise<boolean> {
-    try {
-      const result = await window.maka.sessions.compact(sessionId);
-      return presentContextCompactionResult(
-        contextCompactionPresentation,
-        sessionId,
-        result,
-        uiLocale,
-      );
-    } catch (error) {
-      if (activeIdRef.current !== sessionId) return false;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
-      } else {
-        showSessionError(
-          sessionId,
-          shellCopy.compactErrorTitle,
-          localizedShellErrorMessage(error, shellCopy.compactErrorFallback, uiLocale),
-        );
-      }
-      return false;
-    }
-  }
 
   // The composer's submit callback. Built by the shared factory (same one the
   // regression test drives), so there is no local submit logic here that could
@@ -1634,7 +1592,6 @@ function AppShellContent({
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
         onExecutionBoundaryChanged={reloadActiveExecutionBoundary}
-        onContextCompactionOutcome={(sessionId, turnId, outcome) => contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale)}
         showModelSetupToast={showModelSetupToast}
         onTurnCompleted={(sessionId) => { if (activeIdRef.current === sessionId) setPetCompletionNonce((current) => current + 1); }}
         searchTarget={searchScrollTarget} clearSearchTarget={() => setSearchScrollTarget(null)}

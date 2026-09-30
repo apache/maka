@@ -81,6 +81,9 @@ export function stubConversationServices(
       retractQueueEntry: async () => undefined,
       updateQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
+      compact: async () => {
+        throw new Error('Context compaction is not stubbed');
+      },
       ...sessions,
     },
   };
@@ -97,6 +100,12 @@ export { createConversationWorkspace } from './model/conversation-workspace.js';
 export { useConversationOwner } from './ui/conversation-context.js';
 
 export { createTranscriptCommands } from './model/transcript-commands.js';
+export {
+  contextCompactionNotice,
+  createContextCompactionCommands,
+  createContextCompactionPresentation,
+  presentContextCompactionResult,
+} from './model/context-compaction.js';
 export { useConversationQueue } from './ui/conversation-provider.js';
 
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';

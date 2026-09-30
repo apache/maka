@@ -17,29 +17,13 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
-import type { ToastDiagnosticTarget } from '@maka/ui';
-import { getShellCopy } from './locales/shell-copy.js';
+// Main raises this code (main/project-context-root.ts). An IPC rejection keeps
+// only the message, so the code is matched as its prefix as well.
+const SESSION_WORKSPACE_UNAVAILABLE_CODE = 'SESSION_WORKSPACE_UNAVAILABLE';
 
-export { isSessionWorkspaceUnavailableError } from './application/contracts/session-workspace-errors.js';
-
-export function showSessionWorkspaceUnavailableToast(
-  toastApi: {
-    error(
-      title: string,
-      description?: string,
-      diagnosticDetails?: string,
-      diagnosticTarget?: ToastDiagnosticTarget,
-    ): void;
-  },
-  locale: UiLocale,
-  diagnosticTarget?: ToastDiagnosticTarget,
-): void {
-  const copy = getShellCopy(locale).errors;
-  toastApi.error(
-    copy.workspaceUnavailableTitle,
-    copy.workspaceUnavailableDescription,
-    undefined,
-    diagnosticTarget,
-  );
+export function isSessionWorkspaceUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const event = error as { code?: unknown; message?: unknown };
+  return event.code === SESSION_WORKSPACE_UNAVAILABLE_CODE
+    || (typeof event.message === 'string' && event.message.includes(`${SESSION_WORKSPACE_UNAVAILABLE_CODE}:`));
 }

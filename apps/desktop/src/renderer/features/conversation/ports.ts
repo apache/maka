@@ -21,6 +21,7 @@ import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import type { DesktopSessionLocalBridge } from '../../../shared/session-local-contract.js';
 
@@ -75,6 +76,7 @@ export interface ConversationServices extends Pick<
       entryIds: readonly string[],
       expectedQueueRevision: number,
     ): Promise<void>;
+    compact(sessionId: string): Promise<ContextCompactResult>;
   };
   readonly runtimeHosts: {
     subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;

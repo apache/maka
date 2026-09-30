@@ -52,6 +52,7 @@ export function useConversationTarget() {
     markInteractionChanged: commands.markInteractionChanged,
     settleInteraction: commands.settleInteraction,
     recordSessionChange: commands.recordSessionChange,
+    compactSession: commands.compactSession,
     activeId,
     activeIdRef: workspace.publishedSession,
     bootstrapSelectionLease: workspace.bootstrapSelectionLease,

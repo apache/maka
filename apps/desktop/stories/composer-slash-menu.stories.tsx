@@ -167,6 +167,9 @@ const conversationServices: ConversationServices = {
     promoteQueueEntry: async () => undefined,
     retractQueueEntry: async () => undefined,
     reorderQueueEntries: async () => undefined,
+    compact: async () => {
+      throw new Error('Context compaction is not used in slash menu stories');
+    },
   },
   runtimeHosts: { subscribeChanges: () => () => undefined },
   skills: { listInvocable: loadProjection },
