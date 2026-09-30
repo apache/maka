@@ -27,12 +27,8 @@ export {
 export type { ArchivedTaskProjectScope } from './model/archived-task-scope.js';
 export { createSessionOpenCommand } from './controller/session-open-command.js';
 export { useSessionNavigationReads } from './controller/use-session-navigation-reads.js';
-export { deriveSessionRail } from './model/session-rail.js';
 export { sessionRailLayoutStore } from './model/session-rail-layout-store.js';
-export type {
-  SessionNavigationRowActions,
-  SessionPurgeOutcome,
-} from './controller/session-row-actions.js';
+export type { SessionNavigationRowActions } from './controller/session-row-actions.js';
 export type {
   SessionNavigationPorts,
   SessionNavigationServices,
