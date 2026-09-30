@@ -41,6 +41,7 @@ import {
   decodeConfigurationChangedFrame,
   type ConfigurationChangedFrame,
 } from './configuration-change.js';
+import { decodeArtifactChangedFrame, type ArtifactChangedFrame } from './artifact-change.js';
 import {
   decodeSessionCatalogChangedFrame,
   type SessionCatalogChangedFrame,
@@ -68,6 +69,7 @@ import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../composition-identity.js';
 
 export * from './access-authority.js';
+export * from './artifact-change.js';
 export * from './agent-graph.js';
 export * from './interaction.js';
 export * from './daily-review.js';
@@ -104,7 +106,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 200 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 202 as const;
+// 202: Host change feed includes Artifact deletion and Session purge invalidation frames;
+// the Artifact invalidation feed and guest routing require matching peers.
 // 200: Agent Graph operator snapshots carry bounded output previews and metrics.
 // Older peers reject the additional `output` field on strict operator shapes.
 // 199: `storage.usage.query` and `storage.usage.sessions.query` report storage
@@ -564,6 +568,7 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
+  | ArtifactChangedFrame
   | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame
@@ -698,6 +703,7 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'artifact.changed') return decodeArtifactChangedFrame(frame);
   if (frame.kind === 'connection.catalog.changed') {
     return decodeConnectionCatalogChangedFrame(frame);
   }

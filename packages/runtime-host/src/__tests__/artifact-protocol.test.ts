@@ -41,6 +41,65 @@ import { encodeArtifactProjection } from '../protocol/artifact.js';
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Artifact protocol', () => {
+  test('accepts closed Artifact change frames and rejects malformed invalidations', () => {
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'artifact.changed',
+        reason: 'deleted',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+      }),
+      {
+        kind: 'artifact.changed',
+        reason: 'deleted',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+      },
+    );
+    assert.deepEqual(
+      decodeHostFrame({
+        kind: 'artifact.changed',
+        reason: 'session_purged',
+        sessionId: 'session-1',
+      }),
+      {
+        kind: 'artifact.changed',
+        reason: 'session_purged',
+        sessionId: 'session-1',
+      },
+    );
+
+    for (const frame of [
+      null,
+      undefined,
+      {
+        kind: 'artifact.changed',
+        reason: 'deleted',
+        sessionId: 'session-1',
+      },
+      {
+        kind: 'artifact.changed',
+        reason: 'deleted',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+        revision: 1,
+      },
+      {
+        kind: 'artifact.changed',
+        reason: 'session_purged',
+        sessionId: 'session-1',
+        artifactId: 'artifact-1',
+      },
+      {
+        kind: 'artifact.changed',
+        reason: 'unknown',
+        sessionId: 'session-1',
+      },
+    ]) {
+      assert.throws(() => decodeHostFrame(frame), isInvalidFrame);
+    }
+  });
+
   test('accepts closed Artifact operations and rejects open shapes', () => {
     for (const input of [
       { kind: 'list_start', sessionId: 'session-1' },

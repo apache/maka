@@ -102,6 +102,7 @@ import {
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  type ArtifactChangedFrame,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
@@ -391,6 +392,11 @@ export class DesktopRuntimeHostClient {
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeArtifactChanges(listener: (frame: ArtifactChangedFrame) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeArtifactChanges(listener);
   }
 
   subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {

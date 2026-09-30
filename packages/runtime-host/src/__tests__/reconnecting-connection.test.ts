@@ -36,6 +36,7 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type ArtifactChangedFrame,
   type HostIncompatible,
   type HostStatusResult,
   type OperationInput,
@@ -125,6 +126,68 @@ test('a reconnecting Client reports the connection generation used by direct ope
   replacement.disconnect();
   await yieldToEventLoop();
   assert.equal(availability.length, 3);
+  await connection.close();
+});
+
+test('a reconnecting Client forwards Artifact invalidations only from its current connection', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => replacement.connection,
+  });
+  const changes: ArtifactChangedFrame[] = [];
+  const unsubscribe = connection.subscribeArtifactChanges((frame) => changes.push(frame));
+
+  first.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'deleted',
+    sessionId: 'session-1',
+    artifactId: 'artifact-1',
+  });
+  assert.deepEqual(changes, [
+    {
+      kind: 'artifact.changed',
+      reason: 'deleted',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+    },
+  ]);
+
+  first.disconnect();
+  await waitForCondition(() => replacement.artifactSubscribers === 1);
+  first.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'session_purged',
+    sessionId: 'stale-session',
+  });
+  replacement.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'session_purged',
+    sessionId: 'session-2',
+  });
+  assert.deepEqual(changes, [
+    {
+      kind: 'artifact.changed',
+      reason: 'deleted',
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+    },
+    {
+      kind: 'artifact.changed',
+      reason: 'session_purged',
+      sessionId: 'session-2',
+    },
+  ]);
+
+  unsubscribe();
+  replacement.emitArtifactChange({
+    kind: 'artifact.changed',
+    reason: 'deleted',
+    sessionId: 'session-2',
+    artifactId: 'artifact-2',
+  });
+  assert.equal(changes.length, 2);
   await connection.close();
 });
 
@@ -874,6 +937,7 @@ function connectionHarness(
     resolveClosed = resolve;
   });
   const operations: DirectRequestOperationKey[] = [];
+  const artifactListeners = new Set<(frame: ArtifactChangedFrame) => void>();
   let openedSubscriptions = 0;
   const connection = {
     rootId: 'root-id',
@@ -893,6 +957,10 @@ function connectionHarness(
       return openSubscription();
     },
     subscribeConfigurationChanges: () => () => {},
+    subscribeArtifactChanges: (listener: (frame: ArtifactChangedFrame) => void) => {
+      artifactListeners.add(listener);
+      return () => artifactListeners.delete(listener);
+    },
     subscribeConnectionCatalogChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},
@@ -903,6 +971,12 @@ function connectionHarness(
     connection,
     operations,
     disconnect: resolveClosed,
+    emitArtifactChange: (frame: ArtifactChangedFrame) => {
+      for (const listener of artifactListeners) listener(frame);
+    },
+    get artifactSubscribers() {
+      return artifactListeners.size;
+    },
     get openedSubscriptions() {
       return openedSubscriptions;
     },

@@ -126,6 +126,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
   readonly contextOffload?: Pick<InteractiveContextOffloadWriter, 'retireSession'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
+  readonly onArtifactsPurged?: (sessionId: string) => void;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
   readonly requestDrain: () => void;
@@ -198,6 +199,7 @@ export class HostSessionRetirementCoordinator {
   readonly #sessionTodo: HostSessionRetirementCoordinatorOptions['sessionTodo'];
   readonly #contextOffload: HostSessionRetirementCoordinatorOptions['contextOffload'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
+  readonly #onArtifactsPurged: HostSessionRetirementCoordinatorOptions['onArtifactsPurged'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
   readonly #requestDrain: () => void;
@@ -226,6 +228,7 @@ export class HostSessionRetirementCoordinator {
     this.#sessionTodo = options.sessionTodo;
     this.#contextOffload = options.contextOffload;
     this.#purgeOperationalState = options.purgeOperationalState;
+    this.#onArtifactsPurged = options.onArtifactsPurged;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
     this.#requestDrain = options.requestDrain;
@@ -733,6 +736,7 @@ export class HostSessionRetirementCoordinator {
           sessionTodo: this.#sessionTodo,
           ...(this.#contextOffload ? { contextOffload: this.#contextOffload } : {}),
           purgeOperationalState: this.#purgeOperationalState,
+          ...(this.#onArtifactsPurged ? { onArtifactsPurged: this.#onArtifactsPurged } : {}),
         },
         sessionId,
       ),

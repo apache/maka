@@ -124,6 +124,21 @@ test('does not release renderer IPC before persistent handlers are registered', 
   assert.doesNotMatch(readyBody, /runtimeHostManager\?\.start\(\)/u);
 });
 
+test('wires Artifact deletion and purge events to preview invalidation for the active scope', () => {
+  const subscribe = bootSource.indexOf('client.subscribeArtifactChanges(');
+  const unsubscribe = bootSource.indexOf('unsubscribeArtifactChanges();', subscribe);
+  assert.ok(subscribe >= 0 && unsubscribe > subscribe);
+  const handler = bootSource.slice(subscribe, unsubscribe);
+  assert.match(handler, /managedArtifactPreview\.revoke\(scope\.targetEpoch,\s*frame\.sessionId,\s*frame\.artifactId\)/u);
+  assert.match(handler, /managedArtifactPreview\.releaseSession\(scope\.targetEpoch,\s*frame\.sessionId\)/u);
+  assert.match(bootSource, /managedArtifactPreview\.openScope\(scope\.targetEpoch\)/u);
+  assert.match(bootSource, /await managedArtifactPreview\.closeScope\(scope\.targetEpoch\)/u);
+  assert.ok(
+    bootSource.indexOf('await managedArtifactPreview.closeScope(scope.targetEpoch)') <
+      bootSource.indexOf('unsubscribeArtifactChanges();'),
+  );
+});
+
 test('resolves persisted locale before first post-settings recovery prompt', () => {
   const rendererRecoveryStart = earlyWindowSource.indexOf('onRendererProcessGone: async');
   const rendererRecovery = earlyWindowSource.slice(
