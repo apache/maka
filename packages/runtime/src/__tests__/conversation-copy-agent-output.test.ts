@@ -45,7 +45,10 @@ import {
   type ConversationCopyMessageReferenceMap,
 } from '../conversation-copy.js';
 import { testInvocationRecord } from './invocation-fixture.js';
-import { isConversationCopyAgentOutputSnapshot } from '../conversation-copy-agent-output.js';
+import {
+  conversationCopyAgentOutput,
+  isConversationCopyAgentOutputSnapshot,
+} from '../conversation-copy-agent-output.js';
 import {
   buildArchivedToolResultPlaceholder,
   isArchivedToolResultPlaceholder,
@@ -215,8 +218,8 @@ for (const view of ['events', 'runtime_events', 'all'] as const) {
   test(`agent_output ${view} collects bounded diagnostic Artifacts and snapshots its text`, () => {
     const raw = diagnosticOutput(view);
     for (const input of [
-      { messages: [message(output()), message(raw)], runtimeEvents: [] },
-      { messages: [message(output())], runtimeEvents: [outputEvent(raw)] },
+      { messages: [toolCall(), message(output()), message(raw)], runtimeEvents: [] },
+      { messages: [toolCall(), message(output())], runtimeEvents: [outputEvent(raw)] },
     ]) {
       const refs = collectConversationCopyLinkedChildReferences(input);
       assert.equal(refs.length, 2);
@@ -267,7 +270,7 @@ for (const view of ['events', 'runtime_events', 'all'] as const) {
     ]) {
       assert.deepEqual(
         collectConversationCopyLinkedChildReferences({
-          messages: [message(invalid)],
+          messages: [toolCall(), message(invalid)],
           runtimeEvents: [],
         }),
         [],
@@ -328,14 +331,22 @@ function message(value: unknown = output()): Extract<StoredMessage, { type: 'too
   };
 }
 
-function outputEvent(result: unknown): RuntimeEvent {
-  return { content: { kind: 'function_response', name: 'agent_output', result } } as RuntimeEvent;
+function toolCall(toolName = 'agent_output'): Extract<StoredMessage, { type: 'tool_call' }> {
+  return { type: 'tool_call', id: 'output-call', turnId: 'parent-turn', ts: 2, toolName, args: {} };
+}
+
+function outputEvent(result: unknown, name = 'agent_output'): RuntimeEvent {
+  return {
+    turnId: 'parent-turn',
+    content: { kind: 'function_response', id: 'output-call', name, result },
+  } as RuntimeEvent;
 }
 
 function references(): ConversationCopyMessageReferenceMap {
   return {
     sourceSessionId: 'parent',
     targetSessionId: 'revision',
+    toolNamesByCall: new Map([[JSON.stringify(['parent-turn', 'output-call']), 'agent_output']]),
     artifactIds: new Map(),
     relativePaths: new Map(),
     runIds: new Map(),
@@ -346,6 +357,81 @@ function references(): ConversationCopyMessageReferenceMap {
     ]),
   };
 }
+
+test('only agent_output calls collect or rewrite JSON child claims and snapshots', () => {
+  for (const value of [output(), conversationCopyAgentOutput(output())!.snapshot]) {
+    const result = message(value);
+    for (const toolName of ['mcp__external__lookup', 'provider_lookup']) {
+      for (const input of [
+        { messages: [toolCall(toolName), result], runtimeEvents: [] },
+        { messages: [result], runtimeEvents: [outputEvent(result.content, toolName)] },
+        { messages: [], runtimeEvents: [outputEvent(value, toolName)] },
+        { messages: [result], runtimeEvents: [] },
+        {
+          messages: [{ ...toolCall(), turnId: 'another-turn' }, result],
+          runtimeEvents: [],
+        },
+        {
+          messages: [toolCall(toolName), result],
+          runtimeEvents: [outputEvent(result.content)],
+        },
+      ]) {
+        assert.deepEqual(collectConversationCopyLinkedChildReferences(input), []);
+        assert.deepEqual(
+          [...collectConversationCopySessionFileRefs({ sourceSessionId: 'parent', ...input })],
+          [],
+        );
+      }
+      for (const toolNamesByCall of [
+        undefined,
+        new Map([[JSON.stringify(['parent-turn', 'output-call']), toolName]]),
+      ]) {
+        assert.deepEqual(
+          rewriteConversationCopyMessage(result, {
+            ...references(),
+            toolNamesByCall,
+            sharedChildren: new Map(),
+            artifactIds: new Map([['child-artifact', 'must-not-rewrite']]),
+          }),
+          result,
+        );
+      }
+    }
+  }
+});
+
+for (const field of ['sessionId', 'runId', 'turnId', 'invocationId'] as const) {
+  test(`agent_output rejects an independently mismatched terminal ${field}`, () => {
+    const value = output();
+    value.invocation.terminalEvent![field] = 'unrelated';
+    assert.equal(conversationCopyAgentOutput(value), undefined);
+  });
+}
+
+test('agent_output rejects an invocation session mismatch independently of terminal identity', () => {
+  const value = output();
+  value.invocation.sessionId = 'unrelated';
+  assert.equal(conversationCopyAgentOutput(value), undefined);
+});
+
+test('agent_output rejects a partial terminal event with matching identities', () => {
+  const value = output();
+  value.invocation.terminalEvent!.partial = true;
+  assert.equal(conversationCopyAgentOutput(value), undefined);
+});
+
+for (const field of ['sessionId', 'runId', 'turnId'] as const) {
+  test(`agent_output rejects a diagnostic event from another ${field}`, () => {
+    const value = diagnosticOutput('events');
+    value.events[0]![field] = 'unrelated';
+    assert.equal(conversationCopyAgentOutput(value), undefined);
+  });
+}
+
+test('agent_output result view rejects otherwise valid diagnostics', () => {
+  const value = { ...output(), diagnostics: diagnosticOutput('events').diagnostics };
+  assert.equal(conversationCopyAgentOutput(value), undefined);
+});
 
 test('revision collects historical JSON agent_output references from messages and retained ledger events', () => {
   const msg = message();
@@ -367,7 +453,7 @@ test('revision collects historical JSON agent_output references from messages an
     },
   };
   for (const input of [
-    { messages: [msg], runtimeEvents: [] },
+    { messages: [toolCall(), msg], runtimeEvents: [] },
     { messages: [], runtimeEvents: [event] },
     { messages: [], runtimeEvents: [outputEvent(msg.content)] },
     { messages: [], runtimeEvents: [outputEvent(output())] },
@@ -423,7 +509,7 @@ test('agent_output JSON recognition rejects malformed identities and unrelated J
     mutate(value);
     assert.deepEqual(
       collectConversationCopyLinkedChildReferences({
-        messages: [message(value)],
+        messages: [toolCall(), message(value)],
         runtimeEvents: [],
       }),
       [],
@@ -531,10 +617,16 @@ test('agent_output snapshots remain copyable through messages and retained ledge
   const value = first.content.value;
   assert.ok(isConversationCopyAgentOutputSnapshot(value));
   const event = {
-    content: { kind: 'function_response', name: 'agent_output', result: first.content },
+    turnId: 'parent-turn',
+    content: {
+      kind: 'function_response',
+      id: 'output-call',
+      name: 'agent_output',
+      result: first.content,
+    },
   } as RuntimeEvent;
   for (const input of [
-    { messages: [first], runtimeEvents: [] },
+    { messages: [toolCall(), first], runtimeEvents: [] },
     { messages: [], runtimeEvents: [event] },
     { messages: [], runtimeEvents: [outputEvent(first.content)] },
     { messages: [], runtimeEvents: [outputEvent(value)] },
@@ -568,7 +660,7 @@ test('agent_output snapshots remain copyable through messages and retained ledge
   assert.deepEqual(reclaimed.content, { kind: 'json', value: { ...value, artifactIds: [] } });
 });
 
-for (const { view, archiveDepth } of [
+for (const { view, archiveDepth, toolName = 'agent_output' } of [
   { view: 'result', archiveDepth: 0 },
   { view: 'result', archiveDepth: 1 },
   { view: 'result', archiveDepth: 2 },
@@ -577,8 +669,10 @@ for (const { view, archiveDepth } of [
   { view: 'runtime_events', archiveDepth: 0 },
   { view: 'all', archiveDepth: 0 },
   { view: 'all', archiveDepth: 1 },
+  { view: 'result', archiveDepth: 0, toolName: 'mcp__external__lookup' },
+  { view: 'result', archiveDepth: 2, toolName: 'mcp__external__lookup' },
 ] as const) {
-  test(`successive copies retain ${view} snapshots with ${archiveDepth} legacy archives`, async () => {
+  test(`successive copies retain ${toolName} ${view} results with ${archiveDepth} legacy archives`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-output-snapshot-copy-'));
     const owner = await tryAcquireInteractiveRootOwner(
       await resolveStorageRoot({ path: root, kind: 'interactive' }),
@@ -628,7 +722,7 @@ for (const { view, archiveDepth } of [
           partial: false,
           role: 'model',
           author: 'agent',
-          content: { kind: 'function_call', id: 'output-call', name: 'agent_output', args: {} },
+          content: { kind: 'function_call', id: 'output-call', name: toolName, args: {} },
         },
         {
           id: 'output-event',
@@ -643,7 +737,7 @@ for (const { view, archiveDepth } of [
           content: {
             kind: 'function_response',
             id: 'output-call',
-            name: 'agent_output',
+            name: toolName,
             result: message(raw).content,
             modelProjection: { version: 1, kind: 'json', value: JSON.parse(JSON.stringify(raw)) },
           },
@@ -676,7 +770,7 @@ for (const { view, archiveDepth } of [
           artifactId,
           runtimeEventId: 'output-event',
           toolCallId: 'output-call',
-          toolName: 'agent_output',
+          toolName,
           bodySha256: createHash('sha256').update(serialized).digest('hex'),
           originalEstimatedTokens: 1000,
           originalBytes: Buffer.byteLength(serialized),
@@ -690,7 +784,7 @@ for (const { view, archiveDepth } of [
             runtimeEventId: 'output-event',
             part: 'tool_result',
             toolCallId: 'output-call',
-            toolName: 'agent_output',
+            toolName,
           },
           sourceProjection: projection,
           replacement: archivedToolResultProjection(placeholder),
@@ -783,7 +877,7 @@ for (const { view, archiveDepth } of [
           ...(sourceSessionId === 'parent'
             ? {
                 linkedArtifacts: collectConversationCopyLinkedChildReferences({
-                  messages: [message(raw)],
+                  messages: [toolCall(toolName), message(raw)],
                   runtimeEvents: [],
                 }).map((reference) => ({
                   sessionId: reference.childSessionId,
@@ -813,8 +907,7 @@ for (const { view, archiveDepth } of [
           )
         ).flat();
         const responseEvent = copiedEvents.find(
-          (event) =>
-            event.content?.kind === 'function_response' && event.content.name === 'agent_output',
+          (event) => event.content?.kind === 'function_response' && event.content.name === toolName,
         )!;
         const response = responseEvent.content;
         assert.ok(response?.kind === 'function_response');
@@ -824,35 +917,40 @@ for (const { view, archiveDepth } of [
             typeof snapshot === 'object' &&
             'kind' in snapshot &&
             snapshot.kind === 'json' &&
-            'value' in snapshot &&
-            isConversationCopyAgentOutputSnapshot(snapshot.value),
+            'value' in snapshot,
         );
-        const expectedArtifacts =
-          view === 'result' ? ['child-artifact'] : ['child-artifact', 'diagnostic-artifact'];
-        assert.equal(snapshot.value.artifactIds.length, expectedArtifacts.length);
-        for (const [index, artifactId] of snapshot.value.artifactIds.entries()) {
-          assert.ok(!previousArtifactIds.includes(artifactId));
-          const read = await artifacts.readTextInSession(targetSessionId, artifactId);
-          assert.ok(read.ok);
-          assert.equal(read.text, `${expectedArtifacts[index]} bytes`);
-        }
-        const attachmentLinks = snapshot.value.text?.match(
-          /maka:\/\/runtime\/attachments\/[A-Za-z0-9_-]+/g,
-        );
-        assert.ok(attachmentLinks?.length, 'Retain the attachment links in the snapshot text');
-        for (const link of attachmentLinks) {
-          const ref = parseAttachmentResourceRef(link);
-          assert.ok(ref);
-          const read = await artifacts.readTextInSession(targetSessionId, ref.artifactId);
-          assert.ok(read.ok, `Copied link must resolve in ${targetSessionId}: ${link}`);
-          assert.equal(read.text, 'child-artifact bytes');
-        }
-        if (view === 'runtime_events' || view === 'all') {
-          assert.match(snapshot.value.text!, /Expected 12, received 34\./);
-          assert.match(snapshot.value.text!, /npm test/);
-          assert.match(snapshot.value.text!, /Assertion failed/);
-          assert.ok(!snapshot.value.text!.includes('child-read-call'));
-          assert.ok(!snapshot.value.text!.includes('provider-only-output'));
+        if (toolName === 'agent_output') {
+          assert.ok(isConversationCopyAgentOutputSnapshot(snapshot.value));
+          const expectedArtifacts =
+            view === 'result' ? ['child-artifact'] : ['child-artifact', 'diagnostic-artifact'];
+          assert.equal(snapshot.value.artifactIds.length, expectedArtifacts.length);
+          for (const [index, artifactId] of snapshot.value.artifactIds.entries()) {
+            assert.ok(!previousArtifactIds.includes(artifactId));
+            const read = await artifacts.readTextInSession(targetSessionId, artifactId);
+            assert.ok(read.ok);
+            assert.equal(read.text, `${expectedArtifacts[index]} bytes`);
+          }
+          const attachmentLinks = snapshot.value.text?.match(
+            /maka:\/\/runtime\/attachments\/[A-Za-z0-9_-]+/g,
+          );
+          assert.ok(attachmentLinks?.length, 'Retain the attachment links in the snapshot text');
+          for (const link of attachmentLinks) {
+            const ref = parseAttachmentResourceRef(link);
+            assert.ok(ref);
+            const read = await artifacts.readTextInSession(targetSessionId, ref.artifactId);
+            assert.ok(read.ok, `Copied link must resolve in ${targetSessionId}: ${link}`);
+            assert.equal(read.text, 'child-artifact bytes');
+          }
+          if (view === 'runtime_events' || view === 'all') {
+            assert.match(snapshot.value.text!, /Expected 12, received 34\./);
+            assert.match(snapshot.value.text!, /npm test/);
+            assert.match(snapshot.value.text!, /Assertion failed/);
+            assert.ok(!snapshot.value.text!.includes('child-read-call'));
+            assert.ok(!snapshot.value.text!.includes('provider-only-output'));
+          }
+          previousArtifactIds = [...snapshot.value.artifactIds];
+        } else {
+          assert.deepEqual(snapshot, message(raw).content);
         }
         assert.deepEqual(response.modelProjection, {
           version: 1,
@@ -899,8 +997,12 @@ for (const { view, archiveDepth } of [
             archived.serializedResult,
             serializeToolResultProjectionV1(expectedProjection),
           );
-          assert.ok(!archived.serializedResult.includes('child-run'));
-          assert.ok(!JSON.stringify(placeholder.page).includes('child-run'));
+          if (toolName === 'agent_output') {
+            assert.ok(!archived.serializedResult.includes('child-run'));
+            assert.ok(!JSON.stringify(placeholder.page).includes('child-run'));
+          } else {
+            assert.ok(archived.serializedResult.includes('child-run'));
+          }
           const read = async (input: ReadInput) =>
             readPageSchema.parse(
               await readToolResultArchiveResource(
@@ -961,7 +1063,6 @@ for (const { view, archiveDepth } of [
             snapshot,
           );
         }
-        previousArtifactIds = [...snapshot.value.artifactIds];
         messages = copied.copiedMessages;
         sourceSessionId = targetSessionId;
       }

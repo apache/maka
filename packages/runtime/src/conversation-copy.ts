@@ -138,6 +138,8 @@ export interface ConversationCopyArtifactReferenceMap {
 }
 
 export type ConversationCopyMessageReferenceMap = ConversationCopyArtifactReferenceMap & {
+  /** Tool names keyed by [turnId, toolCallId]; missing/conflicting provenance stays opaque. */
+  readonly toolNamesByCall?: ReadonlyMap<string, string | undefined>;
   readonly ledgerArchives?: Map<string, LedgerArchivedToolResultPlaceholder>;
   readonly runIds: ReadonlyMap<string, string>;
   readonly runtimeEventIds: ReadonlyMap<string, string>;
@@ -301,7 +303,13 @@ export function rewriteConversationCopyMessage(
   if (message.type === 'tool_result') {
     return {
       ...message,
-      content: rewriteToolResultContent(message.content, references),
+      content: rewriteToolResultContent(
+        message.content,
+        references,
+        references.toolNamesByCall?.get(
+          conversationCopyToolCallKey(message.turnId, message.toolUseId),
+        ),
+      ),
     };
   }
   if (message.type === 'token_usage' && message.providerRequestTraceId) {
@@ -560,6 +568,10 @@ export async function cloneConversationRuntimeLedger(
   const operationIds = toolOperationIdMap(flattenedPlans, targetInvocationIds);
   const references: ConversationCopyReferenceMap = {
     ...input.referenceMap,
+    toolNamesByCall: conversationCopyToolNames({
+      messages: input.copiedMessages,
+      runtimeEvents: flattenedPlans.flatMap((plan) => plan.events),
+    }),
     runIds,
     invocationIds,
     operationIds,
@@ -1030,16 +1042,21 @@ async function loadConversationCopyRunEvents(
 
 // Legacy archive bodies and provider projections can store the raw result;
 // RuntimeEvents and transcript messages normally carry the JSON wrapper.
-function decodeConversationCopyToolResult(value: unknown): ToolResultContent {
-  if (conversationCopyAgentOutput(value) || isConversationCopyAgentOutputSnapshot(value))
+function decodeConversationCopyToolResult(value: unknown, toolName?: string): ToolResultContent {
+  if (
+    toolName === 'agent_output' &&
+    (conversationCopyAgentOutput(value) || isConversationCopyAgentOutputSnapshot(value))
+  )
     return { kind: 'json', value };
   return decodePersistedToolResultContent(markPersisted<ToolResultContent>(value));
 }
 
 export function conversationCopyLinkedChildReferences(
   content: ToolResultContent,
+  toolName?: string,
 ): readonly ConversationCopyLinkedChildReference[] {
   if (content.kind === 'json') {
+    if (toolName !== 'agent_output') return [];
     const output = conversationCopyAgentOutput(content.value);
     return output ? [output.reference] : [];
   }
@@ -1078,28 +1095,63 @@ export function collectConversationCopyLinkedChildReferences(input: {
   readonly messages: readonly StoredMessage[];
   readonly runtimeEvents: readonly RuntimeEvent[];
 }): readonly ConversationCopyLinkedChildReference[] {
-  return conversationCopyToolResults(input).flatMap(conversationCopyLinkedChildReferences);
+  return conversationCopyToolResults(input).flatMap(({ content, toolName }) =>
+    conversationCopyLinkedChildReferences(content, toolName),
+  );
+}
+
+/** Pair transcript results with call metadata, including historical ledger-only calls. */
+function conversationCopyToolNames(
+  input: ConversationCopyStorageReferenceInput,
+): ReadonlyMap<string, string | undefined> {
+  const names = new Map<string, string | undefined>();
+  const add = (turnId: string, callId: string, name: string): void => {
+    const key = conversationCopyToolCallKey(turnId, callId);
+    names.set(key, names.has(key) && names.get(key) !== name ? undefined : name);
+  };
+  for (const message of input.messages) {
+    if (message.type === 'tool_call') add(message.turnId, message.id, message.toolName);
+  }
+  for (const event of input.runtimeEvents) {
+    if (event.content?.kind === 'function_call' || event.content?.kind === 'function_response') {
+      add(event.turnId, event.content.id, event.content.name);
+    }
+  }
+  return names;
+}
+
+function conversationCopyToolCallKey(turnId: string, callId: string): string {
+  return JSON.stringify([turnId, callId]);
 }
 
 function conversationCopyToolResults(
   input: ConversationCopyStorageReferenceInput,
-): readonly ToolResultContent[] {
-  const results: ToolResultContent[] = [];
-  const add = (value: unknown): void => {
+): readonly { content: ToolResultContent; toolName: string | undefined }[] {
+  const results: { content: ToolResultContent; toolName: string | undefined }[] = [];
+  const toolNames = conversationCopyToolNames(input);
+  const add = (value: unknown, toolName: string | undefined): void => {
     if (isArchivedToolResultPlaceholder(value)) return;
     try {
-      results.push(decodeConversationCopyToolResult(value));
+      results.push({ content: decodeConversationCopyToolResult(value, toolName), toolName });
     } catch {
       // Opaque tool results have no typed conversation-copy references.
     }
   };
   for (const message of input.messages) {
     if (message.type === 'tool_result') {
-      results.push(message.content);
+      results.push({
+        content: message.content,
+        toolName: toolNames.get(conversationCopyToolCallKey(message.turnId, message.toolUseId)),
+      });
     }
   }
   for (const event of input.runtimeEvents) {
-    if (event.content?.kind === 'function_response') add(event.content.result);
+    if (event.content?.kind === 'function_response') {
+      add(
+        event.content.result,
+        toolNames.get(conversationCopyToolCallKey(event.turnId, event.content.id)),
+      );
+    }
   }
   return results;
 }
@@ -1127,8 +1179,12 @@ export function collectConversationCopySessionFileRefs(input: {
       refs.add(ref.relativePath);
     }
   }
-  for (const content of conversationCopyToolResults(input)) {
-    if (content.kind === 'json' && isConversationCopyAgentOutputSnapshot(content.value)) {
+  for (const { content, toolName } of conversationCopyToolResults(input)) {
+    if (
+      toolName === 'agent_output' &&
+      content.kind === 'json' &&
+      isConversationCopyAgentOutputSnapshot(content.value)
+    ) {
       for (const artifactId of content.value.artifactIds) refs.add(artifactId);
     }
   }
@@ -1649,6 +1705,10 @@ function rewriteRuntimeEventReferences(
   event: RuntimeEvent,
   references: ConversationCopyReferenceMap,
 ): RuntimeEvent {
+  const toolName =
+    event.content?.kind === 'function_response'
+      ? references.toolNamesByCall?.get(conversationCopyToolCallKey(event.turnId, event.content.id))
+      : undefined;
   const content =
     event.content?.kind === 'text'
       ? {
@@ -1666,12 +1726,13 @@ function rewriteRuntimeEventReferences(
       : event.content?.kind === 'function_response'
         ? {
             ...event.content,
-            result: rewriteRuntimeToolResult(event.content.result, references),
+            result: rewriteRuntimeToolResult(event.content.result, references, toolName),
             ...(event.content.modelProjection
               ? {
                   modelProjection: rewriteConversationCopyModelProjection(
                     event.content.modelProjection,
                     references,
+                    toolName,
                   ),
                 }
               : {}),
@@ -1806,8 +1867,9 @@ function rewriteToolRecoveryFact(
 function rewriteToolResultContent(
   content: ToolResultContent,
   references: ConversationCopyMessageReferenceMap,
+  toolName?: string,
 ): ToolResultContent {
-  if (content.kind === 'json') {
+  if (toolName === 'agent_output' && content.kind === 'json') {
     if (isConversationCopyAgentOutputSnapshot(content.value)) {
       return rewriteAgentOutputSnapshot(content.value, references);
     }
@@ -1928,13 +1990,19 @@ function rewriteAgentOutputSnapshot(
 function rewriteConversationCopyModelProjection(
   projection: DurableToolResultProjection,
   references: ConversationCopyMessageReferenceMap,
+  toolName?: string,
 ): DurableToolResultProjection {
   if (
+    toolName === 'agent_output' &&
     projection.kind === 'json' &&
     (conversationCopyAgentOutput(projection.value) ||
       isConversationCopyAgentOutputSnapshot(projection.value))
   ) {
-    const content = rewriteToolResultContent({ kind: 'json', value: projection.value }, references);
+    const content = rewriteToolResultContent(
+      { kind: 'json', value: projection.value },
+      references,
+      toolName,
+    );
     if (content.kind === 'json')
       return { ...projection, value: content.value as typeof projection.value };
   }
@@ -1946,15 +2014,16 @@ function rewriteConversationCopyModelProjection(
 function rewriteRuntimeToolResult(
   value: unknown,
   references: ConversationCopyMessageReferenceMap,
+  toolName?: string,
 ): unknown {
   if (isArchivedToolResultPlaceholder(value)) return rewriteArchivedToolResult(value, references);
   let content: ToolResultContent;
   try {
-    content = decodeConversationCopyToolResult(value);
+    content = decodeConversationCopyToolResult(value, toolName);
   } catch {
     return value;
   }
-  const rewritten = rewriteToolResultContent(content, references);
+  const rewritten = rewriteToolResultContent(content, references, toolName);
   return (conversationCopyAgentOutput(value) || isConversationCopyAgentOutputSnapshot(value)) &&
     rewritten.kind === 'json'
     ? rewritten.value

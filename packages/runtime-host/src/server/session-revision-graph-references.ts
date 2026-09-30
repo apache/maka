@@ -159,8 +159,6 @@ export async function prepareLinkedChildCopyReferences(
         (request.graph.graphId !== parent.graph?.graphId ||
           request.graph.workId !== parent.graph?.workId ||
           request.graph.operatorId !== parent.graph?.operatorId)) ||
-      (parent.graph !== undefined &&
-        !referencedGraphs.get(parent.parentSessionId)?.has(parent.graph.graphId)) ||
       !retainedTurnIds.has(parent.spawnedBy.parentTurnId)
     ) {
       return failure(

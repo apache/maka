@@ -118,6 +118,25 @@ test('revision validates historical JSON agent_output against the retained child
   }
 });
 
+test('external tool JSON cannot invent a linked child and deny conversation copies', async () => {
+  const value = agentOutputValue();
+  const message: StoredMessage = { ...linkedResult(), content: { kind: 'json', value } };
+  for (const kind of ['revision', 'branch', 'side_conversation'] as const) {
+    const input = {
+      kind,
+      sessionHeaders: [sessionHeader(ROOT_SESSION_ID)],
+      messages: [message],
+    };
+    const genuine = await prepare(input);
+    assert.equal(genuine.ok, false);
+    if (!genuine.ok) assert.equal(genuine.code, 'operation_unavailable');
+    const external = await prepare({ ...input, toolName: 'mcp__external__lookup' });
+    assert.ok(external.ok);
+    assert.equal(external.shared.size, 0);
+    assert.equal(external.snapshots.size, 0);
+  }
+});
+
 test('mixed agent_output views validate and retain diagnostic-only Artifacts', async () => {
   const result = agentOutputValue();
   const { result: _result, ...envelope } = result;
@@ -527,10 +546,14 @@ test('Agent Graph revision admission includes only retained direct and reference
 });
 
 function outputEvent(result: unknown): RuntimeEvent {
-  return { content: { kind: 'function_response', name: 'agent_output', result } } as RuntimeEvent;
+  return {
+    turnId: ROOT_TURN_ID,
+    content: { kind: 'function_response', id: 'graph-call', name: 'agent_output', result },
+  } as RuntimeEvent;
 }
 
 interface PrepareOverrides {
+  readonly toolName?: string;
   readonly kind?: 'branch' | 'revision' | 'side_conversation';
   readonly messages?: readonly StoredMessage[];
   readonly runtimeEvents?: readonly RuntimeEvent[];
@@ -555,7 +578,17 @@ async function prepare(overrides: PrepareOverrides = {}) {
       sessionHeaders: overrides.sessionHeaders ?? [sourceHeader, childHeader()],
       copyTurnIds: [ROOT_TURN_ID],
       requests: collectConversationCopyLinkedChildReferences({
-        messages,
+        messages: [
+          {
+            type: 'tool_call',
+            id: 'graph-call',
+            turnId: ROOT_TURN_ID,
+            ts: 1,
+            toolName: overrides.toolName ?? 'agent_output',
+            args: {},
+          },
+          ...messages,
+        ],
         runtimeEvents: overrides.runtimeEvents ?? [],
       }),
     },
