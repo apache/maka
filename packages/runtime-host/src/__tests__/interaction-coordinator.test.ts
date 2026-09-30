@@ -206,6 +206,114 @@ describe('HostInteractionCoordinator', () => {
     );
   });
 
+  for (const source of ['interactions', 'sandboxBoundaries'] as const) {
+    test(`failed ${source} activity reads do not gate canonical answer publication or application`, async () => {
+      await withStore(async ({ store }) => {
+        const failure = new Error(`Injected ${source} activity read failure`);
+        let failRead = false;
+        const errors: unknown[] = [];
+        const calls: string[] = [];
+        const activity = new SessionInteractionActivityProjection({
+          interactions: {
+            listSessionPending: async (sessionId) => {
+              if (failRead && source === 'interactions') throw failure;
+              return store.listSessionPending(sessionId);
+            },
+          },
+          sandboxBoundaries: {
+            listPendingSandboxBoundaryRequests: async () => {
+              if (failRead && source === 'sandboxBoundaries') throw failure;
+              return [];
+            },
+          },
+          onChanged: () => calls.push('activity'),
+          onError: (_sessionId, error) => errors.push(error),
+        });
+        const admission = new SessionAdmissionGate();
+        const coordinator = createCoordinator(store, {
+          sessionAdmission: admission,
+          refreshCanonicalContinuity: async (sessionId) => {
+            await activity.refresh(sessionId);
+            calls.push('canonical');
+            admission.detach(() => calls.push('workhub'));
+          },
+        });
+        const owner = coordinator.bindRun(RUN);
+        try {
+          await owner.acceptFormRequest!({
+            request: formEvent('projection-failure', 10),
+            continuation: formContinuation('projection-failure', {
+              answer: () => calls.push('applied'),
+            }),
+          });
+          assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), 1);
+          calls.length = 0;
+          failRead = true;
+          const answered = await coordinator.handlers['interaction.answer'](
+            {
+              sessionId: RUN.sessionId,
+              interactionId: 'projection-failure',
+              answer: { kind: 'form', action: 'accept', values: { replicas: 2 } },
+            },
+            connection(),
+          );
+          assert.equal(answered.ok, true);
+          assert.equal(
+            (await store.readInteraction('projection-failure'))?.outcome?.outcome.kind,
+            'form_answer',
+          );
+          assert.deepEqual(calls, ['activity', 'canonical', 'workhub', 'applied']);
+          assert.deepEqual(errors, [failure]);
+          assert.equal(
+            activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId),
+            undefined,
+            'A failed projection must become unknown, not keep stale waiting counts',
+          );
+          calls.length = 0;
+          await activity.refresh(RUN.sessionId);
+          assert.deepEqual(
+            calls,
+            [],
+            'Repeated failures must not repeatedly invalidate the catalog',
+          );
+          assert.deepEqual(errors, [failure, failure]);
+          failRead = false;
+          await activity.refresh(RUN.sessionId);
+          assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), 0);
+          assert.deepEqual(calls, ['activity']);
+        } finally {
+          failRead = false;
+          await owner.close('turn_terminal');
+          owner.release();
+          await coordinator.close();
+        }
+      });
+    });
+  }
+
+  test('activity observers and diagnostics cannot gate canonical work', async () => {
+    const failure = new Error('Injected activity observer failure');
+    const errors: unknown[] = [];
+    let failObserver = true;
+    const activity = new SessionInteractionActivityProjection({
+      interactions: { listSessionPending: async () => [] },
+      sandboxBoundaries: { listPendingSandboxBoundaryRequests: async () => [] },
+      onChanged: () => {
+        if (failObserver) throw failure;
+      },
+      onError: (_sessionId, error) => {
+        errors.push(error);
+        throw new Error('Injected diagnostic failure');
+      },
+    });
+    await activity.refresh(RUN.sessionId);
+    assert.deepEqual(errors, [failure]);
+    assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), undefined);
+    failObserver = false;
+    await activity.refresh(RUN.sessionId);
+    assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), 0);
+  });
+
   test('Host-owned forms reuse durable answers and concurrent requests without rebinding the Run', async () => {
     await withStore(async ({ store }) => {
       const published = deferred();
@@ -1701,10 +1809,12 @@ async function withGraphInteractionActivity(
       },
     });
     let graph!: AgentGraphCoordinator;
+    const activityErrors: unknown[] = [];
     const activity = new SessionInteractionActivityProjection({
       interactions: store,
       sandboxBoundaries: stores.sessionStore,
       onChanged: (sessionId) => graph.refreshSessionInteractionActivity(sessionId),
+      onError: (_sessionId, error) => activityErrors.push(error),
     });
     graph = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
@@ -1739,6 +1849,7 @@ async function withGraphInteractionActivity(
         identity.runId,
       );
       await run({ coordinator, owner, identity, graph, activity, rootId: root.id, store });
+      assert.deepEqual(activityErrors, []);
       assert.deepEqual(
         await stores.runtimeEventStore.readImmutableRuntimeEvents(child.id, identity.runId),
         runtimeEventsBefore,

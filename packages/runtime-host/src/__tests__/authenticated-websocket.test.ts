@@ -357,7 +357,11 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     assert.deepEqual(
       { ...localSession, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
       renamed.kind === 'committed'
-        ? { ...renamed.session, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE, backgroundActivity: 'idle' }
+        ? {
+            ...renamed.session,
+            liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+            backgroundActivity: 'idle',
+          }
         : assert.fail('Remote Session rename did not commit'),
     );
 

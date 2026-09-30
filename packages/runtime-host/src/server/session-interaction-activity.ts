@@ -33,6 +33,7 @@ export class SessionInteractionActivityProjection {
       interactions: Pick<InteractiveInteractionStoreWriterFacade, 'listSessionPending'>;
       sandboxBoundaries: Pick<ExecutionSessionWriter, 'listPendingSandboxBoundaryRequests'>;
       onChanged(sessionId: string): void;
+      onError(sessionId: string, error: unknown): void;
     },
   ) {}
 
@@ -42,6 +43,26 @@ export class SessionInteractionActivityProjection {
   }
 
   async refresh(sessionId: string): Promise<void> {
+    try {
+      await this.#refresh(sessionId);
+    } catch (error) {
+      // This is presentation state, not canonical authority. Failed reads must
+      // neither retain authoritative counts nor prevent an answer from applying.
+      const invalidated = this.#counts.delete(sessionId);
+      try {
+        if (invalidated) this.sources.onChanged(sessionId);
+      } catch {
+        // A catalog observer cannot gate canonical continuity either.
+      }
+      try {
+        this.sources.onError(sessionId, error);
+      } catch {
+        // Diagnostics must not turn a presentation failure into an authority failure.
+      }
+    }
+  }
+
+  async #refresh(sessionId: string): Promise<void> {
     const [interactions, boundaries] = await Promise.all([
       this.sources.interactions.listSessionPending(sessionId),
       this.sources.sandboxBoundaries.listPendingSandboxBoundaryRequests(sessionId),
