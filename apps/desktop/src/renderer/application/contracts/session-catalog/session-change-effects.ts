@@ -18,14 +18,8 @@
  */
 
 import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
-import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { recordSessionEventStreamChange } from './session-event-health.js';
 
 type RefBox<T> = { current: T };
-
-type SessionEventHealthUpdater = (
-  updater: (current: Record<string, SessionEventStreamSnapshot>) => Record<string, SessionEventStreamSnapshot>,
-) => void;
 
 export function handleSessionChangedEvent(
   event: SessionChangedEvent,
@@ -44,7 +38,7 @@ export function handleSessionChangedEvent(
     sessionsRef: RefBox<readonly SessionSummary[]>;
     /** Surfaces a model rebound; the caller owns the copy. */
     notifyModelRebound: (modelId: string | undefined) => void;
-    setSessionEventHealthBySession: SessionEventHealthUpdater;
+    recordSessionChange(sessionId: string, ts: number): void;
   },
 ): void {
   const changedSessionId = event.sessionId;
@@ -56,14 +50,7 @@ export function handleSessionChangedEvent(
     void options.refreshProjects();
   }
   if (event.sessionId) {
-    options.setSessionEventHealthBySession((current) => {
-      const previous = current[event.sessionId!];
-      if (!previous) return current;
-      return {
-        ...current,
-        [event.sessionId!]: recordSessionEventStreamChange(previous, event.ts),
-      };
-    });
+    options.recordSessionChange(event.sessionId, event.ts);
   }
   if (
     event.sessionId &&

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -110,6 +111,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     releaseSnapshot = resolve;
   });
   const services: ConversationServices = {
+    observation: stubConversationServices().observation,
     ...sessionLocalServices,
     sessions: {
       readSnapshot: async () => snapshot,
@@ -252,6 +254,7 @@ test('send resolves the selected Session snapshot at the send boundary', async (
   };
   let reads = 0;
   const services: ConversationServices = {
+    observation: stubConversationServices().observation,
     ...sessionLocalServices,
     sessions: {
       ...queueStubs,
@@ -358,6 +361,7 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
   });
   let release!: (snapshot: SessionSnapshot) => void;
   const services: ConversationServices = {
+    observation: stubConversationServices().observation,
     ...sessionLocalServices,
     sessions: {
       ...queueStubs,

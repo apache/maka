@@ -17,4 +17,11 @@
  * under the License.
  */
 
-export { useStableActions } from './application/contracts/use-stable-actions.js';
+import { createContext, useContext } from 'react';
+import type { useConversationController } from '../controller/use-conversation-controller.js';
+export const ConversationContext = createContext<ReturnType<typeof useConversationController> | null>(null);
+export function useConversationOwner() {
+  const value = useContext(ConversationContext);
+  if (!value) throw new Error('ConversationProvider is required');
+  return value;
+}

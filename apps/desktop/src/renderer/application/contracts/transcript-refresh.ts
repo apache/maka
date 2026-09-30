@@ -17,4 +17,5 @@
  * under the License.
  */
 
-export { useStableActions } from './application/contracts/use-stable-actions.js';
+/** A readiness check; publication remains exclusively with the observation owner. */
+export interface RefreshMessagesOptions { requiredAssistantMessageId?: string; }

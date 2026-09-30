@@ -33,7 +33,7 @@ import {
 import {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 
 type VirtualizerHandle = NonNullable<Parameters<typeof useChatScroll>[0]['virtualizerRef']['current']>;

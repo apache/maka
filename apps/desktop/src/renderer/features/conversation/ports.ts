@@ -55,6 +55,7 @@ export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
+  readonly observation: import('./transcript-ports.js').ConversationObservationServices;
   readonly promptSuggestions?: {
     generate(sessionId: string): Promise<string | undefined>;
     readEnabled(): boolean;

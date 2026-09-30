@@ -28,7 +28,7 @@ import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } f
 import {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 import {
   createTranscriptRestoreLifecycle,

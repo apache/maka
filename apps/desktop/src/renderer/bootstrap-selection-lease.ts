@@ -17,44 +17,4 @@
  * under the License.
  */
 
-import type { SessionSummary } from '@maka/core/session';
-
-type BootstrapSession = Pick<SessionSummary, 'id' | 'lastMessageAt' | 'isArchived'>;
-
-export interface BootstrapSelectionLease<Summary extends BootstrapSession> {
-  reconcile(sessions: readonly Summary[]): boolean;
-  release(): void;
-}
-
-export function createBootstrapSelectionLease<Summary extends BootstrapSession>(options: {
-  readActiveId: () => string | undefined;
-  readSelectionRevision: () => number;
-  select: (sessionId: string | undefined) => void;
-}): BootstrapSelectionLease<Summary> {
-  let ownedRevision = options.readSelectionRevision();
-  let active = true;
-
-  return {
-    reconcile(sessions): boolean {
-      if (!active || options.readSelectionRevision() !== ownedRevision) {
-        active = false;
-        return false;
-      }
-
-      // The catalog includes archived history; automatic selection must not.
-      const candidates = sessions.filter((session) => !session.isArchived);
-      const current = options.readActiveId();
-      const next = current && candidates.some((session) => session.id === current)
-        ? current
-        : candidates[0]?.lastMessageAt
-          ? candidates[0].id
-          : undefined;
-      if (next !== current) options.select(next);
-      ownedRevision = options.readSelectionRevision();
-      return true;
-    },
-    release(): void {
-      active = false;
-    },
-  };
-}
+export * from './application/contracts/bootstrap-selection-lease.js';
