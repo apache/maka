@@ -152,3 +152,32 @@ confirmation ownership, and exact approval/resume retry inputs. Plan remains
 Session-scoped and uses the existing observer/control APIs. Revisit this boundary
 if an accepted architecture decision changes that target or moves Plan into an
 independent domain; do not restore a full-model export to adapt callers.
+
+
+## Composer staging ownership (R2 M3, first slice)
+
+`ComposerStagingProvider` is the sole owner of the Desktop staging controller.
+It stays mounted across Session and section switches. `StagedComposer` reads
+files, directory references and quote chips at the actual Composer;
+`StagedQuoteChatView` reads quote annotations at the transcript, and
+`ComposerMentionsProvider` reads the same quotes for the session-reference limit.
+No staging state or reactive read port is returned to AppShell. The private
+context/binding modules and the controller owner entry seal this boundary.
+The Desktop attachment service is injected at the composition root.
+
+The shell holds only stable commands. Submission captures a draft-bound snapshot
+before awaiting revision preparation or delivery. Cleanup and restoration stay
+bound to that draft; directory references retain their originating Host. Quotes
+are copied at invocation, including session references added in the same tick.
+Accepted sends remove only captured quote entries, preserving later additions
+and edits. Failed sends keep their staging. This does not change Host admission,
+queue routing, revision-copy ordering or the new-task text handoff.
+
+The existing file-picker rule still targets the visible draft when I/O completes;
+directory pickers still require the original draft and Host to remain current.
+Staging uses `activeId ?? NEW_TASK_PENDING_KEY`; the editor's new-task persistence
+key remains distinct. Do not key this provider or the Composer's parent by Session.
+
+Readiness, revision draft state, send-pending state, delivery recovery and the
+remaining send orchestration are later M3 work. They can use captured submission
+commands without restoring root subscriptions or acquiring the private controller.

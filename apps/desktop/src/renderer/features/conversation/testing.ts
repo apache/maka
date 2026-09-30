@@ -101,3 +101,5 @@ export { useConversationQueue } from './ui/conversation-provider.js';
 
 export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { TranscriptReadingPositionController, type TranscriptReadingPositionCommands } from './controller/transcript-reading-position-controller.js';
+export { useComposerAttachments } from './controller/use-composer-attachments.js';
+export { useComposerQuotes } from './controller/use-composer-quotes.js';

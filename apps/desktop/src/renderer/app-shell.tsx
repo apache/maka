@@ -157,7 +157,6 @@ import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
   desktopSlashCommandPresentation,
   useActiveExecutionBoundary,
-  useComposerAttachments,
   useNewTaskChoice,
   useShellChatModel,
 } from './features/conversation/index.js';
@@ -349,37 +348,7 @@ function AppShellContent({
     : (taskEntry.selectors.selectedHost?.kind === 'local'
         ? taskEntry.selectors.target?.hostId
         : undefined);
-  const {
-    pendingAttachments,
-    submittableAttachments,
-    hasPendingContext,
-    directoryOptions,
-    directoryComposerProps,
-    pickAttachments,
-    attachFilePaths,
-    restoreAttachments,
-    restoreDirectories,
-    restoreQuotes,
-    removeAttachment,
-    clearSubmittedContext,
-    imageNoticeLifecycle,
-    pendingQuotes,
-    hasStagedQuotes,
-    quotesForSend,
-    addQuote,
-    clearQuotes,
-    composerQuoteProps,
-    chatViewQuoteProps,
-  } = useComposerAttachments({
-    draftKey: attachmentDraftKey,
-    directoryHostId,
-    toastApi,
-    service: window.maka.attachments,
-    imageNotice: {
-      supportsVision: () => composerSupportsVision,
-      notify: toastApi.info,
-    },
-  });
+  const composerStaging = useMemo(Conversation.createComposerStagingCommands, []);
 
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
@@ -1015,7 +984,7 @@ function AppShellContent({
         projectPath: projectInfo?.projectPath,
       });
   const openNewTaskSurface = useCallback(() => {
-    imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
+    composerStaging.resetImageNotice(NEW_TASK_PENDING_KEY);
     const ownerToken = startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
@@ -1026,7 +995,7 @@ function AppShellContent({
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
     return ownerToken;
-  }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
+  }, [composerStaging, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -1065,8 +1034,6 @@ function AppShellContent({
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode,
-    onAddQuote: addQuote,
-    pendingQuotes,
   };
 
   const hasModalOpen = overlays.selectors.anyModalOpen || sharedSessionDialog.isOpen;
@@ -1226,7 +1193,7 @@ function AppShellContent({
     captureSelection,
     composerRef,
     readMessages,
-    hasPendingAttachments: () => hasPendingContext,
+    hasPendingAttachments: () => composerStaging.captureSubmission().hasPendingContext,
     openSessionInChat,
     refreshSessions,
     commitRevisionDraft,
@@ -1241,7 +1208,7 @@ function AppShellContent({
   function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
     const createdSessionId = activeIdRef.current;
     if (!sourceSessionId && createdSessionId)
-      imageNoticeLifecycle.transfer(NEW_TASK_PENDING_KEY, createdSessionId);
+      composerStaging.transferImageNotice(NEW_TASK_PENDING_KEY, createdSessionId);
   }
 
   async function enqueueFollowUp(
@@ -1250,15 +1217,16 @@ function AppShellContent({
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean> {
+    const staging = composerStaging.captureSubmission();
     try {
       const sent = await enqueueMessage(sessionId, text,
-        mode === 'steer' ? 'current_turn' : 'next_turn', submittableAttachments, {
-          ...directoryOptions, quotes: pendingQuotes,
+        mode === 'steer' ? 'current_turn' : 'next_turn', staging.submittableAttachments, {
+          ...staging.directoryOptions, quotes: staging.quotesForSend(),
           workspaceFileReferences: metadata?.workspaceFileReferences,
         });
       if (!sent) return false;
-      clearSubmittedContext(submittableAttachments);
-      clearQuotes();
+      staging.clearSubmittedContext(staging.submittableAttachments);
+      staging.clearQuotes();
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
@@ -1305,13 +1273,7 @@ function AppShellContent({
       revisionDraftRef,
       composerRef,
       retractedWorkspaceReferencesRef,
-      hasPendingContext,
-      hasStagedQuotes,
-      submittableAttachments,
-      directoryOptions,
-      quotesForSend,
-      clearSubmittedContext,
-      clearQuotes,
+      captureStaging: composerStaging.captureSubmission,
       prepareRevisionSend,
       send,
       completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
@@ -1582,6 +1544,8 @@ function AppShellContent({
     // readers. Composer mentions still wrap the frame so one projection serves
     // every composer, including side-chat panels, without rebuilding the frame
     // on catalog moves.
+    <Conversation.ComposerStagingProvider commands={composerStaging}
+      draftKey={attachmentDraftKey} directoryHostId={directoryHostId} supportsVision={composerSupportsVision}>
     <Conversation.PlanProvider session={ownerActiveId ? activeHostSession : undefined}>
     <SessionSettingsProvider
       bridge={sessionSettingIntent.bridge}
@@ -1884,7 +1848,6 @@ function AppShellContent({
                   respondToUserQuestion={respondToUserQuestion}
                   respondToUserForm={respondToUserForm}
                   stop={stop}
-                  directoryComposerProps={directoryComposerProps}
                   directoryPickerEnabled={Boolean(
                     canStageComposerContext && directoryHostId && !revisionDraft
                   )}
@@ -1911,12 +1874,9 @@ function AppShellContent({
                       : undefined
                   }
                   slashCommands={desktopSlashCommands}
-                  pendingAttachments={pendingAttachments}
                   allowAttachmentOnlySend={canStageComposerContext}
-                  onRemoveAttachment={removeAttachment}
-                  {...composerQuoteProps(canStageComposerContext)}
-                  onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
-                  onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
+                  canStageContext={canStageComposerContext}
+                  contextPickEnabled={contextPickEnabled}
                   {...Conversation.executorComposerProps(executor, {activeId, turnActive, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface})}
                   activeSession={activeSessionForView}
                   {...{ executorTarget, onExecutorTargetChange }}
@@ -1988,7 +1948,6 @@ function AppShellContent({
               >
                 {sessionsSelected ? (
                   <Conversation.ConversationTranscriptRegion surface={ChatMessageSurface}
-                {...chatViewQuoteProps}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
                 activeSession={activeSessionForView}
                 activeConnectionLabel={activeConnectionLabel}
@@ -2030,7 +1989,7 @@ function AppShellContent({
                   sharedSessionActive
                     ? undefined
                     : (selection) => {
-                        addQuote(selection);
+                        composerStaging.addQuote(selection);
                         composerRef.current?.focus();
                       }
                 }
@@ -2150,5 +2109,6 @@ function AppShellContent({
     </Goals.GoalProvider>
     </SessionSettingsProvider>
     </Conversation.PlanProvider>
+    </Conversation.ComposerStagingProvider>
   );
 }
