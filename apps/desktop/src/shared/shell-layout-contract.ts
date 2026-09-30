@@ -17,19 +17,17 @@
  * under the License.
  */
 
-export function createObservableState<S>(initial: S) {
-  let current = initial;
-  const listeners = new Set<() => void>();
-  return {
-    getState: (): S => current,
-    subscribe(listener: () => void): () => void {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    replaceState(next: S): void {
-      if (next === current) return;
-      current = next;
-      for (const listener of [...listeners]) listener();
-    },
-  };
-}
+/* The Desktop shell's width contract, in one place for the main process and
+   the renderer. The renderer side lives in
+   `src/renderer/application/contracts/shell-layout-contract.ts`; CSS reads the
+   two lengths it needs from tokens (`--maka-conversation-min-width`,
+   `--agents-content-area-gap`) because the WorkHub renderer is a separate
+   document that loads the same token sheet. */
+
+/**
+ * The native window floor. The frame caps the sidebar and the Workbar so the
+ * conversation keeps its minimum; this is what leaves the sidebar its own
+ * minimum (180px) beside that conversation and the seam between them, so no
+ * width the window can reach clips the shell.
+ */
+export const SHELL_WINDOW_MIN_WIDTH = 600;

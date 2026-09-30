@@ -1448,7 +1448,3 @@ export function hasExactKeys(
   const keys = Object.keys(record);
   return keys.length === expected.length && expected.every((key) => Object.hasOwn(record, key));
 }
-
-export function sanitizeJson(_key: string, value: unknown): unknown {
-  return value === undefined ? undefined : value;
-}

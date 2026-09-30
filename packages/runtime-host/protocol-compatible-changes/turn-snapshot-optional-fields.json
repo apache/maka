@@ -1,0 +1,5 @@
+{
+  "epoch": 199,
+  "files": ["packages/runtime-host/src/protocol/turn.ts"],
+  "reason": "Against the cumulative protocol through epoch 199, this reorganizes the local construction of already-supported optional Turn snapshot fields; it changes neither the wire keys nor accepted values."
+}

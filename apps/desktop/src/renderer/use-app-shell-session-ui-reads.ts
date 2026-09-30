@@ -17,18 +17,4 @@
  * under the License.
  */
 
-import { sessionUiSelectors as select, type AppShellSessionUiStateController } from './features/conversation/index.js';
-import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
-
-/** Shell subscribes to low-frequency execution and content summaries, never raw tokens. */
-export function useAppShellSessionUiReads(controller: AppShellSessionUiStateController, activeId: string | undefined) {
-  return {
-    ...useExternalStoreSelector(controller, select.messageLoad, undefined, select.messageLoadEqual),
-    ...useExternalStoreSelector(controller, select.active, activeId, select.activeEqual),
-    messageRetryPendingBySession: useExternalStoreSelector(controller, select.retry),
-    stopPendingBySession: useExternalStoreSelector(controller, select.stop),
-    interactionBySession: useExternalStoreSelector(controller, select.interaction),
-    messageQueueBySession: useExternalStoreSelector(controller, select.queue),
-    streamingSessionIds: useExternalStoreSelector(controller, select.pulse, undefined, select.pulseEqual),
-  };
-}
+export { useAppShellSessionUiReads } from './features/conversation/index.js';

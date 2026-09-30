@@ -257,8 +257,11 @@ import {
   type CollaborationTurnRequestQueryResult,
   type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
+  type SessionStorageUsage,
+  type StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
+import { createSessionStorageUsageReader } from './session-storage-usage.js';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
   desktopSessionKey,
@@ -1245,6 +1248,19 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
     >;
   },
 };
+
+const loadDesktopSessionStorageUsage = createSessionStorageUsageReader({
+  resolve: async (sessionId) => {
+    const ref = await runtimeHostSessionRef(sessionId);
+    return { ...ref, scopeKey: runtimeHostScopeKey(ref.scope) };
+  },
+  query: async (scope: DesktopTargetScope, hostIds) =>
+    (
+      await scopedRuntimeHost(scope).query('storage.usage.sessions.query', {
+        sessionIds: hostIds,
+      })
+    ).sessions,
+});
 
 async function listScheduledTasks(target?: DesktopRuntimeHostRef): Promise<ScheduledTask[]> {
   const host = scopedRuntimeHost(await selectedRuntimeHostScope(target));
@@ -3693,6 +3709,14 @@ const makaBridge = {
         },
         'INSPECTOR_CONTEXT_FAILED',
       );
+    },
+  },
+  storage: {
+    async usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.usage.query', {});
+    },
+    sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>> {
+      return loadDesktopSessionStorageUsage(sessionIds);
     },
   },
   dailyReview: {

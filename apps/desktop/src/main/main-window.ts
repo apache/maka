@@ -39,6 +39,7 @@ import {
 import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate, type WindowRevealMode } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
+import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
 import {
   parseDesktopSessionResourceKey,
 } from '../shared/runtime-host-identity.js';
@@ -55,12 +56,7 @@ export interface MainWindowController {
    */
   reloadMainRenderer(): Promise<boolean>;
   send(channel: string, ...args: unknown[]): void;
-  /** Subscribe an app-owned renderer to existing application broadcasts. */
-  registerAuxiliaryRenderer(contents: Electron.WebContents, parent?: View): () => void;
-  ownsRenderer(contents: Electron.WebContents): boolean;
   isMainRenderer(contents: Electron.WebContents): boolean;
-  browserParentForRenderer(contents: Electron.WebContents): View | undefined;
-  setBrowserViewParentResolver(resolve: (sessionId: string) => View | undefined): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
   notifyRendererReady(
@@ -72,7 +68,7 @@ export interface MainWindowController {
   setTitleBarOverlayTheme(sender: Electron.WebContents, theme: unknown): void;
   showOpenDialog(options: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue>;
   showSaveDialog(options: Electron.SaveDialogOptions): Promise<Electron.SaveDialogReturnValue>;
-  getBrowserViews(): BrowserViewManager<BrowserViewController>;
+  getBrowserViews(parentForSession: (sessionId: string) => Electron.View | undefined): BrowserViewManager<BrowserViewController>;
   disposeBrowserViews(): Promise<void>;
   hasOpenWindows(): boolean;
   focus(): void;
@@ -116,38 +112,12 @@ interface MainWindowControllerDeps {
 }
 
 let mainWindow: BrowserWindow | null = null;
-const auxiliaryRenderers = new Map<Electron.WebContents, View | undefined>();
-
-function registerAuxiliaryRenderer(contents: Electron.WebContents, parent?: View): () => void {
-  if (contents.isDestroyed()) return () => undefined;
-  auxiliaryRenderers.set(contents, parent);
-  const release = () => {
-    auxiliaryRenderers.delete(contents);
-    contents.removeListener('destroyed', release);
-  };
-  contents.once('destroyed', release);
-  return release;
-}
-
-function browserParentForRenderer(contents: Electron.WebContents): View | undefined {
-  if (contents.isDestroyed()) return undefined;
-  if (mainWindow && !mainWindow.isDestroyed() && contents === mainWindow.webContents) {
-    return mainWindow.contentView;
-  }
-  return auxiliaryRenderers.get(contents);
-}
-
-function ownsRenderer(contents: Electron.WebContents): boolean {
-  if (contents.isDestroyed()) return false;
-  return (!!mainWindow && !mainWindow.isDestroyed() && contents === mainWindow.webContents)
-    || auxiliaryRenderers.has(contents);
-}
 let browserViews: BrowserViewManager<BrowserViewController> | undefined;
 
 /** Broadcast once to each live owned renderer, even if the main window is closed.
  * Returns whether at least one IPC send was issued, not a renderer acknowledgment. */
 export function safeSendToRenderer(channel: string, ...args: unknown[]): boolean {
-  const recipients = new Set(auxiliaryRenderers.keys());
+  const recipients = new Set(auxiliaryWindowRegistry.renderers());
   if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
   let emitted = false;
   for (const contents of recipients) {
@@ -179,8 +149,8 @@ const SHOW_FALLBACK_TIMEOUT_MS = 4000;
 
 // PR-WINDOW-TITLEBAR-0: the titleBarOverlay height matches the renderer
 // `--h-titlebar: 36px` token so the native control strip and the in-app top
-// chrome share a baseline; `app-region-hygiene-contract.test.ts` fails if the
-// two numbers drift. The overlay color/symbolColor are reused both at window
+// chrome share a baseline; `shell-layout-widths.test.ts` fails if the two
+// numbers drift. The overlay color/symbolColor are reused both at window
 // creation (to avoid a first-frame flash against the window `backgroundColor`)
 // and on runtime mode/palette changes via `setTitleBarOverlayTheme` — Windows
 // only, which is why macOS passes the height alone.
@@ -202,7 +172,6 @@ const titleBarOverlayOptions = (
 export function createMainWindowController(deps: MainWindowControllerDeps): MainWindowController {
   const { workspaceRoot, e2eFixture, settingsStore } = deps;
   const liveBrowserScopes = new Map<string, { hostId: string; targetEpoch: string }>();
-  let browserViewParentResolver: ((sessionId: string) => View | undefined) | undefined;
 
   // PR-SHOW-AFTER-FIRST-COMMIT: windows launched hidden (`hidden` covers
   // e2e-fixture capture and E2E — see main.ts) must never be revealed;
@@ -258,11 +227,13 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     });
   };
 
-  function getBrowserViews(): BrowserViewManager<BrowserViewController> {
+  function getBrowserViews(
+    parentForSession: (sessionId: string) => Electron.View | undefined,
+  ): BrowserViewManager<BrowserViewController> {
     if (!browserViews) {
       browserViews = new BrowserViewManager<BrowserViewController>({
         create: (sessionId) => {
-          const parent = browserViewParentResolver?.(sessionId);
+          const parent = parentForSession(sessionId);
           if (!parent) throw new Error('Embedded browser used without an active renderer parent.');
           return new BrowserViewController(parent, sessionId, (sid, state) => {
             const ref = parseDesktopSessionResourceKey(sid);
@@ -410,15 +381,15 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // xuan `eea556cd`): explicit `resizable: true` so a future
       // patch can't silently disable window edge resize. Default is
       // already `true`, but pinning it here removes the ambiguity
-      // and makes the intent obvious to reviewers; CSS-level fixes
-      // (see `app-region-hygiene-contract.test.ts`) cover the
-      // renderer side of the same gate.
+      // and makes the intent obvious to reviewers; the shell's CSS
+      // floors cover the renderer side of the same gate.
       resizable: true,
       // #824: enforce the sanitizeBounds restore floor at runtime resize too,
       // so the both-present dvh layout fix can't be defeated by dragging the
-      // window shorter than the 320px restore minimum. Shares SAFE_MIN_HEIGHT
-      // with sanitizeBounds so the resize floor and the restore floor can't
-      // drift apart (locked by app-region-hygiene-contract.test.ts).
+      // window below the restore minimum. Shares SAFE_MIN_WIDTH and
+      // SAFE_MIN_HEIGHT with sanitizeBounds so the resize floor and the restore
+      // floor can't drift apart (locked by window-state.test.ts).
+      minWidth: SAFE_MIN_WIDTH,
       minHeight: SAFE_MIN_HEIGHT,
       backgroundColor: initialBg,
       // The window stays hidden until `ready-to-show`, so the first visible
@@ -634,13 +605,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       }
     },
     send: safeSendToRenderer,
-    registerAuxiliaryRenderer,
-    ownsRenderer,
-    browserParentForRenderer,
     isMainRenderer: (contents) => !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === contents,
-    setBrowserViewParentResolver(resolve) {
-      browserViewParentResolver = resolve;
-    },
     notifyRendererReady(sender, senderFrame) {
       if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
       const recovery = rendererRecoveryReadiness;

@@ -137,8 +137,8 @@ import {
 } from './settings-snapshot-cache.js';
 import { RuntimeHostInteractionBoundary } from './runtime-host-interaction-boundary.js';
 import { createSettingsRequestAuthority } from './settings-request-authority.js';
+import { SHELL_SETTINGS_NARROW_QUERY } from '../application/contracts/shell-layout-contract.js';
 
-const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 const RUNTIME_HOST_CATALOG_KEY = 'runtime-host-catalog';
 
 function isBuiltInSettingsSection(value: string): value is SettingsSection {
@@ -212,7 +212,7 @@ function SettingsSurfaceContent(
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
-  const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
+  const isNarrowSettings = useMediaQuery(SHELL_SETTINGS_NARROW_QUERY);
   const [section, setSection] = useState<string>(
     () => props.request?.section ?? readLastSettingsSection(),
   );

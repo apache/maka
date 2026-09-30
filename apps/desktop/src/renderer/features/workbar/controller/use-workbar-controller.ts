@@ -28,6 +28,7 @@ import {
   type ComponentProps,
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
+import { useMediaQuery } from '@astryxdesign/core/hooks';
 import type { QuoteRef } from '@maka/core/events';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
@@ -52,6 +53,12 @@ import {
   type SessionWorkbarTabKind,
 } from '../model/workbar-tabs.js';
 import { workbarToolDefinition, workbarToolsForWorkspace } from '../model/workbar-tool-definitions.js';
+import {
+  SHELL_WORKBAR_COMPACT_QUERY,
+  shellRailLayoutPort,
+  shellWorkbarGridRoom,
+} from '../../../application/contracts/shell-layout-contract.js';
+import { SESSION_WORKBAR_MIN_WIDTH } from '../model/workbar-layout.js';
 import {
   consumeCompanionInitialPrompt,
   consumeCompanionQuoteSnapshot,
@@ -81,6 +88,8 @@ export interface WorkbarControllerCommands {
   respondToClientCapability(response: ClientCapabilityResponse): Promise<void>;
   respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
+  /** The panel-facing toggle: at the compact breakpoint it hides the rail first. */
+  toggleRightPanel(): void;
   toggleTool(kind: SessionWorkbarTabKind): void;
   setWorkbarCollapsed(collapsed: boolean): void;
   /**
@@ -187,7 +196,8 @@ export function useWorkbarController(
     Boolean(input.openNewTaskSurface && input.resolveWorkBoardTarget && input.prepareWorkBoardDraft);
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds);
+  const compact = useMediaQuery(SHELL_WORKBAR_COMPACT_QUERY);
+  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, compact);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -488,12 +498,36 @@ export function useWorkbarController(
     return () => { disposed = true; clearTimeout(retry); unsubscribeResync(); unsubscribeUpdates(); };
   }, [activeSessionId, terminal, layout.restoreTerminals]);
 
+  /* At the compact breakpoint the conversation keeps its minimum width, so an
+     expanded rail may leave the right Workbar no grid room. Every reveal —
+     the panel toggle below and every tool/artifact/side-chat open path that
+     lands here — applies the same space decision: conceal the rail (a spell
+     the widening window forgets, never a user choice) so the revealed panel
+     can actually paint. Concealing only when the room check fails keeps a
+     reveal beside a narrower rail, or near the top of the compact band, from
+     hiding a sidebar the Workbar never needed. */
+  const concealRailIfNoWorkbarRoom = useCallback((): void => {
+    const rail = shellRailLayoutPort.current;
+    const railState = rail?.getState();
+    if (
+      compact &&
+      rail &&
+      railState &&
+      !railState.collapsed &&
+      shellWorkbarGridRoom(window.innerWidth, railState.width) < SESSION_WORKBAR_MIN_WIDTH
+    ) {
+      rail.setSpaceConcealed(true);
+    }
+  }, [compact]);
+
   const revealPlacement = useCallback(
     (placement: SessionWorkbarPlacement) => {
-      if (placement === 'right') layout.setWorkbarCollapsed(false);
-      else layout.setBottomPanelOpen(true);
+      if (placement === 'right') {
+        concealRailIfNoWorkbarRoom();
+        layout.setWorkbarCollapsed(false);
+      } else layout.setBottomPanelOpen(true);
     },
-    [layout.setBottomPanelOpen, layout.setWorkbarCollapsed],
+    [concealRailIfNoWorkbarRoom, layout.setBottomPanelOpen, layout.setWorkbarCollapsed],
   );
 
   const openNewSideConversation = useCallback(
@@ -773,6 +807,57 @@ export function useWorkbarController(
     layout.workbarCollapsed,
   ]);
 
+  /* The panel-facing toggle applies the same space decision as every other
+     reveal; the yield effect below guarantees no "open Workbar beside a
+     room-stealing rail" state exists for a click to land on. */
+  const toggleRightPanel = useCallback(() => {
+    concealRailIfNoWorkbarRoom();
+    toggleRight();
+  }, [concealRailIfNoWorkbarRoom, toggleRight]);
+
+  /* Give the rail back when the room it was concealed for is free again: the
+     Workbar closed, or the window widened past the compact breakpoint. The
+     rail's own compact breakpoint (820px) is narrower than the Workbar's
+     (1080px), so this restore — not the rail's setCompact — ends the spell. */
+  useLayoutEffect(() => {
+    if (!compact || layout.workbarCollapsed)
+      shellRailLayoutPort.current?.setSpaceConcealed(false);
+  }, [compact, layout.workbarCollapsed]);
+
+  /* The rail can take the room back too: the user expands it under an open
+     Workbar, drags it wider, or narrows the window until the two no longer
+     fit. The explicit rail action is the later choice and wins, so the
+     Workbar yields — but through `spaceCollapsed`, the same space-decision
+     lane as the rail's `spaceConcealed`: it suppresses the reading without
+     touching the spell or the stored preference, releases when the room
+     returns, and an explicit user collapse/expand clears it. A persisted
+     collapse would leak the squeeze into the preference and never come back.
+     With the rail already hidden there is nothing to yield to: the Workbar
+     draws below its minimum rather than not at all. */
+  useLayoutEffect(() => {
+    if (!compact) return;
+    const rail = shellRailLayoutPort.current;
+    const arbitrateRoom = () => {
+      const railState = rail?.getState();
+      const railStealsRoom = !!(
+        railState &&
+        !railState.collapsed &&
+        shellWorkbarGridRoom(window.innerWidth, railState.width) <
+          SESSION_WORKBAR_MIN_WIDTH
+      );
+      if (railStealsRoom) {
+        if (!layout.workbarCollapsed) layout.setSpaceCollapsed(true);
+      } else if (layout.spaceCollapsed) layout.setSpaceCollapsed(false);
+    };
+    arbitrateRoom();
+    const unsubscribe = rail?.subscribe(arbitrateRoom);
+    window.addEventListener('resize', arbitrateRoom);
+    return () => {
+      unsubscribe?.();
+      window.removeEventListener('resize', arbitrateRoom);
+    };
+  }, [compact, layout.workbarCollapsed, layout.spaceCollapsed, layout.setSpaceCollapsed]);
+
   useLayoutEffect(() => {
     setPendingSideChatClose([]);
   }, [activeSessionId]);
@@ -909,6 +994,7 @@ export function useWorkbarController(
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
+      toggleRightPanel,
       setWorkbarCollapsed: layout.setWorkbarCollapsed,
       bindNewTaskSessionResolver,
     }),
@@ -920,6 +1006,7 @@ export function useWorkbarController(
       respondToClientCapability,
       sideChat.respondToUserForm,
       toggleRight,
+      toggleRightPanel,
       layout.setWorkbarCollapsed,
     ],
   );
@@ -949,7 +1036,7 @@ export function useWorkbarController(
         revealPlacement(placement);
       },
       onRequestOpenTab: (placement, kind) => openTool(kind, placement),
-      onToggleRightPanel: toggleRight,
+      onToggleRightPanel: toggleRightPanel,
       onDismissPanel: (placement) => {
         if (placement === 'right') layout.setWorkbarCollapsed(true);
         else layout.setBottomPanelOpen(false);

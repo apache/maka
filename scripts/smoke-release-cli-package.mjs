@@ -628,7 +628,7 @@ function validateInstalledRuntimeFiles(packageRoot) {
   );
   assertOutput(
     readFileSync(join(packageRoot, 'node_modules/@ai-sdk/provider-utils/dist/index.js'), 'utf8'),
-    'function absentIfBlank',
+    'Ambiguous streamed tool call delta.',
   );
 }
 

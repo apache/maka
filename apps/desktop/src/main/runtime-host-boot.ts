@@ -20,6 +20,7 @@
 import { resolveDesktopWslHostHandoff } from './runtime-host-wsl-handoff.js';
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   type BrowserWindow,
   clipboard,
   ipcMain,
@@ -137,6 +138,7 @@ import {
   readWithFallback,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
+import { auxiliaryWindowRegistry } from "./auxiliary-window-registry.js";
 import type { DesktopRuntimeHostProfileChangedEvent } from "../preload/bridge-contract.js";
 import {
   defaultRuntimeHostRecoveryDialog,
@@ -408,6 +410,7 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
 });
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
+  revealMode,
   locale: desktopLocale,
   keepSystemAwake,
   mainWindow: mainWindowController,
@@ -431,6 +434,7 @@ const releaseDesktopInteractionSession = (sessionId: string): void => {
 };
 const permissionOverlay = createPermissionOverlayMain({
   resolveLocale: () => desktopLocale.resolve(),
+  revealMode,
 });
 mainWindowDelegates.onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
@@ -765,7 +769,8 @@ const workHubControl = createWorkHubControl({
     if (!window) throw new Error('Maka window is unavailable');
     return window.webContents;
   },
-  authorizedRenderer: (contents) => mainWindowController.ownsRenderer(contents),
+  authorizedRenderer: (contents) =>
+    mainWindowController.isMainRenderer(contents) || auxiliaryWindowRegistry.rendererParent(contents) !== undefined,
   send: (channel, payload) => mainWindowController.send(channel, payload),
   readSettings: () => settingsStore.get(),
   client: (scope) => requireWorkHubTarget(scope).client,
@@ -774,6 +779,7 @@ const workHubControl = createWorkHubControl({
 });
 const browserIpc = registerBrowserIpc({
   mainWindowController,
+  auxiliaryWindowRegistry,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
 });
 let workHubEnabled = false;
@@ -790,7 +796,7 @@ const workHubPresentation = createWorkHubPresentation({
   mainModuleDirectory: import.meta.dirname,
   viteDevServerUrl: process.env.VITE_DEV_SERVER_URL,
   preloadPath: join(import.meta.dirname, '..', 'preload', 'preload.cjs'),
-  onViewCreated: (contents, container) => mainWindowController.registerAuxiliaryRenderer(contents, container),
+  onViewCreated: (contents, container) => auxiliaryWindowRegistry.registerRenderer(contents, container),
   onVisibilityChanged: () => browserIpc.refreshVisibility(),
 });
 workHubPresentation.registerIpc();
@@ -917,6 +923,7 @@ const desktopUpdateChannel = app.isPackaged
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
+  nativeUpdater: nativeAutoUpdater,
   updateChannel: desktopUpdateChannel,
   testFeedUrl: updateTestFeed,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
@@ -2060,6 +2067,21 @@ function wireLifecycle(): void {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
     if (process.platform !== "darwin" && !windowsAppTray.hasTray() && !isBrowserMessageBoxPresentationActive()) app.quit();
+  });
+  // macOS `quitAndInstall` closes every window and then waits, silently, for
+  // the window list to empty before it asks Squirrel to relaunch; only that
+  // relaunch reaches `before-quit`. WorkHub survives a main-window close by
+  // re-parenting into its floating panel, and the panel refuses its own close,
+  // so the relaunch never started and the retired Runtime Host handoff was
+  // never released (#5783). Let the panel close ahead of the sweep. This is
+  // narrower than the dispose the quit cleanup performs later: if the quit
+  // does not go through, the next Desktop window brings WorkHub back.
+  nativeAutoUpdater.on("before-quit-for-update", () => {
+    try {
+      workHubPresentation.releaseForQuit();
+    } catch (error) {
+      console.error("[update] WorkHub release before install failed:", error);
+    }
   });
   powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();

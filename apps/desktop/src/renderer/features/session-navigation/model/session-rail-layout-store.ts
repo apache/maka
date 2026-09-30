@@ -20,6 +20,7 @@
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 import type { SessionViewMode } from '@maka/ui';
 import { createObservableState } from '../../../application/contracts/session-catalog/observable-state.js';
+import { shellRailLayoutPort } from '../../../application/contracts/shell-layout-contract.js';
 import {
   clampSessionListWidth,
   readSessionListCollapsed,
@@ -34,6 +35,8 @@ import {
 const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
 
 export interface SessionRailLayoutState {
+  /** What the rail shows: the preference, or on a compact window only what
+      the user opened there. Every reader wants this one. */
   readonly collapsed: boolean;
   readonly width: number;
   readonly viewMode: SessionViewMode;
@@ -52,13 +55,36 @@ export interface SessionRailLayoutState {
  * One rail exists per renderer and its persisted form is already a single
  * localStorage record, so the store is a module value: there is no second
  * instance for it to be an instance of.
+ *
+ * A compact window hides the rail without touching the stored preference.
+ * Toggling it there is a choice for this narrow spell; when the window widens
+ * the choice is promoted into the preference, so widening never restores a
+ * rail the user closed and narrowing never rewrites what they stored. The
+ * Workbar reveal may instead conceal the rail for the spell — a space
+ * decision, not a choice, which the preference survives untouched.
  */
 export function createSessionRailLayoutStore() {
+  let preferredCollapsed = readSessionListCollapsed();
+  let compact = false;
+  let compactCollapsed: boolean | undefined;
+  let spaceConcealed = false;
+  const visibleCollapsed = () =>
+    spaceConcealed || (compact ? (compactCollapsed ?? true) : preferredCollapsed);
   const state = createObservableState<SessionRailLayoutState>({
-    collapsed: readSessionListCollapsed(),
+    collapsed: visibleCollapsed(),
     width: readSessionListWidth(),
     viewMode: readSessionListViewMode(),
   });
+  const publishCollapsed = () => {
+    const current = state.getState();
+    const collapsed = visibleCollapsed();
+    if (current.collapsed !== collapsed) state.replaceState({ ...current, collapsed });
+  };
+  const setPreferredCollapsed = (next: boolean) => {
+    if (preferredCollapsed === next) return;
+    preferredCollapsed = next;
+    writeSessionListCollapsed(next);
+  };
   const collapseHandleRef: { current: SideNavImperativeCollapseHandle | null } = { current: null };
   let widthPersistHandle: ReturnType<typeof setTimeout> | undefined;
 
@@ -67,10 +93,31 @@ export function createSessionRailLayoutStore() {
     subscribe: state.subscribe,
     collapseHandleRef,
     setCollapsed(next: boolean): void {
-      const current = state.getState();
-      if (current.collapsed === next) return;
-      state.replaceState({ ...current, collapsed: next });
-      writeSessionListCollapsed(next);
+      if (compact) {
+        // Only a change the rail shows is a choice; repeating the visible
+        // state must not mint a preference out of a policy or conceal hide.
+        if (visibleCollapsed() !== next) compactCollapsed = next;
+      } else setPreferredCollapsed(next);
+      // A user action always ends a space concealment.
+      spaceConcealed = false;
+      publishCollapsed();
+    },
+    /** Hide the rail so the compact-window Workbar has grid room, or give it
+        back. A space decision owned by the Workbar's compact spell — which is
+        wider than this rail's own compact breakpoint — never a user choice,
+        so the stored preference survives it untouched. */
+    setSpaceConcealed(concealed: boolean): void {
+      if (spaceConcealed === concealed) return;
+      spaceConcealed = concealed;
+      publishCollapsed();
+    },
+    /** The window's narrow reading, fed in by the feature's reads hook. */
+    setCompact(next: boolean): void {
+      if (compact === next) return;
+      if (!next && compactCollapsed !== undefined) setPreferredCollapsed(compactCollapsed);
+      compact = next;
+      compactCollapsed = undefined;
+      publishCollapsed();
     },
     /** Debounced: a drag reports a width per frame and only the last one is worth storing. */
     setWidth(next: number): void {
@@ -103,6 +150,10 @@ export function createSessionRailLayoutStore() {
 export type SessionRailLayoutStore = ReturnType<typeof createSessionRailLayoutStore>;
 
 export const sessionRailLayoutStore: SessionRailLayoutStore = createSessionRailLayoutStore();
+
+/* The Workbar controller's compact toggle reads the rail through the shell
+   layout contract's port rather than importing this feature. */
+shellRailLayoutPort.current = sessionRailLayoutStore;
 
 /**
  * The whole geometry. Both readers use more than one field of it, and the store

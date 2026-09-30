@@ -9,7 +9,7 @@ Policy: every package must resolve to an ASF-compatible SPDX license. Compound
 expressions record the compatible selected license. Packages without a shipped
 license file require an exact name@version text override in the generator.
 
-Package: @agentclientprotocol/sdk@1.4.0
+Package: @agentclientprotocol/sdk@1.5.0
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: git+https://github.com/agentclientprotocol/typescript-sdk.git
@@ -208,7 +208,7 @@ Apache License
 
 ================================================================================
 
-Package: @ai-sdk/anthropic@4.0.53
+Package: @ai-sdk/anthropic@4.0.68
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/anthropic
@@ -230,7 +230,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/code-mode@1.0.56
+Package: @ai-sdk/code-mode@1.0.79
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/code-mode
@@ -252,7 +252,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/cohere@4.0.41
+Package: @ai-sdk/cohere@4.0.52
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/cohere
@@ -274,7 +274,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/gateway@4.0.80
+Package: @ai-sdk/gateway@4.0.100
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/gateway
@@ -296,7 +296,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/google@4.0.69
+Package: @ai-sdk/google@4.0.85
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/google
@@ -318,7 +318,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/open-responses@2.0.44
+Package: @ai-sdk/open-responses@2.0.56
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/open-responses
@@ -340,7 +340,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai@4.0.66
+Package: @ai-sdk/openai@4.0.80
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai
@@ -362,7 +362,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/openai-compatible@3.0.48
+Package: @ai-sdk/openai-compatible@3.0.59
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/openai-compatible
@@ -384,7 +384,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider@4.0.14
+Package: @ai-sdk/provider@4.0.19
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider
@@ -406,7 +406,7 @@ limitations under the License.
 
 ================================================================================
 
-Package: @ai-sdk/provider-utils@5.0.40
+Package: @ai-sdk/provider-utils@5.0.51
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/provider-utils
@@ -616,7 +616,7 @@ Apache License
 
 ================================================================================
 
-Package: @earendil-works/pi-tui@0.85.1
+Package: @earendil-works/pi-tui@0.87.1
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/earendil-works/pi.git#packages/tui
@@ -700,7 +700,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: @larksuiteoapi/node-sdk@1.73.3
+Package: @larksuiteoapi/node-sdk@1.74.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/larksuite/node-sdk.git
@@ -752,7 +752,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 
-Package: @modelcontextprotocol/client@2.0.0
+Package: @modelcontextprotocol/client@2.1.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -977,7 +977,7 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/core@2.0.0
+Package: @modelcontextprotocol/core@2.1.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -1723,7 +1723,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @types/node@26.5.1
+Package: @types/node@26.6.3
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git#types/node
@@ -2186,7 +2186,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: ai@7.0.99
+Package: ai@7.0.122
 Declared license: Apache-2.0
 Selected license: Apache-2.0
 Repository: https://github.com/vercel/ai#packages/ai
@@ -4721,7 +4721,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 
-Package: image-dimensions@2.5.1
+Package: image-dimensions@2.6.0
 Declared license: MIT
 Selected license: MIT
 Repository: sindresorhus/image-dimensions
@@ -4781,7 +4781,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 
-Package: ip-address@10.4.0
+Package: ip-address@10.7.2
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/beaugunderson/ip-address.git
@@ -5574,10 +5574,10 @@ software or this license, under any kind of legal claim.***
 
 ================================================================================
 
-Package: marked@18.0.5
+Package: marked@18.0.11
 Declared license: MIT
 Selected license: MIT
-Repository: git://github.com/markedjs/marked.git
+Repository: git+https://github.com/markedjs/marked.git
 
 --- LICENSE ---
 # License information
@@ -7361,7 +7361,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: systeminformation@5.33.10
+Package: systeminformation@5.33.13
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/sebhildebrandt/systeminformation.git
@@ -7444,7 +7444,7 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: undici@7.29.0
+Package: undici@7.30.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -7474,7 +7474,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: undici@8.10.2
+Package: undici@8.11.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/nodejs/undici.git
@@ -7965,7 +7965,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: quickjs-emscripten (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.56
+Embedded by: @ai-sdk/code-mode@1.0.79
 Selected license: MIT
 Repository: https://github.com/justjake/quickjs-emscripten
 
@@ -7995,7 +7995,7 @@ SOFTWARE.
 ================================================================================
 
 Embedded component: QuickJS JavaScript engine (embedded runtime)
-Embedded by: @ai-sdk/code-mode@1.0.56
+Embedded by: @ai-sdk/code-mode@1.0.79
 Selected license: MIT
 Repository: https://github.com/bellard/quickjs
 

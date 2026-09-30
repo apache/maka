@@ -120,7 +120,6 @@ export const ALLOWED = {
     useLayoutEffect: 1,
     useNewTaskChoice: 1,
     useOnboardingSnapshot: 1,
-    usePlanModeState: 1,
     useSessionEventHealthPolling: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
     // `SessionNavigationProvider`. The entry shrinks rather than disappearing,

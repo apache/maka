@@ -17,4 +17,8 @@
  * under the License.
  */
 
-export * from './features/conversation/index.js';
+/** A read-only projection. Its owner notifies only when this snapshot changes. */
+export interface SnapshotReader<T> {
+  getSnapshot(): T;
+  subscribe(listener: () => void): () => void;
+}

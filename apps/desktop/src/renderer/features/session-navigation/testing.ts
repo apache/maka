@@ -18,6 +18,9 @@
  */
 
 import type { SessionNavigationServices } from './ports.js';
+export { createSessionVisitHistory } from './model/session-visit-history.js';
+export { createSessionSwipe } from './model/session-swipe.js';
+export { SessionHistoryNavigation } from './ui/session-history-navigation.js';
 
 export type {
   SessionNavigationPorts,
@@ -54,6 +57,7 @@ export {
 } from './model/session-selection.js';
 export {
   SESSION_LIST_EXPANDED_DEFAULT_WIDTH,
+  SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from './model/session-list-layout.js';
 export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';
 

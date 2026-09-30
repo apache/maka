@@ -32,11 +32,10 @@
     "main right-handle right"
     "bottom-handle right-handle right"
     "bottom right-handle right";
-  grid-template-columns: minmax(0, 1fr) 0 auto;
+  grid-template-columns: minmax(var(--maka-conversation-min-width), 1fr) 0 auto;
   grid-template-rows: minmax(0, 1fr) 0 auto;
   flex: 1 1 auto;
   height: auto;
-  min-width: 0;
   min-height: 0;
 }
 
@@ -46,6 +45,13 @@
   min-height: 0;
 }
 
+/* Preview states are allowed past the conversation-floor cap: the overshoot
+   drag draws beyond it on its way to focus, and the focused preview takes the
+   whole frame. Neither can exceed the frame itself. */
+.maka-detail-with-artifacts[data-preview-resizing],
+.maka-detail-with-artifacts[data-preview-focused] {
+  --maka-session-workbar-max-width: 100cqi;
+}
 .maka-detail-with-artifacts[data-preview-resizing] .maka-session-workbar[data-placement="right"] {
   transition: none;
 }
@@ -362,53 +368,52 @@
 
 /* The frame and the overlay panel share the grid area, so they carry the same
    width and margin. No `min-width` here: it would stop the collapse short,
-   and `workbar-layout.ts` already clamps the value. */
+   and `workbar-layout.ts` already clamps the value. The width is the user's
+   and eases; the max-width is the room the frame leaves beside the
+   conversation's minimum and does not, so a window resize moves the column
+   with the window edge instead of trailing it (frame-style.ts).
+
+   The column eases open and shut the way the sidebar does, at every window
+   width, so the two sides keep one rhythm. The children keep the open width
+   and hang off the box's right edge, so the panel contents stay in place
+   while the box's left edge sweeps over them.
+   The lone grid track grows to the children's width, so it is the track that
+   sits at the end: `end` alignment overflows at the start edge. An auto
+   margin would resolve to 0 instead. */
 .maka-session-workbar[data-placement="right"],
 .maka-session-workbar-panel[data-overlay][data-placement="right"] {
   grid-area: right;
   width: var(--maka-session-workbar-width, 480px);
+  max-width: var(--maka-session-workbar-max-width, none);
   margin-left: var(--agents-content-area-gap);
+  justify-content: end;
+  transition:
+    width var(--duration-large) var(--ease-out-strong),
+    margin-left var(--duration-large) var(--ease-out-strong);
 }
 
-/* On a wide window the right column eases open and shut the way the sidebar
-   does. The children keep the open width and hang off the box's right edge,
-   so the panel contents stay in place while the box's left edge sweeps over
-   them.
-   The lone grid track grows to the children's width, so it is the track that
-   sits at the end: `end` alignment overflows at the start edge. An auto
-   margin would resolve to 0 instead. */
-@media (min-width: 991px) {
-  .maka-session-workbar[data-placement="right"],
+.maka-session-workbar[data-placement="right"] > *,
+.maka-session-workbar-panel[data-overlay][data-placement="right"] > * {
+  width: min(var(--maka-session-workbar-width, 480px), var(--maka-session-workbar-max-width, 100vw));
+}
+
+.maka-session-workbar[data-placement="right"][data-collapsed],
+.maka-session-workbar-panel[data-overlay][data-placement="right"][data-collapsed] {
+  display: grid;
+  width: 0;
+  margin-left: 0;
+  visibility: hidden;
+  transition:
+    width var(--duration-large) var(--ease-out-strong),
+    margin-left var(--duration-large) var(--ease-out-strong),
+    visibility 0s var(--duration-large);
+}
+
+/* A pointer drag feeds the width back on every move; an ease would trail it. */
+.maka-detail-with-artifacts:has([data-resizing]) .maka-session-workbar[data-placement="right"],
+.maka-detail-with-artifacts:has([data-resizing])
   .maka-session-workbar-panel[data-overlay][data-placement="right"] {
-    justify-content: end;
-    transition:
-      width var(--duration-large) var(--ease-out-strong),
-      margin-left var(--duration-large) var(--ease-out-strong);
-  }
-
-  .maka-session-workbar[data-placement="right"] > *,
-  .maka-session-workbar-panel[data-overlay][data-placement="right"] > * {
-    width: var(--maka-session-workbar-width, 480px);
-  }
-
-  .maka-session-workbar[data-placement="right"][data-collapsed],
-  .maka-session-workbar-panel[data-overlay][data-placement="right"][data-collapsed] {
-    display: grid;
-    width: 0;
-    margin-left: 0;
-    visibility: hidden;
-    transition:
-      width var(--duration-large) var(--ease-out-strong),
-      margin-left var(--duration-large) var(--ease-out-strong),
-      visibility 0s var(--duration-large);
-  }
-
-  /* A pointer drag feeds the width back on every move; an ease would trail it. */
-  .maka-detail-with-artifacts:has([data-resizing]) .maka-session-workbar[data-placement="right"],
-  .maka-detail-with-artifacts:has([data-resizing])
-    .maka-session-workbar-panel[data-overlay][data-placement="right"] {
-    transition: none;
-  }
+  transition: none;
 }
 
 .maka-session-workbar[data-placement="bottom"] {
@@ -458,7 +463,8 @@
 }
 
 /* After the placement rules, which set `display` at the same specificity, and
-   one attribute lighter than the wide-window rule above, which restores it. */
+   one attribute lighter than the right column's collapsed rule above, which
+   keeps it laid out at zero width so it can ease. */
 .maka-session-workbar[data-collapsed],
 .maka-session-workbar-panel[data-overlay][data-collapsed] {
   display: none;
@@ -613,6 +619,10 @@ button.maka-workbar-edge {
   right: 16px;
   transform: translateY(-50%);
   z-index: 3;
+  /* WorkHub's native surface paints its workspace after the edge control in
+     the DOM. Keep the affordance in the hit-test layer when the panel is
+     collapsed on a compact window. */
+  pointer-events: auto;
   width: 28px;
   min-width: 28px;
   height: 48px;
