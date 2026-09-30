@@ -987,7 +987,7 @@ index 0c81fd3..51e9632 100644
        })]
      })
 diff --git a/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js b/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js
-index bcc42ce..6e606e7 100644
+index bcc42ce..1ad2ef6 100644
 --- a/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js
 +++ b/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js
 @@ -14,6 +14,7 @@
@@ -1009,7 +1009,7 @@ index bcc42ce..6e606e7 100644
    // Toast ids whose exit has begun — guards onHide from double-firing (see
    // removeToast). Mirrors exitingIds state, readable synchronously.
    const exitingIdsRef = useRef(new Set());
-@@ -424,20 +426,57 @@ export function ToastViewport({
+@@ -424,20 +426,64 @@ export function ToastViewport({
      insetStyle.insetInlineEnd = inset.end;
    }
  
@@ -1021,8 +1021,15 @@ index bcc42ce..6e606e7 100644
 +  // Keep one portal host when dialogs open/close: moving the host preserves
 +  // toast timers, exit transitions, focus and React's delegated event handlers.
 +  useLayoutEffect(() => {
-+    if (!isTopLayer || !anchorRef.current) return;
-+    const host = anchorRef.current.ownerDocument.createElement('div');
++    const anchor = anchorRef.current;
++    if (!isTopLayer || !anchor) return;
++    const view = anchor.ownerDocument.defaultView;
++    // DOM shims and older browsers have no native top layer. Keep their
++    // inline viewport instead of querying unsupported pseudo-classes.
++    if (typeof viewportRef.current?.showPopover !== 'function' ||
++        !view?.CSS?.supports('selector(:modal)') ||
++        !view.CSS.supports('selector(:popover-open)')) return;
++    const host = anchor.ownerDocument.createElement('div');
 +    host.style.display = 'contents';
 +    setPortalHost(host);
 +    return () => host.remove();
@@ -1079,7 +1086,7 @@ index bcc42ce..6e606e7 100644
  
    // F6 jumps focus into the toast viewport — the standard "go to
    // notifications" affordance. Focus the first control in the newest toast,
-@@ -479,9 +518,7 @@ export function ToastViewport({
+@@ -479,9 +525,7 @@ export function ToastViewport({
    }, [hasToasts, getFocusable]);
    const posStyle = position === 'topEnd' ? styles.topEnd : position === 'topStart' ? styles.topStart : position === 'bottomStart' ? styles.bottomStart : styles.bottomEnd;
    const isReversed = position === 'topEnd' || position === 'topStart';
@@ -1090,7 +1097,7 @@ index bcc42ce..6e606e7 100644
        ref: viewportRef,
        role: hasToasts ? 'region' : undefined,
        "aria-label": hasToasts ? t('@astryx.toast.viewport') : undefined,
-@@ -500,7 +537,12 @@ export function ToastViewport({
+@@ -500,7 +544,12 @@ export function ToastViewport({
          onExited: handleExited,
          onDismiss: removeToast
        }, entry.id))
@@ -1100,7 +1107,7 @@ index bcc42ce..6e606e7 100644
 +    value: contextValue,
 +    children: [children,
 +      isTopLayer ? /*#__PURE__*/_jsx("span", {hidden: true, ref: anchorRef}) : null,
-+      isTopLayer ? portalHost && createPortal(viewport, portalHost) : viewport]
++      isTopLayer && portalHost ? createPortal(viewport, portalHost) : viewport]
    });
  }
  ToastViewport.displayName = 'ToastViewport';
@@ -2366,7 +2373,7 @@ index 7f7dedd..0a8720a 100644
      transform: 'rotate(-90deg)',
      strokeDasharray: `calc(var(${RESOLVED_DIAMETER}) * ${PI} * var(--spinner-arc-fraction)) calc(var(${RESOLVED_DIAMETER}) * ${PI} * (1 - var(--spinner-arc-fraction)))`,
 diff --git a/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx b/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx
-index 62dbde6..0f3ee9b 100644
+index 62dbde6..012d6de 100644
 --- a/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx
 +++ b/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx
 @@ -24,6 +24,7 @@ import {
@@ -2388,7 +2395,7 @@ index 62dbde6..0f3ee9b 100644
    // Toast ids whose exit has begun — guards onHide from double-firing (see
    // removeToast). Mirrors exitingIds state, readable synchronously.
    const exitingIdsRef = useRef<Set<string>>(new Set());
-@@ -527,20 +529,57 @@ export function ToastViewport({
+@@ -527,20 +529,64 @@ export function ToastViewport({
      insetStyle.insetInlineEnd = inset.end;
    }
  
@@ -2400,8 +2407,15 @@ index 62dbde6..0f3ee9b 100644
 +  // Keep one portal host when dialogs open/close: moving the host preserves
 +  // toast timers, exit transitions, focus and React's delegated event handlers.
 +  useLayoutEffect(() => {
-+    if (!isTopLayer || !anchorRef.current) return;
-+    const host = anchorRef.current.ownerDocument.createElement('div');
++    const anchor = anchorRef.current;
++    if (!isTopLayer || !anchor) return;
++    const view = anchor.ownerDocument.defaultView;
++    // DOM shims and older browsers have no native top layer. Keep their
++    // inline viewport instead of querying unsupported pseudo-classes.
++    if (typeof viewportRef.current?.showPopover !== 'function' ||
++        !view?.CSS?.supports('selector(:modal)') ||
++        !view.CSS.supports('selector(:popover-open)')) return;
++    const host = anchor.ownerDocument.createElement('div');
 +    host.style.display = 'contents';
 +    setPortalHost(host);
 +    return () => host.remove();
@@ -2458,7 +2472,7 @@ index 62dbde6..0f3ee9b 100644
  
    // F6 jumps focus into the toast viewport — the standard "go to
    // notifications" affordance. Focus the first control in the newest toast,
-@@ -591,9 +630,7 @@ export function ToastViewport({
+@@ -591,9 +637,7 @@ export function ToastViewport({
            : styles.bottomEnd;
    const isReversed = position === 'topEnd' || position === 'topStart';
  
@@ -2469,7 +2483,7 @@ index 62dbde6..0f3ee9b 100644
        <div
          ref={viewportRef}
          role={hasToasts ? 'region' : undefined}
-@@ -619,6 +656,12 @@ export function ToastViewport({
+@@ -619,6 +663,12 @@ export function ToastViewport({
            />
          ))}
        </div>
@@ -2478,7 +2492,7 @@ index 62dbde6..0f3ee9b 100644
 +    <ToastContext value={contextValue}>
 +      {children}
 +      {isTopLayer ? <span hidden ref={anchorRef} /> : null}
-+      {isTopLayer ? portalHost && createPortal(viewport, portalHost) : viewport}
++      {isTopLayer && portalHost ? createPortal(viewport, portalHost) : viewport}
      </ToastContext>
    );
  }
