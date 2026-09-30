@@ -4460,10 +4460,13 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
         { range: 'all', sessionId: session.id },
         Date.now(),
       );
-      // The aborted call's row is recorded under the no-run sentinel turn, so
-      // settlement coverage does not count it as missing usage — a hosted run
-      // must still settle despite an auxiliary failure.
-      assert.equal(abortedSummary.projection.coverage.usageMissingAttempts, 0);
+      // Every failed auxiliary call above — the 401 recap, the timed-out
+      // recap, and the aborted goal evaluation — is recorded under the
+      // no-run sentinel turn, and the ledger-wide coverage still counts all
+      // three: real unknown-usage calls stay visible in the public
+      // provenance. Keeping a hosted run to its own rows is settlement's
+      // run-scoped check, not this field's job.
+      assert.equal(abortedSummary.projection.coverage.usageMissingAttempts, 3);
       const abortedLegacyLogs = await usage.telemetry.logs({ range: 'all' });
       assert.equal(
         abortedLegacyLogs.rows.some((row) => row.callId === `goal_evaluation_${session.id}_call-2`),
@@ -4575,9 +4578,11 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
         Date.now(),
       );
       assert.equal(summary.projection.totalRequests, expected.requests);
-      // Settlement coverage counts run-owned usage-missing rows only: the
-      // auxiliary rows under test are recorded under the no-run sentinel
-      // turn, so `missing` stays at whatever a run's own dispatch produced.
+      // The ledger-wide coverage counts every usage-unknown row it holds —
+      // the auxiliary rows under test included, each recorded under the
+      // no-run sentinel turn. Hiding them here would make an incomplete
+      // total read as complete; settlement scopes itself to the run's own
+      // rows instead.
       assert.equal(summary.projection.coverage.usageMissingAttempts, expected.missing);
       assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
       assert.equal(summary.projection.errorRequests, expected.errors);
@@ -4606,7 +4611,7 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
     abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
     abortReleased.resolve();
     await assert.rejects(settleWithin(abortedCall));
-    await assertSummary({ requests: 1, missing: 0, errors: 0 });
+    await assertSummary({ requests: 1, missing: 1, errors: 0 });
     const abortedRow = await canonicalRow('call-1');
     assert.ok(abortedRow);
     assert.equal(abortedRow.status, 'aborted');
@@ -4624,7 +4629,7 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
         new AbortController().signal,
       ),
     );
-    await assertSummary({ requests: 2, missing: 0, errors: 1 });
+    await assertSummary({ requests: 2, missing: 2, errors: 1 });
     const failedRow = await canonicalRow('call-2');
     assert.ok(failedRow);
     assert.equal(failedRow.status, 'error');
@@ -4632,11 +4637,11 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
     assert.deepEqual(await legacyGoalRows(), []);
 
     // A completion the provider answered without usage stays on the legacy
-    // zero path: hosted execution settlement refuses any range containing
-    // usage-missing rows, so a canonical missing row here would mark every
-    // such hosted run indeterminate. This residual zero is pending a ruling
-    // on that settlement coverage semantics (#5691); aborted and failed calls
-    // keep their canonical usage-unknown rows above.
+    // zero path for now: with settlement scoped to a run's own rows a
+    // canonical missing row here would no longer flip any hosted run
+    // indeterminate, so routing it to the canonical ledger is a free-standing
+    // recording question (#5691), not a settlement constraint. Aborted and
+    // failed calls above already keep their canonical usage-unknown rows.
     const silentEvaluator = evaluator(async () =>
       Response.json({
         id: 'chatcmpl-usage-unknown',
@@ -4660,7 +4665,7 @@ test('Host auxiliary aborts, errors and usage-unknown completions record canonic
       ),
       RESPONSE_TEXT,
     );
-    await assertSummary({ requests: 2, missing: 0, errors: 1 });
+    await assertSummary({ requests: 2, missing: 2, errors: 1 });
     const silentLegacy = (await legacyGoalRows()).find((row) => row.callId === callId('call-3'));
     assert.ok(silentLegacy);
     assert.equal(silentLegacy.status, 'success');

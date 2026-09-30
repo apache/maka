@@ -48,6 +48,7 @@ import {
   NO_RUN_TURN_ID,
   PRICED_COST,
   REQUEST_SUMS,
+  RUN_SETTLEMENT_COVERAGE_SUMS,
   TOKEN_SUMS,
   unreadableFilter,
   type SqlFilter,
@@ -121,6 +122,25 @@ export interface ModelCallLedgerReader {
     offset: number,
     limit: number,
   ): ModelCallLedgerResult<ModelCallUsageLogs>;
+  /**
+   * The rows one Session's own run left unsettled (#5691): its attempts whose
+   * usage the provider never reported or only partly reported. Rows recorded
+   * outside any run — the no-run sentinel turn — belong to no run's
+   * settlement and are excluded, the reverse of the ledger-wide coverage
+   * above, which must see them.
+   */
+  runSettlementCoverage(sessionId: string): RunSettlementCoverage;
+}
+
+/**
+ * What a hosted execution's settlement checks instead of the ledger-wide
+ * coverage: whether the run's own attempts all settled (#5691).
+ */
+export interface RunSettlementCoverage {
+  /** Countable rows the run owns — Session rows outside the sentinel turn. */
+  readonly attempts: number;
+  readonly usageMissingAttempts: number;
+  readonly usagePartialAttempts: number;
 }
 
 export interface CatchUpModelCallProjectionInput {
@@ -365,6 +385,22 @@ class SqliteModelCallLedger implements ModelCallLedger {
     return {
       projection: { rows: rows.map(toUsageLogRow), total: coverage.attempts, coverage },
       unreadableRecords: this.#unreadable(query, range),
+    };
+  }
+
+  runSettlementCoverage(sessionId: string): RunSettlementCoverage {
+    const db = this.#open();
+    const row = db
+      .prepare(
+        `SELECT ${RUN_SETTLEMENT_COVERAGE_SUMS}
+         FROM usage_model_call_attempts
+         WHERE cost_basis IS NOT NULL AND session_id = ? AND turn_id IS NOT ?`,
+      )
+      .get(sessionId, NO_RUN_TURN_ID) as Record<string, unknown> | undefined;
+    return {
+      attempts: count(row?.attempts),
+      usageMissingAttempts: count(row?.usageMissingAttempts),
+      usagePartialAttempts: count(row?.usagePartialAttempts),
     };
   }
 

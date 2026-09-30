@@ -219,14 +219,20 @@ describe('InteractiveUsageStores', () => {
         assert.equal(summary.projection.totalRequests, 1);
         assert.equal(summary.projection.totalCostUsd, 0);
         assert.equal(summary.projection.totalTokens.total, 0);
-        // The row is recorded under the no-run sentinel turn, so settlement
-        // coverage — which a hosted run must be able to pass despite an
-        // auxiliary failure — does not count it as missing usage. The
-        // accounting facts stay in the row itself, asserted against the table
-        // below.
-        assert.equal(summary.projection.coverage.usageMissingAttempts, 0);
+        // The ledger-wide coverage counts the row: a real unknown-usage call
+        // must stay visible in the public provenance even though it belongs to
+        // no run. Keeping a hosted run to its own rows is the run-scoped
+        // settlement coverage's job, asserted against the same stores below.
+        assert.equal(summary.projection.coverage.usageMissingAttempts, 1);
         assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
         assert.equal(summary.unreadableRecords, 0);
+        // The run-scoped settlement coverage excludes the no-run sentinel row,
+        // so an auxiliary failure cannot flip a hosted run to indeterminate.
+        assert.deepEqual(await stores.modelCalls.modelCallRunSettlementCoverage('session-aux'), {
+          attempts: 0,
+          usageMissingAttempts: 0,
+          usagePartialAttempts: 0,
+        });
 
         const logs = await stores.modelCalls.modelCallLogs({ range: 'all' }, Date.now(), 0, 10);
         assert.equal(logs.projection.total, 1);

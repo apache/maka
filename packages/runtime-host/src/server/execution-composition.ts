@@ -2818,6 +2818,7 @@ export async function createExecutionRuntimeHostComposition(
         'turn.stop': turnControl.handlers['turn.stop'],
         'usage.query': usagePricing.handlers['usage.query'],
       },
+      runSettlementCoverage: (sessionId) => usagePricing.runSettlementCoverage(sessionId),
       context: {
         hostEpoch: context.hostEpoch,
         connectionId: 'hosted-execution',

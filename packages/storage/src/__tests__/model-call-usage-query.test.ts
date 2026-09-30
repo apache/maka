@@ -99,12 +99,13 @@ describe('Usage answers over the canonical ledger', () => {
     );
   });
 
-  test('settlement coverage ignores usage-unknown rows recorded outside any run', async () => {
-    // Hosted execution settlement refuses a range whose canonical coverage
-    // holds usage-missing rows: those are a run's unsettled usage, the thing
-    // settlement must not paper over. A failed auxiliary call (#5691) is
-    // accounted the same honest way, but it belongs to no run, so its row —
-    // the no-run sentinel turn — must not flip a run to indeterminate.
+  test('ledger coverage counts usage-unknown rows recorded outside any run', async () => {
+    // A failed auxiliary call (#5691) is accounted the same honest way as a
+    // run's own unsettled dispatch, and the ledger-wide coverage — what
+    // `summary()`/`logs()` report to every client — must see both. Excluding
+    // the no-run sentinel turn here would hide a real unknown-usage call from
+    // the public provenance and let an incomplete total read as complete;
+    // keeping a hosted run to its own rows is settlement's separate job.
     await withProjectedAttempts(
       [
         attempt({
@@ -129,11 +130,68 @@ describe('Usage answers over the canonical ledger', () => {
       ],
       async (ledger) => {
         const { projection } = ledger.summary(ALL, NOW);
-        assert.equal(projection.coverage.usageMissingAttempts, 1);
+        assert.equal(projection.coverage.usageMissingAttempts, 2);
         assert.equal(projection.coverage.usageReportedAttempts, 0);
-        // Both rows stay accounted: the exclusion changes settlement
-        // coverage, not the ledger.
         assert.equal(projection.totalRequests, 2);
+      },
+    );
+  });
+
+  test('run settlement coverage holds a run to its own rows, not auxiliary ones', async () => {
+    // Hosted execution settlement asks what its own run left unsettled (#5691).
+    // Rows under the no-run sentinel turn belong to no run — a failed
+    // auxiliary call sharing the Session's id included — so they are excluded
+    // even at the same Session, and another Session's rows never count. The
+    // run's own usage-missing dispatch still shows up.
+    await withProjectedAttempts(
+      [
+        attempt({
+          attemptId: 'auxiliary-failure',
+          turnId: 'auxiliary',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+        attempt({
+          attemptId: 'other-session-dispatch',
+          sessionId: 'session-2',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+        attempt({
+          attemptId: 'run-reported',
+          logicalCallId: 'call-2',
+        }),
+        attempt({
+          attemptId: 'run-partial',
+          logicalCallId: 'call-3',
+          usageBasis: 'partial',
+          outputTokens: undefined,
+        }),
+        attempt({
+          attemptId: 'run-missing-dispatch',
+          logicalCallId: 'call-4',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      async (ledger) => {
+        assert.deepEqual(ledger.runSettlementCoverage('session-1'), {
+          attempts: 3,
+          usageMissingAttempts: 1,
+          usagePartialAttempts: 1,
+        });
       },
     );
   });
