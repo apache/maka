@@ -631,9 +631,6 @@
         "importDeclarations": 53,
         "bridgePaths": {
           "window.maka.attachments.readBytes": 1,
-          "window.maka.diagnostics.copyPreviousMainProcessInterruption": 1,
-          "window.maka.diagnostics.copyReport": 1,
-          "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
           "window.maka.onboarding.setMilestone": 1,
           "window.maka.sessions.compact": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
@@ -653,11 +650,11 @@
           "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
-          "useEffect": 3,
+          "useEffect": 2,
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
-          "useRef": 8,
+          "useRef": 7,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
           "useShellAppearance": 1,
@@ -703,6 +700,7 @@
           "./features/app-update/index.js": 1,
           "./features/conversation": 1,
           "./features/conversation/index.js": 1,
+          "./features/diagnostics/index.js": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
           "./features/overlays/index.js": 1,
@@ -715,7 +713,6 @@
           "./features/workhub": 1,
           "./follow-up-submit-routing": 1,
           "./locales/shell-copy": 1,
-          "./locales/shell-remaining-copy.js": 1,
           "./model-connection-errors": 1,
           "./nav-selection": 1,
           "./pending-items": 1,
@@ -750,8 +747,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 80,
-        "nonTriviaTokens": 9614
+        "importSpecifiers": 79,
+        "nonTriviaTokens": 9352
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
