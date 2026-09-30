@@ -2498,7 +2498,6 @@
           "./provider-connection-status": 1,
           "./provider-display": 1,
           "./provider-oauth-section": 1,
-          "./settings-error-copy": 1,
           "./settings-route-focus": 1,
           "./settings-route-header": 1,
           "@astryxdesign/core": 1,
