@@ -653,6 +653,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         readonly sideSessionId: string;
         parentDraft: string;
         sideDraft: string;
+        // Quotes recovered by a retraction ride the draft they were restored
+        // into: parked here while the other view is active, staged back when
+        // the view returns (#5265 review).
+        parentQuotes: StagedQuoteRefs;
+        sideQuotes: StagedQuoteRefs;
         parentStatus?: MakaSideConversationParentStatus;
         stopParentObserver?: () => Promise<void>;
       }
@@ -701,11 +706,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // outright (applySwitchResult) — a switch must not be able to resurrect
   // the quotes into a later submit unnoticed; a refused or failed submit
   // keeps them for the retry.
-  let stagedRewindQuotes: NonNullable<MakaSessionRewindResult['quotes']> = [];
+  //
+  // Retraction-restored quotes (#5265 review) are the exception: they come
+  // back attached to the retracted message's text, whose only remaining copy
+  // is the editor/draft the restore handed it to, so they follow that text —
+  // into the staging (while it is in the editor) or into the side
+  // conversation's draft slots (when the text is parked there) — instead of
+  // dying on a switch. followDraft marks that lane; the session key still
+  // gates turn-staged quotes exactly as #5109 left it.
+  type StagedQuoteRefs = NonNullable<MakaSessionRewindResult['quotes']>;
+  let stagedRewindQuotes: StagedQuoteRefs = [];
   let stagedQuotesSessionId: string | null = null;
+  let stagedQuotesFollowDraft = false;
   let stagedGeneration = 0;
   const effectiveStagedQuotes = () =>
-    stagedQuotesSessionId !== null && stagedQuotesSessionId === input.driver.getSessionId()
+    stagedQuotesFollowDraft ||
+    (stagedQuotesSessionId !== null && stagedQuotesSessionId === input.driver.getSessionId())
       ? stagedRewindQuotes
       : [];
   // Every write to the staging pair is a new generation. In-flight submits
@@ -713,14 +729,29 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // write has landed since, so a write that skips this setter would let a
   // stale failure callback overwrite newer staging (#5109 review).
   const setStagedQuotes = (
-    quotes: NonNullable<MakaSessionRewindResult['quotes']>,
+    quotes: StagedQuoteRefs,
     sessionId: string | null,
+    followDraft = false,
   ) => {
     stagedRewindQuotes = quotes;
     stagedQuotesSessionId = sessionId;
+    stagedQuotesFollowDraft = followDraft;
     stagedGeneration += 1;
   };
   const clearStagedQuotes = () => setStagedQuotes([], null);
+  // Quotes riding the recovered draft text move with it: taking them clears
+  // the staging (the text is leaving the editor for a draft slot), staging
+  // them back re-arms them for the view that owns the text (#5265 review).
+  const takeDraftQuotes = (): StagedQuoteRefs => {
+    if (!stagedQuotesFollowDraft || stagedRewindQuotes.length === 0) return [];
+    const quotes = stagedRewindQuotes;
+    clearStagedQuotes();
+    return quotes;
+  };
+  const stageDraftQuotes = (quotes: StagedQuoteRefs, sessionId: string) => {
+    if (quotes.length === 0) return;
+    setStagedQuotes(quotes, sessionId, true);
+  };
   // Some actions supersede a pending restoration without writing the staging
   // pair, because the staging is already empty: an ordinary submit that
   // carries no quotes, or an explicit `/quotes clear` that finds nothing.
@@ -1438,9 +1469,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     refillEditorFromQueues(retracted.text);
     // The Host returns the full MessageContent with a retraction: quotes that
     // rode a queued or steered message come back with it and restage here, so
-    // the re-edited retry does not go out without them (#5109 review).
+    // the re-edited retry does not go out without them (#5109 review). They
+    // ride the restored draft text, so they follow it across switches and
+    // draft parking (#5265 review).
     if (retracted.quotes.length > 0) {
-      setStagedQuotes(retracted.quotes, input.driver.getSessionId());
+      setStagedQuotes(retracted.quotes, input.driver.getSessionId(), true);
     }
   };
 
@@ -1472,11 +1505,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // flight has since bumped it and must not inherit context meant for the
     // original conversation (#5109 review).
     const originGeneration = stagedGeneration;
+    const originFollowDraft = stagedQuotesFollowDraft;
     const restageForRetry = (): boolean => {
       if (!staged.length) return false;
       if (input.driver.getSessionId() !== originSessionId) return false;
       if (stagedGeneration !== originGeneration) return false;
-      setStagedQuotes(staged, originSessionId);
+      setStagedQuotes(staged, originSessionId, originFollowDraft);
       return true;
     };
     const task = input.driver
@@ -2035,12 +2069,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   }: MakaSessionSwitchResult): Promise<void> => {
     resetTranscriptViewer();
     closeTodoOverlay();
-    // Every session change invalidates the staged rewind quotes outright:
+    // Every session change invalidates turn-staged rewind quotes outright:
     // keying the staging to its session only hides it while the user is
     // elsewhere, and a silent resurrection on return would send context the
     // user can no longer see (#5109 review). The rewind re-stages its own
     // quotes after this returns.
-    clearStagedQuotes();
+    //
+    // Retraction-restored quotes are the exception (#5265 review): they belong
+    // to the recovered text the editor is still holding across this switch,
+    // and the Host already removed the queue entries they came from — the
+    // staging here is the only copy. They stay live, keyed to wherever that
+    // text lives next (this session's editor, or the draft slot a side
+    // toggle/open parks it in right after this returns).
+    if (!stagedQuotesFollowDraft) clearStagedQuotes();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     syncInteractionOverlays();
@@ -2226,18 +2267,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!pair || detaching || (busy && !turnRunning)) return;
     const fromSide = input.driver.getSessionId() === pair.sideSessionId;
     const targetSessionId = fromSide ? pair.parentSessionId : pair.sideSessionId;
-    const currentDraft = editor.getText();
     const switchView = async () => {
       if (turnRunning) await switchAwayMidTurn(targetSessionId);
       else await switchSession(targetSessionId);
       if (sideConversation !== pair) return;
+      // Capture after the switch: both switch paths drain a pending
+      // retraction first, and the drain may have restored text (and its
+      // quotes) into the editor. Capturing before the wait would write that
+      // stale draft back over the recovery — side editor, parent editor, and
+      // Host queue all empty with no notice (#5265 review).
+      const currentDraft = editor.getText();
+      const currentQuotes = takeDraftQuotes();
       if (fromSide) {
         pair.sideDraft = currentDraft;
+        pair.sideQuotes = currentQuotes;
         editor.setText(pair.parentDraft);
+        stageDraftQuotes(pair.parentQuotes, pair.parentSessionId);
+        pair.parentQuotes = [];
         await stopSideParentObserver(pair);
       } else {
         pair.parentDraft = currentDraft;
+        pair.parentQuotes = currentQuotes;
         editor.setText(pair.sideDraft);
+        stageDraftQuotes(pair.sideQuotes, pair.sideSessionId);
+        pair.sideQuotes = [];
         await startSideParentObserver(pair);
       }
       requestRender();
@@ -2314,13 +2367,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         parentSessionId: result.parentSessionId,
         sideSessionId: result.sideSessionId,
         parentDraft: editor.getText(),
+        // The drain may have restored the parent's recovered text — and the
+        // quotes riding it — into the editor before the re-key; both are
+        // captured here, and the editor switches to the side view's own
+        // (empty) draft — pressing Enter here must not resubmit the parent's
+        // message inside the side conversation (#5265 review).
+        parentQuotes: takeDraftQuotes(),
         sideDraft: '',
+        sideQuotes: [],
       };
-      // The drain may have restored the parent's recovered text into the
-      // editor before the re-key; it is captured as parentDraft above, and the
-      // editor switches to the side view's own (empty) draft — pressing Enter
-      // here must not resubmit the parent's message inside the side
-      // conversation (#5265 review).
       editor.setText(sideConversation.sideDraft);
       await startSideParentObserver(sideConversation);
       opened = true;
@@ -2364,16 +2419,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // onto the parent, the close's session fence discards the text and quotes
     // the Host already removed from the side queue (#5265 review).
     await settleRetractions();
-    // The close is only admitted from an empty draft, so anything in the
-    // editor here was restored by the drain (or typed under it): aborting
-    // keeps the recovered side text visible instead of overwriting it with
-    // the parent draft below, and a later Ctrl+C clears it like any draft
+    // The close is only admitted from an empty editor with nothing staged:
+    // recovered text in the editor (or staged quotes with no text — a
+    // quote-only retraction) is the only copy left, and closing here would
+    // overwrite it with the parent draft below or clear it on the switch.
+    // Aborting keeps it visible; a later Ctrl+C clears it like any draft
     // (#5265 review).
-    if (editor.getText().length > 0) {
+    const keptDraft = editor.getText().length > 0;
+    const keptQuotes = effectiveStagedQuotes().length > 0;
+    if (keptDraft || keptQuotes) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: 'Side conversation kept open — the retracted message was restored to the draft.',
+        text: keptDraft
+          ? 'Side conversation kept open — the editor draft was kept.'
+          : 'Side conversation kept open — the staged quotes were kept.',
       });
       requestRender();
       return;
@@ -2383,7 +2443,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       pair.parentSessionId,
     );
     await applySwitchResult(result);
-    editor.setText(pair.parentDraft);
+    // The switch window only disabled submit: anything typed while the close
+    // was in flight is live user input and outranks the parked parent draft.
+    // Keep it — appending the parent draft below when both exist — instead of
+    // letting the restore silently drop it (#5265 review).
+    const liveDraft = editor.getText();
+    editor.setText(
+      liveDraft.length > 0
+        ? pair.parentDraft.length > 0
+          ? `${liveDraft}\n\n${pair.parentDraft}`
+          : liveDraft
+        : pair.parentDraft,
+    );
+    // The parent view's own quotes come back with its draft, still keyed to
+    // the session their text lives in (#5265 review).
+    stageDraftQuotes(pair.parentQuotes, pair.parentSessionId);
     await stopSideParentObserver(pair);
     sideConversation = undefined;
     if (result.cleanup === 'pending') {
@@ -2460,11 +2534,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return rewind;
       });
       await discardCurrentSidePair();
-      // The branched session starts clean: any quotes staged for the previous
-      // session are gone, and the rewound turn's own quotes become the new
-      // staging (#5109).
-      clearStagedQuotes();
+      // The rewound turn's own quotes replace anything staged — including
+      // draft quotes a drained retraction restored: replacement, not
+      // accumulation (#5109, #5265 review). When the branch carries no quotes
+      // of its own, retraction-restored quotes stay staged and keep riding
+      // the recovered text, which the rewind preserved in the editor (#5265
+      // review).
       if (result.quotes?.length) {
+        clearStagedQuotes();
         setStagedQuotes(result.quotes, input.driver.getSessionId());
         state.entries.push({
           kind: 'notice',
