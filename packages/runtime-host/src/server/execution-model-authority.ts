@@ -613,8 +613,10 @@ interface HostAuxiliaryModelCallInput {
 /**
  * Turn placeholder for canonical rows of calls no run owns: auxiliary calls
  * happen outside any turn, and the ledger's countable rows require the column.
- * The storage side excludes these rows from settlement coverage, so a failed
- * auxiliary call cannot flip a hosted run to indeterminate (#5691).
+ * The storage side records the rows' no-run ownership from this seam, so a
+ * failed auxiliary call cannot flip a hosted run to indeterminate (#5691) —
+ * including a hosted execution legally named like this placeholder
+ * (#5890 review).
  */
 const AUXILIARY_TURN_ID = NO_RUN_TURN_ID;
 

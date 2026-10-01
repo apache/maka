@@ -46,10 +46,12 @@ const ERROR_ROW = `status = 'failed'`;
 /**
  * The turn placeholder on rows recorded outside any AgentRun — failed and
  * aborted auxiliary Host model calls (#5691). Such a row is honest accounting
- * (real spend shape, unknown usage), so the ledger-wide coverage counts it;
- * what it is not is a run's unsettled obligation, and the run-scoped
- * settlement coverage excludes it on that marker. Shared with the writer so
- * the sentinel cannot drift between the two.
+ * (real spend shape, unknown usage), so the ledger-wide coverage counts it.
+ * The value is a placeholder for the table's required turn column, not the
+ * settlement discriminator: rows carry a `no_run` column written by whichever
+ * seam recorded them, because a hosted execution legally named `auxiliary`
+ * owns rows under this same turn value (#5890 review). Shared with the writer
+ * so the placeholder cannot drift.
  */
 export const NO_RUN_TURN_ID = 'auxiliary';
 
@@ -72,8 +74,9 @@ export const COVERAGE_SUMS = `
 
 /**
  * Coverage a hosted execution's settlement may hold a run to (#5691): the
- * rows the run owns — its Session's, outside the no-run sentinel turn. The
- * sentinel exclusion is the query's WHERE clause, not an aggregate here, so
+ * rows the run owns — the ones its Session's event-stream projection
+ * recorded, outside the `no_run` mark the usage-unknown seam writes. The
+ * ownership exclusion is the query's WHERE clause, not an aggregate here, so
  * this stays narrower than the ledger-wide {@link COVERAGE_SUMS} on purpose:
  * one answers "what does the ledger hold unknown-usage rows for", the other
  * "what did this run leave unsettled".

@@ -19,7 +19,9 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_USAGE_SCHEMA_VERSION = 9;
+import { NO_RUN_TURN_ID } from './model-call-usage-sql.js';
+
+export const SQLITE_USAGE_SCHEMA_VERSION = 10;
 
 /**
  * The canonical ledger's columns, in the order every statement binds them.
@@ -49,6 +51,7 @@ export const MODEL_CALL_COLUMNS = [
   'reasoning_tokens',
   'cost_basis',
   'cost_usd',
+  'no_run',
 ] as const;
 
 /**
@@ -140,6 +143,11 @@ const MODEL_CALL_TABLE = `
     reasoning_tokens INTEGER,
     cost_basis TEXT,
     cost_usd REAL,
+    -- Which writer recorded the row: the run's event-stream projection (0) or
+    -- the usage-unknown seam for calls no AgentRun owns (1). Settlement reads
+    -- this, not the turn value — a hosted execution legally named like the
+    -- no-run sentinel owns rows under the sentinel turn too (#5890 review).
+    no_run INTEGER NOT NULL DEFAULT 0,
     CHECK (${MODEL_CALL_REQUIRED_COLUMNS.map(
       (column) => `(${column} IS NULL) = (cost_basis IS NULL)`,
     ).join(' AND ')}),
@@ -221,6 +229,14 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
   // through, and the conversion below reads one.
   ensureColumn(db, 'usage_model_call_attempts', 'session_id', 'TEXT');
   spreadModelCallRecordJson(db);
+  // Rows recorded before the ownership column existed were already
+  // discriminated by the no-run sentinel turn; carry that judgment over once
+  // so a database from an earlier build keeps its no-run rows excluded when
+  // the column takes over the discrimination.
+  ensureColumn(db, 'usage_model_call_attempts', 'no_run', 'INTEGER NOT NULL DEFAULT 0');
+  db.prepare(
+    `UPDATE usage_model_call_attempts SET no_run = 1 WHERE turn_id = ? AND no_run = 0`,
+  ).run(NO_RUN_TURN_ID);
   db.exec(`
     CREATE INDEX IF NOT EXISTS usage_model_call_attempts_completed_at
       ON usage_model_call_attempts(completed_at DESC, attempt_id);
@@ -364,7 +380,10 @@ function spreadModelCallRecordJson(db: DatabaseSync): void {
       attempt_id,
       completed_at,
       session_id,
-      ${pricing}
+      ${pricing},
+      -- Pre-column rows all predate the usage-unknown seam: every one of them
+      -- was recorded by the run's event-stream projection.
+      0 AS no_run
     FROM classified;
 
     DROP TABLE usage_model_call_attempts_blob;

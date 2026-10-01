@@ -125,9 +125,9 @@ export interface ModelCallLedgerReader {
   /**
    * The rows one Session's own run left unsettled (#5691): its attempts whose
    * usage the provider never reported or only partly reported. Rows recorded
-   * outside any run — the no-run sentinel turn — belong to no run's
-   * settlement and are excluded, the reverse of the ledger-wide coverage
-   * above, which must see them.
+   * outside any run — by the usage-unknown seam, which the ledger marks
+   * `no_run` — belong to no run's settlement and are excluded, the reverse of
+   * the ledger-wide coverage above, which must see them.
    */
   runSettlementCoverage(sessionId: string): RunSettlementCoverage;
 }
@@ -137,7 +137,7 @@ export interface ModelCallLedgerReader {
  * coverage: whether the run's own attempts all settled (#5691).
  */
 export interface RunSettlementCoverage {
-  /** Countable rows the run owns — Session rows outside the sentinel turn. */
+  /** Countable rows the run owns — its Session's rows outside the `no_run` mark. */
   readonly attempts: number;
   readonly usageMissingAttempts: number;
   readonly usagePartialAttempts: number;
@@ -178,7 +178,9 @@ export interface UsageUnknownModelCallRecord {
   /**
    * Calls outside any run's turn carry the shared no-run sentinel
    * (`NO_RUN_TURN_ID`) — the table requires the column for every countable
-   * row, and settlement coverage excludes rows recorded under it.
+   * row. The value is a placeholder, not the discriminator: the ledger
+   * records the row's no-run ownership from this seam itself, so an
+   * execution legally named like the sentinel keeps its own rows.
    */
   readonly turnId: string;
   readonly callKind: ModelCallKind;
@@ -394,9 +396,9 @@ class SqliteModelCallLedger implements ModelCallLedger {
       .prepare(
         `SELECT ${RUN_SETTLEMENT_COVERAGE_SUMS}
          FROM usage_model_call_attempts
-         WHERE cost_basis IS NOT NULL AND session_id = ? AND turn_id IS NOT ?`,
+         WHERE cost_basis IS NOT NULL AND session_id = ? AND no_run = 0`,
       )
-      .get(sessionId, NO_RUN_TURN_ID) as Record<string, unknown> | undefined;
+      .get(sessionId) as Record<string, unknown> | undefined;
     return {
       attempts: count(row?.attempts),
       usageMissingAttempts: count(row?.usageMissingAttempts),
@@ -547,6 +549,9 @@ function bindModelCallAttempt(attempt: ModelCallAttempt): (string | number | nul
     reasoning_tokens: attempt.reasoningTokens ?? null,
     cost_basis: attempt.costBasis,
     cost_usd: attempt.costUsd ?? null,
+    // The projection's only source is the AgentRun authority: every row it
+    // writes is run-owned, whatever turn the run ran under.
+    no_run: 0,
   };
   return MODEL_CALL_COLUMNS.map((column) => values[column]);
 }
@@ -584,6 +589,9 @@ function bindUsageUnknownModelCallAttempt(
     reasoning_tokens: null,
     cost_basis: 'unpriced',
     cost_usd: null,
+    // The one write outside any run's event stream: the ledger marks the row
+    // no-run here rather than inferring ownership from the turn value.
+    no_run: 1,
   };
   return MODEL_CALL_COLUMNS.map((column) => values[column]);
 }

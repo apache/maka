@@ -19,13 +19,61 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
+  type ModelCallLedger,
+  NO_RUN_TURN_ID,
+  type UsageUnknownModelCallRecord,
+} from '../model-call-ledger.js';
+import {
+  appendAuthorityEvent,
   modelCallAttempt as attempt,
   MODEL_CALL_NOW as NOW,
+  withLedger,
   withProjectedAttempts,
 } from './fixtures/model-call-attempt.js';
 
 const ALL = { range: 'all' } as const;
+
+/**
+ * Seeds rows the way production writes them: run-owned attempts through the
+ * AgentRun authority's projection, calls no run owns through the usage-unknown
+ * seam. Ownership follows the writer, so a test cannot fake a no-run row by
+ * projecting a sentinel turn value.
+ */
+async function withRecordedAttempts(
+  projected: readonly ModelCallAttempt[],
+  noRun: readonly UsageUnknownModelCallRecord[],
+  run: (ledger: ModelCallLedger) => Promise<void>,
+): Promise<void> {
+  await withLedger(async (ledger, root) => {
+    projected.forEach((value, index) => {
+      appendAuthorityEvent(root, index, value, value.sessionId, value.runId);
+    });
+    await ledger.catchUpProjection();
+    for (const record of noRun) await ledger.recordUsageUnknownAttempt(record);
+    await run(ledger);
+  });
+}
+
+/** A failed auxiliary Host call, as the usage-unknown seam records it. */
+function usageUnknownAttempt(
+  overrides: Partial<UsageUnknownModelCallRecord> = {},
+): UsageUnknownModelCallRecord {
+  return {
+    attemptId: 'auxiliary-failure',
+    completedAt: NOW - 100,
+    sessionId: 'session-1',
+    logicalCallId: 'auxiliary-failure',
+    turnId: NO_RUN_TURN_ID,
+    callKind: 'goal_evaluation',
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    latencyMs: 5,
+    status: 'failed',
+    ...overrides,
+  };
+}
 
 describe('Usage answers over the canonical ledger', () => {
   test('a total never counts unpriced spend as zero, and says so in coverage', async () => {
@@ -103,21 +151,11 @@ describe('Usage answers over the canonical ledger', () => {
     // A failed auxiliary call (#5691) is accounted the same honest way as a
     // run's own unsettled dispatch, and the ledger-wide coverage — what
     // `summary()`/`logs()` report to every client — must see both. Excluding
-    // the no-run sentinel turn here would hide a real unknown-usage call from
-    // the public provenance and let an incomplete total read as complete;
-    // keeping a hosted run to its own rows is settlement's separate job.
-    await withProjectedAttempts(
+    // the no-run rows here would hide a real unknown-usage call from the
+    // public provenance and let an incomplete total read as complete; keeping
+    // a hosted run to its own rows is settlement's separate job.
+    await withRecordedAttempts(
       [
-        attempt({
-          attemptId: 'auxiliary-failure',
-          turnId: 'auxiliary',
-          status: 'failed',
-          usageBasis: 'missing',
-          inputTokens: undefined,
-          outputTokens: undefined,
-          costBasis: 'unpriced',
-          costUsd: undefined,
-        }),
         attempt({
           attemptId: 'run-dispatch',
           status: 'failed',
@@ -128,6 +166,7 @@ describe('Usage answers over the canonical ledger', () => {
           costUsd: undefined,
         }),
       ],
+      [usageUnknownAttempt()],
       async (ledger) => {
         const { projection } = ledger.summary(ALL, NOW);
         assert.equal(projection.coverage.usageMissingAttempts, 2);
@@ -139,22 +178,12 @@ describe('Usage answers over the canonical ledger', () => {
 
   test('run settlement coverage holds a run to its own rows, not auxiliary ones', async () => {
     // Hosted execution settlement asks what its own run left unsettled (#5691).
-    // Rows under the no-run sentinel turn belong to no run — a failed
-    // auxiliary call sharing the Session's id included — so they are excluded
-    // even at the same Session, and another Session's rows never count. The
-    // run's own usage-missing dispatch still shows up.
-    await withProjectedAttempts(
+    // Rows the usage-unknown seam recorded — a failed auxiliary call sharing
+    // the Session's id included — belong to no run and are excluded even at
+    // the same Session, and another Session's rows never count. The run's own
+    // usage-missing dispatch still shows up.
+    await withRecordedAttempts(
       [
-        attempt({
-          attemptId: 'auxiliary-failure',
-          turnId: 'auxiliary',
-          status: 'failed',
-          usageBasis: 'missing',
-          inputTokens: undefined,
-          outputTokens: undefined,
-          costBasis: 'unpriced',
-          costUsd: undefined,
-        }),
         attempt({
           attemptId: 'other-session-dispatch',
           sessionId: 'session-2',
@@ -186,12 +215,62 @@ describe('Usage answers over the canonical ledger', () => {
           costUsd: undefined,
         }),
       ],
+      [usageUnknownAttempt()],
       async (ledger) => {
         assert.deepEqual(ledger.runSettlementCoverage('session-1'), {
           attempts: 3,
           usageMissingAttempts: 1,
           usagePartialAttempts: 1,
         });
+      },
+    );
+  });
+
+  test('run settlement coverage holds a hosted execution named like the sentinel to its own rows', async () => {
+    // The execution id is a client-chosen entity id and the runner reuses it as
+    // the root Turn id, so a hosted execution named `auxiliary` owns rows under
+    // `turn_id = 'auxiliary'` — on (session_id, turn_id) indistinguishable from
+    // no-run sentinel rows (#5890 review). Settlement must read ownership from
+    // how a row was recorded, not from the turn value, or this execution's
+    // missing-usage dispatch disappears from its own settlement and
+    // `incompleteUsageReason` releases the environment with unknown usage.
+    await withRecordedAttempts(
+      [
+        attempt({
+          attemptId: 'run-reported',
+          sessionId: 'auxiliary',
+          runId: 'run-auxiliary',
+          turnId: 'auxiliary',
+          logicalCallId: 'call-reported',
+        }),
+        attempt({
+          attemptId: 'run-missing-dispatch',
+          sessionId: 'auxiliary',
+          runId: 'run-auxiliary',
+          turnId: 'auxiliary',
+          logicalCallId: 'call-missing',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      [usageUnknownAttempt({ sessionId: 'auxiliary' })],
+      async (ledger) => {
+        // The run-owned missing dispatch is this execution's unsettled
+        // obligation; the failed auxiliary call is nobody's. Public coverage
+        // keeps counting both.
+        assert.deepEqual(ledger.runSettlementCoverage('auxiliary'), {
+          attempts: 2,
+          usageMissingAttempts: 1,
+          usagePartialAttempts: 0,
+        });
+        assert.equal(
+          ledger.summary({ range: 'all' }, NOW).projection.coverage.usageMissingAttempts,
+          2,
+        );
       },
     );
   });
