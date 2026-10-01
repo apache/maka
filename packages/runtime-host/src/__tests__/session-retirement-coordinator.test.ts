@@ -1402,12 +1402,12 @@ describe('archive retention through the removal path', () => {
         rig.setArchivedAt([late], enabledAt + 5 * DAY);
 
         // Exactly the period after enablement is not "longer than" it.
-        harness.now = enabledAt + 30 * DAY;
+        await rig.advanceTo(enabledAt + 30 * DAY);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([legacy, early, late]), [legacy, early, late]);
 
         // An unknown or earlier archive time counts from enablement.
-        harness.now = enabledAt + 30 * DAY + 1;
+        await rig.advanceTo(enabledAt + 30 * DAY + 1);
         const first = await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([legacy, early, late]), [late]);
         assert.equal(first.lastSweep?.deleted, 2);
@@ -1418,10 +1418,10 @@ describe('archive retention through the removal path', () => {
         });
 
         // A later archive time counts from itself, with the same strict boundary.
-        harness.now = enabledAt + 35 * DAY;
+        await rig.advanceTo(enabledAt + 35 * DAY);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([late]), [late]);
-        harness.now = enabledAt + 35 * DAY + 1;
+        await rig.advanceTo(enabledAt + 35 * DAY + 1);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([late]), []);
       });
@@ -1435,17 +1435,17 @@ describe('archive retention through the removal path', () => {
         const enabledAt = await rig.enable(30);
         rig.setArchivedAt([task], enabledAt);
 
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         await rig.setLifecycle(task, 'active');
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([task]), [task]);
 
         await rig.setLifecycle(task, 'archived');
         rig.setArchivedAt([task], enabledAt + 31 * DAY);
-        harness.now = enabledAt + 61 * DAY;
+        await rig.advanceTo(enabledAt + 61 * DAY);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([task]), [task]);
-        harness.now = enabledAt + 61 * DAY + 1;
+        await rig.advanceTo(enabledAt + 61 * DAY + 1);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([task]), []);
       });
@@ -1460,7 +1460,7 @@ describe('archive retention through the removal path', () => {
         const enabledAt = await rig.enable(30);
         rig.setArchivedAt(harness.familyIds, null);
 
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
 
@@ -1492,7 +1492,7 @@ describe('archive retention through the removal path', () => {
         const enabledAt = await rig.enable(30);
         rig.setArchivedAt([parent, orphan], null);
 
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         const result = await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([parent, active, orphan]), [parent, active, orphan]);
         assert.equal(result.lastSweep?.needsReview, 2);
@@ -1512,10 +1512,10 @@ describe('archive retention through the removal path', () => {
         rig.setArchivedAt([harness.revisionId], enabledAt + 5 * DAY);
 
         // The root alone is due; its revision is not, so neither is deleted.
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
-        harness.now = enabledAt + 35 * DAY + 1;
+        await rig.advanceTo(enabledAt + 35 * DAY + 1);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present(harness.familyIds), []);
       });
@@ -1530,7 +1530,7 @@ describe('archive retention through the removal path', () => {
         rig.setArchivedAt(harness.familyIds, null);
         rig.afterCandidates(() => harness.store.setFlagged(harness.revisionId, true));
 
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
       });
@@ -1554,7 +1554,7 @@ describe('archive retention through the removal path', () => {
           assert.equal(removed.ok, true);
         });
 
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         const result = await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([task]), []);
         assert.equal(result.lastDeletion, undefined);
@@ -1590,7 +1590,7 @@ describe('archive retention through the removal path', () => {
           harness.actions.disposed.push(sessionId);
         };
 
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         await rig.sweepUntilIdle();
         await disabling;
         // When the change answered, the admitted family was gone and recorded;
@@ -1612,7 +1612,7 @@ describe('archive retention through the removal path', () => {
         rig.setArchivedAt([task], null);
         harness.blockers.message.add(task);
 
-        harness.now = enabledAt + 31 * DAY;
+        await rig.advanceTo(enabledAt + 31 * DAY);
         const busy = await rig.sweepUntilIdle();
         assert.deepEqual(await rig.present([task]), [task]);
         assert.equal(busy.lastSweep?.skippedBusy, 1);
@@ -1640,6 +1640,11 @@ interface RetentionRig {
   /** Runs once, right after the next candidate read and before any admission. */
   afterCandidates(hook: () => Promise<unknown>): void;
   sweepUntilIdle(): Promise<StorageRetentionQueryResult>;
+  /**
+   * Moves the Host clock as a running Host sees it, sweeping at least every
+   * six days on the way so no step reads as a forward clock jump.
+   */
+  advanceTo(time: number): Promise<void>;
   /** The given Sessions that still exist, in order. */
   present(sessionIds: readonly string[]): Promise<string[]>;
 }
@@ -1725,6 +1730,13 @@ async function withRetention(
     query,
     afterCandidates: (hook) => {
       afterCandidates = hook;
+    },
+    advanceTo: async (time) => {
+      while (time - (harness.now ?? Date.now()) > 6 * DAY) {
+        harness.now = (harness.now ?? Date.now()) + 6 * DAY;
+        await retention.sweep();
+      }
+      harness.now = time;
     },
     sweepUntilIdle: async () => {
       for (let tick = 0; await retention.sweep(); tick += 1) assert.ok(tick < 100);

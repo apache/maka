@@ -34,11 +34,16 @@ export interface ArchiveRetentionCopy {
   readonly conflict: string;
   /** Nothing archived would be deleted. */
   readonly previewNone: string;
-  /** A lower bound: deleting a task can orphan archived subtasks that qualify later. */
+  /**
+   * Neither bound: the count includes families a sweep keeps (busy, for
+   * review) and misses subtasks a deletion orphans into the archive later.
+   */
   preview(count: number, date: string): string;
   lastCleanup(count: number, size: string | undefined, date: string): string;
   needsReview(count: number): string;
   readonly paused: string;
+  /** Deletions held after the clock moved ahead by about `days` days. */
+  held(until: string, days: number): string;
   readonly confirmEnableTitle: string;
   readonly confirmChangeTitle: string;
   /** `date` is the Client's own now plus `days`, so it is approximate. */
@@ -65,18 +70,20 @@ const COPY_BY_LOCALE = {
     conflict: '设置已在别处更改，已重新读取。',
     previewNone: '目前没有会被删除的已归档任务。',
     preview: (count: number, date: string) =>
-      `至少涵盖 ${count} 个已归档任务，最早在 ${date} 之后删除。`,
+      `${count} 个已归档任务适用自动清理，最早在 ${date} 之后删除。`,
     lastCleanup: (count: number, size: string | undefined, date: string) =>
       `上次自动清理：${date} 删除了 ${count} 个任务${size ? `（约 ${size}）` : ''}`,
     needsReview: (count: number) =>
       `${count} 个任务需要你处理：它们使用子代理工作树，或仍有进行中的子任务，请手动删除。`,
     paused: '自动清理已暂停：本机时钟早于已记录的时间。时钟追上后会自动恢复。',
+    held: (until: string, days: number) =>
+      `自动清理将在 ${until} 之后恢复：自此主机上次运行以来，系统时钟向前跳了约 ${days} 天。请检查系统时间；如果时间有误，请关闭自动清理。`,
     confirmEnableTitle: '开启自动清理？',
     confirmChangeTitle: '修改保留天数？',
     confirmDescription: (days: number, count: number, date: string) =>
       `已归档任务将在归档 ${days} 天后删除，计时最早从现在开始。` +
       (count > 0
-        ? `目前至少涵盖 ${count} 个任务，最早约在 ${date} 之后删除。`
+        ? `目前有 ${count} 个已归档任务适用自动清理，最早约在 ${date} 之后删除。`
         : '目前没有涵盖的任务。') +
       '已置顶的任务会保留。删除后无法恢复。',
     confirmEnable: '开启',
@@ -99,18 +106,20 @@ const COPY_BY_LOCALE = {
     conflict: '設定已在別處變更，已重新讀取。',
     previewNone: '目前沒有會被刪除的已歸檔任務。',
     preview: (count: number, date: string) =>
-      `至少涵蓋 ${count} 個已歸檔任務，最早在 ${date} 之後刪除。`,
+      `${count} 個已歸檔任務適用自動清理，最早在 ${date} 之後刪除。`,
     lastCleanup: (count: number, size: string | undefined, date: string) =>
       `上次自動清理：${date} 刪除了 ${count} 個任務${size ? `（約 ${size}）` : ''}`,
     needsReview: (count: number) =>
       `${count} 個任務需要你處理：它們使用子代理工作樹，或仍有進行中的子任務，請手動刪除。`,
     paused: '自動清理已暫停：本機時鐘早於已記錄的時間。時鐘追上後會自動恢復。',
+    held: (until: string, days: number) =>
+      `自動清理將在 ${until} 之後恢復：自此主機上次執行以來，系統時鐘向前跳了約 ${days} 天。請檢查系統時間；如果時間有誤，請關閉自動清理。`,
     confirmEnableTitle: '開啟自動清理？',
     confirmChangeTitle: '修改保留天數？',
     confirmDescription: (days: number, count: number, date: string) =>
       `已歸檔任務將在歸檔 ${days} 天後刪除，計時最早從現在開始。` +
       (count > 0
-        ? `目前至少涵蓋 ${count} 個任務，最早約在 ${date} 之後刪除。`
+        ? `目前有 ${count} 個已歸檔任務適用自動清理，最早約在 ${date} 之後刪除。`
         : '目前沒有涵蓋的任務。') +
       '已置頂的任務會保留。刪除後無法復原。',
     confirmEnable: '開啟',
@@ -133,19 +142,21 @@ const COPY_BY_LOCALE = {
     conflict: 'The setting changed elsewhere and has been reloaded.',
     previewNone: 'No archived tasks would be deleted yet.',
     preview: (count: number, date: string) =>
-      `Covers at least ${count === 1 ? '1 archived task' : `${count} archived tasks`}; the first can be deleted after ${date}.`,
+      `${count === 1 ? '1 archived task is' : `${count} archived tasks are`} subject to automatic cleanup; the first can be deleted after ${date}.`,
     lastCleanup: (count: number, size: string | undefined, date: string) =>
       `Last automatic cleanup: deleted ${count === 1 ? '1 task' : `${count} tasks`}${size ? ` (about ${size})` : ''} on ${date}`,
     needsReview: (count: number) =>
       `${count === 1 ? '1 task needs' : `${count} tasks need`} review: they use a subagent worktree or have active subtasks, so delete them by hand.`,
     paused:
       'Automatic cleanup is paused: this computer’s clock reads earlier than a time already recorded. It resumes once the clock catches up.',
+    held: (until: string, days: number) =>
+      `Automatic cleanup resumes after ${until} because the system clock moved ahead by about ${days === 1 ? '1 day' : `${days} days`} since this Host last ran. Check your system time; if it is wrong, turn cleanup off.`,
     confirmEnableTitle: 'Turn on automatic cleanup?',
     confirmChangeTitle: 'Change the period?',
     confirmDescription: (days: number, count: number, date: string) =>
       `Archived tasks will be deleted ${days} days after they were archived, counting from now at the earliest. ` +
       (count > 0
-        ? `At least ${count === 1 ? '1 task is' : `${count} tasks are`} covered now; none is deleted before about ${date}. `
+        ? `${count === 1 ? '1 archived task is' : `${count} archived tasks are`} subject to automatic cleanup now; none is deleted before about ${date}. `
         : 'No tasks are covered yet. ') +
       'Pinned tasks are kept. Deleted tasks cannot be restored.',
     confirmEnable: 'Turn on',

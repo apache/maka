@@ -52,6 +52,29 @@ export function archiveRetentionDeadline(start: number, days: ArchiveRetentionDa
   return start + days * ARCHIVE_RETENTION_DAY_MS;
 }
 
+/**
+ * A forward gap in the wall clock larger than this, between two times the Host
+ * observed, holds deletions: the smaller of the retention window and 7 days.
+ * A wrong clock set far ahead would otherwise make a whole backlog eligible at
+ * once, and so would a long time offline, which a hold costs only a day.
+ */
+export function archiveRetentionGapThreshold(days: ArchiveRetentionDays): number {
+  return Math.min(days, 7) * ARCHIVE_RETENTION_DAY_MS;
+}
+
+/** How long a forward gap holds deletions after it is observed. */
+export const ARCHIVE_RETENTION_HOLD_MS = 24 * 60 * 60 * 1000;
+
+/** Deletions held after the wall clock moved ahead further than a sweep expects. */
+export interface ArchiveRetentionHold {
+  /** The last Host time observed before the gap. */
+  readonly since: number;
+  /** When the gap was observed. */
+  readonly detectedAt: number;
+  /** Deletions resume once the Host clock reaches this. */
+  readonly until: number;
+}
+
 /** The latest automatic sweep, as the Host last recorded it. */
 export interface ArchiveRetentionSweep {
   /** Host clock, epoch milliseconds. */
@@ -119,6 +142,18 @@ export function decodeArchiveRetentionDeletion(
       ? {}
       : { bytes: count(deletion.bytes, 'retention deletion bytes', fail) }),
   };
+}
+
+export function decodeArchiveRetentionHold(
+  value: unknown,
+  fail: (message: string) => Error,
+): ArchiveRetentionHold {
+  const hold = exactRecord(value, 'retention hold', ['since', 'detectedAt', 'until'], [], fail);
+  const since = count(hold.since, 'retention hold since', fail);
+  const detectedAt = count(hold.detectedAt, 'retention hold detectedAt', fail);
+  const until = count(hold.until, 'retention hold until', fail);
+  if (since > detectedAt || detectedAt > until) throw fail('Invalid retention hold order');
+  return { since, detectedAt, until };
 }
 
 function exactRecord(

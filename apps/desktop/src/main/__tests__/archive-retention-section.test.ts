@@ -141,7 +141,7 @@ test('a change that starts the clock is confirmed with the Host count first', as
     now: 10 * DAY,
   });
   assert.equal(confirm.title, copy.confirmEnableTitle);
-  assert.match(confirm.description ?? '', /At least 4 tasks are covered now/);
+  assert.match(confirm.description ?? '', /4 archived tasks are subject to automatic cleanup now/);
   assert.ok(
     confirm.description?.includes(`before about ${formatAbsoluteTimestamp(70 * DAY, 'en')}`),
   );
@@ -239,7 +239,7 @@ test('the section states the rules, the preview, the last cleanup and what needs
   assert.match(text, /Pinned tasks are kept\. Deletion is permanent\./);
   assert.ok(
     text.includes(
-      `Covers at least 5 archived tasks; the first can be deleted after ${formatAbsoluteTimestamp(31 * DAY, 'en')}.`,
+      `5 archived tasks are subject to automatic cleanup; the first can be deleted after ${formatAbsoluteTimestamp(31 * DAY, 'en')}.`,
     ),
   );
   assert.ok(
@@ -261,6 +261,7 @@ test('the section shows a paused sweep and hides what it has not done', async ()
     lastSweep: { at: 5, deleted: 0, skippedBusy: 0, needsReview: 0, failed: 0, paused: true },
   });
   assert.match(text, /Automatic cleanup is paused/);
+  assert.doesNotMatch(text, /resumes after/);
   assert.match(text, /No archived tasks would be deleted yet\./);
   assert.doesNotMatch(text, /Last automatic cleanup/);
   assert.doesNotMatch(text, /need review/);
@@ -273,4 +274,22 @@ test('the legacy Archived tasks page renders the section and makes no bridge cal
   );
   assert.match(source, /<ArchiveRetentionSection \/>/);
   assert.doesNotMatch(source, /window\.maka|\bmaka\.storage\b|useState|useEffect/);
+});
+
+test('the section says when a held cleanup resumes and how far the clock moved', async () => {
+  const until = 50 * DAY;
+  const { text } = await render({
+    revision: 1,
+    enabled: true,
+    days: 30,
+    enabledAt: 1,
+    preview: { count: 2, eligibleAt: 31 * DAY },
+    hold: { since: 10 * DAY, detectedAt: 49 * DAY, until },
+  });
+  assert.ok(
+    text.includes(
+      `Automatic cleanup resumes after ${formatAbsoluteTimestamp(until, 'en')} because the system clock moved ahead by about 39 days since this Host last ran.`,
+    ),
+  );
+  assert.match(text, /if it is wrong, turn cleanup off/);
 });

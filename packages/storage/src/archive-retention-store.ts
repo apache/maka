@@ -20,8 +20,10 @@
 import {
   type ArchiveRetentionDays,
   type ArchiveRetentionDeletion,
+  type ArchiveRetentionHold,
   type ArchiveRetentionSweep,
   decodeArchiveRetentionDeletion,
+  decodeArchiveRetentionHold,
   decodeArchiveRetentionSweep,
   isArchiveRetentionDays,
 } from '@maka/core/archive-retention';
@@ -51,6 +53,8 @@ export interface ArchiveRetentionDocument {
   readonly latest?: {
     readonly lastSweep?: ArchiveRetentionSweep;
     readonly lastDeletion?: ArchiveRetentionDeletion;
+    /** Deletions held after a forward clock gap; any setting change clears it. */
+    readonly hold?: ArchiveRetentionHold;
   };
 }
 
@@ -121,7 +125,7 @@ function decodeArchiveRetentionDocument(value: unknown): ArchiveRetentionDocumen
   const latest =
     document.latest === undefined
       ? undefined
-      : exactRecord(document.latest, `${FILE}.latest`, [], ['lastSweep', 'lastDeletion']);
+      : exactRecord(document.latest, `${FILE}.latest`, [], ['lastSweep', 'lastDeletion', 'hold']);
   return {
     version: VERSION,
     revision: count(document.revision, 'revision'),
@@ -142,6 +146,9 @@ function decodeArchiveRetentionDocument(value: unknown): ArchiveRetentionDocumen
               : {
                   lastDeletion: decodeArchiveRetentionDeletion(latest.lastDeletion, documentError),
                 }),
+            ...(latest.hold === undefined
+              ? {}
+              : { hold: decodeArchiveRetentionHold(latest.hold, documentError) }),
           },
         }),
   };

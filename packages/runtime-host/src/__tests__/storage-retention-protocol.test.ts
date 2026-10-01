@@ -39,6 +39,7 @@ const queried: StorageRetentionQueryResult = {
   preview: { count: 4, eligibleAt: 1_705_184_000_000 },
   lastSweep: { at: 1_706_000_000_000, deleted: 2, skippedBusy: 1, needsReview: 1, failed: 0 },
   lastDeletion: { at: 1_706_000_000_000, count: 2, bytes: 4096 },
+  hold: { since: 1_705_000_000_000, detectedAt: 1_706_000_000_000, until: 1_706_086_400_000 },
 };
 
 function minimal() {
@@ -128,6 +129,11 @@ describe('storage retention protocol', () => {
     rejects(() =>
       querySpec.decodeOutput({ ...queried, lastDeletion: { at: 1, count: 1, bytes: -1 } }),
     );
+    // A hold resumes after it was detected, which is after the time it measures from.
+    rejects(() =>
+      querySpec.decodeOutput({ ...queried, hold: { since: 3, detectedAt: 2, until: 4 } }),
+    );
+    rejects(() => querySpec.decodeOutput({ ...queried, hold: { since: 1, until: 4 } }));
     rejects(() => setSpec.decodeOutput({ kind: 'committed' }));
     rejects(() => setSpec.decodeOutput({ kind: 'stale' }));
     rejects(() =>
