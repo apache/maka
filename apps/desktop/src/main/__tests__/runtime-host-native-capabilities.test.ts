@@ -31,6 +31,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
+import { buildBrowserTools } from '../browser/browser-tools.js';
 import { buildManagedArtifactPreviewTools } from '../managed-artifact-preview-tools.js';
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
@@ -41,6 +42,24 @@ function jsonSchema(schema: Record<string, unknown>): {
 } {
   return { jsonSchema: schema };
 }
+
+test('production browser observation tools publish a valid seven-tool manifest', () => {
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: buildBrowserTools(),
+    resolveBrowserUrl: () => 'https://example.com/',
+    releaseBrowserSession() {}, computerUseTools: computerTools(), releaseDesktopInteractionSession() {},
+  });
+  assert.doesNotThrow(() => decodeClientCapabilityReplaceInput({ registrationId: 'registration-1', offers: provider.offers() }));
+  const offer = provider.offers().find(item => item.offerId === 'desktop_browser');
+  assert.ok(offer);
+  assert.equal(offer.tools.length, 7);
+  const inspect = offer.tools.find(tool => tool.name === 'browser_inspect');
+  assert.ok(inspect);
+  const schema = inspect.inputSchema as { properties: Record<string, unknown> };
+  assert.ok(schema.properties.selector);
+  assert.ok(schema.properties.scope);
+  assert.ok(schema.properties.maxElements);
+});
 
 test('Artifact preview is discoverable and admitted without a pre-existing browser origin', async () => {
   let invoked = false;

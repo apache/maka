@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+<html lang="en">
+<head><meta charset="utf-8"><title>PR observation fixture</title>
+<style>body{font:16px/1.5 system-ui;margin:24px}input,textarea{display:block;margin:8px 0}button,summary,label{padding:8px}table{border-collapse:collapse}td{padding:12px;border:1px solid #999}.contents{display:contents}</style></head>
+<body>
+<div id="repository-menu" style="display:none">__HIDDEN_REPOSITORIES__</div>
+<details id="closed-repository-menu"><summary>Select repository</summary><div>__CLOSED_REPOSITORIES__</div></details>
+<form id="new_pull_request">
+<h1>Open a pull request</h1>
+<label for="title">Add a title</label><input id="title" name="pull_request[title]" placeholder="Title">
+<label for="body">Add a description</label><textarea id="body" name="pull_request[body]"></textarea>
+<button class="preview-tab" type="button">Preview</button>
+<div id="preview" hidden><h2>Before / After</h2><table><tbody><tr><td>Before — broken underline</td><td>After — continuous underline</td></tr></tbody></table></div>
+<div><button class="btn-primary" type="submit">Draft pull request</button>
+<details id="pr-type"><summary aria-label="Select a type of pull request">Pull request type</summary>
+<label role="menuitemradio"><input id="draft_off" type="radio" name="draft" value="off">Create pull request — ready for review</label>
+<label role="menuitemradio"><input id="draft_on" type="radio" name="draft" value="on" checked>Draft pull request</label>
+</details></div>
+<div hidden id="sidebar">__OTHER_SUBMITS__<div><label role="menuitemradio">Hidden first radio</label></div><div><label role="menuitemradio">Hidden second radio</label></div><div><label role="menuitemradio">Hidden third radio</label></div></div>
+<input type="hidden" id="private-csrf-identifier" value="PRIVATE_CSRF_VALUE">
+<input type="password" id="password" aria-label="Password" value="PRIVATE_PASSWORD_VALUE">
+<div class="contents"><button id="contents-control" type="button">Display contents control</button></div>
+<div style="opacity:0"><button id="transparent-control" type="button">Invisible control</button></div>
+<button id="disabled-control" type="button" disabled>Disabled control</button>
+</form>
+<div id="result" hidden><h1>Pull request created</h1></div>
+<script>
+window.submissions = 0;
+document.querySelector('.preview-tab').onclick = () => { document.getElementById('preview').hidden = false; };
+document.getElementById('draft_off').onchange = () => { document.querySelector('.btn-primary').textContent = 'Create pull request'; };
+document.getElementById('new_pull_request').onsubmit = event => { event.preventDefault(); window.submissions++; document.getElementById('result').hidden = false; };
+</script>
+</body></html>

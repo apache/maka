@@ -30,11 +30,17 @@ import {
   withBrowserPage,
 } from './session.js';
 import { parseNavigable } from './logic.js';
+import {
+  browserObservationJs,
+  type BrowserObservation,
+  type BrowserObservationOptions,
+  BROWSER_OBSERVATION_MAX_CHARS,
+} from './browser-observation.js';
 
 /**
- * Generic observe→act browser tools over opencli's numbered-ref model:
- * browser_snapshot lists interactive elements as `[N]` refs, the act tools
- * (click / type) take a ref and self-verify the match. All six drive the
+ * Generic observe→act browser tools over OpenCLI's action transport:
+ * structured observations expose visible controls and document-local CSS refs.
+ * Legacy OpenCLI numbered refs remain accepted by the act tools. All tools drive the
  * conversation's OWN embedded-browser view through BrowserSession.
  *
  * Permission: the Runtime Host admits these Client Capability calls against an
@@ -203,34 +209,102 @@ export function buildBrowserNavigateTool(): MakaTool<{ url: string }, string> {
   };
 }
 
-export function buildBrowserSnapshotTool(): MakaTool<Record<string, never>, string> {
+const observationScope = z.string().min(1).max(2000).optional();
+const observationLimit = z.number().int().min(1).max(100).optional();
+
+export function buildBrowserSnapshotTool(): MakaTool<
+  { selector?: string; maxElements?: number; source?: 'visible' | 'opencli' }, string
+> {
   return {
     name: 'browser_snapshot',
     displayName: '浏览器快照',
     description:
-      'Observe the current page as a list of interactive elements (links, buttons, inputs), each tagged with a `[N]` ' +
-      'reference you pass to browser_click / browser_type. This is the primary way to see what is on the page before acting.',
-    parameters: z.object({}),
+      'Observe visible controls and headings as bounded structured data. Use selector to scope a form or dialog. ' +
+      'Each candidate includes a document-local CSS ref accepted by browser_click / browser_type. ' +
+      'Hidden menus are excluded. Reload/navigation invalidates refs; inspect again rather than guessing selectors. ' +
+      'Use source=opencli for a capped legacy tree (including supported shadow/iframe observations); no selector/maxElements in that mode.',
+    parameters: z.object({ selector: observationScope, maxElements: observationLimit, source: z.enum(['visible', 'opencli']).optional() }),
     categoryHint: BROWSER_TOOL_CATEGORY,
-    impl: async (_args, { sessionId, abortSignal }) => {
+    impl: async ({ selector, maxElements, source }, { sessionId, abortSignal }) => {
+      if (source === 'opencli' && (selector !== undefined || maxElements !== undefined)) {
+        throw new Error('selector/maxElements require source=visible.');
+      }
       const result = await runBrowserAction({
         sessionId,
         label: 'snapshot',
         abortSignal,
         run: async (page, info) => {
-          const snapshot = await page.snapshot({ interactive: true });
-          const url = (await page.getCurrentUrl?.()) ?? '';
-          return { snapshot, url, info };
+          if (source === 'opencli') {
+            const raw = await page.snapshot({ interactive: true });
+            const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+            return { text: text.slice(0, BROWSER_OBSERVATION_MAX_CHARS) +
+              (text.length > BROWSER_OBSERVATION_MAX_CHARS ? '\n(Tree clipped; prefer a scoped visible snapshot or browser_inspect.)' : ''), info };
+          }
+          const observation = await page.evaluate<BrowserObservation>(browserObservationJs({
+            scope: selector, maxElements: maxElements ?? 60, context: true,
+          }));
+          return { text: JSON.stringify(observation), info };
         },
       });
       if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
-      const text =
-        typeof result.value.snapshot === 'string'
-          ? result.value.snapshot
-          : JSON.stringify(result.value.snapshot, null, 2);
-      return (result.value.url ? `${result.value.url}\n\n${text}` : text) + takeoverNote(result.value.info);
+      return result.value.text + takeoverNote(result.value.info);
     },
   };
+}
+
+export function buildBrowserInspectTool(): MakaTool<BrowserObservationOptions, string> {
+  return {
+    name: 'browser_inspect',
+    displayName: '浏览器元素检查',
+    description:
+      'Inspect CSS matches with exact matchCount, visibleMatchCount, attributes and actionable refs. ' +
+      'Use scope to target one form/dialog; visibleOnly defaults to true and maxElements to 20. ' +
+      'A visible candidate is not proof that the original selector is unique: use its returned ref to act. ' +
+      'No input values or hidden-input identifiers are returned. Observation does not reload the page.',
+    parameters: z.object({
+      selector: observationScope, scope: observationScope,
+      visibleOnly: z.boolean().optional(), maxElements: observationLimit,
+    }),
+    categoryHint: BROWSER_TOOL_CATEGORY,
+    impl: async (options, { sessionId, abortSignal }) => {
+      const result = await runBrowserAction({
+        sessionId,
+        label: 'inspect',
+        abortSignal,
+        run: async (page, info) => ({
+          observation: await page.evaluate<BrowserObservation>(browserObservationJs(options)), info,
+        }),
+      });
+      if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
+      return JSON.stringify(result.value.observation) + takeoverNote(result.value.info);
+    },
+  };
+}
+
+/** CSS actions require a unique, visible, enabled target; never pick the first match. */
+async function inspectActionTarget(page: IPage, ref: string): Promise<BrowserObservation | undefined> {
+  if (/^\d+$/.test(ref)) return undefined; // Existing OpenCLI numbered refs retain their resolver.
+  const observation = await page.evaluate<BrowserObservation>(browserObservationJs({
+    selector: ref, visibleOnly: false, maxElements: 8,
+  }));
+  if (ref.startsWith('[data-maka-browser-ref=') && observation.matchCount === 1 &&
+      observation.candidates[0]?.ref !== ref) {
+    observation.error = 'The ref is stale: its element was replaced or the document reference state changed.';
+    return observation;
+  }
+  if (!observation.error && observation.matchCount === 1 &&
+      observation.candidates[0]?.visible && observation.candidates[0]?.enabled) return undefined;
+  if (observation.matchCount === 0 && !observation.error) {
+    const nearby = await page.evaluate<BrowserObservation>(browserObservationJs({ maxElements: 12 }));
+    observation.candidates = nearby.candidates;
+    observation.error = 'No target matched. The ref may be stale after reload/navigation; these are current visible controls.';
+  }
+  return observation;
+}
+
+function noActionTaken(observation: BrowserObservation): string {
+  return 'No action taken: target must match exactly one visible, enabled element. ' +
+    'Use a candidate ref below or browser_inspect with a narrower scope.\n' + JSON.stringify(observation);
 }
 
 export function buildBrowserClickTool(): MakaTool<{ ref: string }, string> {
@@ -238,10 +312,10 @@ export function buildBrowserClickTool(): MakaTool<{ ref: string }, string> {
     name: 'browser_click',
     displayName: '浏览器点击',
     description:
-      'Click an element by its browser_snapshot reference (like "[12]") or a CSS selector. ' +
+      'Click an element by its browser_snapshot reference or a CSS ref returned by browser_inspect / browser_snapshot. ' +
       'Reports how many elements matched and the match confidence; re-snapshot if multiple matched.',
     parameters: z.object({
-      ref: z.string().min(1).max(2000).describe('Element reference from browser_snapshot (like "[12]") or a CSS selector.'),
+      ref: z.string().min(1).max(2000).describe('Candidate CSS ref from browser_inspect/browser_snapshot, a unique CSS selector, or a legacy numbered ref.'),
     }),
     categoryHint: BROWSER_TOOL_CATEGORY,
     impl: async ({ ref }, { sessionId, abortSignal }) => {
@@ -252,12 +326,15 @@ export function buildBrowserClickTool(): MakaTool<{ ref: string }, string> {
         // A mutating action: harden a taken-over page (reload once) before clicking.
         takeover: 'mutate',
         run: async (page, info) => {
+          const diagnostics = await inspectActionTarget(page, normalizeElementRef(ref));
+          if (diagnostics) return { diagnostics, info };
           const outcome = await page.click(normalizeElementRef(ref));
           return { outcome, info };
         },
       });
       if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
-      const { matches_n, match_level } = result.value.outcome;
+      if (result.value.diagnostics) return noActionTaken(result.value.diagnostics) + takeoverNote(result.value.info);
+      const { matches_n, match_level } = result.value.outcome!;
       return (
         `Clicked ${ref} (matched ${matches_n} element${matches_n === 1 ? '' : 's'}, ${match_level} match).` +
         (matches_n > 1
@@ -304,10 +381,10 @@ export function buildBrowserTypeTool(): MakaTool<{ ref: string; text: string; su
     name: 'browser_type',
     displayName: '浏览器输入',
     description:
-      'Fill text into a field by its browser_snapshot reference (like "[7]") or a CSS selector; replaces the field\'s current content. ' +
+      'Fill text into a field by its browser_snapshot reference or a CSS ref returned by browser_inspect / browser_snapshot; replaces the field\'s current content. ' +
       'Set submit=true to press Enter after (search boxes, single-field forms). Self-verifies the field now holds the requested text.',
     parameters: z.object({
-      ref: z.string().min(1).max(2000).describe('Element reference from browser_snapshot (like "[7]") or a CSS selector.'),
+      ref: z.string().min(1).max(2000).describe('Candidate CSS ref from browser_inspect/browser_snapshot, a unique CSS selector, or a legacy numbered ref.'),
       text: z.string().max(100_000).describe("Text to fill in; replaces the field's current content."),
       submit: z
         .boolean()
@@ -323,13 +400,16 @@ export function buildBrowserTypeTool(): MakaTool<{ ref: string; text: string; su
         // A mutating action: harden a taken-over page (reload once) before typing.
         takeover: 'mutate',
         run: async (page, info) => {
+          const diagnostics = await inspectActionTarget(page, normalizeElementRef(ref));
+          if (diagnostics) return { diagnostics, info };
           const outcome = await page.fillText(normalizeElementRef(ref), text);
           if (submit) await page.pressKey('Enter');
           return { outcome, info };
         },
       });
       if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
-      const { verified, actual, match_level } = result.value.outcome;
+      if (result.value.diagnostics) return noActionTaken(result.value.diagnostics) + takeoverNote(result.value.info);
+      const { verified, actual, match_level } = result.value.outcome!;
       const lines = [
         `Filled ${ref} (${match_level} match)${submit ? ', then pressed Enter' : ''}.`,
         verified
@@ -429,7 +509,8 @@ export function buildBrowserExtractTool(): MakaTool<{ selector?: string; start?:
     name: 'browser_extract',
     displayName: '浏览器提取',
     description:
-      'Read the page (or a CSS-selected region) as Markdown for analysis. Omit selector for the whole body. ' +
+      'Read one page region as Markdown, not for locating controls. Omit selector for the whole body. ' +
+      'Selectors must match exactly one region; use browser_inspect for candidate refs when ambiguous. ' +
       'Long pages page through `start` — the output names the next_start_char to continue from.',
     parameters: z.object({
       selector: z.string().optional().describe('CSS selector to extract from; omit for the whole page body.'),
@@ -448,20 +529,29 @@ export function buildBrowserExtractTool(): MakaTool<{ selector?: string; start?:
         run: async (page, info) => {
           // The selector is JSON-serialized into the script (never string-
           // concatenated), so it cannot inject.
-          const read = await page.evaluate<{ html: string; truncated: boolean } | null>(
+          const read = await page.evaluate<{ html: string; truncated: boolean; matchCount?: number } | null>(
             readHtmlJs(JSON.stringify(selector ?? null)),
           );
           const url = (await page.getCurrentUrl?.()) ?? '';
-          return { read, url, info };
+          const diagnostics = !read || (read.matchCount ?? 1) !== 1
+            ? await page.evaluate<BrowserObservation>(browserObservationJs({
+              selector: read ? selector : undefined, visibleOnly: false, maxElements: 8,
+            }))
+            : undefined;
+          return { read, url, info, diagnostics };
         },
       });
       if (result.kind === 'navigated') return navigationResult(result.url, result.requiresApproval);
       if (typeof result.value.read?.html !== 'string') {
         throw new Error(
-          selector
+          (selector
             ? `No element matches selector ${JSON.stringify(selector)}.`
-            : 'The page has no readable body yet — navigate somewhere first.',
+            : 'The page has no readable body yet — navigate somewhere first.') +
+          '\nCurrent candidates: ' + JSON.stringify(result.value.diagnostics),
         );
+      }
+      if ((result.value.read.matchCount ?? 1) !== 1) {
+        throw new Error(`Selector matched ${result.value.read.matchCount} elements; no region was extracted. Use a unique candidate ref:\n${JSON.stringify(result.value.diagnostics)}`);
       }
       const markdown = htmlToMarkdown(result.value.read.html);
       const chunk = markdown.slice(start, start + EXTRACT_CHAR_LIMIT);
@@ -484,29 +574,31 @@ export function buildBrowserExtractTool(): MakaTool<{ selector?: string; start?:
 
 // Runs inside the page. The selector arrives pre-serialized via JSON (never
 // string-concatenated into code), so selector content cannot inject script. A
-// malformed selector (e.g. a "[12]" ref a model echoed) makes querySelector
+// malformed selector (e.g. a "[12]" ref a model echoed) makes querySelectorAll
 // throw a SyntaxError; catch it and return null so the tool surfaces its
 // friendly "No element matches selector" message instead of a raw DOMException.
 export function readHtmlJs(selectorJson: string): string {
   return `(() => {
   const selector = ${selectorJson};
-  let el;
+  let elements;
   try {
-    el = selector ? document.querySelector(selector) : document.body;
+    elements = selector ? document.querySelectorAll(selector) : (document.body ? [document.body] : []);
   } catch {
     return null;
   }
-  if (!el) return null;
-  const html = el.outerHTML;
-  return { html: html.slice(0, ${HTML_CHAR_LIMIT}), truncated: html.length > ${HTML_CHAR_LIMIT} };
+  if (!elements.length) return null;
+  if (elements.length !== 1) return { html: '', truncated: false, matchCount: elements.length };
+  const html = elements[0].outerHTML;
+  return { html: html.slice(0, ${HTML_CHAR_LIMIT}), truncated: html.length > ${HTML_CHAR_LIMIT}, matchCount: 1 };
 })()`;
 }
 
-/** The six generic observe→act browser tools, in observe-before-act order. */
+/** Generic observe→act browser tools, in observe-before-act order. */
 export function buildBrowserTools(): MakaTool[] {
   return [
     buildBrowserNavigateTool(),
     buildBrowserSnapshotTool(),
+    buildBrowserInspectTool(),
     buildBrowserClickTool(),
     buildBrowserTypeTool(),
     buildBrowserWaitTool(),

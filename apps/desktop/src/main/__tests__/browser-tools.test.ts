@@ -24,6 +24,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { z } from 'zod';
 import { afterEach, describe, it } from 'node:test';
 import type { IPage } from '@jackwener/opencli/types';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
@@ -32,6 +33,8 @@ import { withBrowserOriginAdmission } from '../browser/browser-origin-admission.
 import {
   buildBrowserClickTool,
   buildBrowserExtractTool,
+  buildBrowserInspectTool,
+  buildBrowserTools,
   buildBrowserNavigateTool,
   buildBrowserSnapshotTool,
   buildBrowserTypeTool,
@@ -40,13 +43,14 @@ import {
   readHtmlJs,
   takeoverNote,
 } from '../browser/browser-tools.js';
-import { type BridgeLike, resetBrowserSessionsForTest, setBridgeFactoryForTest } from '../browser/session.js';
+import { type BridgeLike, resetBrowserSessionsForTest, setBridgeFactoryForTest, revokeHiddenBrowserActions } from '../browser/session.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
 import {
   type BrowserViewHost,
   provideBrowserViewHost,
 } from '../browser/browser-host.js';
 import { BrowserOriginLeaseTracker } from '../browser/browser-origin-lease.js';
+import type { BrowserObservation } from '../browser/browser-observation.js';
 
 type FakePageConfig = {
   url?: string;
@@ -57,6 +61,7 @@ type FakePageConfig = {
   click?: { matches_n: number; match_level: 'exact' | 'stable' | 'reidentified' };
   fill?: { verified: boolean; actual: string; match_level: 'exact' | 'stable' | 'reidentified' };
   snapshot?: unknown;
+  observation?: BrowserObservation;
   snapshotImpl?: (browser: FakeBrowser) => unknown | Promise<unknown>;
   extractHtml?: string;
   extractImpl?: (browser: FakeBrowser) => void;
@@ -93,6 +98,12 @@ function makeFakePage(cfg: FakePageConfig, browser: FakeBrowser): IPage {
     getCurrentUrl: async () => browser.url || null,
     goto: async (url: string) => browser.navigate(cfg.afterGotoUrl ?? url),
     evaluate: async (js: string) => {
+      if (js.includes('__makaBrowserObservationRefs')) {
+        if (cfg.snapshotImpl) return await cfg.snapshotImpl(browser) as never;
+        return (cfg.observation ?? { selector: '*', scope: 'body', scopeMatchCount: 1, matchCount: 1,
+          visibleMatchCount: 1, scannedCount: 1, scanTruncated: false, truncated: false, context: [],
+          candidates: [{ ref: '[data-maka-browser-ref="test"]', tag: 'button', name: 'Home', attributes: {}, visible: true, enabled: true }] }) as never;
+      }
       if (js.includes('location.href')) return browser.url as never;
       if (js.includes('document.title')) return (cfg.title ?? '') as never;
       if (js.includes('outerHTML')) {
@@ -385,16 +396,87 @@ describe('browser tool execution', () => {
     // matches selector" message rather than a raw DOMException.
     const doc = {
       body: { outerHTML: '<body>ok</body>' },
-      querySelector(sel: string) {
+      querySelectorAll(sel: string) {
         if (sel === '[12]') throw new Error("'[12]' is not a valid selector");
-        return null;
+        return [];
       },
     };
     const exec = (selector: unknown): unknown =>
       new Function('document', `return ${readHtmlJs(JSON.stringify(selector))};`)(doc);
     assert.equal(exec('[12]'), null); // invalid selector → null, not a throw
     assert.equal(exec('#missing'), null); // valid-but-absent → null (unchanged)
-    assert.deepEqual(exec(null), { html: '<body>ok</body>', truncated: false }); // no selector → body
+    assert.deepEqual(exec(null), { html: '<body>ok</body>', truncated: false, matchCount: 1 }); // no selector → body
+  });
+
+  it('registers inspection and validates bounded production observation schemas', () => {
+    assert.deepEqual(buildBrowserTools().map(tool => tool.name), [
+      'browser_navigate', 'browser_snapshot', 'browser_inspect', 'browser_click', 'browser_type', 'browser_wait', 'browser_extract',
+    ]);
+    const tool = buildBrowserInspectTool();
+    assert.ok((tool.parameters as z.ZodType).safeParse({ scope: '#pr', maxElements: 8 }).success);
+    for (const maxElements of [0, 101, 1.5]) assert.equal((tool.parameters as z.ZodType).safeParse({ maxElements }).success, false);
+    assert.equal((tool.parameters as z.ZodType).safeParse({ selector: '' }).success, false);
+  });
+
+  it('inspect observes without clicking or typing', async () => {
+    const browser = install({});
+    const output = JSON.parse(await run(buildBrowserInspectTool(), { scope: '#pr' }));
+    assert.equal(output.matchCount, 1);
+    assert.equal(output.candidates[0].name, 'Home');
+    assert.equal(browser.clicks, 0);
+    assert.equal(browser.fills, 0);
+  });
+
+  it('inspection discards collected candidates after an A→B→A Origin race', async () => {
+    install({ snapshotImpl: browser => {
+      browser.navigate('https://other.example/private?token=secret');
+      browser.navigate('https://example.com/back');
+      return { candidates: [{ name: 'private observation' }] };
+    } });
+    const output = await run(buildBrowserInspectTool(), {});
+    assert.match(output, /Access to the new site requires approval/);
+    assert.doesNotMatch(output, /private observation|token/);
+  });
+
+  it('ambiguous CSS click and type return candidates without acting or pressing Enter', async () => {
+    const observation: BrowserObservation = {
+      selector: 'button', scope: 'body', scopeMatchCount: 1, matchCount: 2, visibleMatchCount: 2,
+      scannedCount: 2, scanTruncated: false, truncated: false, context: [],
+      candidates: [{ ref: '[data-maka-browser-ref="one"]', tag: 'button', name: 'Create', attributes: {}, visible: true, enabled: true }],
+    };
+    const browser = install({ observation });
+    const click = await run(buildBrowserClickTool(), { ref: 'button' });
+    const type = await run(buildBrowserTypeTool(), { ref: 'input', text: 'secret', submit: true });
+    assert.match(click, /No action taken/);
+    assert.match(click, /"matchCount":2/);
+    assert.match(type, /No action taken/);
+    assert.equal(browser.clicks, 0);
+    assert.equal(browser.fills, 0);
+    assert.equal(browser.presses, 0);
+  });
+
+  it('blocked observation is not admitted when the owning conversation is hidden', async () => {
+    install({});
+    provideBrowserViewHost({ canDrive: () => false } as unknown as BrowserViewHost);
+    await assert.rejects(run(buildBrowserInspectTool(), {}), /conversation is the one on screen/);
+  });
+
+  it('keeps a capped legacy snapshot for shadow/iframe observation compatibility', async () => {
+    install({ snapshot: 'x'.repeat(20_000) });
+    const output = await run(buildBrowserSnapshotTool(), { source: 'opencli' });
+    assert.match(output, /Tree clipped/);
+    assert.ok(output.length < 16_100);
+    await assert.rejects(run(buildBrowserSnapshotTool(), { source: 'opencli', selector: '#pr' }), /require source=visible/);
+  });
+
+  it('revokes in-flight structured observation when the conversation is hidden', async () => {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    install({ snapshotImpl: async () => { started(); return new Promise(() => {}); } });
+    const pending = run(buildBrowserInspectTool(), {});
+    await ready;
+    revokeHiddenBrowserActions(() => false);
+    await assert.rejects(pending, /switched away|no longer read/);
   });
 
   it('a tool fails with a clear message when no host is injected', async () => {
