@@ -71,6 +71,7 @@ export function validatePdfBytes(bytes: Uint8Array): PdfPreflightResult {
   if (buffer.length <= 5 * 1024 * 1024) {
     scanBuffers.push(buffer.toString('ascii'));
   } else {
+    // Scan head and tail independently to avoid synthetic matches across a concatenated seam.
     scanBuffers.push(buffer.subarray(0, 1024 * 1024).toString('ascii'));
     scanBuffers.push(buffer.subarray(buffer.length - 1024 * 1024).toString('ascii'));
   }
@@ -87,6 +88,7 @@ export function validatePdfBytes(bytes: Uint8Array): PdfPreflightResult {
   // A text-level scan cannot reliably distinguish the root /Pages /Count from
   // an intermediate page-tree node or a content-stream comment, so we report
   // the value but leave enforcement to the caller's discretion.
+  // Note: The captured count may be any page-tree node's count, not necessarily the root.
   const pagesRegex = /\/Type\s*\/Pages[\s\S]{0,100}?\/Count\s+(\d+)/;
   const alternatePagesRegex = /\/Count\s+(\d+)[\s\S]{0,100}?\/Type\s*\/Pages/;
   let pages: number | undefined = undefined;
