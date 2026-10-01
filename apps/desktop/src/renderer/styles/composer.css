@@ -472,12 +472,14 @@
   text-align: left;
 }
 .maka-composer-left-controls .maka-composer-options-trigger {
+  /* local: one trigger now carries model, context and effort, so it gets the
+     model + thinking pair's former combined share instead of the model cap. */
   max-width: min(280px, 40vw);
 }
 .maka-composer-options-label {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .maka-composer-options-details {
@@ -489,7 +491,8 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 28px;
+  gap: var(--space-6);
+  /* local: keeps a short row name and its value apart in a narrow flyout. */
   min-width: 9rem;
 }
 .maka-composer-options-value {

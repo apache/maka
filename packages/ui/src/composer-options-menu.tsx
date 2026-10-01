@@ -30,6 +30,8 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ProviderType } from '@maka/core/llm-connections';
 import { exactModelChoiceValue, type ChatModelChoice } from './chat-model-helpers.js';
 import { formatCompactTokenCount } from './compact-token-count.js';
+import { ComposerModelLabel } from './composer-model-label.js';
+import { providerMarkIcon } from './model-picker-internals.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { usePendingSelection } from './use-pending-selection.js';
@@ -142,7 +144,7 @@ export function ComposerOptionsMenu(props: {
         endContent: <Icon icon="chevronDown" size="sm" color="secondary" />,
         children: (
           <span className="maka-composer-options-label">
-            <span className="maka-composer-model-label">{props.label}</span>
+            <ComposerModelLabel text={props.label} />
             {triggerDetails ? <span className="maka-composer-options-details">{triggerDetails}</span> : null}
           </span>
         ),
@@ -187,7 +189,7 @@ export function ComposerOptionsMenu(props: {
                 key={value}
                 value={value}
                 label={connection ? `${candidate.label} · ${connection}` : candidate.label}
-                icon={props.renderProviderMark?.(candidate.providerType)}
+                icon={providerMarkIcon(candidate.providerType, props.renderProviderMark)}
               />
             );
           })}

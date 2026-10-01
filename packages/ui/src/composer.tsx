@@ -1852,46 +1852,42 @@ export const Composer = forwardRef<
         onChange={props.onNewChatThinkingLevelChange}
       />
     );
+  // Phase 1 of #5787: only an open native Session uses the unified menu. The
+  // new-task composer keeps its pickers until executor selection joins the menu.
+  const optionsSession = props.activeSession;
+  const optionsConnectionId = props.activeModelConnectionId ?? optionsSession?.llmConnectionId;
   const unifiedModelOptions =
+    optionsSession !== undefined &&
     (props.pickerPresentation === undefined || props.pickerPresentation === 'popover') &&
     !props.executorTarget &&
     (props.modelChoices?.length ?? 0) > 0 &&
-    (props.activeSession ? Boolean(props.onModelChange) : Boolean(props.onPickNewChatModel));
-  const currentModelValue = props.activeSession
-    ? (props.activeModelConnectionId
-      ? exactModelChoiceValue(
-          props.activeModelConnectionId,
-          props.activeModelConnectionSlug ?? props.activeSession.llmConnectionSlug,
-          props.activeModel ?? props.activeSession.model,
-        )
-      : undefined)
-    : (props.newChatModel && !props.executorPicker?.selection
-      ? exactModelChoiceValue(
-          props.newChatModel.llmConnectionId,
-          props.newChatModel.llmConnectionSlug,
-          props.newChatModel.model,
-        )
-      : undefined);
-  const renderComposerOptions = (): ReactNode => (
+    Boolean(props.onModelChange);
+  const renderComposerOptions = (): ReactNode => optionsSession ? (
     <ComposerOptionsMenu
       // A pick still settling belongs to the Session it was made in.
-      key={props.activeSession?.id ?? 'new-task'}
-      label={(props.activeSession ? props.activeModelLabel?.trim() : undefined) || modelChipLabel}
-      disabled={props.activeSession ? !modelSwitchAvailability.available : false}
-      disabledReason={props.activeSession ? modelSwitcherDisabledReason : undefined}
+      key={optionsSession.id}
+      label={props.activeModelLabel?.trim() || modelChipLabel}
+      disabled={!modelSwitchAvailability.available}
+      disabledReason={modelSwitcherDisabledReason}
       isReadOnly={props.pickersReadOnly}
       openNonce={modelPickerNonce}
       choices={props.modelChoices ?? []}
-      currentModelValue={currentModelValue}
+      currentModelValue={optionsConnectionId
+        ? exactModelChoiceValue(
+            optionsConnectionId,
+            props.activeModelConnectionSlug ?? optionsSession.llmConnectionSlug,
+            props.activeModel ?? optionsSession.model,
+          )
+        : undefined}
       onModelChange={onNativeModelChange}
-      thinkingLevels={props.activeSession ? props.activeThinkingLevels : props.newChatThinkingLevels}
-      thinkingLevel={props.activeSession ? props.activeThinkingLevel : props.newChatThinkingLevel}
-      onThinkingLevelChange={props.activeSession ? props.onThinkingLevelChange : props.onNewChatThinkingLevelChange}
+      thinkingLevels={props.activeThinkingLevels}
+      thinkingLevel={props.activeThinkingLevel}
+      onThinkingLevelChange={props.onThinkingLevelChange}
       hasConversationHistory={props.modelSwitchHasHistory}
-      sessionId={props.activeSession?.id}
+      sessionId={optionsSession.id}
       renderProviderMark={props.renderProviderMark}
     />
-  );
+  ) : null;
 
   return (
     <>

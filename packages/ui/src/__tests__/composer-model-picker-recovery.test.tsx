@@ -91,7 +91,7 @@ test('the native model pair remains the model-selection slot fallback', () => {
       />
     </LocaleProvider>,
   );
-  assert.match(detailed, /maka-composer-model-label">Native model</u);
+  assert.match(detailed, /maka-composer-model-label" dir="ltr" title="Native model">Native model</u);
   assert.match(detailed, /maka-composer-options-details">1M High</u);
 
   const pluginExecutorWithoutClientContribution = render(true);

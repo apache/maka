@@ -78,6 +78,9 @@ test('"Model default" in the effort submenu clears the level', async () => {
       'Switch model for this task: GPT-5.5 High',
       'the trigger is named by its action, not only the visible model details',
     );
+    const label = dom.document.querySelector('.maka-composer-options-trigger .maka-composer-model-label');
+    assert.equal(label?.getAttribute('title'), 'GPT-5.5', 'an ellipsized model id stays readable on hover');
+    assert.equal(label?.getAttribute('dir'), 'ltr');
     await click(dom.document.querySelector('.maka-composer-options-trigger'));
     await click(row('menuitem', 'Effort'));
     await click(row('menuitemradio', 'Model default'));
