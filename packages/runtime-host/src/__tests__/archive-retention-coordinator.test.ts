@@ -24,7 +24,10 @@ import type {
   ArchiveRetentionDocument,
   ArchiveRetentionDocumentRead,
 } from '@maka/storage/archive-retention-store';
-import type { ArchiveRetentionCandidate } from '@maka/storage/execution-stores';
+import type {
+  ArchiveRetentionCandidateRow,
+  SessionCatalogRecord,
+} from '@maka/storage/execution-stores';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
   ARCHIVE_RETENTION_FAMILIES_PER_TICK,
@@ -53,6 +56,8 @@ interface Task {
   isArchived?: boolean;
   /** What the removal path answers once the guard admits the task. */
   outcome?: RetentionRemovalOutcome;
+  /** Metadata that no longer decodes. */
+  undecodable?: boolean;
 }
 
 function rig(options: { read?: ArchiveRetentionDocumentRead; tasks?: Task[] } = {}) {
@@ -66,6 +71,8 @@ function rig(options: { read?: ArchiveRetentionDocumentRead; tasks?: Task[] } = 
   let newest: number | undefined;
   /** Runs inside a removal admission, before the guard: a mid-sweep change. */
   let beforeGuard: (() => Promise<void>) | undefined;
+  /** The last guard the removal path ran, with the plan it ran on. */
+  let lastGuard: { run: () => Promise<RetentionHoldReason | undefined> } | undefined;
   const header = (task: Task): SessionHeader =>
     ({
       id: task.id,
@@ -101,22 +108,29 @@ function rig(options: { read?: ArchiveRetentionDocumentRead; tasks?: Task[] } = 
               (order(task) === order(query.after) && task.id > query.after.sessionId),
           )
           .slice(0, query.limit)
-          .map(
-            (task): ArchiveRetentionCandidate => ({
-              header: header(task),
-              revision: 1,
-              committedAt: 0,
-              ...(task.archivedAt === undefined ? {} : { archivedAt: task.archivedAt }),
-            }),
-          );
+          .map((task): ArchiveRetentionCandidateRow => {
+            const position = task.archivedAt === undefined ? {} : { archivedAt: task.archivedAt };
+            return task.undecodable
+              ? { undecodable: true, sessionId: task.id, ...position }
+              : { header: header(task), revision: 1, committedAt: 0, ...position };
+          });
       },
-      readSessionArchiveTimes: async (sessionIds) =>
-        new Map(
-          sessionIds.flatMap((id) => {
-            const archivedAt = tasks.get(id)?.archivedAt;
-            return archivedAt === undefined ? [] : [[id, archivedAt] as const];
-          }),
-        ),
+      countArchiveRetentionCandidates: async (enabledAt) => {
+        const starts = new Map<string, number>();
+        for (const task of tasks.values()) {
+          if (task.isFlagged) continue;
+          const start = Math.max(task.archivedAt ?? enabledAt, enabledAt);
+          const family = task.family ?? task.id;
+          starts.set(family, Math.max(starts.get(family) ?? start, start));
+        }
+        return starts.size === 0
+          ? { families: 0 }
+          : { families: starts.size, firstStart: Math.min(...starts.values()) };
+      },
+      readCatalogRecord: async (sessionId) =>
+        ({
+          summary: { archivedAt: tasks.get(sessionId)?.archivedAt },
+        }) as unknown as SessionCatalogRecord,
       readLatestSessionMetadataTime: async () => {
         calls.latest += 1;
         return newest;
@@ -129,7 +143,9 @@ function rig(options: { read?: ArchiveRetentionDocumentRead; tasks?: Task[] } = 
         const plan: RetentionRemovalPlan = {
           remove: [{ header: header(task), revision: 1, committedAt: 0 }],
           archiveSessionIds: [],
+          worktreeCount: 0,
         };
+        lastGuard = { run: () => guard(plan) };
         const reason = await guard(plan);
         if (reason) {
           held.push(reason);
@@ -146,8 +162,8 @@ function rig(options: { read?: ArchiveRetentionDocumentRead; tasks?: Task[] } = 
     now: () => clock,
     log: () => undefined,
   });
-  const query = async (input: { previewDays?: 30 | 60 | 90 } = {}) => {
-    const result = await retention.handlers['storage.retention.query'](input, CONTEXT);
+  const query = async () => {
+    const result = await retention.handlers['storage.retention.query']({}, CONTEXT);
     assert.ok(result.ok);
     return result.result;
   };
@@ -180,12 +196,20 @@ function rig(options: { read?: ArchiveRetentionDocumentRead; tasks?: Task[] } = 
     set beforeGuard(value: (() => Promise<void>) | undefined) {
       beforeGuard = value;
     },
+    get lastGuard() {
+      return lastGuard;
+    },
   };
 }
 
 test('enabling or changing the days restamps enabledAt on the Host clock; disabling clears it', async () => {
   const r = rig();
-  assert.deepEqual(await r.query(), { revision: 0, enabled: false, days: 30 });
+  assert.deepEqual(await r.query(), {
+    revision: 0,
+    enabled: false,
+    days: 30,
+    preview: { count: 0 },
+  });
 
   const enabled = await r.set(true, 30);
   assert.deepEqual(enabled, {
@@ -228,9 +252,10 @@ test('no SQL runs and nothing is eligible until the policy is older than its day
   await r.set(true, 30);
   const enabledAt = r.now;
 
+  const before = { ...r.calls };
   r.now = enabledAt + 30 * DAY;
   assert.equal(await r.retention.sweep(), false);
-  assert.deepEqual(r.calls, { list: 0, latest: 0 });
+  assert.deepEqual(r.calls, before);
 
   r.now = enabledAt + 30 * DAY + 1;
   assert.equal(await r.retention.sweep(), false);
@@ -275,17 +300,106 @@ test('a sweep deletes at most eight families a tick and reports when work remain
   assert.ok(!r.removed.includes('task-00-revision'));
 });
 
-test('a policy change between the candidate read and the admission keeps the task', async () => {
-  const r = rig({ tasks: [{ id: 'legacy' }] });
+test('a setting change pending at the admission keeps the task and waits for the tick', async () => {
+  const r = rig({ tasks: [{ id: 'legacy' }, { id: 'later' }] });
   await r.set(true, 30);
   r.now += 31 * DAY;
+  let changed: Promise<unknown> | undefined;
   r.beforeGuard = async () => {
     r.beforeGuard = undefined;
-    await r.set(true, 60);
+    // Started, not awaited: it waits for this tick, which must not delete.
+    changed = r.retention.handlers['storage.retention.set'](
+      { expectedRevision: 1, enabled: true, days: 60 },
+      CONTEXT,
+    );
   };
   await r.retention.sweep();
   assert.deepEqual(r.removed, []);
   assert.deepEqual(r.held, ['ineligible']);
+  // The tick stopped before the next family.
+  assert.equal(r.tasks.has('later'), true);
+  assert.deepEqual(await changed, {
+    ok: true,
+    result: {
+      kind: 'committed',
+      setting: { revision: 2, enabled: true, days: 60, enabledAt: r.now },
+    },
+  });
+});
+
+test('a guard run after the setting moved on holds the task by its revision alone', async () => {
+  const r = rig({ tasks: [{ id: 'legacy', outcome: { kind: 'skipped' } }] });
+  await r.set(true, 30);
+  r.now += 31 * DAY;
+  await r.retention.sweep();
+  const guard = r.lastGuard!;
+  // Same days, so only the revision tells the two settings apart.
+  await r.set(false, 30);
+  await r.set(true, 30);
+  r.now += 31 * DAY;
+  assert.equal(await guard.run(), 'ineligible');
+});
+
+test('a clock that goes back between the candidate read and the admission keeps the task', async () => {
+  const r = rig({ tasks: [{ id: 'legacy' }] });
+  await r.set(true, 30);
+  r.now += 40 * DAY;
+  r.beforeGuard = async () => {
+    // Still past every deadline, but behind a time this sweep already saw.
+    r.now -= 1;
+  };
+  await r.retention.sweep();
+  assert.deepEqual(r.removed, []);
+  assert.deepEqual(r.held, ['ineligible']);
+});
+
+test('draining stops a sweep before the next family', async () => {
+  const r = rig({ tasks: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] });
+  await r.set(true, 30);
+  r.now += 31 * DAY;
+  r.beforeGuard = async () => {
+    r.beforeGuard = undefined;
+    r.retention.beginDrain();
+  };
+  assert.equal(await r.retention.sweep(), false);
+  assert.deepEqual(r.removed, ['a']);
+  assert.equal(await r.retention.sweep(), false);
+  assert.deepEqual(r.removed, ['a']);
+});
+
+test('a row that no longer decodes is counted as failed and passed over', async () => {
+  const r = rig({
+    tasks: [
+      { id: 'a-bad', archivedAt: 1, undecodable: true },
+      { id: 'b-good', archivedAt: 2 },
+    ],
+  });
+  await r.set(true, 30);
+  r.now += 31 * DAY;
+  assert.equal(await r.retention.sweep(), false);
+  assert.deepEqual(r.removed, ['b-good']);
+  assert.equal((await r.query()).lastSweep?.failed, 1);
+});
+
+test('a setting change clears a recorded pause and never backdates enabledAt', async () => {
+  const r = rig({ tasks: [] });
+  await r.set(true, 30);
+  r.now += 40 * DAY;
+  await r.retention.sweep();
+  const observed = r.now;
+  r.now = observed - 10;
+  await r.retention.sweep();
+  assert.equal((await r.query()).lastSweep?.paused, true);
+
+  // Behind what the Host saw: the new clock starts where the Host already was.
+  const changed = await r.set(true, 60);
+  assert.equal(changed.kind === 'committed' && changed.setting.enabledAt, observed);
+  assert.equal((await r.query()).lastSweep?.paused, undefined);
+
+  // Behind the newest metadata time: the clock starts there.
+  r.newest = observed + 500;
+  const enabled = await r.set(true, 90);
+  assert.equal(enabled.kind === 'committed' && enabled.setting.enabledAt, observed + 500);
 });
 
 test('a restore, re-archive or pin between the candidate read and the admission keeps the task', async () => {
@@ -352,7 +466,12 @@ test('a document that cannot be validated is treated as disabled until it is set
     read: { kind: 'invalid', reason: 'unsupported version' },
     tasks: [{ id: 'legacy' }],
   });
-  assert.deepEqual(await r.query(), { revision: 0, enabled: false, days: 30 });
+  assert.deepEqual(await r.query(), {
+    revision: 0,
+    enabled: false,
+    days: 30,
+    preview: { count: 1 },
+  });
   r.now += 365 * DAY;
   assert.equal(await r.retention.sweep(), false);
   assert.deepEqual(r.calls, { list: 0, latest: 0 });
@@ -399,18 +518,13 @@ test('the preview counts current candidates by family and says when the first is
     tasks: [
       { id: 'legacy' },
       { id: 'revision', family: 'legacy' },
-      // Archived long before enablement: its clock still starts at enablement.
       { id: 'early', archivedAt: 1_000 * DAY - 100 * DAY },
       { id: 'late', archivedAt: 1_000 * DAY + 5 * DAY },
     ],
   });
   const now = r.now;
-  // Disabled: what enabling now would do. Every clock starts now at the earliest.
-  assert.deepEqual((await r.query({ previewDays: 60 })).preview, {
-    count: 3,
-    eligibleAt: now + 60 * DAY,
-  });
-  assert.equal((await r.query()).preview, undefined);
+  // Disabled: a count, never a date.
+  assert.deepEqual((await r.query()).preview, { count: 3 });
 
   await r.set(true, 30);
   assert.deepEqual((await r.query()).preview, { count: 3, eligibleAt: now + 30 * DAY });

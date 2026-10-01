@@ -78,3 +78,72 @@ export interface ArchiveRetentionDeletion {
   /** Measured before deletion; an estimate, and absent when it could not be measured. */
   readonly bytes?: number;
 }
+
+/**
+ * The one decoder of the results the Host records and reports, shared by the
+ * State Root document and the protocol. `fail` builds the caller's own error.
+ */
+export function decodeArchiveRetentionSweep(
+  value: unknown,
+  fail: (message: string) => Error,
+): ArchiveRetentionSweep {
+  const sweep = exactRecord(
+    value,
+    'retention sweep',
+    ['at', 'deleted', 'skippedBusy', 'needsReview', 'failed'],
+    ['paused'],
+    fail,
+  );
+  if (sweep.paused !== undefined && sweep.paused !== true) {
+    throw fail('Invalid retention sweep paused');
+  }
+  return {
+    at: count(sweep.at, 'retention sweep at', fail),
+    deleted: count(sweep.deleted, 'retention sweep deleted', fail),
+    skippedBusy: count(sweep.skippedBusy, 'retention sweep skippedBusy', fail),
+    needsReview: count(sweep.needsReview, 'retention sweep needsReview', fail),
+    failed: count(sweep.failed, 'retention sweep failed', fail),
+    ...(sweep.paused === true ? { paused: true as const } : {}),
+  };
+}
+
+export function decodeArchiveRetentionDeletion(
+  value: unknown,
+  fail: (message: string) => Error,
+): ArchiveRetentionDeletion {
+  const deletion = exactRecord(value, 'retention deletion', ['at', 'count'], ['bytes'], fail);
+  return {
+    at: count(deletion.at, 'retention deletion at', fail),
+    count: count(deletion.count, 'retention deletion count', fail),
+    ...(deletion.bytes === undefined
+      ? {}
+      : { bytes: count(deletion.bytes, 'retention deletion bytes', fail) }),
+  };
+}
+
+function exactRecord(
+  value: unknown,
+  label: string,
+  required: readonly string[],
+  optional: readonly string[],
+  fail: (message: string) => Error,
+): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw fail(`Invalid ${label}`);
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !required.includes(key) && !optional.includes(key))) {
+    throw fail(`Unknown ${label} field`);
+  }
+  if (required.some((key) => !Object.hasOwn(record, key))) {
+    throw fail(`Invalid ${label} fields`);
+  }
+  return record;
+}
+
+function count(value: unknown, label: string, fail: (message: string) => Error): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw fail(`Invalid ${label}`);
+  }
+  return value;
+}

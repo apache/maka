@@ -51,8 +51,9 @@ import {
   type CoordinationTranscriptIndexRecord,
   type CoordinationTranscriptIndexState,
   type SessionAuthorityStore,
-  type ArchiveRetentionCandidate,
+  type ArchiveRetentionCandidateCount,
   type ArchiveRetentionCandidateQuery,
+  type ArchiveRetentionCandidateRow,
 } from './session-store-contract.js';
 export {
   isSafeSessionId,
@@ -909,19 +910,23 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async listArchiveRetentionCandidates(
     query: ArchiveRetentionCandidateQuery,
-  ): Promise<ArchiveRetentionCandidate[]> {
+  ): Promise<ArchiveRetentionCandidateRow[]> {
     await this.ensureReady();
-    return (await this.metadata.listArchiveRetentionCandidates(query)).map((record) => ({
-      ...projectHeaderSnapshot(record),
-      ...(record.archivedAt === undefined ? {} : { archivedAt: record.archivedAt }),
-    }));
+    return (await this.metadata.listArchiveRetentionCandidates(query)).map((record) =>
+      'undecodable' in record
+        ? record
+        : {
+            ...projectHeaderSnapshot(record),
+            ...(record.archivedAt === undefined ? {} : { archivedAt: record.archivedAt }),
+          },
+    );
   }
 
-  async readSessionArchiveTimes(
-    sessionIds: readonly string[],
-  ): Promise<ReadonlyMap<string, number>> {
+  async countArchiveRetentionCandidates(
+    enabledAt: number,
+  ): Promise<ArchiveRetentionCandidateCount> {
     await this.ensureReady();
-    return this.metadata.readSessionArchiveTimes(sessionIds);
+    return this.metadata.countArchiveRetentionCandidates(enabledAt);
   }
 
   async readLatestSessionMetadataTime(): Promise<number | undefined> {

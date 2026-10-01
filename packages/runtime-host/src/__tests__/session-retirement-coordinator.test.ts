@@ -1503,6 +1503,107 @@ describe('archive retention through the removal path', () => {
     });
   });
 
+  test('a family is as young as its most recently archived member', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        await rig.setLifecycle(harness.rootId, 'archived');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([harness.rootId], null);
+        rig.setArchivedAt([harness.revisionId], enabledAt + 5 * DAY);
+
+        // The root alone is due; its revision is not, so neither is deleted.
+        harness.now = enabledAt + 31 * DAY;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
+        harness.now = enabledAt + 35 * DAY + 1;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), []);
+      });
+    });
+  });
+
+  test('a revision pinned after the candidate read keeps its whole family at the admission', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        await rig.setLifecycle(harness.rootId, 'archived');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt(harness.familyIds, null);
+        rig.afterCandidates(() => harness.store.setFlagged(harness.revisionId, true));
+
+        harness.now = enabledAt + 31 * DAY;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
+      });
+    });
+  });
+
+  test('a task already removed by hand is not counted as this sweep deletion', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const task = await rig.archivedTask('Removed by hand');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([task], null);
+        rig.afterCandidates(async () => {
+          const removed = await harness.coordinator.handlers['session.remove'](
+            {
+              sessionId: task,
+              expectedRevision: (await harness.store.readHeaderRecordSnapshot(task)).revision,
+            },
+            CONNECTION_CONTEXT,
+          );
+          assert.equal(removed.ok, true);
+        });
+
+        harness.now = enabledAt + 31 * DAY;
+        const result = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), []);
+        assert.equal(result.lastDeletion, undefined);
+        assert.equal(result.lastSweep, undefined);
+      });
+    });
+  });
+
+  test('turning retention off waits for the family in flight, which is recorded', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const first = await rig.archivedTask('In flight');
+        const second = await rig.archivedTask('Not yet admitted');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([first], enabledAt - 2 * DAY);
+        rig.setArchivedAt([second], enabledAt - DAY);
+        let settled = false;
+        let atAnswer: { present: string[]; deleted?: number } | undefined;
+        let disabling: Promise<unknown> | undefined;
+        // After the guard admitted `first`, before its tombstone is written.
+        harness.disposeBackend = async (sessionId) => {
+          harness.disposeBackend = undefined;
+          disabling = rig.disable().then(async (answer) => {
+            settled = true;
+            atAnswer = {
+              present: await rig.present([first]),
+              deleted: (await rig.query()).lastDeletion?.count,
+            };
+            return answer;
+          });
+          for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+          assert.equal(settled, false, 'the change waits for the family in flight');
+          harness.actions.disposed.push(sessionId);
+        };
+
+        harness.now = enabledAt + 31 * DAY;
+        await rig.sweepUntilIdle();
+        await disabling;
+        // When the change answered, the admitted family was gone and recorded;
+        // nothing was admitted after it.
+        assert.deepEqual(atAnswer, { present: [], deleted: 1 });
+        assert.deepEqual(await rig.present([first, second]), [second]);
+        const result = await rig.query();
+        assert.equal(result.enabled, false);
+        assert.equal(result.lastDeletion?.count, 1);
+      });
+    });
+  });
+
   test('a busy task is skipped as busy and deleted by a later sweep', async () => {
     await withHarness(async (harness) => {
       await withRetention(harness, async (rig) => {
@@ -1533,6 +1634,11 @@ interface RetentionRig {
   setArchivedAt(sessionIds: readonly string[], archivedAt: number | null): void;
   /** Enables the policy at the harness clock and returns `enabledAt`. */
   enable(days: 30 | 60 | 90): Promise<number>;
+  /** Disables the policy, not waiting for anything first. */
+  disable(): Promise<unknown>;
+  query(): Promise<StorageRetentionQueryResult>;
+  /** Runs once, right after the next candidate read and before any admission. */
+  afterCandidates(hook: () => Promise<unknown>): void;
   sweepUntilIdle(): Promise<StorageRetentionQueryResult>;
   /** The given Sessions that still exist, in order. */
   present(sessionIds: readonly string[]): Promise<string[]>;
@@ -1546,6 +1652,7 @@ async function withRetention(
   // read as a clock that went back.
   harness.now = Date.now() + 1_000 * DAY;
   let document: ArchiveRetentionDocument | undefined;
+  let afterCandidates: (() => Promise<unknown>) | undefined;
   const retention = new HostArchiveRetentionCoordinator({
     document: {
       read: async () => (document ? { kind: 'valid', document } : { kind: 'absent' }),
@@ -1553,7 +1660,19 @@ async function withRetention(
         document = next;
       },
     },
-    catalog: harness.store,
+    catalog: {
+      listArchiveRetentionCandidates: async (query) => {
+        const rows = await harness.store.listArchiveRetentionCandidates(query);
+        const hook = afterCandidates;
+        afterCandidates = undefined;
+        await hook?.();
+        return rows;
+      },
+      countArchiveRetentionCandidates: (enabledAt) =>
+        harness.store.countArchiveRetentionCandidates(enabledAt),
+      readLatestSessionMetadataTime: () => harness.store.readLatestSessionMetadataTime(),
+      readCatalogRecord: (sessionId) => harness.store.readCatalogRecord(sessionId),
+    },
     retirement: harness.coordinator,
     now: () => harness.now ?? Date.now(),
     log: () => undefined,
@@ -1597,6 +1716,15 @@ async function withRetention(
       assert.ok(set.ok && set.result.kind === 'committed');
       assert.equal(set.result.setting.enabledAt, harness.now);
       return set.result.setting.enabledAt!;
+    },
+    disable: async () =>
+      retention.handlers['storage.retention.set'](
+        { expectedRevision: document?.revision ?? 0, enabled: false, days: document?.days ?? 30 },
+        CONNECTION_CONTEXT,
+      ),
+    query,
+    afterCandidates: (hook) => {
+      afterCandidates = hook;
     },
     sweepUntilIdle: async () => {
       for (let tick = 0; await retention.sweep(); tick += 1) assert.ok(tick < 100);

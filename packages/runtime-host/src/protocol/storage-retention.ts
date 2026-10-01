@@ -21,6 +21,8 @@ import {
   type ArchiveRetentionDays,
   type ArchiveRetentionDeletion,
   type ArchiveRetentionSweep,
+  decodeArchiveRetentionDeletion,
+  decodeArchiveRetentionSweep,
   isArchiveRetentionDays,
 } from '@maka/core/archive-retention';
 import { requireCount, requireShapedRecord } from './codec.js';
@@ -44,30 +46,27 @@ export interface StorageRetentionSetting {
 }
 
 /**
- * The archived tasks, counted as Settings › Archived tasks counts them, that
- * the policy would delete if nothing changed: archived, in a family no member
- * of which is pinned. Families a sweep leaves for review (those whose deletion
- * would reclaim a subagent worktree or archive an active subtask) are still
- * counted, so this is an upper bound.
+ * The archived tasks the policy covers now, counted as Settings › Archived
+ * tasks counts them: archived, not an Agent Graph operator, in a family no
+ * member of which is pinned. It is neither bound: families a sweep leaves for
+ * review are counted, and subtasks a deletion orphans into the archive are
+ * not.
  */
 export interface StorageRetentionPreview {
   readonly count: number;
-  /** The first of them becomes eligible once the Host clock passes this; absent when `count` is 0. */
+  /**
+   * When the first of them becomes eligible: after this Host instant. Present
+   * exactly while the setting is enabled and `count` is above 0. Enabling or
+   * changing the days restarts every clock, so a Client previews that change
+   * as `count` tasks eligible after its own now plus the new days.
+   */
   readonly eligibleAt?: number;
 }
 
-export interface StorageRetentionQueryInput {
-  /**
-   * Preview what enabling the setting with these days, now, would do. That is
-   * also what changing the days of an enabled setting does, since any change
-   * restarts the clock.
-   */
-  readonly previewDays?: ArchiveRetentionDays;
-}
+export type StorageRetentionQueryInput = Record<string, never>;
 
 export interface StorageRetentionQueryResult extends StorageRetentionSetting {
-  /** Present for an enabled setting, or when `previewDays` was asked for. */
-  readonly preview?: StorageRetentionPreview;
+  readonly preview: StorageRetentionPreview;
   readonly lastSweep?: ArchiveRetentionSweep;
   readonly lastDeletion?: ArchiveRetentionDeletion;
 }
@@ -137,24 +136,29 @@ export const STORAGE_RETENTION_OPERATION_SPECS = {
 } as const;
 
 export function decodeStorageRetentionQueryInput(value: unknown): StorageRetentionQueryInput {
-  const input = requireShapedRecord(value, 'storage retention input', [], ['previewDays']);
-  return input.previewDays === undefined ? {} : { previewDays: requireDays(input.previewDays) };
+  requireShapedRecord(value, 'storage retention input', [], []);
+  return {};
 }
 
 export function decodeStorageRetentionQueryResult(value: unknown): StorageRetentionQueryResult {
   const result = requireShapedRecord(
     value,
     'storage retention result',
-    ['revision', 'enabled', 'days'],
-    ['enabledAt', 'preview', 'lastSweep', 'lastDeletion'],
+    ['revision', 'enabled', 'days', 'preview'],
+    ['enabledAt', 'lastSweep', 'lastDeletion'],
   );
+  const setting = decodeSettingFields(result);
   return {
-    ...decodeSettingFields(result),
-    ...(result.preview === undefined ? {} : { preview: decodePreview(result.preview) }),
-    ...(result.lastSweep === undefined ? {} : { lastSweep: decodeSweep(result.lastSweep) }),
+    ...setting,
+    preview: decodePreview(result.preview, setting.enabled),
+    ...(result.lastSweep === undefined
+      ? {}
+      : { lastSweep: decodeArchiveRetentionSweep(result.lastSweep, invalidProtocolFrame) }),
     ...(result.lastDeletion === undefined
       ? {}
-      : { lastDeletion: decodeDeletion(result.lastDeletion) }),
+      : {
+          lastDeletion: decodeArchiveRetentionDeletion(result.lastDeletion, invalidProtocolFrame),
+        }),
   };
 }
 
@@ -220,48 +224,17 @@ function decodeSettingFields(record: Record<string, unknown>): StorageRetentionS
   };
 }
 
-function decodePreview(value: unknown): StorageRetentionPreview {
+function decodePreview(value: unknown, enabled: boolean): StorageRetentionPreview {
   const preview = requireShapedRecord(value, 'retention preview', ['count'], ['eligibleAt']);
   const count = requireCount(preview.count, 'retention preview count');
-  if (count > 0 !== (preview.eligibleAt !== undefined)) {
-    throw invalidProtocolFrame('Retention preview eligibleAt must be present exactly with tasks');
+  if ((enabled && count > 0) !== (preview.eligibleAt !== undefined)) {
+    throw invalidProtocolFrame('Retention preview eligibleAt must be present exactly when due');
   }
   return {
     count,
     ...(preview.eligibleAt === undefined
       ? {}
       : { eligibleAt: requireCount(preview.eligibleAt, 'retention preview eligibleAt') }),
-  };
-}
-
-function decodeSweep(value: unknown): ArchiveRetentionSweep {
-  const sweep = requireShapedRecord(
-    value,
-    'retention sweep',
-    ['at', 'deleted', 'skippedBusy', 'needsReview', 'failed'],
-    ['paused'],
-  );
-  if (sweep.paused !== undefined && sweep.paused !== true) {
-    throw invalidProtocolFrame('Invalid retention sweep paused');
-  }
-  return {
-    at: requireCount(sweep.at, 'retention sweep at'),
-    deleted: requireCount(sweep.deleted, 'retention sweep deleted'),
-    skippedBusy: requireCount(sweep.skippedBusy, 'retention sweep skippedBusy'),
-    needsReview: requireCount(sweep.needsReview, 'retention sweep needsReview'),
-    failed: requireCount(sweep.failed, 'retention sweep failed'),
-    ...(sweep.paused === true ? { paused: true as const } : {}),
-  };
-}
-
-function decodeDeletion(value: unknown): ArchiveRetentionDeletion {
-  const deletion = requireShapedRecord(value, 'retention deletion', ['at', 'count'], ['bytes']);
-  return {
-    at: requireCount(deletion.at, 'retention deletion at'),
-    count: requireCount(deletion.count, 'retention deletion count'),
-    ...(deletion.bytes === undefined
-      ? {}
-      : { bytes: requireCount(deletion.bytes, 'retention deletion bytes') }),
   };
 }
 

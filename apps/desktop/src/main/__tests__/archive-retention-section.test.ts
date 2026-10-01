@@ -25,7 +25,6 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import type {
-  StorageRetentionQueryInput,
   StorageRetentionQueryResult,
   StorageRetentionSetInput,
 } from '@maka/runtime-host/protocol';
@@ -60,17 +59,15 @@ afterEach(() => {
 });
 
 function services(retention: StorageRetentionQueryResult) {
-  const reads: StorageRetentionQueryInput[] = [];
+  const reads = { count: 0 };
   const writes: StorageRetentionSetInput[] = [];
   const value: StorageUsageServices = {
     loadUsage: async () => assert.fail('usage is not read here'),
     loadSessionUsage: async () => ({}),
-    loadRetention: async (host, input) => {
+    loadRetention: async (host) => {
       assert.deepEqual(host, HOST);
-      reads.push(input);
-      return input.previewDays === undefined
-        ? retention
-        : { ...retention, preview: { count: 4, eligibleAt: 10 * DAY } };
+      reads.count += 1;
+      return retention;
     },
     setRetention: async (host, input) => {
       assert.deepEqual(host, HOST);
@@ -89,27 +86,31 @@ function services(retention: StorageRetentionQueryResult) {
   return { value, reads, writes };
 }
 
-test('a change that starts the clock is confirmed with the Host preview first', async () => {
-  const off = { revision: 2, enabled: false, days: 30 } as const;
+test('a change that starts the clock is confirmed with the Host count first', async () => {
+  const off = { revision: 2, enabled: false, days: 30, preview: { count: 4 } } as const;
   const fake = services(off);
-  const asked: Array<{ count: number; eligibleAt?: number; days: number }> = [];
+  const asked: Array<{ count: number; days: number }> = [];
   const answer = { value: false };
-  const change = (current: typeof off | StorageRetentionQueryResult, enabled: boolean, days: 30 | 60 | 90) =>
+  const change = (
+    current: StorageRetentionQueryResult,
+    enabled: boolean,
+    days: 30 | 60 | 90,
+  ) =>
     applyArchiveRetentionChange({
       services: fake.value,
       host: HOST,
       current,
       next: { enabled, days },
-      confirm: async (preview, applied) => {
-        asked.push({ ...preview, days: applied.days });
+      confirm: async (count, applied) => {
+        asked.push({ count, days: applied.days });
         return answer.value;
       },
     });
 
-  // Declined: the preview was asked for with the new days, and nothing changed.
+  // Declined: the count was read fresh from the Host, and nothing changed.
   assert.deepEqual(await change(off, true, 60), { kind: 'cancelled' });
-  assert.deepEqual(fake.reads, [{ previewDays: 60 }]);
-  assert.deepEqual(asked, [{ count: 4, eligibleAt: 10 * DAY, days: 60 }]);
+  assert.equal(fake.reads.count, 1);
+  assert.deepEqual(asked, [{ count: 4, days: 60 }]);
   assert.deepEqual(fake.writes, []);
 
   answer.value = true;
@@ -118,22 +119,32 @@ test('a change that starts the clock is confirmed with the Host preview first', 
   assert.deepEqual(fake.writes, [{ expectedRevision: 2, enabled: true, days: 60 }]);
 
   // Turning it off deletes nothing, so it is neither previewed nor confirmed.
-  const on = { revision: 3, enabled: true, days: 60, enabledAt: 1 } as const;
+  const on = {
+    revision: 3,
+    enabled: true,
+    days: 60,
+    enabledAt: 1,
+    preview: { count: 0 },
+  } as const;
   assert.equal((await change(on, false, 60)).kind, 'committed');
   assert.equal(asked.length, 2);
   assert.deepEqual(fake.writes.at(-1), { expectedRevision: 3, enabled: false, days: 60 });
 
-  // The confirm states the preview's count and date, and what is kept.
+  // The confirm states the count as a floor and an approximate earliest date:
+  // this Client's now plus the new days.
   const confirm = archiveRetentionConfirm({
     copy,
     locale: 'en',
     current: off,
     change: { enabled: true, days: 60 },
-    preview: { count: 4, eligibleAt: 10 * DAY },
+    count: 4,
+    now: 10 * DAY,
   });
   assert.equal(confirm.title, copy.confirmEnableTitle);
-  assert.match(confirm.description ?? '', /4 tasks are covered now/);
-  assert.ok(confirm.description?.includes(formatAbsoluteTimestamp(10 * DAY, 'en')));
+  assert.match(confirm.description ?? '', /At least 4 tasks are covered now/);
+  assert.ok(
+    confirm.description?.includes(`before about ${formatAbsoluteTimestamp(70 * DAY, 'en')}`),
+  );
   assert.match(confirm.description ?? '', /Pinned tasks are kept\. Deleted tasks cannot be restored\./);
   assert.equal(
     archiveRetentionConfirm({
@@ -141,7 +152,8 @@ test('a change that starts the clock is confirmed with the Host preview first', 
       locale: 'en',
       current: on,
       change: { enabled: true, days: 30 },
-      preview: { count: 0 },
+      count: 0,
+      now: 0,
     }).title,
     copy.confirmChangeTitle,
   );
@@ -194,6 +206,7 @@ async function render(retention: StorageRetentionQueryResult) {
               services: fake.value,
               children: createElement(RuntimeHostSettingsTarget, {
                 host: HOST,
+                label: 'Build box',
                 children: createElement(ArchiveRetentionSection),
               }),
             }),
@@ -218,13 +231,15 @@ test('the section states the rules, the preview, the last cleanup and what needs
     lastSweep: { at: sweptAt, deleted: 3, skippedBusy: 1, needsReview: 2, failed: 0 },
     lastDeletion: { at: sweptAt, count: 3, bytes: 3 * 1024 },
   });
-  assert.deepEqual(fake.reads, [{}]);
+  assert.equal(fake.reads.count, 1);
+  // The switch names its Host; the list below spans every Host.
+  assert.match(text, /Applies to the Runtime Host “Build box” only/);
   assert.match(text, /applies to every archived task/);
   assert.match(text, /The clock starts when you turn it on/);
   assert.match(text, /Pinned tasks are kept\. Deletion is permanent\./);
   assert.ok(
     text.includes(
-      `Covers 5 archived tasks; the first can be deleted after ${formatAbsoluteTimestamp(31 * DAY, 'en')}.`,
+      `Covers at least 5 archived tasks; the first can be deleted after ${formatAbsoluteTimestamp(31 * DAY, 'en')}.`,
     ),
   );
   assert.ok(

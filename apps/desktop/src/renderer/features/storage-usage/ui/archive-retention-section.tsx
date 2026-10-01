@@ -30,6 +30,7 @@ import {
   SettingsRow,
   SettingsSection,
   useOptionalRuntimeHostSettingsGenerationKey,
+  useOptionalRuntimeHostSettingsLabel,
   useOptionalRuntimeHostSettingsTarget,
 } from '../../../application/contracts/settings-presentation/index.js';
 import {
@@ -63,6 +64,7 @@ interface ScopedRetention {
 export function ArchiveRetentionSection() {
   const host = useOptionalRuntimeHostSettingsTarget();
   const hostKey = useOptionalRuntimeHostSettingsGenerationKey();
+  const hostName = useOptionalRuntimeHostSettingsLabel();
   const services = useOptionalStorageUsageServices();
   const toast = useToast();
   const locale = useUiLocale();
@@ -75,7 +77,7 @@ export function ArchiveRetentionSection() {
   useEffect(() => {
     if (!host || !services) return;
     let current = true;
-    services.loadRetention(host, {}).then(
+    services.loadRetention(host).then(
       (retention) => {
         if (current) setScoped({ hostKey, state: { status: 'ready', retention } });
       },
@@ -101,9 +103,16 @@ export function ArchiveRetentionSection() {
         host,
         current: retention,
         next,
-        confirm: (preview, applied) =>
+        confirm: (count, applied) =>
           toast.confirm(
-            archiveRetentionConfirm({ copy, locale, current: retention, change: applied, preview }),
+            archiveRetentionConfirm({
+              copy,
+              locale,
+              current: retention,
+              change: applied,
+              count,
+              now: Date.now(),
+            }),
           ),
       });
       if (result.kind === 'conflict') toast.warning(copy.conflict);
@@ -125,7 +134,12 @@ export function ArchiveRetentionSection() {
       ) : null}
       <SettingsRow
         label={copy.enable}
-        description={retention ? retentionSummary(retention, copy, locale) : copy.enableHelp}
+        description={(
+          <>
+            {copy.hostScope(hostName)}
+            {retention?.enabled ? ` ${retentionSummary(retention, copy, locale)}` : null}
+          </>
+        )}
         align="start"
         end={(
           <Switch
@@ -173,7 +187,6 @@ function retentionSummary(
   locale: UiLocale,
 ): string {
   const preview = retention.preview;
-  if (!retention.enabled || !preview) return copy.enableHelp;
   return preview.count === 0 || preview.eligibleAt === undefined
     ? copy.previewNone
     : copy.preview(preview.count, formatAbsoluteTimestamp(preview.eligibleAt, locale));
