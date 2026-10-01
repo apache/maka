@@ -4538,6 +4538,109 @@ Slug openai-work<cursor>
     await run;
   });
 
+  test('Tab during a turn queues a followup like Alt+Enter', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('do this next');
+    terminal.input('\t'); // Tab queues a followup during a turn
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Queued: do this next'),
+    );
+    assert.deepEqual(driver.queuedMessages, ['do this next']);
+    assert.deepEqual(driver.steered, []);
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    // Interrupt refills the editor with the cleared queue; clear it before /exit.
+    terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('Tab while idle stays with the editor and does not submit', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('not submitted');
+    terminal.input('\t'); // Idle Tab is the editor's completion trigger, not submit.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(driver.queuedMessages, []);
+    assert.deepEqual(driver.steered, []);
+    assert.equal(terminal.progressStates.at(-1) ?? false, false);
+
+    terminal.input('\x03'); // clear the draft
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('Shift+Left takes the queued messages back into the editor', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('reword this later');
+    terminal.input('\r'); // steer
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Steering: reword this later'),
+    );
+
+    terminal.input('\x1b[1;2D'); // Shift+Left
+    await waitFor(() => driver.retractCalls === 1);
+    // The pending bar is cleared and the text is back in the editor.
+    await waitFor(() => {
+      const screen = plainTerminalOutput(terminal.screenOutput());
+      return (
+        !screen.includes('Steering: reword this later') && screen.includes('reword this later')
+      );
+    });
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03'); // clear the refilled draft
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('Alt+Up takes the queued messages back into the editor', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();

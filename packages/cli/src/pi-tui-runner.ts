@@ -1403,9 +1403,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     submitMessage(text, 'current_turn');
   };
 
-  // Alt+Enter: during a turn, queue the text to open the next turn; when idle,
-  // it submits like Enter.
-  const handleAltEnter = () => {
+  // Tab / Alt+Enter: during a turn, queue the text to open the next turn; when
+  // idle, it submits like Enter. (Idle Tab never reaches this — it stays the
+  // editor's completion trigger; see the key handler.)
+  const queueOrSubmit = () => {
     // Mirror Enter's control-busy guard BEFORE touching the editor: during a
     // control action (busy without a running turn) submitPrompt would drop the
     // prompt, so keep the draft in place instead of clearing it into the void.
@@ -4803,7 +4804,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // (newline is shift+enter/ctrl+j; history is plain up), so intercepting
     // here does not collide with the editor's own keys.
     if (matchesKey(data, Key.alt('enter')) && !isKeyRepeat(data)) {
-      handleAltEnter();
+      queueOrSubmit();
       return { consume: true };
     }
     if (matchesKey(data, Key.alt('up')) && !isKeyRepeat(data)) {
@@ -4812,6 +4813,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // tick would see an empty mirror while the runtime holds the message.
       // Alt+Up is not an editor binding, and an empty retract refill is a
       // no-op, so consuming unconditionally loses nothing.
+      retractQueuedMessages();
+      return { consume: true };
+    }
+    // Tab: queue a followup during a turn — the macOS/Windows-safe route for
+    // terminals that claim the Alt chords (#3538; Codex's default). The
+    // editor owns Tab everywhere else: it triggers/accepts completion, so a
+    // turn-running Tab only queues a non-empty draft while no completion
+    // popup is open. Idle Tab stays with the editor rather than submitting.
+    if (
+      turnRunning &&
+      !interruptRequested &&
+      !editorPastePending &&
+      editor.getText().trim().length > 0 &&
+      !editor.isShowingAutocomplete() &&
+      matchesKey(data, Key.tab) &&
+      !isKeyRepeat(data)
+    ) {
+      queueOrSubmit();
+      return { consume: true };
+    }
+    // Shift+←: retract queued messages (Codex's edit_queued_message default).
+    // Not an editor binding either, so the same unconditional-consume
+    // rationale as Alt+↑ applies.
+    if (matchesKey(data, Key.shift('left')) && !isKeyRepeat(data)) {
       retractQueuedMessages();
       return { consume: true };
     }
