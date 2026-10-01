@@ -21,7 +21,7 @@ import { useEffect, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Selector } from '@astryxdesign/core/Selector';
 import { Text } from '@astryxdesign/core/Text';
-import { ARCHIVE_RETENTION_DAYS } from '@maka/core/archive-retention';
+import { ARCHIVE_RETENTION_DAY_MS, ARCHIVE_RETENTION_DAYS } from '@maka/core/archive-retention';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StorageRetentionQueryResult } from '@maka/runtime-host/protocol';
@@ -131,6 +131,20 @@ export function ArchiveRetentionSection() {
       ) : null}
       {retention?.lastSweep?.paused ? (
         <Banner status="warning" title={copy.paused} />
+      ) : null}
+      {retention?.hold ? (
+        <Banner
+          status="warning"
+          title={copy.held(
+            formatAbsoluteTimestamp(retention.hold.until, locale),
+            Math.max(
+              1,
+              Math.round(
+                (retention.hold.detectedAt - retention.hold.since) / ARCHIVE_RETENTION_DAY_MS,
+              ),
+            ),
+          )}
+        />
       ) : null}
       <SettingsRow
         label={copy.enable}

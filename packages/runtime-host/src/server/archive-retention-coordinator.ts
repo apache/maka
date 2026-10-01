@@ -19,10 +19,12 @@
 
 import {
   ARCHIVE_RETENTION_DAY_MS,
+  ARCHIVE_RETENTION_HOLD_MS,
   type ArchiveRetentionDeletion,
   type ArchiveRetentionSweep,
   archiveRetentionClockStart,
   archiveRetentionDeadline,
+  archiveRetentionGapThreshold,
 } from '@maka/core/archive-retention';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { sessionRevisionFamilyId } from '@maka/core/session';
@@ -133,6 +135,8 @@ export class HostArchiveRetentionCoordinator {
    * Session metadata recorded.
    */
   #observedAt = 0;
+  /** Whether `#observedAt` is a time this process saw, rather than the persisted floor. */
+  #observedThisRun = false;
   #pass: SweepPass | undefined;
   #draining = false;
 
@@ -174,13 +178,36 @@ export class HostArchiveRetentionCoordinator {
       enabledAt: document.enabledAt,
     };
     const now = this.#now();
-    const wentBack = now < this.#observedAt;
-    this.#observedAt = Math.max(this.#observedAt, now);
+    const previous = this.#observedAt;
+    const observedThisRun = this.#observedThisRun;
+    this.#observedAt = Math.max(previous, now);
+    this.#observedThisRun = true;
+    const deadline = archiveRetentionDeadline(setting.enabledAt, setting.days);
+    const gap = archiveRetentionGapThreshold(setting.days);
+    // A forward jump is caught even when it lands short of the deadline. Before
+    // the deadline no SQL runs, so a fresh process measures from the persisted
+    // floor alone.
+    if ((observedThisRun || now <= deadline) && now - previous > gap) {
+      return this.#hold(previous, now);
+    }
     // Nothing can be eligible before the policy itself is `days` old.
-    if (now <= archiveRetentionDeadline(setting.enabledAt, setting.days)) return false;
-    if (wentBack) return this.#pause(now);
+    if (now <= deadline) return false;
+    if (now < previous) return this.#pause(now);
     const newest = await this.#catalog.readLatestSessionMetadataTime();
     if (newest !== undefined && now < newest) return this.#pause(now);
+    if (!observedThisRun) {
+      // After a restart, the newest metadata time says when the Host last ran.
+      const since = Math.max(previous, newest ?? 0);
+      if (now - since > gap) return this.#hold(since, now);
+    }
+    const hold = document.latest?.hold;
+    if (hold) {
+      if (now < hold.until) return false;
+      await this.#update(({ latest, ...rest }) => {
+        const { hold: _hold, ...kept } = latest ?? {};
+        return { ...rest, ...(Object.keys(kept).length > 0 ? { latest: kept } : {}) };
+      });
+    }
 
     if (this.#pass?.revision !== setting.revision) {
       this.#pass = {
@@ -281,6 +308,24 @@ export class HostArchiveRetentionCoordinator {
     return undefined;
   }
 
+  /**
+   * The wall clock moved ahead further than a sweep expects, whether set wrong
+   * or after a long time offline: delete nothing for a day, so a wrong clock
+   * can be noticed and the setting turned off. A further jump re-arms it.
+   */
+  async #hold(since: number, now: number): Promise<false> {
+    this.#pass = undefined;
+    this.#log('archive retention held: the clock moved ahead further than a sweep expects');
+    await this.#update((document) => ({
+      ...document,
+      latest: {
+        ...document.latest,
+        hold: { since, detectedAt: now, until: now + ARCHIVE_RETENTION_HOLD_MS },
+      },
+    }));
+    return false;
+  }
+
   async #pause(now: number): Promise<false> {
     this.#pass = undefined;
     // Recorded once: a clock that stays behind writes nothing further.
@@ -365,6 +410,7 @@ export class HostArchiveRetentionCoordinator {
           },
           ...(document.latest?.lastSweep ? { lastSweep: document.latest.lastSweep } : {}),
           ...(document.latest?.lastDeletion ? { lastDeletion: document.latest.lastDeletion } : {}),
+          ...(document.latest?.hold ? { hold: document.latest.hold } : {}),
         },
       };
     } catch (error) {
@@ -406,6 +452,7 @@ export class HostArchiveRetentionCoordinator {
         const now = this.#now();
         const enabledAt = Math.max(now, this.#observedAt, newest ?? 0);
         this.#observedAt = Math.max(this.#observedAt, now);
+        this.#observedThisRun = true;
         const { enabledAt: _previous, latest, ...rest } = current;
         const lastSweep = latest?.lastSweep && withoutPause(latest.lastSweep);
         const nextLatest = {
@@ -490,6 +537,7 @@ export class HostArchiveRetentionCoordinator {
       this.#observedAt,
       document.enabledAt ?? 0,
       document.latest?.lastSweep?.at ?? 0,
+      document.latest?.hold?.detectedAt ?? 0,
     );
     this.#document = document;
     return document;

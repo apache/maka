@@ -26,7 +26,7 @@ import { test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '../session-store.js';
-import { exportSessionBundleState } from '../session-bundle-policy.js';
+import { exportSessionBundleState, importSessionBundleState } from '../session-bundle-policy.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
 test('exports one Session as filtered SQLite', async () => {
@@ -78,6 +78,73 @@ test('exports one Session as filtered SQLite', async () => {
         ).count,
         0,
       );
+    } finally {
+      database.close();
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('an imported archived Session starts its archive clock at the import', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-session-bundle-archived-'));
+  const configRoot = join(base, 'config');
+  await mkdir(configRoot, { recursive: true });
+  try {
+    // One archived before the time was recorded, one archived long ago.
+    const exported: Array<{ id: string; bundle: string }> = [];
+    for (const [name, archivedAt] of [
+      ['unknown', null],
+      ['old', 5],
+    ] as const) {
+      const stateRoot = join(base, `source-${name}`);
+      const sessions = createSessionStore(stateRoot);
+      const session = await sessions.create(input(name));
+      await sessions.appendMessage(session.id, message(`${name}-message`));
+      await sessions.setSessionsArchivedVersioned(
+        [
+          {
+            sessionId: session.id,
+            expectedVersion: (await sessions.readHeaderRecordSnapshot(session.id)).revision,
+          },
+        ],
+        true,
+      );
+      await sessions.close?.();
+      const source = new DatabaseSync(join(stateRoot, 'runtime.sqlite'));
+      source
+        .prepare('UPDATE session_metadata SET archived_at = ? WHERE session_id = ?')
+        .run(archivedAt, session.id);
+      source.close();
+      const bundle = join(base, `bundle-${name}`);
+      await exportSessionBundleState({
+        stateRoot,
+        configRoot,
+        destinationRoot: bundle,
+        sessionId: session.id,
+      });
+      exported.push({ id: session.id, bundle });
+    }
+
+    const target = join(base, 'target');
+    await mkdir(target, { recursive: true });
+    const before = Date.now();
+    for (const { bundle } of exported) {
+      await importSessionBundleState({ stateRoot: target, bundleStateRoot: bundle });
+    }
+    const after = Date.now();
+    const database = new DatabaseSync(join(target, 'runtime.sqlite'), { readOnly: true });
+    try {
+      for (const { id } of exported) {
+        const row = database
+          .prepare('SELECT is_archived, archived_at FROM session_metadata WHERE session_id = ?')
+          .get(id) as { is_archived: number; archived_at: number | null };
+        assert.equal(row.is_archived, 1);
+        assert.ok(
+          row.archived_at !== null && row.archived_at >= before && row.archived_at <= after,
+          `archived_at ${row.archived_at} is the import time`,
+        );
+      }
     } finally {
       database.close();
     }

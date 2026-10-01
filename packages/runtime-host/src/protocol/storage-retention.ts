@@ -20,8 +20,10 @@
 import {
   type ArchiveRetentionDays,
   type ArchiveRetentionDeletion,
+  type ArchiveRetentionHold,
   type ArchiveRetentionSweep,
   decodeArchiveRetentionDeletion,
+  decodeArchiveRetentionHold,
   decodeArchiveRetentionSweep,
   isArchiveRetentionDays,
 } from '@maka/core/archive-retention';
@@ -69,6 +71,12 @@ export interface StorageRetentionQueryResult extends StorageRetentionSetting {
   readonly preview: StorageRetentionPreview;
   readonly lastSweep?: ArchiveRetentionSweep;
   readonly lastDeletion?: ArchiveRetentionDeletion;
+  /**
+   * Present while deletions are held because the wall clock moved ahead
+   * further than a sweep expects; they resume once the Host clock reaches
+   * `until`, and any setting change clears it.
+   */
+  readonly hold?: ArchiveRetentionHold;
 }
 
 export interface StorageRetentionSetInput {
@@ -145,7 +153,7 @@ export function decodeStorageRetentionQueryResult(value: unknown): StorageRetent
     value,
     'storage retention result',
     ['revision', 'enabled', 'days', 'preview'],
-    ['enabledAt', 'lastSweep', 'lastDeletion'],
+    ['enabledAt', 'lastSweep', 'lastDeletion', 'hold'],
   );
   const setting = decodeSettingFields(result);
   return {
@@ -159,6 +167,9 @@ export function decodeStorageRetentionQueryResult(value: unknown): StorageRetent
       : {
           lastDeletion: decodeArchiveRetentionDeletion(result.lastDeletion, invalidProtocolFrame),
         }),
+    ...(result.hold === undefined
+      ? {}
+      : { hold: decodeArchiveRetentionHold(result.hold, invalidProtocolFrame) }),
   };
 }
 
