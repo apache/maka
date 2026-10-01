@@ -158,6 +158,10 @@ import type {
   ContextDiagnosticsResult,
   SessionRemovePreviewResult,
   SessionStorageUsage,
+  StorageRetentionQueryInput,
+  StorageRetentionQueryResult,
+  StorageRetentionSetInput,
+  StorageRetentionSetResult,
   StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
@@ -1846,6 +1850,16 @@ export interface MakaBridge {
      * Runtime Host is unavailable or fails, or when that Host no longer holds it.
      */
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
+    /** One Runtime Host's archived-task retention setting, its preview and its latest results. */
+    retention(
+      input: StorageRetentionQueryInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionQueryResult>;
+    /** Changes that setting, fenced by the revision the caller read. The Host stamps the time. */
+    setRetention(
+      input: StorageRetentionSetInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionSetResult>;
   };
   dailyReview: {
     day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;

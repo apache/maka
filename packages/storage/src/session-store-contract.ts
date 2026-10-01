@@ -149,6 +149,25 @@ export type ProbeSessionRemovalResult =
   | { readonly kind: 'removed' }
   | { readonly kind: 'absent' };
 
+/**
+ * A task row archive retention may delete: what Settings › Archived tasks lists
+ * — an archived root, or an archived subtask whose parent is gone — that no
+ * member of its revision family pins.
+ */
+export interface ArchiveRetentionCandidate extends SessionHeaderSnapshot {
+  /** Absent for a Session archived before the Host recorded the time. */
+  readonly archivedAt?: number;
+}
+
+/** Candidates come oldest archive first; an unknown time sorts before every known one. */
+export interface ArchiveRetentionCandidateQuery {
+  /** Only rows archived before this instant, plus every row whose time is unknown. */
+  readonly archivedBefore?: number;
+  /** Resume strictly after this row of the same order. */
+  readonly after?: { readonly archivedAt?: number; readonly sessionId: string };
+  readonly limit: number;
+}
+
 export interface SessionCatalogRecord extends SessionHeaderSnapshot {
   readonly activityAt: number;
   readonly summary: SessionSummary;
@@ -550,4 +569,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   reconcileOrphanedAgentGraphRetirements(): Promise<string[]>;
   listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]>;
   completeSessionRetirementCleanup(sessionId: string): Promise<void>;
+  listArchiveRetentionCandidates(
+    query: ArchiveRetentionCandidateQuery,
+  ): Promise<ArchiveRetentionCandidate[]>;
+  /** Archive times of the given Sessions; one archived before the time was recorded is absent. */
+  readSessionArchiveTimes(sessionIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  /** The newest time any Session metadata write or archive recorded; undefined with no Sessions. */
+  readLatestSessionMetadataTime(): Promise<number | undefined>;
 }

@@ -20,6 +20,7 @@
 // Public API of the storage usage feature. Legacy Settings pages import only
 // from this barrel and render these surfaces; they hold no storage state.
 
+export { ArchiveRetentionSection } from './ui/archive-retention-section.js';
 export { StorageUsageSection } from './ui/storage-usage-section.js';
 export { TaskStorageSize } from './ui/task-storage-size.js';
 export { StorageUsageServicesProvider } from './services-context.js';

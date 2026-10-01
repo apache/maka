@@ -259,6 +259,10 @@ import {
   type SessionTurnAccessRequest,
   type SessionRemovePreviewResult,
   type SessionStorageUsage,
+  type StorageRetentionQueryInput,
+  type StorageRetentionQueryResult,
+  type StorageRetentionSetInput,
+  type StorageRetentionSetResult,
   type StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
@@ -3746,6 +3750,18 @@ const makaBridge = {
     },
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>> {
       return loadDesktopSessionStorageUsage(sessionIds);
+    },
+    async retention(
+      input: StorageRetentionQueryInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionQueryResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.retention.query', input);
+    },
+    async setRetention(
+      input: StorageRetentionSetInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionSetResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).command('storage.retention.set', input);
     },
   },
   dailyReview: {

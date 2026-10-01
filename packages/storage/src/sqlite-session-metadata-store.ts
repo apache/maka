@@ -1284,6 +1284,117 @@ export class SqliteSessionMetadataStore {
     return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
   }
 
+  /**
+   * Archive-retention candidates: archived, unpinned rows Settings › Archived
+   * tasks lists — not a graph operator, not a subtask whose parent still
+   * exists, not a preparing copy — in a family no member of which is pinned.
+   * The `(is_flagged, is_archived, …)` index bounds the scan to archived rows.
+   */
+  async listArchiveRetentionCandidates(query: {
+    readonly archivedBefore?: number;
+    readonly after?: { readonly archivedAt?: number; readonly sessionId: string };
+    readonly limit: number;
+  }): Promise<Array<SessionMetadataRecord & { readonly archivedAt?: number }>> {
+    this.assertOpen();
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 256) {
+      throw new Error('Archive retention candidate limit must be between 1 and 256');
+    }
+    const role = sqliteOrdinarySessionRolePredicate();
+    const where = [
+      'metadata.is_flagged = 0',
+      'metadata.is_archived = 1',
+      role.sql,
+      "COALESCE(json_extract(metadata.payload_json, '$.conversationCopy.state'), '') <> 'preparing'",
+      "COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), 1) <> 0",
+      "json_type(metadata.payload_json, '$.subagentParent.graph') IS NULL",
+      `(
+        metadata.subagent_parent_session_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM session_metadata parent
+          WHERE parent.session_id = metadata.subagent_parent_session_id
+        )
+      )`,
+      `NOT EXISTS (
+        SELECT 1 FROM session_metadata pinned
+        WHERE pinned.is_flagged = 1
+          AND COALESCE(pinned.revision_root_session_id, pinned.session_id)
+            = COALESCE(metadata.revision_root_session_id, metadata.session_id)
+      )`,
+    ];
+    const parameters: Array<string | number> = [...role.parameters];
+    if (query.archivedBefore !== undefined) {
+      where.push('(metadata.archived_at IS NULL OR metadata.archived_at < ?)');
+      parameters.push(query.archivedBefore);
+    }
+    if (query.after) {
+      assertSafeSessionId(query.after.sessionId);
+      where.push('(COALESCE(metadata.archived_at, -1), metadata.session_id) > (?, ?)');
+      parameters.push(query.after.archivedAt ?? -1, query.after.sessionId);
+    }
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          metadata.session_id,
+          metadata.payload_json,
+          metadata.metadata_version,
+          metadata.committed_at,
+          metadata.archived_at
+        FROM session_metadata metadata
+        WHERE ${where.join(' AND ')}
+        ORDER BY COALESCE(metadata.archived_at, -1), metadata.session_id
+        LIMIT ?
+      `,
+      )
+      .all(...parameters, query.limit) as unknown as Array<
+      SessionMetadataRow & { archived_at: number | null }
+    >;
+    return rows.map((row) => {
+      const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
+      return { ...decodeRecord(row), ...(archivedAt === undefined ? {} : { archivedAt }) };
+    });
+  }
+
+  async readSessionArchiveTimes(sessionIds: readonly string[]): Promise<Map<string, number>> {
+    this.assertOpen();
+    const times = new Map<string, number>();
+    for (let offset = 0; offset < sessionIds.length; offset += 256) {
+      const page = sessionIds.slice(offset, offset + 256);
+      for (const sessionId of page) assertSafeSessionId(sessionId);
+      const rows = this.db
+        .prepare(
+          `
+          SELECT session_id, archived_at
+          FROM session_metadata
+          WHERE archived_at IS NOT NULL
+            AND session_id IN (${page.map(() => '?').join(', ')})
+        `,
+        )
+        .all(...page) as unknown as Array<{ session_id: string; archived_at: number | null }>;
+      for (const row of rows) {
+        const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
+        if (archivedAt !== undefined) times.set(row.session_id, archivedAt);
+      }
+    }
+    return times;
+  }
+
+  async readLatestSessionMetadataTime(): Promise<number | undefined> {
+    this.assertOpen();
+    const row = this.db
+      .prepare(
+        `
+        SELECT MAX(committed_at) AS committed_at, MAX(archived_at) AS archived_at
+        FROM session_metadata
+      `,
+      )
+      .get() as { committed_at: number | null; archived_at: number | null } | undefined;
+    const times = [row?.committed_at, row?.archived_at].filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value),
+    );
+    return times.length === 0 ? undefined : Math.max(...times);
+  }
+
   async reconcileOrphanedAgentGraphRetirements(): Promise<string[]> {
     this.assertOpen();
     return this.transaction(() => {

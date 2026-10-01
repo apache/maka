@@ -46,6 +46,9 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 import { HostSessionRetirementCoordinator } from '../server/session-retirement-coordinator.js';
+import { HostArchiveRetentionCoordinator } from '../server/archive-retention-coordinator.js';
+import type { StorageRetentionQueryResult } from '../protocol/index.js';
+import type { ArchiveRetentionDocument } from '@maka/storage/archive-retention-store';
 import { purgeSessionSidecars } from '../server/session-sidecar-purge.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -1385,6 +1388,232 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 });
+
+describe('archive retention through the removal path', () => {
+  test("a task's clock starts no earlier than enablement and must run longer than the period", async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const legacy = await rig.archivedTask('Legacy');
+        const early = await rig.archivedTask('Archived before enablement');
+        const late = await rig.archivedTask('Archived after enablement');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([legacy], null);
+        rig.setArchivedAt([early], enabledAt - 10 * DAY);
+        rig.setArchivedAt([late], enabledAt + 5 * DAY);
+
+        // Exactly the period after enablement is not "longer than" it.
+        harness.now = enabledAt + 30 * DAY;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([legacy, early, late]), [legacy, early, late]);
+
+        // An unknown or earlier archive time counts from enablement.
+        harness.now = enabledAt + 30 * DAY + 1;
+        const first = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([legacy, early, late]), [late]);
+        assert.equal(first.lastSweep?.deleted, 2);
+        assert.deepEqual(first.lastDeletion, {
+          at: enabledAt + 30 * DAY + 1,
+          count: 2,
+          bytes: 2 * MEASURED_SESSION_TOTAL,
+        });
+
+        // A later archive time counts from itself, with the same strict boundary.
+        harness.now = enabledAt + 35 * DAY;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([late]), [late]);
+        harness.now = enabledAt + 35 * DAY + 1;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([late]), []);
+      });
+    });
+  });
+
+  test('restoring a task cancels its deadline and archiving it again starts a fresh one', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const task = await rig.archivedTask('Restored');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([task], enabledAt);
+
+        harness.now = enabledAt + 31 * DAY;
+        await rig.setLifecycle(task, 'active');
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), [task]);
+
+        await rig.setLifecycle(task, 'archived');
+        rig.setArchivedAt([task], enabledAt + 31 * DAY);
+        harness.now = enabledAt + 61 * DAY;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), [task]);
+        harness.now = enabledAt + 61 * DAY + 1;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), []);
+      });
+    });
+  });
+
+  test('a pinned revision keeps its whole family', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        await rig.setLifecycle(harness.rootId, 'archived');
+        await harness.store.setFlagged(harness.revisionId, true);
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt(harness.familyIds, null);
+
+        harness.now = enabledAt + 31 * DAY;
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
+
+        await harness.store.setFlagged(harness.revisionId, false);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), []);
+      });
+    });
+  });
+
+  test('a family that would archive an active subtask or reclaim a worktree needs review', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        // An active subtask the deletion would move to the archive.
+        const parent = await rig.archivedTask('Parent of an active subtask');
+        const active = await createClosedSubagent(harness, parent, 1);
+        // An orphaned archived subtask whose deletion would reclaim its worktree.
+        const owner = (await harness.store.create(sessionInput('Worktree owner'))).id;
+        const orphan = await createClosedSubagent(harness, owner, 2, worktreeBinding('f'));
+        await rig.setLifecycle(orphan, 'archived');
+        const removed = await harness.coordinator.handlers['session.remove'](
+          {
+            sessionId: owner,
+            expectedRevision: (await harness.store.readHeaderRecordSnapshot(owner)).revision,
+          },
+          CONNECTION_CONTEXT,
+        );
+        assert.equal(removed.ok, true);
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([parent, orphan], null);
+
+        harness.now = enabledAt + 31 * DAY;
+        const result = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([parent, active, orphan]), [parent, active, orphan]);
+        assert.equal(result.lastSweep?.needsReview, 2);
+        assert.equal(result.lastSweep?.deleted, 0);
+        assert.equal(result.lastDeletion, undefined);
+        assert.deepEqual(harness.actions.retiredWorktrees, []);
+      });
+    });
+  });
+
+  test('a busy task is skipped as busy and deleted by a later sweep', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const task = await rig.archivedTask('Busy');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([task], null);
+        harness.blockers.message.add(task);
+
+        harness.now = enabledAt + 31 * DAY;
+        const busy = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), [task]);
+        assert.equal(busy.lastSweep?.skippedBusy, 1);
+
+        harness.blockers.message.delete(task);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), []);
+      });
+    });
+  });
+});
+
+const DAY = 24 * 60 * 60 * 1000;
+
+interface RetentionRig {
+  archivedTask(name: string): Promise<string>;
+  setLifecycle(sessionId: string, state: 'active' | 'archived'): Promise<void>;
+  /** Overrides the recorded archive time; null is a task archived before it was recorded. */
+  setArchivedAt(sessionIds: readonly string[], archivedAt: number | null): void;
+  /** Enables the policy at the harness clock and returns `enabledAt`. */
+  enable(days: 30 | 60 | 90): Promise<number>;
+  sweepUntilIdle(): Promise<StorageRetentionQueryResult>;
+  /** The given Sessions that still exist, in order. */
+  present(sessionIds: readonly string[]): Promise<string[]>;
+}
+
+async function withRetention(
+  harness: RetirementHarness,
+  operation: (rig: RetentionRig) => Promise<void>,
+): Promise<void> {
+  // Far enough ahead of the real clock that metadata writes stamped by it never
+  // read as a clock that went back.
+  harness.now = Date.now() + 1_000 * DAY;
+  let document: ArchiveRetentionDocument | undefined;
+  const retention = new HostArchiveRetentionCoordinator({
+    document: {
+      read: async () => (document ? { kind: 'valid', document } : { kind: 'absent' }),
+      write: async (next) => {
+        document = next;
+      },
+    },
+    catalog: harness.store,
+    retirement: harness.coordinator,
+    now: () => harness.now ?? Date.now(),
+    log: () => undefined,
+  });
+  const query = async () => {
+    const result = await retention.handlers['storage.retention.query']({}, CONNECTION_CONTEXT);
+    assert.ok(result.ok);
+    return result.result;
+  };
+  const rig: RetentionRig = {
+    archivedTask: async (name) => {
+      const { id } = await harness.store.create(sessionInput(name));
+      await rig.setLifecycle(id, 'archived');
+      return id;
+    },
+    setLifecycle: async (sessionId, state) => {
+      const result = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId, state },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(result.ok, true);
+    },
+    setArchivedAt: (sessionIds, archivedAt) => {
+      const database = new DatabaseSync(
+        join(harness.workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+      );
+      try {
+        const update = database.prepare(
+          'UPDATE session_metadata SET archived_at = ? WHERE session_id = ?',
+        );
+        for (const sessionId of sessionIds) update.run(archivedAt, sessionId);
+      } finally {
+        database.close();
+      }
+    },
+    enable: async (days) => {
+      const set = await retention.handlers['storage.retention.set'](
+        { expectedRevision: (await query()).revision, enabled: true, days },
+        CONNECTION_CONTEXT,
+      );
+      assert.ok(set.ok && set.result.kind === 'committed');
+      assert.equal(set.result.setting.enabledAt, harness.now);
+      return set.result.setting.enabledAt!;
+    },
+    sweepUntilIdle: async () => {
+      for (let tick = 0; await retention.sweep(); tick += 1) assert.ok(tick < 100);
+      return query();
+    },
+    present: async (sessionIds) => {
+      const present: string[] = [];
+      for (const sessionId of sessionIds) {
+        if ((await harness.store.probeSessionRemoval(sessionId)).kind === 'present') {
+          present.push(sessionId);
+        }
+      }
+      return present;
+    },
+  };
+  await operation(rig);
+}
 
 /** What the fake footprint reports for any Session: 124 bytes in all. */
 const MEASURED_SESSION_BYTES = { transcript: 100, runtime: 20, artifacts: 3, context: 1 };

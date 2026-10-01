@@ -185,3 +185,42 @@ test('failed paths do not pin the pagination cursor, and another sweep retries t
   assert.deepEqual(cursors, [undefined, 'failed-path', undefined]);
   await maintenance.close();
 });
+
+test('the retention lane sweeps a second apart while work remains and every quarter hour otherwise', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const remaining = [true, true, false];
+  let sweeps = 0;
+  const maintenance = new HostStorageMaintenance({
+    artifacts: {
+      reclaimUpgradeResidue: async () => ({ nextAfter: null, processedPaths: 0, failedPaths: 0 }),
+    },
+    retention: {
+      sweep: async () => {
+        sweeps += 1;
+        return remaining.shift() ?? false;
+      },
+    },
+    onError: assert.fail,
+  });
+  maintenance.start();
+  t.mock.timers.tick(999);
+  await settle();
+  assert.equal(sweeps, 0, 'the first sweep waits a second after Ready');
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(sweeps, 1);
+  t.mock.timers.tick(1_000);
+  await settle();
+  assert.equal(sweeps, 2);
+  t.mock.timers.tick(1_000);
+  await settle();
+  assert.equal(sweeps, 3);
+  // Nothing left: the next sweep is fifteen minutes away, not the other lanes' minute.
+  t.mock.timers.tick(15 * 60_000 - 1);
+  await settle();
+  assert.equal(sweeps, 3);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(sweeps, 4);
+  await maintenance.close();
+});
