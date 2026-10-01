@@ -126,7 +126,7 @@ export async function publishAcpPromptAttachments(
     const mimeType = resolveAttachmentMimeType(bytes, attachment.mimeType, attachment.name);
     if (mimeType === 'application/pdf') {
       const preflight = validatePdfBytes(bytes);
-      if (!preflight.ok) {
+      if (!preflight.ok && preflight.reason !== 'encrypted') {
         throw invalidPrompt('attachments', `pdf_${preflight.reason}`);
       }
     }

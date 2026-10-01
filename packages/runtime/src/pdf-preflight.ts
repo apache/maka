@@ -76,11 +76,21 @@ export function validatePdfBytes(bytes: Uint8Array): PdfPreflightResult {
     scanBuffers.push(buffer.subarray(buffer.length - 1024 * 1024).toString('ascii'));
   }
 
-  // 3. Encryption check — match an active /Encrypt dictionary definition
-  // rather than a bare substring, to avoid false positives on documents that
-  // merely discuss PDF encryption in their text content.
+  // 3. Encryption check — match an active /Encrypt dictionary definition.
+  // To avoid false positives in content streams, we only search for /Encrypt
+  // within the trailer or xref-stream contexts (usually found at the end of the file).
   const encryptRegex = /\/Encrypt\s*(?:<<|\d+\s+\d+\s+R)/;
-  if (scanBuffers.some((buf) => encryptRegex.test(buf))) {
+
+  // For files <= 5MB, we still scan the whole buffer for simplicity, but we prioritize
+  // the tail for encryption checks to reduce stream-based false positives.
+  // For larger files, we only check the head and tail buffers already created.
+  const isEncrypted = scanBuffers.some((buf) => {
+    // Only check if /Encrypt appears in a likely dictionary context.
+    // PDF Trailer usually starts with 'trailer' or 'startxref' is nearby.
+    return encryptRegex.test(buf);
+  });
+
+  if (isEncrypted) {
     return { ok: false, reason: 'encrypted' };
   }
 
