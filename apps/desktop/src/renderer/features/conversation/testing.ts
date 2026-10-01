@@ -62,6 +62,15 @@ export function stubConversationServices(
     subscribeChanges: () => () => undefined,
     skills: { listInvocable: async () => [] },
     runtimeHosts: { subscribeChanges: () => () => undefined },
+    resume: {
+      queryPlan: async () => {
+        throw new Error('Resume plan query is not stubbed');
+      },
+      start: async () => {
+        throw new Error('Resume start is not stubbed');
+      },
+      subscribeChanges: () => () => undefined,
+    },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
     newTasks: {
       subscribeChanges: () => () => undefined,

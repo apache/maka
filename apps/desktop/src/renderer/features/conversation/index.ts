@@ -46,6 +46,7 @@ export {
 } from '@maka/ui/pending-items';
 export { desktopSlashCommandPresentation } from './model/slash-command-presentation.js';
 export { useActiveExecutionBoundary } from './controller/use-active-execution-boundary.js';
+export { useShellResume } from './controller/use-shell-resume.js';
 export { useSessionReferenceComposer } from './controller/use-session-reference-composer.js';
 export {
   ComposerMentionsProvider,

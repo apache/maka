@@ -153,6 +153,7 @@ const makaBridge = {
 
 const conversationServices: ConversationServices = {
   observation: stubConversationServices().observation,
+  resume: stubConversationServices().resume,
   listMessages: async () => [],
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,

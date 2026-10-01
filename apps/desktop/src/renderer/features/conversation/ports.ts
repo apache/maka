@@ -81,6 +81,19 @@ export interface ConversationServices extends Pick<
   readonly runtimeHosts: {
     subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;
   };
+  /**
+   * Safe-boundary resume (#1223, #5903): the read-only plan preview behind the
+   * composer's Resume offer, the admission behind every resume click, and the
+   * catalog changes that move the answer.
+   */
+  readonly resume: {
+    queryPlan(sessionId: string): Promise<import('@maka/runtime-host/protocol').TurnResumePlan>;
+    start(sessionId: string): Promise<
+      | { readonly disposition: 'started'; readonly runId: string; readonly turnId: string }
+      | { readonly disposition: 'park'; readonly rejectionReasons: readonly string[]; readonly diagnostics: readonly unknown[] }
+    >;
+    subscribeChanges(handler: (event: import('@maka/core/session').SessionChangedEvent) => void): () => void;
+  };
   readonly skills: {
     listInvocable(sessionId?: string): Promise<InvocableSkillEntry[]>;
   };

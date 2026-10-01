@@ -102,6 +102,10 @@ export interface ConversationCopy {
     reorderQueuedEntry: string;
     stopLabel: string;
     stopping: string;
+    /** Send-slot replacement offered while the latest interrupted Turn can safely resume and the draft stays empty (#5903). */
+    resumeLabel: string;
+    resumePending: string;
+    resumeTitle: string;
     addContext: string;
     /** Noun label for the composer drawer's staged quotes/attachments — the
      *  collapsed badge, the drawer group's accessible name, and the collapse
@@ -450,6 +454,7 @@ const CONVERSATION_COPY = {
       queuedMessages: '待发送',
       promoteQueuedEntry: '直接发送', editQueuedEntry: '编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
+      resumeLabel: '继续', resumePending: '正在继续…', resumeTitle: '继续被中断的上一轮',
       addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件', referenceFolder: '引用文件夹',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
@@ -574,6 +579,7 @@ const CONVERSATION_COPY = {
       queuedMessages: '待發送',
       promoteQueuedEntry: '直接傳送', editQueuedEntry: '編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
+      resumeLabel: '繼續', resumePending: '正在繼續…', resumeTitle: '繼續被中斷的上一輪',
       addContext: '新增上下文', stagedContext: '附加內容',
       selectModel: '選擇模型', dropToImport: '鬆開以匯入檔案內容', addingAttachment: '正在新增附件', addFileOrDirectory: '新增檔案或目錄', referenceFolder: '引用資料夾',
       chooseSkill: '選擇技能', noSkillsAvailable: '目前沒有可用技能',
@@ -698,6 +704,7 @@ const CONVERSATION_COPY = {
       queuedMessages: 'queued',
       promoteQueuedEntry: 'Send now', editQueuedEntry: 'Edit', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
+      resumeLabel: 'Resume', resumePending: 'Resuming…', resumeTitle: 'Resume the interrupted turn',
       addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add files', referenceFolder: 'Reference folder',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',

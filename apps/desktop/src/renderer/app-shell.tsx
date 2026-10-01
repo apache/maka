@@ -150,6 +150,7 @@ import {
   useActiveExecutionBoundary,
   useNewTaskChoice,
   useShellChatModel,
+  useShellResume,
 } from './features/conversation/index.js';
 import {
   type ComposerMentionsSurfaceInput,
@@ -159,7 +160,6 @@ import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
 import { useShellLiveTurn } from './use-shell-live-turn';
-import { useShellResume } from './use-shell-resume';
 
 import { useSystemUiLocale } from './use-system-ui-locale';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
@@ -524,11 +524,14 @@ function AppShellContent({
     [commitRevisionDraft],
   );
 
-  const {
-    resumePendingSessionId,
-    resumeParkDescriptionBySession,
-    resumeInterruptedSession,
-  } = useShellResume({ activeId: ownerActiveId, toastApi, shellCopy, uiLocale });
+  const { safeResumeAction, composerResumeAction, noteUserStoppedTurn } = useShellResume({
+    activeId,
+    ownerActiveId,
+    sharedSessionActive,
+    toastApi,
+    shellCopy,
+    uiLocale,
+  });
   const rendererMountedRef = useRef(true);
   const activeSession = activeCatalogSession;
   const sessionSettingIntent = useSessionSettingIntent(activeId);
@@ -1196,6 +1199,16 @@ function AppShellContent({
     removeTransientMessage,
     toastApi,
   });
+  // #5904: the composer's Stop and its Resume offer share one send slot, so
+  // the slot must never offer to restart the very Turn the user just stopped
+  // from it — a repeated click would. Every composer stop path (the Stop
+  // button and Escape, both gated on streaming) notes the stop here, and the
+  // resume tracker suppresses exactly the offer that stop produces; the
+  // interrupted-Turn banner remains the deliberate resume path for it.
+  const stopOwningItsTarget = () => {
+    noteUserStoppedTurn(activeIdRef.current);
+    void stop();
+  };
 
   useAppShellNavRefSync({
     navSelection,
@@ -1751,7 +1764,8 @@ function AppShellContent({
                   // screen (first token, or a slow provider's step-to-step lull).
                   streaming={turnActive}
                   onSend={sendOwningItsTarget}
-                  onStop={stop}
+                  onStop={stopOwningItsTarget}
+                  resumeAction={composerResumeAction}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? queueSurface.promoteQueuedEntry : undefined}
@@ -1859,11 +1873,7 @@ function AppShellContent({
                 deriveTurnPresentation={deriveTurnPresentation}
                 onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
-                safeResumeAction={!sharedSessionActive && activeId ? {
-                  pending: resumePendingSessionId === activeId,
-                  detail: resumeParkDescriptionBySession[activeId],
-                  onResume: () => { void resumeInterruptedSession(); },
-                } : undefined}
+                safeResumeAction={safeResumeAction}
                 onLineageBadgeClick={(turnId) => { if (activeId) openSessionInChat(activeId, turnId); }}
                 onReadAttachmentBytes={window.maka.attachments.readBytes}
                 onOpenLinkedSession={openSessionInChat}

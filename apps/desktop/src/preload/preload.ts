@@ -2336,6 +2336,11 @@ const makaBridge = {
     > {
       return invokeSessionRuntimeHost('sessions:resumeLatest', sessionId);
     },
+    queryResumeLatest(
+      sessionId: string,
+    ): Promise<import('@maka/runtime-host/protocol').TurnResumePlan> {
+      return invokeSessionRuntimeHost('sessions:queryResumeLatest', sessionId);
+    },
     stop(
       sessionId: string,
       input?: {
