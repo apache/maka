@@ -109,3 +109,18 @@ export function renderConversationMarkdown(sessionName: string, messages: readon
 
   return lines.join('\n').trim() + '\n';
 }
+
+export async function renderCompleteConversationMarkdown(
+  sessionId: string | undefined,
+  sessions: readonly { readonly id: string; readonly name?: string }[],
+  fallbackName: string,
+  locale: UiLocale,
+  read: (sessionId: string) => Promise<readonly StoredMessage[]>,
+): Promise<{ readonly markdown: string; readonly sessionName: string } | undefined> {
+  if (!sessionId) return undefined;
+  const sessionName = sessions.find((session) => session.id === sessionId)?.name ?? fallbackName;
+  return {
+    sessionName,
+    markdown: renderConversationMarkdown(sessionName, [...await read(sessionId)], locale),
+  };
+}

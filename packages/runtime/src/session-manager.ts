@@ -1397,6 +1397,12 @@ export class SessionManager {
     if (!shellRuns) return [];
 
     const ownUpdates = await shellRuns.listSessionUpdates(sessionId);
+    // Only a branched or revised Session can inherit resources from its history.
+    // Ordinary Sessions already have their complete answer in the ShellRun store.
+    const inheritedFrom = await this.deps.store.readHeader(sessionId);
+    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
+    if (!parentSessionId) return ownUpdates;
+
     const ownToolCalls = new Set(ownUpdates.map((update) => update.sourceToolCallId));
     const messages = await this.readShellRunProjectionMessages(sessionId);
     if (!messages) return ownUpdates;
@@ -1429,9 +1435,6 @@ export class SessionManager {
     }
     if (inherited.size === 0) return ownUpdates;
 
-    const inheritedFrom = await this.deps.store.readHeader(sessionId);
-    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
-    if (!parentSessionId) return ownUpdates;
     const inheritedUpdates = await Promise.all(
       [...inherited.values()].map(async (candidate) => {
         const owner = await this.resolveShellRunOwner(parentSessionId, candidate.ref);
@@ -1459,6 +1462,10 @@ export class SessionManager {
     const own = await shellRuns.getSessionUpdate(sessionId, ref);
     if (own) return own;
 
+    const inheritedFrom = await this.deps.store.readHeader(sessionId);
+    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
+    if (!parentSessionId) return null;
+
     const messages = await this.readShellRunProjectionMessages(sessionId);
     if (!messages) return null;
     const bashToolCalls = shellRunBashToolCallIds(messages);
@@ -1483,9 +1490,6 @@ export class SessionManager {
     }
     if (!candidate) return null;
 
-    const inheritedFrom = await this.deps.store.readHeader(sessionId);
-    const parentSessionId = inheritedFrom.revisionParentSessionId ?? inheritedFrom.parentSessionId;
-    if (!parentSessionId) return null;
     const owner = await this.resolveShellRunOwner(parentSessionId, ref);
     return {
       sessionId,

@@ -20,7 +20,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  buildAppShellCommandList,
   resolveManualDiagnosticTarget,
+  type AppShellCommandListOptions,
 } from '../../renderer/app-shell-command-actions.js';
 import {
   contextCompactionNotice,
@@ -67,6 +69,99 @@ test('targets manual diagnostics to the current task or new-task Host profile', 
     ),
     undefined,
   );
+});
+
+test('conversation copy and save wait for the complete transcript', async (t) => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  let clipboard = '';
+  let clipboardFailure = false;
+  let saved = '';
+  const errors: Array<[string, string]> = [];
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { clipboard: { writeText: async (value: string) => {
+      if (clipboardFailure) throw new Error('clipboard denied');
+      clipboard = value;
+    } } },
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      maka: {
+        sessions: {
+          saveConversationToFile: async ({ markdown }: { markdown: string }) => {
+            saved = markdown;
+            return { ok: true };
+          },
+        },
+      },
+    },
+  });
+  t.after(() => {
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+
+  const requested: string[] = [];
+  const options = {
+    uiLocale: 'en',
+    activeId: 'session-1',
+    activePermissionMode: undefined,
+    canSetPermissionMode: true,
+    clientPathsAccessible: false,
+    connections: [],
+    defaultConnection: null,
+    readCompleteTranscript: async (sessionId: string) => {
+      requested.push(sessionId);
+      return [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'oldest question' },
+        { type: 'assistant', id: 'new-answer', turnId: 'new-turn', ts: 2, modelId: 'model', text: 'newest answer' },
+      ] as const;
+    },
+    newTaskProfileId: undefined,
+    settingsOpen: false,
+    settingsProfileId: undefined,
+    sessionCatalog: {
+      getState: () => ({ sessions: [{ id: 'session-1', name: 'Long task' }] }),
+    },
+    themePref: 'auto',
+    hiddenSessionIds: new Set<string>(),
+    captureComposerImportOwner: () => ({ sessionId: 'session-1', navSection: 'sessions' }),
+    createSession() {},
+    openSideConversation() {},
+    openHelp() {},
+    openScheduledTaskCreate() {},
+    openProjectFolder: async () => {},
+    openSessionInChat() {},
+    openSettings() {},
+    openSettingsSection() {},
+    openWorkspaceFolder: async () => {},
+    refreshConnections: async () => {},
+    copyTodayDailyReview: async () => {},
+    pasteTodayDailyReview: async () => {},
+    saveTodayDailyReview: async () => {},
+    setNavSelection() {},
+    setPermissionMode: async () => true,
+    setThemePref() {},
+    toastApi: { success() {}, info() {}, error(title: string, description: string) { errors.push([title, description]); } },
+  } as unknown as AppShellCommandListOptions;
+  const commands = buildAppShellCommandList({ current: options });
+
+  await commands.find(({ id }) => id === 'diag:export-conversation')?.run();
+  await commands.find(({ id }) => id === 'diag:save-conversation-file')?.run();
+
+  assert.deepEqual(requested, ['session-1', 'session-1']);
+  assert.match(clipboard, /oldest question/);
+  assert.match(clipboard, /newest answer/);
+  assert.match(saved, /oldest question/);
+  assert.match(saved, /newest answer/);
+
+  clipboardFailure = true;
+  await commands.find(({ id }) => id === 'diag:export-conversation')?.run();
+  assert.deepEqual(errors, [['Copy failed', 'Clipboard unavailable']]);
 });
 
 test('presents every successful-frame context compaction outcome', () => {

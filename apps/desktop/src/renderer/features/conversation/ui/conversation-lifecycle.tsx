@@ -109,6 +109,9 @@ export function ConversationLifecycle(props: {
   useConversationObservation({
     services: services.observation, uiLocale, toastApi,
     activeId: requested?.localState !== 'pending' ? requested?.id : undefined,
+    initialTranscriptTurnId: props.searchTarget?.sessionId === requestedId
+      ? props.searchTarget?.turnId
+      : requestedId ? ui.transcriptReadingAnchorBySessionRef.current[requestedId]?.turnId : undefined,
     observationAuthorityRevision: authority.current.generation,
     activeIdRef, transcriptRangeRef,
     handleEvent: handlers.handleEvent,

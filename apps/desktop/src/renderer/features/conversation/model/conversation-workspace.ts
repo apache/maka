@@ -18,7 +18,7 @@
  */
 
 import { INITIAL_LIVE_CONTENT_SEED, visibleLiveContentGeneration, type LiveContentSeedState } from './observation-visibility.js';
-import { currentTranscriptRange } from '../controller/transcript-reading-position.js';
+import { currentTranscriptRange, readCompleteTranscript } from '../controller/transcript-reading-position.js';
 import { selectLatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
@@ -113,6 +113,7 @@ export function createConversationWorkspace(catalog: SessionCatalogController, s
     removeTransientMessage: transaction(raw.removeTransientMessage),
     // Commands read on invocation; publication never flows through Shell render.
     readMessages: (): readonly StoredMessage[] => state.messages,
+    readCompleteTranscript: (sessionId: string) => readCompleteTranscript(transcriptRangeRef, activeIdRef, sessionId),
   };
   const bootstrapSelectionLease = createBootstrapSelectionLease({
     readActiveId: () => activeIdRef.current,

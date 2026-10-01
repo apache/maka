@@ -77,7 +77,9 @@ test('keeps both Turns reachable when an oversized ledger Turn is followed by a 
     const history: { sequence: number; message: StoredMessage }[] = [];
     let cursor: string | null = null;
     do {
-      const page = await replica.readOlderPage(completeThrough, cursor);
+      // Opening uses a smaller Host page than later reading, including when a
+      // single tool result needs several pages to finish decoding.
+      const page = await replica.readOlderPage(completeThrough, cursor, PAGE_BYTES);
       history.unshift(...page.durable);
       cursor = page.nextCursor;
     } while (cursor !== null);

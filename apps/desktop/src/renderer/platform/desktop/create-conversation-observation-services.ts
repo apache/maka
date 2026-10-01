@@ -25,12 +25,12 @@ export function createDesktopConversationObservationServices(
   bridge: Pick<MakaBridge, 'sessions' | 'transcripts' | 'shellRuns'> = window.maka,
 ): ConversationObservationServices {
   return {
-    openTranscript(sessionId, onError) {
+    openTranscript(sessionId, onError, initialTurnId) {
       const store = new DesktopTranscriptRangeStore(sessionId);
       return createDesktopTranscriptRangeController(store,
         openDesktopTranscriptHistory(bridge.transcripts.open, sessionId, (batch) => {
           try { store.accept(batch); } catch (error) { onError(error); }
-        }), { onError });
+        }), { onError, initialTurnId });
     },
     subscribeEvents: (...args) => bridge.sessions.subscribeEvents(...args),
     listActiveInteractions: (sessionId) => bridge.sessions.listActiveInteractions(sessionId),

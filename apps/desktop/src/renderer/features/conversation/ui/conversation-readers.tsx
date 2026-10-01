@@ -29,6 +29,7 @@ type ChatProps = ComponentProps<typeof ChatView>;
 type TranscriptProps = Pick<ChatProps,
   'onStreamingSettled' | 'messages' | 'transientMessages' | 'messageLoading' | 'messageLoadError' | 'messageLoadRetryPending' |
   'onRetryMessages' | 'hasEarlierHistory' | 'onLoadEarlierHistory' | 'transcriptTurnIndex' |
+  'hasLaterHistory' | 'onLoadLaterHistory' | 'onLoadLatestHistory' |
   'onLoadTranscriptTurn' | 'restoreTargetTurn' | 'onReadingAnchorChange' | 'viewportNavigation'
 > & { activeSessionId: string | undefined; liveContentSeedGeneration: number; sessionUiReads: SessionUiReads };
 
@@ -54,7 +55,10 @@ export function ConversationTranscriptRegion<P extends object>(
     onRetryMessages: sessionId ? () => { void commands.retryMessages(sessionId); } : undefined,
     viewportNavigation: workspace.ui.transcriptViewportNavigation,
     hasEarlierHistory: view.range?.sessionId === sessionId ? view.range?.hasOlder : undefined,
+    hasLaterHistory: view.range?.sessionId === sessionId ? view.range?.hasNewer : undefined,
     onLoadEarlierHistory: () => readingCommands.current?.loadEarlier(),
+    onLoadLaterHistory: () => readingCommands.current?.loadNewer(),
+    onLoadLatestHistory: () => readingCommands.current?.showLatest(),
     transcriptTurnIndex: view.turnIndex?.sessionId === sessionId ? view.turnIndex?.turns : undefined,
     onLoadTranscriptTurn: (turn) => readingCommands.current?.loadEarlier(turn.sequence),
     restoreTargetTurn: transcriptRestoreTarget(sessionId ? workspace.ui.transcriptReadingAnchorBySessionRef.current[sessionId] : undefined, load.unavailableTranscriptRestore),

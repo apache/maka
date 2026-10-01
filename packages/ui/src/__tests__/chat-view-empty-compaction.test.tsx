@@ -28,7 +28,7 @@ import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import type { LiveTurnProjection } from '../live-turn-projection.js';
 import { LocaleProvider } from '../locale-context.js';
-import { renderTranscriptMarkup } from './transcript-test-dom.js';
+import { installTranscriptDom, renderTranscriptMarkup } from './transcript-test-dom.js';
 
 const activeSession = {
   id: 'session-1',
@@ -73,13 +73,27 @@ test('retains tool and compaction evidence without activity after observation lo
     { toolUseId: 'bash', toolName: 'Bash', args: { command: 'echo retained' }, status: 'running' },
   ] }] };
   const compact: LiveTurnProjection = { turnId: 'compact', rootExecutionKind: 'context_compact', steps: [] };
-  for (const observed of [true, false, true]) {
-    const toolDocument = parseHTML(await renderChat(tool, { messages, activeTurn: observed ? { turnId: tool.turnId } : undefined })).document;
-    assert.equal(toolDocument.querySelector('.maka-tool-activity-card')?.getAttribute('data-activity-observed'), String(observed));
-    assert.match(toolDocument.querySelector('.maka-tool-activity-card')?.textContent ?? '', /echo retained/);
-    const compactDocument = parseHTML(await renderChat(compact, { messages, activeTurn: observed ? { turnId: compact.turnId, compacting: true } : undefined })).document;
-    assert.equal(compactDocument.querySelector('[data-compaction-state]')?.getAttribute('data-compaction-state'), observed ? 'running' : 'unavailable');
-    assert.equal(compactDocument.querySelectorAll('.maka-compaction-status .astryx-spinner').length, observed ? 1 : 0);
+  for (const live of [tool, compact]) {
+    const dom = installTranscriptDom();
+    try {
+      let retained: Element | null = null;
+      for (const observed of [true, false, true]) {
+        await dom.render(<LocaleProvider locale="en"><ChatSurfaceLayout composer={null}>
+          <ChatView messages={messages} activeSession={activeSession} liveTurns={[live]} scrollBehavior="auto"
+            onNew={() => undefined} activeTurn={observed ? { turnId: live.turnId!, compacting: live === compact } : undefined} />
+        </ChatSurfaceLayout></LocaleProvider>);
+        if (live === tool) {
+          const card = dom.document.querySelector('.maka-tool-activity-card');
+          assert.equal(card?.getAttribute('data-activity-observed'), String(observed));
+          assert.match(card?.textContent ?? '', /echo retained/);
+          if (retained) assert.equal(card, retained, 'observation loss preserves already displayed work');
+          retained = card;
+        } else {
+          assert.equal(dom.document.querySelector('[data-compaction-state]')?.getAttribute('data-compaction-state'), observed ? 'running' : 'unavailable');
+          assert.equal(dom.document.querySelectorAll('.maka-compaction-status .astryx-spinner').length, observed ? 1 : 0);
+        }
+      }
+    } finally { await dom.cleanup(); }
   }
   assert.equal(tool.steps[0]?.tools[0]?.status, 'running', 'availability never rewrites retained execution evidence');
 });
@@ -216,5 +230,24 @@ test('shared turn presentation only exposes lineage when the surface supports na
       onLineageBadgeClick: canNavigate ? () => {} : undefined,
     }));
     assert.equal(document.querySelectorAll('.maka-turn-lineage-badge').length, canNavigate ? 1 : 0);
+  }
+});
+
+test('Resume is offered only when the displayed window covers the session tail', async () => {
+  for (const hasLaterHistory of [true, false]) {
+    const markup = await renderChat(undefined, {
+      messages: [
+        { type: 'user', id: 'ask', turnId: 'stopped', text: 'Ask', ts: 1 },
+        { type: 'turn_state', id: 'stopped-state', turnId: 'stopped', status: 'aborted', abortSource: 'renderer.stop_button', ts: 2 },
+      ],
+      hasLaterHistory,
+      safeResumeAction: { pending: false, onResume() {} },
+      deriveTurnPresentation: () => ({
+        footerActionsByTurn: {}, failedReasonLabels: {}, failedSeverities: {}, failedExecutionStateLabels: {},
+        resumeCandidateTurnId: 'stopped',
+        lineageBadgesByTurn: {},
+      }),
+    });
+    assert.equal(markup.includes('Continue this turn'), !hasLaterHistory);
   }
 });

@@ -254,7 +254,12 @@ export function WorkHubRoot() {
       focus();
     };
   }, [services]);
-  const links = useMemo(() => workHubLinkedWork(transcript.messages, controller.sessions, t.work, controller.sessionId), [transcript.messages, controller.sessions, t.work, controller.sessionId]);
+  const links = useMemo(
+    () => transcript.historyComplete
+      ? workHubLinkedWork(transcript.messages, controller.sessions, t.work, controller.sessionId)
+      : [],
+    [transcript.historyComplete, transcript.messages, controller.sessions, t.work, controller.sessionId],
+  );
   const delegatedSessionIds = links.map((link) => link.targetSessionId);
   const call = (task: Promise<unknown>) => {
     void task.catch(controller.report);

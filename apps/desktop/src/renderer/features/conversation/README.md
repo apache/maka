@@ -46,8 +46,9 @@ facts, fixed Session reads, a keyed Stop claim, and semantic commands. Its
 published Session reference is a frozen getter, and consuming contracts declare
 it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
-`readMessages()` is an invocation-time, readonly view of the **published range**;
-it is used by Copy/Save and revision commands and is not a full-history promise.
+`readMessages()` is an invocation-time, readonly view of the **published range**
+used by revision commands. Copy/Save use `readCompleteTranscript()` to read the
+complete history without changing the displayed window.
 
 The Desktop adapter supplies `ConversationObservationServices`. The feature
 never imports the Desktop range implementation or accesses `window.maka`.
@@ -126,7 +127,7 @@ Remaining transitional capabilities have explicit consumers and removal work:
 | --- | --- | --- |
 | Stop pending claim and semantic send/transient/interaction commands | AppShell chat actions and composer submission | M3 persistent Composer owner |
 | `useAppShellSessionUiReads` | AppShell chrome and Composer prop assembly | M3 regional readers; retain only required chrome |
-| Invocation-time published-message read | Copy/Save and revision commands | M3 command ownership / bounded-history export integration |
+| Invocation-time published-message and complete-history reads | Copy/Save and revision commands | M3 command ownership |
 
 M2 owns presentation and observation; it does not add a Catalog, Host cache or
 execution state machine, or complete the remaining Composer migration.

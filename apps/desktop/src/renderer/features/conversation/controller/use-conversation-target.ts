@@ -46,6 +46,7 @@ export function useConversationTarget() {
     updateTransientMessage: commands.updateTransientMessage,
     removeTransientMessage: commands.removeTransientMessage,
     readMessages: commands.readMessages,
+    readCompleteTranscript: commands.readCompleteTranscript,
     refreshMessages: commands.refreshMessages,
     prepareSend: commands.prepareSend,
     clearMessageLoadError: commands.clearMessageLoadError,

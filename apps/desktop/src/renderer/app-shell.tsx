@@ -273,6 +273,7 @@ function AppShellContent({
   const previousInterruptionShownRef = useRef(false);
   const {
     readMessages,
+    readCompleteTranscript,
     refreshMessages,
     prepareSend,
     transcriptEmpty,
@@ -357,7 +358,7 @@ function AppShellContent({
   const [newTaskPermissionChoice, setNewTaskPermissionMode, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
-  const [navigationState, setNavigationState] = useState(() => readNavigationState());
+  const [navigationState, setNavigationState] = useState(readNavigationState);
   const navSelection = navigationState.selection;
   const sessionsSelected = navSelection.section === 'sessions';
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
@@ -1475,7 +1476,7 @@ function AppShellContent({
         : projectCapabilities.viewClientPath,
     connections: defaultHostConnections.snapshot.connections,
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
-    readMessages,
+    readCompleteTranscript,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
     settingsProfileId: overlays.selectors.settings.request.profileId,
