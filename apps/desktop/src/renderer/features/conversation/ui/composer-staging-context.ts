@@ -17,14 +17,12 @@
  * under the License.
  */
 
-import type { SessionSummary } from '@maka/core/session';
+import { createContext, useContext } from 'react';
+import type { useComposerAttachments } from '../controller/use-composer-attachments.js';
 
-/** Whether an archived row remains because its ordinary parent task was deleted. */
-export function isOrphanedSubagentTask(
-  session: SessionSummary,
-  knownSessionIds: ReadonlySet<string>,
-): boolean {
-  const parentSessionId =
-    session.subagent?.parentSessionId ?? session.subagentParent?.parentSessionId;
-  return parentSessionId !== undefined && !knownSessionIds.has(parentSessionId);
+export const ComposerStagingContext = createContext<ReturnType<typeof useComposerAttachments> | undefined>(undefined);
+export function useComposerStaging() {
+  const staging = useContext(ComposerStagingContext);
+  if (!staging) throw new Error('ComposerStagingProvider is required');
+  return staging;
 }

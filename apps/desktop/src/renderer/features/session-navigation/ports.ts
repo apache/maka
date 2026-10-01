@@ -21,14 +21,16 @@ import type { RefObject } from 'react';
 import type { SessionSummary } from '@maka/core/session';
 import type { ProjectRecord } from '@maka/core/project';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
+import type { SessionRemovePreviewResult } from '@maka/runtime-host/protocol';
 import type { DesktopSessionUpdateFailureCode } from '../../../shared/desktop-session-projection.js';
 
-export type SessionNavigationRemoveDisposition = 'removed' | 'restored';
+/** `restored` and `too_recent` both mean the task was kept, not that it failed. */
+export type SessionNavigationRemoveDisposition = 'removed' | 'restored' | 'too_recent';
 
 /**
  * How a delete settled together with the count the Host actually archived.
  * `archivedSubtaskCount` is the Host's executed number — 0 when the delete was
- * called off (`restored`) — so the toast reports a fact, not a renderer guess.
+ * called off — so the toast reports a fact, not a renderer guess.
  */
 export interface SessionNavigationRemoveOutcome {
   readonly disposition: SessionNavigationRemoveDisposition;
@@ -98,7 +100,7 @@ export interface SessionNavigationSessionService {
   ): Promise<void>;
   remove(
     sessionId: string,
-    options: { revisionFamily: true; requireArchived: boolean },
+    options: { revisionFamily: true; requireArchived: boolean; requireArchivedForMs?: number },
   ): Promise<SessionNavigationRemoveOutcome>;
   /**
    * How many linked subtasks a delete of this parent would move to the archive,
@@ -106,6 +108,14 @@ export interface SessionNavigationSessionService {
    * estimating from the catalog projection.
    */
   previewRemoval(sessionId: string): Promise<number>;
+  /**
+   * The same plan for a set of tasks, paged per Host, with the Agent Graph
+   * subtasks and worktrees it deletes and, when asked, the bytes it holds.
+   */
+  previewRemovals(
+    sessionIds: readonly string[],
+    options: { measureBytes: boolean; requireArchived: boolean },
+  ): Promise<SessionRemovePreviewResult>;
   /**
    * Re-file one task under another project, or out of every project (`null`).
    * Settles as an outcome rather than throwing for the expected refusals, so

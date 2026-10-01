@@ -32,7 +32,7 @@ import type { SessionHealthNoticeView, SessionUiReads } from './features/convers
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { PlanChatView } from './features/conversation/index.js';
+import { StagedQuoteChatView } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
@@ -55,6 +55,9 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'shellRunUpdates'
   | 'goalIndicator'
   | 'conversationItems'
+  | 'handleRef'
+  | 'pendingQuotes'
+  | 'onQuoteAnnotationSubmit'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -195,7 +198,7 @@ export function ChatMessageSurface({
     <>
       <ChatViewGoalProjectionConsumer>
         {(goalProjection) => (
-          <PlanChatView
+          <StagedQuoteChatView
             {...chatViewRest}
             liveTurns={seededLiveTurns}
               // Every branch above reseeds `sessionId` to `activeSessionId`, and a

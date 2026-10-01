@@ -17,14 +17,12 @@
  * under the License.
  */
 
-import type { SessionSummary } from '@maka/core/session';
+import type { ComponentProps } from 'react';
+import { PlanChatView } from './plan-surfaces.js';
+import { useComposerStaging } from './composer-staging-context.js';
 
-/** Whether an archived row remains because its ordinary parent task was deleted. */
-export function isOrphanedSubagentTask(
-  session: SessionSummary,
-  knownSessionIds: ReadonlySet<string>,
-): boolean {
-  const parentSessionId =
-    session.subagent?.parentSessionId ?? session.subagentParent?.parentSessionId;
-  return parentSessionId !== undefined && !knownSessionIds.has(parentSessionId);
+export function StagedQuoteChatView(props: Omit<ComponentProps<typeof PlanChatView>,
+  'handleRef' | 'pendingQuotes' | 'onQuoteAnnotationSubmit'>) {
+  const staging = useComposerStaging();
+  return <PlanChatView {...props} {...staging.chatViewQuoteProps} />;
 }

@@ -17,13 +17,13 @@
  * under the License.
  */
 
+import { useComposerAttachments } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
 import { normalizeSessionSendCommand } from '../permission-response-guard.js';
 import {
-  useComposerAttachments,
   type ComposerAttachmentService,
 } from '../../renderer/features/conversation/index.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';

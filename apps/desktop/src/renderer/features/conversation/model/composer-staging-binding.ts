@@ -17,14 +17,10 @@
  * under the License.
  */
 
-import type { SessionSummary } from '@maka/core/session';
+import type { ComposerStagingCommands } from './composer-staging-contract.js';
 
-/** Whether an archived row remains because its ordinary parent task was deleted. */
-export function isOrphanedSubagentTask(
-  session: SessionSummary,
-  knownSessionIds: ReadonlySet<string>,
-): boolean {
-  const parentSessionId =
-    session.subagent?.parentSessionId ?? session.subagentParent?.parentSessionId;
-  return parentSessionId !== undefined && !knownSessionIds.has(parentSessionId);
-}
+// Binding is feature-private. The shell cannot publish a controller or acquire
+// the provider's reactive model through the public command handle.
+export const stagingBindings = new WeakMap<ComposerStagingCommands, {
+  current?: ComposerStagingCommands;
+}>();

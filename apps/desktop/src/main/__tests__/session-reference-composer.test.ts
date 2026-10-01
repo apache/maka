@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
+import { stubConversationServices, useComposerQuotes } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -27,7 +27,6 @@ import type { SessionSnapshot } from '@maka/core/session-reference';
 import {
   ConversationServicesProvider,
   type ConversationServices,
-  useComposerQuotes,
   useSessionReferenceComposer,
 } from '../../renderer/features/conversation/index.js';
 

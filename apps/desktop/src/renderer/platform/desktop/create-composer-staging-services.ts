@@ -17,14 +17,11 @@
  * under the License.
  */
 
-import type { SessionSummary } from '@maka/core/session';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { ComposerStagingServices } from '../../features/conversation/index.js';
 
-/** Whether an archived row remains because its ordinary parent task was deleted. */
-export function isOrphanedSubagentTask(
-  session: SessionSummary,
-  knownSessionIds: ReadonlySet<string>,
-): boolean {
-  const parentSessionId =
-    session.subagent?.parentSessionId ?? session.subagentParent?.parentSessionId;
-  return parentSessionId !== undefined && !knownSessionIds.has(parentSessionId);
+export function createDesktopComposerStagingServices(
+  bridge: Pick<MakaBridge, 'attachments'> = window.maka,
+): ComposerStagingServices {
+  return bridge.attachments;
 }

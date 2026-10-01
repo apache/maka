@@ -17,14 +17,10 @@
  * under the License.
  */
 
-import type { SessionSummary } from '@maka/core/session';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
+import type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 
-/** Whether an archived row remains because its ordinary parent task was deleted. */
-export function isOrphanedSubagentTask(
-  session: SessionSummary,
-  knownSessionIds: ReadonlySet<string>,
-): boolean {
-  const parentSessionId =
-    session.subagent?.parentSessionId ?? session.subagentParent?.parentSessionId;
-  return parentSessionId !== undefined && !knownSessionIds.has(parentSessionId);
-}
+export type ComposerStagingServices = ComposerAttachmentService;
+const context = createServicesContext<ComposerStagingServices>('ComposerStagingServicesProvider');
+export const ComposerStagingServicesProvider = context.Provider;
+export const useComposerStagingServices = context.useServices;
