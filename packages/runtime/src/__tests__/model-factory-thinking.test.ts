@@ -51,6 +51,28 @@ function custom(
 }
 
 describe('buildProviderOptions: thinking level', () => {
+  test('MiniMax-M3 exposes off and sends disabled thinking on both regional providers', () => {
+    for (const providerType of ['MiniMax', 'MiniMax-cn'] as const) {
+      assert.deepEqual([...thinkingVariantsForModel(providerType, 'MiniMax-M3')], ['off']);
+      assert.deepEqual(buildProviderOptions(conn(providerType), 'MiniMax-M3', 'off'), {
+        anthropic: { thinking: { type: 'disabled' } },
+      });
+      assert.deepEqual(buildProviderOptions(conn(providerType), 'MiniMax-M3'), { anthropic: {} });
+      assert.deepEqual(buildProviderOptions(conn(providerType), 'MiniMax-M3', 'high'), {
+        anthropic: {},
+      });
+    }
+  });
+
+  test('MiniMax-M2.7 remains always on for both regional providers', () => {
+    for (const providerType of ['MiniMax', 'MiniMax-cn'] as const) {
+      assert.deepEqual([...thinkingVariantsForModel(providerType, 'MiniMax-M2.7')], []);
+      assert.deepEqual(buildProviderOptions(conn(providerType), 'MiniMax-M2.7', 'off'), {
+        anthropic: {},
+      });
+    }
+  });
+
   test('Anthropic-compatible providers do not inherit automatic prompt caching', () => {
     for (const providerType of ['MiniMax', 'MiniMax-cn', 'kimi-coding-plan'] as const) {
       const anthropic = buildProviderOptions(conn(providerType), 'claude-opus-4-8').anthropic;
