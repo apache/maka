@@ -524,7 +524,9 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     }
     this.#assertOpen();
     if (this.#databaseFilePath !== ':memory:') {
-      const freelistEmpty = this.#readTransaction(() => readSqliteFreelistPages(this.#database) === 0);
+      const freelistEmpty = this.#readTransaction(
+        () => readSqliteFreelistPages(this.#database) === 0,
+      );
       if (freelistEmpty) {
         return { reclaimedPages: 0, reclaimedBytes: 0, hasMore: false };
       }
