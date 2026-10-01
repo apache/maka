@@ -29,6 +29,7 @@ import { RuntimeHostOperationError, projectSessionCatalogSummary } from '@maka/r
 import type {
   SessionCatalogProjection,
   SessionCreateInput,
+  SessionRemovePreviewInput,
   WorkspaceTarget,
   SessionModelTarget,
 } from '@maka/runtime-host/protocol';
@@ -258,14 +259,17 @@ export function registerRuntimeHostSessionCatalogIpc(
     // downstream of the deletion runs for it.
     const outcome = await deps.client.removeSession(sessionId, {
       requireArchived: requiresArchivedSession(options),
+      // Shape-checked by the protocol codec, which refuses anything but a
+      // positive integer rather than dropping the guard.
+      ...archiveAgeGuard(options),
     });
     if (outcome.disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
     return outcome;
   });
-  ipcMain.handle('sessions:removePreview', async (_event, sessionId: string) => {
-    // Read-only: how many subtasks the delete would archive, for the confirm.
-    return deps.client.previewSessionRemoval(sessionId);
-  });
+  ipcMain.handle('sessions:removePreview', async (_event, input: unknown) =>
+    // Read-only, for the confirm. The protocol codec validates the whole input.
+    deps.client.previewSessionRemoval(input as SessionRemovePreviewInput),
+  );
   ipcMain.handle(
     'sessions:moveToProject',
     async (_event, sessionId: string, projectId: unknown) => {
@@ -331,6 +335,11 @@ async function moveSessionToProject(
  * destructive answer. It repeats the shape check its sibling does instead of
  * relying on the caller running that one first.
  */
+function archiveAgeGuard(options: unknown): { requireArchivedForMs?: number } {
+  const value = (options as { requireArchivedForMs?: unknown } | undefined)?.requireArchivedForMs;
+  return value === undefined ? {} : { requireArchivedForMs: value as number };
+}
+
 function requiresArchivedSession(options: unknown): boolean {
   if (options === undefined) return false;
   if (!options || typeof options !== 'object' || Array.isArray(options)) {

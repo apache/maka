@@ -20,7 +20,8 @@
 import type { ReactNode } from 'react';
 import { WorkHubServicesProvider } from '../features/workhub';
 import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub-services';
-import { ConversationServicesProvider, PlanServicesProvider } from '../features/conversation';
+import { ConversationServicesProvider, PlanServicesProvider, ComposerStagingServicesProvider } from '../features/conversation';
+import { createDesktopComposerStagingServices } from '../platform/desktop/create-composer-staging-services.js';
 import { createDesktopConversationPlanServices } from '../platform/desktop/create-conversation-plan-services.js';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
@@ -79,6 +80,7 @@ export function createDesktopFeatureServices() {
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     conversationPlan: createDesktopConversationPlanServices(),
+    composerStaging: createDesktopComposerStagingServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     externalAgentSettings: createDesktopExternalAgentSettingsServices(),
     goal: createDesktopGoalServices(),
@@ -116,6 +118,7 @@ export function DesktopFeatureServicesProvider(props: {
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
                           <PlanServicesProvider services={props.services.conversationPlan}>
+                          <ComposerStagingServicesProvider services={props.services.composerStaging}>
                             <WorkHubServicesProvider services={props.services.workHub}>
                               <SessionBundleServicesProvider services={props.services.sessionBundle}>
                                 <OverlaysServicesProvider services={props.services.overlays}>
@@ -125,6 +128,7 @@ export function DesktopFeatureServicesProvider(props: {
                                 </OverlaysServicesProvider>
                               </SessionBundleServicesProvider>
                             </WorkHubServicesProvider>
+                          </ComposerStagingServicesProvider>
                           </PlanServicesProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
