@@ -253,7 +253,8 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: /切换当前任务模型/ })).toBeEnabled());
     await waitFor(() => expect(canvas.getByRole('button', { name: '打开用量追踪' }).textContent).toContain('1%'));
     await userEvent.click(canvas.getByRole('button', { name: /切换当前任务模型/ }));
-    await userEvent.click(page.getByRole('option', { name: /model-b/ }));
+    await userEvent.click(await page.findByRole('menuitem', { name: /^模型/ }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: /model-b/ }));
     await waitFor(() => expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
       model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-b' },
     }));
@@ -265,30 +266,36 @@ export const StandardComposer: Story = {
     await waitFor(() => expect(canvasElement.querySelectorAll('.maka-composer-attachment-token')).toHaveLength(0));
   },
 };
-// Real path: WorkHub composer → thinking level → choose an override or restore the default.
+// Real path: WorkHub composer → model menu → Effort → choose an override or restore the default.
 export const ThinkingLevelPicker: Story = {
   render: () => <Surface />,
   play: async ({ canvasElement }) => {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement); const page = within(canvasElement.ownerDocument.body);
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
+    const trigger = () => canvas.getByRole('button', { name: /切换当前任务模型/ });
+    const openEffort = async () => {
+      await userEvent.click(trigger());
+      await userEvent.click(await page.findByRole('menuitem', { name: /^思考强度/ }));
+    };
+    await waitFor(() => expect(trigger()).toBeEnabled());
     const usage = canvas.getByRole('button', { name: '打开用量追踪' });
     await waitFor(() => expect(usage.textContent).toContain('1%'));
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
-    await userEvent.click(page.getByRole('option', { name: /^高$/ }));
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 高' })).toBeEnabled());
+    await openEffort();
+    await expect(page.getByRole('menuitem', { name: /^思考强度/ })).toHaveTextContent(/默认$/);
+    await userEvent.click(await page.findByRole('menuitemradio', { name: /^高$/ }));
+    await waitFor(() => expect(trigger()).toHaveAccessibleName(/ 高$/));
     await expect(writes.defaults).toHaveBeenCalledWith(sessionId, {
       model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
       thinkingLevel: 'high',
     });
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 高' }));
-    await userEvent.click(page.getByRole('option', { name: /^默认$/ }));
-    await waitFor(() => expect(canvas.getByRole('combobox', { name: '思考级别: 默认' })).toBeEnabled());
+    await openEffort();
+    await userEvent.click(await page.findByRole('menuitemradio', { name: /^默认$/ }));
+    await waitFor(() => expect(trigger()).not.toHaveAccessibleName(/ 高$/));
     await expect(writes.defaults).toHaveBeenLastCalledWith(sessionId, {
       model: { llmConnectionId: 'connection-test', llmConnectionSlug: 'test', model: 'model-a' },
     });
-    await userEvent.click(canvas.getByRole('combobox', { name: '思考级别: 默认' }));
-    await expect(page.getByRole('option', { name: /^默认$/ })).toHaveAttribute('aria-selected', 'true');
+    await openEffort();
+    await expect(await page.findByRole('menuitemradio', { name: /^默认$/ })).toHaveAttribute('aria-checked', 'true');
   },
 };
 // Real path: a floating WorkHub progress card → edit its composer → open the model picker.

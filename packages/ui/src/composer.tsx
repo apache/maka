@@ -59,6 +59,7 @@ import {
   NewChatModelPicker,
   ThinkingLevelSelector,
 } from './chat-model-switcher.js';
+import { ComposerOptionsMenu } from './composer-options-menu.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helpers.js';
@@ -1851,6 +1852,42 @@ export const Composer = forwardRef<
         onChange={props.onNewChatThinkingLevelChange}
       />
     );
+  // Phase 1 of #5787: only an open native Session uses the unified menu. The
+  // new-task composer keeps its pickers until executor selection joins the menu.
+  const optionsSession = props.activeSession;
+  const optionsConnectionId = props.activeModelConnectionId ?? optionsSession?.llmConnectionId;
+  const unifiedModelOptions =
+    optionsSession !== undefined &&
+    (props.pickerPresentation === undefined || props.pickerPresentation === 'popover') &&
+    !props.executorTarget &&
+    (props.modelChoices?.length ?? 0) > 0 &&
+    Boolean(props.onModelChange);
+  const renderComposerOptions = (): ReactNode => optionsSession ? (
+    <ComposerOptionsMenu
+      // A pick still settling belongs to the Session it was made in.
+      key={optionsSession.id}
+      label={props.activeModelLabel?.trim() || modelChipLabel}
+      disabled={!modelSwitchAvailability.available}
+      disabledReason={modelSwitcherDisabledReason}
+      isReadOnly={props.pickersReadOnly}
+      openNonce={modelPickerNonce}
+      choices={props.modelChoices ?? []}
+      currentModelValue={optionsConnectionId
+        ? exactModelChoiceValue(
+            optionsConnectionId,
+            props.activeModelConnectionSlug ?? optionsSession.llmConnectionSlug,
+            props.activeModel ?? optionsSession.model,
+          )
+        : undefined}
+      onModelChange={onNativeModelChange}
+      thinkingLevels={props.activeThinkingLevels}
+      thinkingLevel={props.activeThinkingLevel}
+      onThinkingLevelChange={props.onThinkingLevelChange}
+      hasConversationHistory={props.modelSwitchHasHistory}
+      sessionId={optionsSession.id}
+      renderProviderMark={props.renderProviderMark}
+    />
+  ) : null;
 
   return (
     <>
@@ -2468,7 +2505,9 @@ export const Composer = forwardRef<
                         onExecutorTargetChange: props.onExecutorTargetChange,
                       }}
                       options={{
-                        fallback: (
+                        fallback: unifiedModelOptions && !props.executorPicker ? (
+                          renderComposerOptions()
+                        ) : (
                           <>
                             {props.activeSession ? (
                               <ChatModelSwitcher

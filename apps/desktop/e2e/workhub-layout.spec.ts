@@ -394,7 +394,8 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(floatingBottom).toBe(anchoredBottom);
   await expect.poll(() => workhub.locator('[data-chat-scroll-container]').evaluate((element) => element.scrollTop)).toBe(scrollTop);
   await expect(editor).toHaveText('Keep this draft while folding the conversation.');
-  await expect(model).toHaveAttribute('aria-haspopup', 'listbox');
+  // Expanded again, the wheel gives way to the composer's popover options menu.
+  await expect(model).toHaveAttribute('aria-haspopup', 'menu');
 });
 
 

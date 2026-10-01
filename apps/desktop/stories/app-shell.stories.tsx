@@ -1599,11 +1599,12 @@ function EmptyComposerLifecycle() {
     chatHidden={state.chatHidden} composer={{ draftKey: state.draftKey, disabled: state.disabled, onSend: emptyComposerSend }} />;
 }
 
-// Real path: 新任务 → no session exists yet. The composer swaps
-// ChatModelSwitcher for NewChatModelPicker and drops the thinking selector,
-// because both are keyed on an active session (composer.tsx). That branch has
-// no other story, so without this one nothing renders the picker a user meets
-// before their first send.
+// Real path: 新任务 → no session exists yet. The composer shows
+// NewChatModelPicker (plus the new-task thinking selector when the model offers
+// levels) instead of the open Session's unified options menu, which is keyed on
+// an active session (composer.tsx, phase 1 of #5787). That branch has no other
+// story, so without this one nothing renders the picker a user meets before
+// their first send.
 export const NewChatComposer: Story = {
   beforeEach: () => {
     // AppShell can mount the composer beneath an inert ancestor while a
@@ -4360,7 +4361,7 @@ export const NarrowWorkbarCappedTitlebarReserve: Story = {
 
 // Real path: a session with the right workbar open while the conversation
 // column is narrow enough for a long model label to exercise the composer's
-// footer shrink contract. Model and thinking controls remain available while
+// footer shrink contract. The unified model menu remains available while
 // the lower-priority usage action is hidden.
 export const NarrowComposerFooter: Story = {
   parameters: {
@@ -4406,20 +4407,18 @@ export const NarrowComposerFooter: Story = {
 
     const send = within(card).getByRole('button', { name: '发送' });
     const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
-    const thinkingField = card.querySelector<HTMLElement>(
-      '.maka-model-selection-controls .astryx-field:has(.maka-thinking-level-selector)',
-    );
-    if (!thinkingField) throw new Error('thinking level field is missing');
+    const modelMenu = card.querySelector<HTMLElement>('.maka-composer-options-trigger');
+    if (!modelMenu) throw new Error('composer model menu is missing');
     await waitFor(() => {
       const cardBox = card.getBoundingClientRect();
       const sendBox = send.getBoundingClientRect();
       expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
       expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
       expect(contextGauge).toBeNull();
-      expect(getComputedStyle(thinkingField).display).not.toBe('none');
-      const thinkingBox = thinkingField.getBoundingClientRect();
-      expect(thinkingBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
-      expect(thinkingBox.right).toBeLessThanOrEqual(sendBox.left + 1);
+      expect(getComputedStyle(modelMenu).display).not.toBe('none');
+      const modelBox = modelMenu.getBoundingClientRect();
+      expect(modelBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(modelBox.right).toBeLessThanOrEqual(sendBox.left + 1);
       // The remaining controls must stay inside their flex slot rather than
       // painting over the fixed send slot when the window narrows.
       const controlsBox = leftControls.getBoundingClientRect();
