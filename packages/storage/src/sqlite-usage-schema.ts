@@ -19,7 +19,6 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-import { NO_RUN_TURN_ID } from './model-call-usage-sql.js';
 
 export const SQLITE_USAGE_SCHEMA_VERSION = 10;
 
@@ -229,14 +228,12 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
   // through, and the conversion below reads one.
   ensureColumn(db, 'usage_model_call_attempts', 'session_id', 'TEXT');
   spreadModelCallRecordJson(db);
-  // Rows recorded before the ownership column existed were already
-  // discriminated by the no-run sentinel turn; carry that judgment over once
-  // so a database from an earlier build keeps its no-run rows excluded when
-  // the column takes over the discrimination.
+  // no_run is written by the recorder, never inferred from the turn value:
+  // a backfill keyed on the auxiliary turn string would flip a legally named
+  // execution's own run-owned rows (see the settlement-coverage regression in
+  // model-call-usage-query.test.ts). Databases from before this column cannot
+  // hold auxiliary rows - recording them is what introduced the column.
   ensureColumn(db, 'usage_model_call_attempts', 'no_run', 'INTEGER NOT NULL DEFAULT 0');
-  db.prepare(
-    `UPDATE usage_model_call_attempts SET no_run = 1 WHERE turn_id = ? AND no_run = 0`,
-  ).run(NO_RUN_TURN_ID);
   db.exec(`
     CREATE INDEX IF NOT EXISTS usage_model_call_attempts_completed_at
       ON usage_model_call_attempts(completed_at DESC, attempt_id);
