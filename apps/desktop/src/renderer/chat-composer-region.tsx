@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useLayoutEffect, useRef, type ComponentProps, type ComponentType, type ReactNode, type RefObject } from 'react';
+import { useLayoutEffect, useRef, type ComponentProps, type ComponentType, type ReactNode, type RefObject } from 'react';
 import {
   Banner,
   Button,
@@ -194,14 +194,6 @@ export function ChatComposerRegion({
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
-  const activeQuestionRef = useRef({ sessionId: activeId, question: activeQuestion });
-  useEffect(() => {
-    const previous = activeQuestionRef.current;
-    activeQuestionRef.current = { sessionId: activeId, question: activeQuestion };
-    if (previous.question && !activeQuestion && previous.sessionId === activeId) {
-      clearUserQuestionWizardState(previous.question.requestId);
-    }
-  }, [activeId, activeQuestion]);
   const activeModelChoice = composerRest.activeModel
     ? composerRest.modelChoices?.find(
         (choice) =>
@@ -217,9 +209,21 @@ export function ChatComposerRegion({
         onOpen: onOpenContextUsage,
       }
     : undefined;
-  const previousNewTaskDraftKey = useRef(newTaskDraftKey);
+  const composerLifecycleRef = useRef({
+    newTaskDraftKey,
+    sessionId: activeId,
+    question: activeQuestion,
+  });
   useLayoutEffect(() => {
-    const previous = previousNewTaskDraftKey.current;
+    const lifecycle = composerLifecycleRef.current;
+    const previousQuestion = lifecycle.question;
+    const previousSessionId = lifecycle.sessionId;
+    lifecycle.sessionId = activeId;
+    lifecycle.question = activeQuestion;
+    if (previousQuestion && !activeQuestion && previousSessionId === activeId) {
+      clearUserQuestionWizardState(previousQuestion.requestId);
+    }
+    const previous = lifecycle.newTaskDraftKey;
     // A submission owns the text it submitted until it settles. `sendCurrent`
     // captures the key it sent from and clears exactly that key when the send
     // resolves, so carrying the text to a target chosen mid-flight would leave
@@ -229,7 +233,7 @@ export function ChatComposerRegion({
     // slot the completion has already cleared, so nothing sent comes with it,
     // and anything typed after the send does.
     if (newTaskSendPending) return;
-    previousNewTaskDraftKey.current = newTaskDraftKey;
+    lifecycle.newTaskDraftKey = newTaskDraftKey;
     if (previous === newTaskDraftKey) return;
     const composer = composerRef.current;
     if (!composer) return;
@@ -272,7 +276,7 @@ export function ChatComposerRegion({
         ? carried
         : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
     );
-  }, [composerRef, newTaskDraftKey, newTaskSendPending]);
+  }, [activeId, activeQuestion, composerRef, newTaskDraftKey, newTaskSendPending]);
 
   // The composer body as a function of the gauge's live reading, so the probe
   // — when mounted — can feed it the per-settled-request snapshot (#4717), and

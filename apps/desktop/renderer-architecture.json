@@ -352,8 +352,8 @@
           "./skill-invocation-feedback.js": 1,
           "@maka/core/session-name": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2934
+        "importSpecifiers": 7,
+        "nonTriviaTokens": 2893
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 1,
@@ -943,9 +943,8 @@
         "environmentCapabilities": {},
         "hookCalls": {
           "useComposerMentionsContext": 1,
-          "useEffect": 1,
           "useLayoutEffect": 1,
-          "useRef": 2
+          "useRef": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,

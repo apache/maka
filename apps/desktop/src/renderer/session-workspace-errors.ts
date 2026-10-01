@@ -19,7 +19,7 @@
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ToastDiagnosticTarget } from '@maka/ui';
-import { getShellCopy } from './locales/shell-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 const SESSION_WORKSPACE_UNAVAILABLE_CODE = 'SESSION_WORKSPACE_UNAVAILABLE';
 
@@ -50,5 +50,35 @@ export function isSessionWorkspaceUnavailableError(error: unknown): boolean {
   return (
     event.code === SESSION_WORKSPACE_UNAVAILABLE_CODE ||
     (typeof event.message === 'string' && event.message.includes(`${SESSION_WORKSPACE_UNAVAILABLE_CODE}:`))
+  );
+}
+
+export function notifyInteractionResponseFailure(
+  shouldNotify: boolean,
+  error: unknown,
+  input: {
+    readonly toastApi: {
+      error(
+        title: string,
+        description?: string,
+        diagnosticDetails?: string,
+        diagnosticTarget?: ToastDiagnosticTarget,
+      ): void;
+    };
+    readonly locale: UiLocale;
+    readonly sessionId: string;
+  },
+): void {
+  if (!shouldNotify) return;
+  const copy = getShellCopy(input.locale).errors;
+  if (isSessionWorkspaceUnavailableError(error)) {
+    showSessionWorkspaceUnavailableToast(input.toastApi, input.locale, { sessionId: input.sessionId });
+    return;
+  }
+  input.toastApi.error(
+    copy.responseFailedTitle,
+    localizedShellErrorMessage(error, copy.responseFailedFallback, input.locale),
+    undefined,
+    { sessionId: input.sessionId },
   );
 }
