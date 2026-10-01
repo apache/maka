@@ -17,29 +17,23 @@
  * under the License.
  */
 
-import { useCallback, useMemo, useState } from 'react';
-import type { ProjectRecord } from '@maka/core/project';
+import { useMemo } from 'react';
 import { formatCompactTimestamp } from '@maka/core/relative-time';
-import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import { Button, EmptyState, IconButton, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { Archive, ICON_SIZE, Search, Trash2, Unarchive } from '@maka/ui/icons';
-import { HStack, StackItem } from '@astryxdesign/core';
+import { EmptyState, IconButton, useUiLocale } from '@maka/ui';
+import { Archive, ICON_SIZE, Trash2, Unarchive } from '@maka/ui/icons';
 import { List, ListItem } from '@astryxdesign/core/List';
-import { TextInput } from '@astryxdesign/core/TextInput';
-import type { SessionPurgeOutcome } from '../features/session-navigation';
+import type {
+  ArchivedTaskProjectScope,
+  ArchivedTaskScopeView,
+  SessionNavigationRowActions,
+} from '../features/session-navigation';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import type { SessionCatalogController } from '../application/contracts/session-catalog/session-catalog-state.js';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { getStorageUsageCopy } from '../locales/storage-usage-copy.js';
 import { TaskStorageSize } from '../features/storage-usage/index.js';
-import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
-import {
-  archivedTaskRows,
-  isOrphanedSubagentTask,
-  matchesArchivedTaskQuery,
-} from './task-catalog-rows';
+import { isOrphanedSubagentTask } from './task-catalog-rows';
 
 /**
  * Everything this page needs from the shell's session catalog, as one prop so
@@ -48,14 +42,13 @@ import {
  */
 export interface ArchivedTasksBridge {
   catalog: SessionCatalogController;
-  projects: readonly ProjectRecord[];
-  onRestore(sessionId: string): void;
-  onDelete(sessionId: string): void;
+  /** Every Host's Projects, keyed by Host the way the rail groups tasks. */
+  projectScopes: readonly ArchivedTaskProjectScope[];
   /**
-   * Deletes the tasks that are still archived when the sweep reaches them, and
-   * reports what it could confirm. It never touches an id outside this set.
+   * The rail's row actions: restore, delete, and the bulk delete, which
+   * previews, confirms and sweeps only the tasks still archived.
    */
-  onPurge(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
+  commands: { readonly current: SessionNavigationRowActions | null };
 }
 
 /**
@@ -73,112 +66,27 @@ export interface ArchivedTasksBridge {
  * the rail's own projection, and restoring or deleting one calls the rail's own
  * row action — the same confirm, the same cleanup, the same toasts. A second
  * copy of that machinery would drift from the rail's the first time either side
- * changed. What is genuinely new here is finding a task by name or project, and
- * clearing a set of them in one pass.
+ * changed. What is genuinely new here is finding a task by name, project or
+ * age, and clearing a set of them in one pass; the rail's `ArchivedTaskScope`
+ * owns that scope and hands this page the rows it keeps.
  */
 export function TasksSettingsPage(
-  props: ArchivedTasksBridge & { sessions: readonly DesktopSessionSummary[] },
+  props: ArchivedTasksBridge & {
+    sessions: readonly DesktopSessionSummary[];
+    scope: ArchivedTaskScopeView<DesktopSessionSummary>;
+  },
 ) {
   const locale = useUiLocale();
   const copy = getSettingsTasksCopy(locale);
-  const toast = useToast();
-  const mountedRef = useMountedRef();
-  const [query, setQuery] = useState('');
-  const [purging, setPurging] = useState(false);
+  const { visible, purging, projectLabelOf } = props.scope;
 
-  const projectNames = useMemo(() => {
-    const names = new Map<string, string>();
-    for (const project of props.projects) names.set(project.id, project.name);
-    return names;
-  }, [props.projects]);
-
-  /**
-   * `无项目` is a fact about the task, not a stand-in for a project this page
-   * failed to look up — a row that cannot resolve its project says nothing
-   * rather than something false.
-   */
-  const projectLabelOf = useCallback(
-    (session: DesktopSessionSummary): string | undefined => {
-      if (runtimeHostProfileUsesHostWorkspace(session.profileKind)) return session.profileName;
-      return session.projectId ? projectNames.get(session.projectId) : copy.noProject;
-    },
-    [copy.noProject, projectNames],
-  );
-
-  // Most recently archived first; `archivedTaskRows` owns the order.
-  const archived = useMemo(() => archivedTaskRows(props.sessions), [props.sessions]);
   const knownSessionIds = useMemo(
     () => new Set(props.sessions.map((session) => session.id)),
     [props.sessions],
   );
-  const isSearching = query.trim().length > 0;
-  const visible = useMemo(
-    () => archived.filter((session) => matchesArchivedTaskQuery(session, query, projectLabelOf)),
-    [archived, projectLabelOf, query],
-  );
-  const purgeTargets = isSearching ? visible : archived;
-
-  async function purge() {
-    // Frozen at the click. A confirm names a number to a person, and a set
-    // re-read afterwards can be larger than the one they agreed to — another
-    // client archiving a task while the dialog is up would add it. Shrinking is
-    // safe and happens at the other end: `onPurge` keeps anything restored
-    // meanwhile and says so.
-    const ids = purgeTargets.map((session) => session.id);
-    const confirmed = await toast.confirm({
-      title: isSearching
-        ? copy.purgeMatchesConfirmTitle(ids.length)
-        : copy.purgeAllConfirmTitle(ids.length),
-      description: `${copy.purgeConfirmBody} ${copy.purgeSubtaskNote}`,
-      confirmLabel: copy.purgeConfirmAction,
-      cancelLabel: getSettingsSharedCopy(locale).cancel,
-      destructive: true,
-    });
-    if (!confirmed) return;
-    setPurging(true);
-    try {
-      const outcome = await props.onPurge(ids);
-      // The person agreed to a number, so a sweep that lands on a smaller one
-      // owes them the whole account rather than whichever single fact a branch
-      // picked. Kept tasks and failures are independent — reporting one and
-      // dropping the other is how a count quietly stops adding up.
-      const kept =
-        outcome.restored.length > 0 ? copy.purgeKeptRestored(outcome.restored.length) : undefined;
-      // A bulk purge of parents archives their linked subtasks; say how many so
-      // the archived rows that appear next are not a surprise.
-      const moved =
-        outcome.archivedSubtasks > 0 ? copy.purgedSubtaskNote(outcome.archivedSubtasks) : undefined;
-      const detail = (...parts: Array<string | undefined>) => {
-        const text = parts.filter(Boolean).join(' ');
-        return text.length > 0 ? text : undefined;
-      };
-      if (!outcome.verified || outcome.remaining.length > 0) {
-        // A reason beats a count: a task refuses to retire while its turn is
-        // still running, and "N still there" gives the reader nothing to do.
-        const reason = !outcome.verified
-          ? copy.purgeUnverified
-          : outcome.firstFailure
-            ? settingsActionErrorMessage(outcome.firstFailure.error, locale)
-            : copy.purgeFailedBody(outcome.remaining.length);
-        toast.error(
-          copy.purgeFailedTitle,
-          detail(reason, moved, kept),
-          undefined,
-          outcome.firstFailure
-            ? { sessionId: outcome.firstFailure.sessionId }
-            : undefined,
-        );
-      } else {
-        toast.success(copy.purgedToast(outcome.removed), detail(moved, kept));
-      }
-    } finally {
-      if (mountedRef.current) setPurging(false);
-    }
-  }
-
   // Nothing archived at all is a different situation from a search that
   // matched nothing, and only one of them replaces the whole page.
-  if (archived.length === 0) {
+  if (props.scope.rows.length === 0) {
     return (
       <SettingsPage>
         <EmptyState title={copy.emptyTitle} description={copy.emptyBody} />
@@ -188,32 +96,7 @@ export function TasksSettingsPage(
 
   return (
     <SettingsPage as="section" aria-label={copy.listAria}>
-      {/* Search and the clear button share one row: as a section action the
-          button landed a full 32px page rhythm below the box, alone on its
-          own line. */}
-      <HStack gap={2} vAlign="center">
-        <StackItem size="fill">
-          <TextInput
-            label={copy.searchLabel}
-            isLabelHidden
-            placeholder={copy.searchLabel}
-            value={query}
-            onChange={setQuery}
-            startIcon={Search}
-            hasClear
-            width="100%"
-          />
-        </StackItem>
-        {/* While a search is on screen the button deletes what is on screen.
-            One that said 全部 and deleted a set the reader could not see would
-            be answering a question nobody asked. */}
-        <Button
-          variant="destructive"
-          isDisabled={purging || purgeTargets.length === 0}
-          clickAction={() => void purge()}
-          label={isSearching ? copy.purgeMatches(visible.length) : copy.purgeAll}
-        />
-      </HStack>
+      {props.scope.controls}
       <SettingsSection description={getStorageUsageCopy(locale).taskSizeNote}>
         {visible.length === 0 ? (
           <EmptyState isCompact title={copy.noMatchTitle} description={copy.noMatchBody} />
@@ -251,7 +134,9 @@ export function TasksSettingsPage(
                         variant="ghost"
                         size="sm"
                         isDisabled={purging}
-                        clickAction={() => props.onRestore(session.id)}
+                        clickAction={() =>
+                          void props.commands.current?.unarchiveSession(session.id)
+                        }
                         label={copy.unarchiveTask(session.name)}
                         tooltip={copy.unarchive}
                         icon={<Unarchive size={ICON_SIZE.control} aria-hidden="true" />}
@@ -264,7 +149,7 @@ export function TasksSettingsPage(
                         variant="ghost"
                         size="sm"
                         isDisabled={purging}
-                        clickAction={() => props.onDelete(session.id)}
+                        clickAction={() => void props.commands.current?.deleteSession(session.id)}
                         label={copy.deleteTask(session.name)}
                         tooltip={copy.delete}
                         icon={<Trash2 size={ICON_SIZE.control} aria-hidden="true" />}

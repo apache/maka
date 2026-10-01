@@ -156,6 +156,7 @@ import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 import type {
   ContextDiagnosticsResult,
+  SessionRemovePreviewResult,
   SessionStorageUsage,
   StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
@@ -1412,20 +1413,33 @@ export interface MakaBridge {
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task
-     * restored meanwhile answers `restored` and is kept. `archivedSubtaskCount`
-     * is the Host's executed count of ordinary linked subtasks moved to the
-     * archive — 0 when restored or when nothing was archived.
+     * restored meanwhile answers `restored` and is kept. `requireArchivedForMs`
+     * adds an age the Host checks on its own clock: a task archived more
+     * recently answers `too_recent` and is kept. `archivedSubtaskCount` is the
+     * Host's executed count of ordinary linked subtasks moved to the archive —
+     * 0 when the task was kept or when nothing was archived.
      */
     remove(
       sessionId: string,
-      options?: { revisionFamily?: boolean; requireArchived?: boolean },
-    ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }>;
+      options?: { revisionFamily?: boolean; requireArchived?: boolean; requireArchivedForMs?: number },
+    ): Promise<{ disposition: 'removed' | 'restored' | 'too_recent'; archivedSubtaskCount: number }>;
     /**
      * How many linked subtasks a delete of this parent would move to the
      * archive, per the Host's removal plan. The confirm warns off this instead
      * of estimating from the catalog projection.
      */
     previewRemoval(sessionId: string): Promise<number>;
+    /**
+     * What deleting these tasks, one `remove` each, would take with them, per
+     * each Host's removal plans: linked subtasks archived, Agent Graph subtasks
+     * and worktrees deleted, and with `measureBytes` an estimate of the bytes
+     * stored. Paged per Host; rejects when any task's Host cannot answer
+     * rather than under-reporting.
+     */
+    previewRemovals(
+      sessionIds: readonly string[],
+      options?: { measureBytes?: boolean; requireArchived?: boolean },
+    ): Promise<SessionRemovePreviewResult>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
