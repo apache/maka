@@ -19,7 +19,6 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-
 export const SQLITE_USAGE_SCHEMA_VERSION = 10;
 
 /**
