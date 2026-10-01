@@ -17,13 +17,14 @@
  * under the License.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider, ToastProvider } from '@maka/ui';
+import { type ComposerHandle, LocaleProvider, ToastProvider } from '@maka/ui';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
@@ -156,7 +157,8 @@ async function mountShell(services: SessionCollaborationServices) {
     await act(async () => {
       root.render(createElement(LocaleProvider, {
         locale: 'en',
-        children: createElement(AstryxLocaleProvider, {
+        children: createElement(ComposerStagingFixture, {
+          draftKey: sessionId,
           children: createElement(ToastProvider, {
             children: createElement(SessionCollaborationServicesProvider, {
               services,
@@ -167,7 +169,8 @@ async function mountShell(services: SessionCollaborationServices) {
                   composerRef: composer,
                   guest,
                   onOpenContextUsage: () => undefined,
-                  directoryComposerProps: {},
+                  canStageContext: true,
+                  contextPickEnabled: true,
                   directoryPickerEnabled: false,
                   active: true,
                   onboardingComposerHidden: false,
@@ -186,7 +189,6 @@ async function mountShell(services: SessionCollaborationServices) {
                     throw new Error('an owner send must not run for a Guest Session');
                   },
                   onStop: () => {},
-                  onPickAttachments: () => {},
                 }),
               }),
             }),
@@ -223,7 +225,7 @@ async function mountShell(services: SessionCollaborationServices) {
 // app-shell.tsx is not in the node test build.
 test('AppShell mounts the one ChatComposerRegion inside GuestTurnRequests with no owner/Guest remount', () => {
   const source = readFileSync(new URL('../../../src/renderer/app-shell.tsx', import.meta.url), 'utf8');
-  const regions = [...source.matchAll(/<ChatComposerRegion\b/g)];
+  const regions = [...source.matchAll(/<Conversation\.ConversationComposerRegion\s+surface=\{ChatComposerRegion\}/g)];
   assert.equal(regions.length, 1);
   const open = source.indexOf('<SessionCollaboration.GuestTurnRequests');
   const close = source.indexOf('</SessionCollaboration.GuestTurnRequests>');

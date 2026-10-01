@@ -1653,6 +1653,12 @@ export function projectSessionCatalogRecord(
     name: header.name,
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,
+    // The archive state is `isArchived` alone. A stray time on an active row
+    // is dropped here rather than failing this Host's own decoder and hiding
+    // the task behind an unsupported-record placeholder.
+    ...(header.isArchived && summary.archivedAt !== undefined
+      ? { archivedAt: summary.archivedAt }
+      : {}),
     labels: projectedLabels.labels,
     labelsTruncated: projectedLabels.truncated,
     hasUnread: header.hasUnread,

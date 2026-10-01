@@ -17,12 +17,17 @@
  * under the License.
  */
 
-import { isWorkHubCoordinationSessionTarget, sessionRevisionFamilyId } from '@maka/core/session';
+import {
+  isWorkHubCoordinationSessionTarget,
+  sessionRevisionFamilyId,
+  type SessionHeader,
+} from '@maka/core/session';
 import type {
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
 } from '@maka/core/subagent-workspace';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
+import type { InteractiveStorageFootprintReader } from '@maka/storage/storage-writer-composition';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -35,6 +40,7 @@ import type { AgentGraphRetirementDisposition } from '@maka/runtime/stream-graph
 import type { InteractiveSessionTodoWriter } from '@maka/storage/session-todo-authority';
 import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import {
+  STORAGE_USAGE_SESSION_MAX_ITEMS,
   type OperationOutcome,
   type SessionCatalogItem,
   type SessionLifecycleSetInput,
@@ -128,6 +134,10 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
+  /** Sizes the Sessions a removal preview would delete, as storage usage does. */
+  readonly footprint: Pick<InteractiveStorageFootprintReader, 'measureSessions'>;
+  /** The Host clock that `requireArchivedForMs` is judged by. */
+  readonly now?: () => number;
   readonly requestDrain: () => void;
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
 }
@@ -200,6 +210,8 @@ export class HostSessionRetirementCoordinator {
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
+  readonly #footprint: HostSessionRetirementCoordinatorOptions['footprint'];
+  readonly #now: () => number;
   readonly #requestDrain: () => void;
   readonly #memoryExtractionLane: MemoryExtractionSessionLane;
   readonly #cleanupQueue = new Set<string>();
@@ -228,6 +240,8 @@ export class HostSessionRetirementCoordinator {
     this.#purgeOperationalState = options.purgeOperationalState;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
+    this.#footprint = options.footprint;
+    this.#now = options.now ?? Date.now;
     this.#requestDrain = options.requestDrain;
     this.#memoryExtractionLane = options.memoryExtractionLane;
   }
@@ -331,6 +345,14 @@ export class HostSessionRetirementCoordinator {
             actualRevision: target.revision,
           });
         }
+        if (input.requireArchivedForMs !== undefined) {
+          // The caller's age filter ran on its own clock and may be stale: a
+          // task restored and archived again meanwhile carries a new time.
+          const { archivedAt } = (await this.#stores.readCatalogRecord(input.sessionId)).summary;
+          if (archivedAt === undefined || this.#now() - archivedAt <= input.requireArchivedForMs) {
+            return removeOutcome({ kind: 'too_recent', sessionId: input.sessionId });
+          }
+        }
 
         let removeHandles: RetirementHandles | undefined;
         let archiveHandles: RetirementHandles | undefined;
@@ -385,36 +407,89 @@ export class HostSessionRetirementCoordinator {
   }
 
   /**
-   * Read-only preview of how many subtasks a delete of this parent would move
-   * to the archive — the confirm warns off this so the renderer never has to
-   * re-derive the plan from a catalog projection that lacks the operator marker
-   * and the copy state. Absent or already-removed targets, and Agent Graph
-   * operators (which retire with their root rather than archive), preview zero.
+   * Read-only preview of what one `session.remove` per requested Session would
+   * do — the confirm states this so the renderer never has to re-derive a plan
+   * from a catalog projection that lacks the operator marker and the copy
+   * state. Every figure comes from the removal plan `#remove` executes, all
+   * read from one header snapshot.
+   *
+   * The plans of this request's targets are unioned before counting, so a
+   * Session or subtask two of them reach counts once; a Client summing pages
+   * of unrelated archived tasks counts nothing twice. Absent targets, Agent
+   * Graph operators (which retire with their root rather than on their own)
+   * and, under `requireArchived`, active targets contribute nothing.
    */
   async #previewRemoval(
     input: SessionRemovePreviewInput,
   ): Promise<OperationOutcome<'session.remove.preview'>> {
-    let probe;
+    let headers: readonly SessionHeader[];
     try {
-      probe = await this.#stores.probeSessionRemoval(input.sessionId);
+      headers = await this.#stores.listHeaders();
     } catch {
       return previewFailure('persistence_failed', 'Session removal state is unavailable');
     }
-    if (probe.kind !== 'present') return previewSuccess(0);
-    try {
-      const plan = await this.#readRemovalPlanSessionIds(input.sessionId);
-      return previewSuccess(plan.archivableSubtaskCount);
-    } catch (error) {
-      // A graph operator has no independent delete and archives nothing; a
-      // target that vanished mid-read has nothing left to archive either.
-      if (
-        error instanceof SessionMetadataConflictError ||
-        error instanceof SessionRetirementMissingSessionError
-      ) {
-        return previewSuccess(0);
+    const byId = new Map(headers.map((header) => [header.id, header]));
+    const removed = new Map<string, SessionHeader>();
+    const archivableFamilyIds = new Set<string>();
+    for (const sessionId of input.sessionIds) {
+      const target = byId.get(sessionId);
+      if (!target || (input.requireArchived && !target.isArchived)) continue;
+      let plan;
+      try {
+        plan = await this.#readRemovalPlanSessionIds(sessionId, headers);
+      } catch (error) {
+        // A graph operator has no independent delete and archives nothing.
+        if (error instanceof SessionMetadataConflictError) continue;
+        return previewFailure('persistence_failed', 'Session removal plan is unavailable');
       }
-      return previewFailure('persistence_failed', 'Session removal plan is unavailable');
+      for (const id of plan.removeSessionIds) removed.set(id, byId.get(id)!);
+      for (const familyId of plan.archivableSubtaskFamilyIds) archivableFamilyIds.add(familyId);
     }
+    const removedHeaders = [...removed.values()];
+    // A subtask another target of this request deletes is not also archived.
+    for (const header of removedHeaders) {
+      archivableFamilyIds.delete(sessionRevisionFamilyId(header));
+    }
+    const bytes = input.measureBytes ? await this.#measureRemoved([...removed.keys()]) : undefined;
+    return {
+      ok: true,
+      result: {
+        archivableSubtaskCount: archivableFamilyIds.size,
+        removedSubtaskCount: new Set(
+          removedHeaders
+            .filter((header) => header.subagentParent?.graph !== undefined)
+            .map(sessionRevisionFamilyId),
+        ).size,
+        // What cleanup retires: one binding per removed Session, and only
+        // through a worktree executor. A subagent Session carrying a binding
+        // cannot be a revision, so no two removed Sessions share one.
+        worktreeCount: this.#worktrees
+          ? removedHeaders.filter((header) => header.subagentWorkspace !== undefined).length
+          : 0,
+        ...(bytes === undefined ? {} : { bytes }),
+      },
+    };
+  }
+
+  /**
+   * Sizes removed Sessions in storage-usage pages, yielding between them. A
+   * failed measurement is left out rather than failing the counts beside it.
+   */
+  async #measureRemoved(sessionIds: readonly string[]): Promise<number | undefined> {
+    let bytes = 0;
+    try {
+      for (let offset = 0; offset < sessionIds.length; offset += STORAGE_USAGE_SESSION_MAX_ITEMS) {
+        if (offset > 0) await new Promise((resolve) => setImmediate(resolve));
+        const page = sessionIds.slice(offset, offset + STORAGE_USAGE_SESSION_MAX_ITEMS);
+        for (const usage of await this.#footprint.measureSessions(page)) {
+          const { transcript, runtime, artifacts, context = 0 } = usage.bytes;
+          bytes += transcript + runtime + artifacts + context;
+        }
+      }
+    } catch {
+      return undefined;
+    }
+    return bytes;
   }
 
   async #withStableRemovalPlan<T>(
@@ -506,23 +581,32 @@ export class HostSessionRetirementCoordinator {
     );
   }
 
-  async #readFamilySessionIds(sessionId: string): Promise<string[]> {
-    const target = await this.#stores.probeSessionRemoval(sessionId);
-    if (target.kind !== 'present') {
-      throw new SessionRetirementMissingSessionError(target.kind);
+  /** `snapshot` holds every header and the target; without it both are read. */
+  async #readFamilySessionIds(
+    sessionId: string,
+    snapshot?: readonly SessionHeader[],
+  ): Promise<string[]> {
+    let target: SessionHeader | undefined;
+    if (snapshot) {
+      target = snapshot.find((header) => header.id === sessionId);
+      if (!target) throw new SessionRetirementMissingSessionError('absent');
+    } else {
+      const probe = await this.#stores.probeSessionRemoval(sessionId);
+      if (probe.kind !== 'present') throw new SessionRetirementMissingSessionError(probe.kind);
+      target = probe.record.header;
     }
-    if (isWorkHubCoordinationSessionTarget(target.record.header)) {
+    if (isWorkHubCoordinationSessionTarget(target)) {
       throw new SessionMetadataConflictError(
         'WorkHub Coordination Session lifecycle is owned by WorkHub',
       );
     }
-    if (target.record.header.subagentParent?.graph) {
+    if (target.subagentParent?.graph) {
       throw new SessionMetadataConflictError(
         'Agent Graph operator Sessions retire with their root Session',
       );
     }
-    const familyId = sessionRevisionFamilyId(target.record.header);
-    const headers = await this.#stores.listHeaders();
+    const familyId = sessionRevisionFamilyId(target);
+    const headers = snapshot ?? (await this.#stores.listHeaders());
     const roots = headers.filter(
       (header) =>
         header.conversationCopy?.state !== 'preparing' &&
@@ -551,15 +635,18 @@ export class HostSessionRetirementCoordinator {
     return [...new Set(members)].sort();
   }
 
-  async #readRemovalPlanSessionIds(sessionId: string): Promise<{
+  async #readRemovalPlanSessionIds(
+    sessionId: string,
+    snapshot?: readonly SessionHeader[],
+  ): Promise<{
     removeSessionIds: readonly string[];
     archiveSessionIds: readonly string[];
     archiveGuardSessionIds: readonly string[];
-    archivableSubtaskCount: number;
+    archivableSubtaskFamilyIds: readonly string[];
   }> {
-    const removeSessionIds = await this.#readFamilySessionIds(sessionId);
+    const removeSessionIds = await this.#readFamilySessionIds(sessionId, snapshot);
     const removeIds = new Set(removeSessionIds);
-    const headers = await this.#stores.listHeaders();
+    const headers = snapshot ?? (await this.#stores.listHeaders());
     const ordinaryParentIds = new Set(
       headers
         .filter((header) => removeIds.has(header.id) && !header.subagentParent?.graph)
@@ -594,7 +681,7 @@ export class HostSessionRetirementCoordinator {
       // Distinct subtasks (by revision family) that a delete would move to the
       // archive — the count the confirm warns off, matching what `#remove`
       // reports afterwards.
-      archivableSubtaskCount: new Set(archiveHeaders.map(sessionRevisionFamilyId)).size,
+      archivableSubtaskFamilyIds: [...new Set(archiveHeaders.map(sessionRevisionFamilyId))],
     };
   }
 
@@ -913,12 +1000,6 @@ function removeFailure(
   message: string,
 ): Extract<OperationOutcome<'session.remove'>, { ok: false }> {
   return { ok: false, error: { code, message } };
-}
-
-function previewSuccess(
-  archivableSubtaskCount: number,
-): OperationOutcome<'session.remove.preview'> {
-  return { ok: true, result: { archivableSubtaskCount } };
 }
 
 function previewFailure(

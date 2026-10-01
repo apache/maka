@@ -103,6 +103,7 @@ import { SessionBundleTasks } from '../features/session-bundle';
 import { CatalogSessions } from '../application/contracts/session-catalog/catalog-sessions.js';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
+import { ArchivedTaskScope } from '../features/session-navigation';
 import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
@@ -1244,7 +1245,13 @@ function SettingsPageBody(props: {
     case 'archived-tasks':
       return (
         <CatalogSessions catalog={props.archivedTasks.catalog}>
-          {(sessions) => <TasksSettingsPage {...props.archivedTasks} sessions={sessions} />}
+          {(sessions) => (
+            <ArchivedTaskScope {...props.archivedTasks} sessions={sessions}>
+              {(scope) => (
+                <TasksSettingsPage {...props.archivedTasks} sessions={sessions} scope={scope} />
+              )}
+            </ArchivedTaskScope>
+          )}
         </CatalogSessions>
       );
     case 'import-tasks':

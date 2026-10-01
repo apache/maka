@@ -24,16 +24,6 @@ import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { classifiedErrorFallback } from './application/contracts/operation-diagnostics.js';
 import { getShellCopy } from './locales/shell-copy.js';
 
-export function messageReadErrorMessage(error: unknown, locale: UiLocale): string {
-  const copy = getShellCopy(locale);
-  return classifiedErrorFallback(error, copy.errors.messageRead, locale, 'message-read');
-}
-
-export function messageRefreshErrorMessage(error: unknown, locale: UiLocale): string {
-  const copy = getShellCopy(locale);
-  return classifiedErrorFallback(error, copy.errors.messageRefresh, locale, 'message-refresh');
-}
-
 export function commandPaletteActionErrorMessage(
   error: unknown,
   fallback: string,

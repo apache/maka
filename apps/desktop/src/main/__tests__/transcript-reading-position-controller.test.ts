@@ -28,7 +28,7 @@ import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } f
 import {
   TranscriptReadingPositionController,
   type TranscriptReadingPositionCommands,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 import {
   createTranscriptRestoreLifecycle,
@@ -224,7 +224,7 @@ test('loading earlier history only reaches the current Session controller', asyn
   await fixture.commands.current!.loadEarlier();
   assert.equal(first, 1);
 
-  fixture.props.currentSessionId.current = 'session-2';
+  fixture.currentSessionId.current = 'session-2';
   await fixture.commands.current!.loadEarlier();
   assert.equal(first, 1, 'a superseded Session cannot load history');
 
@@ -255,7 +255,7 @@ test('captured reading anchors belong to the current Session and preparing a sen
   assert.deepEqual(followed, ['session-1']);
   assert.equal(anchors.current['session-1'], undefined);
 
-  fixture.props.currentSessionId.current = 'session-2';
+  fixture.currentSessionId.current = 'session-2';
   fixture.commands.current!.captureAnchor('turn-2');
   assert.equal(anchors.current['session-1'], undefined, 'a superseded Session cannot capture an anchor');
 });
@@ -289,6 +289,7 @@ test('a Turn index read that failed is read again when the transcript reopens', 
 function controllerFixture() {
   const { root } = installReactRenderer();
   const commands = createRef<TranscriptReadingPositionCommands>();
+  const currentSessionId = { current: 'session-1' };
   const controller = {
     loadEarlier: async () => {},
     store: {
@@ -299,7 +300,7 @@ function controllerFixture() {
   const props: ComponentProps<typeof TranscriptReadingPositionController> = {
     commands,
     sessionId: 'session-1',
-    currentSessionId: { current: 'session-1' },
+    currentSessionId,
     rangeController: { current: controller },
     messages: [],
     searchTarget: undefined,
@@ -311,7 +312,7 @@ function controllerFixture() {
     onRestoreError: (error) => assert.fail(String(error)),
   };
   return {
-    commands, controller, props,
+    commands, controller, props, currentSessionId,
     render: () => act(() => root.render(createElement(TranscriptReadingPositionController, props))),
   };
 }

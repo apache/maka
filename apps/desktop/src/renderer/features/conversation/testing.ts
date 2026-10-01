@@ -38,7 +38,7 @@ export {
   prepareTranscriptForSend,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
-export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
+export { shellSessionRowEqual } from './model/conversation-catalog-row.js';
 export {
   type ActiveExecutionBoundarySnapshot,
   activeExecutionBoundaryOf,
@@ -55,6 +55,7 @@ export function stubConversationServices(
 ): ConversationServices {
   const { sessions, ...rest } = overrides;
   return {
+    observation: { openTranscript() { throw new Error('Transcript observation not configured'); }, subscribeEvents: () => () => {}, listActiveInteractions: async () => [], subscribeActiveInteractions: () => () => {}, shellRuns: { list: async () => [], subscribeUpdates: () => () => {}, subscribeResync: () => () => {} }, subscribeVisible: () => () => {}, queryCancelledMessages: async () => ({ cancelledMessageIds: [] }) },
     listMessages: async () => [],
     cancelMessage: async () => undefined,
     reconcileMessage: async () => undefined,
@@ -88,3 +89,18 @@ export function stubConversationServices(
 export { usePlanModeState } from './controller/use-plan-mode-state.js';
 export type { PlanModeState } from './model/plan-state.js';
 export { PlanExecutionPanel } from './ui/plan-panels.js';
+
+export { createSessionWorkspaceActions } from './model/session-workspace-actions.js';
+
+export { createAppShellSessionDisplayBatch, createAppShellSessionEventHandlers } from './model/session-events.js';
+export { createConversationWorkspace } from './model/conversation-workspace.js';
+export { useConversationOwner } from './ui/conversation-context.js';
+
+export { createTranscriptCommands } from './model/transcript-commands.js';
+export { useConversationQueue } from './ui/conversation-provider.js';
+
+export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
+export { TranscriptReadingPositionController, type TranscriptReadingPositionCommands } from './controller/transcript-reading-position-controller.js';
+export { useComposerAttachments } from './controller/use-composer-attachments.js';
+export { useComposerQuotes } from './controller/use-composer-quotes.js';
+export { useComposerStaging } from './ui/composer-staging-context.js';

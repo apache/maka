@@ -311,10 +311,11 @@ async function verifyPackagedRuntimeHostParentDeath({
 }) {
   const requestId = `runtime-host-parent-death-${process.pid}-${randomBytes(4).toString('hex')}`;
   const launchRequestId = `${requestId}-launch`;
-  assertCondition(
-    (await listCancellationProcesses(sandboxExecutable)).length === 0,
-    'Runtime Host parent-death evidence started with an existing sandbox process.',
-  );
+  await waitForObservation({
+    description: 'clean Runtime Host parent-death process baseline',
+    probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+    accept: (processes) => processes.length === 0,
+  });
 
   const child = spawn(
     appExecutable,
@@ -516,10 +517,11 @@ async function verifyPackagedClientCancellation({
   const requestId = `packaged-client-cancel-${process.pid}-${randomBytes(4).toString('hex')}`;
   const launchRequestId = `${requestId}-launch`;
   const sleepSeconds = 47;
-  assertCondition(
-    (await listCancellationProcesses(sandboxExecutable)).length === 0,
-    'Client-cancel evidence started with an existing sandbox process.',
-  );
+  await waitForObservation({
+    description: 'clean client-cancel process baseline',
+    probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+    accept: (processes) => processes.length === 0,
+  });
   const controller = new AbortController();
   const cancelClient = new FilesystemWorkerClient({
     sandboxManager: new SandboxManager([

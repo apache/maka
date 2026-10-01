@@ -181,6 +181,29 @@ describe('Session catalog protocol', () => {
     }
   });
 
+  test('carries an optional archive time only on an archived Session', () => {
+    const archived = { ...projection(), isArchived: true, archivedAt: 1_700_000_000_000 };
+    assert.deepEqual(decodeSessionCatalogItem(archived), archived);
+
+    // Absent means the Host does not know when the Session was archived.
+    const unknown = { ...projection(), isArchived: true };
+    const decoded = decodeSessionCatalogItem(unknown);
+    assert.deepEqual(decoded, unknown);
+    assert.equal(Object.hasOwn(decoded, 'archivedAt'), false);
+
+    for (const archivedAt of ['1700000000000', -1, 1.5, null, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(
+        () => decodeSessionCatalogItem({ ...projection(), isArchived: true, archivedAt }),
+        isProtocolError,
+        `archivedAt ${String(archivedAt)} must be rejected`,
+      );
+    }
+    assert.throws(
+      () => decodeSessionCatalogItem({ ...projection(), isArchived: false, archivedAt: 1 }),
+      isProtocolError,
+    );
+  });
+
   test('bounds the live running-turn collection explicitly', () => {
     const atLimit = Array.from(
       { length: SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS },

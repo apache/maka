@@ -51,7 +51,7 @@ export function TranscriptReadingPositionController(props: {
   commands: Ref<TranscriptReadingPositionCommands>;
   sessionId?: string;
   profileId?: string;
-  currentSessionId: { current: string | undefined };
+  currentSessionId: { readonly current: string | undefined };
   rangeController: { current: RangeController | undefined };
   messages: readonly StoredMessage[];
   searchTarget: Parameters<typeof restoreSessionTranscriptRange>[0]['searchTarget'];
