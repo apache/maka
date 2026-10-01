@@ -87,6 +87,8 @@ import {
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
+import type { SessionNavigationRowActions } from '../../src/renderer/features/session-navigation';
+import { runtimeHostProjectKey } from '../../src/renderer/application/contracts/runtime-host-project-key';
 import {
   createSessionCatalogController,
   type SessionCatalogController,
@@ -1633,10 +1635,8 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
     catalog.commitSessions(current.filter((session) => !doomed.has(session.id)));
   };
-  return {
-    catalog,
-    projects: archivedTaskProjects,
-    onRestore: (sessionId) => {
+  const commands = {
+    unarchiveSession: async (sessionId: string) => {
       const current = catalog.getState().sessions;
       const family = new Set(revisionFamilySessionIds(current, sessionId));
       catalog.commitSessions(
@@ -1648,22 +1648,29 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     // Mirrors the shell's own row action, which always confirms first — a
     // story where a row vanishes on one click would be showing an interaction
     // the app does not have.
-    onDelete: (sessionId) => {
-      void confirmDelete(sessionId).then((ok) => {
-        if (ok) drop([sessionId]);
+    deleteSession: async (sessionId: string) => {
+      if (await confirmDelete(sessionId)) drop([sessionId]);
+    },
+    purgeArchived: async (request: { sessionIds: readonly string[] }) => {
+      const ok = await toast.confirm({
+        title: `删除当前显示的 ${request.sessionIds.length} 条任务？`,
+        description: '这些任务及其全部消息会被永久删除，无法撤销。',
+        confirmLabel: '永久删除',
+        cancelLabel: '取消',
+        destructive: true,
       });
+      if (ok) drop(request.sessionIds);
     },
-    onPurge: async (sessionIds) => {
-      drop(sessionIds);
-      return {
-        removed: sessionIds.length,
-        archivedSubtasks: 0,
-        remaining: [],
-        restored: [],
-        verified: true,
-        firstError: undefined,
-      };
-    },
+  } as unknown as SessionNavigationRowActions;
+  return {
+    catalog,
+    projectScopes: archivedTaskProjects.map((project) => ({
+      key: runtimeHostProjectKey('storybook-local', project.id),
+      hostId: 'storybook-local',
+      profileName: 'Local',
+      project,
+    })),
+    commands: { current: commands },
   };
 }
 const gitBashSettings = mergeSettings(createDefaultSettings(), {

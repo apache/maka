@@ -734,7 +734,7 @@
           "react": 1
         },
         "importSpecifiers": 76,
-        "nonTriviaTokens": 9385
+        "nonTriviaTokens": 9347
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -3010,6 +3010,7 @@
           "../features/connection-settings": 1,
           "../features/external-agent-settings/index.js": 1,
           "../features/session-bundle": 1,
+          "../features/session-navigation": 1,
           "../locales/settings-navigation-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "./about-settings-page": 1,
@@ -3098,17 +3099,12 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {
-          "../features/session-navigation/index.js": 1
-        }
+        "dependencyPaths": {}
       },
       "src/renderer/settings/tasks-settings-page.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useMountedRef": 1,
-          "useState": 2,
-          "useToast": 1,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
@@ -3116,17 +3112,12 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../features/storage-usage/index.js": 1,
-          "../locales/settings-shared-copy.js": 1,
           "../locales/settings-tasks-copy.js": 1,
           "../locales/storage-usage-copy.js": 1,
-          "./settings-error-copy": 1,
           "./settings-section": 1,
           "./task-catalog-rows": 1,
-          "@astryxdesign/core": 1,
           "@astryxdesign/core/List": 1,
-          "@astryxdesign/core/TextInput": 1,
           "@maka/core/relative-time": 1,
-          "@maka/runtime-host/profile-kind": 1,
           "@maka/ui": 1,
           "@maka/ui/icons": 1,
           "react": 1
