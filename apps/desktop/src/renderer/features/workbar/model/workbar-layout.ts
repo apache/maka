@@ -21,6 +21,7 @@ import {
   safeLocalStorageGet,
   safeLocalStorageSet,
 } from '../../../browser-storage.js';
+import { SHELL_CONVERSATION_MIN_WIDTH_PX } from '../../../application/contracts/shell-layout-contract.js';
 import {
   persistableSessionWorkbarPanels,
   parseSessionWorkbarPanels,
@@ -39,12 +40,18 @@ import {
  */
 export const SESSION_WORKBAR_DEFAULT_WIDTH = 480;
 /**
- * 340 is the floor `astryx docs layout` gives a detail/inspector panel, and it
- * is also where the strip stops fitting: five faces need 386px of tab and have
- * 260px, so below this the strip is always scrolling.
+ * 340 is the normal drag minimum `astryx docs layout` gives a detail/inspector
+ * panel. A compact window can force the rendered panel below it while keeping
+ * the saved preference; there is no adjustable drag range in that case.
  */
 export const SESSION_WORKBAR_MIN_WIDTH = 340;
-export const SESSION_WORKBAR_MAX_WIDTH = 600;
+/**
+ * The conversation column the rail leaves behind on a window wide enough for
+ * both. That is why the ceiling is a layout measurement (`container − gap −
+ * this`) rather than a constant. This matches the shell's CSS token, including
+ * windows where the Workbar has less than its usual 340px minimum available.
+ */
+export const SESSION_CONVERSATION_MIN_WIDTH = SHELL_CONVERSATION_MIN_WIDTH_PX;
 export const SESSION_BOTTOM_PANEL_DEFAULT_HEIGHT = 300;
 export const SESSION_BOTTOM_PANEL_MIN_HEIGHT = 180;
 export const SESSION_BOTTOM_PANEL_MAX_HEIGHT = 520;
@@ -66,7 +73,18 @@ export interface WorkbarLayoutState {
       cleared by any explicit collapse/expand the user makes. */
   spaceCollapsed: boolean;
   bottomOpen: boolean;
-  rightWidth: number;
+  /**
+   * The width the user last chose, persisted as-is. A narrow window holds the
+   * *display* width (`sessionWorkbarDisplayWidth`) back instead of overwriting
+   * this, so widening the window gives the width back.
+   */
+  rightWidthPreference: number;
+  /**
+   * The measured ceiling, `undefined` until the layout container reports one.
+   * `measure-right-ceiling` is its only writer: the policy lives in the reducer,
+   * the measurement in the hook that observes the element.
+   */
+  rightWidthCeiling: number | undefined;
   bottomHeight: number;
 }
 
@@ -92,7 +110,8 @@ export type WorkbarLayoutAction =
       type: 'resize';
       placement: 'right' | 'bottom';
       size: number;
-    };
+    }
+  | { type: 'measure-right-ceiling'; ceiling: number };
 
 export type WorkbarLayoutPersistenceTarget =
   | 'all'
@@ -107,9 +126,43 @@ function clampSize(size: number, min: number, max: number): number {
 }
 
 /**
- * Reads the persisted width without applying bounds. `loadWorkbarLayout`
- * applies the shared reducer policy so hydration and resize actions use one
- * clamping rule.
+ * The ceiling the rail may display at. Unmeasured there is no bound to trust,
+ * and the default — not the stored preference — is the safe one: a stale wide
+ * value must not overrun the conversation column on the first frame.
+ */
+export function sessionWorkbarMaxWidth(state: WorkbarLayoutState): number {
+  return state.rightWidthCeiling ?? SESSION_WORKBAR_DEFAULT_WIDTH;
+}
+
+/**
+ * How wide the Workbar actually renders. At the native window floor the shell
+ * may leave less than 340px even after hiding the sidebar. That measured cap
+ * takes precedence over the normal drag minimum without changing the saved
+ * preference, so widening the window restores the user's chosen width.
+ */
+export function sessionWorkbarDisplayWidth(state: WorkbarLayoutState): number {
+  return clampSize(
+    state.rightWidthPreference,
+    SESSION_WORKBAR_MIN_WIDTH,
+    sessionWorkbarMaxWidth(state),
+  );
+}
+
+/**
+ * The ceiling a container grants the rail, where `gap` is the spacing between
+ * the two columns: what is left once the conversation keeps its
+ * `SESSION_CONVERSATION_MIN_WIDTH` target. A container too small for both
+ * can fall below the normal Workbar drag minimum in a compact window.
+ */
+export function sessionWorkbarCeiling(containerWidth: number, gap: number): number {
+  return containerWidth - gap - SESSION_CONVERSATION_MIN_WIDTH;
+}
+
+/**
+ * Reads the persisted width without applying bounds. `loadWorkbarLayout` keeps
+ * it unclamped because the container, not a constant, decides how wide the rail
+ * may display, and a window that is too narrow right now must not truncate the
+ * preference the next window would fit.
  */
 export function readSessionWorkbarWidth(): number {
   const stored = Number(safeLocalStorageGet('maka-session-workbar-width-v1'));
@@ -198,11 +251,8 @@ export function loadWorkbarLayout(activeSessionId?: string, compact = false): Wo
     compactCollapsed: {},
     bottomOpen: readSessionBottomPanelOpen(),
     spaceCollapsed: false,
-    rightWidth: clampSize(
-      readSessionWorkbarWidth(),
-      SESSION_WORKBAR_MIN_WIDTH,
-      SESSION_WORKBAR_MAX_WIDTH,
-    ),
+    rightWidthPreference: readSessionWorkbarWidth(),
+    rightWidthCeiling: undefined,
     bottomHeight: clampSize(
       readSessionBottomPanelHeight(),
       SESSION_BOTTOM_PANEL_MIN_HEIGHT,
@@ -243,7 +293,7 @@ export function persistWorkbarLayout(
   if (target === 'all' || target === 'right-size') {
     safeLocalStorageSet(
       'maka-session-workbar-width-v1',
-      String(state.rightWidth),
+      String(state.rightWidthPreference),
     );
   }
   if (target === 'all' || target === 'bottom-size') {
@@ -291,6 +341,16 @@ export function reduceWorkbarLayout(
       ? state
       : { ...state, activeSessionId: action.sessionId };
   }
+  if (action.type === 'measure-right-ceiling') {
+    // The shell keeps the 400px conversation floor even in a 600px window.
+    // A Workbar the user opens there is allowed to be narrower than its
+    // normal drag minimum; measurement never overwrites the saved preference.
+    if (!Number.isFinite(action.ceiling)) return state;
+    const ceiling = Math.max(0, Math.round(action.ceiling));
+    return state.rightWidthCeiling === ceiling
+      ? state
+      : { ...state, rightWidthCeiling: ceiling };
+  }
   if (action.type === 'retain-sessions') {
     let panels = state.panels;
     for (const placement of ['right', 'bottom'] as const) {
@@ -324,14 +384,22 @@ export function reduceWorkbarLayout(
   }
   if (action.type === 'resize') {
     if (action.placement === 'right') {
-      const rightWidth = clampSize(
+      const maxWidth = sessionWorkbarMaxWidth(state);
+      // Below the normal drag minimum there is no adjustable range. Keep the
+      // preference until more space is available instead of saving the forced
+      // narrow display width as the user's choice.
+      if (maxWidth < SESSION_WORKBAR_MIN_WIDTH) return state;
+      // A drag is the user's new preference, inside the space the container has.
+      // Its start is the *displayed* width, so a narrowed window still drags
+      // from what the user can see.
+      const rightWidthPreference = clampSize(
         action.size,
         SESSION_WORKBAR_MIN_WIDTH,
-        SESSION_WORKBAR_MAX_WIDTH,
+        maxWidth,
       );
-      return state.rightWidth === rightWidth
+      return state.rightWidthPreference === rightWidthPreference
         ? state
-        : { ...state, rightWidth };
+        : { ...state, rightWidthPreference };
     }
     const bottomHeight = clampSize(
       action.size,

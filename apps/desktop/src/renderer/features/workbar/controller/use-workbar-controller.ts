@@ -26,6 +26,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type RefObject,
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import { useMediaQuery } from '@astryxdesign/core/hooks';
@@ -122,6 +123,11 @@ export interface UseWorkbarControllerInput {
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
+  /**
+   * The grid container holding both the conversation column and the rail. The
+   * WorkbarProvider attaches the ref through WorkbarLayoutContainer.
+   */
+  layoutContainerRef?: RefObject<HTMLElement | null>;
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
   composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
@@ -197,7 +203,12 @@ export function useWorkbarController(
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
   const compact = useMediaQuery(SHELL_WORKBAR_COMPACT_QUERY);
-  const layout = useWorkbarLayoutState(input.layoutSessionId, input.authoritativeSessionIds, compact);
+  const layout = useWorkbarLayoutState(
+    input.layoutSessionId,
+    input.authoritativeSessionIds,
+    compact,
+    input.layoutContainerRef,
+  );
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
