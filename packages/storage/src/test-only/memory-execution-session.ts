@@ -61,6 +61,7 @@ import {
   type SessionCatalogRecord,
   type CreateStableSessionRequest,
   type CoordinationTranscriptIndexRecord,
+  type ArchiveRetentionCandidate,
 } from '../session-store-contract.js';
 import { buildSessionHeader, normalizeSessionHeader, toSummary } from '../session-store-values.js';
 import { isValidConversationCopyTransition } from '../session-conversation-copy.js';
@@ -724,6 +725,62 @@ export function createMemorySessionStore(
         rows(s, 'cleanup').delete(id);
       });
     },
+    listArchiveRetentionCandidates: async (query) =>
+      read((s) => {
+        const all = [...headers(s).values()];
+        const family = (h: SessionHeader) => h.revisionRootSessionId ?? h.id;
+        const pinned = new Set(all.filter((r) => r.header.isFlagged).map((r) => family(r.header)));
+        const order = (r: ArchiveRetentionCandidate) => r.archivedAt ?? -1;
+        const after = query.after;
+        return all
+          .filter(({ header: h }) => h.isArchived && !h.isFlagged && h.id !== HUB && !h.role)
+          .filter(({ header: h }) => h.conversationCopy?.state !== 'preparing')
+          .filter(({ header: h }) => h.transcriptLedgerVersion !== 0 && !h.subagentParent?.graph)
+          .filter(
+            ({ header: h }) =>
+              !h.subagentParent || !headers(s).has(h.subagentParent.parentSessionId),
+          )
+          .filter(({ header: h }) => !pinned.has(family(h)))
+          .map((r): ArchiveRetentionCandidate => {
+            const archivedAt = rows<number>(s, 'archivedAt').get(r.header.id);
+            return archivedAt === undefined ? r : { ...r, archivedAt };
+          })
+          .filter(
+            (r) =>
+              query.archivedBefore === undefined ||
+              r.archivedAt === undefined ||
+              r.archivedAt < query.archivedBefore,
+          )
+          .sort(
+            (a, b) =>
+              order(a) - order(b) ||
+              (a.header.id < b.header.id ? -1 : a.header.id > b.header.id ? 1 : 0),
+          )
+          .filter(
+            (r) =>
+              !after ||
+              order(r) > (after.archivedAt ?? -1) ||
+              (order(r) === (after.archivedAt ?? -1) && r.header.id > after.sessionId),
+          )
+          .slice(0, query.limit);
+      }),
+    readSessionArchiveTimes: async (ids) =>
+      read((s) => {
+        const times = new Map<string, number>();
+        for (const id of ids) {
+          const archivedAt = rows<number>(s, 'archivedAt').get(id);
+          if (archivedAt !== undefined) times.set(id, archivedAt);
+        }
+        return times;
+      }),
+    readLatestSessionMetadataTime: async () =>
+      read((s) => {
+        const times = [
+          ...[...headers(s).values()].map((r) => r.committedAt),
+          ...rows<number>(s, 'archivedAt').values(),
+        ];
+        return times.length === 0 ? undefined : Math.max(...times);
+      }),
     reconcileOrphanedAgentGraphRetirements: async () =>
       write('session.reconcileRetirement', (s) => {
         const ids = [...headers(s).values()]
