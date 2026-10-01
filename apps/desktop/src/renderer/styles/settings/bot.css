@@ -41,36 +41,14 @@
   height: 36px;
 }
 
-.settingsRemoteAccessChannelRow,
-.settingsRemoteAccessCatalogRow {
-  min-height: 64px;
-  min-width: 0;
-  gap: var(--space-3);
-  /* Deep-review fix: flush inline — kit rows edge-align with the section
-     heading; the 10px inset was a leftover from the old card grid. */
-  padding: var(--space-2) 0;
-}
-
-.settingsRemoteAccessItemTitle {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-width: 0;
-  flex-wrap: wrap;
-  overflow-wrap: anywhere;
-}
-
+/* Channel rows are SettingsEntryRow (rows.css owns their geometry); only
+   their state treatments live here. */
 .settingsRemoteAccessItemDescription {
   overflow-wrap: anywhere;
 }
 
 .settingsRemoteAccessChannelRow[data-attention="true"] {
   background: var(--color-warning-muted);
-}
-
-.settingsRemoteAccessItemActions {
-  display: flex;
-  color: var(--muted-foreground);
 }
 
 .settingsRemoteAccessCatalogRow[data-support="planned"] {
@@ -168,17 +146,6 @@
     grid-row: 3;
   }
 
-  .settingsRemoteAccessChannelRow,
-  .settingsRemoteAccessCatalogRow {
-    gap: var(--space-2);
-  }
-
-  /* The whole row remains the named button. In the narrow layout, dropping
-     the redundant chevron leaves enough room for the provider name, status
-     chip, and a useful diagnostic summary. */
-  .settingsRemoteAccessItemActions {
-    display: none;
-  }
 }
 
 .settingsBotActionStack {

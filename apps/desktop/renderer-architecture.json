@@ -1792,8 +1792,7 @@
           "./settings-section": 1,
           "@astryxdesign/core": 1,
           "@maka/core/settings": 1,
-          "@maka/ui": 2,
-          "@maka/ui/icons": 1
+          "@maka/ui": 2
         }
       },
       "src/renderer/settings/bot-chat-settings-page.tsx": {
@@ -2599,13 +2598,13 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../application/contracts/settings-presentation/index.js": 1,
           "../features/connection-settings": 1,
           "./provider-catalog-page": 1,
           "./provider-connection-detail": 1,
           "./provider-connection-status": 1,
           "./provider-display": 1,
           "./provider-oauth-section": 1,
-          "./runtime-host-settings-target.js": 1,
           "./settings-error-copy": 1,
           "./settings-route-focus": 1,
           "./settings-route-header": 1,
