@@ -19,7 +19,6 @@
 
 import {
   ARCHIVE_RETENTION_DAY_MS,
-  type ArchiveRetentionDays,
   type ArchiveRetentionDeletion,
   type ArchiveRetentionSweep,
   archiveRetentionClockStart,
@@ -35,8 +34,6 @@ import type { ExecutionSessionWriter } from '@maka/storage/execution-stores';
 import { RuntimePolicyStoreError } from '@maka/storage/runtime-policy-stores';
 import type {
   OperationOutcome,
-  StorageRetentionPreview,
-  StorageRetentionQueryInput,
   StorageRetentionSetInput,
   StorageRetentionSetting,
 } from '../protocol/index.js';
@@ -51,7 +48,6 @@ import type {
 /** Revision families a sweep tick may delete. */
 export const ARCHIVE_RETENTION_FAMILIES_PER_TICK = 8;
 const CANDIDATE_PAGE = 64;
-const PREVIEW_PAGE = 256;
 
 const DISABLED: ArchiveRetentionDocument = Object.freeze({
   version: 1,
@@ -62,7 +58,10 @@ const DISABLED: ArchiveRetentionDocument = Object.freeze({
 
 type RetentionCatalog = Pick<
   ExecutionSessionWriter,
-  'listArchiveRetentionCandidates' | 'readSessionArchiveTimes' | 'readLatestSessionMetadataTime'
+  | 'listArchiveRetentionCandidates'
+  | 'countArchiveRetentionCandidates'
+  | 'readLatestSessionMetadataTime'
+  | 'readCatalogRecord'
 >;
 
 export interface HostArchiveRetentionCoordinatorOptions {
@@ -77,14 +76,16 @@ export interface HostArchiveRetentionCoordinatorOptions {
 
 interface EnabledSetting {
   readonly revision: number;
-  readonly days: ArchiveRetentionDays;
+  readonly days: ArchiveRetentionDocument['days'];
   readonly enabledAt: number;
 }
 
 interface SweepPass {
+  /** The setting revision the pass started under; its results belong to it alone. */
+  readonly revision: number;
   /** Resume the candidate order strictly after this row. */
   cursor?: { readonly archivedAt?: number; readonly sessionId: string };
-  /** Families this pass already tried; a kept family is not retried until the next pass. */
+  /** Families (and undecodable rows) this pass already tried; none is retried before the next pass. */
   readonly seen: Set<string>;
   deleted: number;
   skippedBusy: number;
@@ -103,11 +104,13 @@ interface SweepPass {
  * clock reads earlier than a time the Host has already seen, and deletes each
  * family through `session.remove`'s own path with a guard that rechecks the
  * policy, the archive and pin state, the elapsed time and the plan under the
- * removal admission.
+ * removal admission. A setting change waits for the family in flight, so once
+ * `storage.retention.set` answers, no deletion admitted under the old setting
+ * is still running.
  */
 export class HostArchiveRetentionCoordinator {
   readonly handlers: StorageRetentionOperationHandlerMap = {
-    'storage.retention.query': (input) => this.#query(input),
+    'storage.retention.query': () => this.#query(),
     'storage.retention.set': (input) => this.#set(input),
   };
 
@@ -120,9 +123,15 @@ export class HostArchiveRetentionCoordinator {
   #loading: Promise<ArchiveRetentionDocument> | undefined;
   /** Serializes every read-modify-write of the document. */
   #writes: Promise<unknown> = Promise.resolve();
-  /** Setting changes in flight; a sweep deletes nothing while one is pending. */
+  /** Setting changes in flight; while one is pending a sweep admits and starts nothing. */
   #changing = 0;
-  /** The latest Host time a sweep observed: the clock must not read below it. */
+  /** The sweep step running now, which a setting change waits for. */
+  #ticking: Promise<boolean> | undefined;
+  /**
+   * The latest Host time observed, in memory only. After a restart the floor
+   * is `enabledAt`, the last sweep's time and, on every sweep, the newest time
+   * Session metadata recorded.
+   */
   #observedAt = 0;
   #pass: SweepPass | undefined;
   #draining = false;
@@ -142,6 +151,18 @@ export class HostArchiveRetentionCoordinator {
   /** One bounded sweep step; true while candidates remain. */
   async sweep(): Promise<boolean> {
     if (this.#draining) return false;
+    // A setting change is waiting for this lane; look again shortly.
+    if (this.#changing > 0) return true;
+    const tick = this.#tick();
+    this.#ticking = tick;
+    try {
+      return await tick;
+    } finally {
+      if (this.#ticking === tick) this.#ticking = undefined;
+    }
+  }
+
+  async #tick(): Promise<boolean> {
     const document = await this.#load();
     if (!document.enabled || document.enabledAt === undefined) {
       this.#pass = undefined;
@@ -161,14 +182,17 @@ export class HostArchiveRetentionCoordinator {
     const newest = await this.#catalog.readLatestSessionMetadataTime();
     if (newest !== undefined && now < newest) return this.#pause(now);
 
-    this.#pass ??= {
-      seen: new Set(),
-      deleted: 0,
-      skippedBusy: 0,
-      needsReview: 0,
-      failed: 0,
-      bytes: 0,
-    };
+    if (this.#pass?.revision !== setting.revision) {
+      this.#pass = {
+        revision: setting.revision,
+        seen: new Set(),
+        deleted: 0,
+        skippedBusy: 0,
+        needsReview: 0,
+        failed: 0,
+        bytes: 0,
+      };
+    }
     const pass = this.#pass;
     const page = await this.#catalog.listArchiveRetentionCandidates({
       archivedBefore: now - setting.days * ARCHIVE_RETENTION_DAY_MS,
@@ -177,33 +201,47 @@ export class HostArchiveRetentionCoordinator {
     });
     const deletedBefore = pass.deleted;
     let tried = 0;
-    let full = false;
-    for (const candidate of page) {
-      const family = sessionRevisionFamilyId(candidate.header);
-      if (!pass.seen.has(family)) {
-        if (tried === ARCHIVE_RETENTION_FAMILIES_PER_TICK) {
-          full = true;
-          break;
-        }
-        tried += 1;
-        pass.seen.add(family);
-        tally(
-          pass,
-          await this.#retirement.removeForRetention(
-            { sessionId: candidate.header.id, expectedRevision: candidate.revision },
-            (plan) => this.#guard(plan, setting),
-          ),
-        );
+    let stopped = false;
+    for (const row of page) {
+      // Draining or a pending setting change: stop before the next family.
+      if (this.#draining || this.#changing > 0) {
+        stopped = true;
+        break;
       }
+      if ('undecodable' in row) {
+        // A row that no longer decodes is counted once and passed over.
+        if (!pass.seen.has(`row:${row.sessionId}`)) {
+          pass.seen.add(`row:${row.sessionId}`);
+          pass.failed += 1;
+        }
+      } else {
+        const family = sessionRevisionFamilyId(row.header);
+        if (!pass.seen.has(family)) {
+          if (tried === ARCHIVE_RETENTION_FAMILIES_PER_TICK) {
+            stopped = true;
+            break;
+          }
+          tried += 1;
+          pass.seen.add(family);
+          tally(
+            pass,
+            await this.#retirement.removeForRetention(
+              { sessionId: row.header.id, expectedRevision: row.revision },
+              (plan) => this.#guard(plan, setting),
+            ),
+          );
+        }
+      }
+      const sessionId = 'undecodable' in row ? row.sessionId : row.header.id;
       pass.cursor = {
-        ...(candidate.archivedAt === undefined ? {} : { archivedAt: candidate.archivedAt }),
-        sessionId: candidate.header.id,
+        ...(row.archivedAt === undefined ? {} : { archivedAt: row.archivedAt }),
+        sessionId,
       };
     }
-    if (full || page.length === CANDIDATE_PAGE) {
+    if (stopped || page.length === CANDIDATE_PAGE) {
       // A deletion is recorded as it happens, not only when the pass ends.
       if (pass.deleted > deletedBefore) await this.#record(now, pass);
-      return true;
+      return !this.#draining;
     }
     if (this.#pass === pass) this.#pass = undefined;
     await this.#finishPass(now, pass);
@@ -213,44 +251,33 @@ export class HostArchiveRetentionCoordinator {
   /**
    * Runs under the removal admission, after the plan is stable and before any
    * retirement work: anything that changed since the sweep read the task keeps
-   * it for this pass.
+   * it for this pass. Every setting change moves the revision.
    */
   async #guard(
     plan: RetentionRemovalPlan,
     setting: EnabledSetting,
   ): Promise<RetentionHoldReason | undefined> {
-    const current = this.#document;
-    if (
-      this.#changing > 0 ||
-      !current?.enabled ||
-      current.revision !== setting.revision ||
-      current.days !== setting.days ||
-      current.enabledAt !== setting.enabledAt
-    ) {
+    if (this.#changing > 0 || this.#document?.revision !== setting.revision) {
       return 'ineligible';
     }
     if (plan.remove.some(({ header }) => !header.isArchived || header.isFlagged)) {
       return 'ineligible';
     }
-    const archivedAt = await this.#catalog.readSessionArchiveTimes(
-      plan.remove.map(({ header }) => header.id),
+    // The archive time through the reader `requireArchivedForMs` judges by.
+    const archivedAt = await Promise.all(
+      plan.remove.map(
+        async ({ header }) => (await this.#catalog.readCatalogRecord(header.id)).summary.archivedAt,
+      ),
     );
     const now = this.#now();
     if (now < this.#observedAt) return 'ineligible';
     // A family is as young as its most recently archived member.
     const start = Math.max(
-      ...plan.remove.map(({ header }) =>
-        archiveRetentionClockStart(archivedAt.get(header.id), setting.enabledAt),
-      ),
+      ...archivedAt.map((time) => archiveRetentionClockStart(time, setting.enabledAt)),
     );
     if (now <= archiveRetentionDeadline(start, setting.days)) return 'ineligible';
     // Unattended cleanup is more conservative than a manual delete.
-    if (
-      plan.archiveSessionIds.length > 0 ||
-      plan.remove.some(({ header }) => header.subagentWorkspace !== undefined)
-    ) {
-      return 'needs_review';
-    }
+    if (plan.archiveSessionIds.length > 0 || plan.worktreeCount > 0) return 'needs_review';
     return undefined;
   }
 
@@ -303,34 +330,39 @@ export class HostArchiveRetentionCoordinator {
             ...(pass.bytes === undefined ? {} : { bytes: pass.bytes }),
           }
         : undefined;
-    return this.#update((document) => ({
-      ...document,
-      latest: {
-        ...document.latest,
-        lastSweep,
-        ...(lastDeletion ? { lastDeletion } : {}),
-      },
-    }));
+    return this.#serialized(async () => {
+      const document = await this.#load();
+      // A pass belongs to the setting it started under; a newer one starts afresh.
+      if (document.revision !== pass.revision) return;
+      await this.#write({
+        ...document,
+        latest: {
+          ...document.latest,
+          lastSweep,
+          ...(lastDeletion ? { lastDeletion } : {}),
+        },
+      });
+    });
   }
 
-  async #query(
-    input: StorageRetentionQueryInput,
-  ): Promise<OperationOutcome<'storage.retention.query'>> {
+  async #query(): Promise<OperationOutcome<'storage.retention.query'>> {
     if (this.#draining) return draining();
     try {
       const document = await this.#load();
-      const now = this.#now();
-      const preview =
-        input.previewDays !== undefined
-          ? await this.#preview(now, input.previewDays)
-          : document.enabled && document.enabledAt !== undefined
-            ? await this.#preview(document.enabledAt, document.days)
-            : undefined;
+      const enabledAt = document.enabled ? document.enabledAt : undefined;
+      const { families, firstStart } = await this.#catalog.countArchiveRetentionCandidates(
+        enabledAt ?? this.#now(),
+      );
       return {
         ok: true,
         result: {
           ...settingOf(document),
-          ...(preview ? { preview } : {}),
+          preview: {
+            count: families,
+            ...(enabledAt !== undefined && families > 0 && firstStart !== undefined
+              ? { eligibleAt: archiveRetentionDeadline(firstStart, document.days) }
+              : {}),
+          },
           ...(document.latest?.lastSweep ? { lastSweep: document.latest.lastSweep } : {}),
           ...(document.latest?.lastDeletion ? { lastDeletion: document.latest.lastDeletion } : {}),
         },
@@ -344,42 +376,13 @@ export class HostArchiveRetentionCoordinator {
     }
   }
 
-  /**
-   * Every current candidate, counted by family, and when the first becomes
-   * eligible under a policy enabled at `enabledAt`. The conservative skips a
-   * sweep applies to worktrees and active subtasks are not applied here.
-   */
-  async #preview(enabledAt: number, days: ArchiveRetentionDays): Promise<StorageRetentionPreview> {
-    const starts = new Map<string, number>();
-    let after: { readonly archivedAt?: number; readonly sessionId: string } | undefined;
-    for (;;) {
-      const page = await this.#catalog.listArchiveRetentionCandidates({
-        ...(after ? { after } : {}),
-        limit: PREVIEW_PAGE,
-      });
-      for (const candidate of page) {
-        const family = sessionRevisionFamilyId(candidate.header);
-        const start = archiveRetentionClockStart(candidate.archivedAt, enabledAt);
-        starts.set(family, Math.max(starts.get(family) ?? start, start));
-      }
-      const last = page.at(-1);
-      if (page.length < PREVIEW_PAGE || !last) break;
-      after = {
-        ...(last.archivedAt === undefined ? {} : { archivedAt: last.archivedAt }),
-        sessionId: last.header.id,
-      };
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    let first: number | undefined;
-    for (const start of starts.values()) first = Math.min(first ?? start, start);
-    if (first === undefined) return { count: 0 };
-    return { count: starts.size, eligibleAt: archiveRetentionDeadline(first, days) };
-  }
-
   async #set(input: StorageRetentionSetInput): Promise<OperationOutcome<'storage.retention.set'>> {
     if (this.#draining) return draining();
     this.#changing += 1;
     try {
+      // A family admitted under the current setting finishes, and is recorded,
+      // before the setting changes; nothing new is admitted meanwhile.
+      await this.#ticking?.catch(() => undefined);
       return await this.#serialized(async () => {
         const current = await this.#load();
         if (current.revision !== input.expectedRevision) {
@@ -396,15 +399,26 @@ export class HostArchiveRetentionCoordinator {
           return { ok: true, result: { kind: 'committed', setting: settingOf(current) } } as const;
         }
         // Any change restarts the clock: enabling, or new days while enabled.
-        const { enabledAt: _previous, ...rest } = current;
+        // A clock behind a time already recorded never backdates the deadline.
+        const newest = input.enabled
+          ? await this.#catalog.readLatestSessionMetadataTime()
+          : undefined;
         const now = this.#now();
+        const enabledAt = Math.max(now, this.#observedAt, newest ?? 0);
         this.#observedAt = Math.max(this.#observedAt, now);
+        const { enabledAt: _previous, latest, ...rest } = current;
+        const lastSweep = latest?.lastSweep && withoutPause(latest.lastSweep);
+        const nextLatest = {
+          ...(lastSweep ? { lastSweep } : {}),
+          ...(latest?.lastDeletion ? { lastDeletion: latest.lastDeletion } : {}),
+        };
         const next: ArchiveRetentionDocument = {
           ...rest,
           revision: current.revision + 1,
           enabled: input.enabled,
           days: input.days,
-          ...(input.enabled ? { enabledAt: now } : {}),
+          ...(input.enabled ? { enabledAt } : {}),
+          ...(Object.keys(nextLatest).length > 0 ? { latest: nextLatest } : {}),
         };
         await this.#write(next);
         this.#pass = undefined;
@@ -435,18 +449,14 @@ export class HostArchiveRetentionCoordinator {
   }
 
   async #write(next: ArchiveRetentionDocument): Promise<void> {
-    const document: ArchiveRetentionDocument = {
-      ...next,
-      ...(this.#observedAt > (next.observedAt ?? 0) ? { observedAt: this.#observedAt } : {}),
-    };
     try {
-      await this.#store.write(document);
+      await this.#store.write(next);
     } catch (error) {
-      // The file may or may not hold `document`; read it again before trusting either.
+      // The file may or may not hold `next`; read it again before trusting either.
       this.#document = undefined;
       throw error;
     }
-    this.#document = document;
+    this.#document = next;
   }
 
   #serialized<T>(operation: () => Promise<T>): Promise<T> {
@@ -476,10 +486,19 @@ export class HostArchiveRetentionCoordinator {
       }
       document = DISABLED;
     }
-    this.#observedAt = Math.max(this.#observedAt, document.observedAt ?? 0);
+    this.#observedAt = Math.max(
+      this.#observedAt,
+      document.enabledAt ?? 0,
+      document.latest?.lastSweep?.at ?? 0,
+    );
     this.#document = document;
     return document;
   }
+}
+
+function withoutPause(sweep: ArchiveRetentionSweep): ArchiveRetentionSweep {
+  const { paused: _paused, ...rest } = sweep;
+  return rest;
 }
 
 function settingOf(document: ArchiveRetentionDocument): StorageRetentionSetting {

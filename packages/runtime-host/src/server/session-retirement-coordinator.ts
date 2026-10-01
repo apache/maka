@@ -188,6 +188,8 @@ export interface RetentionRemovalPlan {
   readonly remove: readonly SessionHeaderSnapshot[];
   /** Still-active subtasks the removal would move to the archive. */
   readonly archiveSessionIds: readonly string[];
+  /** Worktrees cleanup would retire, counted exactly as the removal preview counts them. */
+  readonly worktreeCount: number;
 }
 
 /** Why a sweep's guard kept a task: not (or no longer) eligible, or left for manual review. */
@@ -362,9 +364,11 @@ export class HostSessionRetirementCoordinator {
     let outcome: OperationOutcome<'session.remove'>;
     try {
       outcome = await this.#removeUnder(target, async (plan) => {
+        const remove = plan.remove.sessionIds.map((id) => requireFamilyRecord(plan.remove, id));
         const reason = await guard({
-          remove: plan.remove.sessionIds.map((id) => requireFamilyRecord(plan.remove, id)),
+          remove,
           archiveSessionIds: plan.archive.sessionIds,
+          worktreeCount: this.#reclaimedWorktreeCount(remove.map(({ header }) => header)),
         });
         if (reason) throw new RetentionHold(reason);
         admitted = true;
@@ -543,15 +547,21 @@ export class HostSessionRetirementCoordinator {
             .filter((header) => header.subagentParent?.graph !== undefined)
             .map(sessionRevisionFamilyId),
         ).size,
-        // What cleanup retires: one binding per removed Session, and only
-        // through a worktree executor. A subagent Session carrying a binding
-        // cannot be a revision, so no two removed Sessions share one.
-        worktreeCount: this.#worktrees
-          ? removedHeaders.filter((header) => header.subagentWorkspace !== undefined).length
-          : 0,
+        worktreeCount: this.#reclaimedWorktreeCount(removedHeaders),
         ...(bytes === undefined ? {} : { bytes }),
       },
     };
+  }
+
+  /**
+   * What cleanup retires: one binding per removed Session, and only through a
+   * worktree executor. A subagent Session carrying a binding cannot be a
+   * revision, so no two removed Sessions share one.
+   */
+  #reclaimedWorktreeCount(removed: readonly SessionHeader[]): number {
+    return this.#worktrees
+      ? removed.filter((header) => header.subagentWorkspace !== undefined).length
+      : 0;
   }
 
   /**

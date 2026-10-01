@@ -17,13 +17,10 @@
  * under the License.
  */
 
-import type { ArchiveRetentionDays } from '@maka/core/archive-retention';
+import { ARCHIVE_RETENTION_DAY_MS, type ArchiveRetentionDays } from '@maka/core/archive-retention';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type {
-  StorageRetentionPreview,
-  StorageRetentionSetting,
-} from '@maka/runtime-host/protocol';
+import type { StorageRetentionSetting } from '@maka/runtime-host/protocol';
 import type { ConfirmInput } from '@maka/ui';
 import type { ArchiveRetentionCopy } from '../locales/archive-retention-copy.js';
 import type { StorageUsageHostTarget, StorageUsageServices } from '../ports.js';
@@ -39,23 +36,26 @@ export type ArchiveRetentionChangeResult =
   /** The setting moved on the Host since it was read; read it again. */
   | { readonly kind: 'conflict' };
 
-/** The confirm a change that starts the clock asks, stating the Host's preview. */
+/**
+ * The confirm a change that starts the clock asks. The Host counts what it
+ * covers; the date is this Client's now plus the new days, since any change
+ * restarts every clock, so it is stated as approximate.
+ */
 export function archiveRetentionConfirm(input: {
   readonly copy: ArchiveRetentionCopy;
   readonly locale: UiLocale;
   readonly current: StorageRetentionSetting;
   readonly change: ArchiveRetentionChange;
-  readonly preview: StorageRetentionPreview;
+  readonly count: number;
+  readonly now: number;
 }): ConfirmInput {
-  const { copy, preview } = input;
+  const { copy, change } = input;
   return {
     title: input.current.enabled ? copy.confirmChangeTitle : copy.confirmEnableTitle,
     description: copy.confirmDescription(
-      input.change.days,
-      preview.count,
-      preview.eligibleAt === undefined
-        ? undefined
-        : formatAbsoluteTimestamp(preview.eligibleAt, input.locale),
+      change.days,
+      input.count,
+      formatAbsoluteTimestamp(input.now + change.days * ARCHIVE_RETENTION_DAY_MS, input.locale),
     ),
     confirmLabel: input.current.enabled ? copy.confirmChange : copy.confirmEnable,
     cancelLabel: copy.cancel,
@@ -66,7 +66,7 @@ export function archiveRetentionConfirm(input: {
 /**
  * Applies one change to a Host's retention setting. A change that starts the
  * clock — enabling, or new days while enabled — is confirmed first with the
- * Host's own preview of what it would cover; turning the setting off, or
+ * Host's current count of what it would cover; turning the setting off, or
  * picking days while it is off, deletes nothing and is applied directly.
  */
 export async function applyArchiveRetentionChange(input: {
@@ -74,12 +74,12 @@ export async function applyArchiveRetentionChange(input: {
   readonly host: StorageUsageHostTarget;
   readonly current: StorageRetentionSetting;
   readonly next: ArchiveRetentionChange;
-  readonly confirm: (preview: StorageRetentionPreview, change: ArchiveRetentionChange) => Promise<boolean>;
+  readonly confirm: (count: number, change: ArchiveRetentionChange) => Promise<boolean>;
 }): Promise<ArchiveRetentionChangeResult> {
   const { current, next } = input;
   if (next.enabled) {
-    const { preview } = await input.services.loadRetention(input.host, { previewDays: next.days });
-    if (!(await input.confirm(preview ?? { count: 0 }, next))) return { kind: 'cancelled' };
+    const { preview } = await input.services.loadRetention(input.host);
+    if (!(await input.confirm(preview.count, next))) return { kind: 'cancelled' };
   }
   const result = await input.services.setRetention(input.host, {
     expectedRevision: current.revision,

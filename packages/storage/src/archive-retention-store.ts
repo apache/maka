@@ -21,6 +21,8 @@ import {
   type ArchiveRetentionDays,
   type ArchiveRetentionDeletion,
   type ArchiveRetentionSweep,
+  decodeArchiveRetentionDeletion,
+  decodeArchiveRetentionSweep,
   isArchiveRetentionDays,
 } from '@maka/core/archive-retention';
 import { runWithStorageRootLease, type StorageRootLease } from './root-authority.js';
@@ -46,8 +48,6 @@ export interface ArchiveRetentionDocument {
   readonly days: ArchiveRetentionDays;
   /** Host clock when the current setting took effect; present exactly while enabled. */
   readonly enabledAt?: number;
-  /** The latest Host time a sweep observed. A clock reading below it is a clock gone back. */
-  readonly observedAt?: number;
   readonly latest?: {
     readonly lastSweep?: ArchiveRetentionSweep;
     readonly lastDeletion?: ArchiveRetentionDeletion;
@@ -105,12 +105,12 @@ export async function readArchiveRetentionDocument(
   }
 }
 
-export function decodeArchiveRetentionDocument(value: unknown): ArchiveRetentionDocument {
+function decodeArchiveRetentionDocument(value: unknown): ArchiveRetentionDocument {
   const document = exactRecord(
     value,
     FILE,
     ['version', 'revision', 'enabled', 'days'],
-    ['enabledAt', 'observedAt', 'latest'],
+    ['enabledAt', 'latest'],
   );
   if (document.version !== VERSION) throw new Error(`${FILE} has an unsupported version`);
   if (typeof document.enabled !== 'boolean') throw new Error(`${FILE} has an invalid enabled`);
@@ -130,17 +130,18 @@ export function decodeArchiveRetentionDocument(value: unknown): ArchiveRetention
     ...(document.enabledAt === undefined
       ? {}
       : { enabledAt: count(document.enabledAt, 'enabledAt') }),
-    ...(document.observedAt === undefined
-      ? {}
-      : { observedAt: count(document.observedAt, 'observedAt') }),
     ...(latest === undefined
       ? {}
       : {
           latest: {
-            ...(latest.lastSweep === undefined ? {} : { lastSweep: decodeSweep(latest.lastSweep) }),
+            ...(latest.lastSweep === undefined
+              ? {}
+              : { lastSweep: decodeArchiveRetentionSweep(latest.lastSweep, documentError) }),
             ...(latest.lastDeletion === undefined
               ? {}
-              : { lastDeletion: decodeDeletion(latest.lastDeletion) }),
+              : {
+                  lastDeletion: decodeArchiveRetentionDeletion(latest.lastDeletion, documentError),
+                }),
           },
         }),
   };
@@ -149,35 +150,6 @@ export function decodeArchiveRetentionDocument(value: unknown): ArchiveRetention
 function encodeArchiveRetentionDocument(document: ArchiveRetentionDocument): unknown {
   // Never publish what the reader would refuse.
   return decodeArchiveRetentionDocument(JSON.parse(JSON.stringify(document)));
-}
-
-function decodeSweep(value: unknown): ArchiveRetentionSweep {
-  const sweep = exactRecord(
-    value,
-    `${FILE}.latest.lastSweep`,
-    ['at', 'deleted', 'skippedBusy', 'needsReview', 'failed'],
-    ['paused'],
-  );
-  if (sweep.paused !== undefined && sweep.paused !== true) {
-    throw new Error(`${FILE} has an invalid paused sweep`);
-  }
-  return {
-    at: count(sweep.at, 'lastSweep.at'),
-    deleted: count(sweep.deleted, 'lastSweep.deleted'),
-    skippedBusy: count(sweep.skippedBusy, 'lastSweep.skippedBusy'),
-    needsReview: count(sweep.needsReview, 'lastSweep.needsReview'),
-    failed: count(sweep.failed, 'lastSweep.failed'),
-    ...(sweep.paused === true ? { paused: true as const } : {}),
-  };
-}
-
-function decodeDeletion(value: unknown): ArchiveRetentionDeletion {
-  const deletion = exactRecord(value, `${FILE}.latest.lastDeletion`, ['at', 'count'], ['bytes']);
-  return {
-    at: count(deletion.at, 'lastDeletion.at'),
-    count: count(deletion.count, 'lastDeletion.count'),
-    ...(deletion.bytes === undefined ? {} : { bytes: count(deletion.bytes, 'lastDeletion.bytes') }),
-  };
 }
 
 function exactRecord(
@@ -206,4 +178,8 @@ function count(value: unknown, label: string): number {
     throw new Error(`${FILE} has an invalid ${label}`);
   }
   return value;
+}
+
+function documentError(message: string): Error {
+  return new Error(`${FILE}: ${message}`);
 }

@@ -259,7 +259,6 @@ import {
   type SessionTurnAccessRequest,
   type SessionRemovePreviewResult,
   type SessionStorageUsage,
-  type StorageRetentionQueryInput,
   type StorageRetentionQueryResult,
   type StorageRetentionSetInput,
   type StorageRetentionSetResult,
@@ -3751,11 +3750,8 @@ const makaBridge = {
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>> {
       return loadDesktopSessionStorageUsage(sessionIds);
     },
-    async retention(
-      input: StorageRetentionQueryInput,
-      host?: DesktopRuntimeHostRef,
-    ): Promise<StorageRetentionQueryResult> {
-      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.retention.query', input);
+    async retention(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.retention.query', {});
     },
     async setRetention(
       input: StorageRetentionSetInput,

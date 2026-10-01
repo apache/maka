@@ -159,6 +159,23 @@ export interface ArchiveRetentionCandidate extends SessionHeaderSnapshot {
   readonly archivedAt?: number;
 }
 
+/** A candidate row whose metadata no longer decodes: counted as failed and passed over. */
+export interface ArchiveRetentionUndecodableRow {
+  readonly undecodable: true;
+  readonly sessionId: string;
+  readonly archivedAt?: number;
+}
+
+export type ArchiveRetentionCandidateRow =
+  | ArchiveRetentionCandidate
+  | ArchiveRetentionUndecodableRow;
+
+/** Candidate families and the earliest clock start among them under one `enabledAt`. */
+export interface ArchiveRetentionCandidateCount {
+  readonly families: number;
+  readonly firstStart?: number;
+}
+
 /** Candidates come oldest archive first; an unknown time sorts before every known one. */
 export interface ArchiveRetentionCandidateQuery {
   /** Only rows archived before this instant, plus every row whose time is unknown. */
@@ -571,9 +588,8 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   completeSessionRetirementCleanup(sessionId: string): Promise<void>;
   listArchiveRetentionCandidates(
     query: ArchiveRetentionCandidateQuery,
-  ): Promise<ArchiveRetentionCandidate[]>;
-  /** Archive times of the given Sessions; one archived before the time was recorded is absent. */
-  readSessionArchiveTimes(sessionIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  ): Promise<ArchiveRetentionCandidateRow[]>;
+  countArchiveRetentionCandidates(enabledAt: number): Promise<ArchiveRetentionCandidateCount>;
   /** The newest time any Session metadata write or archive recorded; undefined with no Sessions. */
   readLatestSessionMetadataTime(): Promise<number | undefined>;
 }

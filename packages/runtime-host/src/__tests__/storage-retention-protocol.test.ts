@@ -41,6 +41,10 @@ const queried: StorageRetentionQueryResult = {
   lastDeletion: { at: 1_706_000_000_000, count: 2, bytes: 4096 },
 };
 
+function minimal() {
+  return { revision: 0, enabled: false, days: 30 } as const;
+}
+
 function rejects(decode: () => unknown): void {
   assert.throws(decode, RuntimeHostProtocolError);
 }
@@ -48,15 +52,17 @@ function rejects(decode: () => unknown): void {
 describe('storage retention protocol', () => {
   test('round-trips the query and set shapes', () => {
     assert.deepEqual(querySpec.decodeInput({}), {});
-    assert.deepEqual(querySpec.decodeInput({ previewDays: 90 }), { previewDays: 90 });
     assert.deepEqual(querySpec.decodeOutput(JSON.parse(JSON.stringify(queried))), queried);
-    const minimal = { revision: 0, enabled: false, days: 30 };
+    // Disabled: a count, never a date.
+    const minimal = { revision: 0, enabled: false, days: 30, preview: { count: 3 } };
     assert.deepEqual(querySpec.decodeOutput(minimal), minimal);
     const paused = {
       ...minimal,
       lastSweep: { at: 1, deleted: 0, skippedBusy: 0, needsReview: 0, failed: 0, paused: true },
       preview: { count: 0 },
     };
+    const enabledEmpty = { ...queried, preview: { count: 0 } };
+    assert.deepEqual(querySpec.decodeOutput(enabledEmpty), enabledEmpty);
     assert.deepEqual(querySpec.decodeOutput(paused), paused);
 
     const input = { expectedRevision: 3, enabled: true, days: 30 };
@@ -84,7 +90,7 @@ describe('storage retention protocol', () => {
   });
 
   test('rejects malformed inputs and results', () => {
-    rejects(() => querySpec.decodeInput({ previewDays: 45 }));
+    rejects(() => querySpec.decodeInput({ previewDays: 30 }));
     rejects(() => querySpec.decodeInput({ days: 30 }));
     rejects(() => setSpec.decodeInput({ expectedRevision: 0, enabled: true }));
     rejects(() => setSpec.decodeInput({ expectedRevision: -1, enabled: true, days: 30 }));
@@ -95,13 +101,27 @@ describe('storage retention protocol', () => {
     );
 
     // enabledAt is present exactly while enabled.
-    rejects(() => querySpec.decodeOutput({ revision: 1, enabled: true, days: 30 }));
-    rejects(() => querySpec.decodeOutput({ revision: 1, enabled: false, days: 30, enabledAt: 1 }));
+    rejects(() =>
+      querySpec.decodeOutput({ revision: 1, enabled: true, days: 30, preview: { count: 0 } }),
+    );
+    rejects(() =>
+      querySpec.decodeOutput({
+        revision: 1,
+        enabled: false,
+        days: 30,
+        enabledAt: 1,
+        preview: { count: 0 },
+      }),
+    );
+    // The preview is always there.
+    const { preview: _preview, ...withoutPreview } = queried;
+    rejects(() => querySpec.decodeOutput(withoutPreview));
     rejects(() => querySpec.decodeOutput({ ...queried, days: 7 }));
     rejects(() => querySpec.decodeOutput({ ...queried, unknown: true }));
-    // A preview with tasks says when; one without says nothing.
+    // An enabled preview with tasks says when; one without tasks, or a disabled one, does not.
     rejects(() => querySpec.decodeOutput({ ...queried, preview: { count: 2 } }));
     rejects(() => querySpec.decodeOutput({ ...queried, preview: { count: 0, eligibleAt: 1 } }));
+    rejects(() => querySpec.decodeOutput({ ...minimal(), preview: { count: 2, eligibleAt: 1 } }));
     rejects(() =>
       querySpec.decodeOutput({ ...queried, lastSweep: { ...queried.lastSweep, paused: false } }),
     );

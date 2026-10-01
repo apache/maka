@@ -31,7 +31,7 @@ export function createDesktopStorageUsageServices(
     // No host argument: each task is measured by the Host that holds it, and
     // the bridge routes by the projected id for exactly that reason.
     loadSessionUsage: (sessionIds) => bridge.storage.sessionUsage(sessionIds),
-    loadRetention: (host, input) => bridge.storage.retention(input, host),
+    loadRetention: (host) => bridge.storage.retention(host),
     setRetention: (host, input) => bridge.storage.setRetention(input, host),
   };
 }

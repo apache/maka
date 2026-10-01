@@ -19,7 +19,6 @@
 
 import type {
   SessionStorageUsage,
-  StorageRetentionQueryInput,
   StorageRetentionQueryResult,
   StorageRetentionSetInput,
   StorageRetentionSetResult,
@@ -48,10 +47,7 @@ export interface StorageUsageServices {
     sessionIds: readonly string[],
   ): Promise<Readonly<Record<string, SessionStorageUsage>>>;
   /** One Host's retention setting, its preview and its latest results. */
-  loadRetention(
-    host: StorageUsageHostTarget,
-    input: StorageRetentionQueryInput,
-  ): Promise<StorageRetentionQueryResult>;
+  loadRetention(host: StorageUsageHostTarget): Promise<StorageRetentionQueryResult>;
   /** The Desktop's only way to change that setting. */
   setRetention(
     host: StorageUsageHostTarget,

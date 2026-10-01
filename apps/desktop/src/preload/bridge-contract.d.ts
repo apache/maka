@@ -158,7 +158,6 @@ import type {
   ContextDiagnosticsResult,
   SessionRemovePreviewResult,
   SessionStorageUsage,
-  StorageRetentionQueryInput,
   StorageRetentionQueryResult,
   StorageRetentionSetInput,
   StorageRetentionSetResult,
@@ -1851,10 +1850,7 @@ export interface MakaBridge {
      */
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
     /** One Runtime Host's archived-task retention setting, its preview and its latest results. */
-    retention(
-      input: StorageRetentionQueryInput,
-      host?: DesktopRuntimeHostRef,
-    ): Promise<StorageRetentionQueryResult>;
+    retention(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult>;
     /** Changes that setting, fenced by the revision the caller read. The Host stamps the time. */
     setRetention(
       input: StorageRetentionSetInput,
