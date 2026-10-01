@@ -86,6 +86,7 @@ export * from './external-session.js';
 export * from './message.js';
 export * from './queue-mutation.js';
 export * from './operations.js';
+export * from './storage-retention.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';
@@ -104,7 +105,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 202 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 204 as const;
+// 203: Host-owned opt-in retention query/set and automatic archived-task cleanup.
 // 202: `session.remove.preview` takes a bounded list of Sessions and reports the
 // child tasks, worktrees and optionally the bytes their removal would delete;
 // `session.remove` takes `requireArchivedForMs` and may answer `too_recent`.

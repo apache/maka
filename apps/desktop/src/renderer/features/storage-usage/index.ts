@@ -24,3 +24,5 @@ export { StorageUsageSection } from './ui/storage-usage-section.js';
 export { TaskStorageSize } from './ui/task-storage-size.js';
 export { StorageUsageServicesProvider } from './services-context.js';
 export type { StorageUsageHostTarget, StorageUsageServices } from './ports.js';
+
+export { StorageRetentionSection } from './ui/storage-retention-section.js';

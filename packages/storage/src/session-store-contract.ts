@@ -394,6 +394,12 @@ export interface CoordinationTranscriptIndexState {
 }
 
 export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
+  listRetentionCandidates(input: {
+    cutoff: number;
+    after?: string;
+    limit: number;
+  }): Promise<{ sessionIds: string[]; hasMore: boolean }>;
+
   readCoordinationTranscriptIndexState(): Promise<CoordinationTranscriptIndexState>;
   appendCoordinationTranscriptIndex(
     records: readonly CoordinationTranscriptReference[],

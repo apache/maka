@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { SessionStorageUsage, StorageUsageQueryResult } from '@maka/runtime-host/protocol';
+import type { SessionStorageUsage, StorageUsageQueryResult, StorageRetentionQueryResult, StorageRetentionSetInput, StorageRetentionPolicy } from '@maka/runtime-host/protocol';
 
 /** The Runtime Host a Settings page is pointed at, stated structurally. */
 export interface StorageUsageHostTarget {
@@ -30,6 +30,8 @@ export interface StorageUsageHostTarget {
  * measurements. Nothing here reclaims or deletes data.
  */
 export interface StorageUsageServices {
+  loadRetention?(host: StorageUsageHostTarget): Promise<StorageRetentionQueryResult>;
+  setRetention?(host: StorageUsageHostTarget, input: StorageRetentionSetInput): Promise<StorageRetentionPolicy>;
   /** One Runtime Host's State Root footprint. */
   loadUsage(host: StorageUsageHostTarget): Promise<StorageUsageQueryResult>;
   /**

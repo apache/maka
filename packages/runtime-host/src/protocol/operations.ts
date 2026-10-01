@@ -64,6 +64,7 @@ import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { PROMPT_SUGGESTION_OPERATION_SPECS } from './prompt-suggestions.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
+import { STORAGE_RETENTION_OPERATION_SPECS } from './storage-retention.js';
 import { STORAGE_USAGE_OPERATION_SPECS } from './storage-usage.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
@@ -234,6 +235,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SKILL_CATALOG_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,
   STORAGE_USAGE_OPERATION_SPECS,
+  STORAGE_RETENTION_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
   OAUTH_OPERATION_SPECS,
   EXTERNAL_AGENT_SETUP_OPERATION_SPECS,
@@ -359,6 +361,8 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'skill.catalog.mutate',
   'skill.catalog.preview-update',
   'skill.catalog.query',
+  'storage.retention.query',
+  'storage.retention.set',
   'storage.usage.query',
   'storage.usage.sessions.query',
   'subscription.close',

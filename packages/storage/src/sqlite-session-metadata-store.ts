@@ -1498,6 +1498,52 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async listRetentionCandidates(input: {
+    cutoff: number;
+    after?: string;
+    limit: number;
+  }): Promise<{ sessionIds: string[]; hasMore: boolean }> {
+    this.assertOpen();
+    if (
+      !Number.isSafeInteger(input.cutoff) ||
+      input.cutoff < 0 ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 8
+    ) {
+      throw new Error('Invalid retention candidate bounds');
+    }
+    const role = sqliteOrdinarySessionRolePredicate();
+    const rows = this.db
+      .prepare(`
+      SELECT MIN(metadata.session_id) AS session_id
+      FROM session_metadata metadata
+      WHERE metadata.is_flagged = 0 AND metadata.is_archived = 1
+        AND (metadata.archived_at IS NULL OR metadata.archived_at <= ?)
+        AND ${role.sql}
+        AND COALESCE(json_extract(metadata.payload_json, '$.conversationCopy.state'), '') != 'preparing'
+        AND COALESCE(json_extract(metadata.payload_json, '$.revisionState'), '') != 'preparing'
+        AND (metadata.subagent_parent_session_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM session_metadata parent WHERE parent.session_id = metadata.subagent_parent_session_id
+        ))
+        AND NOT EXISTS (
+          SELECT 1 FROM session_metadata member
+          WHERE COALESCE(member.revision_root_session_id, member.session_id) = COALESCE(metadata.revision_root_session_id, metadata.session_id)
+            AND (member.is_flagged = 1 OR member.is_archived = 0)
+        )
+      GROUP BY COALESCE(metadata.revision_root_session_id, metadata.session_id)
+      HAVING MIN(metadata.session_id) > ?
+      ORDER BY session_id LIMIT ?
+    `)
+      .all(input.cutoff, ...role.parameters, input.after ?? '', input.limit + 1) as unknown as {
+      session_id: string;
+    }[];
+    return {
+      sessionIds: rows.slice(0, input.limit).map((row) => row.session_id),
+      hasMore: rows.length > input.limit,
+    };
+  }
+
   async readCatalogRevision(): Promise<SessionCatalogRevisionState> {
     this.assertOpen();
     return this.readCatalogRevisionSync();

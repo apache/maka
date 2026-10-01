@@ -27,6 +27,8 @@ export function createDesktopStorageUsageServices(
   bridge: DesktopStorageUsageBridge = window.maka,
 ): StorageUsageServices {
   return {
+    loadRetention: (host) => bridge.storage.retentionQuery(host),
+    setRetention: (host, input) => bridge.storage.retentionSet(input, host),
     loadUsage: (host) => bridge.storage.usage(host),
     // No host argument: each task is measured by the Host that holds it, and
     // the bridge routes by the projected id for exactly that reason.

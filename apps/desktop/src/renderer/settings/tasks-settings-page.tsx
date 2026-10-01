@@ -31,7 +31,7 @@ import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import type { SessionCatalogController } from '../application/contracts/session-catalog/session-catalog-state.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { getStorageUsageCopy } from '../locales/storage-usage-copy.js';
-import { TaskStorageSize } from '../features/storage-usage/index.js';
+import { TaskStorageSize, StorageRetentionSection } from '../features/storage-usage/index.js';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { isOrphanedSubagentTask } from './task-catalog-rows';
 
@@ -89,6 +89,7 @@ export function TasksSettingsPage(
   if (props.scope.rows.length === 0) {
     return (
       <SettingsPage>
+        <StorageRetentionSection />
         <EmptyState title={copy.emptyTitle} description={copy.emptyBody} />
       </SettingsPage>
     );
@@ -96,6 +97,7 @@ export function TasksSettingsPage(
 
   return (
     <SettingsPage as="section" aria-label={copy.listAria}>
+      <StorageRetentionSection />
       {props.scope.controls}
       <SettingsSection description={getStorageUsageCopy(locale).taskSizeNote}>
         {visible.length === 0 ? (

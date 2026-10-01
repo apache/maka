@@ -55,6 +55,8 @@ import {
   AppUpdateServicesProvider,
   type AppUpdateServices,
 } from '../../src/renderer/features/app-update/index.js';
+import { StorageUsageServicesProvider, type StorageUsageServices } from '../../src/renderer/features/storage-usage/index.js';
+import type { StorageRetentionPolicy } from '@maka/runtime-host/protocol';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -1970,11 +1972,27 @@ function fieldChrome(element: HTMLElement) {
  * reach a provider its own component renders.
  */
 function SettingsStory(props: SettingsStoryProps) {
+  // IO fixture for the actual production feature, on the existing Settings frame.
+  const [storageServices] = useState<StorageUsageServices>(() => {
+    let policy: StorageRetentionPolicy = { enabled: false, days: 30, enabledAt: null, revision: 0 };
+    return {
+      loadUsage: async () => ({ measuredAt: Date.now(), totals: [], reclaimableBytes: 0, worktreeCount: 0 }),
+      loadSessionUsage: async () => ({}),
+      loadRetention: async () => ({ policy, preview: { count: policy.enabled ? archivedTaskSessions.length : 0, eligibleAt: policy.enabledAt === null ? null : policy.enabledAt + policy.days * 24 * 60 * 60 * 1000 }, lastSweep: null, lastDeletion: null }),
+      setRetention: async (_host, input) => {
+        if (input.expectedRevision !== policy.revision) throw new Error('Retention revision changed');
+        policy = { enabled: input.enabled, days: input.days, enabledAt: input.enabled ? Date.now() : null, revision: policy.revision + 1 };
+        return policy;
+      },
+    };
+  });
   return (
     <ToastProvider>
       <AppUpdateServicesProvider services={settingsAppUpdateServices}>
         <AppUpdateProvider>
-          <SettingsStoryFrame {...props} />
+          <StorageUsageServicesProvider services={storageServices}>
+            <SettingsStoryFrame {...props} />
+          </StorageUsageServicesProvider>
         </AppUpdateProvider>
       </AppUpdateServicesProvider>
     </ToastProvider>

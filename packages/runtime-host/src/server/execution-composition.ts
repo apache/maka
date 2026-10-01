@@ -241,6 +241,8 @@ import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
+import { HostStorageRetentionPolicy } from './storage-retention-policy.js';
+import { HostStorageRetentionCoordinator } from './storage-retention-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
 import { HostStorageUsageCoordinator } from './storage-usage-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
@@ -2845,7 +2847,14 @@ export async function createExecutionRuntimeHostComposition(
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     const storageUsage = new HostStorageUsageCoordinator({ footprint: storage.footprint });
+    const storageRetention = await HostStorageRetentionCoordinator.open({
+      policy: await HostStorageRetentionPolicy.open(context.owner.capability.canonicalPath),
+      stores: stores.sessionStore,
+      retirement: sessionRetirement,
+      stateRoot: context.owner.capability.canonicalPath,
+    });
     const storageMaintenance = new HostStorageMaintenance({
+      retention: storageRetention,
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
       onError: (name, error) =>
@@ -2856,6 +2865,11 @@ export async function createExecutionRuntimeHostComposition(
         id: 'storage-maintenance',
         drain: [() => storageMaintenance.beginDrain()],
         close: [() => storageMaintenance.close()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'storage-retention',
+        handlers: [storageRetention.handlers],
+        drain: [() => storageRetention.beginDrain()],
       }),
       createRuntimeHostDomainModule({
         id: 'storage-usage',

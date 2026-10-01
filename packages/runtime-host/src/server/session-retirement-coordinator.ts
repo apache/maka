@@ -62,6 +62,7 @@ import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admi
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import type { RootTurnCoordinator } from './root-turn-coordinator.js';
 import type { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
+import { retentionDeadline, type StorageRetentionPolicy } from './storage-retention-policy.js';
 import { purgeSessionSidecars } from './session-sidecar-purge.js';
 import type { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
 
@@ -316,7 +317,79 @@ export class HostSessionRetirementCoordinator {
     }
   }
 
-  async #remove(input: SessionRemoveInput): Promise<OperationOutcome<'session.remove'>> {
+  async estimateRetentionBytes(sessionId: string): Promise<number | undefined> {
+    const plan = await this.#readRemovalPlanSessionIds(sessionId);
+    return this.#measureRemoved(plan.removeSessionIds);
+  }
+
+  /** Host-internal unattended removal; clients cannot weaken these guards. */
+  async removeForRetention(
+    input: SessionRemoveInput,
+    policy: StorageRetentionPolicy,
+    clockFloor = policy.enabledAt ?? 0,
+  ): Promise<'removed' | 'kept' | 'needs_review' | 'busy' | 'failed'> {
+    const disposition: { value: 'eligible' | 'kept' | 'needs_review' } = { value: 'eligible' };
+    const outcome = await this.#remove(input, {
+      policy,
+      clockFloor,
+      report: (value) => {
+        disposition.value = value;
+      },
+    });
+    if (disposition.value === 'needs_review') return 'needs_review';
+    if (!outcome.ok)
+      return outcome.error.code === 'session_busy'
+        ? 'busy'
+        : ['persistence_failed', 'commit_outcome_unknown', 'internal_failure'].includes(
+              outcome.error.code,
+            )
+          ? 'failed'
+          : 'kept';
+    if (outcome.result.kind === 'removed') return 'removed';
+    return 'kept';
+  }
+
+  async #retentionDisposition(
+    plan: StableRemovalPlan,
+    policy: StorageRetentionPolicy,
+    clockFloor = policy.enabledAt ?? 0,
+  ): Promise<'eligible' | 'kept' | 'needs_review'> {
+    if (!policy.enabled) return 'kept';
+    if (plan.archive.sessionIds.length > 0) return 'needs_review';
+    for (const id of plan.remove.sessionIds) {
+      const record = await this.#stores.readCatalogRecord(id);
+      if (!record.header.isArchived || record.header.isFlagged) return 'kept';
+      if (record.header.subagentWorkspace) return 'needs_review';
+      const deadline = retentionDeadline(policy, record.summary.archivedAt);
+      if (deadline === null || this.#now() <= deadline) return 'kept';
+    }
+    return 'eligible';
+  }
+
+  async #checkRetention(
+    plan: StableRemovalPlan,
+    retention: {
+      policy: StorageRetentionPolicy;
+      clockFloor: number;
+      report: (value: 'eligible' | 'kept' | 'needs_review') => void;
+    },
+  ): Promise<'eligible' | 'kept' | 'needs_review'> {
+    const disposition =
+      this.#now() < retention.clockFloor
+        ? 'kept'
+        : await this.#retentionDisposition(plan, retention.policy);
+    retention.report(disposition);
+    return disposition;
+  }
+
+  async #remove(
+    input: SessionRemoveInput,
+    retention?: {
+      policy: StorageRetentionPolicy;
+      clockFloor: number;
+      report: (value: 'eligible' | 'kept' | 'needs_review') => void;
+    },
+  ): Promise<OperationOutcome<'session.remove'>> {
     let probe;
     try {
       probe = await this.#stores.probeSessionRemoval(input.sessionId);
@@ -324,6 +397,7 @@ export class HostSessionRetirementCoordinator {
       return removeFailure('persistence_failed', 'Session removal state is unavailable');
     }
     if (probe.kind === 'removed') {
+      if (retention) return removeOutcome({ kind: 'too_recent', sessionId: input.sessionId });
       try {
         this.#scheduleCleanup(
           await this.#stores.listPendingSessionRetirementCleanupIds(input.sessionId),
@@ -354,6 +428,9 @@ export class HostSessionRetirementCoordinator {
           }
         }
 
+        if (retention && (await this.#checkRetention(plan, retention)) !== 'eligible') {
+          return removeOutcome({ kind: 'too_recent', sessionId: input.sessionId });
+        }
         let removeHandles: RetirementHandles | undefined;
         let archiveHandles: RetirementHandles | undefined;
         let committed = false;
@@ -367,6 +444,13 @@ export class HostSessionRetirementCoordinator {
           await this.#disposeBackends(allSessionIds);
           const committableRemove = await this.#refreshFamilyRecords(plan.remove);
           const committableArchive = await this.#refreshFamilyRecords(plan.archive);
+          if (retention && (await this.#checkRetention(plan, retention)) !== 'eligible') {
+            removeHandles.goal.rollback();
+            removeHandles.scheduledTasks.rollback();
+            archiveHandles?.goal.rollback();
+            archiveHandles?.scheduledTasks.rollback();
+            return removeOutcome({ kind: 'too_recent', sessionId: input.sessionId });
+          }
           const removedSessionIds = await this.#stores.removeSessionsVersioned(
             versionedFamily(committableRemove),
             versionedFamily(committableArchive),

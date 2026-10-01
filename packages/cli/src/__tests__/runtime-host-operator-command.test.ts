@@ -335,6 +335,8 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
       assert.equal(resolved.operationGrants.includes('session.prompt-suggestion.generate'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
+      assert.equal(resolved.operationGrants.includes('storage.retention.query'), true);
+      assert.equal(resolved.operationGrants.includes('storage.retention.set'), true);
     }
     assert.equal(desktop.canPublishClientCapabilities, true);
     assert.equal(desktop.operationGrants.includes('client.capability.replace'), true);

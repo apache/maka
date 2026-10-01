@@ -113,7 +113,7 @@ const SETTINGS_SECTION_SCOPES: Record<
   'bot-chat': 'client',
   search: 'runtime-host',
   usage: 'runtime-host',
-  'archived-tasks': 'client',
+  'archived-tasks': 'mixed',
   'import-tasks': 'runtime-host',
   'daily-review': 'runtime-host',
   data: 'mixed',

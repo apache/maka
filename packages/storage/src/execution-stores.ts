@@ -616,6 +616,7 @@ async function createExecutionStoresForWrite(
       listCatalogPage: (filter, cursor, limit, expectedRevision) =>
         run(() => sessionStore.listCatalogPage(filter, cursor, limit, expectedRevision)),
       listHeaders: () => run(() => sessionStore.listHeaders()),
+      listRetentionCandidates: (input) => run(() => sessionStore.listRetentionCandidates(input)),
       listForRecovery: () => run(() => sessionStore.listForRecovery()),
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readHeaderRecordSnapshot: (sessionId) =>

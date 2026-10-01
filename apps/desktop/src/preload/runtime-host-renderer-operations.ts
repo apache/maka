@@ -28,11 +28,13 @@ export const RENDERER_RUNTIME_HOST_QUERY_OPERATIONS = [
   'execution.inspect.query',
   'scheduled-task.query',
   // Read-only State Root and per-task size measurement; it reclaims nothing.
+  'storage.retention.query',
   'storage.usage.query',
   'storage.usage.sessions.query',
 ] as const satisfies readonly (keyof OperationSpecMap)[];
 
 export const RENDERER_RUNTIME_HOST_COMMAND_OPERATIONS = [
+  'storage.retention.set',
   'daily-review.mutate',
   'scheduled-task.mutate',
   'web-search.execute',

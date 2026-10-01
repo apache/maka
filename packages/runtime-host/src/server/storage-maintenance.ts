@@ -31,6 +31,8 @@ interface MaintenanceLane {
   timer?: ReturnType<typeof setTimeout>;
   pending?: Promise<void>;
   failures: number;
+  readonly activeDelayMs?: number;
+  readonly idleDelayMs?: number;
 }
 
 /** Physical cleanup is optional work, admitted only after the Host publishes Ready. */
@@ -44,6 +46,7 @@ export class HostStorageMaintenance {
     artifacts: Pick<InteractiveArtifactStoreWriter, 'reclaimUpgradeResidue'>;
     contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage'>;
     onError: (name: string, error: unknown) => void;
+    retention?: { run: (input: { maxFamilies: number }) => Promise<boolean> };
   }) {
     this.#onError = input.onError;
     let after: string | undefined;
@@ -67,6 +70,16 @@ export class HostStorageMaintenance {
         },
       },
     ];
+    if (input.retention) {
+      const retention = input.retention;
+      this.#lanes.push({
+        name: 'archived task retention',
+        failures: 0,
+        activeDelayMs: 1_000,
+        idleDelayMs: 15 * 60_000,
+        run: () => retention.run({ maxFamilies: 8 }),
+      });
+    }
     const context = input.contextOffload;
     if (context)
       this.#lanes.push({
@@ -86,7 +99,7 @@ export class HostStorageMaintenance {
   start(): void {
     if (this.#started || this.#draining) return;
     this.#started = true;
-    for (const lane of this.#lanes) this.#schedule(lane, ACTIVE_DELAY_MS);
+    for (const lane of this.#lanes) this.#schedule(lane, lane.activeDelayMs ?? ACTIVE_DELAY_MS);
   }
 
   beginDrain(): void {
@@ -113,7 +126,7 @@ export class HostStorageMaintenance {
     try {
       const more = await lane.run();
       lane.failures = 0;
-      delay = more ? ACTIVE_DELAY_MS : IDLE_DELAY_MS;
+      delay = more ? (lane.activeDelayMs ?? ACTIVE_DELAY_MS) : (lane.idleDelayMs ?? IDLE_DELAY_MS);
     } catch (error) {
       lane.failures = Math.min(lane.failures + 1, 7);
       delay = Math.min(IDLE_DELAY_MS, 1000 * 2 ** (lane.failures - 1));

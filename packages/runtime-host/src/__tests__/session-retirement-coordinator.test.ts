@@ -57,6 +57,142 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Host Session retirement coordinator', () => {
+  test('retention uses family pins, exact deadlines, current archive time, and Host retirement guards', async () => {
+    await withHarness(async (harness) => {
+      await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      const archivedAt = (await harness.store.readCatalogRecord(harness.rootId)).summary
+        .archivedAt!;
+      const policy = { enabled: true, days: 30 as const, enabledAt: archivedAt, revision: 1 };
+      const deadline = archivedAt + 30 * 24 * 60 * 60 * 1000;
+      const remove = async () =>
+        harness.coordinator.removeForRetention(
+          {
+            sessionId: harness.rootId,
+            expectedRevision: (await harness.store.readHeaderRecordSnapshot(harness.rootId))
+              .revision,
+          },
+          policy,
+          deadline,
+        );
+      harness.now = deadline;
+      assert.equal(await remove(), 'kept');
+      harness.now++;
+      await harness.store.updateHeader(harness.revisionId, { isFlagged: true });
+      assert.equal(await remove(), 'kept');
+      assert.deepEqual(
+        (await harness.store.listRetentionCandidates({ cutoff: deadline, limit: 8 })).sessionIds,
+        [],
+      );
+      await harness.store.updateHeader(harness.revisionId, { isFlagged: false });
+      const candidates = await harness.store.listRetentionCandidates({
+        cutoff: deadline,
+        limit: 8,
+      });
+      assert.equal(candidates.sessionIds.length, 1);
+      harness.blockers.message.add(harness.rootId);
+      assert.equal(await remove(), 'busy');
+      harness.blockers.message.clear();
+      harness.now = deadline - 1;
+      assert.equal(await remove(), 'kept');
+      harness.now = deadline + 1;
+      assert.equal(await remove(), 'removed');
+      assert.equal((await harness.store.probeSessionRemoval(harness.rootId)).kind, 'removed');
+    });
+  });
+
+  test('retention never reclaims a bound worktree', async () => {
+    await withHarness(async (harness) => {
+      const childId = await createClosedSubagent(harness, harness.rootId, 98, {
+        schemaVersion: 1,
+        kind: 'git_worktree',
+        leaseId: `subagent_worktree_${'a'.repeat(32)}`,
+        gitCommonDir: '/tmp/project/.git',
+        worktreePath: '/tmp/maka-subagent-worktree',
+        branch: `maka/subagent/${'a'.repeat(32)}`,
+        baseCommit: 'b'.repeat(40),
+      });
+      await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: childId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      const archivedAt = (await harness.store.readCatalogRecord(childId)).summary.archivedAt!;
+      harness.now = archivedAt + 31 * 24 * 60 * 60 * 1000;
+      const target = await harness.store.readHeaderRecordSnapshot(childId);
+      assert.equal(
+        await harness.coordinator.removeForRetention(
+          { sessionId: childId, expectedRevision: target.revision },
+          { enabled: true, days: 30, enabledAt: archivedAt, revision: 1 },
+        ),
+        'needs_review',
+      );
+      assert.equal((await harness.store.probeSessionRemoval(childId)).kind, 'present');
+    });
+  });
+
+  test('retention restores cancel deadlines and re-archive starts fresh', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 1_000 });
+    await withHarness(async (harness) => {
+      const lifecycle = async (state: 'active' | 'archived') =>
+        harness.coordinator.handlers['session.lifecycle.set'](
+          { sessionId: harness.rootId, state },
+          CONNECTION_CONTEXT,
+        );
+      await lifecycle('archived');
+      const policy = { enabled: true, days: 30 as const, enabledAt: 1_000, revision: 1 };
+      const remove = async () =>
+        harness.coordinator.removeForRetention(
+          {
+            sessionId: harness.rootId,
+            expectedRevision: (await harness.store.readHeaderRecordSnapshot(harness.rootId))
+              .revision,
+          },
+          policy,
+        );
+      t.mock.timers.tick(30 * 24 * 60 * 60 * 1000 + 1);
+      await lifecycle('active');
+      assert.equal(await remove(), 'kept');
+      await lifecycle('archived');
+      assert.equal(await remove(), 'kept');
+      t.mock.timers.tick(30 * 24 * 60 * 60 * 1000 + 1);
+      assert.equal(await remove(), 'removed');
+    });
+  });
+  test('retention keeps active subtasks for review and excludes parented subtasks from candidates', async () => {
+    await withHarness(async (harness) => {
+      await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      const childId = await createClosedSubagent(harness, harness.rootId, 99);
+      const archivedAt = (await harness.store.readCatalogRecord(harness.rootId)).summary
+        .archivedAt!;
+      harness.now = archivedAt + 31 * 24 * 60 * 60 * 1000;
+      const policy = { enabled: true, days: 30 as const, enabledAt: archivedAt, revision: 1 };
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+      assert.equal(
+        await harness.coordinator.removeForRetention(
+          { sessionId: harness.rootId, expectedRevision: target.revision },
+          policy,
+        ),
+        'needs_review',
+      );
+      assert.equal((await harness.store.readHeaderSnapshot(childId)).isArchived, false);
+      await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: childId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(
+        (
+          await harness.store.listRetentionCandidates({ cutoff: harness.now, limit: 8 })
+        ).sessionIds.includes(childId),
+        false,
+      );
+    });
+  });
+
   test('retirement finalizes admitted patches and fences late artifact publication', async (t) => {
     await withHarness(async (harness) => {
       const capability = await resolveStorageRoot({

@@ -159,6 +159,9 @@ import type {
   SessionRemovePreviewResult,
   SessionStorageUsage,
   StorageUsageQueryResult,
+  StorageRetentionQueryResult,
+  StorageRetentionPolicy,
+  StorageRetentionSetInput,
 } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
@@ -1853,6 +1856,8 @@ export interface MakaBridge {
     test(input: { provider?: WebSearchProvider; apiKey?: string }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
   };
   storage: {
+    retentionQuery(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult>;
+    retentionSet(input: StorageRetentionSetInput, host?: DesktopRuntimeHostRef): Promise<StorageRetentionPolicy>;
     /** One Runtime Host's State Root footprint. Read-only; nothing is reclaimed. */
     usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult>;
     /**

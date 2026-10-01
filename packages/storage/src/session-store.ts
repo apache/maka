@@ -611,6 +611,15 @@ class SqliteSessionStore implements SessionAuthorityStore {
       .map(toCatalogRecordSummary);
   }
 
+  async listRetentionCandidates(input: {
+    cutoff: number;
+    after?: string;
+    limit: number;
+  }): Promise<{ sessionIds: string[]; hasMore: boolean }> {
+    await this.ensureCatalogProjectionReadable();
+    return this.metadata.listRetentionCandidates(input);
+  }
+
   async listCatalogPage(
     filter: SessionListFilter | undefined,
     cursor: SessionCatalogPageCursor | undefined,

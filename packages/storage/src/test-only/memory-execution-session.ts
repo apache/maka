@@ -435,6 +435,9 @@ export function createMemorySessionStore(
   const read = <T>(fn: (s: MemoryState) => T) => a.read(fn);
   const write = <T>(name: string, fn: (s: MemoryState) => T) => a.write(name, fn);
   const store: SessionAuthorityStore = {
+    listRetentionCandidates: async () => {
+      throw new Error('Retention SQL is unavailable in memory execution store');
+    },
     ready: async () => {},
     close: async () => {},
     create: async (input, initial) =>
