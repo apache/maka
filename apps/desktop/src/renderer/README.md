@@ -149,8 +149,10 @@ cannot be attributed. Type-only imports and type positions are not recorded.
 Deep feature imports stay with the zone rules. `--write` regenerates the record
 and the tree must match it exactly. Against the base the record may only
 shrink, with two exceptions the CLI lists as it admits them. A new root use
-passes when the same change adds that export to the entry's public surface,
-measured on the materialized base tree. A use may also move one way out of
+passes when the same change adds that binding to the entry's public surface,
+measured on the materialized base tree. Bindings are compared by their
+declaring module and local name, so a new alias of an export the base entry
+already had is not new. A use may also move one way out of
 `appShell` into `composition` or `bootstrap` when `appShell` gives it up in the
 same change; a copy or the reverse move fails. Taking an export the base entry
 already had fails, and so does removing the record. This is a module-graph rule:
@@ -247,7 +249,11 @@ AppShell-family bridge references and action factories from
 `legacyAppShell.files`, the rows of the Conversation README's transitional
 capability table, the hook-gate entries that lack a retained-root row, and the
 root symbol uses per zone. It only reports. These numbers fall over several
-PRs, and the existing no-growth ratchets already stop them rising.
+PRs, and the existing no-growth ratchets already stop them rising. It also
+lists the feature public symbols that legacy files in the AppShell closure
+take, and a `--base` run prints each one a change adds there. Those files are
+not a root zone and their entry edges stay free, so this is reported, never
+ratcheted.
 
 ### Retained root hooks
 
@@ -258,9 +264,13 @@ application lifecycle) or the R2 module that removes it, never both. The
 architecture checker reads the gate's `ALLOWED` literal without running or
 editing it, and fails when a gate entry has no row, when its row count differs
 from the gate's call-site count, or when a row names a hook the gate no longer
-lists. A change that moves a hook out of AppShell therefore edits the gate and
-deletes the matching rows together. The checker validates the table's shape,
-not the accuracy of each consumer or owner, which stays with review.
+lists. Where an entry has several call sites, each row's call site must name,
+in backticks, an identifier of exactly one of those calls in `app-shell.tsx`
+(a binding it declares or an identifier in its arguments), and no two rows may
+name the same call. A change that moves a hook out of AppShell therefore edits
+the gate and deletes the matching rows together. The checker validates the
+table's shape and call-site binding, not the accuracy of each consumer, owner
+or reason, which stays with review.
 
 <!-- retained-root-hooks:start -->
 | Component | Hook | Call site | Consumer | Owner | Allowed capability | Root reason | Removal |
@@ -277,8 +287,8 @@ not the accuracy of each consumer or owner, which stays with review.
 | `AppShellContent` | `useAppShellSessionUiReads` | displayed Session chrome | stop, interaction, queue, live-turn and execution chrome; Composer props | Conversation (transitional reader) | fixed-purpose reads of the displayed and owner Session | — | M3 |
 | `AppShellContent` | `useAppShellSessionWorkspace` | Session workspace | every region's requested, published and owner Session | legacy `use-app-shell-session-workspace.ts` over the Session catalog and Conversation | Session selection and the catalog controller; its transient and interaction commands leave with M3 | navigation | — |
 | `AppShellContent` | `useAppShellTurnPresentation` | `deriveTurnPresentation` | `ChatView` turn footer | application contract `turn-presentation` | derive turn presentation from the transcript projection and pending turn actions | — | M3 |
-| `AppShellContent` | `useEffect` | WorkHub enablement subscription | `workHubEnabled`, `workHubActive` | AppShell | read the client WorkHub setting and follow its changes | — | M5 |
-| `AppShellContent` | `useEffect` | onboarding connection seed | default-Host connection projection | AppShell | seed default-Host connections from the onboarding snapshot | — | M5 |
+| `AppShellContent` | `useEffect` | `setWorkHubEnabled`: WorkHub enablement subscription | `workHubEnabled`, `workHubActive` | AppShell | read the client WorkHub setting and follow its changes | — | M5 |
+| `AppShellContent` | `useEffect` | `defaultHostConnections`: onboarding connection seed | default-Host connection projection | AppShell | seed default-Host connections from the onboarding snapshot | — | M5 |
 | `AppShellContent` | `useLayoutEffect` | `openSessionInChatRef` publication | turn footer, Module Hub, titlebar parent link | AppShell | publish the current open-Session command into a ref | cross-region command | — |
 | `AppShellContent` | `useNewTaskChoice` | new-task permission choice | Composer permission control; chat actions | Conversation (transitional) | the per-draft permission choice | — | M3 |
 | `AppShellContent` | `useOnboardingSnapshot` | onboarding snapshot | hero, connection seed, readiness, send outcomes | legacy `use-onboarding-snapshot.ts` | read onboarding state from Main | — | M5 |

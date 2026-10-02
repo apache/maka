@@ -3478,6 +3478,19 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
       );
 
       await fixture.writeFiles({
+        [entry]: "export { AlphaPanel, AlphaProvider } from './ui/alpha.js';\nexport { AlphaPanel as AlphaPanelAlias } from './ui/alpha.js';\n",
+        [composition]: "import { AlphaPanelAlias, AlphaProvider } from '../features/alpha';\nexport const DesktopApplication = () => <AlphaProvider><AlphaPanelAlias /></AlphaProvider>;\n",
+      });
+      await fixture.writeLedger();
+      fixture.commit('take an existing export through a new alias');
+      const aliased = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(aliased.status, 0);
+      assert.match(
+        aliased.stderr,
+        /^- src\/renderer\/features\/alpha\/index\.ts: composition root newly uses AlphaPanelAlias, an alias of existing public export AlphaPanel;/mu,
+      );
+
+      await fixture.writeFiles({
         [entry]: "export { AlphaInspector, AlphaPanel, AlphaProvider } from './ui/alpha.js';\n",
         [composition]: "import { AlphaInspector, AlphaProvider } from '../features/alpha';\nexport const DesktopApplication = () => <AlphaProvider><AlphaInspector /></AlphaProvider>;\n",
       });
@@ -3490,6 +3503,39 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
       assert.match(
         added.stdout,
         /root symbol use admitted: src\/renderer\/features\/alpha\/index\.ts: composition AlphaInspector \(new public export\)/u,
+      );
+    });
+  });
+
+  it('reports, without ratcheting, a feature symbol newly taken in the AppShell closure', async () => {
+    await withGitFixture(async (fixture) => {
+      const appShell = 'src/renderer/app-shell.ts';
+      const helper = 'src/renderer/legacy-session-helper.ts';
+      const seed = architectureConfig({
+        rootDebt: { [RENDERER_ENTRY_PATH]: emptyDebt() },
+        ownership: [
+          { capability: 'fixture-root', targetZone: 'bootstrap', legacyPaths: [RENDERER_ENTRY_PATH] },
+          { capability: 'fixture-app-shell', targetZone: 'shell', legacyPaths: [appShell] },
+        ],
+      });
+      await fixture.writeFiles({
+        'src/renderer/features/alpha/index.ts': "export function alphaLabel() { return 'alpha'; }\n",
+        [appShell]: "import { legacySessionHelper } from './legacy-session-helper.js';\nexport const AppShell = legacySessionHelper;\n",
+        [helper]: 'export const legacySessionHelper = 1;\n',
+      });
+      await fixture.writeLedger(seed);
+      const base = fixture.commit('base');
+      await fixture.writeFiles({
+        [helper]: "import { alphaLabel } from './features/alpha/index.js';\nexport const legacySessionHelper = alphaLabel();\n",
+      });
+      await fixture.writeLedger(seed);
+      fixture.commit('the closure takes a feature symbol');
+
+      const result = fixture.runChecker(['--base', base, '--strict-base']);
+      assertPassed(result, base, 'closure growth is only reported');
+      assert.match(
+        result.stdout,
+        /AppShell closure newly uses alphaLabel from src\/renderer\/features\/alpha\/index\.ts in src\/renderer\/legacy-session-helper\.ts \(reported, not ratcheted\)/u,
       );
     });
   });
@@ -3965,10 +4011,12 @@ describe('root public symbol uses', () => {
     await withDesktopFixture(alphaFeature, (desktopRoot) => {
       const surfaces = collectFeatureEntrySurfaces(desktopRoot);
       assert.deepEqual([...surfaces.keys()], ['src/renderer/features/alpha']);
-      assert.deepEqual(
-        [...surfaces.get('src/renderer/features/alpha')].sort(),
-        ['AlphaPanel', 'AlphaProvider', 'useAlphaReads', 'useAlphaState'],
-      );
+      assert.deepEqual(Object.fromEntries(surfaces.get('src/renderer/features/alpha')), {
+        AlphaPanel: 'src/renderer/features/alpha/ui/alpha-provider.tsx#AlphaPanel',
+        AlphaProvider: 'src/renderer/features/alpha/ui/alpha-provider.tsx#AlphaProvider',
+        useAlphaReads: 'src/renderer/features/alpha/controller/alpha-reads.ts#useAlphaReads',
+        useAlphaState: 'src/renderer/features/alpha/controller/alpha-reads.ts#useAlphaState',
+      });
     });
   });
 
@@ -3982,7 +4030,10 @@ describe('root public symbol uses', () => {
     }, (desktopRoot) => {
       const config = architectureConfig({ rootSymbolUses: { [ENTRY]: { composition: ['AlphaPanel', 'AlphaProvider'] } } });
       const baseConfig = architectureConfig({ rootSymbolUses: { [ENTRY]: { composition: ['AlphaProvider'] } } });
-      const surfacesWith = (...names) => new Map([['src/renderer/features/alpha', new Set(names)]]);
+      const surfacesWith = (...names) => new Map([[
+        'src/renderer/features/alpha',
+        new Map([...collectFeatureEntrySurfaces(desktopRoot).get('src/renderer/features/alpha')].filter(([name]) => names.includes(name))),
+      ]]);
 
       assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig, baseEntrySurfaces: surfacesWith('AlphaProvider') }), []);
       assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig, baseEntrySurfaces: new Map() }), []);
@@ -4002,6 +4053,34 @@ describe('root public symbol uses', () => {
     });
   });
 
+  for (const [name, aliasExport] of [
+    ['a re-exported alias', "export { AlphaPanel as AlphaPanelAlias } from './ui/alpha-provider.js';"],
+    ['an imported and re-exported alias', "import { AlphaPanel as panel } from './ui/alpha-provider.js';\nexport { panel as AlphaPanelAlias };"],
+  ]) {
+    it(`does not admit ${name} of an existing export as a new export`, async () => {
+      await withDesktopFixture({
+        ...alphaFeature,
+        [ENTRY]: `${alphaFeature[ENTRY]}\n${aliasExport}\nexport { AlphaInspector } from './ui/alpha-inspector.js';\n`,
+        'src/renderer/features/alpha/ui/alpha-inspector.tsx': 'export function AlphaInspector() { return null; }\n',
+        [COMPOSITION]: `
+          import { AlphaInspector, AlphaPanelAlias } from '../features/alpha';
+          export function DesktopApplication() { return <><AlphaPanelAlias /><AlphaInspector /></>; }
+        `,
+      }, (desktopRoot) => {
+        const current = collectFeatureEntrySurfaces(desktopRoot).get('src/renderer/features/alpha');
+        assert.equal(current.get('AlphaPanelAlias'), current.get('AlphaPanel'));
+        const baseEntrySurfaces = new Map([[
+          'src/renderer/features/alpha',
+          new Map([...current].filter(([exported]) => !['AlphaInspector', 'AlphaPanelAlias'].includes(exported))),
+        ]]);
+        const config = architectureConfig({ rootSymbolUses: { [ENTRY]: { composition: ['AlphaInspector', 'AlphaPanelAlias'] } } });
+        assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig: architectureConfig({ rootSymbolUses: {} }), baseEntrySurfaces }), [
+          `${ENTRY}: composition root newly uses AlphaPanelAlias, an alias of existing public export AlphaPanel; only a binding the same change adds may join rootSymbolUses`,
+        ]);
+      });
+    });
+  }
+
   it('admits a use moving out of appShell, but not a copy or the reverse move', async () => {
     await withDesktopFixture({
       ...alphaFeature,
@@ -4010,7 +4089,7 @@ describe('root public symbol uses', () => {
         export function DesktopApplication() { return <AlphaPanel />; }
       `,
     }, (desktopRoot) => {
-      const baseEntrySurfaces = new Map([['src/renderer/features/alpha', new Set(['AlphaPanel', 'AlphaProvider'])]]);
+      const baseEntrySurfaces = collectFeatureEntrySurfaces(desktopRoot);
       const ratchet = (current, base) =>
         rootViolations(desktopRoot, architectureConfig({ rootSymbolUses: current }), {
           baseConfig: architectureConfig({ rootSymbolUses: base }),
@@ -4139,6 +4218,39 @@ describe('retained root hook table', () => {
     });
   }
 
+  describe('rows of a hook with several call sites', () => {
+    const appShell = {
+      'src/renderer/app-shell.tsx': `
+        import { useState } from 'react';
+        import { useToast } from '@astryxdesign/core/Toast';
+        export function AppShell() {
+          const [uiLocalePreference] = useState('auto');
+          const [uiLocaleOverride] = useState(null);
+          return <AppShellContent preference={uiLocalePreference} override={uiLocaleOverride} />;
+        }
+        function AppShellContent(_props: unknown) {
+          const toastApi = useToast();
+          return toastApi ? null : null;
+        }
+      `,
+    };
+    const stateRow = (callSite) => `| \`AppShell\` | \`useState\` | ${callSite} | consumer | owner | capability | locale | — |`;
+
+    it('binds each row to one call in app-shell.tsx', async () => {
+      await withTable({ ...appShell, [README]: readme(complete) }, (violations) => assert.deepEqual(violations, []));
+    });
+
+    for (const [name, rows, pattern] of [
+      ['a call site that names no call', [stateRow('`uiLocalePreference`'), stateRow('`uiLocaleBogus`')], /retained-root call site uiLocaleBogus must name an identifier of exactly one AppShell\.useState call in src\/renderer\/app-shell\.tsx; it matches 0/u],
+      ['a call site that names two calls', [stateRow('`uiLocalePreference`'), stateRow('`uiLocalePreference` or `uiLocaleOverride`')], /must name an identifier of exactly one AppShell\.useState call .*; it matches 2/u],
+      ['two rows on one call', [stateRow('`uiLocalePreference`'), stateRow('`uiLocalePreference`, again')], /^AppShell\.useState: retained-root rows src\/renderer\/README\.md:\d+, src\/renderer\/README\.md:\d+ name the same call site$/u],
+    ]) {
+      it(`rejects ${name}`, async () => {
+        await withTable({ ...appShell, [README]: readme([...rows, complete[2]]) }, (violations) => assertHasViolation(violations, pattern));
+      });
+    }
+  });
+
   it('reads the gate inventory only as a static literal', async () => {
     await withDesktopFixture({ [GATE]: gateSource('buildInventory()'), [README]: readme(complete) }, (desktopRoot) => {
       assertHasViolation(
@@ -4166,6 +4278,9 @@ describe('retained root hook table', () => {
         '| two | AppShell | M3 |',
         '',
       ].join('\n'),
+      'src/renderer/app-shell.tsx': "import { LegacyPanel } from './legacy-panel';\nexport const AppShell = LegacyPanel;\n",
+      'src/renderer/legacy-panel.tsx': "import { AlphaPanel } from './features/alpha';\nexport const LegacyPanel = AlphaPanel;\n",
+      'src/renderer/features/alpha/index.ts': 'export function AlphaPanel() { return null; }\n',
     }, (desktopRoot) => {
       const config = architectureConfig({
         legacyFiles: {
@@ -4187,6 +4302,8 @@ describe('retained root hook table', () => {
         'AppShell hook gate: 2 entries / 3 call sites; entries without a retained-root row: 0',
         '  retained at the root: locale 2',
         '  scheduled for removal: M5 1',
+        'AppShell closure feature-entry uses (reported, not ratcheted): 1 in 1 files',
+        '  src/renderer/legacy-panel.tsx: alpha.AlphaPanel',
         'Root symbol uses: appShell 2, bootstrap 0, composition 1',
       ]);
     });

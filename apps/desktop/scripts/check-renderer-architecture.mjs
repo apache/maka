@@ -2204,6 +2204,7 @@ function createModuleExportGraph(desktopRoot, knownAnalyses = new Map()) {
   const analyses = new Map(knownAnalyses);
   const surfaces = new Map();
   const reaches = new Map();
+  const bindings = new Map();
   const relativePath = (file) => normalizePath(relative(desktopRoot, file));
   const target = (importer, source) => resolveSourceFile(desktopRoot, importer, source, index);
   const featureEntryOf = (file) => {
@@ -2331,7 +2332,55 @@ function createModuleExportGraph(desktopRoot, knownAnalyses = new Map()) {
     return undefined;
   }
 
-  return { analysisOf, featureEntryOf, reachesFeature, resolveImport, surfaceOf, target };
+  /**
+   * Where the runtime binding exported as `name` is declared: a
+   * Desktop-relative `path#local`, or `specifier#name` for a package
+   * re-export. Every alias of one binding shares this key.
+   */
+  function bindingOf(file, name, active = new Set()) {
+    const key = `${normalizePath(file)}#${name}`;
+    if (bindings.has(key)) return bindings.get(key);
+    if (active.has(key)) return undefined;
+    active.add(key);
+    const result = declarationOf(file, name, active);
+    active.delete(key);
+    bindings.set(key, result);
+    return result;
+  }
+
+  function declarationOf(file, name, active) {
+    const analysis = analysisOf(file);
+    if (!analysis) return undefined;
+    const follow = (source, imported) => {
+      const next = target(file, source);
+      if (next) return bindingOf(next, imported, active);
+      return isBarePackageSpecifier(source) ? `${source}#${imported}` : undefined;
+    };
+    const namespaceOf = (source) => {
+      const next = target(file, source);
+      return `${next ? relativePath(next) : source}#*`;
+    };
+    for (const entry of analysis.moduleReexports) {
+      if (entry.kind === 'all' || entry.exported !== name) continue;
+      return entry.kind === 'namespace' ? namespaceOf(entry.source) : follow(entry.source, entry.imported);
+    }
+    for (const entry of analysis.moduleLocalExports) {
+      if (entry.exported !== name) continue;
+      const binding = analysis.moduleImports.find((item) => item.local === entry.local);
+      if (!binding) return `${relativePath(file)}#${entry.local}`;
+      if (binding.kind === 'namespace') return namespaceOf(binding.source);
+      return follow(binding.source, binding.kind === 'default' ? 'default' : binding.imported);
+    }
+    if (name === 'default') return analysis.hasDefaultExport ? `${relativePath(file)}#default` : undefined;
+    for (const entry of analysis.moduleReexports) {
+      if (entry.kind !== 'all') continue;
+      const next = target(file, entry.source);
+      if (next && surfaceOf(next).has(name)) return bindingOf(next, name, active);
+    }
+    return undefined;
+  }
+
+  return { analysisOf, bindingOf, featureEntryOf, reachesFeature, resolveImport, surfaceOf, target };
 }
 
 function rootSymbolKey(entry, zone, symbol) {
@@ -2354,10 +2403,14 @@ function flattenRootSymbolUses(record) {
  * module load — is a violation instead of a record.
  */
 function collectRootSymbolUses(desktopRoot, config, knownAnalyses) {
+  return collectFeatureEntryUses(desktopRoot, rootSymbolCallers(desktopRoot, config), knownAnalyses);
+}
+
+function collectFeatureEntryUses(desktopRoot, callers, knownAnalyses) {
   const graph = createModuleExportGraph(desktopRoot, knownAnalyses);
   const uses = new Map();
   const violations = [];
-  for (const { path, zone } of rootSymbolCallers(desktopRoot, config)) {
+  for (const { path, zone } of callers) {
     const file = resolve(desktopRoot, path);
     const analysis = graph.analysisOf(file);
     if (!analysis) continue;
@@ -2417,6 +2470,26 @@ function collectRootSymbolUses(desktopRoot, config, knownAnalyses) {
   return { record: sortedRecord, uses, violations };
 }
 
+/**
+ * Feature public symbols the legacy files reachable from AppShell take. They
+ * are not a root zone: legacy-to-entry edges stay free, so these are reported,
+ * never ratcheted.
+ */
+function collectAppShellClosureUses(desktopRoot) {
+  const callers = collectRootDependencyClosure(desktopRoot, legacyAppShellFiles(desktopRoot), [], 'AppShell')
+    .filter((path) => path.startsWith('src/renderer/') && !isTestConsumer(path))
+    .map((path) => ({ path, zone: 'appShellClosure' }));
+  const { uses } = collectFeatureEntryUses(desktopRoot, callers);
+  return [...uses.values()]
+    .flatMap((use) => [...use.callers].map((path) => ({ path, entry: use.entry, symbol: use.symbol })))
+    .sort((left, right) =>
+      left.path.localeCompare(right.path) || left.entry.localeCompare(right.entry) || left.symbol.localeCompare(right.symbol),
+    );
+}
+
+const closureUseKey = (use) => `${use.path}#${use.entry}#${use.symbol}`;
+const featureNameOf = (entry) => entry.split('/')[3];
+
 function validateRootSymbolUses({ desktopRoot, config, sourceAnalyses, violations }) {
   const knownAnalyses = new Map(
     [...sourceAnalyses.values()].map(({ analysis, file }) => [normalizePath(file), analysis]),
@@ -2437,26 +2510,38 @@ function validateRootSymbolUses({ desktopRoot, config, sourceAnalyses, violation
   }
 }
 
-/** Each feature's public runtime export names, keyed by feature directory. */
+/**
+ * Each feature's public runtime exports, keyed by feature directory, with the
+ * binding each export name resolves to.
+ */
 export function collectFeatureEntrySurfaces(desktopRoot) {
   const graph = createModuleExportGraph(desktopRoot);
   const surfaces = new Map();
   for (const file of sourceFiles(resolve(desktopRoot, 'src/renderer/features'))) {
     const entry = graph.featureEntryOf(file);
-    if (entry) surfaces.set(dirname(entry), graph.surfaceOf(file));
+    if (!entry) continue;
+    const names = [...graph.surfaceOf(file)].sort();
+    surfaces.set(dirname(entry), new Map(names.map((name) => [name, graph.bindingOf(file, name)])));
   }
   return surfaces;
 }
 
 /**
  * Root symbol uses may only shrink against the base, with two exceptions. A
- * symbol the same change adds to the entry's public surface may be taken:
+ * binding the same change adds to the entry's public surface may be taken:
  * that is an explicit public-contract change rather than a new grip on an
- * existing capability. And a use may move one way, out of the legacy AppShell
- * into composition or bootstrap, when AppShell gives it up in the same change.
+ * existing capability. Bindings are compared, not names, so a new alias of an
+ * export the base entry already had is not new. And a use may move one way,
+ * out of the legacy AppShell into composition or bootstrap, when AppShell
+ * gives it up in the same change.
  */
-function compareRootSymbolUses(config, baseConfig, baseEntrySurfaces) {
+function compareRootSymbolUses(config, baseConfig, baseEntrySurfaces, desktopRoot) {
   const result = { admitted: [], violations: [] };
+  let currentSurfaces;
+  const currentBinding = (use) => {
+    currentSurfaces ??= desktopRoot ? collectFeatureEntrySurfaces(desktopRoot) : new Map();
+    return currentSurfaces.get(dirname(use.entry))?.get(use.symbol);
+  };
   if (!baseConfig || baseConfig.rootSymbolUses === undefined) return result;
   if (config.rootSymbolUses === undefined) {
     result.violations.push('rootSymbolUses: the root public symbol record cannot be removed');
@@ -2487,7 +2572,17 @@ function compareRootSymbolUses(config, baseConfig, baseEntrySurfaces) {
         `${use.entry}: ${use.zone} root newly uses existing public export ${use.symbol}; only an export the same change adds may join rootSymbolUses`,
       );
     } else {
-      result.admitted.push(`${use.entry}: ${use.zone} ${use.symbol} (new public export)`);
+      const binding = currentBinding(use);
+      const baseName = binding === undefined
+        ? undefined
+        : [...(baseEntrySurfaces.get(dirname(use.entry)) ?? new Map())].find(([, baseBinding]) => baseBinding === binding)?.[0];
+      if (baseName) {
+        result.violations.push(
+          `${use.entry}: ${use.zone} root newly uses ${use.symbol}, an alias of existing public export ${baseName}; only a binding the same change adds may join rootSymbolUses`,
+        );
+      } else {
+        result.admitted.push(`${use.entry}: ${use.zone} ${use.symbol} (new public export)`);
+      }
     }
   }
   return result;
@@ -2574,7 +2669,80 @@ function readRetainedRootTable(desktopRoot) {
   return markdownTable(lines.slice(0, end), start + 1) ?? { header: undefined, rows: [] };
 }
 
+const RETAINED_ROOT_SOURCE = 'src/renderer/app-shell.tsx';
+const FUNCTION_NODES = new Set([
+  'ArrowFunctionExpression',
+  'ClassMethod',
+  'ClassPrivateMethod',
+  'FunctionDeclaration',
+  'FunctionExpression',
+  'ObjectMethod',
+]);
+
+/**
+ * Each gate hook's calls in the render bodies of the AppShell components,
+ * with the identifiers that name a call: the bindings it declares and every
+ * identifier in its arguments. Undefined when the source cannot be read.
+ */
+function appShellHookCalls(desktopRoot, gate) {
+  const path = resolve(desktopRoot, RETAINED_ROOT_SOURCE);
+  if (!existsSync(path)) return undefined;
+  let program;
+  try {
+    program = parse(readFileSync(path, 'utf8'), { sourceType: 'module', plugins: ['jsx', 'typescript'] }).program;
+  } catch {
+    return undefined;
+  }
+  const parents = buildParentMap(program);
+  const calls = new Map();
+  for (const statement of program.body) {
+    const declaration = statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement;
+    if (declaration?.type !== 'FunctionDeclaration' || !declaration.id) continue;
+    const component = declaration.id.name;
+    const visit = (node) => {
+      if (node !== declaration && FUNCTION_NODES.has(node.type)) return;
+      if (node.type === 'CallExpression' || node.type === 'OptionalCallExpression') {
+        const callee = unwrapExpression(node.callee);
+        const hook = callee?.type === 'Identifier' ? callee.name : memberPropertyName(callee);
+        const key = `${component}.${hook}`;
+        if (gate.has(key)) {
+          if (!calls.has(key)) calls.set(key, []);
+          calls.get(key).push(callSiteNames(node, parents));
+        }
+      }
+      for (const child of childNodes(node)) visit(child);
+    };
+    visit(declaration);
+  }
+  return calls;
+}
+
+function callSiteNames(call, parents) {
+  const names = new Set();
+  let owner = parents.get(call);
+  while (owner && ['ParenthesizedExpression', 'TSAsExpression', 'TSNonNullExpression', 'TSSatisfiesExpression'].includes(owner.type)) {
+    owner = parents.get(owner);
+  }
+  if (owner?.type === 'VariableDeclarator') {
+    for (const name of bindingNames(owner.id)) names.add(name);
+    for (const property of owner.id.type === 'ObjectPattern' ? owner.id.properties : []) {
+      const key = property.type === 'ObjectProperty' && !property.computed ? memberName(property.key) : undefined;
+      if (key) names.add(key);
+    }
+  }
+  const collect = (node) => {
+    if (node.type === 'Identifier') names.add(node.name);
+    for (const child of childNodes(node)) collect(child);
+  };
+  for (const argument of call.arguments) collect(argument);
+  return names;
+}
+
 const plainCell = (cell) => cell.replace(/^`([^`]*)`$/u, '$1');
+const callSiteTokens = (cell) => {
+  const quoted = [...cell.matchAll(/`([A-Za-z_$][\w$]*)`/gu)].map((match) => match[1]);
+  return quoted.length > 0 ? quoted : [cell].filter((value) => /^[A-Za-z_$][\w$]*$/u.test(value));
+};
 const emptyCell = (cell) => cell === '' || cell === '—' || cell === '-';
 
 /**
@@ -2601,6 +2769,7 @@ function validateRetainedRootTable({ desktopRoot, hookGatePath, violations }) {
   }
   const rows = [];
   const callSites = new Map();
+  const labels = new Map();
   for (const { cells, line } of table.rows) {
     const at = `${RETAINED_ROOT_DOC}:${line}`;
     if (cells?.length !== RETAINED_ROOT_COLUMNS.length) {
@@ -2630,6 +2799,8 @@ function validateRetainedRootTable({ desktopRoot, hookGatePath, violations }) {
     if (!callSites.has(key)) callSites.set(key, new Set());
     if (callSites.get(key).has(callSite)) violations.push(`${at}: duplicate retained-root call site ${callSite} for ${key}`);
     callSites.get(key).add(callSite);
+    if (!labels.has(key)) labels.set(key, []);
+    labels.get(key).push({ at, callSite, tokens: callSiteTokens(cells[2]) });
     rows.push({ key, reason: hasReason ? reason : undefined, removal: hasRemoval ? removal : undefined });
   }
   for (const [key, entry] of gate) {
@@ -2638,6 +2809,29 @@ function validateRetainedRootTable({ desktopRoot, hookGatePath, violations }) {
       violations.push(`${key}: AppShell hook gate entry has no retained-root row in ${RETAINED_ROOT_DOC}`);
     } else if (recorded !== entry.count) {
       violations.push(`${key}: the AppShell hook gate counts ${entry.count} call sites, the retained-root table has ${recorded} rows`);
+    }
+  }
+  // Where a hook has several call sites, each row must name one of them, so a
+  // row cannot drift onto another call. The gate owns the counts; when the
+  // source and the gate disagree the gate already fails, so the entry is left
+  // to it here.
+  const hookCalls = appShellHookCalls(desktopRoot, gate);
+  for (const [key, entry] of hookCalls ? gate : []) {
+    const calls = hookCalls.get(key) ?? [];
+    if (entry.count < 2 || calls.length !== entry.count) continue;
+    const named = new Map();
+    for (const label of labels.get(key) ?? []) {
+      const matches = calls.flatMap((names, index) => (label.tokens.some((token) => names.has(token)) ? [index] : []));
+      if (matches.length !== 1) {
+        violations.push(
+          `${label.at}: retained-root call site ${label.callSite} must name an identifier of exactly one ${key} call in ${RETAINED_ROOT_SOURCE}; it matches ${matches.length}`,
+        );
+        continue;
+      }
+      named.set(matches[0], [...(named.get(matches[0]) ?? []), label.at]);
+    }
+    for (const ats of named.values()) {
+      if (ats.length > 1) violations.push(`${key}: retained-root rows ${ats.join(', ')} name the same call site`);
     }
   }
   return { gate, rows };
@@ -2699,6 +2893,15 @@ export function rendererArchitectureReport({
   } else {
     lines.push('AppShell hook gate: not found');
   }
+  const closureUses = collectAppShellClosureUses(desktopRoot);
+  const closureFiles = [...new Set(closureUses.map((use) => use.path))];
+  lines.push(
+    `AppShell closure feature-entry uses (reported, not ratcheted): ${closureUses.length} in ${closureFiles.length} files`,
+    ...closureFiles.map((path) => `  ${path}: ${closureUses
+      .filter((use) => use.path === path)
+      .map((use) => `${featureNameOf(use.entry)}.${use.symbol}`)
+      .join(', ')}`),
+  );
   const zones = flattenRootSymbolUses(config.rootSymbolUses).reduce((counts, use) => {
     counts[use.zone] = (counts[use.zone] ?? 0) + 1;
     return counts;
@@ -3859,7 +4062,7 @@ export function generateArchitectureConfig(desktopRoot, config) {
 
 function validateMonotonicDebt(config, baseConfig, desktopRoot, violations, baseEntrySurfaces) {
   if (!baseConfig) return;
-  violations.push(...compareRootSymbolUses(config, baseConfig, baseEntrySurfaces).violations);
+  violations.push(...compareRootSymbolUses(config, baseConfig, baseEntrySurfaces, desktopRoot).violations);
   const currentPrivateModules = new Set(featurePrivateModulesOf(config));
   for (const path of featurePrivateModulesOf(baseConfig)) {
     if (!currentPrivateModules.has(path)) {
@@ -4312,6 +4515,7 @@ async function loadBaseConfig(repoRoot, desktopRoot, base, { strictBase = false 
       baseConfig = baseTreeFallback({ base, baseCommittedConfig, error, strictBase });
     }
     const baseEntrySurfaces = collectFeatureEntrySurfaces(baseDesktopRoot);
+    const baseClosureUses = collectAppShellClosureUses(baseDesktopRoot);
     const crossCheckViolations = await crossCheckUnderBaseChecker({
       base,
       baseCommittedConfig,
@@ -4321,7 +4525,7 @@ async function loadBaseConfig(repoRoot, desktopRoot, base, { strictBase = false 
       repoRoot,
       strictBase,
     });
-    return { baseConfig, baseEntrySurfaces, crossCheckViolations, introducedLedger: false };
+    return { baseConfig, baseClosureUses, baseEntrySurfaces, crossCheckViolations, introducedLedger: false };
   } finally {
     baseTree.remove();
   }
@@ -4384,13 +4588,22 @@ async function runCli() {
     process.exitCode = 1;
     return;
   }
-  const { baseConfig, baseEntrySurfaces, crossCheckViolations, introducedLedger } = loadedBase;
+  const { baseConfig, baseClosureUses, baseEntrySurfaces, crossCheckViolations, introducedLedger } = loadedBase;
   const violations = [
     ...checkRendererArchitecture({ baseConfig, baseEntrySurfaces, config, desktopRoot }),
     ...crossCheckViolations,
   ];
-  for (const use of compareRootSymbolUses(config, baseConfig, baseEntrySurfaces).admitted) {
+  for (const use of compareRootSymbolUses(config, baseConfig, baseEntrySurfaces, desktopRoot).admitted) {
     console.log(`Renderer architecture check: root symbol use admitted: ${use}`);
+  }
+  if (baseClosureUses) {
+    const baseKeys = new Set(baseClosureUses.map(closureUseKey));
+    for (const use of collectAppShellClosureUses(desktopRoot)) {
+      if (baseKeys.has(closureUseKey(use))) continue;
+      console.log(
+        `Renderer architecture check: AppShell closure newly uses ${use.symbol} from ${use.entry} in ${use.path} (reported, not ratcheted)`,
+      );
+    }
   }
   if (report) {
     console.log('Renderer architecture report:');
