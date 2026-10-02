@@ -23,7 +23,7 @@
  * Owns the per-session unsent-draft store that used to live inline in
  * `composer.tsx`: a bounded Map keyed by `draftKey` and the active key.
  * The pure store operations
- * (remember / read, with the 120k-char and 32-entry bounds) stay in
+ * (remember / read, with a 120k-char ordinary-draft bound and 32-entry limit) stay in
  * `composer-helpers.ts` — this hook is the React seam that wires them to the
  * input's `ComposerTextPort`.
  *
@@ -85,7 +85,9 @@ export function useComposerDraft(input: {
 
   function remember(key: string | undefined, value: string, references: readonly InlineReference[]) {
     const previousKeys = [...draftStoreRef.current.keys()];
-    rememberComposerDraft(draftStoreRef.current, key, value);
+    rememberComposerDraft(draftStoreRef.current, key, value, {
+      preserveFullText: replacementsByKey.current.has(key ?? ''),
+    });
     // Capacity eviction abandons the old edit. Emptying the current body is
     // handled separately because its attachments or quotes may still remain.
     for (const previousKey of previousKeys) {
@@ -116,8 +118,11 @@ export function useComposerDraft(input: {
     setDraft(key, '');
   }
 
-  function setDraft(key: string | undefined, value: string, references: readonly InlineReference[] = []) {
-    replacementsByKey.current.delete(key ?? '');
+  function setDraft(key: string | undefined, value: string, references: readonly InlineReference[] = [], replacesMessageId?: string) {
+    // Establish ownership before the first cache write, including restores to
+    // an inactive Session whose full text is never held in the live input.
+    if (key && replacesMessageId) replacementsByKey.current.set(key, replacesMessageId);
+    else replacementsByKey.current.delete(key ?? '');
     if (activeDraftKeyRef.current === key) {
       input.text.setValue(value);
       input.references?.write(references);
@@ -143,8 +148,7 @@ export function useComposerDraft(input: {
     const offset = (current.trimEnd() ? current.trimEnd().length + 2 : 0) - (value.length - value.trimStart().length);
     const combined = [...previous, ...references.map((reference) => ({ ...reference, start: reference.start + offset }))]
       .filter((reference) => reference.start >= 0 && next.slice(reference.start, reference.start + reference.value.length) === reference.value);
-    setDraft(key, next, combined);
-    if (key && replacement) replacementsByKey.current.set(key, replacement);
+    setDraft(key, next, combined, replacement);
     return next;
   }
 

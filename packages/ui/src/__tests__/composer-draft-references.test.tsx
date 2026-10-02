@@ -83,3 +83,67 @@ test('keyed draft appends preserve file reference offsets, isolation and clearin
     Object.assign(globalThis, originals);
   }
 });
+
+for (const active of [true, false]) {
+  test(`oversized replacement restored to an ${active ? 'active' : 'inactive'} draft keeps its body and references`, async () => {
+    const originals = { document: globalThis.document, window: globalThis.window, IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT };
+    const { document, window } = parseHTML('<div id="root"></div>');
+    Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+    const root = createRoot(document.querySelector('#root')!);
+    let value = '';
+    let references: readonly InlineReference[] = [];
+    let draft!: ComposerDraftApi;
+    const text = { getValue: () => value, setValue: (next: string) => { value = next; } };
+    function Probe({ draftKey }: { draftKey: string }) {
+      draft = useComposerDraft({ text, draftKey, onDraftKeyChange() {},
+        references: { read: () => references, write: (next) => { references = next; } },
+      });
+      return null;
+    }
+    const render = async (draftKey: string) => act(() => root.render(<Probe draftKey={draftKey} />));
+    const reference: InlineReference = { kind: 'workspace_file', value: '@src/keep.ts', label: 'keep.ts', start: 0 };
+    const prefix = `${reference.value}\n`;
+    const body = prefix + 'x'.repeat(128_000 - prefix.length);
+    try {
+      await render(active ? 'edit' : 'other');
+      if (!active) draft.setDraft('other', 'unrelated draft');
+      draft.appendDraft('edit', body, [reference], 'paused-original');
+      assert.equal(draft.getDraft('edit').length, body.length, 'the first cache write must retain the full edit');
+      if (!active) assert.equal(value, 'unrelated draft');
+      await render('other');
+      await render('edit');
+      assert.equal(value.length, body.length, 'switching sessions must not truncate a replacement');
+      assert.equal(value, body);
+      assert.deepEqual(references, [reference]);
+      assert.equal(draft.replacementMessageId('edit'), 'paused-original');
+
+      draft.appendDraft('edit', 'additional context');
+      draft.saveCurrentDraft();
+      await render('other');
+      await render('edit');
+      assert.equal(value, `${body}\n\nadditional context`);
+      assert.deepEqual(references, [reference]);
+      assert.equal(draft.replacementMessageId('edit'), 'paused-original');
+
+      // Abandoning the edit restores the normal draft policy and drops references.
+      draft.clearDraft('edit');
+      assert.equal(draft.replacementMessageId('edit'), undefined);
+      assert.deepEqual(references, []);
+      draft.setDraft('edit', body, [reference]);
+      await render('other');
+      await render('edit');
+      assert.equal(value.length, 120_000);
+      assert.equal(value, body.slice(-120_000));
+      assert.deepEqual(references, []);
+
+      // Whole-entry eviction must still abandon even an oversized replacement.
+      draft.appendDraft('evicted-edit', body, [reference], 'evicted-original');
+      for (let index = 0; index < 32; index++) draft.setDraft(`other-${index}`, 'another draft');
+      assert.equal(draft.getDraft('evicted-edit'), '');
+      assert.equal(draft.replacementMessageId('evicted-edit'), undefined);
+    } finally {
+      await act(() => root.unmount());
+      Object.assign(globalThis, originals);
+    }
+  });
+}

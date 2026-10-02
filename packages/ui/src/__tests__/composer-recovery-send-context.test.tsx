@@ -76,6 +76,7 @@ async function harness(path: SendPath = 'submit') {
   const admission = deferred<boolean>();
   const released: string[] = [];
   const events: string[] = [];
+  const sentTexts: string[] = [];
   const sends: Array<{ available: boolean; metadata?: ComposerSendMetadata }> = [];
   let attachments!: ReturnType<typeof useComposerAttachments>;
   let mounted = true;
@@ -112,8 +113,9 @@ async function harness(path: SendPath = 'submit') {
         return () => { events.push('end'); endSend(); };
       }}
       waitForSessionReference={() => { events.push('wait'); return reference.promise; }}
-      onSend={async (_text, metadata) => {
+      onSend={async (text, metadata) => {
         const submitted = staged.pendingAttachments;
+        sentTexts.push(text);
         sends.push({ available: !released.includes(recoveryId), metadata });
         const accepted = await admission.promise;
         if (accepted) staged.clearSubmittedContext(submitted);
@@ -152,7 +154,7 @@ async function harness(path: SendPath = 'submit') {
     async restoreOriginal(text = 'editable original') {
       await act(() => composer.current!.appendDraft('original', text, [], 'paused-original'));
     },
-    released, events, sends, render, unmount,
+    released, events, sends, sentTexts, render, unmount,
     async submit() {
       await act(async () => {
         if (path === 'submit') {
@@ -174,6 +176,25 @@ async function harness(path: SendPath = 'submit') {
     async resolveAdmission(accepted: boolean) { await act(async () => admission.resolve(accepted)); },
   };
 }
+
+test('an oversized edited message is sent in full after switching Sessions', async () => {
+  const h = await harness();
+  const prefix = 'Keep the original instructions.\n';
+  const body = prefix + 'x'.repeat(128_000 - prefix.length);
+  await h.restoreOriginal(body);
+  await h.render('another');
+  await h.render('original');
+  await h.submit();
+  await h.resolveReference(true);
+  assert.equal(h.sentTexts[0]?.length, body.length);
+  assert.equal(h.sentTexts[0], body);
+  assert.equal(h.sends[0]?.metadata?.replacesLocalMessageId, 'paused-original');
+  await h.resolveAdmission(true);
+  assert.equal(h.readDraft(), '');
+  await h.typeDraft('next message');
+  await h.submit();
+  assert.equal(h.sends[1]?.metadata?.replacesLocalMessageId, undefined);
+});
 
 for (const path of ['submit', 'follow-up-enter', 'steer-enter'] as const) {
   test(`${path} carries the paused original identity through the real composer send`, async () => {
