@@ -641,7 +641,6 @@
           "useAppShellTurnPresentation": 1,
           "useEffect": 2,
           "useLayoutEffect": 1,
-          "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "useRef": 7,
           "useSessionNavigationReads": 1,
@@ -653,7 +652,7 @@
           "useShellMemoryPill": 1,
           "useShellResume": 1,
           "useStableActions": 4,
-          "useState": 10,
+          "useState": 8,
           "useSystemUiLocale": 1,
           "useToast": 1,
           "useTurnActionRegistry": 1
@@ -732,7 +731,7 @@
           "react": 1
         },
         "importSpecifiers": 73,
-        "nonTriviaTokens": 9062
+        "nonTriviaTokens": 9054
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

@@ -116,7 +116,6 @@ export const ALLOWED = {
     useAppShellTurnPresentation: 1,
     useEffect: 2,
     useLayoutEffect: 1,
-    useNewTaskChoice: 1,
     useOnboardingSnapshot: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
     // `SessionNavigationProvider`. The entry shrinks rather than disappearing,
@@ -138,7 +137,7 @@ export const ALLOWED = {
     useShellMemoryPill: 1,
     useShellResume: 1,
     useStableActions: 4,
-    useState: 8,
+    useState: 6,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry
     // replaces: #4113 moved the other two onto the session UI store, which is

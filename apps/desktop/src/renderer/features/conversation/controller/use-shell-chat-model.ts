@@ -44,7 +44,7 @@ import {
 } from '../model/session-health-notice.js';
 type ComposerDefaults = { model: NewChatModelCandidate | null };
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
-import { useNewTaskChoice } from './use-new-task-choice.js';
+import { useNewTaskChoice } from '../../../application/contracts/use-new-task-choice.js';
 
 export type { NewChatModel } from '../model/shell-chat-model-selection.js';
 export type NewChatExecutionTarget = NewChatModel | { executorId: string; model: string };

@@ -34,7 +34,6 @@ import type {
   QuoteRef,
 } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { isLinkedSubagentSession } from '@maka/core/session';
@@ -147,7 +146,6 @@ import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
   desktopSlashCommandPresentation,
   useActiveExecutionBoundary,
-  useNewTaskChoice,
   useShellChatModel,
   useShellResume,
 } from './features/conversation/index.js';
@@ -334,12 +332,6 @@ function AppShellContent({
 
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
-  // What a new chat will start with, held the way the Session holds it: a
-  // Plan toggle and one orchestration value, not one fused choice.
-  const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
-  const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
-  const [newTaskPermissionChoice, setNewTaskPermissionMode, clearNewTaskPermissionChoice] =
-    useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [petCompletionNonce, setPetCompletionNonce] = useState(0);
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
@@ -476,6 +468,11 @@ function AppShellContent({
   });
   const shellCopy = getShellCopy(uiLocale).app;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
+  // Session Settings owns both the selected Session's mode writes and what a
+  // new chat will start with: a Plan toggle, one orchestration value and the
+  // draft's permission choice, not one fused choice.
+  const sessionSettingIntent = useSessionSettingIntent(activeId);
+  const newTaskSettings = sessionSettingIntent.newTask;
   /**
    * What this draft would start in: the user's choice for it if they made one,
    * otherwise the Host default it will inherit by omission.
@@ -485,7 +482,7 @@ function AppShellContent({
    * never written back to `chatDefaults` — the Settings surface owns that.
    */
   const newSessionPermissionMode =
-    newTaskPermissionChoice ??
+    newTaskSettings.permissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
     'bypass';
   // Persisted composer defaults seed the empty-state model, project path, and
@@ -533,7 +530,6 @@ function AppShellContent({
   });
   const rendererMountedRef = useRef(true);
   const activeSession = activeCatalogSession;
-  const sessionSettingIntent = useSessionSettingIntent(activeId);
   const { setPermissionMode, setSessionModel, setSessionThinkingLevel, setSessionExecutor } = sessionSettingIntent.commands;
   const modelConfigurationOverlay = sessionSettingIntent.overlay.modelConfiguration;
   const activeSessionForModelControls = activeSession
@@ -661,7 +657,7 @@ function AppShellContent({
   function setPlanMode(active: boolean): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId) {
-      setNewChatPlanModeActive(active);
+      sessionSettingIntent.commands.setNewTaskPlanMode(active);
       return Promise.resolve(true);
     }
     if (active === activePlanMode) return Promise.resolve(true);
@@ -678,7 +674,7 @@ function AppShellContent({
   function setOrchestrationMode(mode: OrchestrationMode): Promise<boolean> {
     const sessionId = activeIdRef.current;
     if (!sessionId) {
-      setNewChatOrchestrationMode(mode);
+      sessionSettingIntent.commands.setNewTaskOrchestrationMode(mode);
       return Promise.resolve(true);
     }
     if (mode === activeOrchestrationMode) return Promise.resolve(true);
@@ -755,12 +751,12 @@ function AppShellContent({
   const activePlanMode = activeId
     ? sessionSettingIntent.overlay.planMode
       ?? ((activeSessionForView?.collaborationMode ?? 'agent') === 'plan')
-    : newChatPlanModeActive;
+    : newTaskSettings.planMode;
   const activeOrchestrationMode: OrchestrationMode = activeId
     ? sessionSettingIntent.overlay.orchestrationMode
       ?? activeSessionForView?.orchestrationMode
       ?? 'default'
-    : newChatOrchestrationMode;
+    : newTaskSettings.orchestrationMode;
   /**
    * Why neither mode can be changed right now, if either cannot. Both controls
    * write the same Session configuration, so everything that holds one holds
@@ -936,14 +932,14 @@ function AppShellContent({
     const ownerToken = startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
-    setNewChatPlanModeActive(false);
+    sessionSettingIntent.commands.setNewTaskPlanMode(false);
     setNavSelection({ section: 'sessions' });
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
     return ownerToken;
-  }, [composerStaging, setNavSelection, setSearchScrollTarget, startNewSession]);
+  }, [composerStaging, sessionSettingIntent.commands, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -978,7 +974,7 @@ function AppShellContent({
       : taskEntry.selectors.projectPath,
     newTaskTarget: activeId ? undefined : taskEntry.selectors.target,
     newSessionModel: newChatModel,
-    newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
+    newSessionCollaborationMode: newTaskSettings.planMode ? 'plan' : 'agent',
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode,
@@ -1096,10 +1092,10 @@ function AppShellContent({
     pendingNewChatThinkingLevel: executorTarget ? newChatExecutionThinkingLevel ?? null : pendingNewChatThinkingLevel,
     executorSelection: executor.selection,
     executorEntry: executor.entry,
-    newChatPermissionChoice: newTaskPermissionChoice,
-    clearNewChatPermissionChoice: clearNewTaskPermissionChoice,
-    newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
-    newChatOrchestrationMode,
+    newChatPermissionChoice: newTaskSettings.permissionChoice,
+    clearNewChatPermissionChoice: sessionSettingIntent.commands.clearNewTaskPermissionChoice,
+    newChatCollaborationMode: newTaskSettings.planMode ? 'plan' : 'agent',
+    newChatOrchestrationMode: newTaskSettings.orchestrationMode,
     newTaskTarget: taskEntry.selectors.target,
   });
 
@@ -1457,6 +1453,7 @@ function AppShellContent({
       input={{
         catalog: sessionCatalogController,
         isActiveSession: (sessionId) => activeIdRef.current === sessionId,
+        newTaskChoiceKey: currentNewTaskDraftKey,
         newSessionPermissionMode,
         refreshCatalog: refreshSessions,
         saveComposerDefaults: (model) => saveComposerDefaults({ model }),
@@ -1476,7 +1473,6 @@ function AppShellContent({
         },
         captureOwner: captureComposerImportOwner,
         isOwnerActive: isComposerImportOwnerActive,
-        setNewTaskPermissionMode,
         confirmBypass: () => confirmBypassPermission(toastApi, uiLocale),
       }}
     >
