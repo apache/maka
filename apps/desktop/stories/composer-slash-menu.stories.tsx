@@ -171,6 +171,7 @@ const conversationServices: ConversationServices = {
     compact: async () => {
       throw new Error('Context compaction is not used in slash menu stories');
     },
+    listTurnLandmarks: async () => ({ landmarks: [] }),
   },
   runtimeHosts: { subscribeChanges: () => () => undefined },
   skills: { listInvocable: loadProjection },

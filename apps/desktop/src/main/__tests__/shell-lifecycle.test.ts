@@ -131,3 +131,8 @@ test('Desktop supplies the lifecycle events and tags the document; the effects r
   const effects = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell-effects.ts', import.meta.url)), 'utf8');
   assert.deepEqual(effects.split('\n').filter((line) => /\bwindow\.maka\b/.test(line)), []);
 });
+
+test('AppShell itself reaches no Desktop bridge path', () => {
+  const shell = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)), 'utf8');
+  assert.deepEqual(shell.split('\n').filter((line) => /\bwindow\.maka\b/.test(line)), []);
+});

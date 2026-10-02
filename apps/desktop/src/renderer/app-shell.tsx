@@ -1548,7 +1548,6 @@ function AppShellContent({
         showModelSetupToast={showModelSetupToast}
         onTurnCompleted={(sessionId) => { if (activeIdRef.current === sessionId) setPetCompletionNonce((current) => current + 1); }}
         searchTarget={searchScrollTarget} clearSearchTarget={() => setSearchScrollTarget(null)}
-        listTurnLandmarks={(sessionId, turnId) => window.maka.sessions.listTurnLandmarks(sessionId, turnId)}
       />
       {/* Window chrome is frame-level hit-test only (not AppShell topNav): a
           transparent drag overlay so column surfaces paint to the window top.

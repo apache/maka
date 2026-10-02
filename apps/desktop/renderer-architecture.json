@@ -604,9 +604,7 @@
       },
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 49,
-        "bridgePaths": {
-          "window.maka.sessions.listTurnLandmarks": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
         },
@@ -715,7 +713,7 @@
           "react": 1
         },
         "importSpecifiers": 71,
-        "nonTriviaTokens": 8920
+        "nonTriviaTokens": 8898
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

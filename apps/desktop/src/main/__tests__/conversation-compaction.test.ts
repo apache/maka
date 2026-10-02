@@ -165,7 +165,7 @@ describe('Conversation owner context compaction', () => {
       return createElement(Fragment, null, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
         showModelSetupToast() {}, onTurnCompleted() {},
-        searchTarget: null, clearSearchTarget() {}, listTurnLandmarks: async () => ({ landmarks: [] }),
+        searchTarget: null, clearSearchTarget() {},
       }));
     }
     act(() => root.render(createElement(LocaleProvider, { locale: 'en', children:

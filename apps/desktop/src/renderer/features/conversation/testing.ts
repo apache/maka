@@ -93,6 +93,7 @@ export function stubConversationServices(
       compact: async () => {
         throw new Error('Context compaction is not stubbed');
       },
+      listTurnLandmarks: async () => ({ landmarks: [] }),
       ...sessions,
     },
   };
