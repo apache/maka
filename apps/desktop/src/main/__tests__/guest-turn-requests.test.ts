@@ -176,7 +176,7 @@ async function mountShell(services: SessionCollaborationServices) {
                   contextUsageSessionId: sessionId,
                   newTaskDraftKey: 'new-task:local',
                   newTaskSendPending: false,
-                  stopPendingBySession: {},
+                  stopPending: false,
                   respondToSandboxBoundary: () => {},
                   respondToClientCapability: () => {},
                   respondToUserQuestion: () => {},
@@ -223,7 +223,7 @@ async function mountShell(services: SessionCollaborationServices) {
 // app-shell.tsx is not in the node test build.
 test('AppShell mounts the one ChatComposerRegion inside GuestTurnRequests with no owner/Guest remount', () => {
   const source = readFileSync(new URL('../../../src/renderer/app-shell.tsx', import.meta.url), 'utf8');
-  const regions = [...source.matchAll(/<ChatComposerRegion\b/g)];
+  const regions = [...source.matchAll(/<Conversation\.ConversationComposerRegion\s+surface=\{ChatComposerRegion\}/g)];
   assert.equal(regions.length, 1);
   const open = source.indexOf('<SessionCollaboration.GuestTurnRequests');
   const close = source.indexOf('</SessionCollaboration.GuestTurnRequests>');

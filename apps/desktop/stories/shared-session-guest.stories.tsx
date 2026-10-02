@@ -161,7 +161,7 @@ function GuestComposer(props: { sessionId: string }) {
           contextUsageSessionId={props.sessionId}
           newTaskDraftKey="new-task:story"
           newTaskSendPending={false}
-          stopPendingBySession={{}}
+          stopPending={false}
           respondToSandboxBoundary={() => undefined}
           respondToClientCapability={() => undefined}
           respondToUserQuestion={() => undefined}

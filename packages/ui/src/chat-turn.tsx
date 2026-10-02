@@ -222,7 +222,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   return (
     <>
       {nonImageAttachments.length > 0 ? (
-        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachment-tokens">
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
           {nonImageAttachments.map((attachment, index) => (
             <Token
               key={`${attachment.name}-${index}`}
@@ -242,14 +242,14 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         </HStack>
       ) : null}
       {props.quotes && props.quotes.length > 0 ? (
-        <div className="maka-user-quotes">
+        <HStack gap={1} wrap="wrap" align="start" maxWidth="100%" className="maka-user-quotes">
           {props.quotes.map((quote, index) => (
             <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
           ))}
-        </div>
+        </HStack>
       ) : null}
       {imageAttachments.length > 0 ? (
-        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachments">
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
           {imageAttachments.map((attachment, index) => (
             <AttachmentImage
               key={`${attachment.name}-${index}`}
@@ -281,41 +281,40 @@ export function TransientUserMessage(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
   return (
-    <div data-transient-message-id={message.id} className="maka-transient-message">
-      <LocalizedChatMessage
-        accessibleLabel={copy.userAriaLabel}
-        sender="user"
-        className="maka-chat-message maka-user-message"
-      >
-        <UserMessageBody
-          messageId={message.id}
-          text={message.text}
-          ts={message.ts}
-          attachments={message.attachments}
-          quotes={message.quotes}
-          directoryReferences={message.directoryReferences}
-          inlineReferences={message.inlineReferences}
-          delivery={message.deliveryStatus ? undefined : message}
-        />
-        {message.deliveryStatus && (
-          <div className="maka-message-delivery" data-tone={message.deliveryTone ?? 'neutral'}>
-            <div role="status" aria-atomic="true">
-              <span className="maka-message-delivery-status">{message.deliveryStatus}</span>
-              {message.deliveryDetail && <p className="maka-message-delivery-detail">{message.deliveryDetail}</p>}
-            </div>
-            {!!message.deliveryActions?.length && <div className="maka-message-delivery-actions">
-              {message.deliveryActions.map((action) => (
-                <UiButton key={action.label} label={action.label} isDisabled={action.disabled} variant="ghost" size="sm" onClick={action.onClick} />
-              ))}
-            </div>}
-            {message.deliveryDiagnostic && <details className="maka-message-delivery-diagnostic">
-              <summary>{message.deliveryDiagnosticLabel}</summary>
-              <p>{message.deliveryDiagnostic}</p>
-            </details>}
+    <LocalizedChatMessage
+      accessibleLabel={copy.userAriaLabel}
+      sender="user"
+      className="maka-chat-message maka-user-message maka-transient-message"
+      data-transient-message-id={message.id}
+    >
+      <UserMessageBody
+        messageId={message.id}
+        text={message.text}
+        ts={message.ts}
+        attachments={message.attachments}
+        quotes={message.quotes}
+        directoryReferences={message.directoryReferences}
+        inlineReferences={message.inlineReferences}
+        delivery={message.deliveryStatus ? undefined : message}
+      />
+      {message.deliveryStatus && (
+        <div className="maka-message-delivery" data-tone={message.deliveryTone ?? 'neutral'}>
+          <div role="status" aria-atomic="true">
+            <span className="maka-message-delivery-status">{message.deliveryStatus}</span>
+            {message.deliveryDetail && <p className="maka-message-delivery-detail">{message.deliveryDetail}</p>}
           </div>
-        )}
-      </LocalizedChatMessage>
-    </div>
+          {!!message.deliveryActions?.length && <div className="maka-message-delivery-actions">
+            {message.deliveryActions.map((action) => (
+              <UiButton key={action.label} label={action.label} isDisabled={action.disabled} variant="ghost" size="sm" onClick={action.onClick} />
+            ))}
+          </div>}
+          {message.deliveryDiagnostic && <details className="maka-message-delivery-diagnostic">
+            <summary>{message.deliveryDiagnosticLabel}</summary>
+            <p>{message.deliveryDiagnostic}</p>
+          </details>}
+        </div>
+      )}
+    </LocalizedChatMessage>
   );
 }
 

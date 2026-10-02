@@ -38,12 +38,12 @@ import type { TransientUserMessageProjection } from '@maka/ui';
 import {
   clearNewTaskReloadIntent,
   markNewTaskReloadIntent,
-} from './application/contracts/new-task-reload-intent.js';
-import type { DesktopTranscriptRangeController } from './platform/desktop/desktop-transcript-range-store.js';
+} from '../../../application/contracts/new-task-reload-intent.js';
+import type { ConversationTranscriptController as DesktopTranscriptRangeController } from '../transcript-ports.js';
 import {
   mergeTransientMessageProjection,
   reconcileTransientMessages,
-} from './application/contracts/transient-message-projection.js';
+} from '../../../application/contracts/transient-message-projection.js';
 
 type RefBox<T> = { current: T };
 
@@ -82,6 +82,7 @@ export function createSessionWorkspaceActions(deps: {
   setTransientMessagesState: (next: TransientUserMessage[]) => void;
   setMessageLoadPending: (pending: boolean) => void;
   clearSessionUiState: (sessionId: string) => void;
+  queryCancelledMessages(sessionId: string, messageIds: string[]): Promise<{ cancelledMessageIds: readonly string[] }>;
 }): SessionWorkspaceActions {
   const {
     activeIdRef,
@@ -151,7 +152,7 @@ export function createSessionWorkspaceActions(deps: {
     if (!pending || pending.size === 0) return;
     try {
       const messageIds = [...pending.keys()];
-      const { cancelledMessageIds } = await window.maka.sessions.queryCancelledMessages(
+      const { cancelledMessageIds } = await deps.queryCancelledMessages(
         sessionId,
         messageIds,
       );

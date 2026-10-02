@@ -82,7 +82,7 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
   toastApi: {
     info(title: string, description?: string): void;
   };
-  activeIdRef: RefBox<string | undefined>;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
   revisionDraftRef: RefBox<TDraft | null>;
   composerRef: RefBox<ComposerHandle | null>;
   retractedWorkspaceReferencesRef: RefBox<Record<string, InlineReference[]>>;

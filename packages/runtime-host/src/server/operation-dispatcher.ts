@@ -68,6 +68,7 @@ import { SESSION_TODO_OPERATION_SPECS } from '../protocol/session-todo.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from '../protocol/session-transcript.js';
 import { SESSION_TURNS_OPERATION_SPECS } from '../protocol/session-turns.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from '../protocol/skill-catalog.js';
+import { STORAGE_USAGE_OPERATION_SPECS } from '../protocol/storage-usage.js';
 import { TURN_OPERATION_SPECS } from '../protocol/turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from '../protocol/usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from '../protocol/web-search.js';
@@ -153,6 +154,7 @@ export type SessionCatalogOperationKey =
 export type ArtifactOperationKey = keyof typeof ARTIFACT_OPERATION_SPECS;
 export type SkillCatalogOperationKey = keyof typeof SKILL_CATALOG_OPERATION_SPECS;
 export type UsagePricingOperationKey = keyof typeof USAGE_PRICING_OPERATION_SPECS;
+export type StorageUsageOperationKey = keyof typeof STORAGE_USAGE_OPERATION_SPECS;
 export type MemoryOperationKey = keyof typeof MEMORY_OPERATION_SPECS;
 export type OAuthOperationKey = keyof typeof OAUTH_OPERATION_SPECS;
 export type RuntimeResourceOperationKey = keyof typeof RUNTIME_RESOURCE_OPERATION_SPECS;
@@ -212,6 +214,7 @@ export type SessionTodoOperationHandlerMap = Pick<OperationHandlerMap, SessionTo
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
+export type StorageUsageOperationHandlerMap = Pick<OperationHandlerMap, StorageUsageOperationKey>;
 export type MemoryOperationHandlerMap = Pick<OperationHandlerMap, MemoryOperationKey>;
 export type OAuthOperationHandlerMap = Pick<OperationHandlerMap, OAuthOperationKey>;
 export type RuntimeResourceOperationHandlerMap = Pick<

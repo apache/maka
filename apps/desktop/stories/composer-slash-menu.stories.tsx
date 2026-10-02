@@ -33,6 +33,7 @@
  * that exists without a real Selection.
  */
 
+import { stubConversationServices } from '../src/renderer/features/conversation/testing.js';
 import { useMemo, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
@@ -149,6 +150,7 @@ const makaBridge = {
 };
 
 const conversationServices: ConversationServices = {
+  observation: stubConversationServices().observation,
   listMessages: async () => [],
   readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in slash menu stories'); },
   releaseRecoveryAttachments: async () => undefined,

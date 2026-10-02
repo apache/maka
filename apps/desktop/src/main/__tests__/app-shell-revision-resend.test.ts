@@ -212,7 +212,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
       return () => selectionRevision === revision;
     },
     composerRef: composer,
-    messages: [userMessage('turn-1', ORIGINAL_TEXT)],
+    readMessages: () => [userMessage('turn-1', ORIGINAL_TEXT)],
     hasPendingAttachments: () => false,
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
@@ -320,7 +320,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
             contextUsageSessionId: SESSION_1,
             newTaskDraftKey: 'new-task:test-target',
             newTaskSendPending: false,
-            stopPendingBySession: {},
+            stopPending: false,
             respondToSandboxBoundary: () => undefined,
             respondToClientCapability: () => undefined,
             respondToUserQuestion: () => undefined,

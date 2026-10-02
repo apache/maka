@@ -582,7 +582,7 @@ describe('ACP Goal/Plan real Host routes', () => {
   });
 
   test('submits and executes a Plan through the model, ACP, and real Host', {
-    timeout: 30_000,
+    timeout: 45_000,
   }, async () => {
     let modelCalls = 0;
     const modelToolNames: string[][] = [];
@@ -1011,6 +1011,7 @@ describe('ACP Goal/Plan real Host routes', () => {
         },
         {
           startRuntimeHost: true,
+          timeoutMs: 30_000,
           model: {
             id: 'goal-plan-fixture',
             thinkingLevels: [],

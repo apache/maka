@@ -79,6 +79,30 @@ function graph(
   };
 }
 
+function operator(
+  overrides: Pick<Snapshot['operators'][number], 'operatorId' | 'status'> &
+    Partial<Snapshot['operators'][number]>,
+): Snapshot['operators'][number] {
+  return {
+    childSessionId: `child-${overrides.operatorId}`,
+    provisionId: `provision-${overrides.operatorId}`,
+    agentId: 'reviewer',
+    provisionedAt: 1,
+    inboundEdgeIds: [],
+    outboundEdgeIds: [],
+    scheduledWorkIds: [],
+    readiness: [],
+    omitted: {
+      inboundEdgeIds: 0,
+      outboundEdgeIds: 0,
+      scheduledWorkIds: 0,
+      readiness: 0,
+      readinessWaits: 0,
+    },
+    ...overrides,
+  };
+}
+
 class GraphPanelFixture {
   readonly container: Element;
   readonly root: Root;
@@ -128,14 +152,18 @@ class GraphPanelFixture {
     this.#readsFail = value;
   }
 
-  async render(sessionId = 'session-a', enabled = true): Promise<void> {
+  async render(
+    sessionId = 'session-a',
+    enabled = true,
+    onOpenSession: (sessionId: string) => void = () => undefined,
+  ): Promise<void> {
     await act(async () => {
       this.root.render(
         createElement(AgentGraphPanel, {
           rootSessionId: sessionId,
           enabled,
           locale: 'en',
-          onOpenSession: () => undefined,
+          onOpenSession,
         }),
       );
       await Promise.resolve();
@@ -240,6 +268,57 @@ describe('AgentGraphPanel boundary contract', () => {
       );
       await fixture.close();
     }
+  });
+
+  it('renders bounded live and completed output facts without replacing child navigation', async () => {
+    const opened: string[] = [];
+    const fixture = new GraphPanelFixture({
+      ...graph('graph-output', 'active'),
+      operators: [
+        operator({
+          operatorId: 'operator-live',
+          status: 'running',
+          output: {
+            activationId: 'run-live',
+            preview: 'Inspecting the renderer projection',
+            previewTruncated: true,
+            phase: 'streaming',
+            previewUpdatedAt: 2_000,
+            sourceEventId: 'event-live',
+            messageId: 'message-live',
+            sampleStartedAt: 1_000,
+            outputTokens: 21,
+            sampleDurationMs: 1_000,
+            tokensPerSecond: 21,
+          },
+        }),
+        operator({
+          operatorId: 'operator-done',
+          status: 'completed',
+          output: {
+            activationId: 'run-done',
+            preview: 'Projection verified',
+            previewTruncated: false,
+            phase: 'completed',
+            previewUpdatedAt: 3_000,
+            sourceEventId: 'event-done',
+            sampleStartedAt: 2_000,
+          },
+        }),
+      ],
+    });
+    await fixture.render('session-a', true, (sessionId) => opened.push(sessionId));
+
+    assert.match(fixture.container.textContent ?? '', /Live output · avg 21\.0 output token\/s/);
+    assert.match(fixture.container.textContent ?? '', /…Inspecting the renderer projection/);
+    assert.match(fixture.container.textContent ?? '', /Result preview/);
+    const open = [...fixture.container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Open child task'),
+    );
+    assert.ok(open);
+    await act(async () => (open as HTMLElement).click());
+    assert.deepEqual(opened, ['child-operator-live']);
+    await fixture.close();
   });
 
   it('renders history read-only while the current epoch retains stop authority', async () => {

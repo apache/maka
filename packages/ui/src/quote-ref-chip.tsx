@@ -20,7 +20,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
-import { MetadataList, MetadataListItem, Text, VStack } from '@astryxdesign/core';
+import { HStack, MetadataList, MetadataListItem, Text, VStack } from '@astryxdesign/core';
 import { MessageSquareQuote, MessagesSquare, TextQuote } from './icons.js';
 import { cn } from './utils.js';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -103,7 +103,13 @@ export function QuoteRefChip(props: { quote: QuoteRef }) {
   const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
   const chip = (
-    <span
+    <HStack
+      gap={1}
+      paddingInline={2}
+      paddingBlock={expanded ? 1 : 0.5}
+      align={expanded ? 'start' : 'center'}
+      width={expanded ? '100%' : undefined}
+      maxWidth={expanded ? '100%' : '240px'}
       className={cn(
         'maka-quote-chip',
         expanded ? 'maka-quote-chip-expanded' : 'maka-quote-chip-collapsed',
@@ -144,7 +150,7 @@ export function QuoteRefChip(props: { quote: QuoteRef }) {
           {provenance ? ` · ${provenance}` : null}
         </span>
       </Button>
-    </span>
+    </HStack>
   );
 
   return (

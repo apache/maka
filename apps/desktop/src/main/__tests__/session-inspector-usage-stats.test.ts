@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   deriveInspectorOverviewModel,
+  formatDuration,
   RING_ACTIVE_MIN_SWEEP,
   RING_MIN_SWEEP,
   usageRingArcs,
@@ -343,4 +344,12 @@ test('hovering the dominant segment leaves the layout untouched', () => {
   );
   assert.ok(arcs[0].end >= 1 - RING_MIN_SWEEP);
   assert.equal(arcs[1].end, 1);
+});
+
+test('carries rounded inspector durations into the next unit', () => {
+  assert.equal(formatDuration(59_940), '59.9s');
+  assert.equal(formatDuration(59_960), '1m0s');
+  assert.equal(formatDuration(119_600), '2m0s');
+  assert.equal(formatDuration(3_599_600), '60m0s');
+  assert.equal(formatDuration(125_000), '2m5s');
 });

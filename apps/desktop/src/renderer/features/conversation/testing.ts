@@ -18,16 +18,30 @@
  */
 
 import type { ConversationServices } from './ports.js';
+import { createSessionUiState, type AppShellSessionUiState } from './model/session-ui-state.js';
+
+export {
+  createAppShellSessionUiStateController as createProductionSessionUiStateController,
+  clearAppShellSessionUiStateForSession,
+  createInitialAppShellSessionUiState,
+  type AppShellSessionUiState,
+} from './model/session-ui-state.js';
+
+/** Production controller with inspection available only to tests. */
+export function createAppShellSessionUiStateController(initialState?: AppShellSessionUiState) {
+  const { controller, getState } = createSessionUiState(initialState);
+  return { ...controller, getState };
+}
 
 export {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
-export { shellSessionRowEqual } from './controller/use-app-shell-session-ui-state.js';
 export { localMessagePresentation } from './controller/local-message-presentation.js';
 export { composerSend, composerFollowUp } from './controller/composer-follow-up.js';
 export { composerMessageRecovery } from './controller/composer-message-recovery.js';
+export { shellSessionRowEqual } from './model/conversation-catalog-row.js';
 export {
   type ActiveExecutionBoundarySnapshot,
   activeExecutionBoundaryOf,
@@ -44,6 +58,7 @@ export function stubConversationServices(
 ): ConversationServices {
   const { sessions, ...rest } = overrides;
   return {
+    observation: { openTranscript() { throw new Error('Transcript observation not configured'); }, subscribeEvents: () => () => {}, listActiveInteractions: async () => [], subscribeActiveInteractions: () => () => {}, shellRuns: { list: async () => [], subscribeUpdates: () => () => {}, subscribeResync: () => () => {} }, subscribeVisible: () => () => {}, queryCancelledMessages: async () => ({ cancelledMessageIds: [] }) },
     listMessages: async () => [],
     readFailedMessage: async () => { throw new Error('Failed-message recovery is not stubbed'); },
     releaseRecoveryAttachments: async () => undefined,
@@ -76,3 +91,19 @@ export function stubConversationServices(
     },
   };
 }
+
+export { usePlanModeState } from './controller/use-plan-mode-state.js';
+export type { PlanModeState } from './model/plan-state.js';
+export { PlanExecutionPanel } from './ui/plan-panels.js';
+
+export { createSessionWorkspaceActions } from './model/session-workspace-actions.js';
+
+export { createAppShellSessionDisplayBatch, createAppShellSessionEventHandlers } from './model/session-events.js';
+export { createConversationWorkspace } from './model/conversation-workspace.js';
+export { useConversationOwner } from './ui/conversation-context.js';
+
+export { createTranscriptCommands } from './model/transcript-commands.js';
+export { useConversationQueue } from './ui/conversation-provider.js';
+
+export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
+export { TranscriptReadingPositionController, type TranscriptReadingPositionCommands } from './controller/transcript-reading-position-controller.js';

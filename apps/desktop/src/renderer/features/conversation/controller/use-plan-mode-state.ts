@@ -17,30 +17,15 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react';
-import type { PlanExecutionStep, PlanProposal, PlanSessionState } from '@maka/core/plan';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PlanProposal, PlanSessionState } from '@maka/core/plan';
 import type { SessionEvent } from '@maka/core/events';
-import type { SessionSummary } from '@maka/core/session';
-import { Banner } from '@astryxdesign/core/Banner';
-import { Collapsible } from '@astryxdesign/core/Collapsible';
-import { Badge, type BadgeVariant, Button as UiButton, useToast, useUiLocale, type UiLocale } from '@maka/ui';
-import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
-import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
-import {
-  getPlanModeCopy,
-  planControlFailureCopy,
-  type PlanModeCopy,
-} from './locales/plan-mode-copy.js';
-
-export interface PlanModeState {
-  state: PlanSessionState | undefined;
-  pending: boolean;
-  error: string | undefined;
-  requestRevision(proposalId: string): Promise<void>;
-  approve(proposal: PlanProposal): Promise<void>;
-  resume(executionId: string): Promise<void>;
-  abandon(executionId: string, title: string): Promise<void>;
-}
+import { useToast, useUiLocale } from '@maka/ui';
+import { reportUnexpectedError } from '../../../application/contracts/operation-diagnostics.js';
+import type { PlanControlIpcResult } from '../../../../shared/plan-mode-ipc.js';
+import { getPlanModeCopy, planControlFailureCopy } from '../../../locales/plan-mode-copy.js';
+import type { PlanAutomaticQueryGate, PlanModeState, PlanSession } from '../model/plan-state.js';
+import { usePlanServices } from '../plan-services.js';
 
 /**
  * Identity of the panel instance a read or a user action belongs to.
@@ -88,20 +73,16 @@ interface PlanControlRetries {
   resume?: PlanResumeRetry;
 }
 
-interface AutomaticQueryGate {
-  subscribe(listener: () => void): () => void;
-  isAutomaticQueryBlocked(sessionId: string): boolean;
-}
-
-const UNBLOCKED_QUERY_GATE: AutomaticQueryGate = {
+const UNBLOCKED_QUERY_GATE: PlanAutomaticQueryGate = {
   subscribe: () => () => undefined,
   isAutomaticQueryBlocked: () => false,
 };
 
 export function usePlanModeState(
-  session: SessionSummary | undefined,
-  automaticQueryGate: AutomaticQueryGate = UNBLOCKED_QUERY_GATE,
+  session: PlanSession | undefined,
+  automaticQueryGate: PlanAutomaticQueryGate = UNBLOCKED_QUERY_GATE,
 ): PlanModeState {
+  const services = usePlanServices();
   const toastApi = useToast();
   const locale = useUiLocale();
   const copy = getPlanModeCopy(locale);
@@ -137,7 +118,7 @@ export function usePlanModeState(
     const sequence = (owner.sequence += 1);
     let next: PlanSessionState;
     try {
-      next = await window.maka.sessions.getPlanState(session.id);
+      next = await services.getPlanState(session.id);
     } catch (cause) {
       // A superseded read owns nothing, including its failure: report it only
       // while it is still the newest read of the Session still on screen.
@@ -150,7 +131,7 @@ export function usePlanModeState(
       || (automatic && automaticQueryGate.isAutomaticQueryBlocked(session.id))
     ) return;
     setState(next);
-  }, [automaticQueryGate, session?.id]);
+  }, [automaticQueryGate, services, session?.id]);
 
   useEffect(() => {
     const scope = scopeRef.current;
@@ -171,7 +152,7 @@ export function usePlanModeState(
       scope.sequence += 1;
       if (!queryBlocked) refreshOrReport();
     });
-    const unsubscribeEvents = window.maka.sessions.subscribeEvents(session.id, (event: SessionEvent) => {
+    const unsubscribeEvents = services.subscribeEvents(session.id, (event: SessionEvent) => {
       if (
         event.type === 'plan_submitted'
         || event.type === 'complete'
@@ -180,7 +161,7 @@ export function usePlanModeState(
         refreshOrReport();
       }
     });
-    const unsubscribePlanChanges = window.maka.sessions.subscribePlanChanges(
+    const unsubscribePlanChanges = services.subscribePlanChanges(
       session.id,
       refreshOrReport,
     );
@@ -192,7 +173,7 @@ export function usePlanModeState(
       unsubscribeEvents();
       unsubscribePlanChanges();
     };
-  }, [automaticQueryGate, copy.operationFailed, session?.id, session?.collaborationMode, refresh]);
+  }, [automaticQueryGate, copy.operationFailed, services, session?.id, session?.collaborationMode, refresh]);
 
   const run = useCallback(
     async (
@@ -231,9 +212,9 @@ export function usePlanModeState(
     if (!session) return;
     const owner = scopeRef.current;
     await run(owner, async () => {
-      return window.maka.sessions.requestPlanRevision(session.id, proposalId);
+      return services.requestPlanRevision(session.id, proposalId);
     });
-  }, [run, session?.id]);
+  }, [run, services, session?.id]);
 
   const approve = useCallback(async (proposal: PlanProposal): Promise<void> => {
     if (!session || !state) return;
@@ -254,7 +235,7 @@ export function usePlanModeState(
           };
     retries.current.approval = input;
     await run(owner, async () => {
-      const result = await window.maka.sessions.approvePlan(session.id, {
+      const result = await services.approvePlan(session.id, {
         proposalId: input.proposalId,
         expectedRevision: input.expectedRevision,
         expectedStoreVersion: input.expectedStoreVersion,
@@ -267,7 +248,7 @@ export function usePlanModeState(
       if (result.ok && retries.current.approval === input) retries.current.approval = undefined;
       return result;
     });
-  }, [run, session?.id, state]);
+  }, [run, services, session?.id, state]);
 
   const resume = useCallback(async (executionId: string): Promise<void> => {
     if (!session) return;
@@ -279,11 +260,11 @@ export function usePlanModeState(
         : { sessionId: session.id, executionId, turnId: crypto.randomUUID() };
     retries.current.resume = input;
     await run(owner, async () => {
-      const result = await window.maka.sessions.resumePlan(session.id, executionId, input.turnId);
+      const result = await services.resumePlan(session.id, executionId, input.turnId);
       if (result.ok && retries.current.resume === input) retries.current.resume = undefined;
       return result;
     });
-  }, [run, session?.id]);
+  }, [run, services, session?.id]);
 
   const abandon = useCallback(async (executionId: string, title: string): Promise<void> => {
     if (!session) return;
@@ -300,211 +281,9 @@ export function usePlanModeState(
     });
     if (!confirmed) return;
     await run(owner, async () => {
-      return window.maka.sessions.abandonPlanExecution(session.id, executionId);
+      return services.abandonPlanExecution(session.id, executionId);
     });
-  }, [copy, run, session?.id, toastApi]);
+  }, [copy, run, services, session?.id, toastApi]);
 
   return { state, pending, error, requestRevision, approve, resume, abandon };
-}
-
-export function PlanProposalCard(props: {
-  proposal: PlanProposal;
-  planMode: PlanModeState;
-}): JSX.Element {
-  const { proposal, planMode } = props;
-  const copy = getPlanModeCopy(useUiLocale()).proposal;
-  const reviewable =
-    proposal.status === 'pending_approval'
-    && planMode.state?.latestProposalId === proposal.proposalId;
-
-  return (
-    <section className="plan-mode-panel" aria-label={copy.aria}>
-      <div className="plan-proposal-card" data-status={proposal.status}>
-        <div className="plan-proposal-heading">
-          <div className="plan-proposal-title">
-            <span className="plan-proposal-kicker">{copy.kicker}</span>
-            <strong>{proposal.title}</strong>
-          </div>
-          <div className="plan-proposal-meta">
-            <Badge
-              className="plan-proposal-revision"
-              label={
-                <>
-                  {copy.revision} <code>{proposal.revision}</code>
-                </>
-              }
-            />
-            <Badge
-              variant={proposalStatusVariant(proposal.status)}
-              label={proposalStatusLabel(proposal.status, copy)}
-            />
-          </div>
-        </div>
-        {proposal.overview && <p className="plan-proposal-overview">{proposal.overview}</p>}
-        <div className="plan-proposal-section">
-          <h3>{copy.steps}</h3>
-          <ol className="plan-proposal-steps">
-            {proposal.steps.map((step, index) => (
-              <li key={step.id}>
-                <span className="plan-proposal-step-number" aria-hidden="true">{index + 1}</span>
-                <div className="plan-proposal-step-content">
-                  <strong>{step.title}</strong>
-                  <p>{step.description}</p>
-                </div>
-              </li>
-            ))}
-          </ol>
-        </div>
-        {proposal.risks && proposal.risks.length > 0 && (
-          <div className="plan-proposal-section plan-proposal-risks">
-            <h3>{copy.risks}</h3>
-            <ul>
-              {proposal.risks.map((risk, index) => <li key={`${index}:${risk}`}>{risk}</li>)}
-            </ul>
-          </div>
-        )}
-        {reviewable && (
-          <div className="plan-proposal-actions">
-            <UiButton
-              variant="secondary"
-              size="sm"
-              isDisabled={planMode.pending}
-              onClick={() => void planMode.requestRevision(proposal.proposalId)}
-              label={copy.revise}
-            />
-            <UiButton
-              variant="primary"
-              size="sm"
-              isDisabled={planMode.pending}
-              onClick={() => void planMode.approve(proposal)}
-              label={copy.execute}
-            />
-          </div>
-        )}
-        {planMode.error && reviewable && (
-          <Banner status="error" role="alert" title={planMode.error} />
-        )}
-      </div>
-    </section>
-  );
-}
-
-export function PlanExecutionPanel(props: {
-  planMode: PlanModeState;
-}): JSX.Element | null {
-  const { planMode } = props;
-  const copy = getPlanModeCopy(useUiLocale()).execution;
-  const [expanded, setExpanded] = useState(false);
-  const detailsId = useId();
-  const active = planMode.state?.executions.find(
-    (item) => item.executionId === planMode.state?.activeExecutionId,
-  );
-  const interrupted = [...(planMode.state?.executions ?? [])].reverse().find(
-    (item) => item.status === 'interrupted',
-  );
-  const execution = active ?? interrupted;
-  useEffect(() => {
-    setExpanded(false);
-  }, [execution?.executionId]);
-  if (!execution) return null;
-
-  const proposal = planMode.state?.proposals.find(
-    (item) => item.proposalId === execution.proposalId,
-  );
-  const completedCount = execution.steps.filter(
-    (step) => step.status === 'completed' || step.status === 'skipped',
-  ).length;
-
-  return (
-    <section className="plan-execution-panel" aria-label={copy.aria}>
-      <Collapsible
-        className="plan-execution-toggle"
-        isOpen={expanded}
-        onOpenChange={setExpanded}
-        trigger={(
-          <div className="plan-execution-trigger-body">
-            <div>
-              <span>{execution.status === 'interrupted' ? copy.interrupted : copy.running}</span>
-              <strong>{proposal?.title ?? copy.approvedPlan}</strong>
-            </div>
-            <span className="plan-execution-summary">
-              <span className="plan-execution-count">{copy.stepCount(completedCount, execution.steps.length)}</span>
-            </span>
-          </div>
-        )}
-      >
-        <div className="plan-execution-details" id={detailsId}>
-          <ol className="plan-execution-steps">
-            {execution.steps.map((step) => (
-              <li key={step.id} data-status={step.status}>
-                <span
-                  className="plan-execution-step-marker"
-                  data-status={step.status}
-                  role="img"
-                  aria-label={executionStepStatusLabel(step.status, copy)}
-                  title={executionStepStatusLabel(step.status, copy)}
-                >
-                  {executionStepMark(step.status)}
-                </span>
-                <span>{step.title}</span>
-              </li>
-            ))}
-          </ol>
-          {execution.status === 'interrupted' && (
-            <div className="plan-execution-actions">
-              <UiButton
-                variant="secondary"
-                size="sm"
-                isDisabled={planMode.pending}
-                onClick={() => void planMode.resume(execution.executionId)}
-                label={copy.resume}
-              />
-              <UiButton
-                variant="destructive"
-                size="sm"
-                isDisabled={planMode.pending}
-                onClick={() => void planMode.abandon(
-                  execution.executionId,
-                  proposal?.title ?? copy.approvedPlan,
-                )}
-                label={copy.abandon}
-              />
-            </div>
-          )}
-        </div>
-      </Collapsible>
-      {planMode.error && <Banner status="error" role="alert" title={planMode.error} />}
-    </section>
-  );
-}
-
-function proposalStatusLabel(
-  status: PlanProposal['status'],
-  copy: PlanModeCopy['proposal'],
-): string {
-  return copy.statuses[status];
-}
-
-/* #1879: the status pill is an Astryx `Badge`. Only `approved` is a semantic
-   outcome; waiting and stale are steady states, so they stay neutral rather
-   than borrowing a colour the state does not mean. `green` rather than
-   `success` because Astryx paints its semantic archive as solid saturated
-   fills and its colour archive as tints — the chrome this replaced was a
-   tint. */
-function proposalStatusVariant(status: PlanProposal['status']): BadgeVariant {
-  return status === 'approved' ? 'green' : 'neutral';
-}
-
-function executionStepStatusLabel(
-  status: PlanExecutionStep['status'],
-  copy: PlanModeCopy['execution'],
-): string {
-  return copy.stepStatuses[status];
-}
-
-function executionStepMark(status: PlanExecutionStep['status']): string {
-  if (status === 'completed') return '✓';
-  if (status === 'in_progress') return '•';
-  if (status === 'skipped') return '–';
-  return '';
 }

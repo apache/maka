@@ -68,7 +68,7 @@ export interface AppShellCommandListOptions {
   clientPathsAccessible: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
-  messages: StoredMessage[];
+  readMessages(): readonly StoredMessage[];
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
   settingsProfileId: string | undefined;
@@ -205,24 +205,20 @@ export function buildAppShellCommandList(
         );
       }
     },
-    onOpenWorkspace: async () => {
-      await optionsRef.current.openWorkspaceFolder();
-    },
+    onOpenWorkspace: () => optionsRef.current.openWorkspaceFolder(),
     ...(options.clientPathsAccessible
       ? {
           onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
         }
       : {}),
-    onSelectModule: (selection) => {
-      optionsRef.current.setNavSelection(selection);
-    },
+    onSelectModule: (selection) => optionsRef.current.setNavSelection(selection),
     onExportActiveConversation: async () => {
-      const { activeId, messages, sessionCatalog, toastApi } = optionsRef.current;
+      const { activeId, readMessages, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
       const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const markdown = renderConversationMarkdown(
         session?.name ?? copy.newConversation,
-        messages,
+        readMessages(),
         locale,
       );
       try {
@@ -236,13 +232,13 @@ export function buildAppShellCommandList(
       }
     },
     onSaveActiveConversationToFile: async () => {
-      const { activeId, messages, sessionCatalog, toastApi } = optionsRef.current;
+      const { activeId, readMessages, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
       const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const sessionName = session?.name ?? copy.newConversation;
       const markdown = renderConversationMarkdown(
         sessionName,
-        messages,
+        readMessages(),
         locale,
       );
       const now = new Date();

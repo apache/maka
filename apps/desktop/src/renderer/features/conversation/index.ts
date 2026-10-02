@@ -17,37 +17,22 @@
  * under the License.
  */
 
-import {
-  currentTranscriptRange,
-  transcriptRestoreTarget,
-} from './controller/transcript-reading-position.js';
-
-export const transcriptReadingPosition = {
-  currentRange: currentTranscriptRange,
-  restoreTarget: transcriptRestoreTarget,
-};
-
-export {
-  TranscriptReadingPositionController,
-  type TranscriptReadingPositionCommands,
-  type TranscriptTurnIndex,
-} from './controller/transcript-reading-position-controller.js';
-
 export {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
   resolveTaskReadinessModelTarget,
   type TaskReadinessNotice,
 } from './model/task-readiness-notice.js';
-export * from './model/session-ui-state.js';
+export type {
+  AppShellSessionUiStateController,
+  SessionPendingClaim,
+} from './model/session-ui-state.js';
+export type { SessionUiReads } from './model/session-ui-reads.js';
+export { useAppShellSessionUiReads } from './controller/use-session-ui-reads.js';
 export type { ConversationHostChange, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
 export { SessionLocalMessages } from './controller/session-local-messages.js';
-export { createConversationDisplayFrameScheduler } from './controller/display-frame-scheduler.js';
-export {
-  useAppShellSessionUiState,
-  type TranscriptPublisher,
-} from './controller/use-app-shell-session-ui-state.js';
+
 
 export { useComposerAttachments, type ComposerAttachmentService } from './controller/use-composer-attachments.js';
 export { type PendingAttachment, toSubmittedAttachments } from '@maka/ui/composer-attachments';
@@ -71,8 +56,6 @@ export {
 } from './ui/composer-mentions-provider.js';
 
 export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
-export { selectLiveTurns, sessionUiSelectors } from './model/session-ui-selectors.js';
-export { LiveTurnReconciler } from './controller/live-turn-reconciler.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
 export { composerFollowUp, type ComposerMessageContext } from './controller/composer-follow-up.js';
 export { composerMessageRecovery } from './controller/composer-message-recovery.js';
@@ -90,3 +73,17 @@ export * from './controller/use-new-task-choice.js';
 export * from './controller/use-shell-chat-model.js';
 export * from './model/executor-submission.js';
 export * from './model/executor-composer.js';
+
+export { PlanProvider } from './ui/plan-provider.js';
+export { PlanChatView, PlanExecutionSurface } from './ui/plan-surfaces.js';
+export { PlanServicesProvider } from './plan-services.js';
+export type { PlanServices } from './plan-ports.js';
+
+export type { ConversationObservationServices } from './transcript-ports.js';
+
+export { ConversationProvider } from './ui/conversation-provider.js';
+export { useConversationTarget as useAppShellSessionUiState } from './controller/use-conversation-target.js';
+
+export { ConversationLifecycle } from './ui/conversation-lifecycle.js';
+
+export { ConversationTranscriptRegion, ConversationComposerRegion, ConversationMessageConsumer } from './ui/conversation-readers.js';
