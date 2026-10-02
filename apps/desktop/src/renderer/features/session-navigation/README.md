@@ -75,6 +75,11 @@ through `SessionNavigationPorts`, which the shell composes.
 - Local Sessions group by Project while remote Sessions group by Runtime Host.
 - Opening a Session first exits WorkHub, selects the Sessions destination, then
   activates the Session and replaces or clears the turn-scroll target.
+- The WorkHub entry follows the client switch in the application WorkHub
+  enablement authority (`application/contracts/workhub-workspace`), which the
+  Workbar and the WorkHub dock read too. The rail shows the entry only while it
+  is on and checks it again before opening WorkHub; AppShell passes the entry
+  but holds no enablement state.
 - At most one row mutation runs per Session. Mutations retain revision-family
   semantics, and renderer state is cleared only after the Host confirms removal.
 - Width persistence remains trailing-debounced; width, collapse, and grouping

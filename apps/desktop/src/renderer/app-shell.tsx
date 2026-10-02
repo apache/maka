@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
+import { WorkHubControlOverlay, WorkHubDock, WorkHubEnablementWatch, WorkHubMainNavigation } from './features/workhub';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
   useCallback,
@@ -352,32 +352,9 @@ function AppShellContent({
     ));
   }, []);
   const navSelectionRef = useRef<NavSelection>(navSelection);
-  const [workHubEnabled, setWorkHubEnabled] = useState(false);
+  // Navigation only: whether WorkHub is enabled at all is the client switch
+  // the WorkHub enablement authority owns (see WorkHubEnablementWatch below).
   const [workHubActive, setWorkHubActive] = useState(false);
-  const workHubEnabledRef = useRef(false);
-  useEffect(() => {
-    let disposed = false;
-    const refresh = async () => {
-      try {
-        const enabled = (await window.maka.settings.getClient()).workHub.enabled;
-        if (disposed) return;
-        const becameEnabled = enabled && !workHubEnabledRef.current;
-        workHubEnabledRef.current = enabled;
-        setWorkHubEnabled(enabled);
-        if (!enabled || becameEnabled) setWorkHubActive(enabled);
-        if (becameEnabled) setNavSelection({ section: 'sessions' });
-      } catch {
-        // Keep the last known client-owned setting. A transient settings read
-        // must not leave the shell half-switched between WorkHub and Session.
-      }
-    };
-    void refresh();
-    const unsubscribe = window.maka.settings.subscribeClientChanged(() => void refresh());
-    return () => {
-      disposed = true;
-      unsubscribe();
-    };
-  }, [setNavSelection]);
   // #4582: read only displayed/owner Session chrome. Token content and global
   // streaming membership subscribe inside their consuming regions.
   const {
@@ -735,7 +712,6 @@ function AppShellContent({
     [shellCopy],
   );
   const openWorkHub = useCallback(() => {
-    if (!workHubEnabledRef.current) return;
     overlays.commands.closeSettings();
     setNavSelection({ section: 'sessions' });
     setWorkHubActive(true);
@@ -1520,7 +1496,7 @@ function AppShellContent({
     <WorkbarProvider
       bridge={bridge}
       input={{
-        workHub: { enabled: workHubEnabled, active: workHubActive },
+        workHub: { active: workHubActive },
         available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
         layoutSessionId: activeId,
         activeSession: activeHostSession,
@@ -1557,6 +1533,7 @@ function AppShellContent({
       })}
     >
       <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
+      <WorkHubEnablementWatch onEnabled={() => { setWorkHubActive(true); setNavSelection({ section: 'sessions' }); }} onDisabled={exitWorkHub} />
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
         onExecutionBoundaryChanged={reloadActiveExecutionBoundary}
@@ -1660,11 +1637,7 @@ function AppShellContent({
                 onSelect={setNavSelection}
                 onOpenSettings={openSettings}
                 onNew={createSession}
-                workHubEntry={workHubEnabled ? {
-                  active: workHubActive,
-                  label: 'WorkHub',
-                  onSelect: openWorkHub,
-                } : undefined}
+                workHubEntry={{ active: workHubActive, label: 'WorkHub', onSelect: openWorkHub }}
                 projectActions={projectRowActions}
                 onNewProject={
                   taskEntry.selectors.canAddProject
@@ -1696,7 +1669,7 @@ function AppShellContent({
               <WorkHubMainNavigation workbarReady={workHubActive && selectors.ready}
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRightPanel}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 data-session-history-surface="true"
                 // ChatView positions this transcript: switching conversations,

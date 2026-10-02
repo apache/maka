@@ -16,15 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { WorkHubEnablementSource } from '../../application/contracts/workhub-workspace/workhub-enablement.js';
 
-/** Cross-package integration tests exercise the same hook and authority as ChatView. */
-export { useChatScroll } from './use-chat-scroll.js';
-export {
-  TranscriptScrollAuthorityProvider,
-  TranscriptScrollButton,
-  useTranscriptScrollAuthority,
-  type TranscriptScrollAuthority,
-} from './transcript-scroll-authority.js';
-
-export { foldTimeline } from './timeline-fold.js';
-export { useSessionRailChrome, useSessionRailSelection } from './session-rail-context.js';
+export function createDesktopWorkHubEnablementSource(
+  bridge: { settings: Pick<MakaBridge['settings'], 'getClient' | 'subscribeClientChanged'> } = window.maka,
+): WorkHubEnablementSource {
+  return {
+    read: async () => (await bridge.settings.getClient()).workHub.enabled,
+    subscribeChanges: (handler) => bridge.settings.subscribeClientChanged(handler),
+  };
+}

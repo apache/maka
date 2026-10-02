@@ -616,9 +616,7 @@
         "importDeclarations": 50,
         "bridgePaths": {
           "window.maka.onboarding.setMilestone": 1,
-          "window.maka.sessions.listTurnLandmarks": 1,
-          "window.maka.settings.getClient": 1,
-          "window.maka.settings.subscribeClientChanged": 1
+          "window.maka.sessions.listTurnLandmarks": 1
         },
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
@@ -633,11 +631,11 @@
           "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
-          "useEffect": 2,
+          "useEffect": 1,
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
-          "useRef": 7,
+          "useRef": 6,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
           "useShellAppearance": 1,
@@ -647,7 +645,7 @@
           "useShellMemoryPill": 1,
           "useShellResume": 1,
           "useStableActions": 4,
-          "useState": 10,
+          "useState": 9,
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
@@ -728,7 +726,7 @@
           "react": 1
         },
         "importSpecifiers": 74,
-        "nonTriviaTokens": 9069
+        "nonTriviaTokens": 8915
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

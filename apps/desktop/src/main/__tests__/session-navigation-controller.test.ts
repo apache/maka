@@ -24,10 +24,11 @@ import type { ProjectRecord } from '@maka/core/project';
 import {
   LocaleProvider,
   useSessionRailData,
+  type SessionRailChrome,
   type SessionRailData,
   type SessionRailSelection,
 } from '@maka/ui';
-import { useSessionRailSelection } from '@maka/ui/testing';
+import { useSessionRailChrome, useSessionRailSelection } from '@maka/ui/testing';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeSessionNavigationServices,
@@ -47,6 +48,10 @@ import { createSessionCatalogController } from '../../renderer/application/contr
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import type { SnapshotReader } from '../../renderer/application/contracts/snapshot-reader.js';
 import { createProductionSessionUiStateController } from '../../renderer/features/conversation/testing.js';
+import {
+  WorkHubEnablementProvider,
+  type WorkHubEnablement,
+} from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
 
 const EMPTY_STREAMING_SESSIONS = new Set<string>();
 
@@ -192,7 +197,11 @@ function input(
 
 function navigationTree(
   catalog: ReturnType<typeof createSessionCatalogController>,
-  shell: { activeSessionId: string; workHubActive: boolean },
+  shell: {
+    activeSessionId: string;
+    workHubActive: boolean;
+    workHubEntry?: { active: boolean; label: string; onSelect(): void };
+  },
   sibling: ReactNode,
   child: ReactNode,
   streamingSessions: SnapshotReader<ReadonlySet<string>> = {
@@ -607,6 +616,46 @@ describe('SessionNavigationProvider selection', () => {
     await render(true);
 
     assert.deepEqual([...selection().selectedIds], []);
+  });
+
+  it('offers the WorkHub entry only while the switch is on, checked again on select', async () => {
+    let chrome: SessionRailChrome | undefined;
+    function ChromeProbe() {
+      chrome = useSessionRailChrome();
+      return null;
+    }
+    let enabled = false;
+    const listeners = new Set<() => void>();
+    const enablement: WorkHubEnablement = {
+      isEnabled: () => enabled,
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    const opened: string[] = [];
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const { root } = installReactRenderer();
+    await act(async () => root.render(createElement(WorkHubEnablementProvider, { value: enablement },
+      navigationTree(catalog, {
+        activeSessionId: 'root',
+        workHubActive: false,
+        workHubEntry: { active: false, label: 'WorkHub', onSelect: () => opened.push('workhub') },
+      }, null, createElement(ChromeProbe)))));
+    const workHubEntry = () => chrome?.workHubEntry;
+    assert.equal(workHubEntry(), undefined);
+    enabled = true;
+    await act(async () => listeners.forEach((listener) => listener()));
+    const entry = workHubEntry();
+    assert.equal(entry?.label, 'WorkHub');
+    enabled = false;
+    entry?.onSelect();
+    assert.deepEqual(opened, [], 'a click that lands after the switch went off does nothing');
+    enabled = true;
+    entry?.onSelect();
+    assert.deepEqual(opened, ['workhub']);
+    await act(async () => root.unmount());
   });
 });
 

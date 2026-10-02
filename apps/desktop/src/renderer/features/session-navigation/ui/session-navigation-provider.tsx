@@ -64,6 +64,7 @@ import { sessionIdSetsEqual } from '../../../application/contracts/session-catal
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
 import type { SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
+import { useWorkHubEnabled, useWorkHubEnablement } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -72,6 +73,7 @@ export interface SessionNavigationChromeInput {
   scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;
   workHubActive: boolean;
+  /** Shown, and selectable, only while the client WorkHub switch is on. */
   workHubEntry?: { active: boolean; label: string; onSelect(): void };
   projectActions?: ProjectRowActions;
   onSelect(selection: NavSelection): void;
@@ -145,6 +147,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     ports: props.ports,
   });
   const openRowId = props.workHubActive ? undefined : rail.activeRowId;
+  const workHubEnabled = useWorkHubEnabled();
+  const workHubEnablement = useWorkHubEnablement();
   const selection = useSessionSelection({
     sessions: rail.sessions,
     commands: controller.commands,
@@ -320,7 +324,10 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
-    workHubEntry: props.workHubEntry,
+    workHubEntry: workHubEnabled && props.workHubEntry ? {
+      ...props.workHubEntry,
+      onSelect: () => { if (workHubEnablement.isEnabled()) props.workHubEntry?.onSelect(); },
+    } : undefined,
   };
 
   return (

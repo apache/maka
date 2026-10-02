@@ -18,6 +18,7 @@
  */
 
 import { WorkHubWorkspaceServicesProvider, type WorkHubWorkspaceServices } from '../../renderer/application/contracts/workhub-workspace/use-workhub-workspace.js';
+import { WorkHubEnablementProvider } from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
@@ -765,8 +766,9 @@ describe('useWorkbarController', () => {
     const render = (active: boolean) => root.render(createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(WorkbarServicesProvider, { services },
-        createElement(WorkHubWorkspaceServicesProvider, { value: coordination },
-          createElement(ControllerProbe, { ...ordinary, workHub: { enabled: true, active } }))),
+        createElement(WorkHubEnablementProvider, { value: { isEnabled: () => true, subscribe: () => () => {} } },
+          createElement(WorkHubWorkspaceServicesProvider, { value: coordination },
+            createElement(ControllerProbe, { ...ordinary, workHub: { active } })))),
     }));
     await act(async () => render(true));
     assert.equal(controller().host.activeId, coordinationId);

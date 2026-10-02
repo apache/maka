@@ -25,6 +25,7 @@ export { WorkHubDock } from './ui/workhub-dock.js';
 export { WorkHubSurfaceSwitch } from './ui/workhub-surface-switch.js';
 export { WorkHubControlOverlay } from './ui/control-overlay.js';
 export { WorkHubMainNavigation } from './ui/main-navigation.js';
+export { WorkHubEnablementWatch } from '../../application/contracts/workhub-workspace/workhub-enablement.js';
 export {
   startWorkHubCoordinationLifecycle,
   WorkHubModelConfigurationRequiredError,

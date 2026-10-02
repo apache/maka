@@ -64,6 +64,11 @@ import {
   createSessionCatalogController,
   SessionCatalogContext,
 } from '../application/contracts/session-catalog/session-catalog-state.js';
+import {
+  createWorkHubEnablement,
+  WorkHubEnablementProvider,
+} from '../application/contracts/workhub-workspace/workhub-enablement.js';
+import { createDesktopWorkHubEnablementSource } from '../platform/desktop/create-workhub-enablement-source.js';
 
 if (import.meta.env.DEV) {
   const stopObserving = observeReactPerformanceMeasures();
@@ -77,6 +82,9 @@ export function createDesktopFeatureServices() {
     // through `useSessionCatalogController` so providers below do not need it
     // drilled through the shell.
     sessionCatalog: createSessionCatalogController(),
+    // Client-global, like the catalog: the shell, Workbar, the rail and the
+    // WorkHub dock all follow the same switch.
+    workHubEnablement: createWorkHubEnablement(createDesktopWorkHubEnablementSource()),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
     diagnostics: createDesktopDiagnosticsServices(),
@@ -106,6 +114,7 @@ export function DesktopFeatureServicesProvider(props: {
 }) {
   return (
     <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
+    <WorkHubEnablementProvider value={props.services.workHubEnablement}>
     <ClientPluginServicesProvider services={props.services.clientPlugins}>
       <ClientPluginRoot>
         <AppUpdateServicesProvider services={props.services.appUpdate}>
@@ -149,6 +158,7 @@ export function DesktopFeatureServicesProvider(props: {
         </AppUpdateServicesProvider>
       </ClientPluginRoot>
     </ClientPluginServicesProvider>
+    </WorkHubEnablementProvider>
     </SessionCatalogContext.Provider>
   );
 }
