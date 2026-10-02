@@ -64,6 +64,7 @@ import {
   createSessionCatalogController,
   SessionCatalogContext,
 } from '../application/contracts/session-catalog/session-catalog-state.js';
+import { createDesktopSessionCatalogSource } from '../platform/desktop/session-catalog-sync.js';
 import {
   createWorkHubEnablement,
   WorkHubEnablementProvider,
@@ -86,7 +87,7 @@ export function createDesktopFeatureServices() {
     // service — it is created once with the other app singletons and read
     // through `useSessionCatalogController` so providers below do not need it
     // drilled through the shell.
-    sessionCatalog: createSessionCatalogController(),
+    sessionCatalog: createSessionCatalogController(createDesktopSessionCatalogSource()),
     // Client-global, like the catalog: the shell, Workbar, the rail and the
     // WorkHub dock all follow the same switch.
     workHubEnablement: createWorkHubEnablement(createDesktopWorkHubEnablementSource()),

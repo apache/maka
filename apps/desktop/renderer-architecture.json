@@ -727,9 +727,7 @@
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
-        "bridgePaths": {
-          "window.maka.sessions.list": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
           "useExternalStoreSelector": 1,
@@ -752,7 +750,7 @@
           "react": 1
         },
         "importSpecifiers": 5,
-        "nonTriviaTokens": 481
+        "nonTriviaTokens": 479
       },
       "src/renderer/use-app-shell-session-ui-reads.ts": {
         "importDeclarations": 0,
