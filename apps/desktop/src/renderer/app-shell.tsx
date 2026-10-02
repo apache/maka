@@ -1399,6 +1399,7 @@ function AppShellContent({
     hiddenSessionIds: selectors.hiddenSessionIds,
     captureComposerImportOwner,
     copyManualDiagnosticReport,
+    paletteActions: overlays.paletteActions,
     createSession,
     openHelp,
     openScheduledTaskCreate: () => {

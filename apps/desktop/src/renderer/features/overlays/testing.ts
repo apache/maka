@@ -43,6 +43,13 @@ export function createFakeOverlaysServices(
     },
     settingsSection: { persist: () => undefined },
     focus: { blurActiveElement: () => undefined },
+    palette: {
+      testConnection: async () => ({ ok: true }),
+      setDefaultConnection: async () => undefined,
+      testNetworkProxy: async () => ({ ok: true, message: '' }),
+      openLocalMemoryFile: async () => ({ ok: true }),
+      saveConversationToFile: async () => ({ ok: false, reason: 'canceled' }),
+    },
     ...overrides,
   };
 }

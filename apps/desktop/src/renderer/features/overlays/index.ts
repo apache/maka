@@ -23,7 +23,7 @@ export { OverlaysConsumer } from './ui/overlays-context.js';
 export { KeyboardHelpModal } from './ui/keyboard-help-modal.js';
 export { CommandPalette } from './ui/command-palette.js';
 export { SearchModalHost } from './ui/search-modal-host.js';
-export type { OverlaysServices } from './ports.js';
+export type { OverlayPaletteActions, OverlaysServices } from './ports.js';
 export type { Command } from './model/command.js';
 export type { OverlaysShellProjection } from './model/overlays-projection.js';
 export {

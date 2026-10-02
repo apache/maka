@@ -23,7 +23,6 @@ import { join, relative, resolve } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { act, createElement, useEffect, type ReactNode } from 'react';
-import type { SessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   AstryxLocaleProvider,
@@ -33,10 +32,6 @@ import {
   type ToastDiagnosticTarget,
 } from '@maka/ui';
 import type { DesktopDiagnosticInput } from '../../preload/diagnostics-contract.js';
-import {
-  buildAppShellCommandList,
-  type AppShellCommandListOptions,
-} from '../../renderer/app-shell-command-actions.js';
 import { ErrorBoundary } from '../../renderer/error-boundary.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import {
@@ -54,6 +49,7 @@ import {
   type RendererCrashDiagnosticReport,
   type ToastDiagnosticReport,
 } from '../../renderer/features/diagnostics/testing.js';
+import { appShellCommandOptions, runPaletteCommand } from './app-shell-command-options.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 type TreeNode = { readonly childNodes?: readonly TreeNode[]; readonly tagName?: string; readonly textContent: string };
@@ -453,64 +449,14 @@ describe('ErrorBoundary crash report', () => {
 describe('Command palette manual report', () => {
   const copy = getShellCopy('en').commandActions;
 
-  function paletteCommands(
-    copyManualDiagnosticReport: AppShellCommandListOptions['copyManualDiagnosticReport'],
-    toasts: string[],
-  ) {
-    const options: AppShellCommandListOptions = {
-      uiLocale: 'en',
-      activeId: 'session-1',
-      activePermissionMode: undefined,
-      canSetPermissionMode: false,
-      clientPathsAccessible: false,
-      connections: [],
-      defaultConnection: null,
-      readMessages: () => [],
-      newTaskProfileId: 'new-task-profile',
-      settingsOpen: false,
-      settingsProfileId: undefined,
-      sessionCatalog: {} as SessionCatalogController,
-      themePref: 'auto',
-      hiddenSessionIds: new Set(),
-      captureComposerImportOwner: () => ({ sessionId: 'session-1', navSection: 'sessions' }),
-      copyManualDiagnosticReport,
-      createSession() {},
-      openSideConversation() {},
-      openHelp() {},
-      openScheduledTaskCreate() {},
-      openProjectFolder: async () => {},
-      openSessionInChat() {},
-      openSettings() {},
-      openSettingsSection() {},
-      openWorkspaceFolder: async () => {},
-      refreshConnections: async () => {},
-      copyTodayDailyReview: async () => {},
-      pasteTodayDailyReview: async () => {},
-      saveTodayDailyReview: async () => {},
-      setNavSelection() {},
-      setPermissionMode: async () => true,
-      setThemePref() {},
-      toastApi: {
-        success: (title) => toasts.push(`success:${title}`),
-        info() {},
-        error: (title, _description, _details, target) => toasts.push(`error:${title}:${JSON.stringify(target)}`),
-      },
-    };
-    return buildAppShellCommandList({ current: options });
-  }
-
-  async function runCopyDiagnostics(commands: ReturnType<typeof paletteCommands>): Promise<void> {
-    const command = commands.find(({ id }) => id === 'diag:copy-diagnostics');
-    assert.ok(command, 'missing diag:copy-diagnostics');
-    await command.run();
-  }
-
   test('copies through the injected command with the current target, then confirms', async () => {
     const targets: Array<ManualDiagnosticTarget | undefined> = [];
     const toasts: string[] = [];
-    await runCopyDiagnostics(paletteCommands(async (target) => {
-      targets.push(target);
-    }, toasts));
+    await runPaletteCommand(appShellCommandOptions(toasts, {
+      copyManualDiagnosticReport: async (target) => {
+        targets.push(target);
+      },
+    }), 'diag:copy-diagnostics');
 
     assert.deepEqual(targets, [{ sessionId: 'session-1' }]);
     assert.deepEqual(toasts, [`success:${copy.diagnosticsCopiedTitle}`]);
@@ -520,13 +466,17 @@ describe('Command palette manual report', () => {
     t.mock.method(console, 'error', () => {});
     const toasts: string[] = [];
     let attempts = 0;
-    await runCopyDiagnostics(paletteCommands(async () => {
-      attempts += 1;
-      throw new Error('denied');
-    }, toasts));
+    await runPaletteCommand(appShellCommandOptions(toasts, {
+      copyManualDiagnosticReport: async () => {
+        attempts += 1;
+        throw new Error('denied');
+      },
+    }), 'diag:copy-diagnostics');
 
     assert.equal(attempts, 1);
-    assert.deepEqual(toasts, [`error:${copy.copyFailedTitle}:${JSON.stringify({ sessionId: 'session-1' })}`]);
+    assert.deepEqual(toasts, [
+      `error:${copy.copyFailedTitle}:${copy.clipboardDenied}:${JSON.stringify({ sessionId: 'session-1' })}`,
+    ]);
   });
 });
 

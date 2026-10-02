@@ -374,13 +374,7 @@
       },
       "src/renderer/app-shell-command-actions.ts": {
         "importDeclarations": 5,
-        "bridgePaths": {
-          "window.maka.connections.setDefault": 1,
-          "window.maka.connections.test": 1,
-          "window.maka.memory.openFile": 1,
-          "window.maka.sessions.saveConversationToFile": 1,
-          "window.maka.settings.testNetworkProxy": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {
           "navigator.clipboard.writeText": 1
         },
@@ -401,7 +395,7 @@
           "react": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 2179
+        "nonTriviaTokens": 2172
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 1,
@@ -697,7 +691,7 @@
           "react": 1
         },
         "importSpecifiers": 74,
-        "nonTriviaTokens": 9042
+        "nonTriviaTokens": 9048
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
