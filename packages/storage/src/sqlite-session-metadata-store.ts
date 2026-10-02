@@ -6492,17 +6492,19 @@ function agentGraphScheduleUpdateRequest(
 function archiveRetentionCandidatePredicate(): { sql: string; parameters: readonly string[] } {
   const row = sqliteArchivedTaskRowPredicate();
   return {
-    // `is_flagged = 0` repeats what the family clause implies so the
-    // `(is_flagged, is_archived, …)` index bounds the scan to archived rows.
+    // The pinned-family exclusion is deliberately uncorrelated: SQLite
+    // evaluates the pinned family roots once, instead of rescanning
+    // session_metadata for every candidate. The correlated form was quadratic
+    // (about 1 s at 10k Sessions) and runs synchronously on the Host thread.
+    // No index covers is_flagged/is_archived (migration 26 dropped them).
     sql: `(
       metadata.is_flagged = 0
       AND ${row.sql}
       AND json_type(metadata.payload_json, '$.subagentParent.graph') IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM session_metadata pinned
+      AND COALESCE(metadata.revision_root_session_id, metadata.session_id) NOT IN (
+        SELECT COALESCE(pinned.revision_root_session_id, pinned.session_id)
+        FROM session_metadata pinned
         WHERE pinned.is_flagged = 1
-          AND COALESCE(pinned.revision_root_session_id, pinned.session_id)
-            = COALESCE(metadata.revision_root_session_id, metadata.session_id)
       )
     )`,
     parameters: row.parameters,
