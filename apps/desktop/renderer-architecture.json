@@ -324,6 +324,195 @@
     "src/renderer/features/conversation/ui/composer-staging-context.ts",
     "src/renderer/features/conversation/ui/conversation-context.ts"
   ],
+  "rootSymbolUses": {
+    "src/renderer/features/app-update/index.ts": {
+      "appShell": [
+        "AppUpdateProvider"
+      ],
+      "composition": [
+        "AppUpdateServicesProvider"
+      ]
+    },
+    "src/renderer/features/client-plugins/index.ts": {
+      "composition": [
+        "ClientPluginRoot",
+        "ClientPluginServicesProvider"
+      ]
+    },
+    "src/renderer/features/connection-settings/index.ts": {
+      "composition": [
+        "ConnectionSettingsServicesProvider"
+      ]
+    },
+    "src/renderer/features/conversation/index.ts": {
+      "appShell": [
+        "ComposerStagingProvider",
+        "ConversationComposerRegion",
+        "ConversationLifecycle",
+        "ConversationMessageConsumer",
+        "ConversationProvider",
+        "ConversationTranscriptRegion",
+        "NEW_TASK_PENDING_KEY",
+        "PlanExecutionSurface",
+        "PlanProvider",
+        "SessionLocalMessages",
+        "activeHostTurn",
+        "canSubmitExecutor",
+        "chatTurnActivity",
+        "createComposerStagingCommands",
+        "createRevisionAwareOnSend",
+        "createStagedFollowUp",
+        "deriveTaskReadinessNotice",
+        "desktopSlashCommandPresentation",
+        "executorComposerProps",
+        "newTaskConfiguration",
+        "resolveTaskReadinessModelTarget",
+        "toSubmittedAttachments",
+        "useActiveExecutionBoundary",
+        "useAppShellSessionUiReads",
+        "useAppShellSessionUiState",
+        "useNewTaskChoice",
+        "useShellChatModel",
+        "useShellResume"
+      ],
+      "composition": [
+        "ComposerStagingServicesProvider",
+        "ConversationServicesProvider",
+        "PlanServicesProvider"
+      ]
+    },
+    "src/renderer/features/diagnostics/index.ts": {
+      "appShell": [
+        "DiagnosticReportToastProvider",
+        "PreviousMainProcessInterruptionNotice"
+      ],
+      "composition": [
+        "DiagnosticsServicesProvider"
+      ]
+    },
+    "src/renderer/features/external-agent-settings/index.ts": {
+      "composition": [
+        "ExternalAgentSettingsServicesProvider"
+      ]
+    },
+    "src/renderer/features/goals/index.ts": {
+      "appShell": [
+        "GoalHost",
+        "GoalProvider"
+      ],
+      "composition": [
+        "GoalServicesProvider"
+      ]
+    },
+    "src/renderer/features/module-hub/index.ts": {
+      "appShell": [
+        "ModuleHubHost",
+        "ModuleHubProvider",
+        "ModuleHubScheduledTasksBoundary",
+        "ModuleHubSkillCatalogRevisionBoundary",
+        "createModuleHubCommandPort"
+      ],
+      "composition": [
+        "ModuleHubServicesProvider"
+      ]
+    },
+    "src/renderer/features/overlays/index.ts": {
+      "appShell": [
+        "CommandPalette",
+        "KeyboardHelpModal",
+        "OverlaysConsumer",
+        "OverlaysRoot",
+        "SearchModalHost"
+      ],
+      "composition": [
+        "OverlaysServicesProvider"
+      ]
+    },
+    "src/renderer/features/runtime-host-management/index.ts": {
+      "appShell": [
+        "RuntimeHostHandoffOverlay"
+      ],
+      "composition": [
+        "RuntimeHostManagementServicesProvider"
+      ]
+    },
+    "src/renderer/features/session-bundle/index.ts": {
+      "composition": [
+        "SessionBundleServicesProvider"
+      ]
+    },
+    "src/renderer/features/session-collaboration/index.ts": {
+      "appShell": [
+        "GuestTurnRequests",
+        "SessionCollaborationDialogRoot",
+        "SessionCollaborationNavigation",
+        "SessionTurnRequestApprovalForSession",
+        "SessionTurnRequestBadge",
+        "SessionTurnRequestInboxProvider"
+      ],
+      "composition": [
+        "SessionCollaborationServicesProvider"
+      ]
+    },
+    "src/renderer/features/session-navigation/index.ts": {
+      "appShell": [
+        "SessionNavigationProvider",
+        "createSessionOpenCommand",
+        "sessionRailLayoutStore",
+        "useSessionNavigationReads"
+      ],
+      "composition": [
+        "SessionNavigationServicesProvider"
+      ]
+    },
+    "src/renderer/features/session-settings/index.ts": {
+      "appShell": [
+        "SessionSettingsProvider",
+        "useSessionSettingIntent"
+      ],
+      "composition": [
+        "SessionSettingsServicesProvider"
+      ]
+    },
+    "src/renderer/features/storage-usage/index.ts": {
+      "composition": [
+        "StorageUsageServicesProvider"
+      ]
+    },
+    "src/renderer/features/task-entry/index.ts": {
+      "appShell": [
+        "TaskEntryHost",
+        "TaskEntryRoot",
+        "TaskEntryWorkspacePickerConsumer"
+      ],
+      "composition": [
+        "TaskEntryServicesProvider"
+      ]
+    },
+    "src/renderer/features/workbar/index.ts": {
+      "appShell": [
+        "WorkbarHost",
+        "WorkbarProvider",
+        "WorkbarShellRoot",
+        "WorkbarTitlebarActions"
+      ],
+      "composition": [
+        "WorkbarServicesProvider"
+      ]
+    },
+    "src/renderer/features/workhub/index.ts": {
+      "appShell": [
+        "WorkHubControlOverlay",
+        "WorkHubDock",
+        "WorkHubMainNavigation"
+      ],
+      "composition": [
+        "WorkHubRoot",
+        "WorkHubServicesProvider",
+        "WorkHubSurfaceSwitch"
+      ]
+    }
+  },
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-chat-actions.ts": {
