@@ -245,7 +245,6 @@ describe('ACP prompt content', () => {
     }
   });
 
-
   for (const interruption of ['cancelled', 'failed'] as const) {
     test(`aborts an open Artifact upload when a chunk is ${interruption}`, async () => {
       const root = await mkdtemp(join(tmpdir(), 'maka-acp-publish-'));
