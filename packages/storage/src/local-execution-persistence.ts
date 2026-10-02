@@ -22,6 +22,7 @@ import { createSqliteAgentRunStore } from './agent-run-store.js';
 import { openRuntimeEventPersistence } from './runtime-event-persistence.js';
 import { createConversationOperationalStateStore } from './conversation-operational-state.js';
 import { createAgentGraphControlStore } from './agent-graph-control-store.js';
+import { createSqliteEventWaitAuthority } from './sqlite-event-wait-authority.js';
 import { createSqliteGoalAuthority } from './goal-authority.js';
 import { createSqliteInteractionStore } from './interaction-store.js';
 import type { ExecutionPersistenceProvider } from './execution-persistence-provider.js';
@@ -54,6 +55,8 @@ export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = O
       closes.push(() => operational.close());
       const graphControlStore = createAgentGraphControlStore(canonicalPath);
       closes.push(() => graphControlStore.close());
+      const eventWaitStore = createSqliteEventWaitAuthority(canonicalPath);
+      closes.push(() => eventWaitStore.close());
       const goalStore = createSqliteGoalAuthority(canonicalPath);
       closes.push(() => goalStore.close());
       const interactionStore = createSqliteInteractionStore(canonicalPath);
@@ -65,6 +68,7 @@ export const localExecutionPersistenceProvider: ExecutionPersistenceProvider = O
         runtimeEventStore: runtime.runtimeEventStore,
         graphControlStore,
         goalStore,
+        eventWaitStore,
         interactionStore,
         purgeConversationOperationalState: (sessionId: string) => operational.purge(sessionId),
         close,

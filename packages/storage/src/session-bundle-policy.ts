@@ -196,6 +196,12 @@ export interface SessionBundleExportInput extends SessionBundleRootLayoutInput {
    */
   omitDiagnostics?: boolean;
   /**
+   * Omit event-wait authority when transferring Sessions to another State Root.
+   * A snapshot keeps these records, but a portable copy must not duplicate an
+   * active subscription or a resolved result still awaiting delivery.
+   */
+  omitEventWaits?: boolean;
+  /**
    * Authority the caller already holds, instead of electing it here.
    *
    * The Runtime Host owns the Storage Root for its whole lifetime and the
@@ -364,6 +370,7 @@ export async function exportSessionBundleState(
           await filterBackedUpDatabase(databasePath, plan.sessionIds, {
             omitDiagnostics: input.omitDiagnostics === true,
             requireQuiescent: input.requireQuiescent === true,
+            omitEventWaits: input.omitEventWaits === true,
           });
           await copyContextSnapshot(stateRoot, stagingRoot, contextLocked, plan.sessionIds);
           await validateContextSnapshot(stagingRoot);
@@ -477,7 +484,7 @@ async function backupOperationalState(stateRoot: string, destinationPath: string
 async function filterBackedUpDatabase(
   destinationPath: string,
   sessionIds: readonly string[],
-  options: { omitDiagnostics: boolean; requireQuiescent: boolean },
+  options: { omitDiagnostics: boolean; requireQuiescent: boolean; omitEventWaits: boolean },
 ): Promise<void> {
   const runtimeStore = createSqliteRuntimeStore(destinationPath);
   try {
@@ -506,6 +513,11 @@ async function filterBackedUpDatabase(
       .all() as Array<{ name?: unknown }>;
     for (const row of tables) {
       if (typeof row.name !== 'string' || PORTABLE_GLOBAL_TABLES.has(row.name)) continue;
+      if (options.omitEventWaits && row.name === EVENT_WAIT_TABLE) {
+        // Keep the schema while leaving root-owned wait authority behind.
+        database.exec(`DELETE FROM ${quoteIdentifier(row.name)}`);
+        continue;
+      }
       const columns = database
         .prepare(`PRAGMA table_info(${quoteIdentifier(row.name)})`)
         .all() as Array<{ name?: unknown }>;
@@ -689,6 +701,8 @@ const LOCAL_SEQUENCE_COLUMNS = new Map([
   ['tool_journal_events', 'journal_seq'],
   ['message_admissions', 'sequence'],
 ]);
+
+const EVENT_WAIT_TABLE = 'workflow_event_waits';
 
 const PORTABLE_GLOBAL_TABLES = new Set([
   'operational_schema_migrations',
@@ -958,10 +972,9 @@ export interface SessionBundleImportResult {
  * The mirror of the export, and the asymmetry is the whole design: the export
  * owns a private copy and can DELETE what is not the subtree, while the import
  * writes into a live workspace holding other people's Sessions and can only
- * ADD. What keeps that from needing a table list is that the bundle's database
- * already contains nothing else -- so this copies every table it has, and a
- * table added to the schema later travels in both directions without anyone
- * updating a list.
+ * ADD. Session-owned tables are discovered by their Session columns. Workspace
+ * tables and event-wait authority are excluded independently of export filtering:
+ * the receiving State Root must not acquire another Root's subscriptions.
  *
  * Write order is the safety argument. Artifact bytes land first and the
  * database transaction commits last, so a failure between them leaves files
@@ -1245,12 +1258,11 @@ async function sameFileContent(left: string, right: string): Promise<boolean> {
 class NotTheSamePayloadError extends Error {}
 
 /**
- * Copy every table the bundle has, in one transaction.
+ * Copy transferable Session tables in one transaction.
  *
- * No allow-list: the bundle's database was already filtered down to its own
- * Sessions, so "everything it has" is exactly what belongs. Only the tables
- * describing the WORKSPACE rather than a Session are skipped -- the target has
- * its own, and they are not the bundle's to bring.
+ * Session columns classify ordinary tables. Workspace records, trigger-maintained
+ * projections, and event-wait authority stay under the receiving Root's control,
+ * even when the bundle was produced by an exporter that retained them.
  */
 function mergeBundleDatabase(
   lease: OperationalStateDatabaseLease,
@@ -1312,7 +1324,10 @@ export function listSessionBundleMergeTables(target: DatabaseSync): SessionBundl
     if (
       typeof name !== 'string' ||
       PORTABLE_GLOBAL_TABLES.has(name) ||
-      TRIGGER_MAINTAINED_TABLES.has(name)
+      TRIGGER_MAINTAINED_TABLES.has(name) ||
+      // Older bundles and snapshots can contain wait rows. Import is a
+      // Session transfer, so it must independently refuse to copy them.
+      name === EVENT_WAIT_TABLE
     ) {
       continue;
     }
