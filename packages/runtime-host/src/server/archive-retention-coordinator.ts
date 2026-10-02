@@ -186,8 +186,10 @@ export class HostArchiveRetentionCoordinator {
     const gap = archiveRetentionGapThreshold(setting.days);
     // A hold ends when its day is over, before or after the deadline alike.
     let hold = document.latest?.hold;
+    let heartbeatCleared = false;
     if (hold && now >= hold.until) {
-      await this.#clearHold();
+      heartbeatCleared = this.#heartbeatDue(document, now);
+      await this.#clearHold(heartbeatCleared ? now : undefined);
       hold = undefined;
     }
     // A forward jump is caught even when it lands short of the deadline. A
@@ -198,12 +200,20 @@ export class HostArchiveRetentionCoordinator {
       ? previous
       : Math.max(previous, (await this.#catalog.readLatestSessionMetadataTime()) ?? 0);
     if (now - since > gap) return this.#hold(since, now);
+    // A Host can run for weeks without writing session metadata. Persist a
+    // coarse heartbeat so a later restart can tell that idle time was spent
+    // while the Host was running, rather than treating it as a clock jump.
+    const heartbeat =
+      !heartbeatCleared && now >= previous && this.#heartbeatDue(this.#document ?? document, now);
     // Nothing can be eligible before the policy itself is `days` old, and no
     // candidate is read before then.
-    if (now <= deadline) return false;
-    if (now < previous) return this.#pause(now);
+    if (now <= deadline) {
+      if (heartbeat) await this.#heartbeat(now);
+      return false;
+    }
+    if (now < previous) return this.#pause(now, heartbeat);
     const newest = await this.#catalog.readLatestSessionMetadataTime();
-    if (newest !== undefined && now < newest) return this.#pause(now);
+    if (newest !== undefined && now < newest) return this.#pause(now, heartbeat);
     if (hold) return false;
 
     if (this.#pass?.revision !== setting.revision) {
@@ -264,11 +274,11 @@ export class HostArchiveRetentionCoordinator {
     }
     if (stopped || page.length === CANDIDATE_PAGE) {
       // A deletion is recorded as it happens, not only when the pass ends.
-      if (pass.deleted > deletedBefore) await this.#record(now, pass);
+      if (pass.deleted > deletedBefore) await this.#record(now, pass, heartbeat);
       return !this.#draining;
     }
     if (this.#pass === pass) this.#pass = undefined;
-    await this.#finishPass(now, pass);
+    await this.#finishPass(now, pass, heartbeat);
     return false;
   }
 
@@ -323,14 +333,37 @@ export class HostArchiveRetentionCoordinator {
     return false;
   }
 
-  #clearHold(): Promise<void> {
-    return this.#update(({ latest, ...rest }) => {
-      const { hold: _hold, ...kept } = latest ?? {};
-      return { ...rest, ...(Object.keys(kept).length > 0 ? { latest: kept } : {}) };
+  #heartbeatDue(document: ArchiveRetentionDocument, now: number): boolean {
+    if (!document.enabled || document.enabledAt === undefined) return false;
+    const previous = document.latest?.observedAt ?? document.enabledAt;
+    return now > previous && now - previous >= ARCHIVE_RETENTION_DAY_MS;
+  }
+
+  async #heartbeat(now: number): Promise<void> {
+    await this.#serialized(async () => {
+      const document = await this.#load();
+      if (!document.enabled || document.enabledAt === undefined) return;
+      const previous = document.latest?.observedAt ?? document.enabledAt;
+      if (now <= previous || now - previous < ARCHIVE_RETENTION_DAY_MS) return;
+      await this.#write({
+        ...document,
+        latest: { ...document.latest, observedAt: now },
+      });
     });
   }
 
-  async #pause(now: number): Promise<false> {
+  #clearHold(observedAt?: number): Promise<void> {
+    return this.#update(({ latest, ...rest }) => {
+      const { hold: _hold, ...kept } = latest ?? {};
+      return {
+        ...rest,
+        ...(observedAt === undefined ? {} : { latest: { ...kept, observedAt } }),
+        ...(observedAt === undefined && Object.keys(kept).length > 0 ? { latest: kept } : {}),
+      };
+    });
+  }
+
+  async #pause(now: number, heartbeat = false): Promise<false> {
     this.#pass = undefined;
     // Recorded once: a clock that stays behind writes nothing further.
     if (this.#document?.latest?.lastSweep?.paused) return false;
@@ -339,13 +372,14 @@ export class HostArchiveRetentionCoordinator {
       ...document,
       latest: {
         ...document.latest,
+        ...(heartbeat ? { observedAt: now } : {}),
         lastSweep: { at: now, deleted: 0, skippedBusy: 0, needsReview: 0, failed: 0, paused: true },
       },
     }));
     return false;
   }
 
-  async #finishPass(now: number, pass: SweepPass): Promise<void> {
+  async #finishPass(now: number, pass: SweepPass, heartbeat: boolean): Promise<void> {
     const previous = this.#document?.latest?.lastSweep;
     const unchanged =
       pass.deleted === 0 &&
@@ -353,17 +387,17 @@ export class HostArchiveRetentionCoordinator {
       pass.needsReview === (previous?.needsReview ?? 0) &&
       pass.failed === (previous?.failed ?? 0) &&
       previous?.paused !== true;
-    if (unchanged) return;
+    if (unchanged && !heartbeat) return;
     if (pass.deleted + pass.skippedBusy + pass.needsReview + pass.failed > 0) {
       this.#log(
         `archive retention deleted ${pass.deleted} tasks; kept ${pass.skippedBusy} busy and ` +
           `${pass.needsReview} for review; ${pass.failed} failed`,
       );
     }
-    await this.#record(now, pass);
+    await this.#record(now, pass, heartbeat);
   }
 
-  #record(now: number, pass: SweepPass): Promise<void> {
+  #record(now: number, pass: SweepPass, heartbeat = false): Promise<void> {
     const lastSweep: ArchiveRetentionSweep = {
       at: now,
       deleted: pass.deleted,
@@ -387,6 +421,7 @@ export class HostArchiveRetentionCoordinator {
         ...document,
         latest: {
           ...document.latest,
+          ...(heartbeat ? { observedAt: now } : {}),
           lastSweep,
           ...(lastDeletion ? { lastDeletion } : {}),
         },
@@ -463,6 +498,7 @@ export class HostArchiveRetentionCoordinator {
         const { enabledAt: _previous, latest, ...rest } = current;
         const lastSweep = latest?.lastSweep && withoutPause(latest.lastSweep);
         const nextLatest = {
+          ...(input.enabled ? { observedAt: now } : {}),
           ...(lastSweep ? { lastSweep } : {}),
           ...(latest?.lastDeletion ? { lastDeletion: latest.lastDeletion } : {}),
         };
@@ -543,6 +579,7 @@ export class HostArchiveRetentionCoordinator {
     this.#observedAt = Math.max(
       this.#observedAt,
       document.enabledAt ?? 0,
+      document.latest?.observedAt ?? 0,
       document.latest?.lastSweep?.at ?? 0,
       document.latest?.hold?.detectedAt ?? 0,
     );
