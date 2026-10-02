@@ -39,6 +39,7 @@ const DOCUMENT: ArchiveRetentionDocument = {
   days: 60,
   enabledAt: 1_000,
   latest: {
+    observedAt: 8_000,
     lastSweep: { at: 9_000, deleted: 2, skippedBusy: 1, needsReview: 0, failed: 0 },
     lastDeletion: { at: 9_000, count: 2, bytes: 512 },
     hold: { since: 1_000, detectedAt: 9_000, until: 95_400 },
@@ -92,6 +93,7 @@ describe('archive retention document', () => {
         JSON.stringify({ ...DOCUMENT, latest: { lastSweep: { at: 1 } } }),
         JSON.stringify({ ...DOCUMENT, latest: { lastDeletion: { at: 1, count: 1, bytes: 1.5 } } }),
         JSON.stringify({ ...DOCUMENT, latest: { hold: { since: 5, detectedAt: 4, until: 6 } } }),
+        JSON.stringify({ ...DOCUMENT, latest: { observedAt: 1.5 } }),
       ]) {
         await write(value);
         assert.equal((await readArchiveRetentionDocument(root)).kind, 'invalid', value);

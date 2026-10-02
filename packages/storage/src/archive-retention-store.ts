@@ -51,6 +51,8 @@ export interface ArchiveRetentionDocument {
   /** Host clock when the current setting took effect; present exactly while enabled. */
   readonly enabledAt?: number;
   readonly latest?: {
+    /** Coarse Host heartbeat used to distinguish an idle restart from a clock jump. */
+    readonly observedAt?: number;
     readonly lastSweep?: ArchiveRetentionSweep;
     readonly lastDeletion?: ArchiveRetentionDeletion;
     /** Deletions held after a forward clock gap; any setting change clears it. */
@@ -125,7 +127,12 @@ function decodeArchiveRetentionDocument(value: unknown): ArchiveRetentionDocumen
   const latest =
     document.latest === undefined
       ? undefined
-      : exactRecord(document.latest, `${FILE}.latest`, [], ['lastSweep', 'lastDeletion', 'hold']);
+      : exactRecord(
+          document.latest,
+          `${FILE}.latest`,
+          [],
+          ['observedAt', 'lastSweep', 'lastDeletion', 'hold'],
+        );
   return {
     version: VERSION,
     revision: count(document.revision, 'revision'),
@@ -138,6 +145,9 @@ function decodeArchiveRetentionDocument(value: unknown): ArchiveRetentionDocumen
       ? {}
       : {
           latest: {
+            ...(latest.observedAt === undefined
+              ? {}
+              : { observedAt: count(latest.observedAt, 'latest observedAt') }),
             ...(latest.lastSweep === undefined
               ? {}
               : { lastSweep: decodeArchiveRetentionSweep(latest.lastSweep, documentError) }),

@@ -248,8 +248,9 @@ test('enabling or changing the days restamps enabledAt on the Host clock; disabl
 
   // Setting what is already set is no change and keeps the clock.
   r.now += DAY;
+  const writesAfterChange = r.writes.length;
   assert.deepEqual(await r.set(true, 60), changed);
-  assert.equal(r.writes.length, 2);
+  assert.equal(r.writes.length, writesAfterChange);
 
   const disabled = await r.set(false, 60);
   assert.deepEqual(disabled, {
@@ -500,18 +501,18 @@ test('a document that cannot be validated is treated as disabled until it is set
   assert.equal((await r.set(true, 30)).kind, 'committed');
 });
 
-test('the document is written only when a sweep changed something', async () => {
+test('the document records a daily heartbeat and sweep results without duplicate writes', async () => {
   const r = rig({ tasks: [] });
   await r.set(true, 30);
   await r.advance(31 * DAY);
   const writes = r.writes.length;
   await r.retention.sweep();
-  assert.equal(r.writes.length, writes, 'an empty sweep writes nothing');
+  assert.equal(r.writes.length, writes + 1, 'an empty sweep records the heartbeat');
 
   r.tasks.set('busy', { id: 'busy', outcome: { kind: 'busy' } });
   r.now += DAY;
   await r.retention.sweep();
-  assert.equal(r.writes.length, writes + 1);
+  assert.equal(r.writes.length, writes + 2);
   assert.deepEqual((await r.query()).lastSweep, {
     at: r.now,
     deleted: 0,
@@ -521,13 +522,13 @@ test('the document is written only when a sweep changed something', async () => 
   });
   r.now += DAY;
   await r.retention.sweep();
-  assert.equal(r.writes.length, writes + 1, 'the same result is not written again');
+  assert.equal(r.writes.length, writes + 3, 'the next heartbeat is written once');
 
   r.tasks.set('legacy', { id: 'legacy', outcome: { kind: 'removed', bytes: 40 } });
   r.tasks.set('unmeasured', { id: 'unmeasured', outcome: { kind: 'removed' } });
   r.now += DAY;
   await r.retention.sweep();
-  assert.equal(r.writes.length, writes + 2);
+  assert.equal(r.writes.length, writes + 4);
   const result = await r.query();
   assert.equal(result.lastSweep?.deleted, 2);
   // One deletion could not be measured, so no estimate is claimed.
@@ -643,6 +644,20 @@ test('after a restart, recent metadata writes say the Host was running', async (
   assert.equal((await r.query()).hold, undefined);
 });
 
+test('a running Host records a heartbeat so an idle restart does not hold', async () => {
+  const r = rig({ tasks: [{ id: 'legacy' }] });
+  await r.set(true, 30);
+  await r.advance(6 * DAY);
+  await r.retention.sweep();
+  const heartbeat = r.writes.at(-1)?.latest?.observedAt;
+  assert.equal(heartbeat, r.now);
+
+  r.restart();
+  r.now += 2 * DAY;
+  await r.retention.sweep();
+  assert.equal((await r.query()).hold, undefined);
+});
+
 test('a setting change clears a hold', async () => {
   const r = rig({ tasks: [{ id: 'legacy' }] });
   await r.set(true, 30);
@@ -699,7 +714,7 @@ test('a hold expires before the deadline: cleared once and never reported after 
   await r.retention.sweep();
   assert.equal(r.writes.length, writes + 1);
   assert.equal(r.writes.at(-1)?.latest?.hold, undefined);
-  r.now += DAY;
+  r.now += 1;
   await r.retention.sweep();
   assert.equal(r.writes.length, writes + 1, 'cleared once');
   assert.deepEqual(r.removed, [], 'still before the deadline');
