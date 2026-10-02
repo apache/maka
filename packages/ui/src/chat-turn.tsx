@@ -194,7 +194,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
               icon={<Icon icon={Pencil} size="sm" />}
               variant="ghost"
               size="sm"
-              className={markerVariants({ variant: 'footer-action' })}
               isDisabled={props.editDisabled === true}
               data-action="edit"
               data-message-id={props.messageId}
@@ -350,7 +349,6 @@ function CopyButton(props: {
       icon={<Icon icon={copyPhase === 'copied' ? 'check' : 'copy'} size="sm" />}
       variant="ghost"
       size="sm"
-      className={markerVariants({ variant: 'footer-action' })}
       isDisabled={props.disabled}
       isLoading={copyPhase === 'pending'}
       data-action={props.dataAction}
@@ -509,7 +507,6 @@ export const TurnView = memo(function TurnView(props: {
               key={badge.id}
               variant="ghost"
               size="sm"
-              className={markerVariants({ variant: 'lineage-badge' })}
               data-direction="forward"
               tooltip={badge.tooltip ?? badge.label}
               onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
@@ -799,7 +796,6 @@ export const TurnView = memo(function TurnView(props: {
                     key={badge.id}
                     variant="ghost"
                     size="sm"
-                    className={markerVariants({ variant: 'lineage-badge' })}
                     data-direction="reverse"
                     tooltip={badge.tooltip ?? badge.label}
                     onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
@@ -1077,7 +1073,6 @@ function TurnFooter(props: {
                 icon={STATUS_FOOTER_ICON[action.id]}
                 variant="ghost"
                 size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
                 data-action={action.id}
                 isDisabled={!action.enabled}
                 isLoading={action.pending === true}
