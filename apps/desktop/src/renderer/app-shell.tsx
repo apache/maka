@@ -524,7 +524,7 @@ function AppShellContent({
     [commitRevisionDraft],
   );
 
-  const { safeResumeAction, composerResumeAction, noteUserStoppedTurn } = useShellResume({
+  const { safeResumeAction, composerResumeAction } = useShellResume({
     activeId,
     ownerActiveId,
     sharedSessionActive,
@@ -1199,16 +1199,6 @@ function AppShellContent({
     removeTransientMessage,
     toastApi,
   });
-  // #5904: the composer's Stop and its Resume offer share one send slot, so
-  // the slot must never offer to restart the very Turn the user just stopped
-  // from it — a repeated click would. Every composer stop path (the Stop
-  // button and Escape, both gated on streaming) notes the stop here, and the
-  // resume tracker suppresses exactly the offer that stop produces; the
-  // interrupted-Turn banner remains the deliberate resume path for it.
-  const stopOwningItsTarget = () => {
-    noteUserStoppedTurn(activeIdRef.current);
-    void stop();
-  };
 
   useAppShellNavRefSync({
     navSelection,
@@ -1764,7 +1754,7 @@ function AppShellContent({
                   // screen (first token, or a slow provider's step-to-step lull).
                   streaming={turnActive}
                   onSend={sendOwningItsTarget}
-                  onStop={stopOwningItsTarget}
+                  onStop={stop}
                   resumeAction={composerResumeAction}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}

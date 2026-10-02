@@ -24,16 +24,8 @@ import { createResumeAvailabilityTracker } from '../../renderer/application/cont
 
 type Availability = Array<readonly [string, boolean]>;
 
-type PlanStub =
-  | {
-      readonly disposition: 'ready';
-      readonly sourceTurnId?: string;
-      readonly sourceRunId?: string;
-    }
-  | { readonly disposition: 'parked' };
-
 function track(
-  query: (sessionId: string) => Promise<PlanStub>,
+  query: (sessionId: string) => Promise<{ readonly disposition: 'ready' | 'parked' }>,
   availability: Availability,
 ) {
   return createResumeAvailabilityTracker({
@@ -173,127 +165,5 @@ describe('resume availability tracker', () => {
       ['session-1', false],
       ['session-1', true],
     ]);
-  });
-
-  it('keeps the stopped candidate hidden across duplicate terminal notifications', async () => {
-    const availability: Availability = [];
-    const gate = deferred<void>();
-    let queries = 0;
-    const tracker = track(async () => {
-      queries += 1;
-      await gate.promise;
-      // Both reads observe the same stopped candidate: identical source Turn
-      // and Run. One stop publishes the terminal notification twice (observer
-      // frame and stop IPC), producing an in-flight read plus a trailing one.
-      return { disposition: 'ready' as const, sourceTurnId: 'turn-1', sourceRunId: 'run-1' };
-    }, availability);
-
-    tracker.noteUserStopped('session-1');
-    tracker.request('session-1');
-    tracker.request('session-1');
-    gate.resolve();
-    await flush();
-
-    assert.equal(queries, 2);
-    // The first ready answer captures the stopped candidate's identity; the
-    // trailing read observes the very same candidate and stays hidden.
-    assert.deepEqual(availability, [
-      ['session-1', false],
-      ['session-1', false],
-    ]);
-  });
-
-  it('offers again once the resume candidate moves on to a new run or turn', async () => {
-    const availability: Availability = [];
-    const plans: PlanStub[] = [
-      { disposition: 'ready', sourceTurnId: 'turn-1', sourceRunId: 'run-1' },
-      { disposition: 'ready', sourceTurnId: 'turn-1', sourceRunId: 'run-1' },
-      // The stopped Turn was resumed (via the banner) and interrupted again:
-      // a new source run is a candidate the user did not just stop.
-      { disposition: 'ready', sourceTurnId: 'turn-1', sourceRunId: 'run-2' },
-      // A genuinely different interruption.
-      { disposition: 'ready', sourceTurnId: 'turn-2', sourceRunId: 'run-3' },
-    ];
-    const tracker = track(async () => plans.shift() ?? { disposition: 'parked' as const }, availability);
-
-    tracker.noteUserStopped('session-1');
-    tracker.request('session-1');
-    await flush();
-    tracker.request('session-1');
-    await flush();
-    assert.deepEqual(availability, [
-      ['session-1', false],
-      ['session-1', false],
-    ]);
-
-    tracker.request('session-1');
-    await flush();
-    assert.deepEqual(availability.at(-1), ['session-1', true]);
-
-    // The last emission was a visible offer, so this re-read retracts it in
-    // flight before answering — then the new candidate shows.
-    tracker.request('session-1');
-    await flush();
-    assert.deepEqual(availability, [
-      ['session-1', false],
-      ['session-1', false],
-      ['session-1', true],
-      ['session-1', false],
-      ['session-1', true],
-    ]);
-  });
-
-  it('hides a visible offer the moment the user stops a Turn', async () => {
-    const availability: Availability = [];
-    const tracker = track(async () => ({ disposition: 'ready' as const }), availability);
-
-    tracker.request('session-1');
-    await flush();
-    assert.deepEqual(availability, [['session-1', true]]);
-
-    tracker.noteUserStopped('session-1');
-    assert.deepEqual(availability, [
-      ['session-1', true],
-      ['session-1', false],
-    ]);
-  });
-
-  it('keeps the stop capture armed until a ready answer identifies the candidate', async () => {
-    const availability: Availability = [];
-    const plans: PlanStub[] = [
-      // Parked answers (session busy, candidate missing) cannot identify —
-      // and must not spend — the capture: the first READY answer names the
-      // stopped Turn.
-      { disposition: 'parked' },
-      { disposition: 'ready', sourceTurnId: 'turn-1', sourceRunId: 'run-1' },
-      { disposition: 'ready', sourceTurnId: 'turn-1', sourceRunId: 'run-1' },
-    ];
-    const tracker = track(async () => plans.shift() ?? { disposition: 'parked' as const }, availability);
-
-    tracker.noteUserStopped('session-1');
-    tracker.request('session-1');
-    await flush();
-    tracker.request('session-1');
-    await flush();
-    assert.deepEqual(availability, [
-      ['session-1', false],
-      ['session-1', false],
-    ]);
-
-    // Once captured, the stopped candidate stays hidden on every re-read.
-    tracker.request('session-1');
-    await flush();
-    assert.deepEqual(availability.at(-1), ['session-1', false]);
-  });
-
-  it('scopes the stop suppression to the session that was stopped', async () => {
-    const availability: Availability = [];
-    const tracker = track(async () => ({ disposition: 'ready' as const }), availability);
-
-    tracker.noteUserStopped('session-1');
-    tracker.request('session-2');
-    await flush();
-
-    assert.deepEqual(availability, [['session-2', true]]);
   });
 });
