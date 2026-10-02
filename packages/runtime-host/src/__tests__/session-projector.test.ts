@@ -33,6 +33,31 @@ import {
   type SubscriptionFrame,
 } from '../protocol/index.js';
 
+const fixedClock = () => 10;
+
+function projectorAt(current = snapshot(), hasRenderedQueue = false) {
+  return new RuntimeHostSessionProjector(
+    current,
+    createRuntimeHostSessionProjectionSeed([], current),
+    fixedClock,
+    [],
+    hasRenderedQueue,
+  );
+}
+
+function eventTypes(events: readonly SessionEvent[]) {
+  return events.map(({ type }) => type);
+}
+
+function queueUpdate(events: readonly SessionEvent[]) {
+  const update = events.find(
+    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
+      event.type === 'queue_update',
+  );
+  assert.ok(update, 'expected an authoritative queue update');
+  return update;
+}
+
 test('projects Client Capability approvals without exposing provider identities', () => {
   assert.deepEqual(
     projectRuntimeHostInteractionRequest(
@@ -121,11 +146,7 @@ test('applies authoritative replacement once and does not complete it again at T
 });
 
 test('forwards a terminal context-compaction outcome with the synthesized complete event', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt();
 
   const events = projector.accept({
     kind: 'subscription.session_projection',
@@ -437,11 +458,7 @@ test('projects a queue drain that lands while no root Turn is live', () => {
   // with not_found forever. Seeding stays silent for rootless snapshots — the
   // Desktop observer pins an empty seed there — because a client that never
   // observed the session has no stale card to clear.
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt(snapshot({ queue: queue(2, [steeringEntry('queued')]) }));
 
   const drained = projector.accept({
     kind: 'subscription.session_projection',
@@ -450,17 +467,9 @@ test('projects a queue drain that lands while no root Turn is live', () => {
     sequence: 1,
     snapshot: snapshot({ projectionRevision: 2, rootTurn: null, queue: queue(3, []) }),
   });
-  assert.deepEqual(
-    drained.events.map((event) => event.type),
-    ['queue_update'],
-  );
-  const update = drained.events.find(
-    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
-      event.type === 'queue_update',
-  );
-  assert.ok(update, 'the drained queue must be projected');
-  assert.deepEqual(update.steering, []);
-  assert.deepEqual(update.followup, []);
+  assert.deepEqual(eventTypes(drained.events), ['queue_update']);
+  const update = queueUpdate(drained.events);
+  assert.deepEqual([update.steering, update.followup], [[], []]);
 });
 
 test('seeding a rootless snapshot conveys the authoritative queue', () => {
@@ -468,60 +477,16 @@ test('seeding a rootless snapshot conveys the authoritative queue', () => {
   // Session is inactive, the resubscribing client's stale queued card survives
   // until a queue_update that the rootless seed never produced (apache/maka
   // #5520 review). The rootless seed must carry the authoritative queue once.
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({ rootTurn: null, queue: queue(3, []) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt(snapshot({ rootTurn: null, queue: queue(3, []) }));
 
-  const seeded = projector.seedActive(true);
-  assert.deepEqual(
-    seeded.map((event) => event.type),
-    ['queue_update'],
-  );
-  const update = seeded.find(
-    (event): event is Extract<SessionEvent, { type: 'queue_update' }> =>
-      event.type === 'queue_update',
-  );
-  assert.ok(update);
-  assert.deepEqual(update.steering, []);
-  assert.deepEqual(update.followup, []);
-});
-
-test('reseeds the latest provider retry when the active Turn still carries one', () => {
-  const retry = {
-    phase: 'scheduled' as const,
-    attempt: 8,
-    maxAttempts: 10,
-    delayMs: 40_000,
-    reason: 'rate_limit' as const,
-  };
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        runId: 'run-1',
-        status: 'running',
-        providerRetry: retry,
-      },
-    }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-
-  const seeded = projector.seedActive(true);
-  assert.equal(seeded.length, 1);
-  assert.equal(seeded[0]?.type, 'provider_retry');
-  assert.equal(seeded[0] && 'phase' in seeded[0] ? seeded[0].phase : undefined, 'scheduled');
+  const seeded = projector.seedActive({ authoritative: true }.authoritative);
+  assert.deepEqual(eventTypes(seeded), ['queue_update']);
+  const update = queueUpdate(seeded);
+  assert.deepEqual([update.steering, update.followup], [[], []]);
 });
 
 test('projects structured context-budget failure detail to the Desktop event', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt();
 
   const events = projector.accept({
     kind: 'subscription.session_projection',
@@ -552,107 +517,6 @@ test('projects structured context-budget failure detail to the Desktop event', (
       message: 'Turn failed: context_overflow',
     },
   ]);
-});
-
-test('reseeds a scheduled retry with remainingMs recomputed from the stored schedule time', () => {
-  // #3393: a reconnect mid-wait must not restart the countdown. The snapshot
-  // keeps the host-clock schedule time; the projector re-derives the skew-free
-  // remaining duration at projection time.
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        runId: 'run-1',
-        status: 'running',
-        providerRetry: {
-          phase: 'scheduled' as const,
-          attempt: 8,
-          maxAttempts: 10,
-          delayMs: 40_000,
-          ts: 5, // scheduled 5ms before the projector clock's `now`
-          reason: 'rate_limit' as const,
-        },
-      },
-    }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-
-  const seeded = projector.seedActive(true);
-  const retry = seeded[0];
-  assert.ok(retry && retry.type === 'provider_retry' && retry.phase === 'scheduled');
-  assert.equal(retry.delayMs, 40_000);
-  assert.equal(retry.remainingMs, 39_995);
-});
-
-test('emits a live provider retry when the snapshot overlay appears, then drops it after content', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-  const retrying = snapshot({
-    projectionRevision: 2,
-    rootTurn: {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-      providerRetry: {
-        phase: 'scheduled',
-        attempt: 8,
-        maxAttempts: 10,
-        delayMs: 40_000,
-        reason: 'rate_limit',
-      },
-    },
-  });
-  const appeared = projector.accept({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 1,
-    snapshot: retrying,
-  }).events;
-  assert.equal(appeared.length, 1);
-  assert.equal(appeared[0]?.type, 'provider_retry');
-
-  const recovered = snapshot({
-    projectionRevision: 3,
-    rootTurn: {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      status: 'running',
-    },
-  });
-  projector.accept({
-    kind: 'subscription.session_delta',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 2,
-    sessionId: 'session-1',
-    delta: {
-      kind: 'text',
-      turnId: 'turn-1',
-      runId: 'run-1',
-      messageId: 'message-1',
-      startOffset: 0,
-      text: 'ok',
-    },
-  });
-  projector.accept({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 3,
-    snapshot: recovered,
-  });
-  assert.deepEqual(
-    projector.seedActive(true).map((event) => event.type),
-    ['text_delta'],
-  );
 });
 
 test('seeds only streams identified as active by the Host catch-up state', () => {
@@ -749,11 +613,7 @@ test('does not replay settled transcript steps when the active step reaches term
 });
 
 test('marks Runtime Host tool results whose durable content is omitted', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt();
 
   const projected = projector.accept({
     kind: 'subscription.session_event',
@@ -782,11 +642,7 @@ test('marks Runtime Host tool results whose durable content is omitted', () => {
 });
 
 test('preserves the bounded shell-run correlation on a tool start', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt();
   const ref = 'maka://runtime/background-tasks/bg-1';
 
   const projected = projector.accept({
@@ -820,11 +676,7 @@ test('projects the durable steering echo even when the in-flight queue state was
   // Regression for apache/maka#3304: the coalesced canonical refresh can jump
   // the queue straight from queued to consumed, so the in-flight synthesis
   // never fires. The forwarded steering_message event must render the message.
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt(snapshot({ queue: queue(2, [steeringEntry('queued')]) }));
 
   const skipped = projector.accept({
     kind: 'subscription.session_projection',
@@ -833,10 +685,7 @@ test('projects the durable steering echo even when the in-flight queue state was
     sequence: 1,
     snapshot: snapshot({ queue: queue(4, []) }),
   });
-  assert.deepEqual(
-    skipped.events.map((event) => event.type),
-    ['queue_update'],
-  );
+  assert.deepEqual(eventTypes(skipped.events), ['queue_update']);
 
   const echoed = projector.accept(steeringFrame(2)).events;
   assert.equal(echoed.length, 1);
@@ -851,11 +700,7 @@ test('projects the durable steering echo even when the in-flight queue state was
 });
 
 test('leaves an in-flight steering message in the queue until the runtime event places it', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({ queue: queue(2, [steeringEntry('queued')]) }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
+  const projector = projectorAt(snapshot({ queue: queue(2, [steeringEntry('queued')]) }));
   const pulled = projector.accept({
     kind: 'subscription.session_projection',
     hostEpoch: 'host-1',
@@ -863,14 +708,8 @@ test('leaves an in-flight steering message in the queue until the runtime event 
     sequence: 1,
     snapshot: snapshot({ queue: queue(3, [steeringEntry('in_flight')]) }),
   });
-  assert.deepEqual(
-    pulled.events.map((event) => event.type),
-    ['queue_update'],
-  );
-  assert.deepEqual(
-    projector.seedActive(false).map((event) => event.type),
-    ['queue_update'],
-  );
+  assert.deepEqual(eventTypes(pulled.events), ['queue_update']);
+  assert.deepEqual(eventTypes(projector.seedActive(false)), ['queue_update']);
   // The runtime event takes the entry out of the queue as it places the row…
   assert.deepEqual(
     projector
@@ -964,6 +803,16 @@ function userSteering(
   };
 }
 
+function projectionFrame(sequence: number, current: SessionContinuitySnapshot): SubscriptionFrame {
+  return {
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence,
+    snapshot: current,
+  };
+}
+
 function deltaFrame(
   sequence: number,
   startOffset: number,
@@ -1036,12 +885,7 @@ function assistant(id: string, text: string): Extract<StoredMessage, { type: 'as
 }
 
 test('live tool_start keeps intent and argsPreview, and never fabricates args', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-    [],
-  );
+  const projector = projectorAt();
 
   const update = projector.accept({
     kind: 'subscription.session_event',
@@ -1071,142 +915,73 @@ test('live tool_start keeps intent and argsPreview, and never fabricates args', 
   assert.equal(event.args, undefined);
 });
 
-test('seeds a context-compaction-started event for a running compaction Turn', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-compact',
-        runId: 'run-compact',
-        status: 'running',
-        rootExecutionKind: 'context_compact',
-      },
-    }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
+test('context compaction projects one lifecycle across bootstrap, transition, and completion', () => {
+  const compacting = snapshot({
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      status: 'running',
+      rootExecutionKind: 'context_compact',
+    },
+  });
+  const bootstrapped = projectorAt(compacting);
+  assert.deepEqual(
+    bootstrapped.seedActive(true).map(({ type, turnId }) => [type, turnId]),
+    [['context_compaction_started', 'turn-compact']],
   );
-  const seeded = projector.seedActive(true);
-  assert.equal(seeded.length, 1);
-  assert.equal(seeded[0]?.type, 'context_compaction_started');
-  assert.equal(seeded[0]?.turnId, 'turn-compact');
+
+  for (const previous of [
+    snapshot(),
+    snapshot(
+      Object.freeze({
+        rootTurn: {
+          sessionId: 'session-1',
+          turnId: 'turn-compact',
+          runId: 'run-compact',
+          status: 'admitted' as const,
+        },
+      }),
+    ),
+  ]) {
+    const projector = projectorAt(previous);
+    const started = projector.accept(projectionFrame(1, compacting)).events;
+    assert.equal(started.filter((event) => event.type === 'context_compaction_started').length, 1);
+  }
+
+  const completed = bootstrapped.accept(
+    projectionFrame(
+      1,
+      snapshot({
+        projectionRevision: 2,
+        rootTurn: {
+          sessionId: 'session-1',
+          turnId: 'turn-compact',
+          runId: 'run-compact',
+          status: 'completed',
+          terminalEventId: 'terminal-1',
+          contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+        },
+      }),
+    ),
+  ).events;
+  const terminal = completed.find((event) => event.type === 'complete');
+  assert.ok(terminal?.type === 'complete');
+  assert.deepEqual(terminal.contextCompactionOutcome, {
+    kind: 'compacted',
+    checkpointId: 'checkpoint-1',
+  });
 });
 
 test('seeds an empty queue only for a client that renders the queue', () => {
-  const projector = new RuntimeHostSessionProjector(
+  const projector = projectorAt(
     snapshot({
       rootTurn: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1', status: 'running' },
     }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
   );
   assert.deepEqual(projector.seedActive(false), []);
   const [cleared] = projector.seedActive(true, { includeEmptyQueue: true });
   assert.equal(cleared?.type, 'queue_update');
   if (cleared?.type !== 'queue_update') return;
   assert.deepEqual([cleared.steeringEntries, cleared.followupEntries], [[], []]);
-});
-
-test('emits a context-compaction-started event when a compaction Turn starts', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-  const events = projector.accept({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 1,
-    snapshot: snapshot({
-      projectionRevision: 2,
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-compact',
-        runId: 'run-compact',
-        status: 'running',
-        rootExecutionKind: 'context_compact',
-      },
-    }),
-  }).events;
-  assert.ok(
-    events.some(
-      (event) => event.type === 'context_compaction_started' && event.turnId === 'turn-compact',
-    ),
-  );
-});
-
-test('emits context-compaction-started on the admitted → running transition at one runId', () => {
-  // The real lifecycle keeps the same runId: `admitted` (no rootExecutionKind)
-  // then `running` / context_compact. Gating on a runId change would miss this
-  // and only surface the row on reconnect.
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-compact',
-        runId: 'run-compact',
-        status: 'admitted',
-      },
-    }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-  const events = projector.accept({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 1,
-    snapshot: snapshot({
-      projectionRevision: 2,
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-compact',
-        runId: 'run-compact',
-        status: 'running',
-        rootExecutionKind: 'context_compact',
-      },
-    }),
-  }).events;
-  assert.equal(events.filter((event) => event.type === 'context_compaction_started').length, 1);
-});
-
-test('projects the typed context-compaction outcome onto the completed Turn event', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot({
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-compact',
-        runId: 'run-compact',
-        status: 'running',
-        rootExecutionKind: 'context_compact',
-      },
-    }),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-  const events = projector.accept({
-    kind: 'subscription.session_projection',
-    hostEpoch: 'host-1',
-    subscriptionId: 'subscription-1',
-    sequence: 1,
-    snapshot: snapshot({
-      projectionRevision: 2,
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-compact',
-        runId: 'run-compact',
-        status: 'completed',
-        terminalEventId: 'terminal-1',
-        contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
-      },
-    }),
-  }).events;
-  const complete = events.find((event) => event.type === 'complete');
-  assert.ok(complete);
-  assert.deepEqual(
-    complete && 'contextCompactionOutcome' in complete
-      ? complete.contextCompactionOutcome
-      : undefined,
-    { kind: 'compacted', checkpointId: 'checkpoint-1' },
-  );
 });

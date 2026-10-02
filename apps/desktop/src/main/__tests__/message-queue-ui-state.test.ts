@@ -32,8 +32,8 @@ import type { RestoredDraftContent } from '../../renderer/application/contracts/
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
 import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
-import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
-import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
+import { createAppShellSessionEventHandlers } from '../../renderer/features/conversation/testing.js';
+import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 
 afterEach(cleanupFakeDom);
 
@@ -165,6 +165,7 @@ test('queue_update stores the snapshot and retires every listed local placeholde
 
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
     ts: 1,
+    queueRevision: 3,
     entries: [steeringEntry, followupEntry],
   });
   assert.equal(transientMessages.size, 0,
@@ -206,6 +207,7 @@ test('queue_update stores the snapshot and retires every listed local placeholde
   assert.equal(transientMessages.size, 0);
   assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
     ts: 3,
+    queueRevision: 4,
     entries: [nextEntry],
   });
 

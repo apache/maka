@@ -287,7 +287,7 @@ The earlier completed-task capture remains
 [historical execution evidence](https://github.com/user-attachments/assets/4fc2827b-feed-4639-9a6a-d50caf203055),
 not a claim about the current picker or a repeated coding run.
 
-Public CI, independent human approval and merge remain repository gates. This document does not
-mark issue #5103's PR 2 checkbox complete. Unknown future label shapes remain raw models until
+Public CI and independent human approval passed before PR 2 merged as #5224 on 2026-09-23.
+Issue #5103's PR 2 checklist is complete. Unknown future label shapes remain raw models until
 verified. Cross-process restoration belongs to PR 3; modes and expanded catalog lifecycle belong
-to PR 4. Neither is claimed by this PR.
+to PR 4. Neither is claimed by PR 2.

@@ -26,7 +26,6 @@ import {
   QUOTE_COMMENT_MAX_LENGTH,
   type ContextCompactionOutcome,
   type MessageContent,
-  type ProviderRetryReason,
 } from '@maka/core/events';
 import {
   isOrchestrationMode,
@@ -50,6 +49,10 @@ import {
   requireString,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
+import { decodeTurnProviderRetry, type TurnProviderRetry } from './turn-provider-retry.js';
+
+export { decodeTurnProviderRetry } from './turn-provider-retry.js';
+export type { TurnProviderRetry } from './turn-provider-retry.js';
 
 export const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
 
@@ -163,39 +166,19 @@ interface TurnSnapshotBase {
   runId: string;
 }
 
-export type TurnProviderRetry =
-  | {
-      phase: 'scheduled';
-      attempt: number;
-      maxAttempts: number;
-      delayMs: number;
-      /**
-       * Host-clock time the wait was scheduled at, kept so a re-projection
-       * mid-wait can recompute the authoritative remaining duration. Absent
-       * from snapshots written by older runtimes.
-       */
-      ts?: number;
-      reason: ProviderRetryReason;
-    }
-  | {
-      phase: 'started';
-      attempt: number;
-      maxAttempts: number;
-      reason: ProviderRetryReason;
-    };
-
-export type LiveTurnSnapshot = TurnSnapshotBase & {
-  status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
-  providerRetry?: TurnProviderRetry;
-  /**
-   * Set when this live Turn is a host-owned explicit context-compaction run, so
-   * the renderer can show a "compacting" transcript row while it is in flight.
-   * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
-   * emits no assistant text, and this survives a Desktop reconnect because the
-   * Host re-projects the live snapshot.
-   */
-  rootExecutionKind?: 'context_compact';
-};
+export type LiveTurnSnapshot = TurnSnapshotBase &
+  Readonly<{
+    status: Exclude<TurnRunStatus, 'completed' | 'failed' | 'cancelled'>;
+    providerRetry?: TurnProviderRetry;
+    /**
+     * Set when this live Turn is a host-owned explicit context-compaction run, so
+     * the renderer can show a "compacting" transcript row while it is in flight.
+     * Sourced from `AgentRunHeader.rootExecutionKind`; a `context_compact` Turn
+     * emits no assistant text, and this survives a Desktop reconnect because the
+     * Host re-projects the live snapshot.
+     */
+    rootExecutionKind?: 'context_compact';
+  }>;
 
 export type TurnSnapshot =
   | LiveTurnSnapshot
@@ -625,7 +608,11 @@ export function decodeTurnStartResult(value: unknown): TurnStartResult {
   }
   if (record.kind === 'started') {
     assertExactKeys(record, 'started Turn result', ['kind', 'turn', 'skillInvocation']);
-    return { kind: 'started', turn: decodeTurnSnapshot(record.turn), skillInvocation };
+    return {
+      kind: 'started',
+      turn: decodeTurnSnapshot(record.turn),
+      skillInvocation,
+    };
   }
   if (record.kind === 'blocked') {
     assertExactKeys(record, 'blocked Turn result', ['kind', 'skillInvocation']);
@@ -724,15 +711,20 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
     ['sessionId', 'turnId', 'runId', 'status'],
     ['providerRetry', 'rootExecutionKind'],
   );
+  const liveFields = {
+    ...(record.providerRetry === undefined
+      ? {}
+      : { providerRetry: decodeTurnProviderRetry(record.providerRetry) }),
+    ...(record.rootExecutionKind === undefined
+      ? {}
+      : {
+          rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind),
+        }),
+  };
   return {
     ...base,
     status,
-    ...(record.providerRetry !== undefined
-      ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
-      : {}),
-    ...(record.rootExecutionKind !== undefined
-      ? { rootExecutionKind: requireContextCompactRootExecutionKind(record.rootExecutionKind) }
-      : {}),
+    ...liveFields,
   };
 }
 
@@ -741,63 +733,16 @@ export function decodeContextCompactionOutcome(value: unknown): ContextCompactio
   const kind = requireString(record.kind, 'kind', 32);
   if (kind === 'compacted') {
     assertExactKeys(record, 'compacted context outcome', ['kind', 'checkpointId']);
-    return { kind, checkpointId: requireEntityId(record.checkpointId, 'checkpointId') };
+    return {
+      kind,
+      checkpointId: requireEntityId(record.checkpointId, 'checkpointId'),
+    };
   }
   if (kind === 'unchanged' || kind === 'failed') {
     assertExactKeys(record, `${kind} context outcome`, ['kind', 'reason']);
     return { kind, reason: requireString(record.reason, 'reason', 256) };
   }
   throw invalidProtocolFrame('Invalid context compaction outcome kind');
-}
-
-export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
-  const record = requireRecord(value, 'Turn provider retry');
-  const phase = record.phase;
-  const attempt = requirePositiveCount(record.attempt, 'attempt');
-  const maxAttempts = requirePositiveCount(record.maxAttempts, 'maxAttempts');
-  if (attempt > maxAttempts) throw invalidProtocolFrame('Invalid Turn provider retry');
-  const reason = requireProviderRetryReason(record.reason);
-  if (phase === 'scheduled') {
-    const requiredKeys = ['phase', 'attempt', 'maxAttempts', 'delayMs', 'reason'] as const;
-    assertExactKeys(
-      record,
-      'scheduled Turn provider retry',
-      record.ts === undefined ? requiredKeys : [...requiredKeys, 'ts'],
-    );
-    return {
-      phase,
-      attempt,
-      maxAttempts,
-      delayMs: requireCount(record.delayMs, 'delayMs'),
-      ...(record.ts !== undefined ? { ts: requireCount(record.ts, 'ts') } : {}),
-      reason,
-    };
-  }
-  if (phase === 'started') {
-    assertExactKeys(record, 'started Turn provider retry', [
-      'phase',
-      'attempt',
-      'maxAttempts',
-      'reason',
-    ]);
-    return { phase, attempt, maxAttempts, reason };
-  }
-  throw invalidProtocolFrame('Invalid Turn provider retry');
-}
-
-function requireProviderRetryReason(value: unknown): ProviderRetryReason {
-  if (
-    value === 'network' ||
-    value === 'provider_capacity' ||
-    value === 'provider_unavailable' ||
-    value === 'stream_truncated' ||
-    value === 'rate_limit' ||
-    value === 'timeout' ||
-    value === 'unknown'
-  ) {
-    return value;
-  }
-  throw invalidProtocolFrame('Invalid Turn provider retry reason');
 }
 
 function requireTurnRunStatus(value: unknown): TurnRunStatus {

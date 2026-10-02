@@ -30,6 +30,7 @@ import { invocationOpening } from './fixtures/invocation-opening.js';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { AgentGraphScheduleRevisionConflictError } from '@maka/core/agent-graph-schedule';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
@@ -79,6 +80,38 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(backend + ': graph wake exhaustion passes through the execution facade', async () => {
+    await withProvider(make(), async ({ graphControlStore: graph }) => {
+      await graph.claimAgentGraphSupervisorWake({
+        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: 'session-1',
+      });
+      const started = await graph.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        turnId: 'turn-1',
+      });
+      assert.equal(started.acquired, true);
+      await graph.completeAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        status: 'retryable_failed',
+        failureReason: 'provider failure',
+      });
+      const exhausted = await graph.exhaustAgentGraphSupervisorWake(
+        'graph-1',
+        'wake-1',
+        'attempt limit',
+      );
+      assert.equal(exhausted.status, 'exhausted');
+      assert.deepEqual(await graph.listRetryableAgentGraphSupervisorWakes(), []);
+    });
+  });
   test(
     backend + ': plugin executor routes survive configuration and catalog projection',
     async () => {
@@ -1633,6 +1666,38 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': the archive writer alone stamps and clears the archive time', async () => {
+    await withProvider(make(), async (stores, root) => {
+      const s = stores.sessionStore,
+        session = await s.create(sessionInput(root));
+      const archivedAt = async () => (await s.readCatalogRecord(session.id)).summary.archivedAt;
+      assert.equal(await archivedAt(), undefined);
+      const before = Date.now();
+      const [archived] = await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: 1 }],
+        true,
+      );
+      const first = await archivedAt();
+      assert.ok(first !== undefined && first >= before && first <= Date.now());
+      await s.updateHeader(session.id, { name: 'Renamed' });
+      const renamed = await s.readHeaderRecordSnapshot(session.id);
+      await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: renamed.revision }],
+        true,
+      );
+      assert.equal(await archivedAt(), first);
+      await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: renamed.revision }],
+        false,
+      );
+      assert.equal(await archivedAt(), undefined);
+      assert.equal(
+        Object.hasOwn((await s.readCatalogRecord(session.id)).summary, 'archivedAt'),
+        false,
+      );
+      assert.equal(archived!.header.isArchived, true);
+    });
+  });
   test(
     backend + ': active WorkHub linkage requires target evidence and enforces bounds',
     async () => {

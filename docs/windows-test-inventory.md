@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 51 |
-| platform-contract | 39 |
+| portable-candidate | 52 |
+| platform-contract | 40 |
 
-Total Windows-excluded declarations: **117**
+Total Windows-excluded declarations: **119**
 
 ## Inventory
 
@@ -138,7 +138,9 @@ Total Windows-excluded declarations: **117**
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
+| platform-contract | `scripts/macos-update-archive.test.mjs` the macOS update ZIP keeps bundle symlinks and modification times | `process.platform !== 'darwin' && 'the macOS update ZIP is built on macOS'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after a delayed Runtime Host Ready | `process.platform === 'win32'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after the real Runtime Host is ready | `process.platform === 'win32'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` rejects a Runtime Host that fails verifier shutdown | `process.platform === 'win32'` |
 | portable-candidate | `scripts/release-cli-eval-support.test.mjs` preserves the primary process failure when diagnostics cannot be read | `process.platform === 'win32'` |
+| portable-candidate | `scripts/verify-packaged-app.test.mjs` stopChild waits for a process that ignores SIGTERM to exit before returning | `process.platform === 'win32'` |

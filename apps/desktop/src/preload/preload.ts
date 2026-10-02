@@ -257,8 +257,13 @@ import {
   type CollaborationTurnRequestQueryResult,
   type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
+  type SessionRemovePreviewResult,
+  type SessionStorageUsage,
+  type StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
+import { createSessionStorageUsageReader } from './session-storage-usage.js';
+import { createSessionRemovalPreviewReader } from './session-removal-preview.js';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
   desktopSessionKey,
@@ -728,6 +733,20 @@ async function invokeSessionRuntimeHost<T>(
 ): Promise<T> {
   const session = await runtimeHostSessionRef(sessionId);
   return invokeWhenReady(channel, session.scope, session.sessionId, ...args) as Promise<T>;
+}
+
+type QueueMutationChannel =
+  | 'sessions:promoteQueueEntry'
+  | 'sessions:reorderQueueEntries'
+  | 'sessions:retractQueueEntry'
+  | 'sessions:updateQueueEntry';
+
+function invokeQueueMutation(
+  channel: QueueMutationChannel,
+  sessionId: string,
+  ...args: unknown[]
+): Promise<void> {
+  return invokeSessionRuntimeHost(channel, sessionId, ...args);
 }
 
 async function invokeRuntimeHostForSession<T>(
@@ -1231,6 +1250,30 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
     >;
   },
 };
+
+const loadDesktopSessionStorageUsage = createSessionStorageUsageReader({
+  resolve: async (sessionId) => {
+    const ref = await runtimeHostSessionRef(sessionId);
+    return { ...ref, scopeKey: runtimeHostScopeKey(ref.scope) };
+  },
+  query: async (scope: DesktopTargetScope, hostIds) =>
+    (
+      await scopedRuntimeHost(scope).query('storage.usage.sessions.query', {
+        sessionIds: hostIds,
+      })
+    ).sessions,
+});
+
+const previewDesktopSessionRemoval = createSessionRemovalPreviewReader({
+  resolve: async (sessionId) => {
+    const ref = await runtimeHostSessionRef(sessionId);
+    return { ...ref, scopeKey: runtimeHostScopeKey(ref.scope) };
+  },
+  query: (scope: DesktopTargetScope, input) =>
+    invokeWhenReady('sessions:removePreview', scope, input) as Promise<
+      SessionRemovePreviewResult
+    >,
+});
 
 async function listScheduledTasks(target?: DesktopRuntimeHostRef): Promise<ScheduledTask[]> {
   const host = scopedRuntimeHost(await selectedRuntimeHostScope(target));
@@ -2293,6 +2336,11 @@ const makaBridge = {
     > {
       return invokeSessionRuntimeHost('sessions:resumeLatest', sessionId);
     },
+    queryResumeLatest(
+      sessionId: string,
+    ): Promise<import('@maka/runtime-host/protocol').TurnResumePlan> {
+      return invokeSessionRuntimeHost('sessions:queryResumeLatest', sessionId);
+    },
     stop(
       sessionId: string,
       input?: {
@@ -2342,15 +2390,26 @@ const makaBridge = {
     queryMessageExecutions(sessionId, messageIds) {
       return invokeSessionRuntimeHost('sessions:queryMessageExecutions', sessionId, messageIds);
     },
-    retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:retractQueueEntry', sessionId, entryId);
+    retractQueueEntry: (sessionId: string, entryId: string) =>
+      invokeQueueMutation('sessions:retractQueueEntry', sessionId, entryId),
+    promoteQueueEntry: (sessionId: string, entryId: string) =>
+      invokeQueueMutation('sessions:promoteQueueEntry', sessionId, entryId),
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void> {
+      return invokeQueueMutation(
+        'sessions:updateQueueEntry',
+        sessionId,
+        entryId,
+        expectedQueueRevision,
+        text,
+      );
     },
-    promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:promoteQueueEntry', sessionId, entryId);
-    },
-    reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void> {
-      return invokeSessionRuntimeHost('sessions:reorderQueueEntries', sessionId, [...entryIds]);
-    },
+    reorderQueueEntries: (sessionId: string, entryIds: readonly string[], expectedQueueRevision: number) =>
+      invokeQueueMutation('sessions:reorderQueueEntries', sessionId, [...entryIds], expectedQueueRevision),
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeSessionRuntimeHost('sessions:readExecutionBoundary', sessionId);
     },
@@ -2454,7 +2513,7 @@ const makaBridge = {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onObservationPhase?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
       onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
     ): () => void {
@@ -2478,9 +2537,10 @@ const makaBridge = {
         // registry restores this observer on the replacement target. Profile
         // identity admits that replacement without accepting another Host's
         // same-named Session channel.
-        unsubscribeEvents = subscribeEveryRuntimeHostEvent(
-          `sessions:event:${session.sessionId}`,
-          (scope, event: SessionEvent | SessionObservationMessage) => {
+        const consumeObservationEvent = (
+          scope: DesktopTargetScope,
+          event: SessionEvent | SessionObservationMessage,
+        ): void => {
             if (disposed) return;
             if (runtimeHostMetadataFor(scope)?.profileId !== profileId) return;
             if (event.type === 'host_observation_seed') {
@@ -2492,26 +2552,24 @@ const makaBridge = {
                 if (disposed) return;
                 handler(projectDesktopSessionEvent(scope, seededEvent));
               }
-              if (!disposed) onObservationSeed?.('ready');
+              if (!disposed) onObservationPhase?.('ready');
               return;
             }
             if (event.type === 'host_observation_pending') {
               if (lastExecution) lastExecution = { ...lastExecution, available: false };
               onExecution?.(lastExecution);
-              onObservationSeed?.('pending');
+              onObservationPhase?.('pending');
               return;
             }
-            if (event.type === 'host_execution') {
-              acceptExecution(event);
-              return;
-            }
+            if (event.type === 'host_execution') return void acceptExecution(event);
             if (event.type === 'host_observation_error') {
               onSeedError?.(new Error(event.message));
               return;
             }
             handler(projectDesktopSessionEvent(scope, event));
-          },
-        );
+        };
+        const observationChannel = `sessions:event:${session.sessionId}`;
+        unsubscribeEvents = subscribeEveryRuntimeHostEvent(observationChannel, consumeObservationEvent);
         return {
           completion: invokeWhenReady(
             'sessions:observe',
@@ -2656,16 +2714,26 @@ const makaBridge = {
     },
     async remove(
       sessionId: string,
-      options?: { revisionFamily?: boolean; requireArchived?: boolean },
-    ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }> {
+      options?: {
+        revisionFamily?: boolean;
+        requireArchived?: boolean;
+        requireArchivedForMs?: number;
+      },
+    ): Promise<{ disposition: 'removed' | 'restored' | 'too_recent'; archivedSubtaskCount: number }> {
       const session = await runtimeHostSessionRef(sessionId);
       if (await invokeWhenReady('session-local:discard', session.scope, session.sessionId)) {
         return { disposition: 'removed', archivedSubtaskCount: 0 };
       }
       return invokeSessionRuntimeHost('sessions:remove', sessionId, options);
     },
-    previewRemoval(sessionId: string): Promise<number> {
-      return invokeSessionRuntimeHost('sessions:removePreview', sessionId);
+    async previewRemoval(sessionId: string): Promise<number> {
+      return (await previewDesktopSessionRemoval([sessionId])).archivableSubtaskCount;
+    },
+    previewRemovals(
+      sessionIds: readonly string[],
+      options?: { measureBytes?: boolean; requireArchived?: boolean },
+    ): Promise<SessionRemovePreviewResult> {
+      return previewDesktopSessionRemoval(sessionIds, options);
     },
     cleanupSessionCopy(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:cleanupSessionCopy', sessionId);
@@ -3671,6 +3739,14 @@ const makaBridge = {
       );
     },
   },
+  storage: {
+    async usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.usage.query', {});
+    },
+    sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>> {
+      return loadDesktopSessionStorageUsage(sessionIds);
+    },
+  },
   dailyReview: {
     day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>> {
       return bridgeResult(async () => {
@@ -4190,7 +4266,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   makaBridge.sessions.subscribeEvents = (
     sessionId,
     handler,
-    onObservationSeed,
+    onObservationPhase,
     onSeedError,
     onExecution,
   ) => {
@@ -4201,7 +4277,7 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       let unsubscribe = () => {};
       void waitForLatch('sessions.observe').then(() => {
         if (!disposed) unsubscribe = subscribeSessionEvents(
-          sessionId, handler, onObservationSeed, onSeedError, onExecution,
+          sessionId, handler, onObservationPhase, onSeedError, onExecution,
         );
       });
       return () => { disposed = true; unsubscribe(); };

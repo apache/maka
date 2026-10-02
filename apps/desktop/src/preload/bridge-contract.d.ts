@@ -154,7 +154,12 @@ import type {
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
 import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
-import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextDiagnosticsResult,
+  SessionRemovePreviewResult,
+  SessionStorageUsage,
+  StorageUsageQueryResult,
+} from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 /**
@@ -1284,6 +1289,12 @@ export interface MakaBridge {
         }
       | { ok: false; reason: 'outcome_unknown' }
     >;
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void>;
     queryCancelledMessages(
       sessionId: string,
       messageIds: readonly string[],
@@ -1294,7 +1305,7 @@ export interface MakaBridge {
     ): Promise<import('@maka/runtime-host/protocol').TurnMessageExecutionQueryResult>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
-    reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
+    reorderQueueEntries(sessionId: string, entryIds: readonly string[], expectedQueueRevision: number): Promise<void>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     subscribeActiveInteractions(
@@ -1318,6 +1329,10 @@ export interface MakaBridge {
       | { disposition: 'started'; runId: string; turnId: string }
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
     >;
+    /** Read-only resume plan preview; the authority behind the composer's Resume offer. */
+    queryResumeLatest(
+      sessionId: string,
+    ): Promise<import('@maka/runtime-host/protocol').TurnResumePlan>;
     branchFromTurn(
       sessionId: string,
       input: DesktopBranchFromTurnInput & { sideConversation: true },
@@ -1343,7 +1358,7 @@ export interface MakaBridge {
     subscribeEvents(
       sessionId: string,
       handler: (event: SessionEvent) => void,
-      onObservationSeed?: (phase: 'pending' | 'ready') => void,
+      onObservationPhase?: (phase: 'pending' | 'ready') => void,
       onSeedError?: (error: unknown) => void,
       onExecution?: (projection: import('../shared/session-execution-projection.js').SessionExecutionProjection | undefined) => void,
     ): () => void;
@@ -1402,20 +1417,33 @@ export interface MakaBridge {
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task
-     * restored meanwhile answers `restored` and is kept. `archivedSubtaskCount`
-     * is the Host's executed count of ordinary linked subtasks moved to the
-     * archive — 0 when restored or when nothing was archived.
+     * restored meanwhile answers `restored` and is kept. `requireArchivedForMs`
+     * adds an age the Host checks on its own clock: a task archived more
+     * recently answers `too_recent` and is kept. `archivedSubtaskCount` is the
+     * Host's executed count of ordinary linked subtasks moved to the archive —
+     * 0 when the task was kept or when nothing was archived.
      */
     remove(
       sessionId: string,
-      options?: { revisionFamily?: boolean; requireArchived?: boolean },
-    ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }>;
+      options?: { revisionFamily?: boolean; requireArchived?: boolean; requireArchivedForMs?: number },
+    ): Promise<{ disposition: 'removed' | 'restored' | 'too_recent'; archivedSubtaskCount: number }>;
     /**
      * How many linked subtasks a delete of this parent would move to the
      * archive, per the Host's removal plan. The confirm warns off this instead
      * of estimating from the catalog projection.
      */
     previewRemoval(sessionId: string): Promise<number>;
+    /**
+     * What deleting these tasks, one `remove` each, would take with them, per
+     * each Host's removal plans: linked subtasks archived, Agent Graph subtasks
+     * and worktrees deleted, and with `measureBytes` an estimate of the bytes
+     * stored. Paged per Host; rejects when any task's Host cannot answer
+     * rather than under-reporting.
+     */
+    previewRemovals(
+      sessionIds: readonly string[],
+      options?: { measureBytes?: boolean; requireArchived?: boolean },
+    ): Promise<SessionRemovePreviewResult>;
     cleanupSessionCopy(sessionId: string): Promise<void>;
     abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   };
@@ -1827,6 +1855,15 @@ export interface MakaBridge {
       apiKey?: string;
     }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
     test(input: { provider?: WebSearchProvider; apiKey?: string }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
+  };
+  storage: {
+    /** One Runtime Host's State Root footprint. Read-only; nothing is reclaimed. */
+    usage(host?: DesktopRuntimeHostRef): Promise<StorageUsageQueryResult>;
+    /**
+     * Per-task storage keyed by Desktop session id. A task is absent when its
+     * Runtime Host is unavailable or fails, or when that Host no longer holds it.
+     */
+    sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
   };
   dailyReview: {
     day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;

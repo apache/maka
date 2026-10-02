@@ -144,7 +144,9 @@ export function useShellChatModel(options: {
     projectHandoffEnabled: true,
     // Task Entry publishes only a same-Host/profile add, after catalog refresh.
     // Carry native model picks only; executor choices retain their own scope.
-    projectHandoffIdentity: !options.activeId && !activeSession && options.connectionSnapshotReady
+    // The picker stays usable during connection revalidation. Keep the draft
+    // identity stable; the destination's offered choices validate the model.
+    projectHandoffIdentity: !options.activeId && !activeSession
       ? 'native-model'
       : undefined,
     acceptProjectHandoff: (choice) => choice === null || (

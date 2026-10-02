@@ -352,6 +352,7 @@ export function QuoteCompanionPanel(props: {
               streaming={companion.streaming}
               processing={companion.processing}
               queuedMessages={companion.queuedMessages}
+              queuedMessageRevision={companion.queuedMessageRevision}
               pendingMessages={companion.transientMessages}
               onPromoteQueuedEntry={companion.promoteQueuedEntry}
               onEditQueuedEntry={companion.editQueuedEntry}

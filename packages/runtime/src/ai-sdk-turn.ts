@@ -69,7 +69,7 @@ import type {
   NormalizedUsage,
   ToolCallPart,
 } from './model-protocol.js';
-import { providerRetryReason } from './provider-error-classification.js';
+import { providerRetryReason } from './provider-retry-policy.js';
 import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019.js';
 import Ajv2020 from 'ajv/dist/2020.js';

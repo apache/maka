@@ -35,7 +35,11 @@ export type ExecutorReadiness =
   | 'ready'
   | 'unavailable'
   | 'authentication_required'
-  | 'history_only';
+  | 'history_only'
+  | 'restorable'
+  | 'restoring'
+  | 'restore_failed'
+  | 'history_gap';
 
 export interface ExecutorModelChoice {
   readonly id: string;
@@ -83,9 +87,16 @@ export function normalizeCatalogEntry(
     !isExecutorId(id) ||
     value.id !== id ||
     !isCatalogText(value.displayName) ||
-    !['ready', 'unavailable', 'authentication_required', 'history_only'].includes(
-      value.readiness,
-    ) ||
+    ![
+      'ready',
+      'unavailable',
+      'authentication_required',
+      'history_only',
+      'restorable',
+      'restoring',
+      'restore_failed',
+      'history_gap',
+    ].includes(value.readiness) ||
     !Array.isArray(value.models) ||
     value.models.length > 256 ||
     !Array.from(value.models).every(

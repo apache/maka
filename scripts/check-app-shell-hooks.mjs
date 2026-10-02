@@ -106,7 +106,6 @@ export const ALLOWED = {
   },
   AppShellContent: {
     useActiveExecutionBoundary: 1,
-    useActiveSessionEvents: 1,
     useAppShellBootstrapSubscriptions: 1,
     useAppShellHostEffects: 1,
     useAppShellNavRefSync: 1,
@@ -115,13 +114,10 @@ export const ALLOWED = {
     useAppShellSessionUiReads: 1,
     useAppShellSessionWorkspace: 1,
     useAppShellTurnPresentation: 1,
-    useComposerAttachments: 1,
-    useEffect: 6,
+    useEffect: 2,
     useLayoutEffect: 1,
     useNewTaskChoice: 1,
     useOnboardingSnapshot: 1,
-    usePlanModeState: 1,
-    useSessionEventHealthPolling: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
     // `SessionNavigationProvider`. The entry shrinks rather than disappearing,
     // because the shell body does read the rail: the command palette lists the
@@ -141,9 +137,8 @@ export const ALLOWED = {
     useShellLiveTurn: 1,
     useShellMemoryPill: 1,
     useShellResume: 1,
-    useShellRunUpdates: 1,
-    useStableActions: 5,
-    useState: 11,
+    useStableActions: 4,
+    useState: 8,
     useTaskSubmissionReadiness: 1,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry

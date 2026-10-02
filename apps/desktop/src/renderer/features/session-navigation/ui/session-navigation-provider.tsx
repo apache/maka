@@ -22,6 +22,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useSyncExternalStore,
   type ComponentType,
   type ReactNode,
 } from 'react';
@@ -37,6 +38,7 @@ import {
   type SessionRowActions,
 } from '@maka/ui';
 import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
+import { SessionHistoryNavigation } from './session-history-navigation.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
 import { useSessionSelection } from '../controller/use-session-selection.js';
 import {
@@ -61,6 +63,7 @@ import { selectStaleSessionIds } from '../../../application/contracts/session-ca
 import { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
+import type { SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -84,12 +87,15 @@ export interface SessionNavigationChromeInput {
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
+  /** Settings and modal overlays suspend conversation history input. */
+  historyBlocked?: boolean;
   /** The rail subscribes the catalog itself: its rows are the churn it displays. */
   catalog: SessionCatalogController;
   activeSessionId: string | undefined;
   hiddenSessionIds: ReadonlySet<string>;
   projectScopes: readonly SessionNavigationProjectScope[];
-  streamingSessionIds: ReadonlySet<string>;
+  /** The activity projection subscribes here, without publishing through AppShell. */
+  streamingSessions: SnapshotReader<ReadonlySet<string>>;
   sessionSendOutcomes?: Readonly<Record<string, SessionSendProjection>>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
@@ -114,6 +120,11 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  * first, the few dozen fibers of permanent chrome on the second.
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
+  const streamingSessionIds = useSyncExternalStore(
+    props.streamingSessions.subscribe,
+    props.streamingSessions.getSnapshot,
+    props.streamingSessions.getSnapshot,
+  );
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
   const staleSessionIds = useExternalStoreSelector(
     props.catalog,
@@ -243,7 +254,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     () => ({
       sessions: rail.sessions,
       activeId: openRowId,
-      streamingSessionIds: props.streamingSessionIds,
+      streamingSessionIds,
       staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
@@ -276,7 +287,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       relinkableProjectIds,
       rail,
       staleSessionIds,
-      props.streamingSessionIds,
+      streamingSessionIds,
       rowActions,
       sessionBadge,
     ],
@@ -318,6 +329,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       chrome={chrome}
       selection={selection}
     >
+      <SessionHistoryNavigation
+        catalog={props.catalog}
+        visible={!props.historyBlocked && props.selection.section === 'sessions' && !props.workHubActive}
+        blocked={props.historyBlocked ?? false}
+        openSession={props.onSelectSession}
+      />
       {props.children}
     </SessionRailProvider>
   );

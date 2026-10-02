@@ -87,6 +87,8 @@ import {
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
+import type { SessionNavigationRowActions } from '../../src/renderer/features/session-navigation';
+import { runtimeHostProjectKey } from '../../src/renderer/application/contracts/runtime-host-project-key';
 import {
   createSessionCatalogController,
   type SessionCatalogController,
@@ -1003,6 +1005,23 @@ const makaBridge = {
     readSpriteSheet: async () => ({ ok: false as const, reason: 'not_found' as const }),
     subscribeChanges: () => () => undefined,
   },
+  // 工作区 reads and subscribes on window.maka.projects when it mounts. Only
+  // the projects-specific bridges supplied it, so opening 工作区 from any other
+  // settings story through the sidebar threw (getSnapshot / subscribeChanges
+  // of undefined).
+  projects: {
+    getSnapshot: async () => ({
+      projects: [],
+      capabilities: {
+        chooseClientDirectory: false,
+        chooseHostDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
+    }),
+    subscribeChanges: () => () => undefined,
+  },
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
@@ -1633,10 +1652,8 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     const doomed = new Set(ids.flatMap((id) => revisionFamilySessionIds(current, id)));
     catalog.commitSessions(current.filter((session) => !doomed.has(session.id)));
   };
-  return {
-    catalog,
-    projects: archivedTaskProjects,
-    onRestore: (sessionId) => {
+  const commands = {
+    unarchiveSession: async (sessionId: string) => {
       const current = catalog.getState().sessions;
       const family = new Set(revisionFamilySessionIds(current, sessionId));
       catalog.commitSessions(
@@ -1648,22 +1665,29 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     // Mirrors the shell's own row action, which always confirms first — a
     // story where a row vanishes on one click would be showing an interaction
     // the app does not have.
-    onDelete: (sessionId) => {
-      void confirmDelete(sessionId).then((ok) => {
-        if (ok) drop([sessionId]);
+    deleteSession: async (sessionId: string) => {
+      if (await confirmDelete(sessionId)) drop([sessionId]);
+    },
+    purgeArchived: async (request: { sessionIds: readonly string[] }) => {
+      const ok = await toast.confirm({
+        title: `删除当前显示的 ${request.sessionIds.length} 条任务？`,
+        description: '这些任务及其全部消息会被永久删除，无法撤销。',
+        confirmLabel: '永久删除',
+        cancelLabel: '取消',
+        destructive: true,
       });
+      if (ok) drop(request.sessionIds);
     },
-    onPurge: async (sessionIds) => {
-      drop(sessionIds);
-      return {
-        removed: sessionIds.length,
-        archivedSubtasks: 0,
-        remaining: [],
-        restored: [],
-        verified: true,
-        firstError: undefined,
-      };
-    },
+  } as unknown as SessionNavigationRowActions;
+  return {
+    catalog,
+    projectScopes: archivedTaskProjects.map((project) => ({
+      key: runtimeHostProjectKey('storybook-local', project.id),
+      hostId: 'storybook-local',
+      profileName: 'Local',
+      project,
+    })),
+    commands: { current: commands },
   };
 }
 const gitBashSettings = mergeSettings(createDefaultSettings(), {
@@ -2567,13 +2591,13 @@ export const Appearance: Story = {
     const canvas = within(canvasElement);
     await canvas.findByRole('heading', { name: 'App icon' });
     const workbarToggle = await canvas.findByRole('switch', { name: 'Show Workbar toggle in titlebar' });
-    expect(workbarToggle).not.toBeChecked();
-    await userEvent.click(workbarToggle);
-    await waitFor(() => expect(workbarToggle).toBeChecked());
-    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
+    expect(workbarToggle).toBeChecked();
     await userEvent.click(workbarToggle);
     await waitFor(() => expect(workbarToggle).not.toBeChecked());
     expect(storyClientSettings.appearance.workbarTogglePosition).toBe('edge');
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
 
     for (const name of ['Azure', 'Classic']) {
       const input = await canvas.findByRole('checkbox', { name });
@@ -2708,6 +2732,51 @@ export const UsageSingleProvider: Story = {
 export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement, globals }) => {
+    const canvas = within(canvasElement);
+    const copy = getUsageSettingsCopy(
+      globals.locale === 'en' ? 'en' : globals.locale === 'zh-TW' ? 'zh-TW' : 'zh-CN',
+    );
+    const tabs = within(await canvas.findByRole('navigation', { name: copy.viewAria }));
+    await userEvent.click(tabs.getByRole('button', { name: new RegExp(`^${copy.tabs[2]}`) }));
+    const table = within(await canvas.findByRole('table', { name: copy.tables.modelsAria }));
+
+    async function expectExactTooltip(trigger: HTMLElement, exactValue: string) {
+      await waitFor(() => {
+        const tooltipId = trigger.getAttribute('aria-describedby');
+        expect(tooltipId).toBeTruthy();
+        const tooltip = canvasElement.ownerDocument.getElementById(tooltipId!);
+        expect(tooltip).toHaveAttribute('role', 'tooltip');
+        expect(tooltip).toBeVisible();
+        expect(tooltip?.textContent).toBe(exactValue);
+        expect(trigger).toHaveAccessibleDescription(exactValue);
+      });
+    }
+
+    for (const compact of ['624K', '318K', '214K', '96K', '32K']) {
+      const token = table.getByText(compact);
+      const cell = token.closest('td');
+      if (!cell) throw new Error('Token count did not render inside a table cell');
+      const range = canvasElement.ownerDocument.createRange();
+      range.selectNodeContents(token);
+      const cellStyle = getComputedStyle(cell);
+      const requiredWidth = range.getBoundingClientRect().width
+        + Number.parseFloat(cellStyle.paddingLeft) + Number.parseFloat(cellStyle.paddingRight);
+      expect(requiredWidth).toBeLessThanOrEqual(cell.clientWidth);
+    }
+
+    const first = table.getByText('624K');
+    await userEvent.hover(first);
+    await expectExactTooltip(first, '624,000');
+    await userEvent.unhover(first);
+    expect(first).toHaveAttribute('tabindex', '0');
+    first.focus();
+    await userEvent.tab();
+    const second = table.getByText('318K');
+    expect(second).toHaveFocus();
+    await expectExactTooltip(second, '318,000');
+    second.blur();
+  },
 };
 // Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {

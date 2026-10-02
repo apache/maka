@@ -74,6 +74,7 @@ import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
 import { MakaClientSlotOutlet, useMakaClientSlotOccupied } from './client-plugin-slots.js';
+import { ProviderRetryNotice } from './provider-retry-notice.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -221,7 +222,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   return (
     <>
       {nonImageAttachments.length > 0 ? (
-        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachment-tokens">
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
           {nonImageAttachments.map((attachment, index) => (
             <Token
               key={`${attachment.name}-${index}`}
@@ -241,14 +242,14 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         </HStack>
       ) : null}
       {props.quotes && props.quotes.length > 0 ? (
-        <div className="maka-user-quotes">
+        <HStack gap={1} wrap="wrap" align="start" maxWidth="100%" className="maka-user-quotes">
           {props.quotes.map((quote, index) => (
             <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
           ))}
-        </div>
+        </HStack>
       ) : null}
       {imageAttachments.length > 0 ? (
-        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachments">
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
           {imageAttachments.map((attachment, index) => (
             <AttachmentImage
               key={`${attachment.name}-${index}`}
@@ -280,24 +281,23 @@ export function TransientUserMessage(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
   return (
-    <div data-transient-message-id={message.id}>
-      <LocalizedChatMessage
-        accessibleLabel={copy.userAriaLabel}
-        sender="user"
-        className="maka-chat-message maka-user-message"
-      >
-        <UserMessageBody
-          messageId={message.id}
-          text={message.text}
-          ts={message.ts}
-          attachments={message.attachments}
-          quotes={message.quotes}
-          directoryReferences={message.directoryReferences}
-          inlineReferences={message.inlineReferences}
-          delivery={message}
-        />
-      </LocalizedChatMessage>
-    </div>
+    <LocalizedChatMessage
+      accessibleLabel={copy.userAriaLabel}
+      sender="user"
+      className="maka-chat-message maka-user-message"
+      data-transient-message-id={message.id}
+    >
+      <UserMessageBody
+        messageId={message.id}
+        text={message.text}
+        ts={message.ts}
+        attachments={message.attachments}
+        quotes={message.quotes}
+        directoryReferences={message.directoryReferences}
+        inlineReferences={message.inlineReferences}
+        delivery={message}
+      />
+    </LocalizedChatMessage>
   );
 }
 
@@ -1237,17 +1237,11 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
   // is the whole status, the moving text is decoration).
   const scheduledA11y = retry.phase === 'scheduled';
   return (
-    <Banner
+    <ProviderRetryNotice
       ref={rootRef}
-      status="warning"
-      container="section"
-      role="status"
-      className="maka-turn-provider-retry"
-      {...(scheduledA11y
-        ? {
-            'aria-label': `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`,
-          }
-        : {})}
+      accessibleLabel={scheduledA11y
+        ? `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`
+        : undefined}
       title={
         scheduledA11y ? (
           <span aria-hidden="true">

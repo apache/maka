@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { useComposerAttachments, useComposerQuotes } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -28,8 +29,6 @@ import { LocaleProvider } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
 import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import {
-  useComposerAttachments,
-  useComposerQuotes,
   type ComposerAttachmentService,
 } from '../../renderer/features/conversation/index.js';
 import {
@@ -365,8 +364,7 @@ test('retracted queue attachments can be restored and submitted without re-inges
   );
 
   await probe.render('session-1');
-  await act(() =>
-    probe.latest().restoreAttachments('session-1', [
+  const retained = [
       {
         kind: 'other',
         name: 'notes.txt',
@@ -378,8 +376,8 @@ test('retracted queue attachments can be restored and submitted without re-inges
           relativePath: 'attachments/notes.txt',
         },
       },
-    ]),
-  );
+    ] as const;
+  await act(() => probe.latest().restoreAttachments('session-1', retained));
 
   assert.equal(probe.latest().pendingAttachments[0]?.source.type, 'retained');
 });

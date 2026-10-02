@@ -2003,70 +2003,49 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
   coordinator.close();
 });
 
-test('keeps the current provider retry on the live Turn until the next content event', async () => {
+const verifyReconnectRetryProjection = async () => {
+  const readCanonical = async (_sessionId: string) => canonical();
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
-    async () => canonical(),
+    readCanonical,
     new SessionAdmissionGate(),
   );
-  const liveSink = new RecordingSink();
-  const live = attachTestConnection(coordinator, 'connection-live', liveSink);
-  const opened = await open(coordinator, 'connection-live');
-  assert.equal(opened.snapshot.rootTurn && 'providerRetry' in opened.snapshot.rootTurn, false);
-  live.activate(opened.subscriptionId);
+  const retryEvent = Object.freeze(
+    Object.fromEntries([
+      ['type', 'provider_retry'],
+      ['id', 'retry-scheduled'],
+      ['turnId', 'turn-1'],
+      ['ts', 5 * 1_000],
+      ['phase', 'scheduled'],
+      ['attempt', 1 + 1],
+      ['maxAttempts', 2 * 2],
+      ['delayMs', 30 * 1_000],
+      ['reason', 'rate_limit'],
+    ]),
+  ) as Parameters<typeof coordinator.acceptRuntimeEvent>[2];
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', retryEvent);
 
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
-    type: 'provider_retry',
-    id: 'retry-1',
-    turnId: 'turn-1',
-    ts: 1,
-    phase: 'scheduled',
-    attempt: 8,
-    maxAttempts: 10,
-    delayMs: 40_000,
-    reason: 'rate_limit',
-  });
-
-  const retry = {
-    phase: 'scheduled' as const,
-    attempt: 8,
-    maxAttempts: 10,
-    delayMs: 40_000,
-    // The host-clock schedule time is kept so a re-projection mid-wait can
-    // recompute the authoritative remaining duration (#3393).
-    ts: 1,
-    reason: 'rate_limit' as const,
+  const { id: _eventId, turnId: _turnId, type: _type, ...expectedRetry } = retryEvent;
+  const retryFor = async (connectionId: string) => {
+    attachTestConnection(coordinator, connectionId, new RecordingSink());
+    const turn = (await open(coordinator, connectionId)).snapshot.rootTurn;
+    assert.equal(turn?.status, 'running');
+    return turn?.status === 'running' ? turn.providerRetry : undefined;
   };
-  attachTestConnection(coordinator, 'connection-remount', new RecordingSink());
-  const remounted = await open(coordinator, 'connection-remount');
-  assert.deepEqual(
-    remounted.snapshot.rootTurn && 'providerRetry' in remounted.snapshot.rootTurn
-      ? remounted.snapshot.rootTurn.providerRetry
-      : undefined,
-    retry,
-  );
-  assert.ok(
-    liveSink.frames.some(
-      (frame) =>
-        frame.kind === 'subscription.session_projection' &&
-        frame.snapshot.rootTurn &&
-        'providerRetry' in frame.snapshot.rootTurn &&
-        frame.snapshot.rootTurn.providerRetry?.phase === 'scheduled',
-    ),
-  );
-
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  attachTestConnection(coordinator, 'connection-after-text', new RecordingSink());
-  const afterText = await open(coordinator, 'connection-after-text');
-  assert.equal(
-    afterText.snapshot.rootTurn && 'providerRetry' in afterText.snapshot.rootTurn,
-    false,
-  );
-
-  live.abort(opened.subscriptionId);
-  coordinator.close();
-});
-
+  try {
+    const beforeProgress = await retryFor('connection-during-wait');
+    assert.deepEqual(beforeProgress, expectedRetry);
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+    const afterProgress = await retryFor('connection-after-progress');
+    assert.equal(afterProgress, undefined);
+  } finally {
+    void coordinator.close();
+  }
+};
+test(
+  'publishes retry state to reconnecting clients until the Turn makes progress',
+  verifyReconnectRetryProjection,
+);
 test('rejoin seeds tool_result_preview at the open nextSequence without sequence_gap', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,

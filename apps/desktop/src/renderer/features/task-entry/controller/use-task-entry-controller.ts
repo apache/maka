@@ -458,7 +458,7 @@ export function useTaskEntryController(
       if (!result.ok) return;
       const refreshedProject = await refreshAddedProject({ profileId: host.profile.id, hostId: host.hostId }, result.project.id);
       if (!refreshedProject) return;
-      if (sourceMatchesHost && !sameTaskEntryTarget(selectedTargetRef.current, sourceTarget)) return;
+      if (!sameTaskEntryTarget(selectedTargetRef.current, sourceTarget)) return;
       setSelectedProfileId(host.profile.id);
       setProjectSelections((current) =>
         new Map(current).set(host.profile.id, refreshedProject.id),

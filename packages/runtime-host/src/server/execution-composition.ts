@@ -18,6 +18,7 @@
  */
 
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
+import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
 import { createJevRoutingModel } from './jev-routing-model.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -55,6 +56,7 @@ import {
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
+import { toolAvailabilityConnectorNames } from '@maka/runtime/tool-availability';
 import { buildRecallTools, type RecallToolDeps } from '@maka/runtime/recall-tools';
 import { RECALL_SYNTHETIC_TEXT_PATTERNS } from '@maka/runtime/recall-candidates';
 import { createRecallMaterialFetch } from './recall-material-fetch.js';
@@ -240,6 +242,7 @@ import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js'
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
+import { HostStorageUsageCoordinator } from './storage-usage-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
@@ -898,6 +901,7 @@ export async function createExecutionRuntimeHostComposition(
     let rootCoordinator: RootTurnCoordinator | undefined;
     let workHubCoordination: HostWorkHubCoordinationCoordinator;
     let workHubResults: ReturnType<typeof createWorkHubResultRuntime> | undefined;
+    let workHubInspection: MakaTool | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
@@ -1148,8 +1152,8 @@ export async function createExecutionRuntimeHostComposition(
         builtinTools,
         hostTools,
         resolveRootTools: (sessionId) =>
-          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
-            ? Promise.resolve([workHubResults.tool])
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
+            ? Promise.resolve([workHubResults.tool, workHubInspection])
             : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         resolvePluginTools: (sessionId, coreTools) =>
           pluginTools.resolveContributions(sessionId, coreTools),
@@ -1313,8 +1317,8 @@ export async function createExecutionRuntimeHostComposition(
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
         const [graphTools, planState] = await Promise.all([
-          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults
-            ? Promise.resolve([workHubResults.tool])
+          sessionId === WORKHUB_COORDINATION_SESSION_ID && workHubResults && workHubInspection
+            ? Promise.resolve([workHubResults.tool, workHubInspection])
             : requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
           planStore.readState(sessionId),
         ]);
@@ -1326,7 +1330,7 @@ export async function createExecutionRuntimeHostComposition(
           parentAgentTools: childAgentTools.parentTools,
         });
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
-        return createInteractiveRunComposer({
+        const composer = createInteractiveRunComposer({
           runtimePolicy,
           shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
           skills,
@@ -1345,7 +1349,11 @@ export async function createExecutionRuntimeHostComposition(
             mode: header.collaborationMode ?? 'agent',
             permissionMode: header.permissionMode,
           },
-        }).tools.map((tool) => tool.name);
+        });
+        return [
+          ...composer.tools.map((tool) => tool.name),
+          ...toolAvailabilityConnectorNames(composer.tools, composer.toolAvailability),
+        ];
       } finally {
         capabilitySnapshot?.release();
       }
@@ -2656,6 +2664,13 @@ export async function createExecutionRuntimeHostComposition(
       },
       requestDrain: context.requestDrain,
     });
+    workHubInspection = createWorkHubInspectionTool({
+      listSessions: () => stores.sessionStore.listHeaders(),
+      reader: requireTranscriptReader(transcriptReader),
+      admission: sessionAdmission,
+      readExecution: async (sessionId) =>
+        (await canonicalProjectionReader.read(sessionId))?.rootTurn ?? null,
+    });
     workHubResults = createWorkHubResultRuntime({
       stores,
       executions: coordinator,
@@ -2792,6 +2807,7 @@ export async function createExecutionRuntimeHostComposition(
         await openedGraphControlStore.purgeAgentGraphEpochs(sessionId);
       },
       worktrees: worktreeChildExecutor,
+      footprint: storage.footprint,
       requestDrain: context.requestDrain,
       memoryExtractionLane,
     });
@@ -2828,6 +2844,7 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
+    const storageUsage = new HostStorageUsageCoordinator({ footprint: storage.footprint });
     const storageMaintenance = new HostStorageMaintenance({
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
@@ -2839,6 +2856,11 @@ export async function createExecutionRuntimeHostComposition(
         id: 'storage-maintenance',
         drain: [() => storageMaintenance.beginDrain()],
         close: [() => storageMaintenance.close()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'storage-usage',
+        handlers: [storageUsage.handlers],
+        drain: [() => storageUsage.beginDrain()],
       }),
       createRuntimeHostDomainModule({
         id: 'plugin-platform',

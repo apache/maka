@@ -38,6 +38,8 @@ import {
 } from '../../renderer/features/task-entry/testing.js';
 import { useShellChatModel } from '../../renderer/features/conversation/testing.js';
 import { ConversationServicesProvider, type ConversationServices } from '../../renderer/features/conversation/index.js';
+import { resolveComposerConnectionSnapshot } from '../../renderer/application/contracts/composer-connection-snapshot.js';
+import { useShellConnections } from '../../renderer/use-shell-connections.js';
 
 const thinkingServices = {
   subscribeChanges: () => () => undefined,
@@ -54,6 +56,7 @@ let latestDirectoryHostId: string | undefined;
 let latestProjectDialog: ReturnType<typeof useTaskEntryHostModel>['newProjectDialog'];
 let latestWorkspaceGroupCount = 0;
 let latestChatModel: ReturnType<typeof useShellChatModel> | undefined;
+let latestNewTaskConnections: ReturnType<typeof useShellConnections> | undefined;
 let thinkingActiveId: string | undefined;
 let thinkingChoices: ChatModelChoice[];
 const CONNECTION: ProjectedLlmConnection = { connectionId: 'c', slug: 'c', providerType: 'openai', name: 'C', enabled: true, defaultModel: 'm', enabledModelIds: ['m'], createdAt: 1, updatedAt: 1, catalogEntries: [] };
@@ -175,14 +178,32 @@ function ShellProbe() {
     },
   });
 }
-function ThinkingProbe({ taskEntry }: { taskEntry: TaskEntryShellProjection }) {
-  latestChatModel = useShellChatModel({ uiLocale: 'en', connections: [CONNECTION], chatModelChoices: thinkingChoices ?? [CHOICE], sessionSendOutcome: undefined, defaultConnection: 'c', newTaskKey: taskEntry.selectors.draftKey, activeId: thinkingActiveId, activeSession: undefined, sessionHealthSession: undefined, persistedComposerDefaults: null, usePersistedComposerDefaults: false, connectionSnapshotReady: true, modelPickerDisabled: false, openSettingsSection() {}, openModelPicker() {}, refreshModelChoices: async () => undefined });
+function ThinkingProbe({ taskEntry, connectionState }: {
+  taskEntry: TaskEntryShellProjection;
+  connectionState?: ReturnType<typeof resolveComposerConnectionSnapshot>;
+}) {
+  latestChatModel = useShellChatModel({ uiLocale: 'en', connections: connectionState?.snapshot.connections ?? [CONNECTION], chatModelChoices: connectionState?.snapshot.chatModelChoices ?? thinkingChoices ?? [CHOICE], sessionSendOutcome: undefined, defaultConnection: connectionState?.snapshot.defaultConnection ?? 'c', newTaskKey: taskEntry.selectors.draftKey, activeId: thinkingActiveId, activeSession: undefined, sessionHealthSession: undefined, persistedComposerDefaults: null, usePersistedComposerDefaults: false, connectionSnapshotReady: connectionState?.ready ?? true, modelPickerDisabled: false, openSettingsSection() {}, openModelPicker() {}, refreshModelChoices: async () => undefined });
   return null;
 }
-function ThinkingShellProbe() {
+function HostConnectionThinkingProbe({ taskEntry }: { taskEntry: TaskEntryShellProjection }) {
+  const options = { toastApi: { error: assert.fail }, uiLocale: 'en' as const };
+  const newTaskHost = useShellConnections({ ...options, target: { kind: 'new-task', host: taskEntry.selectors.target } });
+  latestNewTaskConnections = newTaskHost;
+  const defaultHost = useShellConnections({ ...options, target: { kind: 'default' } });
+  const sessionHost = useShellConnections({ ...options, target: { kind: 'session' } });
+  const connectionState = resolveComposerConnectionSnapshot({
+    usesSessionHost: false,
+    usesDefaultHost: taskEntry.selectors.usesDefaultHost,
+    newTaskHost,
+    defaultHost,
+    sessionHost,
+  });
+  return createElement(ThinkingProbe, { taskEntry, connectionState });
+}
+function ThinkingShellProbe({ withHostConnections = false }: { withHostConnections?: boolean }) {
   return createElement(TaskEntryRoot, { children: (taskEntry) => {
     latestTaskEntry = taskEntry;
-    return createElement(ConversationServicesProvider, { services: thinkingServices, children: createElement(ThinkingProbe, { taskEntry }) });
+    return createElement(ConversationServicesProvider, { services: thinkingServices, children: createElement(withHostConnections ? HostConnectionThinkingProbe : ThinkingProbe, { taskEntry }) });
   } });
 }
 
@@ -235,6 +256,7 @@ afterEach(() => {
   latestProjectDialog = undefined;
   latestWorkspaceGroupCount = 0;
   latestChatModel = undefined;
+  latestNewTaskConnections = undefined;
   thinkingActiveId = undefined;
   thinkingChoices = [CHOICE];
   latestRecoveryPicker = undefined;
@@ -263,34 +285,63 @@ describe('TaskEntryRoot render scope', () => {
     assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
   });
 
-  it('keeps a non-default native model and thinking when adding a project on a non-default Host', async () => {
-    const { root } = installReactRenderer();
-    thinkingChoices = [CHOICE, { ...CHOICE, model: 'other', label: 'Other', isDefault: false }];
-    const host = { ...remoteHost(), capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: false } };
-    let added = false;
-    const services = createFakeTaskEntryServices({ catalog: {
-      ...createFakeTaskEntryServices().catalog,
-      getCatalog: async () => ({ defaultProfileId: 'local', hosts: [localHost([project('local-project')]), { ...host, projects: added ? [project('project-a'), project('project-b')] : host.projects }] }),
-      addProject: async () => { added = true; return { ok: true, project: project('project-b') }; },
-    } });
-    await act(async () => renderProvider(root, services, createElement(ThinkingShellProbe)));
-    await act(async () => latestTaskEntry?.commands.selectProject(latestTaskEntry.selectors.projectScopes.find((scope) => scope.project.id === 'project-a')!.key));
-    await act(async () => latestChatModel?.setPendingNewChatModel({ llmConnectionId: 'c', llmConnectionSlug: 'c', model: 'other' }));
-    await act(async () => latestChatModel?.setPendingNewChatThinkingLevel('high'));
-    assert.equal(latestChatModel?.newChatModel?.model, 'other');
-    await act(async () => latestTaskEntry?.commands.addProject());
-    assert.match(latestTaskEntry?.selectors.draftKey ?? '', /project-b/);
-    assert.equal(latestChatModel?.newChatModel?.model, 'other');
-    assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
-    // Navigating back preserves the source; ordinary navigation to a third
-    // project must not reuse the consumed handoff.
-    await act(async () => latestTaskEntry?.commands.selectProject(latestTaskEntry.selectors.projectScopes.find((scope) => scope.project.id === 'project-a')!.key));
-    assert.equal(latestChatModel?.newChatModel?.model, 'other');
-    assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
-    await act(async () => latestTaskEntry?.commands.selectLocalProject('local-project'));
-    assert.equal(latestChatModel?.newChatModel?.model, 'm');
-    assert.equal(latestChatModel?.pendingNewChatThinkingLevel, undefined);
-  });
+  for (const pickDuringRefresh of [false, true]) {
+    it(`keeps a non-default native model and thinking on a non-default Host (pick during refresh: ${pickDuringRefresh})`, async () => {
+      const { root } = installReactRenderer();
+      thinkingChoices = [CHOICE, { ...CHOICE, model: 'other', label: 'Other', isDefault: false }];
+      const host = { ...remoteHost(), capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: false } };
+      let added = false;
+      const services = createFakeTaskEntryServices({ catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => ({ defaultProfileId: 'local', hosts: [localHost([project('local-project')]), { ...host, projects: added ? [project('project-a'), project('project-b')] : host.projects }] }),
+        addProject: async () => { added = true; return { ok: true, project: project('project-b') }; },
+      } });
+      const requestedHosts: string[] = [];
+      const remoteSnapshot = { connections: [CONNECTION], defaultConnection: 'c', chatModelChoices: thinkingChoices };
+      const refreshing = deferred<typeof remoteSnapshot>();
+      let refreshRemote = false;
+      (window as unknown as { maka: unknown }).maka = {
+        runtimeHostProfiles: { getDefaultHost: async () => ({ profileId: 'local', hostId: 'host-local' }) },
+        connections: { getSnapshot: async () => ({ connections: [CONNECTION], defaultConnection: 'c', chatModelChoices: [CHOICE] }) },
+        newTasks: { getConnections: async (host: { hostId: string }) => {
+          requestedHosts.push(host.hostId);
+          return host.hostId === 'host-remote'
+            ? refreshRemote ? refreshing.promise : remoteSnapshot
+            : { connections: [CONNECTION], defaultConnection: 'c', chatModelChoices: [CHOICE] };
+        } },
+      };
+      await act(async () => renderProvider(root, services, createElement(ThinkingShellProbe, { withHostConnections: true })));
+      await act(async () => latestTaskEntry?.commands.selectProject(latestTaskEntry.selectors.projectScopes.find((scope) => scope.project.id === 'project-a')!.key));
+      if (pickDuringRefresh) {
+        await act(async () => {
+          refreshRemote = true;
+          void latestNewTaskConnections?.refreshConnections();
+        });
+        assert.equal(latestNewTaskConnections?.projection.status, 'refreshing');
+        assert.equal(latestNewTaskConnections?.snapshot.chatModelChoices.length, 2);
+      }
+      await act(async () => latestChatModel?.setPendingNewChatModel({ llmConnectionId: 'c', llmConnectionSlug: 'c', model: 'other' }));
+      await act(async () => latestChatModel?.setPendingNewChatThinkingLevel('high'));
+      assert.equal(latestChatModel?.newChatModel?.model, 'other');
+      if (pickDuringRefresh) {
+        await act(async () => refreshing.resolve(remoteSnapshot));
+        assert.equal(latestNewTaskConnections?.projection.status, 'ready');
+      }
+      await act(async () => latestTaskEntry?.commands.addProject());
+      assert.match(latestTaskEntry?.selectors.draftKey ?? '', /project-b/);
+      assert.equal(latestChatModel?.newChatModel?.model, 'other');
+      assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
+      assert.ok(requestedHosts.includes('host-remote'));
+      // Navigating back preserves the source; ordinary navigation to a third
+      // project must not reuse the consumed handoff.
+      await act(async () => latestTaskEntry?.commands.selectProject(latestTaskEntry.selectors.projectScopes.find((scope) => scope.project.id === 'project-a')!.key));
+      assert.equal(latestChatModel?.newChatModel?.model, 'other');
+      assert.equal(latestChatModel?.pendingNewChatThinkingLevel, 'high');
+      await act(async () => latestTaskEntry?.commands.selectLocalProject('local-project'));
+      assert.equal(latestChatModel?.newChatModel?.model, 'm');
+      assert.equal(latestChatModel?.pendingNewChatThinkingLevel, undefined);
+    });
+  }
 
   it('retains the inherited model and thinking through consecutive project adds in StrictMode', async () => {
     const { root } = installReactRenderer();

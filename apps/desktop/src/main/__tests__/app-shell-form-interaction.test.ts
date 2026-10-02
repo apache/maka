@@ -20,6 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { InteractionQueues } from '@maka/ui';
+import { dequeueInteractionByRequestId } from '@maka/ui';
 import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
 import { createActionsDeps } from './app-shell-chat-actions-fixture.js';
 
@@ -50,8 +51,8 @@ describe('AppShell form interaction response', () => {
       respondToUserForm: async (sessionId, response) => {
         submitted = { sessionId, response };
       },
-      setInteractionBySession: (update) => {
-        interactions = update(interactions);
+      settleInteraction: (sessionId, requestId) => {
+        interactions = dequeueInteractionByRequestId(interactions, sessionId, requestId);
       },
     });
 
@@ -72,8 +73,8 @@ describe('AppShell form interaction response', () => {
       respondToUserForm: async () => {
         throw new Error('Host unavailable');
       },
-      setInteractionBySession: (update) => {
-        interactions = update(interactions);
+      settleInteraction: (sessionId, requestId) => {
+        interactions = dequeueInteractionByRequestId(interactions, sessionId, requestId);
       },
       toastApi: { error: () => { errors += 1; }, info: () => undefined },
     });

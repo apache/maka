@@ -319,12 +319,12 @@ export function ChatView(props: {
   onPromptSuggestion?(prompt: string): void;
   /**
    * Codex/Cursor-style "quote this": when set, selecting text in the transcript
-   * surfaces 引用 (open a note panel under the selection) and 直接引用 (stage it
-   * with no note). Either hands the excerpt, its turn and any note to the
-   * host, which stages it on the composer; an excerpt already in
-   * `pendingQuotes` is never handed over again. Omitted by hosts that don't
-   * compose quotes. Only selections that resolve to a turn are offered, so
-   * `turnId` always arrives.
+   * surfaces 引用, which opens a note panel under the selection; submitting
+   * hands the excerpt, its turn and any note to the host, which stages it on
+   * the composer (an empty note stages the bare quote). An excerpt already in
+   * `pendingQuotes` is never handed over again — 引用 reopens its note instead.
+   * Omitted by hosts that don't compose quotes. Only selections that resolve
+   * to a turn are offered, so `turnId` always arrives.
    */
   onQuoteSelection?(input: { text: string; turnId: string; comment?: string }): void;
   /**
@@ -682,7 +682,6 @@ export function ChatView(props: {
   }, [props.activeSession?.id]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
-    props.onQuoteSelection ? copy.quoteCommentSkip : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
   ].filter((label): label is string => label !== null).join(' / ');
   const hasConversationHeaderActions = useMakaClientSlotOccupied(
@@ -1116,38 +1115,23 @@ export function ChatView(props: {
                   elevation="med"
                 >
                   {props.onQuoteSelection ? (
-                    <>
-                      <Button
-                        type="button"
-                        label={copy.quoteSelection}
-                        onClick={() => {
-                          const selection = window.getSelection();
-                          setQuoteAnnotation({
-                            kind: selectionStaged ? 'edit' : 'annotate',
-                            text: selectionQuote.text,
-                            turnId: selectionQuote.turnId,
-                            anchor: excerptAnchor(
-                              selection?.rangeCount
-                                ? selection.getRangeAt(0).getBoundingClientRect()
-                                : new DOMRect(selectionQuote.anchor.x, selectionQuote.anchor.y),
-                            ),
-                          });
-                        }}
-                      />
-                      <Button
-                        type="button"
-                        label={copy.quoteCommentSkip}
-                        onClick={() => {
-                          if (!selectionStaged) {
-                            props.onQuoteSelection?.({
-                              text: selectionQuote.text,
-                              turnId: selectionQuote.turnId,
-                            });
-                          }
-                          dismissSelectionActions();
-                        }}
-                      />
-                    </>
+                    <Button
+                      type="button"
+                      label={copy.quoteSelection}
+                      onClick={() => {
+                        const selection = window.getSelection();
+                        setQuoteAnnotation({
+                          kind: selectionStaged ? 'edit' : 'annotate',
+                          text: selectionQuote.text,
+                          turnId: selectionQuote.turnId,
+                          anchor: excerptAnchor(
+                            selection?.rangeCount
+                              ? selection.getRangeAt(0).getBoundingClientRect()
+                              : new DOMRect(selectionQuote.anchor.x, selectionQuote.anchor.y),
+                          ),
+                        });
+                      }}
+                    />
                   ) : null}
                   {props.onAskAboutSelection ? (
                     <Button

@@ -54,15 +54,16 @@ describe('TUI primary guidance catalog', () => {
       getTuiPrimaryGuidance(locale, platform);
 
     for (const locale of ['zh-CN', 'en'] as const) {
+      // Queue and retract moved off the Alt chords to Tab and Shift+←, so no
+      // platform needs Option/Alt label rewriting in the keybinding list.
       const macKeybindings = guidanceFor(locale, 'darwin').help.keybindings.join('\n');
-      assert.match(macKeybindings, /⌥\+Enter/u);
-      assert.match(macKeybindings, /⌥\+↑/u);
+      assert.match(macKeybindings, /Tab/u);
+      assert.match(macKeybindings, /Shift\+←/u);
       assert.doesNotMatch(macKeybindings, /\bAlt\+/u);
+      assert.doesNotMatch(macKeybindings, /⌥\+/u);
 
       const linuxKeybindings = guidanceFor(locale, 'linux').help.keybindings.join('\n');
-      assert.match(linuxKeybindings, /Alt\+Enter/u);
-      assert.match(linuxKeybindings, /Alt\+↑/u);
-      assert.doesNotMatch(linuxKeybindings, /⌥\+/u);
+      assert.equal(linuxKeybindings, macKeybindings);
     }
   });
 });
