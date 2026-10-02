@@ -114,7 +114,14 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await app.evaluate(({ Menu }) => {
     const original = Menu.prototype.popup;
     Menu.prototype.popup = function (options) {
-      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu = this;
+      const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
+      probe.workbarMenu = this;
+      probe.workbarMenuOpen = true;
+      // Track the popup's own lifetime in the main process: Linux may
+      // auto-dismiss it (e.g. after a resize) at any moment.
+      this.once('menu-will-close', () => {
+        probe.workbarMenuOpen = false;
+      });
       Menu.prototype.popup = original;
       return original.call(this, options);
     };
@@ -128,15 +135,17 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
     return container?.getVisible();
   })).toBe(true);
-  // aria-expanded tracks the popup IPC resolution, so a menu that already
-  // auto-dismissed (Linux closes popups after window resizes) must not be
-  // closed again — closePopup on a dead popup crashes the main process.
-  if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
+  // A menu that already auto-dismissed (Linux closes popups after window
+  // resizes) must not be closed again: closePopup on a dead popup crashes the
+  // main process. Decide inside the main process, in the same task as the
+  // close, so the dismissal cannot land between the check and the call;
+  // checking the renderer's aria-expanded first left exactly that window.
+  await mainWindow.evaluate((window) => {
+    const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
     // Close on the same owner passed to popup(). The no-window overload takes
     // Electron's close-all MenuRunner path on Linux, even for this single menu.
-    await mainWindow.evaluate((window) =>
-      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup(window));
-  }
+    if (probe.workbarMenuOpen) probe.workbarMenu.closePopup(window);
+  });
   await expect(addPanel).not.toHaveAttribute('aria-expanded', 'true');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();
