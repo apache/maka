@@ -494,7 +494,6 @@ function AppShellContent({
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
   const composerRef = queueSurface.composer;
-  const restoreLocalMessageDraft = queueSurface.restoreDraft;
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -1079,7 +1078,8 @@ function AppShellContent({
     activeIdRef,
     captureComposerImportOwner,
     captureSelection,
-    checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
+    checkTaskSubmissionReadiness: async () =>
+      !sharedSessionActive && (!!activeIdRef.current || !!taskEntry.selectors.target),
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
     refreshSessions,
@@ -1138,10 +1138,6 @@ function AppShellContent({
     toastApi,
   });
 
-  async function taskSubmissionReadyAtSend(): Promise<boolean> {
-    return !sharedSessionActive && (!!activeIdRef.current || !!taskEntry.selectors.target);
-  }
-
   function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
     const createdSessionId = activeIdRef.current;
     if (!sourceSessionId && createdSessionId)
@@ -1153,9 +1149,11 @@ function AppShellContent({
     enqueueMessage,
     onError(sessionId, error) {
       if (activeIdRef.current === sessionId) {
-        const copy = getDesktopConversationCopy(uiLocale).actions;
-        showSessionError(sessionId, copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale));
+        const copy = desktopConversationCopy.actions;
+        showSessionError(
+          sessionId, copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
       }
     },
   });
@@ -1488,13 +1486,7 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages
-      sessionId={activeId}
-      publish={addTransientMessage}
-      retire={removeTransientMessage}
-      reportError={toastApi.error}
-      restoreDraft={restoreLocalMessageDraft}
-    />
+
     <CatalogRowWatch
       catalog={sessionCatalogController}
       sessionIds={[revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId]}
@@ -1513,6 +1505,13 @@ function AppShellContent({
     <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
       render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
+    <Conversation.StagedLocalMessages
+      sessionId={activeId}
+      queue={activeMessageQueue?.entries}
+      session={activeSession}
+      directoryHostId={directoryHostId}
+      enabled={navSelection.section === 'sessions' && canStageComposerContext && !revisionDraft}
+    />
     <SessionCollaboration.SessionTurnRequestInboxProvider
       catalog={sessionCatalogController}
       onOpenSession={openSession}

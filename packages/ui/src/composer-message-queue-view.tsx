@@ -114,6 +114,7 @@ function QueueRow({ controller, entry, ...props }: QueueRowProps) {
 
   return (
     <div
+      role={entry.localMessage ? "listitem" : undefined}
       data-maka-queue-drop-target={reorderable ? "true" : undefined}
       onDragOver={(event) => {
         if (reorderable && controller.hasDrag()) event.preventDefault();
@@ -121,15 +122,17 @@ function QueueRow({ controller, entry, ...props }: QueueRowProps) {
       onDrop={reorderable ? () => controller.dropOn(entry.entryId) : undefined}
     >
       <ListItem
+        role={entry.localMessage ? "presentation" : undefined}
         label={editing ? (
           <QueueEditor controller={controller} label={copy.editQueuedEntry} />
         ) : (
           <QueueEntryLabel entry={entry} />
         )}
         style={{ minHeight: 28, paddingBlock: 0 }}
-        startContent={<QueueDragHandle controller={controller} entry={entry} enabled={reorderable} label={copy.reorderQueuedEntry} />}
-        endContent={<QueueEntryActions controller={controller} editing={editing} entry={entry} {...props} />}
+        startContent={entry.localMessage ? undefined : <QueueDragHandle controller={controller} entry={entry} enabled={reorderable} label={copy.reorderQueuedEntry} />}
+        endContent={entry.localMessage ? undefined : <QueueEntryActions controller={controller} editing={editing} entry={entry} {...props} />}
       />
+      {entry.localMessage && <LocalDeliveryFeedback message={entry.localMessage} />}
     </div>
   );
 }
@@ -158,18 +161,30 @@ function QueueEditor({ controller, label }: { controller: QueueController; label
 
 function QueueEntryLabel({ entry }: { entry: ComposerQueueEntry }) {
   const text = entry.content.displayText ?? entry.content.text;
+  return <span className="maka-composer-queue-text" title={text}>{text}</span>;
+}
+
+function LocalDeliveryFeedback({ message }: { message: NonNullable<ComposerQueueEntry["localMessage"]> }) {
   return (
     <>
-      <span className="maka-composer-queue-text" title={text}>{text}</span>
-      {entry.localMessage?.deliveryStatus ? (
-        <span
-          className="maka-composer-queue-delivery"
-          role="status"
-          title={entry.localMessage.deliveryDetail}
-        >
-          {entry.localMessage.deliveryStatus}
+      <span className="maka-composer-queue-feedback" role="status">
+        {message.deliveryStatus && <span className="maka-composer-queue-delivery">{message.deliveryStatus}</span>}
+        {message.deliveryDetail && <span className="maka-composer-queue-delivery-detail">
+          {message.deliveryStatus && " "}{message.deliveryDetail}
+        </span>}
+      </span>
+      {!!message.deliveryActions?.length && (
+        <span className="maka-composer-queue-actions maka-composer-queue-local-actions">
+          {message.deliveryActions.map((action) => action.icon ? (
+            <IconButton key={action.label} variant="ghost" size="sm" type="button"
+              label={action.label} tooltip={action.label} icon={action.icon}
+              isDisabled={action.disabled} onClick={action.onClick} />
+          ) : (
+            <Button key={action.label} variant="ghost" size="sm" type="button"
+              label={action.label} isDisabled={action.disabled} onClick={action.onClick} />
+          ))}
         </span>
-      ) : null}
+      )}
     </>
   );
 }
@@ -205,24 +220,6 @@ interface QueueEntryActionsProps extends Omit<ComposerMessageQueueViewProps, "en
 }
 
 function QueueEntryActions({ controller, editing, entry, ...props }: QueueEntryActionsProps) {
-  if (entry.localMessage) {
-    return (
-      <span className="maka-composer-queue-actions">
-        {entry.localMessage.deliveryActions?.map((action) => (
-          <IconButton
-            key={action.label}
-            variant="ghost"
-            size="sm"
-            type="button"
-            label={action.label}
-            tooltip={action.label}
-            icon={action.icon}
-            onClick={action.onClick}
-          />
-        ))}
-      </span>
-    );
-  }
   return (
     <span className="maka-composer-queue-actions">
       {editing

@@ -25,7 +25,7 @@ import type {
 } from '@maka/core/events';
 import type { DesktopTranscriptBatchPayload } from '../preload/transcript-contract.js';
 
-export type DesktopLocalMessageState = 'saved' | 'sending' | 'accepted' | 'unknown' | 'failed';
+export type DesktopLocalMessageState = 'saved' | 'paused' | 'sending' | 'accepted' | 'unknown' | 'failed';
 
 /** Presentation only; the durable command and attachment bytes stay in Main. */
 export interface DesktopLocalMessage {
@@ -42,9 +42,27 @@ export interface DesktopLocalMessage {
   readonly quotes?: readonly QuoteRef[];
   readonly inlineReferences: readonly InlineReference[];
   readonly turnId?: string;
+  readonly admission?: 'turn_started' | 'steering' | 'followup';
+  readonly checking?: boolean;
+  readonly retryScheduled?: boolean;
+  readonly waitingForConnection?: boolean;
   readonly error?: string;
   /** Main can reach the Host, so it delivers the message without the user. */
   readonly delivering?: true;
+}
+
+/** Read on demand for editing a definite failure; reading never consumes the original. */
+export interface DesktopLocalMessageDraft {
+  readonly messageId: string;
+  /** Original paused message replaced only when this draft is durably enqueued. */
+  readonly replacesLocalMessageId?: string;
+  readonly text: string;
+  readonly attachments: readonly AttachmentRef[];
+  /** Opaque, scoped, one-shot approvals; attachment bytes never cross into the renderer. */
+  readonly stagedAttachments: readonly { approvalId: string; name: string; mimeType?: string; size: number }[];
+  readonly directoryReferences: readonly DirectoryReference[];
+  readonly quotes: readonly QuoteRef[];
+  readonly inlineReferences: readonly InlineReference[];
 }
 
 export interface DesktopCachedTranscript {
@@ -54,8 +72,13 @@ export interface DesktopCachedTranscript {
 
 export interface DesktopSessionLocalBridge {
   listMessages(sessionId: string): Promise<readonly DesktopLocalMessage[]>;
-  /** Only an intent that has never been dispatched can be cancelled locally. */
-  cancelMessage(sessionId: string, messageId: string): Promise<void>;
+  readFailedMessage(sessionId: string, messageId: string): Promise<DesktopLocalMessageDraft>;
+  /** Release exact recovery approvals owned by this renderer, even after changing Host or Session. */
+  releaseRecoveryAttachments(approvalIds: readonly string[]): Promise<void>;
+  /** Delete a cancellable local copy; restoreDraft pauses a never-dispatched original without deleting it. */
+  cancelMessage(sessionId: string, messageId: string, options?: { restoreDraft: true }): Promise<DesktopLocalMessageDraft | void>;
+  /** Explicitly resume the original, never-dispatched paused message. */
+  resumeMessage(sessionId: string, messageId: string): Promise<void>;
   /** Reconcile the same immutable command; never turn an unknown outcome into a new execution. */
   reconcileMessage(sessionId: string, messageId: string): Promise<void>;
   readTranscript(sessionId: string): Promise<DesktopCachedTranscript | null>;

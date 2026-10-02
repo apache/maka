@@ -32,9 +32,10 @@ import {
 import { createFakeSessionCollaborationServices } from '../src/renderer/features/session-collaboration/testing.js';
 
 import {
-  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands,
+  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands, ConversationServicesProvider,
   type ComposerStagingServices,
 } from '../src/renderer/features/conversation/index.js';
+import { stubConversationServices } from '../src/renderer/features/conversation/testing.js';
 
 const stagingServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
@@ -154,7 +155,9 @@ const reconnectServices = services(async () => {
 function GuestComposer(props: { sessionId: string }) {
   const composerRef = useRef<ComposerHandle>(null);
   const stagingCommands = useMemo(createComposerStagingCommands, []);
+  const conversationServices = useMemo(() => stubConversationServices(), []);
   return (
+    <ConversationServicesProvider services={conversationServices}>
     <ComposerStagingServicesProvider services={stagingServices}>
     <ComposerStagingProvider commands={stagingCommands} draftKey={props.sessionId}>
     <GuestTurnRequests sessionId={props.sessionId} composerRef={composerRef}>
@@ -191,6 +194,7 @@ function GuestComposer(props: { sessionId: string }) {
     </GuestTurnRequests>
     </ComposerStagingProvider>
     </ComposerStagingServicesProvider>
+    </ConversationServicesProvider>
   );
 }
 

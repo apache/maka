@@ -101,6 +101,7 @@ function userMessage(turnId: string, text: string): StoredMessage {
 }
 
 interface RevisionWorld {
+  ports: RevisionSendPorts<TurnRevisionDraft>;
   revisionActions: {
     beginEditUserMessage: (turnId: string) => void;
   };
@@ -249,6 +250,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     retractedWorkspaceReferencesRef: { current: {} },
     captureStaging: () => ({
       draftKey: 'draft',
+      retainAttachments: () => () => {},
       hasPendingContext: false,
       hasStagedQuotes: false,
       submittableAttachments: undefined,
@@ -345,6 +347,7 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   });
 
   return {
+    ports,
     revisionActions,
     composer,
     document,
@@ -399,6 +402,67 @@ test('resending an unchanged revision goes through reviseBeforeTurn and the norm
     // The revision draft settled and the composer kept no residue.
     assert.equal(world.revisionDraftRef.current, null);
     assert.equal(world.composer.current?.getText(), '');
+  } finally {
+    world.restoreWindow();
+  }
+});
+
+for (const text of ['edited message', '/swarm task edited message', '/graph task edited message']) {
+  test(`submit preserves replacement and attachment ownership: ${text}`, async () => {
+    const world = await mountRevisionWorld();
+    try {
+      const staging = { ...world.ports.captureStaging(), submittableAttachments: [{
+        stagingKey: 'restored-file', displayName: 'notes.txt', kind: 'doc', size: 4,
+        source: { type: 'approval', approvalId: 'restored-approval', name: 'notes.txt' },
+      }] as NonNullable<ReturnType<typeof world.ports.captureStaging>['submittableAttachments']> };
+      const events: string[] = [];
+      let finish!: (ok: boolean) => void;
+      const result = new Promise<boolean>((resolve) => { finish = resolve; });
+      const onSend = createRevisionAwareOnSend({
+        ...world.ports,
+        captureStaging: () => ({
+          ...staging,
+          clearSubmittedContext: () => { assert.fail('refused send must retain context'); },
+          retainAttachments: (pending) => {
+            assert.equal(pending, staging.submittableAttachments);
+            events.push('retain');
+            return () => { events.push('release'); };
+          },
+        }),
+        setNewTaskSendPending: (pending) => { events.push(`pending:${pending}`); },
+        send: async (_text, _pending, options) => {
+          assert.equal(_pending, staging.submittableAttachments);
+          assert.equal(options?.replacesLocalMessageId, 'paused-original');
+          events.push('send');
+          return result;
+        },
+      });
+      const sent = onSend(text, { replacesLocalMessageId: 'paused-original' });
+      assert.deepEqual(events, ['retain', 'pending:true', 'send']);
+      finish(false);
+      assert.equal(await sent, false);
+      assert.deepEqual(events, ['retain', 'pending:true', 'send', 'release', 'pending:false']);
+    } finally {
+      world.restoreWindow();
+    }
+  });
+}
+
+test('submit releases attachment ownership when sending throws', async () => {
+  const world = await mountRevisionWorld();
+  try {
+    const events: string[] = [];
+    const onSend = createRevisionAwareOnSend({
+      ...world.ports,
+      captureStaging: () => ({ ...world.ports.captureStaging(), retainAttachments: () => {
+        events.push('retain');
+        return () => { events.push('release'); };
+      } }),
+      setNewTaskSendPending: (pending) => { events.push(`pending:${pending}`); },
+      send: async () => { throw new Error('send failed'); },
+    });
+    await assert.rejects(onSend('edited message'), /send failed/);
+    assert.deepEqual(events, ['retain', 'pending:true', 'release', 'pending:false']);
   } finally {
     world.restoreWindow();
   }

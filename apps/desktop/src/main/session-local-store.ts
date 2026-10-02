@@ -50,6 +50,8 @@ export interface LocalMessageIntent {
   /** Written durably before the first dispatch, and immutable thereafter. */
   readonly originHostEpoch?: string;
   readonly attachmentsPrepared?: true;
+  /** Client-only replacement identity, never forwarded to the Host. */
+  readonly replacesLocalMessageId?: string;
 }
 
 export interface LocalOutboxRecord {
@@ -62,6 +64,17 @@ export interface LocalOutboxRecord {
   readonly fingerprint: string;
   readonly result?: TurnMessageSubmitResult;
   readonly error?: string;
+}
+
+function readOutboxRecord(row: Record<string, unknown>): LocalOutboxRecord {
+  const record = JSON.parse(String(row.payload)) as LocalOutboxRecord;
+  return {
+    ...record,
+    // Older readers take the column state and ignore the payload state. Keep
+    // pauses inert for them, while preserving the distinction from real failures.
+    state: row.state === 'failed' && record.state === 'paused'
+      ? 'paused' : row.state as DesktopLocalMessageState,
+  };
 }
 
 /** A Client-owned database, never the Host's operational database. */
@@ -107,6 +120,9 @@ export class DesktopSessionLocalStore {
       );
       CREATE TABLE IF NOT EXISTS authorities (profile_id TEXT PRIMARY KEY, partition TEXT NOT NULL);
     `);
+    // Upgrade the earlier paused encoding atomically, without touching content
+    // or attachment rows. This must run before a later downgrade opens the DB.
+    this.#db.exec("UPDATE outbox SET state = 'failed', payload = json_set(payload, '$.state', 'paused') WHERE state = 'paused'");
     // A crash may have happened anywhere after persisting dispatch intent.
     // Recovery probes the original epoch instead of assuming the send failed.
     this.#db.exec("UPDATE outbox SET state = 'unknown' WHERE state = 'sending'");
@@ -131,9 +147,11 @@ export class DesktopSessionLocalStore {
   }
 
   enqueue(partition: string, intent: LocalMessageIntent): LocalOutboxRecord {
+    const replacementId = intent.replacesLocalMessageId;
     const digest = createHash('sha256').update(JSON.stringify(intent.command));
     for (const staged of intent.staged)
       digest.update(JSON.stringify([staged.name, staged.mimeType, staged.base64]));
+    if (replacementId) digest.update(JSON.stringify(['replaces', replacementId]));
     const fingerprint = digest.digest('hex');
     const previous = this.get(partition, intent.command.messageId);
     if (previous) {
@@ -143,6 +161,10 @@ export class DesktopSessionLocalStore {
       }
       return previous;
     }
+    const source = replacementId ? this.get(partition, replacementId) : undefined;
+    if (replacementId && (!source || source.sessionId !== intent.command.sessionId ||
+        source.state !== 'paused' || source.intent.originHostEpoch || replacementId === intent.command.messageId))
+      throw new Error('The original message is no longer paused for editing');
     const { staged, ...metadata } = intent;
     const record: LocalOutboxRecord = {
       partition,
@@ -164,19 +186,26 @@ export class DesktopSessionLocalStore {
         .prepare('SELECT COALESCE(SUM(length(content)), 0) AS bytes FROM outbox_attachments')
         .get()!.bytes,
     );
+    const replacedBytes = source ? Number(this.#db.prepare(
+      'SELECT length(CAST(payload AS BLOB)) AS bytes FROM outbox WHERE partition = ? AND message_id = ?',
+    ).get(partition, source.messageId)!.bytes) + Number(this.#db.prepare(
+      'SELECT COALESCE(SUM(length(content)), 0) AS bytes FROM outbox_attachments WHERE partition = ? AND message_id = ?',
+    ).get(partition, source.messageId)!.bytes) : 0;
     const messageBytes =
       Buffer.byteLength(payload) +
       staged.reduce((bytes, item) => bytes + Buffer.byteLength(item.base64, 'base64'), 0);
     if (
-      Number(usage.count) >= 256 ||
+      Number(usage.count) - (source ? 1 : 0) >= 256 ||
       messageBytes > MAX_LOCAL_MESSAGE_BYTES ||
-      Number(usage.bytes) + storedBytes + messageBytes > MAX_OUTBOX_BYTES
+      Number(usage.bytes) + storedBytes - replacedBytes + messageBytes > MAX_OUTBOX_BYTES
     ) {
       throw new Error(
         'Local message storage is full; keep the draft and resolve pending messages first',
       );
     }
     this.#transaction(() => {
+      if (source) this.#db.prepare('DELETE FROM outbox WHERE partition = ? AND message_id = ?')
+        .run(partition, source.messageId);
       this.#db
         .prepare('INSERT INTO outbox VALUES (?, ?, ?, ?, ?, ?)')
         .run(
@@ -224,9 +253,7 @@ export class DesktopSessionLocalStore {
     const row = this.#db
       .prepare('SELECT state, payload FROM outbox WHERE partition = ? AND message_id = ?')
       .get(partition, messageId);
-    return row
-      ? ({ ...JSON.parse(String(row.payload)), state: row.state } as LocalOutboxRecord)
-      : undefined;
+    return row ? readOutboxRecord(row) : undefined;
   }
 
   list(partition: string, sessionId?: string): LocalOutboxRecord[] {
@@ -242,9 +269,7 @@ export class DesktopSessionLocalStore {
               'SELECT state, payload FROM outbox WHERE partition = ? AND session_id = ? ORDER BY created_at, rowid',
             )
             .all(partition, sessionId);
-    return rows.map(
-      (row) => ({ ...JSON.parse(String(row.payload)), state: row.state }) as LocalOutboxRecord,
-    );
+    return rows.map(readOutboxRecord);
   }
 
   update(record: LocalOutboxRecord): void {
@@ -258,7 +283,7 @@ export class DesktopSessionLocalStore {
     this.#transaction(() => {
       this.#db
         .prepare('UPDATE outbox SET state = ?, payload = ? WHERE partition = ? AND message_id = ?')
-        .run(record.state, JSON.stringify(record), record.partition, record.messageId);
+        .run(record.state === 'paused' ? 'failed' : record.state, JSON.stringify(record), record.partition, record.messageId);
       // Host references and local bytes change ownership in the same commit.
       if (record.intent.attachmentsPrepared)
         this.#db
@@ -344,6 +369,53 @@ export class DesktopSessionLocalStore {
       );
       for (const entry of observed) {
         if (remove.run(partition, snapshot.sessionId, entry.message.id).changes) changed = true;
+      }
+      return changed;
+    });
+  }
+
+  /** Successful Stop responses and durable Host tombstones prove cancellation
+   * across Host restarts: the current epoch need not match the dispatch epoch.
+   * Delete exact dispatched identities in one commit; worker ownership fences late ACKs.
+   */
+  retireCancelledMessages(partition: string, sessionId: string, messageIds: readonly string[]): boolean {
+    if (!messageIds.length) return false;
+    return this.#transaction(() => {
+      let changed = false;
+      const remove = this.#db.prepare(
+        'DELETE FROM outbox WHERE partition = ? AND session_id = ? AND message_id = ?',
+      );
+      for (const messageId of messageIds) {
+        const record = this.get(partition, messageId);
+        if (!record || record.sessionId !== sessionId || !record.intent.originHostEpoch) continue;
+        if (remove.run(partition, sessionId, messageId).changes) changed = true;
+      }
+      // Like retireObservedMessages, removing outbox rows does not invalidate
+      // a pending canonical transcript snapshot for the same Session.
+      return changed;
+    });
+  }
+
+  /** A positive Host not_admitted proof releases delivery ordering, but is
+   * not user cancellation: retain the exact local content for recovery.
+   */
+  failNotAdmittedMessages(partition: string, sessionId: string, messageIds: readonly string[]): boolean {
+    if (!messageIds.length) return false;
+    return this.#transaction(() => {
+      let changed = false;
+      const fail = this.#db.prepare(
+        'UPDATE outbox SET state = ?, payload = ? WHERE partition = ? AND session_id = ? AND message_id = ?',
+      );
+      for (const messageId of messageIds) {
+        const record = this.get(partition, messageId);
+        if (!record || record.sessionId !== sessionId || !record.intent.originHostEpoch || record.state === 'failed') continue;
+        const failed: LocalOutboxRecord = {
+          ...record,
+          state: 'failed',
+          result: undefined,
+          error: 'The Host never admitted this message; the local copy is retained.',
+        };
+        if (fail.run('failed', JSON.stringify(failed), partition, sessionId, messageId).changes) changed = true;
       }
       return changed;
     });

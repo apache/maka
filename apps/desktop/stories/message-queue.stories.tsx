@@ -17,11 +17,15 @@
  * under the License.
  */
 
-import { useReducer } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { MessageQueueEntryProjection } from "@maka/core/events";
 import type { SessionSummary } from "@maka/core/session";
-import { Composer, type ChatModelChoice } from "@maka/ui";
+import { Composer, type ChatModelChoice, type ComposerHandle, type TransientUserMessageProjection } from "@maka/ui";
+import { SessionLocalMessages } from "../src/renderer/features/conversation/testing.js";
+import { ConversationServicesProvider } from "../src/renderer/features/conversation";
+import { stubConversationServices } from "../src/renderer/features/conversation/testing";
 
 interface QueueStoryState {
   readonly entries: readonly MessageQueueEntryProjection[];
@@ -153,3 +157,109 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const InteractiveQueue: Story = { render: () => <InteractiveMessageQueue /> };
+
+function PausedFollowUpQueue() {
+  const composer = useRef<ComposerHandle>(null);
+  const [messages, setMessages] = useState<TransientUserMessageProjection[]>([]);
+  const services = useMemo(() => stubConversationServices({
+    listMessages: async () => [{
+      messageId: "paused-follow-up", sessionId: STORY_SESSION.id, createdAt: 1,
+      text: "Review the retained attachment before sending this follow-up again.",
+      state: "paused", canCancel: true, placement: "next_turn", attachments: [], inlineReferences: [],
+    }],
+  }), []);
+  const publish = useCallback((_sessionId: string, message: TransientUserMessageProjection) => {
+    setMessages((current) => [...current.filter((item) => item.id !== message.id), message]);
+  }, []);
+  const retire = useCallback((_sessionId: string, messageId: string) => {
+    setMessages((current) => current.filter((item) => item.id !== messageId));
+  }, []);
+  const restore = useCallback<NonNullable<ComponentProps<typeof SessionLocalMessages>["restoreUnsentDraft"]>>((sessionId, draft) => {
+    if (!composer.current) return false;
+    composer.current.appendDraft(sessionId, draft.text, draft.inlineReferences, draft.replacesLocalMessageId);
+    return true;
+  }, []);
+  return <ConversationServicesProvider services={services}>
+    <SessionLocalMessages sessionId={STORY_SESSION.id} publish={publish} update={publish} retire={retire}
+      canRestoreDraft={() => !composer.current?.getText()} restoreDraft={() => false} restoreUnsentDraft={restore} />
+    {recoveryStoryFrame(<Composer ref={composer} draftKey={STORY_SESSION.id} streaming
+      onSend={() => false} onStop={() => undefined} pendingMessages={messages} />)}
+  </ConversationServicesProvider>;
+}
+
+// Real path: edit a never-dispatched follow-up, then clear the draft. The retained
+// original remains paused in the production queue, with visible recovery guidance.
+export const PausedFollowUp: Story = {
+  render: () => <PausedFollowUpQueue />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector('.maka-composer-queue-feedback')).not.toBeNull());
+    const row = canvasElement.querySelector<HTMLElement>('.maka-composer-queue-list [role="listitem"]')!;
+    const feedback = row.querySelector<HTMLElement>('[role="status"]')!;
+    const actions = row.querySelector<HTMLElement>('.maka-composer-queue-local-actions')!;
+    await expect(feedback).toBeVisible();
+    await expect(feedback.querySelector('.maka-composer-queue-delivery-detail')).toBeVisible();
+    await expect(actions).toBeVisible();
+    await expect(actions.getBoundingClientRect().top).toBeGreaterThanOrEqual(feedback.getBoundingClientRect().bottom - 1);
+    await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
+    const button = actions.querySelector('button')!;
+    button.focus();
+    await expect(button).toHaveFocus();
+  },
+};
+
+function recoveryStoryFrame(children: ReactNode) {
+  return <div style={{ padding: "24px 24px 48px", maxWidth: 840 }}>{children}</div>;
+}
+
+function RecoveredFileDraft() {
+  const composer = useRef<ComposerHandle>(null);
+  const [draftKey, setDraftKey] = useState('other-session');
+  const [sent, setSent] = useState('');
+  useEffect(() => {
+    composer.current!.setDraft('original-session', 'Review first');
+    composer.current!.appendDraft('original-session', '  inspect @src/index.ts ', [
+      { kind: 'workspace_file', value: '@src/index.ts', label: 'index.ts', start: 10 },
+    ]);
+  }, []);
+  return recoveryStoryFrame(<>
+    {/* Review controls stand in for sidebar navigation; the draft and token
+        implementation below is the production Composer, without a second store. */}
+    <button type="button" onClick={() => setDraftKey('original-session')}>Open original session</button>
+    <button type="button" onClick={() => {
+      composer.current!.setText(composer.current!.getText());
+      composer.current!.appendDraft('original-session', 'more');
+    }}>Replace with plain text</button>
+    <Composer ref={composer} draftKey={draftKey} onStop={() => undefined}
+      onSend={(text, metadata) => { setSent(JSON.stringify({ text, references: metadata?.workspaceFileReferences })); return false; }} />
+    <output aria-label="Captured send">{sent}</output>
+  </>);
+}
+
+// Real path: withdraw a queued message containing a workspace-file token after
+// switching Sessions, return to its original draft, then send it again. The
+// restored token stays a file reference rather than becoming lookalike text.
+export const RecoveredFileReference: Story = {
+  render: () => <RecoveredFileDraft />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: 'Open original session' }));
+    await waitFor(() => expect(canvasElement.querySelector('[data-astryx-token-value="@src/index.ts"]')).not.toBeNull());
+    const input = canvasElement.querySelector<HTMLElement>('[contenteditable="true"]')!;
+    await userEvent.click(input);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => {
+      const sent = JSON.parse(canvas.getByLabelText('Captured send').textContent || '{}');
+      expect(sent.text).toBe('Review first\n\ninspect @src/index.ts');
+      expect(sent.references).toEqual([{ value: '@src/index.ts', start: 22 }]);
+    });
+    await userEvent.click(canvas.getByRole('button', { name: 'Replace with plain text' }));
+    await waitFor(() => expect(canvasElement.querySelector('[data-astryx-token-value="@src/index.ts"]')).toBeNull());
+    await userEvent.click(input);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => {
+      const sent = JSON.parse(canvas.getByLabelText('Captured send').textContent || '{}');
+      expect(sent.text).toBe('Review first\n\ninspect @src/index.ts\n\nmore');
+      expect(sent.references).toBeUndefined();
+    });
+  },
+};

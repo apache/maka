@@ -793,3 +793,21 @@
   color: var(--color-text-secondary); font: inherit; font-size: var(--text-xs);
 }
 .maka-composer-next-prompt:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.maka-composer-queue-local-actions {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 0 var(--space-2) var(--space-1);
+}
+.maka-composer-queue-feedback {
+  display: block;
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--muted-foreground);
+}
+.maka-composer-queue-delivery-detail {
+  display: block;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

@@ -41,12 +41,8 @@ import {
 } from './session-workspace-errors.js';
 import * as skillFeedback from './skill-invocation-feedback.js';
 import * as Conversation from './features/conversation/index.js';
-import type { NewChatExecutionTarget, PendingAttachment, ExecutorSubmission } from './features/conversation/index.js';
+import type { NewChatExecutionTarget, PendingAttachment, ExecutorSubmission, ComposerMessageContext } from './features/conversation/index.js';
 
-export interface WorkspaceFileReferencePosition {
-  value: string;
-  start: number;
-}
 import {
   isNoRealConnectionError,
   noRealConnectionReasonFromError,
@@ -80,12 +76,7 @@ type ToastApi = {
   info(title: string, description?: string): void;
 };
 
-type DirectoryReferences = NonNullable<TransientUserMessageProjection['directoryReferences']>;
-type MessageContextOptions = {
-  directoryReferences?: DirectoryReferences;
-  quotes?: readonly QuoteRef[];
-  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-};
+type MessageContextOptions = ComposerMessageContext;
 type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
   targetSessionId?: string;
@@ -329,6 +320,7 @@ export function createAppShellChatActions(deps: {
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+          replacesLocalMessageId: options.replacesLocalMessageId,
         };
         return submitAndProject({
           sessionId,
@@ -490,6 +482,7 @@ export function createAppShellChatActions(deps: {
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+          replacesLocalMessageId: options.replacesLocalMessageId,
         },
         ...copiedArray('quotes', quotes),
         isSurfaceVisible: () => activeIdRef.current === sessionId,

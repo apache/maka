@@ -31,7 +31,7 @@ export type { SessionUiReads } from './model/session-ui-reads.js';
 export { useAppShellSessionUiReads } from './controller/use-session-ui-reads.js';
 export type { ConversationHostChange, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
-export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { StagedLocalMessages } from './ui/staged-local-messages.js';
 
 
 export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
@@ -57,6 +57,7 @@ export {
 
 export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
+export type { ComposerMessageContext } from './controller/composer-follow-up.js';
 export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
 export {
   createRevisionAwareOnSend,

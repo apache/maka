@@ -203,11 +203,16 @@ export function useSessionReferenceComposer(options: {
     setPendingReferences(next);
   }, []);
 
+  // Recovery can run before the selection's state update commits, or after
+  // an asynchronous draft read. Inspect the same live selection as send.
+  const hasPendingReferences = useCallback(() => pendingReferencesRef.current.length > 0, []);
+
   return {
     references,
     pick,
     pending,
     pendingReferences,
+    hasPendingReferences,
     removePendingReference,
     error: error?.contextKey === contextKey
       ? { title: error.title, detail: error.detail }

@@ -51,7 +51,7 @@ export function useSessionMessageQueue(options: {
 }): {
   composer: RefObject<ComposerHandle | null>;
   transientMessages: TransientUserMessageProjection[];
-  restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void;
+  restoreDraft: (sessionId: string, draft: RestoredDraftContent) => boolean;
   /**
    * Staged-context restorer slot: the shell owns the attachments/quotes stores
    * and fills this once, so a retract can hand the entry's context back even
@@ -88,10 +88,12 @@ export function useSessionMessageQueue(options: {
   // key even after navigation — the composer focuses only when it is still
   // showing that Session (setDraft/appendDraft guard on the active key).
   const restoreDraft = useCallback((targetSessionId: string, draft: RestoredDraftContent) => {
-    draftContextRestorer.current?.(targetSessionId, draft);
     const handle = composer.current;
-    if (!handle || !draft.text.trim()) return;
-    handle.appendDraft?.(targetSessionId, draft.text);
+    if (!handle) return false;
+    draftContextRestorer.current?.(targetSessionId, draft);
+    if (draft.text.trim() || draft.replacesLocalMessageId)
+      handle.appendDraft(targetSessionId, draft.text, draft.inlineReferences, draft.replacesLocalMessageId);
+    return true;
   }, []);
   // Surfaces the failure, then rethrows so the pending plate can settle its
   // in-flight action state without guessing with a timer.

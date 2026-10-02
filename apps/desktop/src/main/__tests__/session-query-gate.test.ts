@@ -111,6 +111,7 @@ test('query blocking pauses, resumes, and fences automatic Skills and Plan reads
             value: catalog,
             children: createElement(ComposerStagingFixture, {
               draftKey: session.id,
+              conversationServices: services,
               children: createElement(ComposerMentionsProvider, {
               skillCatalogRevision: 0,
               sessionId: session.id,

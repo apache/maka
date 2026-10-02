@@ -44,9 +44,11 @@ let root: Root | undefined;
 
 const sessionLocalServices: Pick<
   ConversationServices,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
+  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
 > = {
   listMessages: async () => [],
+  readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in reference tests'); },
+  releaseRecoveryAttachments: async () => {},
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,
   subscribeChanges: () => () => undefined,
@@ -111,6 +113,7 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     releaseSnapshot = resolve;
   });
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
     observation: stubConversationServices().observation,
     resume: stubConversationServices().resume,
     ...sessionLocalServices,
@@ -255,6 +258,7 @@ test('send resolves the selected Session snapshot at the send boundary', async (
   };
   let reads = 0;
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
     observation: stubConversationServices().observation,
     resume: stubConversationServices().resume,
     ...sessionLocalServices,
@@ -363,6 +367,7 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
   });
   let release!: (snapshot: SessionSnapshot) => void;
   const services: ConversationServices = {
+    resumeMessage: async () => undefined,
     observation: stubConversationServices().observation,
     resume: stubConversationServices().resume,
     ...sessionLocalServices,

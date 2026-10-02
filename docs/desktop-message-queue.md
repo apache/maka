@@ -46,3 +46,20 @@ At submission time Desktop consults the live-turn reference together with the la
 ## Deliberate Scope
 
 Mutation remains lane-local. Pausing delivery or moving an entry between sessions would require new Host protocol and durability semantics.
+
+## Local paused-message downgrade safety
+
+The client can pause a never-dispatched local message for editing before the
+Host owns it. In the local outbox, these records use `failed` in the SQLite
+state column and retain `paused` in the JSON payload. Older readers use the
+column, so their delivery workers skip the original instead of automatically
+sending it. They may display it as a failed message. New readers recover the
+paused state only when both values match this encoding; genuine failures remain
+failures, and an explicit resume writes `saved` to both values.
+
+Opening the database converts the earlier raw `paused` column values in one
+atomic update without changing the message content or attachment rows. A database
+created by the earlier implementation must be opened by the fixed version before
+downgrading for this protection to apply. This protects automatic dispatch of
+paused originals; it does not promise full application downgrade compatibility
+or prevent explicit edits and deletion in an older version.

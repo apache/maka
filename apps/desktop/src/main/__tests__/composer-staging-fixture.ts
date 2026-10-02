@@ -20,9 +20,11 @@
 import { createElement, useMemo, type ReactNode } from 'react';
 import { AstryxLocaleProvider, ToastProvider } from '@maka/ui';
 import {
-  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands,
-  type ComposerStagingCommands, type ComposerStagingServices,
+  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands, ConversationServicesProvider,
+  type ComposerStagingCommands, type ComposerStagingServices, type ConversationServices,
 } from '../../renderer/features/conversation/index.js';
+
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 
 const emptyServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
@@ -35,10 +37,12 @@ export function ComposerStagingFixture(props: {
   readonly directoryHostId?: string;
   readonly commands?: ComposerStagingCommands;
   readonly services?: ComposerStagingServices;
+  readonly conversationServices?: ConversationServices;
   readonly children?: ReactNode;
 }) {
   const fallbackCommands = useMemo(createComposerStagingCommands, []);
-  return createElement(AstryxLocaleProvider, {
+  const fallbackServices = useMemo(() => stubConversationServices(), []);
+  return createElement(ConversationServicesProvider, { services: props.conversationServices ?? fallbackServices, children: createElement(AstryxLocaleProvider, {
     children: createElement(ToastProvider, {
       children: createElement(ComposerStagingServicesProvider, {
         services: props.services ?? emptyServices,
@@ -50,5 +54,5 @@ export function ComposerStagingFixture(props: {
         }),
       }),
     }),
-  });
+  }) });
 }
