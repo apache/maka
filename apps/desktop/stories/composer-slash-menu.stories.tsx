@@ -214,6 +214,7 @@ function SlashMenuComposer({
 const stagingServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
   previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
 };
 
 // Match AppShell's persistent staging scope around the real mention reader.

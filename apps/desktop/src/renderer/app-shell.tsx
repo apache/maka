@@ -1875,7 +1875,6 @@ function AppShellContent({
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
                 safeResumeAction={safeResumeAction}
                 onLineageBadgeClick={(turnId) => { if (activeId) openSessionInChat(activeId, turnId); }}
-                onReadAttachmentBytes={window.maka.attachments.readBytes}
                 onOpenLinkedSession={openSessionInChat}
                 scrollTargetTurn={
                   activeId && searchScrollTarget?.sessionId === activeId

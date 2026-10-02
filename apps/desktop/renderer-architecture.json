@@ -615,7 +615,6 @@
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 50,
         "bridgePaths": {
-          "window.maka.attachments.readBytes": 1,
           "window.maka.onboarding.setMilestone": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
           "window.maka.settings.getClient": 1,
@@ -729,7 +728,7 @@
           "react": 1
         },
         "importSpecifiers": 74,
-        "nonTriviaTokens": 9080
+        "nonTriviaTokens": 9069
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
