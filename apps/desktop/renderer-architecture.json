@@ -455,22 +455,13 @@
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 5,
-        "bridgePaths": {
-          "window.maka.app.info": 1,
-          "window.maka.appWindow.subscribeCommand": 1,
-          "window.maka.connections.subscribeEvents": 1,
-          "window.maka.runtimeHostProfiles.subscribeChanges": 1,
-          "window.maka.sessions.subscribeChanges": 1,
-          "window.maka.settings.subscribeClientChanged": 1,
-          "window.maka.settings.subscribeExternalChanged": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {
           "cancelAnimationFrame": 1,
-          "document.documentElement.setAttribute": 1,
           "requestAnimationFrame": 1
         },
         "hookCalls": {
-          "useEffect": 7,
+          "useEffect": 6,
           "useHotkeys": 1
         },
         "lifecycleMethods": {},
@@ -486,7 +477,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 1361
+        "nonTriviaTokens": 1140
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -665,6 +656,7 @@
           "./application/contracts/conversation-copy": 1,
           "./application/contracts/onboarding/onboarding-authority.js": 1,
           "./application/contracts/session-catalog/catalog-row-watch.js": 1,
+          "./application/contracts/shell-lifecycle.js": 1,
           "./application/contracts/turn-presentation": 1,
           "./chat-composer-region": 1,
           "./chat-message-surface": 1,
@@ -723,7 +715,7 @@
           "react": 1
         },
         "importSpecifiers": 71,
-        "nonTriviaTokens": 8901
+        "nonTriviaTokens": 8920
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

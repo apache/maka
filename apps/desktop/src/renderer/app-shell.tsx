@@ -97,6 +97,7 @@ import {
   OnboardingProjectionRoot,
   type OnboardingShellProjection,
 } from './application/contracts/onboarding/onboarding-authority.js';
+import { ShellLifecycleSubscriptions } from './application/contracts/shell-lifecycle.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
@@ -1197,7 +1198,7 @@ function AppShellContent({
     navSelectionRef,
   });
   useAppShellHostEffects();
-  useAppShellBootstrapSubscriptions({
+  const shellLifecycle = useAppShellBootstrapSubscriptions({
     uiLocale,
     activeIdRef,
     applyE2eFixture,
@@ -1539,6 +1540,7 @@ function AppShellContent({
       })}
     >
       <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
+      <ShellLifecycleSubscriptions {...shellLifecycle} />
       <WorkHubEnablementWatch onEnabled={() => { setWorkHubActive(true); setNavSelection({ section: 'sessions' }); }} onDisabled={exitWorkHub} />
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
