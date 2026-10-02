@@ -62,9 +62,9 @@ import { selectSessions, type SessionCatalogController } from '../../../applicat
 import { selectStaleSessionIds } from '../../../application/contracts/session-catalog/stale-sessions.js';
 import { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
-import type { SessionSendProjection } from '@maka/core/session-send-projection';
 import type { SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
 import { useWorkHubEnabled, useWorkHubEnablement } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
+import { useOnboardingSessionSendOutcomes } from '../../../application/contracts/onboarding/onboarding-authority.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -98,7 +98,6 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
   projectScopes: readonly SessionNavigationProjectScope[];
   /** The activity projection subscribes here, without publishing through AppShell. */
   streamingSessions: SnapshotReader<ReadonlySet<string>>;
-  sessionSendOutcomes?: Readonly<Record<string, SessionSendProjection>>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
   /**
@@ -128,10 +127,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     props.streamingSessions.getSnapshot,
   );
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  // Send outcomes come from the onboarding authority, not through AppShell.
+  const sessionSendOutcomes = useOnboardingSessionSendOutcomes();
   const staleSessionIds = useExternalStoreSelector(
     props.catalog,
     selectStaleSessionIds,
-    props.sessionSendOutcomes,
+    sessionSendOutcomes,
     sessionIdSetsEqual,
   );
   const rail = useMemo(

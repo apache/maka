@@ -80,6 +80,9 @@ through `SessionNavigationPorts`, which the shell composes.
   Workbar and the WorkHub dock read too. The rail shows the entry only while it
   is on and checks it again before opening WorkHub; AppShell passes the entry
   but holds no enablement state.
+- Stale-row marks come from per-Session send outcomes in the application
+  onboarding authority (`application/contracts/onboarding`), read here
+  directly rather than threaded through AppShell.
 - At most one row mutation runs per Session. Mutations retain revision-family
   semantics, and renderer state is cleared only after the Host confirms removal.
 - Width persistence remains trailing-debounced; width, collapse, and grouping

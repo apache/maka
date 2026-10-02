@@ -69,6 +69,11 @@ import {
   WorkHubEnablementProvider,
 } from '../application/contracts/workhub-workspace/workhub-enablement.js';
 import { createDesktopWorkHubEnablementSource } from '../platform/desktop/create-workhub-enablement-source.js';
+import {
+  createOnboardingAuthority,
+  OnboardingAuthorityProvider,
+} from '../application/contracts/onboarding/onboarding-authority.js';
+import { createDesktopOnboardingSource } from '../platform/desktop/create-onboarding-source.js';
 
 if (import.meta.env.DEV) {
   const stopObserving = observeReactPerformanceMeasures();
@@ -85,6 +90,8 @@ export function createDesktopFeatureServices() {
     // Client-global, like the catalog: the shell, Workbar, the rail and the
     // WorkHub dock all follow the same switch.
     workHubEnablement: createWorkHubEnablement(createDesktopWorkHubEnablementSource()),
+    // First-run state is read by the shell, the rail and composer readiness.
+    onboarding: createOnboardingAuthority(createDesktopOnboardingSource()),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
     diagnostics: createDesktopDiagnosticsServices(),
@@ -115,6 +122,7 @@ export function DesktopFeatureServicesProvider(props: {
   return (
     <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
     <WorkHubEnablementProvider value={props.services.workHubEnablement}>
+    <OnboardingAuthorityProvider value={props.services.onboarding}>
     <ClientPluginServicesProvider services={props.services.clientPlugins}>
       <ClientPluginRoot>
         <AppUpdateServicesProvider services={props.services.appUpdate}>
@@ -158,6 +166,7 @@ export function DesktopFeatureServicesProvider(props: {
         </AppUpdateServicesProvider>
       </ClientPluginRoot>
     </ClientPluginServicesProvider>
+    </OnboardingAuthorityProvider>
     </WorkHubEnablementProvider>
     </SessionCatalogContext.Provider>
   );

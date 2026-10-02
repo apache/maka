@@ -52,6 +52,11 @@ import {
   WorkHubEnablementProvider,
   type WorkHubEnablement,
 } from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
+import {
+  OnboardingAuthorityProvider,
+  type OnboardingAuthority,
+  type OnboardingSnapshot,
+} from '../../renderer/application/contracts/onboarding/onboarding-authority.js';
 
 const EMPTY_STREAMING_SESSIONS = new Set<string>();
 
@@ -223,7 +228,6 @@ function navigationTree(
           hiddenSessionIds,
           projectScopes: [localProjectScope],
           streamingSessions,
-          sessionSendOutcomes: {},
           ports: ports(linkedCatalog, shell.activeSessionId),
           commandsRef: { current: null },
           selection: { section: 'sessions' },
@@ -616,6 +620,30 @@ describe('SessionNavigationProvider selection', () => {
     await render(true);
 
     assert.deepEqual([...selection().selectedIds], []);
+  });
+
+  it('marks stale rows from the onboarding authority rather than a shell prop', async () => {
+    let rail: SessionRailData | undefined;
+    function Rail() {
+      rail = useSessionRailData();
+      return null;
+    }
+    const snapshot = {
+      sessionSendOutcomes: { remote: { kind: 'blocked', reason: 'connection_missing', connectionLocked: false } },
+    } as unknown as OnboardingSnapshot;
+    const onboarding: OnboardingAuthority = {
+      getProjection: () => ({ snapshot, failed: false }),
+      subscribe: () => () => {},
+      refresh: () => {},
+      skipInitialOnboarding: async () => {},
+    };
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const { root } = installReactRenderer();
+    await act(async () => root.render(createElement(OnboardingAuthorityProvider, { value: onboarding },
+      navigationTree(catalog, { activeSessionId: 'root', workHubActive: false }, null, createElement(Rail)))));
+    assert.deepEqual([...(rail?.staleSessionIds ?? [])], ['remote']);
+    await act(async () => root.unmount());
   });
 
   it('offers the WorkHub entry only while the switch is on, checked again on select', async () => {

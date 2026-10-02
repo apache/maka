@@ -117,7 +117,6 @@ export const ALLOWED = {
     useEffect: 1,
     useLayoutEffect: 1,
     useNewTaskChoice: 1,
-    useOnboardingSnapshot: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
     // `SessionNavigationProvider`. The entry shrinks rather than disappearing,
     // because the shell body does read the rail: the command palette lists the

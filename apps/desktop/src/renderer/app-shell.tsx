@@ -92,7 +92,11 @@ import type { SessionCollaborationDialogProjection } from './features/session-co
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { desktopSlashCommandAvailability, parseDesktopSlashCommand } from './desktop-slash-command';
 import { mergeWorkspaceReferences, rebaseWorkspaceFileReferences } from './follow-up-submit-routing';
-import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
+import {
+  getOnboardingActivationCandidate,
+  OnboardingProjectionRoot,
+  type OnboardingShellProjection,
+} from './application/contracts/onboarding/onboarding-authority.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
@@ -121,10 +125,7 @@ import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
-import {
-  defaultRuntimeHostDiagnosticTarget,
-  runOnDefaultRuntimeHost,
-} from './platform/desktop/default-runtime-host-operation.js';
+import { defaultRuntimeHostDiagnosticTarget } from './platform/desktop/default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import { createAppShellChatActions } from './app-shell-chat-actions';
@@ -204,9 +205,13 @@ export function AppShell() {
                           <WorkbarShellRoot>
                             {(workbar) => (
                               <Conversation.ConversationProvider>
-                                <AppShellContent
-                                  {...{ taskEntry, overlays, sharedSessionDialog, workbar, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                                />
+                                <OnboardingProjectionRoot>
+                                  {(onboarding) => (
+                                    <AppShellContent
+                                      {...{ taskEntry, overlays, sharedSessionDialog, workbar, onboarding, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                                    />
+                                  )}
+                                </OnboardingProjectionRoot>
                               </Conversation.ConversationProvider>
                             )}
                           </WorkbarShellRoot>
@@ -240,6 +245,7 @@ function AppShellContent({
   overlays,
   sharedSessionDialog,
   workbar: { bridge, commands, selectors, LiveContextUsageProbe },
+  onboarding,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
@@ -249,6 +255,7 @@ function AppShellContent({
   overlays: OverlaysShellProjection;
   sharedSessionDialog: SessionCollaborationDialogProjection;
   workbar: WorkbarShellProjection;
+  onboarding: OnboardingShellProjection;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
@@ -315,7 +322,6 @@ function AppShellContent({
   const { searchScrollTarget } = overlays.selectors;
   const settingsOpen = overlays.selectors.settings.open;
 
-  const onboarding = useOnboardingSnapshot();
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
   const { resolveWorkBoardTarget, prepareWorkBoardDraft, openSessionWorkspaceRecovery } = taskEntry.commands;
@@ -772,7 +778,7 @@ function AppShellContent({
     transcriptHasHistory;
   // PR110c: OnboardingState is now the single source of truth for
   // first-run UI. The renderer never re-derives provider readiness;
-  // `useOnboardingSnapshot()` pulls the derived state from the main
+  // the application onboarding authority pulls the derived state from the main
   // process (PR110a + PR110b contract) and reactively invalidates on
   // `sessions:changed` + `connections:event`. The hero renders only
   // when sessions.length === 0; any session (including archived /
@@ -785,18 +791,18 @@ function AppShellContent({
         defaultConnection: snapshot.defaultSlug,
         chatModelChoices: snapshot.chatModelChoices,
       });
-    } else if (onboarding.error) {
+    } else if (onboarding.failed) {
       // Session bootstrap is independent above. If onboarding itself failed,
       // retain the previous connection-specific recovery path as well.
       void defaultHostConnections.refreshConnections();
     }
-  }, [onboarding.error, onboarding.snapshot]);
+  }, [onboarding.failed, onboarding.snapshot]);
   // Nothing settled to show while the first snapshot pull is in flight. The
   // flag keeps the composer hidden and — through `data-maka-content-ready` on
   // .appFrame — holds the launch overlay until a real frame exists: sessions,
   // a hero, or the load-error fallback.
   const isOnboardingLoading =
-    sessionCount === 0 && onboardingState === undefined && !onboardingSettled && !onboarding.error;
+    sessionCount === 0 && onboardingState === undefined && !onboardingSettled && !onboarding.failed;
   // Only unfinished setup takes the chat surface over. A configured user with
   // no sessions is not onboarding: they land on the normal empty chat and use
   // the one real Composer, which creates the session on its first send.
@@ -1624,7 +1630,6 @@ function AppShellContent({
                 hiddenSessionIds={selectors.hiddenSessionIds}
                 projectScopes={taskEntry.selectors.projectScopes}
                 streamingSessions={sessionUiReads.streaming}
-                sessionSendOutcomes={onboarding.snapshot?.sessionSendOutcomes}
                 SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
                 NavigationExtras={SessionCollaboration.SessionCollaborationNavigation}
                 ports={sessionNavigationPorts}
@@ -1906,14 +1911,7 @@ function AppShellContent({
                 onRefreshConnections={refreshConnections}
                 onSkip={async () => {
                   try {
-                    await runOnDefaultRuntimeHost((host) =>
-                      window.maka.onboarding.setMilestone(
-                        'initial_onboarding',
-                        'skipped',
-                        host,
-                      ),
-                    );
-                    onboarding.refresh();
+                    await onboarding.skipInitialOnboarding();
                   } catch (error) {
                     toastApi.error(
                       shellCopy.skipErrorTitle,

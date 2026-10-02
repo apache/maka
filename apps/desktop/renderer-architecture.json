@@ -178,7 +178,6 @@
     "src/renderer/use-app-shell-session-list.ts",
     "src/renderer/use-app-shell-session-ui-reads.ts",
     "src/renderer/use-app-shell-session-workspace.ts",
-    "src/renderer/use-onboarding-snapshot.ts",
     "src/renderer/use-project-context.ts",
     "src/renderer/use-shell-appearance.ts",
     "src/renderer/use-shell-connections.ts",
@@ -613,9 +612,8 @@
         "nonTriviaTokens": 561
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 50,
+        "importDeclarations": 49,
         "bridgePaths": {
-          "window.maka.onboarding.setMilestone": 1,
           "window.maka.sessions.listTurnLandmarks": 1
         },
         "environmentCapabilities": {
@@ -634,7 +632,6 @@
           "useEffect": 1,
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
-          "useOnboardingSnapshot": 1,
           "useRef": 6,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
@@ -666,6 +663,7 @@
           "./app-shell-stop-action": 1,
           "./app-shell-turn-actions": 1,
           "./application/contracts/conversation-copy": 1,
+          "./application/contracts/onboarding/onboarding-authority.js": 1,
           "./application/contracts/session-catalog/catalog-row-watch.js": 1,
           "./application/contracts/turn-presentation": 1,
           "./chat-composer-region": 1,
@@ -705,7 +703,6 @@
           "./shell/frame-style": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
-          "./use-onboarding-snapshot": 1,
           "./use-project-context": 1,
           "./use-shell-appearance": 1,
           "./use-shell-connections": 1,
@@ -725,8 +722,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 74,
-        "nonTriviaTokens": 8915
+        "importSpecifiers": 71,
+        "nonTriviaTokens": 8901
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -3385,24 +3382,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./theme": 1
-        }
-      },
-      "src/renderer/use-onboarding-snapshot.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 1,
-          "useRef": 2,
-          "useState": 2,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./platform/desktop/onboarding-snapshot-bridge.js": 2,
-          "@maka/ui": 1,
-          "react": 1
         }
       },
       "src/renderer/use-project-context.ts": {
