@@ -2373,6 +2373,21 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
   return SHELL_COPY_BY_LOCALE[locale];
 }
 
+/**
+ * An `app:openPath` failure reason in this locale. Desktop's open-path guard
+ * reports a closed set; any other value reads as `unknown`, so raw text never
+ * reaches the UI.
+ */
+export function openPathFailureCopy(reason: string, locale: UiLocale): string {
+  const copy = getShellCopy(locale).projectActions.openPathFailures;
+  return reason in copy ? copy[reason as keyof typeof copy] : copy.unknown;
+}
+
+/** The folder an open-path action names, for titles such as "无法打开工作区目录". */
+export function openPathActionLabel(key: 'workspace' | 'memory' | 'project', locale: UiLocale): string {
+  return getShellCopy(locale).projectActions.openPathLabels[key];
+}
+
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
   if (error instanceof AttachmentIngestBlockedError)
     return getShellCopy(locale).sessionSettingsActions.attachmentIngestBlocked[error.code];

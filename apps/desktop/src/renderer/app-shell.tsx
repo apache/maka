@@ -880,7 +880,10 @@ function AppShellContent({
     sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
     sessionProfileKind: sharedSessionActive ? undefined : activeSession?.profileKind,
   });
-  const openProjectFolder = () => taskEntry.commands.openProjectFolder(ownerActiveId);
+  const openProjectFolder = useCallback(
+    () => taskEntry.commands.openProjectFolder(ownerActiveId),
+    [taskEntry.commands, ownerActiveId],
+  );
   const captureActiveComposerClaim = useCallback(() => {
     const sessionId = activeIdRef.current;
     const composer = composerRef.current;

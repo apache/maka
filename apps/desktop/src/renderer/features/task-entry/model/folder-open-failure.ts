@@ -20,7 +20,11 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 import { classifiedErrorFallback } from '../../../application/contracts/operation-diagnostics.js';
 import { isSessionWorkspaceUnavailableError } from '../../../application/contracts/session-workspace-errors.js';
-import { getShellCopy } from '../../../locales/shell-copy.js';
+import {
+  getShellCopy,
+  openPathActionLabel,
+  openPathFailureCopy,
+} from '../../../locales/shell-copy.js';
 import type { TaskEntryError, TaskEntryFolder, TaskEntryFolderOpenResult } from '../ports.js';
 
 /**
@@ -36,14 +40,11 @@ export function folderOpenFailure(
 ): TaskEntryError | undefined {
   if (result.kind === 'opened') return undefined;
   const copy = getShellCopy(locale);
-  const title = copy.projectActions.openFailedTitle(copy.projectActions.openPathLabels[folder]);
+  const title = copy.projectActions.openFailedTitle(openPathActionLabel(folder, locale));
   if (result.kind === 'refused') {
-    const failures = copy.projectActions.openPathFailures;
     return {
       title,
-      description: result.reason in failures
-        ? failures[result.reason as keyof typeof failures]
-        : failures.unknown,
+      description: openPathFailureCopy(result.reason, locale),
       ...result.diagnosticTarget,
     };
   }
