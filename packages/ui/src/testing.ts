@@ -28,3 +28,5 @@ export {
 
 export { foldTimeline } from './timeline-fold.js';
 export { useSessionRailSelection } from './session-rail-context.js';
+/** Exercise the production rail after Desktop has projected its linked Session tree. */
+export { SessionHistoryList } from './session-history-list.js';
