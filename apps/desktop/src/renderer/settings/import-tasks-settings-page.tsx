@@ -883,7 +883,7 @@ export function ImportTasksSettingsPage(props: {
       </SettingsSection>
 
       {isMakaSource || noSource ? null : (
-      <SettingsSection description={copy.duplicateNote}>
+      <SettingsSection title={copy.conversationsLabel} description={copy.duplicateNote}>
         <VStack gap={3}>
           {catalogError && (
             <Banner

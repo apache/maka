@@ -1005,6 +1005,23 @@ const makaBridge = {
     readSpriteSheet: async () => ({ ok: false as const, reason: 'not_found' as const }),
     subscribeChanges: () => () => undefined,
   },
+  // 工作区 reads and subscribes on window.maka.projects when it mounts. Only
+  // the projects-specific bridges supplied it, so opening 工作区 from any other
+  // settings story through the sidebar threw (getSnapshot / subscribeChanges
+  // of undefined).
+  projects: {
+    getSnapshot: async () => ({
+      projects: [],
+      capabilities: {
+        chooseClientDirectory: false,
+        chooseHostDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
+    }),
+    subscribeChanges: () => () => undefined,
+  },
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);

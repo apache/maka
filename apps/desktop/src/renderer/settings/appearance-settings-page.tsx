@@ -545,7 +545,6 @@ export function AppearanceSettingsPage(props: {
         action={appIconLoadFailed ? undefined : (
           <Button
             variant="secondary"
-            size="sm"
             isDisabled={appIconBusy}
             label={appIconBusy ? copy.appIconImporting : copy.appIconImport}
             onClick={() => void importAppIcon()}

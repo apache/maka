@@ -49,9 +49,7 @@ import {
   MakaUriContext,
   AstryxLocaleProvider,
   LocaleProvider,
-  ToastProvider,
   type ToastDiagnosticTarget,
-  type ToastErrorAction,
   type NavSelection,
   type ProjectRowActions,
   SessionListPanel,
@@ -104,7 +102,7 @@ import {
   confirmBypassPermission,
   sessionSettingFailureCopy,
 } from './locales/shell-copy';
-import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
+import * as Diagnostics from './features/diagnostics/index.js';
 import { getDesktopConversationCopy } from './application/contracts/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
@@ -177,21 +175,7 @@ export function AppShell() {
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
   const uiLocale = resolveUiLocale(uiLocalePreference, systemUiLocale, uiLocaleOverride);
-  const errorToastAction = useMemo<ToastErrorAction>(
-    () => ({
-      label: getShellCopy(uiLocale).errorBoundary.copyReport,
-      failureTitle: getShellCopy(uiLocale).commandActions.copyFailedTitle,
-      failureDescription: getShellCopy(uiLocale).commandActions.clipboardDenied,
-      onClick: (input) => window.maka.diagnostics.copyReport({
-        surface: 'toast',
-        title: input.title,
-        ...(input.description ? { description: input.description } : {}),
-        ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
-        ...(input.diagnosticTarget ? { target: input.diagnosticTarget } : {}),
-      }),
-    }),
-    [uiLocale],
-  );
+  const copy = getShellCopy(uiLocale);
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
@@ -200,7 +184,13 @@ export function AppShell() {
           `useUiLocale()` throws before anything renders. Still above every
           Astryx subtree. */}
       <AstryxLocaleProvider>
-        <ToastProvider errorAction={errorToastAction}>
+        <Diagnostics.DiagnosticReportToastProvider
+          labels={{
+            label: copy.errorBoundary.copyReport,
+            failureTitle: copy.commandActions.copyFailedTitle,
+            failureDescription: copy.commandActions.clipboardDenied,
+          }}
+        >
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
               <RuntimeHostHandoffOverlay />
@@ -228,7 +218,7 @@ export function AppShell() {
               </TaskEntry.TaskEntryRoot>
             </AppUpdateProvider>
           </ErrorBoundary>
-        </ToastProvider>
+        </Diagnostics.DiagnosticReportToastProvider>
       </AstryxLocaleProvider>
     </LocaleProvider>
   );
@@ -265,7 +255,6 @@ function AppShellContent({
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
-  const previousInterruptionShownRef = useRef(false);
   const {
     readMessages,
     refreshMessages,
@@ -487,8 +476,6 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
-  const previousInterruptionCopy =
-    getShellRemainingCopy(uiLocale).previousMainProcessInterruption;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
   /**
    * What this draft would start in: the user's choice for it if they made one,
@@ -502,33 +489,6 @@ function AppShellContent({
     newTaskPermissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
     'bypass';
-  useEffect(() => {
-    if (!appearanceHydrated) return;
-    let cancelled = false;
-    void window.maka.diagnostics
-      .takePreviousMainProcessInterruption()
-      .then((interrupted) => {
-        if (cancelled || !interrupted || previousInterruptionShownRef.current) return;
-        previousInterruptionShownRef.current = true;
-        toastApi.toast({
-          variant: 'warning',
-          title: previousInterruptionCopy.title,
-          description: previousInterruptionCopy.description,
-          duration: 10_000,
-          action: {
-            label: previousInterruptionCopy.copyDiagnostics,
-            onClick: () =>
-              window.maka.diagnostics.copyPreviousMainProcessInterruption(),
-          },
-        });
-      })
-      .catch((error) =>
-        console.error('[diagnostics] previous-session notice failed:', error),
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [appearanceHydrated, previousInterruptionCopy, toastApi]);
   // Persisted composer defaults seed the empty-state model, project path, and
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
@@ -1583,6 +1543,7 @@ function AppShellContent({
         sessionListWidth,
       })}
     >
+      <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
         onExecutionBoundaryChanged={reloadActiveExecutionBoundary}
