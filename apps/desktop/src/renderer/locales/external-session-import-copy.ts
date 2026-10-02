@@ -30,6 +30,7 @@ import type { ExternalSessionLimit } from '@maka/core/external-session';
  */
 type ExternalSessionImportCopy = {
   sourceLabel: string;
+  conversationsLabel: string;
   /** Display names by adapter id. An id with no entry falls back to the id
    *  itself, which is legible enough to ship and obvious enough to fix. */
   sourceNames: Readonly<Record<string, string>>;
@@ -142,6 +143,7 @@ const copyZhCn: ExternalSessionImportCopy = {
     bundleUnreadable: '文件无法读取，或它来自这个版本不认识的 Maka。',
     bundleFailed: '操作失败。',
     sourceLabel: '来源',
+    conversationsLabel: '对话',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 会话文件' },
     includeArchived: '包含已归档的对话',
     searchLabel: '搜索',
@@ -224,6 +226,7 @@ const copyZhTw: ExternalSessionImportCopy = {
     bundleUnreadable: '檔案無法讀取，或它來自這個版本不認識的 Maka。',
     bundleFailed: '操作失敗。',
     sourceLabel: '來源',
+    conversationsLabel: '對話',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka 工作階段檔案' },
     includeArchived: '包含已歸檔的對話',
     searchLabel: '搜尋',
@@ -308,6 +311,7 @@ const copyEn: ExternalSessionImportCopy = {
     bundleUnreadable: 'The file could not be read, or it came from a Maka this build does not know.',
     bundleFailed: 'That did not work.',
     sourceLabel: 'Source',
+    conversationsLabel: 'Conversations',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code', opencode: 'OpenCode', 'maka-bundle': 'Maka session file' },
     includeArchived: 'Include archived conversations',
     searchLabel: 'Search',

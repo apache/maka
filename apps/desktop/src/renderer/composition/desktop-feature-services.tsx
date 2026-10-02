@@ -42,6 +42,8 @@ import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
 import { OverlaysServicesProvider } from '../features/overlays/index.js';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
+import { DiagnosticsServicesProvider } from '../features/diagnostics/index.js';
+import { createDesktopDiagnosticsServices } from '../platform/desktop/create-diagnostics-services.js';
 import { createDesktopClientPluginServices } from '../platform/desktop/create-client-plugin-services.js';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
@@ -77,6 +79,7 @@ export function createDesktopFeatureServices() {
     sessionCatalog: createSessionCatalogController(),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
+    diagnostics: createDesktopDiagnosticsServices(),
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     conversationPlan: createDesktopConversationPlanServices(),
@@ -106,6 +109,7 @@ export function DesktopFeatureServicesProvider(props: {
     <ClientPluginServicesProvider services={props.services.clientPlugins}>
       <ClientPluginRoot>
         <AppUpdateServicesProvider services={props.services.appUpdate}>
+        <DiagnosticsServicesProvider services={props.services.diagnostics}>
       <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
       <ExternalAgentSettingsServicesProvider services={props.services.externalAgentSettings}>
         <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
@@ -141,6 +145,7 @@ export function DesktopFeatureServicesProvider(props: {
         </RuntimeHostManagementServicesProvider>
       </ExternalAgentSettingsServicesProvider>
       </ConnectionSettingsServicesProvider>
+        </DiagnosticsServicesProvider>
         </AppUpdateServicesProvider>
       </ClientPluginRoot>
     </ClientPluginServicesProvider>

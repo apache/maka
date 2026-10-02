@@ -46,6 +46,7 @@ import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, L
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { deriveMessageQueueProjection } from '../src/renderer/application/contracts/message-queue-projection';
 import { retractQueuedEntryToDraft, withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
+import { createDefaultSettings } from '@maka/core/settings';
 import { AppShellTitlebar } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
@@ -3963,6 +3964,7 @@ function WorkbarInShell(props: {
   togglePosition?: 'titlebar' | 'edge';
   composer?: Partial<ComposerProps>;
 } = {}) {
+  const togglePosition = props.togglePosition ?? createDefaultSettings().appearance.workbarTogglePosition;
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
@@ -3979,7 +3981,7 @@ function WorkbarInShell(props: {
         <ComposedShell
           motionEnabled
           workbarWidth={workbarWidth}
-          workbarToggle={props.togglePosition === 'titlebar' ? { collapsed: rightCollapsed, onToggle: () => collapseRight(!rightCollapsed) } : undefined}
+          workbarToggle={togglePosition === 'titlebar' ? { collapsed: rightCollapsed, onToggle: () => collapseRight(!rightCollapsed) } : undefined}
           session={props.longTitle ? { name: '主对话标题与右侧工作栏的宽度和信息层级验证 Long conversation title' } : undefined}
           onShare={props.onShare}
           detailChildren={
@@ -3998,7 +4000,7 @@ function WorkbarInShell(props: {
               {!rightCollapsed && <ResizeHandle className="maka-workbar-resize-handle maka-workbar-resize-handle-right" resizable={resizable.props}
                 direction="horizontal" isReversed isAlwaysVisible={false} pillPlacement="center" label="调整工作栏宽度" />}
               <WorkbarSurface
-                togglePosition={props.togglePosition ?? 'edge'}
+                togglePosition={togglePosition}
                 sessionId="session-active"
                 hidden={false}
                 onDismissPanel={() => collapseRight(true)}
@@ -4105,10 +4107,10 @@ export const TitlebarWithWideWorkbar: Story = {
   },
 };
 
-// Real path: hover the conversation/Workbar edge → collapse → restore from the
+// Real path: select the edge control in Appearance, then collapse → restore from the
 // window edge. The full curved edge stays inside the toggle's activation area.
 export const WorkbarEdgeRevealAndCollapse: Story = {
-  render: () => <WorkbarInShell withConversation />,
+  render: () => <WorkbarInShell togglePosition="edge" withConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const frame = canvasElement.querySelector<HTMLElement>('[data-maka-contract="session-workbar-right"]')!;
@@ -4199,10 +4201,10 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
   },
 };
 
-// Real path: Appearance → Show Workbar toggle in titlebar → open a task,
+// Real path: open a task with the default appearance settings,
 // then collapse the Workbar. The same panel and tabs survive a restore.
 export const WorkbarTitlebarRestore: Story = {
-  render: () => <WorkbarInShell togglePosition="titlebar" withConversation />,
+  render: () => <WorkbarInShell withConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const frame = canvasElement.querySelector<HTMLElement>('[data-maka-contract="session-workbar-right"]')!;
@@ -4218,6 +4220,9 @@ export const WorkbarTitlebarRestore: Story = {
     expect(panel).not.toBeVisible();
     const restore = canvas.getByRole('button', { name: '展开任务工作栏' });
     expect(restore.closest('.maka-window-titlebar')).not.toBeNull();
+    expect(restore).toBeVisible();
+    const restoreBox = restore.getBoundingClientRect();
+    expect(document.elementFromPoint(restoreBox.x + restoreBox.width / 2, restoreBox.y + restoreBox.height / 2)?.closest('button')).toBe(restore);
     expect(restore).toHaveAttribute('aria-expanded', 'false');
     restore.focus();
     await userEvent.keyboard('{Enter}');

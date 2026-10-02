@@ -18,8 +18,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Banner, HStack, Link, List, ListItem, Text } from '@astryxdesign/core';
-import { ChevronRight, ICON_SIZE } from '@maka/ui/icons';
+import { Banner, HStack, Link, StatusDot, Text } from '@astryxdesign/core';
 import { SettingsRouteHeader } from '../../application/contracts/settings-presentation/settings-route-header.js';
 import { Button, useUiLocale } from '@maka/ui';
 import type {
@@ -35,6 +34,7 @@ import type {
 import { ANTIGRAVITY_ACP_RELEASE } from '@maka/runtime-host/protocol';
 import { getExternalAgentsCopy } from '../../locales/settings-external-agents-copy.js';
 import {
+  SettingsEntryRow,
   SettingsPage,
   SettingsRow,
   SettingsSection,
@@ -78,25 +78,19 @@ function ExternalAgentsContent(props: Props) {
   if (showSetup) return <AntigravitySetup {...props} onBack={() => setShowSetup(false)} />;
   return (
     <SettingsPage>
-      <SettingsSection
-        title={copy.catalogTitle}
-        description={copy.catalogDescription}
-        variant="bare"
-      >
-        <List hasDividers>
-          <ListItem
-            startContent={<AntigravityLogo />}
-            label={copy.title}
-            description={copy.agentDescription}
-            endContent={
-              <HStack gap={2} vAlign="center">
-                {configured ? <Badge variant="neutral" label={copy.configured} /> : null}
-                <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
-              </HStack>
-            }
-            onClick={() => setShowSetup(true)}
-          />
-        </List>
+      <SettingsSection title={copy.catalogTitle} description={copy.catalogDescription}>
+        <SettingsEntryRow
+          icon={<AntigravityLogo />}
+          label={copy.title}
+          status={configured ? (
+            <span className="settingsStatus">
+              <StatusDot variant="success" label={copy.configured} />
+              <span>{copy.configured}</span>
+            </span>
+          ) : undefined}
+          description={copy.agentDescription}
+          onClick={() => setShowSetup(true)}
+        />
       </SettingsSection>
     </SettingsPage>
   );
