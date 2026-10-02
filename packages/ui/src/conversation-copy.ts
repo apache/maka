@@ -329,6 +329,7 @@ export interface ConversationCopy {
       contextUsageUnavailable: string;
       contextUsageOpen: string;
       stepLimit: string;
+      emptyStepLoop: string;
     };
   };
   chat: {
@@ -537,6 +538,8 @@ const CONVERSATION_COPY = {
         contextUsageUnavailable: '暂无用量数据',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
+        emptyStepLoop:
+          '已停止：连续空工具步骤没有可见进展。任务可能尚未完成。发送消息即可继续。',
       },
     },
     chat: {
@@ -661,6 +664,8 @@ const CONVERSATION_COPY = {
         contextUsageUnavailable: '暫無用量資料',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
+        emptyStepLoop:
+          '已停止：連續空工具步驟沒有可見進展。任務可能尚未完成。傳送訊息即可繼續。',
       },
     },
     chat: {
@@ -782,6 +787,8 @@ const CONVERSATION_COPY = {
         contextUsageUnavailable: 'No usage data is available for this request.',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
+        emptyStepLoop:
+          'Stopped after repeated empty tool steps with no visible progress. The task may be incomplete. Send a message to continue.',
       },
     },
     chat: {

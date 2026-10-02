@@ -32,6 +32,7 @@ import type {
 } from '@maka/core/events';
 import {
   deriveTurnRecords,
+  EMPTY_STEP_LOOP_NOTICE_TEXT,
   isRuntimeSystemNoteKind,
   STEP_LIMIT_NOTICE_TEXT,
   type StoredMessage,
@@ -1059,6 +1060,9 @@ export function applyMakaSessionEventToTranscript(
       if (event.stopReason === 'step_limit') {
         state.entries.push({ kind: 'notice', level: 'info', text: STEP_LIMIT_NOTICE_TEXT });
       }
+      if (event.stopReason === 'empty_step_loop') {
+        state.entries.push({ kind: 'notice', level: 'info', text: EMPTY_STEP_LOOP_NOTICE_TEXT });
+      }
       break;
   }
 }
@@ -1395,6 +1399,8 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     }
     case 'step_limit':
       return STEP_LIMIT_NOTICE_TEXT;
+    case 'empty_step_loop':
+      return EMPTY_STEP_LOOP_NOTICE_TEXT;
   }
 }
 

@@ -127,6 +127,9 @@ export function checkStagedWithBiome({
       if (result.stderr.length > 0) process.stderr.write(result.stderr);
       return false;
     }
+    // Ignored paths can still come back rewritten on stdin (escape bytes turned
+    // into U+FFFD) even though Biome refuses to own them. Trust the ignore.
+    if (/\bis ignored\b/u.test(result.stderr.toString('utf8'))) continue;
     // Biome echoes the input for files it formats or ignores, but prints
     // nothing for a language it parses without formatting, such as Markdown.
     if (result.stdout.length === 0) continue;

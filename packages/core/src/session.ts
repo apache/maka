@@ -1287,6 +1287,7 @@ export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_reported_window_exceeded',
   'context_overflow_after_compaction',
   'step_limit',
+  'empty_step_loop',
 ] as const;
 
 /**
@@ -1984,6 +1985,9 @@ function isToolActivityIdentity(value: Record<string, unknown>): boolean {
 
 export const STEP_LIMIT_NOTICE_TEXT =
   'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.';
+
+export const EMPTY_STEP_LOOP_NOTICE_TEXT =
+  'Stopped after repeated empty tool steps with no visible progress. The task may be incomplete. Send a message to continue.';
 
 /** Latest actual model recorded by a completed assistant step. */
 export function latestAssistantModelId(messages: readonly StoredMessage[]): string | undefined {

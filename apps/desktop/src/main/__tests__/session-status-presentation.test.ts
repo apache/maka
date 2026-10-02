@@ -74,6 +74,7 @@ describe('failed turn presentation', () => {
   it('grades continuable outcomes below outcomes the user must act on', () => {
     assert.equal(deriveFailedTurnSeverity('app_restarted'), 'warning');
     assert.equal(deriveFailedTurnSeverity('tool_step_cap_reached'), 'warning');
+    assert.equal(deriveFailedTurnSeverity('empty_assistant_loop'), 'warning');
     assert.equal(deriveFailedTurnSeverity('permission_required'), 'warning');
     assert.equal(deriveFailedTurnSeverity('auth'), 'error');
     assert.equal(deriveFailedTurnSeverity('context_overflow'), 'error');

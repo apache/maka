@@ -19,11 +19,184 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { createAppShellStopAction } from '../../renderer/app-shell-stop-action.js';
 import {
+  hasActiveTurnAtSubmit,
+  interruptBeforeRootSend,
   mergeWorkspaceReferences,
+  resolveExpectedTurnIdForInterrupt,
+  shouldContinueRootSendAfterInterrupt,
 } from '../../renderer/follow-up-submit-routing.js';
 
 describe('follow-up submit routing', () => {
+  it('uses the synchronous turn arm before React publishes streaming state', () => {
+    assert.equal(
+      hasActiveTurnAtSubmit({
+        liveTurns: [{ turnId: 'turn-1' }],
+        runningTurnIds: [],
+      }),
+      true,
+    );
+  });
+
+  it('ignores a terminal projection whose only running id is the same turn', () => {
+    assert.equal(
+      hasActiveTurnAtSubmit({
+        liveTurns: [{ turnId: 'turn-1', terminal: true }],
+        runningTurnIds: ['turn-1'],
+      }),
+      false,
+    );
+  });
+
+  it('treats a non-terminal buffer entry as active even when a terminal turn is retained', () => {
+    assert.equal(
+      hasActiveTurnAtSubmit({
+        liveTurns: [
+          { turnId: 'turn-1', terminal: true },
+          { turnId: 'turn-2' },
+        ],
+        runningTurnIds: ['turn-1'],
+      }),
+      true,
+    );
+  });
+
+  it('ignores multiple retained terminal turns whose running ids are already settled', () => {
+    assert.equal(
+      hasActiveTurnAtSubmit({
+        liveTurns: [
+          { turnId: 'turn-1', terminal: true },
+          { turnId: 'turn-2', terminal: true },
+        ],
+        runningTurnIds: ['turn-1', 'turn-2'],
+      }),
+      false,
+    );
+  });
+
+  it('treats a running turn outside the retained terminal buffer as active', () => {
+    assert.equal(
+      hasActiveTurnAtSubmit({
+        liveTurns: [{ turnId: 'turn-1', terminal: true }],
+        runningTurnIds: ['turn-1', 'turn-2'],
+      }),
+      true,
+    );
+  });
+
+  it('refuses the root send when the active Session changes during interrupt', () => {
+    assert.equal(
+      shouldContinueRootSendAfterInterrupt({
+        submittingSessionId: 'session-a',
+        activeSessionId: 'session-b',
+      }),
+      false,
+    );
+    assert.equal(
+      shouldContinueRootSendAfterInterrupt({
+        submittingSessionId: 'session-a',
+        activeSessionId: 'session-a',
+      }),
+      true,
+    );
+  });
+
+  it('pins the submitting Session across an awaited interrupt before root send', async () => {
+    const stopped: Array<{ sessionId: string; expectedTurnId?: string }> = [];
+    const errors: Array<{ title: string; description?: string }> = [];
+    const activeIdRef = { current: 'session-a' as string | undefined };
+    assert.equal(
+      await interruptBeforeRootSend({
+        sessionId: 'session-a',
+        slashCommand: undefined,
+        liveTurns: [{ turnId: 'turn-1' }],
+        runningTurnIds: [],
+        activeSessionId: () => activeIdRef.current,
+        stop: async (sessionId, expectedTurnId) => {
+          stopped.push({ sessionId: sessionId ?? '', expectedTurnId });
+          activeIdRef.current = 'session-b';
+          return true;
+        },
+        uiLocale: 'en',
+        toastApi: {
+          error(title, description) {
+            errors.push({ title, description });
+          },
+        },
+      }),
+      false,
+    );
+    assert.deepEqual(stopped, [{ sessionId: 'session-a', expectedTurnId: 'turn-1' }]);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]?.title ?? '', /not sent/i);
+  });
+
+  it('blocks root send when Host stop no-ops for the pinned turn (settlement race)', async () => {
+    const target = globalThis as unknown as { window?: unknown };
+    const previousWindow = target.window;
+    target.window = {
+      maka: {
+        sessions: {
+          // expectedTurnId no longer matches — Host returns undefined.
+          stop: async () => undefined,
+        },
+      },
+    };
+    try {
+      const stop = createAppShellStopAction({
+        uiLocale: 'en',
+        activeIdRef: { current: 'session-a' },
+        stopPending: { claim: () => true, release: () => undefined },
+        removeTransientMessage: () => undefined,
+        toastApi: { error() {} },
+      });
+      const rootSendAllowed = await interruptBeforeRootSend({
+        sessionId: 'session-a',
+        slashCommand: undefined,
+        liveTurns: [{ turnId: 'turn-a' }],
+        runningTurnIds: [],
+        activeSessionId: () => 'session-a',
+        stop,
+      });
+      assert.equal(rootSendAllowed, false);
+    } finally {
+      target.window = previousWindow;
+    }
+  });
+
+  it('pins stop to a running Host turn when the live buffer only retains terminals', async () => {
+    const stopped: Array<{ sessionId: string; expectedTurnId?: string }> = [];
+    assert.equal(
+      await interruptBeforeRootSend({
+        sessionId: 'session-a',
+        slashCommand: undefined,
+        liveTurns: [{ turnId: 'turn-1', terminal: true }],
+        runningTurnIds: ['turn-1', 'turn-2'],
+        activeSessionId: () => 'session-a',
+        stop: async (sessionId, expectedTurnId) => {
+          stopped.push({ sessionId: sessionId ?? '', expectedTurnId });
+          return true;
+        },
+      }),
+      true,
+    );
+    assert.deepEqual(stopped, [{ sessionId: 'session-a', expectedTurnId: 'turn-2' }]);
+  });
+
+  it('resolves the non-terminal live turn before Host running ids', () => {
+    assert.equal(
+      resolveExpectedTurnIdForInterrupt({
+        liveTurns: [
+          { turnId: 'turn-1', terminal: true },
+          { turnId: 'turn-2' },
+        ],
+        runningTurnIds: ['turn-1', 'turn-2', 'turn-3'],
+      }),
+      'turn-2',
+    );
+  });
+
   it('restores workspace references after queued text returns to the draft', () => {
     assert.deepEqual(
       mergeWorkspaceReferences(

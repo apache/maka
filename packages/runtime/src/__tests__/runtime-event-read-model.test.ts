@@ -2048,6 +2048,36 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
   });
 
+  test('failed empty_assistant_loop RuntimeEvent emits an empty_step_loop system note', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-empty-loop',
+          ts: ts + 9,
+          status: 'failed',
+          actions: {
+            endInvocation: true,
+            stateDelta: { stopReason: 'empty_step_loop', failureClass: 'empty_assistant_loop' },
+          },
+        }),
+      ],
+      {
+        invocations: [endedAs('failed', 'empty_assistant_loop')],
+      },
+    );
+
+    assert.deepStrictEqual(
+      out.messages.find((message) => message.type === 'system_note'),
+      {
+        type: 'system_note',
+        id: 'evt-empty-loop:empty-step-loop-notice',
+        turnId,
+        ts: ts + 9,
+        kind: 'empty_step_loop',
+      },
+    );
+  });
+
   test('aborted terminal RuntimeEvent preserves abort source from runtime state', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

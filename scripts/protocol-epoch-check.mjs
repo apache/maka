@@ -185,17 +185,24 @@ function stagedFile(file, exec = execFileSync) {
 }
 
 export function evaluateStagedEpochCheck(exec = execFileSync) {
+  // A merge commit stages the whole other side against our pre-merge tip. Judging
+  // that against HEAD makes every protocol file main added since we branched look
+  // like an undeclared change. Prefer MERGE_HEAD so the check asks what *this*
+  // branch adds on top of the incoming tip (usually main); the merge-result CI
+  // gate still decides the eventual PR merge.
+  const mergeBase = readMergeHead(exec);
+  const against = mergeBase ?? 'HEAD';
   const changedProtocolFiles = git(
-    ['diff', '--cached', '--no-renames', '--name-only', 'HEAD', '--', PROTOCOL_DIR],
+    ['diff', '--cached', '--no-renames', '--name-only', against, '--', PROTOCOL_DIR],
     exec,
   )
     .split('\n')
     .filter(Boolean)
-    .filter((file) => !isStagedHeaderOnlyChange(file, exec));
+    .filter((file) => !isStagedHeaderOnlyChangeAgainst(file, against, exec));
   // `M` too: a branch amends the declaration it added. The merge-result check counts
   // only declarations added against the base, so editing a landed one grants nothing.
   const declarations = git(
-    ['diff', '--cached', '--diff-filter=AM', '--name-only', 'HEAD', '--', COMPATIBLE_CHANGE_DIR],
+    ['diff', '--cached', '--diff-filter=AM', '--name-only', against, '--', COMPATIBLE_CHANGE_DIR],
     exec,
   )
     .split('\n')
@@ -208,11 +215,20 @@ export function evaluateStagedEpochCheck(exec = execFileSync) {
     );
   }
   return evaluateEpochCheck({
-    baseEpoch: epochAtRevision('HEAD', exec),
+    baseEpoch: epochAtRevision(against, exec),
     headEpoch,
     changedProtocolFiles,
     compatibleProtocolFiles,
   });
+}
+
+function readMergeHead(exec = execFileSync) {
+  try {
+    const value = git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], exec).trim();
+    return value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -250,10 +266,14 @@ export function isHeaderOnlyChange(file, base, head, exec = execFileSync) {
 }
 
 export function isStagedHeaderOnlyChange(file, exec = execFileSync) {
+  return isStagedHeaderOnlyChangeAgainst(file, 'HEAD', exec);
+}
+
+export function isStagedHeaderOnlyChangeAgainst(file, against, exec = execFileSync) {
   const style = classifyPath(file).style;
   if (!style) return false;
   try {
-    const before = git(['show', `HEAD:${file}`], exec);
+    const before = git(['show', `${against}:${file}`], exec);
     const after = stagedFile(file, exec);
     return applyHeader(before, style) === after;
   } catch {

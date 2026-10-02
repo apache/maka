@@ -167,6 +167,14 @@ interface ReactiveFixtureOptions {
   providerNative?: boolean;
   /** Explicit send-level step budget forwarded to the backend. */
   maxSteps?: number;
+  /**
+   * Give each scripted `tool` step a distinct Read path. Needed when a test
+   * chains several textless tool steps that would otherwise share both input
+   * and a static `{ ok: true }` result: the Runtime empty-step cap (#4083)
+   * stops consecutive identical request+result signatures, which would look
+   * like a stuck loop rather than intentional context growth.
+   */
+  distinctToolPaths?: boolean;
   /** Per provider-call reported usage, keyed by 1-based call number. */
   usageByCall?: Record<number, { input: number; output: number }>;
   /** The FIRST tool step reports an unusable usage object (no token counts). */
@@ -431,7 +439,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     }
     const chunks =
       kind === 'tool'
-        ? toolCallChunks(call, 'Read', { path: 'one.md' })
+        ? toolCallChunks(call, 'Read', {
+            path: options.distinctToolPaths ? `one-${call}.md` : 'one.md',
+          })
         : kind === 'bigtool'
           ? toolCallChunks(call, 'Read', { path: 'big.md' }, RETRY_STEP_TEXT_SENTINEL)
           : kind === 'bigread'
@@ -1733,9 +1743,11 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // Review P1-1 repro: four completed tool steps grow the provider-visible
     // request far beyond the attempt's INITIAL messages. Recovery must fold the
     // durable rejected-request history rather than relying on that stale base;
-    // same-turn tool growth must remain recoverable.
+    // same-turn tool growth must remain recoverable. Distinct paths keep this
+    // growth from matching the identical empty-step cap (#4083).
     const fixture = buildReactiveFixture({
       script: ['tool', 'tool', 'tool', 'tool', 'overflow', 'done'],
+      distinctToolPaths: true,
     });
     await runTurn(fixture);
 
@@ -1747,7 +1759,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.model.doStreamCalls.length, 6);
     // The four completed tool steps ran exactly once each.
-    assert.deepEqual(fixture.toolExecutions, ['one.md', 'one.md', 'one.md', 'one.md']);
+    assert.deepEqual(fixture.toolExecutions, ['one-1.md', 'one-2.md', 'one-3.md', 'one-4.md']);
   });
 
   test('an unusable first-attempt step usage fails the whole record closed even when the retry succeeds', async () => {
@@ -1988,10 +2000,12 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // overflow folds and the retry succeeds; two more tool steps are accepted
     // by the provider, and the overflow that follows them is a different step
     // with new history behind it, so it gets its own fold instead of failing
-    // the turn.
+    // the turn. Distinct paths keep this growth from matching the identical
+    // empty-step cap (#4083).
     const fixture = buildReactiveFixture({
       script: ['tool', 'overflow', 'tool', 'tool', 'overflow', 'done'],
       bigPriors: true,
+      distinctToolPaths: true,
     });
     await runTurn(fixture);
 
@@ -2004,7 +2018,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.recorded.length, 2);
     assert.equal(fixture.summarizerCalls(), 2);
     // No completed tool step was replayed across either retry.
-    assert.deepEqual(fixture.toolExecutions, ['one.md', 'one.md', 'one.md']);
+    assert.deepEqual(fixture.toolExecutions, ['one-1.md', 'one-3.md', 'one-4.md']);
     // The second fold covers the steps accepted after the first one, so it is
     // a fold of new history rather than a repeat of the same prefix.
     assert.equal(

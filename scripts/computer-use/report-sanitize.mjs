@@ -223,6 +223,7 @@ export function sanitizeCuReport(report) {
                 'end_turn',
                 'max_tokens',
                 'step_limit',
+                'empty_step_loop',
                 'error',
                 'user_stop',
                 'permission_handoff',

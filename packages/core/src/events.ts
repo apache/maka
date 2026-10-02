@@ -1396,6 +1396,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'graph_yield'
     | 'permission_handoff'
     | 'step_limit'
+    | 'empty_step_loop'
     | 'max_tokens';
   /** External provider terminal reason, retained even when the caller cancelled the turn. */
   providerStopReason?: string;
@@ -1413,9 +1414,10 @@ export type CompleteStopReason = CompleteEvent['stopReason'];
 /** Stable failure taxonomy for complete events that did not finish the turn. */
 export function failureClassFromCompleteStopReason(
   reason: CompleteStopReason,
-): 'runtime_error' | 'tool_step_cap_reached' | undefined {
+): 'runtime_error' | 'tool_step_cap_reached' | 'empty_assistant_loop' | undefined {
   if (reason === 'error') return 'runtime_error';
   if (reason === 'step_limit') return 'tool_step_cap_reached';
+  if (reason === 'empty_step_loop') return 'empty_assistant_loop';
   return undefined;
 }
 

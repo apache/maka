@@ -604,7 +604,7 @@
           "./locales/shell-copy.js": 1
         },
         "importSpecifiers": 0,
-        "nonTriviaTokens": 292
+        "nonTriviaTokens": 304
       },
       "src/renderer/app-shell-turn-actions.ts": {
         "importDeclarations": 2,
@@ -750,8 +750,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 80,
-        "nonTriviaTokens": 9576
+        "importSpecifiers": 81,
+        "nonTriviaTokens": 9582
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -1155,7 +1155,9 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {}
+        "dependencyPaths": {
+          "./application/contracts/conversation-copy.js": 1
+        }
       },
       "src/renderer/local-memory-digest.ts": {
         "bridgePaths": {},

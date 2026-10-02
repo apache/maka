@@ -123,6 +123,14 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
     mode: Exclude<OrchestrationMode, 'default'>,
     active: boolean,
   ) => Promise<boolean>;
+  /**
+   * Plain-Enter interrupt before a new root send (#4083). Optional so unit
+   * doubles that only exercise revision/slash routing can omit it.
+   */
+  interruptBeforeRootSend?: (input: {
+    sessionId: string | undefined;
+    slashCommand: ComposerSlashCommand | null;
+  }) => Promise<boolean>;
 }
 
 export interface RevisionAwareOnSendPorts<TDraft extends RevisionDraftIdentity> extends RevisionSendPorts<TDraft> {
@@ -364,6 +372,13 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     ? ports.revisionDraftRef.current
     : undefined;
   const quotes = staging.quotesForSend();
+  // #4083: plain Enter interrupts the live turn before a new root send.
+  if (
+    ports.interruptBeforeRootSend &&
+    !(await ports.interruptBeforeRootSend({ sessionId, slashCommand }))
+  ) {
+    return false;
+  }
   const ok = await ports.send(text, pending, {
     waitForHostAdmission: revisionSend,
     targetSessionId: expectedRevisionDraft?.draftSessionId,

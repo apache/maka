@@ -18,51 +18,42 @@
  */
 
 import type { UiLocale } from '@maka/core/ui-locale';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
+import {
+  localizedShellErrorMessage,
+  type ShellErrorToastApi,
+} from './locales/shell-copy.js';
 import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import type { SessionPendingClaim } from './features/conversation/index.js';
-
-type ToastApi = {
-  error(
-    title: string,
-    description?: string,
-    diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string },
-  ): void;
-};
 
 export function createAppShellStopAction(deps: {
   uiLocale: UiLocale;
   activeIdRef: { readonly current: string | undefined };
   stopPending: SessionPendingClaim;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
-  toastApi: ToastApi;
-}): () => Promise<void> {
-  const {
-    uiLocale,
-    activeIdRef,
-    stopPending,
-    removeTransientMessage,
-    toastApi,
-  } = deps;
-
-  async function stop() {
-    const sessionId = activeIdRef.current;
+  toastApi: ShellErrorToastApi;
+}): (sessionId?: string, expectedTurnId?: string) => Promise<boolean | undefined> {
+  const { uiLocale, activeIdRef, stopPending, removeTransientMessage, toastApi } = deps;
+  return async (override?: string, expectedTurnId?: string) => {
+    const sessionId = override ?? activeIdRef.current;
     if (!sessionId || !stopPending.claim(sessionId)) return;
     try {
-      const result = await window.maka.sessions.stop(sessionId, { source: 'stop_button' });
+      const result = await window.maka.sessions.stop(sessionId, {
+        source: 'stop_button',
+        ...(expectedTurnId ? { expectedTurnId } : {}),
+      });
       if (result?.kind === 'interrupted') {
-        for (const messageId of result.retractedMessageIds) {
-          removeTransientMessage(sessionId, messageId);
-        }
+        for (const id of result.retractedMessageIds) removeTransientMessage(sessionId, id);
+        return true;
       }
+      // Enter pins expectedTurnId. Host returns undefined when that turn has
+      // already settled or been replaced — treat it as a failed interrupt so
+      // interruptBeforeRootSend does not admit a root send over a newer live
+      // turn (#4083 review).
+      if (expectedTurnId) return false;
+      return true;
     } catch (error) {
-      // The Composer wires this through both the Stop button onClick
-      // and the Escape key. Both invoke `onStop` without awaiting, so
-      // a rejected IPC would otherwise surface as an
-      // UnhandledPromiseRejection and the user would see nothing.
-      // Surface it as a toast so the user knows the model wasn't
-      // actually interrupted and can retry.
+      // Composer Stop / Escape call onStop without awaiting; toast so a failed
+      // interrupt is visible instead of an UnhandledPromiseRejection.
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
         toastApi.error(
@@ -75,7 +66,5 @@ export function createAppShellStopAction(deps: {
     } finally {
       stopPending.release(sessionId);
     }
-  }
-
-  return stop;
+  };
 }

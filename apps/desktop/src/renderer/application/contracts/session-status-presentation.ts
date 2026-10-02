@@ -99,6 +99,7 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
     case 'ratelimit': return copy.rateLimit;
     case 'requestrejected': return copy.requestRejected;
     case 'tool_step_cap_reached': return copy.stepCap;
+    case 'empty_assistant_loop': return copy.emptyLoop;
     case 'tool_failed': return copy.tool;
     case 'permission_required': return copy.permission;
     case 'app_restarted': return copy.restarted;
@@ -124,6 +125,7 @@ export function deriveFailedTurnSeverity(errorClass: string | undefined): Failed
   if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) return 'warning';
   if (lower === 'app_restarted') return 'warning';
   if (lower === 'tool_step_cap_reached') return 'warning';
+  if (lower === 'empty_assistant_loop') return 'warning';
   if (lower === 'permission_required' || lower.includes('permission')) return 'warning';
   return 'error';
 }
