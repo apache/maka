@@ -18,13 +18,17 @@
  */
 
 /**
- * Shared scaffolding for the `createAppShellChatActions` suites. The dependency
+ * Shared scaffolding for the Composer submission action suites. The dependency
  * surface is wide and the suites only ever vary a handful of entries, so a
  * second copy of it drifts silently and has to be edited twice whenever the
  * actions gain a dependency.
  */
 
 import type { TransientUserMessageProjection } from '@maka/ui';
+import {
+  createDesktopComposerSubmissionServices,
+  type DesktopComposerSubmissionBridge,
+} from '../../renderer/platform/desktop/create-composer-submission-services.js';
 
 /** Installs a `window.maka` bridge double; the returned function restores it. */
 export function installWindow(maka: unknown): () => void {
@@ -47,6 +51,19 @@ export function installWindow(maka: unknown): () => void {
       delete target.window;
     }
   };
+}
+
+/**
+ * The production Desktop adapter over whichever `window.maka` double is
+ * installed when a call runs, so the suites keep stubbing the bridge they
+ * always stubbed and the adapter's mapping is exercised along the way.
+ */
+export function windowSubmissionServices() {
+  const installed = () => (globalThis as unknown as { window: { maka: DesktopComposerSubmissionBridge } }).window.maka;
+  return createDesktopComposerSubmissionServices({
+    get sessions() { return installed().sessions; },
+    get newTasks() { return installed().newTasks; },
+  });
 }
 
 /**
@@ -75,6 +92,7 @@ export function createTransientState() {
 export function createActionsDeps() {
   const activeIdRef = { current: undefined as string | undefined };
   return {
+    services: windowSubmissionServices(),
     onFollowLatest: (_sessionId: string) => true,
     uiLocale: 'en' as const,
     activeIdRef,

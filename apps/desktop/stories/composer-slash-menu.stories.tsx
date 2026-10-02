@@ -54,7 +54,7 @@ import {
   SessionCatalogContext,
 } from '../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../src/shared/desktop-session-projection.js';
-import { desktopSlashCommandAvailability } from '../src/renderer/desktop-slash-command';
+import { desktopSlashCommandAvailability } from '../src/renderer/application/contracts/desktop-slash-command';
 import { getShellCopy } from '../src/renderer/locales/shell-copy';
 import { withScopedMakaBridge } from './maka-bridge';
 

@@ -47,7 +47,8 @@ published Session reference is a frozen getter, and consuming contracts declare
 it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
 `readMessages()` is an invocation-time, readonly view of the **published range**;
-it is used by Copy/Save and revision commands and is not a full-history promise.
+it is used by Copy/Save and is not a full-history promise. Revision commands read
+the same range from the controller inside the Composer submission owner.
 
 The Desktop adapter supplies `ConversationObservationServices`. The feature
 never imports the Desktop range implementation or accesses `window.maka`.
@@ -124,10 +125,9 @@ Remaining transitional capabilities have explicit consumers and removal work:
 
 | Capability | Current consumer | Removal module |
 | --- | --- | --- |
-| Stop pending claim and semantic send/transient/interaction commands | AppShell chat actions and composer submission | M3 persistent Composer owner |
+| Stop pending claim and transient add/remove | AppShell Stop action and `SessionLocalMessages` props | M3 persistent Composer owner |
 | `useAppShellSessionUiReads` | AppShell chrome and Composer prop assembly | M3 regional readers; retain only required chrome |
-| Invocation-time published-message read | Copy/Save and revision commands | M3 command ownership / bounded-history export integration |
-| `compactSession` command | AppShell composer submission (`/compact` port) | M3 submission ownership |
+| Invocation-time published-message read | Copy/Save | M3 command ownership / bounded-history export integration |
 
 M2 owns presentation and observation; it does not add a Catalog, Host cache or
 execution state machine, or complete the remaining Composer migration.
@@ -201,9 +201,35 @@ directory pickers still require the original draft and Host to remain current.
 Staging uses `activeId ?? NEW_TASK_PENDING_KEY`; the editor's new-task persistence
 key remains distinct. Do not key this provider or the Composer's parent by Session.
 
-Revision draft state, send-pending state, delivery recovery and the remaining
-send orchestration are later M3 work. They can use captured submission commands
+Delivery recovery is later M3 work. It can use captured submission commands
 without restoring root subscriptions or acquiring the private controller.
+
+## Composer submission ownership (R2 M3)
+
+`ComposerSubmissionProvider` alone calls the submission controller. It is
+mounted beside the staging and readiness owners and stays mounted across Session
+and section switches. It owns the send-pending flag, the edit-and-resend draft
+(with the catalog watch that retires it), the retracted workspace references and
+the submit, follow-up and interaction-answer paths. `createRevisionAwareOnSend`,
+the staged follow-up and the chat and revision actions are assembled here, not
+in AppShell, and none of them is exported from `index.ts`.
+
+The Host operations reach the owner as `ComposerSubmissionServices`, one named
+operation each; the Desktop adapter is the only caller of those bridge paths.
+The shell supplies a `shell` port of commands it already owns (surface
+ownership, navigation, catalog refresh, execution-boundary reload, the Workbar's
+form answer, side chat and new-task resolver, the model-setup toast, and the
+selected Session's orchestration write) and a `newTask` projection read at send
+time. Session Settings owns the new-task Plan, orchestration and permission
+choices; the projection carries them, and creation consumes the permission
+choice through `clearPermissionChoice`.
+
+`ConversationComposerRegion` reads the owner in the persistent Composer slot: it
+injects `onSend`, `newTaskSendPending`, the interaction answers and the revision
+notice, and narrows the shell's picker gates while a draft is open. The shell
+keeps only the stable `ComposerSubmissionCommands` handle, whose
+`beginEditUserMessage` starts a draft from the transcript. The handle throws
+while the owner is unmounted. The binding and reader context are private.
 
 ## Task readiness ownership (R2 M3)
 

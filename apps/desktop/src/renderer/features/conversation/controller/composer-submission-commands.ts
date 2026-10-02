@@ -17,26 +17,18 @@
  * under the License.
  */
 
-import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
-import {
-  mergeWorkspaceReferences,
-} from '../../renderer/features/conversation/testing.js';
+import type { ComposerSubmissionCommands } from '../model/composer-submission-contract.js';
+import { submissionBindings } from '../model/composer-submission-binding.js';
 
-describe('follow-up submit routing', () => {
-  it('restores workspace references after queued text returns to the draft', () => {
-    assert.deepEqual(
-      mergeWorkspaceReferences(
-        'preface\n\nreview @src/app.ts',
-        undefined,
-        [{
-          kind: 'workspace_file',
-          value: '@src/app.ts',
-          label: 'src/app.ts',
-          start: 7,
-        }],
-      ),
-      [{ value: '@src/app.ts', start: 16 }],
-    );
-  });
-});
+export function createComposerSubmissionCommands(): ComposerSubmissionCommands {
+  const binding: { current?: ComposerSubmissionCommands } = {};
+  const requireOwner = () => {
+    if (!binding.current) throw new Error('ComposerSubmissionProvider is not mounted');
+    return binding.current;
+  };
+  const commands: ComposerSubmissionCommands = {
+    beginEditUserMessage: (turnId) => requireOwner().beginEditUserMessage(turnId),
+  };
+  submissionBindings.set(commands, binding);
+  return commands;
+}

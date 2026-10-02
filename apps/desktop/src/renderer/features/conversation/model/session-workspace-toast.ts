@@ -17,26 +17,20 @@
  * under the License.
  */
 
-import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
-import {
-  mergeWorkspaceReferences,
-} from '../../renderer/features/conversation/testing.js';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { ToastDiagnosticTarget } from '@maka/ui';
+import { getShellCopy } from '../../../locales/shell-copy.js';
 
-describe('follow-up submit routing', () => {
-  it('restores workspace references after queued text returns to the draft', () => {
-    assert.deepEqual(
-      mergeWorkspaceReferences(
-        'preface\n\nreview @src/app.ts',
-        undefined,
-        [{
-          kind: 'workspace_file',
-          value: '@src/app.ts',
-          label: 'src/app.ts',
-          start: 7,
-        }],
-      ),
-      [{ value: '@src/app.ts', start: 16 }],
-    );
-  });
-});
+export { isSessionWorkspaceUnavailableError } from '../../../application/contracts/session-workspace-errors.js';
+
+/** The Composer owner's copy of the shell's missing-working-directory toast. */
+export function showSessionWorkspaceUnavailableToast(
+  toastApi: {
+    error(title: string, description?: string, diagnosticDetails?: string, diagnosticTarget?: ToastDiagnosticTarget): void;
+  },
+  locale: UiLocale,
+  diagnosticTarget?: ToastDiagnosticTarget,
+): void {
+  const copy = getShellCopy(locale).errors;
+  toastApi.error(copy.workspaceUnavailableTitle, copy.workspaceUnavailableDescription, undefined, diagnosticTarget);
+}

@@ -17,26 +17,14 @@
  * under the License.
  */
 
-import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
-import {
-  mergeWorkspaceReferences,
-} from '../../renderer/features/conversation/testing.js';
+import { createContext, useContext } from 'react';
+import type { useComposerSubmission } from '../controller/use-composer-submission.js';
 
-describe('follow-up submit routing', () => {
-  it('restores workspace references after queued text returns to the draft', () => {
-    assert.deepEqual(
-      mergeWorkspaceReferences(
-        'preface\n\nreview @src/app.ts',
-        undefined,
-        [{
-          kind: 'workspace_file',
-          value: '@src/app.ts',
-          label: 'src/app.ts',
-          start: 7,
-        }],
-      ),
-      [{ value: '@src/app.ts', start: 16 }],
-    );
-  });
-});
+export type ComposerSubmissionReader = ReturnType<typeof useComposerSubmission>['reader'];
+
+export const ComposerSubmissionContext = createContext<ComposerSubmissionReader | undefined>(undefined);
+export function useComposerSubmissionReader() {
+  const reader = useContext(ComposerSubmissionContext);
+  if (!reader) throw new Error('ComposerSubmissionProvider is required');
+  return reader;
+}

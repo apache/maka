@@ -17,26 +17,10 @@
  * under the License.
  */
 
-import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
-import {
-  mergeWorkspaceReferences,
-} from '../../renderer/features/conversation/testing.js';
+import type { ComposerSubmissionCommands } from './composer-submission-contract.js';
 
-describe('follow-up submit routing', () => {
-  it('restores workspace references after queued text returns to the draft', () => {
-    assert.deepEqual(
-      mergeWorkspaceReferences(
-        'preface\n\nreview @src/app.ts',
-        undefined,
-        [{
-          kind: 'workspace_file',
-          value: '@src/app.ts',
-          label: 'src/app.ts',
-          start: 7,
-        }],
-      ),
-      [{ value: '@src/app.ts', start: 16 }],
-    );
-  });
-});
+// Binding is feature-private. The shell cannot publish an implementation or
+// reach the owner's draft state through the public command handle.
+export const submissionBindings = new WeakMap<ComposerSubmissionCommands, {
+  current?: ComposerSubmissionCommands;
+}>();

@@ -27,7 +27,7 @@ import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
-import { acquireSessionCopyAttempt } from './session-copy-attempt.js';
+import { acquireSessionCopyAttempt } from './application/contracts/session-copy-attempt.js';
 
 type ToastApi = {
   info(title: string, description?: string): void;

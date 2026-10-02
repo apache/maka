@@ -136,8 +136,8 @@ export const ALLOWED = {
     useShellLiveTurn: 1,
     useShellMemoryPill: 1,
     useShellResume: 1,
-    useStableActions: 4,
-    useState: 6,
+    useStableActions: 2,
+    useState: 4,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry
     // replaces: #4113 moved the other two onto the session UI store, which is
