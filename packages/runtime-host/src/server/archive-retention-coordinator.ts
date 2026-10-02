@@ -184,30 +184,27 @@ export class HostArchiveRetentionCoordinator {
     this.#observedThisRun = true;
     const deadline = archiveRetentionDeadline(setting.enabledAt, setting.days);
     const gap = archiveRetentionGapThreshold(setting.days);
-    // A forward jump is caught even when it lands short of the deadline. Before
-    // the deadline no SQL runs, so a fresh process measures from the persisted
-    // floor alone.
-    if ((observedThisRun || now <= deadline) && now - previous > gap) {
-      return this.#hold(previous, now);
+    // A hold ends when its day is over, before or after the deadline alike.
+    let hold = document.latest?.hold;
+    if (hold && now >= hold.until) {
+      await this.#clearHold();
+      hold = undefined;
     }
-    // Nothing can be eligible before the policy itself is `days` old.
+    // A forward jump is caught even when it lands short of the deadline. A
+    // running Host measures from what it saw; a fresh process from the
+    // persisted floor and the newest metadata time, which says when the Host
+    // last ran: one MAX query, once per process.
+    const since = observedThisRun
+      ? previous
+      : Math.max(previous, (await this.#catalog.readLatestSessionMetadataTime()) ?? 0);
+    if (now - since > gap) return this.#hold(since, now);
+    // Nothing can be eligible before the policy itself is `days` old, and no
+    // candidate is read before then.
     if (now <= deadline) return false;
     if (now < previous) return this.#pause(now);
     const newest = await this.#catalog.readLatestSessionMetadataTime();
     if (newest !== undefined && now < newest) return this.#pause(now);
-    if (!observedThisRun) {
-      // After a restart, the newest metadata time says when the Host last ran.
-      const since = Math.max(previous, newest ?? 0);
-      if (now - since > gap) return this.#hold(since, now);
-    }
-    const hold = document.latest?.hold;
-    if (hold) {
-      if (now < hold.until) return false;
-      await this.#update(({ latest, ...rest }) => {
-        const { hold: _hold, ...kept } = latest ?? {};
-        return { ...rest, ...(Object.keys(kept).length > 0 ? { latest: kept } : {}) };
-      });
-    }
+    if (hold) return false;
 
     if (this.#pass?.revision !== setting.revision) {
       this.#pass = {
@@ -326,6 +323,13 @@ export class HostArchiveRetentionCoordinator {
     return false;
   }
 
+  #clearHold(): Promise<void> {
+    return this.#update(({ latest, ...rest }) => {
+      const { hold: _hold, ...kept } = latest ?? {};
+      return { ...rest, ...(Object.keys(kept).length > 0 ? { latest: kept } : {}) };
+    });
+  }
+
   async #pause(now: number): Promise<false> {
     this.#pass = undefined;
     // Recorded once: a clock that stays behind writes nothing further.
@@ -410,7 +414,10 @@ export class HostArchiveRetentionCoordinator {
           },
           ...(document.latest?.lastSweep ? { lastSweep: document.latest.lastSweep } : {}),
           ...(document.latest?.lastDeletion ? { lastDeletion: document.latest.lastDeletion } : {}),
-          ...(document.latest?.hold ? { hold: document.latest.hold } : {}),
+          // A hold whose day is over is not reported, cleared or not.
+          ...(document.latest?.hold && this.#now() < document.latest.hold.until
+            ? { hold: document.latest.hold }
+            : {}),
         },
       };
     } catch (error) {

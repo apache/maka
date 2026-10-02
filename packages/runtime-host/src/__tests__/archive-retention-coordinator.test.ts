@@ -268,7 +268,7 @@ test('a stale revision is rejected without writing', async () => {
   assert.equal((await r.query()).enabled, true);
 });
 
-test('no SQL runs and nothing is eligible until the policy is older than its days', async () => {
+test('no candidate is read and nothing is eligible until the policy is older than its days', async () => {
   const r = rig({ tasks: [{ id: 'legacy' }] });
   await r.set(true, 30);
   const enabledAt = r.now;
@@ -276,7 +276,7 @@ test('no SQL runs and nothing is eligible until the policy is older than its day
   const before = { ...r.calls };
   await r.advanceTo(enabledAt + 30 * DAY);
   assert.equal(await r.retention.sweep(), false);
-  assert.deepEqual(r.calls, before);
+  assert.equal(r.calls.list, before.list);
 
   r.now = enabledAt + 30 * DAY + 1;
   assert.equal(await r.retention.sweep(), false);
@@ -652,4 +652,55 @@ test('a setting change clears a hold', async () => {
   assert.ok((await r.query()).hold);
   await r.set(true, 60);
   assert.equal((await r.query()).hold, undefined);
+});
+
+test('a restart before the deadline, with recent metadata, does not hold', async () => {
+  const r = rig({ tasks: [{ id: 'legacy' }] });
+  await r.set(true, 30);
+  await r.advance(9 * DAY);
+  await r.retention.sweep();
+  r.restart();
+  r.now += 60 * 60 * 1000;
+  r.newest = r.now - 60 * 1000;
+  await r.retention.sweep();
+  assert.equal((await r.query()).hold, undefined);
+});
+
+test('a fresh process still holds after a genuine forward jump', async () => {
+  const r = rig({ tasks: [{ id: 'legacy' }] });
+  await r.set(true, 30);
+  const enabledAt = r.now;
+  await r.advance(2 * DAY);
+  await r.retention.sweep();
+  r.restart();
+  r.newest = enabledAt + 2 * DAY;
+  r.now = enabledAt + 12 * DAY;
+  await r.retention.sweep();
+  assert.deepEqual((await r.query()).hold, {
+    since: enabledAt + 2 * DAY,
+    detectedAt: r.now,
+    until: r.now + DAY,
+  });
+});
+
+test('a hold expires before the deadline: cleared once and never reported after its day', async () => {
+  const r = rig({ tasks: [{ id: 'legacy' }] });
+  await r.set(true, 30);
+  await r.advance(DAY);
+  await r.retention.sweep();
+  r.now += 8 * DAY;
+  await r.retention.sweep();
+  const hold = (await r.query()).hold;
+  assert.ok(hold);
+  r.now = hold.until;
+  // Reported as over even before a sweep writes it away.
+  assert.equal((await r.query()).hold, undefined);
+  const writes = r.writes.length;
+  await r.retention.sweep();
+  assert.equal(r.writes.length, writes + 1);
+  assert.equal(r.writes.at(-1)?.latest?.hold, undefined);
+  r.now += DAY;
+  await r.retention.sweep();
+  assert.equal(r.writes.length, writes + 1, 'cleared once');
+  assert.deepEqual(r.removed, [], 'still before the deadline');
 });
