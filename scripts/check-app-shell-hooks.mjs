@@ -136,7 +136,7 @@ export const ALLOWED = {
     useShellLiveTurn: 1,
     useShellMemoryPill: 1,
     useShellResume: 1,
-    useStableActions: 2,
+    useStableActions: 1,
     useState: 4,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry

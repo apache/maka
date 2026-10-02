@@ -66,8 +66,10 @@ export function ConversationTranscriptRegion<P extends object>(
 }
 
 type SubmissionProps = Pick<ComposerSubmissionReader,
-  'onSend' | 'newTaskSendPending' | 'respondToSandboxBoundary' | 'respondToUserQuestion' | 'respondToUserForm'
+  | 'onSend' | 'newTaskSendPending' | 'onStop' | 'stop'
+  | 'respondToSandboxBoundary' | 'respondToUserQuestion' | 'respondToUserForm'
 > & {
+  stopPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
 };
 type ComposerProps = SubmissionProps & {
@@ -77,8 +79,9 @@ type ComposerProps = SubmissionProps & {
 type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean };
 /**
  * Lives in the persistent composer slot, outside the conditional transcript.
- * Submission state (send pending, the edit-and-resend draft) and the submit
- * and interaction-answer callbacks come from the Composer submission owner.
+ * Submission state (send pending, Stop pending, the edit-and-resend draft) and
+ * the submit, Stop and interaction-answer callbacks come from the Composer
+ * submission owner.
  */
 export function ConversationComposerRegion<P extends object>(
   props: { surface: ComponentType<P>; usageModel?: string; usageRoute?: { llmConnectionId?: string } } & Omit<P, keyof ComposerProps>,
@@ -91,12 +94,16 @@ export function ConversationComposerRegion<P extends object>(
   const view = useSyncExternalStore(workspace.composer.subscribe, workspace.composer.getSnapshot);
   const usage = useMemo(() => workspace.usage(usageModel, usageRoute?.llmConnectionId), [workspace, usageModel, usageRoute?.llmConnectionId]);
   const latestRequestUsageTokens = useSyncExternalStore(usage.subscribe, usage.getSnapshot);
+  const stopPending = useSessionUiRead(workspace.ui.reads, 'stop', activeId);
   const draft = submission.revisionDraft;
   const editing = draft !== null && activeId === draft.draftSessionId;
   const gates = presentation as ComposerPickGates;
   const owned: ComposerProps & ComposerPickGates = {
     onSend: submission.onSend,
     newTaskSendPending: submission.newTaskSendPending,
+    onStop: submission.onStop,
+    stop: submission.stop,
+    stopPending,
     respondToSandboxBoundary: submission.respondToSandboxBoundary,
     respondToUserQuestion: submission.respondToUserQuestion,
     respondToUserForm: submission.respondToUserForm,

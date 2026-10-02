@@ -40,6 +40,8 @@ import { useConversationOwner } from '../ui/conversation-context.js';
 import { useConversationQueueCommands } from '../ui/conversation-provider.js';
 import { createChatActions } from './chat-actions.js';
 import { createRevisionAwareOnSend, createStagedFollowUp } from './composer-submit.js';
+import { createStopAction } from './stop-action.js';
+import { createTurnActions } from './turn-actions.js';
 import {
   abandonTurnRevisionCopyAttempt,
   completeTurnRevisionCopyAttempt,
@@ -49,8 +51,9 @@ import {
 
 /**
  * Called only by `ComposerSubmissionProvider`. Owns the send-pending flag, the
- * edit-and-resend draft and the Composer's submit path; the shell supplies
- * navigation and other features' commands, and reads none of this state.
+ * edit-and-resend draft and the Composer's submit, Stop, Turn-branch and
+ * interaction-answer paths; the shell supplies navigation and other features'
+ * commands, and reads none of this state.
  */
 export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input: {
   readonly staging: ComposerStagingCommands;
@@ -61,7 +64,8 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   const { staging, shell, newTask, sharedSessionActive } = input;
   const services = useComposerSubmissionServices();
   const { workspace, commands } = useConversationOwner();
-  const composerRef = useConversationQueueCommands().composer;
+  const queue = useConversationQueueCommands();
+  const composerRef = queue.composer;
   const uiLocale = useUiLocale();
   const toastApi = useToast();
   const activeIdRef = workspace.publishedSession;
@@ -177,6 +181,41 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     setNewTaskSendPending,
   });
 
+  const turn = useStableActions(createTurnActions, {
+    services,
+    uiLocale,
+    activeIdRef,
+    captureSelection: commands.captureSelection,
+    turnActionRegistry: shell.turnActions,
+    openSessionInChat: shell.openSession,
+    refreshSessions: shell.refreshSessions,
+    toastApi,
+  });
+  const { stop, onStop } = useStableActions((deps: Parameters<typeof createStopAction>[0] & {
+    noteUserStoppedTurn(sessionId: string | undefined): void;
+  }) => {
+    const stopSession = createStopAction(deps);
+    return {
+      stop: () => { void stopSession(); },
+      // #5904: the Composer's Stop and its Resume offer share one send slot,
+      // so the slot must never offer to restart the very Turn the user just
+      // stopped from it. Stop and Escape note the stop here; the interrupted-
+      // Turn banner remains the deliberate resume path for it.
+      onStop: () => {
+        deps.noteUserStoppedTurn(activeIdRef.current);
+        void stopSession();
+      },
+    };
+  }, {
+    services,
+    uiLocale,
+    activeIdRef,
+    stopPending: workspace.ui.stopPending,
+    removeTransientMessage: commands.removeTransientMessage,
+    toastApi,
+    noteUserStoppedTurn: shell.noteUserStoppedTurn,
+  });
+
   // The draft survives on exactly two catalog rows; their departure retires it.
   const retireRevisionDraftIfRowsLeave = useCallback(
     (rows: Parameters<typeof catalogWatchedRowsUsable>[0]) => {
@@ -196,7 +235,8 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
 
   const shellCommands = useMemo<ComposerSubmissionCommands>(() => ({
     beginEditUserMessage: (turnId) => revision.beginEditUserMessage(turnId),
-  }), [revision]);
+    handleTurnFooterAction: (turnId, actionId) => turn.handleTurnFooterAction(turnId, actionId),
+  }), [revision, turn]);
   const reader = useMemo(() => ({
     onSend,
     newTaskSendPending,
@@ -205,10 +245,20 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     respondToSandboxBoundary: chat.respondToSandboxBoundary,
     respondToUserQuestion: chat.respondToUserQuestion,
     respondToUserForm: chat.respondToUserForm,
-  }), [chat, newTaskSendPending, onSend, revision, revisionDraft]);
+    stop,
+    onStop,
+  }), [chat, newTaskSendPending, onSend, onStop, revision, revisionDraft, stop]);
   return {
     shellCommands,
     reader,
+    // Local delivery recovery publishes into, and restores drafts for, the
+    // Session the Composer shows.
+    localMessages: {
+      publish: commands.addTransientMessage,
+      retire: commands.removeTransientMessage,
+      reportError: toastApi.error,
+      restoreDraft: queue.restoreDraft,
+    },
     revisionWatch: {
       sessionIds: [revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId] as const,
       onRows: retireRevisionDraftIfRowsLeave,

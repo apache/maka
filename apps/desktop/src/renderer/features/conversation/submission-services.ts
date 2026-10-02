@@ -57,9 +57,15 @@ export type ConversationMessageSubmission =
   | { readonly ok: false; readonly reason: 'attachment_blocked'; readonly code: AttachmentIngestBlockedCode }
   | { readonly ok: false; readonly reason: 'outcome_unknown' };
 
+/** What a Stop retracted, so the Composer can drop the matching pending rows. */
+export type ConversationStopResult =
+  | { readonly kind: 'retracted'; readonly messageId: string }
+  | { readonly kind: 'interrupted'; readonly retractedMessageIds: readonly string[] }
+  | undefined;
+
 /**
- * The Host operations behind the Composer's sends, edit-and-resend and
- * interaction answers. Each is one named operation; the owner never receives a
+ * The Host operations behind the Composer's sends, edit-and-resend, Stop, Turn
+ * branching and interaction answers. Each is one named operation; the owner never receives a
  * bridge namespace.
  */
 export interface ComposerSubmissionServices {
@@ -77,6 +83,11 @@ export interface ComposerSubmissionServices {
     input: { readonly sourceTurnId: string; readonly copyId: string },
   ): Promise<DesktopSessionSummary>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
+  stop(sessionId: string, input: { readonly source: 'stop_button' }): Promise<ConversationStopResult>;
+  branchFromTurn(
+    sessionId: string,
+    input: { readonly sourceTurnId: string; readonly copyId: string },
+  ): Promise<DesktopSessionSummary>;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;
 }

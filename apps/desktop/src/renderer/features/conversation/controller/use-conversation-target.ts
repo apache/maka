@@ -38,11 +38,8 @@ export function useConversationTarget() {
     setActiveId: commands.setActiveId,
     startNewSession: commands.startNewSession,
     clearOwnedSessionState: commands.clearOwnedSessionState,
-    captureSelection: commands.captureSelection,
     isSessionSelected: commands.isSessionSelected,
     retiredSessionIds: commands.retiredSessionIds,
-    addTransientMessage: commands.addTransientMessage,
-    removeTransientMessage: commands.removeTransientMessage,
     readMessages: commands.readMessages,
     refreshMessages: commands.refreshMessages,
     recordSessionChange: commands.recordSessionChange,
@@ -56,6 +53,5 @@ export function useConversationTarget() {
     transcriptHasHistory: chrome.hasHistory,
     queueSurface: useConversationQueueCommands(),
     sessionUiReads: workspace.ui.reads,
-    stopPendingClaims: workspace.ui.stopPending,
   };
 }

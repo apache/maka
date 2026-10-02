@@ -18,15 +18,11 @@
  */
 
 export { resolveTaskReadinessModelTarget } from './model/task-readiness-notice.js';
-export type {
-  AppShellSessionUiStateController,
-  SessionPendingClaim,
-} from './model/session-ui-state.js';
+export type { AppShellSessionUiStateController } from './model/session-ui-state.js';
 export type { SessionUiReads } from './model/session-ui-reads.js';
 export { useAppShellSessionUiReads } from './controller/use-session-ui-reads.js';
 export type { ConversationHostChange, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
-export { SessionLocalMessages } from './controller/session-local-messages.js';
 
 
 export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';

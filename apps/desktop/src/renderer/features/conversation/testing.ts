@@ -135,3 +135,6 @@ export {
   createStagedFollowUp,
   type RevisionSendPorts,
 } from './controller/composer-submit.js';
+export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { createStopAction } from './controller/stop-action.js';
+export { createTurnActions } from './controller/turn-actions.js';

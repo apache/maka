@@ -28,6 +28,7 @@ export function createComposerSubmissionCommands(): ComposerSubmissionCommands {
   };
   const commands: ComposerSubmissionCommands = {
     beginEditUserMessage: (turnId) => requireOwner().beginEditUserMessage(turnId),
+    handleTurnFooterAction: (turnId, actionId) => requireOwner().handleTurnFooterAction(turnId, actionId),
   };
   submissionBindings.set(commands, binding);
   return commands;

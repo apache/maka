@@ -117,8 +117,6 @@ import {
 } from './platform/desktop/default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
-import { createAppShellTurnActions } from './app-shell-turn-actions';
-import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
 import {
   useAppShellBootstrapSubscriptions,
@@ -252,13 +250,9 @@ function AppShellContent({
     setActiveId,
     startNewSession,
     clearOwnedSessionState,
-    captureSelection,
     isSessionSelected,
     retiredSessionIds,
-    addTransientMessage,
-    removeTransientMessage,
     sessionUiReads,
-    stopPendingClaims,
     recordSessionChange,
     sessionCatalogController,
     commitSession,
@@ -349,7 +343,6 @@ function AppShellContent({
   // streaming membership subscribe inside their consuming regions.
   const {
     messageLoadError: activeMessageLoadError,
-    stopPending,
     activeInteraction,
     activeMessageQueue,
     activeLiveTurnSnapshot,
@@ -466,7 +459,6 @@ function AppShellContent({
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
   const composerRef = queueSurface.composer;
-  const restoreLocalMessageDraft = queueSurface.restoreDraft;
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -1002,33 +994,6 @@ function AppShellContent({
     setUiLocaleOverride,
   });
 
-  const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
-    uiLocale,
-    activeIdRef,
-    captureSelection,
-    turnActionRegistry,
-    openSessionInChat,
-    refreshSessions,
-    toastApi,
-  });
-  const stop = createAppShellStopAction({
-    uiLocale,
-    activeIdRef,
-    stopPending: stopPendingClaims,
-    removeTransientMessage,
-    toastApi,
-  });
-  // #5904: the composer's Stop and its Resume offer share one send slot, so
-  // the slot must never offer to restart the very Turn the user just stopped
-  // from it — a repeated click would. Every composer stop path (the Stop
-  // button and Escape, both gated on streaming) notes the stop here, and the
-  // resume tracker suppresses exactly the offer that stop produces; the
-  // interrupted-Turn banner remains the deliberate resume path for it.
-  const stopOwningItsTarget = () => {
-    noteUserStoppedTurn(activeIdRef.current);
-    void stop();
-  };
-
   useAppShellNavRefSync({
     navSelection,
     navSelectionRef,
@@ -1306,6 +1271,8 @@ function AppShellContent({
         showModelSetupToast,
         bindNewTaskSessionResolver: commands.bindNewTaskSessionResolver,
         openSideChat: (options) => commands.openTool('side-chat', 'right', options),
+        noteUserStoppedTurn,
+        turnActions: turnActionRegistry,
         orchestrationMode: () => activeOrchestrationMode,
         setOrchestrationModeActive,
       }}>
@@ -1343,13 +1310,6 @@ function AppShellContent({
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
-    <Conversation.SessionLocalMessages
-      sessionId={activeId}
-      publish={addTransientMessage}
-      retire={removeTransientMessage}
-      reportError={toastApi.error}
-      restoreDraft={restoreLocalMessageDraft}
-    />
     <ModuleHub.ModuleHubProvider
       selection={navSelection}
       selectModule={setNavSelection}
@@ -1599,15 +1559,12 @@ function AppShellContent({
                   activeInteraction={activeInteraction}
                   activeId={activeId}
                   newTaskDraftKey={currentNewTaskDraftKey}
-                  stopPending={stopPending}
                   respondToClientCapability={commands.respondToClientCapability}
-                  stop={stop}
                   directoryPickerEnabled={Boolean(canStageComposerContext && directoryHostId)}
                   // #646: Stop must be available for the WHOLE turn - the moment the
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
                   streaming={turnActive}
-                  onStop={stopOwningItsTarget}
                   resumeAction={composerResumeAction}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
@@ -1704,7 +1661,7 @@ function AppShellContent({
                 memoryActive={memoryActive}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
                 deriveTurnPresentation={deriveTurnPresentation}
-                onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
+                onTurnFooterAction={sharedSessionActive ? undefined : composerSubmission.handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : composerSubmission.beginEditUserMessage}
                 safeResumeAction={safeResumeAction}
                 onLineageBadgeClick={(turnId) => { if (activeId) openSessionInChat(activeId, turnId); }}

@@ -22,7 +22,7 @@ import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { ToastDiagnosticTarget } from '@maka/ui';
+import type { ToastDiagnosticTarget, TurnFooterActionMeta } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../../../shared/desktop-session-projection.js';
 import type { NewChatExecutionTarget } from '../controller/use-shell-chat-model.js';
 import type { ConversationNewTaskTarget } from '../ports.js';
@@ -37,6 +37,7 @@ export interface ComposerSurfaceOwner {
 /** Commands only: the shell gets no draft, pending flag or setter through this handle. */
 export interface ComposerSubmissionCommands {
   beginEditUserMessage(turnId: string): void;
+  handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']): Promise<void>;
 }
 
 /**
@@ -59,6 +60,14 @@ export interface ComposerSubmissionShell<Owner extends ComposerSurfaceOwner> {
   showModelSetupToast(description: string, reason?: string, diagnosticTarget?: ToastDiagnosticTarget): void;
   bindNewTaskSessionResolver(selectionRevision: number): (sessionId: string, newTaskDraftKey?: string) => void;
   openSideChat(options: { initialPrompt?: string }): void;
+  /** Lets the resume offer skip the Turn the user just stopped from the Composer. */
+  noteUserStoppedTurn(sessionId: string | undefined): void;
+  /** The shell's pending mask for Turn footer actions; it also renders the mask. */
+  turnActions: {
+    addKey(key: string): boolean;
+    clearKey(key: string): void;
+    keyOf(sessionId: string, turnId: string, actionId: string): string;
+  };
   orchestrationMode(): OrchestrationMode;
   setOrchestrationModeActive(mode: Exclude<OrchestrationMode, 'default'>, active: boolean): Promise<boolean>;
 }

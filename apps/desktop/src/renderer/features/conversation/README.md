@@ -42,7 +42,10 @@ status and profile changes still reach recovery and observation ownership.
 
 `useAppShellSessionUiState` is now a transitional **reader/command adapter**,
 not a construction hook. It exposes published/Host target identity, empty/history
-facts, fixed Session reads, a keyed Stop claim, and semantic commands. Its
+facts, fixed Session reads and the selection commands the shell still owns
+(activate, start a new task, retire a Session). The Stop claim and the send,
+transient and interaction commands are no longer on it; the Composer
+submission owner reads them from the controller. Its
 published Session reference is a frozen getter, and consuming contracts declare
 it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
@@ -72,9 +75,9 @@ and issues the viewport command without waiting for history reads.
 - Composer migration keeps `activeId` as the published draft target and
   `ownerActiveId` as the readable, non-shared Host target. Selection leases,
   transient add/update/remove, `prepareSend`, `refreshMessages`, interaction
-  settlement and draft restoration are semantic ports; do not re-export the
-  private workspace to finish M3. Composer staging/readiness/send policy stays
-  with that migration.
+  settlement and draft restoration are semantic ports that the Composer
+  submission owner consumes inside the feature; do not re-export the private
+  workspace to reach them from the shell.
 - The visible range is not an event watermark. Bounded-window work may extend
   the injected range controller and the private reading lifecycle, including
   return-to-latest and full-history export commands. It must preserve one
@@ -125,7 +128,6 @@ Remaining transitional capabilities have explicit consumers and removal work:
 
 | Capability | Current consumer | Removal module |
 | --- | --- | --- |
-| Stop pending claim and transient add/remove | AppShell Stop action and `SessionLocalMessages` props | M3 persistent Composer owner |
 | `useAppShellSessionUiReads` | AppShell chrome and Composer prop assembly | M3 regional readers; retain only required chrome |
 | Invocation-time published-message read | Copy/Save | M3 command ownership / bounded-history export integration |
 
@@ -210,25 +212,30 @@ without restoring root subscriptions or acquiring the private controller.
 mounted beside the staging and readiness owners and stays mounted across Session
 and section switches. It owns the send-pending flag, the edit-and-resend draft
 (with the catalog watch that retires it), the retracted workspace references and
-the submit, follow-up and interaction-answer paths. `createRevisionAwareOnSend`,
-the staged follow-up and the chat and revision actions are assembled here, not
-in AppShell, and none of them is exported from `index.ts`.
+the submit, follow-up, Stop, Turn-branch and interaction-answer paths.
+`createRevisionAwareOnSend`, the staged follow-up and the chat, revision, Stop
+and Turn actions are assembled here, not in AppShell, and none of them is
+exported from `index.ts`. Local delivery recovery (`SessionLocalMessages`)
+mounts inside the owner for the published Session; its recovery policy is
+unchanged.
 
 The Host operations reach the owner as `ComposerSubmissionServices`, one named
 operation each; the Desktop adapter is the only caller of those bridge paths.
 The shell supplies a `shell` port of commands it already owns (surface
 ownership, navigation, catalog refresh, execution-boundary reload, the Workbar's
-form answer, side chat and new-task resolver, the model-setup toast, and the
-selected Session's orchestration write) and a `newTask` projection read at send
-time. Session Settings owns the new-task Plan, orchestration and permission
+form answer, side chat and new-task resolver, the model-setup toast, the resume
+tracker's stopped-Turn note, the Turn-action pending registry the transcript
+renders, and the selected Session's orchestration write) and a `newTask`
+projection read at send time. Session Settings owns the new-task Plan, orchestration and permission
 choices; the projection carries them, and creation consumes the permission
 choice through `clearPermissionChoice`.
 
 `ConversationComposerRegion` reads the owner in the persistent Composer slot: it
-injects `onSend`, `newTaskSendPending`, the interaction answers and the revision
-notice, and narrows the shell's picker gates while a draft is open. The shell
-keeps only the stable `ComposerSubmissionCommands` handle, whose
-`beginEditUserMessage` starts a draft from the transcript. The handle throws
+injects `onSend`, `newTaskSendPending`, `onStop`/`stop` with the published
+Session's Stop claim, the interaction answers and the revision notice, and
+narrows the shell's picker gates while a draft is open. The shell keeps only the
+stable `ComposerSubmissionCommands` handle, whose `beginEditUserMessage` and
+`handleTurnFooterAction` serve the transcript. The handle throws
 while the owner is unmounted. The binding and reader context are private.
 
 ## Task readiness ownership (R2 M3)

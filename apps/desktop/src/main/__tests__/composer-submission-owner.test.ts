@@ -73,6 +73,10 @@ interface RegionProps {
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   respondToUserForm(response: { requestId: string }): Promise<void>;
+  stop(): void;
+  onStop(): void;
+  stopPending: boolean;
+  pendingMessages: ReadonlyArray<{ id: string }>;
 }
 
 const row = (id: string): DesktopSessionSummary => ({
@@ -95,12 +99,15 @@ function harness(options: {
   shell?: Partial<ProviderProps['shell']>;
   newTask?: Partial<ProviderProps['newTask']>;
   sharedSessionActive?: boolean;
+  listMessages?: ReturnType<typeof stubConversationServices>['listMessages'];
 } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
   catalog.commitSessions(['A', 'B'].map(row));
   const published: Array<(messages: StoredMessage[]) => void> = [];
-  const conversationServices = stubConversationServices();
+  const conversationServices = stubConversationServices(
+    options.listMessages ? { listMessages: options.listMessages } : {},
+  );
   conversationServices.observation.openTranscript = (sessionId) => {
     let messages: StoredMessage[] = [];
     let ready = false;
@@ -305,9 +312,73 @@ describe('ComposerSubmissionProvider', () => {
     ]);
   });
 
+  test('owns Stop: claims it for the published Session, drops retracted rows and notes the stopped Turn', async () => {
+    const stopping = deferred<Awaited<ReturnType<ComposerSubmissionServices['stop']>>>();
+    const calls: unknown[] = [];
+    const h = harness({
+      services: {
+        stop: (sessionId, input) => { calls.push(['stop', sessionId, input]); return stopping.promise; },
+      },
+      shell: { noteUserStoppedTurn: (sessionId) => { calls.push(['noted', sessionId]); } },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'running')]));
+    await act(async () => h.region.onStop());
+    assert.deepEqual(calls, [['noted', 'A'], ['stop', 'A', { source: 'stop_button' }]]);
+    assert.equal(h.region.stopPending, true, 'the Stop claim is read in the Composer slot');
+    await act(async () => h.region.onStop());
+    assert.equal(calls.length, 3, 'a second Stop notes the Turn but the claim refuses a second request');
+    await act(async () => stopping.resolve({ kind: 'interrupted', retractedMessageIds: [] }));
+    assert.equal(h.region.stopPending, false);
+
+    calls.length = 0;
+    await act(async () => h.region.stop());
+    assert.deepEqual(calls.map((call) => (call as unknown[])[0]), ['stop'], 'a question prompt\'s Stop does not suppress Resume');
+  });
+
+  test('branches a Turn for the shell through its port and opens the copy', async () => {
+    const calls: unknown[] = [];
+    const h = harness({
+      services: {
+        branchFromTurn: async (sessionId, input) => {
+          calls.push(['branch', sessionId, input.sourceTurnId, typeof input.copyId]);
+          return { ...row('C'), name: 'Copy' };
+        },
+      },
+      shell: {
+        refreshSessions: async () => { calls.push(['refresh']); return []; },
+        openSession: (sessionId) => { calls.push(['open', sessionId]); },
+      },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'source')]));
+    await act(async () => h.commands.handleTurnFooterAction('turn-1', 'branch'));
+    assert.deepEqual(calls, [['branch', 'A', 'turn-1', 'string'], ['refresh'], ['open', 'C']]);
+  });
+
+  test('runs local delivery recovery for the published Session below the owner', async () => {
+    const listed: string[] = [];
+    const h = harness({
+      listMessages: async (sessionId) => {
+        listed.push(sessionId);
+        return sessionId === 'A'
+          ? [{
+              sessionId: 'A', messageId: 'saved-follow-up', createdAt: 1, state: 'unknown', canCancel: false,
+              placement: 'next_turn', text: 'queued while offline', attachments: [], inlineReferences: [],
+            }]
+          : [];
+      },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
+    assert.deepEqual(listed, ['A']);
+    assert.deepEqual(h.region.pendingMessages.map((message) => message.id), ['saved-follow-up']);
+  });
+
   test('the shell\'s command handle works only while the owner is mounted', async () => {
     const unmounted = createComposerSubmissionCommands();
     assert.throws(() => unmounted.beginEditUserMessage('turn-1'), /ComposerSubmissionProvider is not mounted/);
+    assert.throws(() => unmounted.handleTurnFooterAction('turn-1', 'branch'), /ComposerSubmissionProvider is not mounted/);
     const h = harness();
     await act(async () => h.root.unmount());
     assert.throws(() => h.commands.beginEditUserMessage('turn-1'), /ComposerSubmissionProvider is not mounted/);
@@ -324,6 +395,8 @@ describe('Desktop Composer submission adapter', () => {
         remove: record('sessions.remove'),
         reviseBeforeTurn: record('sessions.reviseBeforeTurn'),
         abandonSessionCopy: record('sessions.abandonSessionCopy'),
+        stop: record('sessions.stop'),
+        branchFromTurn: record('sessions.branchFromTurn'),
         respondToSandboxBoundary: record('sessions.respondToSandboxBoundary'),
         respondToUserQuestion: record('sessions.respondToUserQuestion'),
       },
@@ -336,6 +409,8 @@ describe('Desktop Composer submission adapter', () => {
     await services.removeUnsentSession('s');
     await services.reviseBeforeTurn('s', { sourceTurnId: 'turn', copyId: 'copy' });
     await services.abandonSessionCopy('s', 'copy');
+    await services.stop('s', { source: 'stop_button' });
+    await services.branchFromTurn('s', { sourceTurnId: 'turn', copyId: 'copy' });
     await services.respondToSandboxBoundary('s', { requestId: 'b' } as SandboxBoundaryResponse);
     await services.respondToUserQuestion('s', { requestId: 'q' } as UserQuestionResponse);
     assert.deepEqual(calls, [
@@ -344,6 +419,8 @@ describe('Desktop Composer submission adapter', () => {
       ['sessions.remove', 's'],
       ['sessions.reviseBeforeTurn', 's', { sourceTurnId: 'turn', copyId: 'copy' }],
       ['sessions.abandonSessionCopy', 's', 'copy'],
+      ['sessions.stop', 's', { source: 'stop_button' }],
+      ['sessions.branchFromTurn', 's', { sourceTurnId: 'turn', copyId: 'copy' }],
       ['sessions.respondToSandboxBoundary', 's', { requestId: 'b' }],
       ['sessions.respondToUserQuestion', 's', { requestId: 'q' }],
     ]);
@@ -373,7 +450,7 @@ describe('Composer submission ownership', () => {
     assert.deepEqual(sourcesMatching(/create-composer-submission-services/), ['composition/desktop-feature-services.tsx']);
     // Workbar and WorkHub keep their own adapters for their own Composers.
     const hostCalls = sourcesMatching(
-      /\bsessions\s*\.\s*(?:submitMessage|reviseBeforeTurn|abandonSessionCopy|respondToSandboxBoundary|respondToUserQuestion)\b|\bnewTasks\s*\.\s*create\b/,
+      /\bsessions\s*\.\s*(?:submitMessage|reviseBeforeTurn|abandonSessionCopy|respondToSandboxBoundary|respondToUserQuestion|stop|branchFromTurn)\b|\bnewTasks\s*\.\s*create\b/,
     );
     assert.ok(hostCalls.includes('platform/desktop/create-composer-submission-services.ts'));
     assert.deepEqual(hostCalls.filter((path) => !path.startsWith('platform/desktop/')), []);
@@ -385,8 +462,14 @@ describe('Composer submission ownership', () => {
 
   test('AppShell holds no submission state and the public entry no submit construction', () => {
     const shell = readFileSync(join(rendererRoot, 'app-shell.tsx'), 'utf8');
-    assert.doesNotMatch(shell, /revisionDraft|newTaskSendPending|createRevisionAwareOnSend|createStagedFollowUp|ChatActions\b|RevisionActions\b/);
-    for (const name of ['createRevisionAwareOnSend', 'createStagedFollowUp', 'useComposerSubmission', 'createChatActions', 'createRevisionActions']) {
+    assert.doesNotMatch(
+      shell,
+      /revisionDraft|newTaskSendPending|stopPending|createRevisionAwareOnSend|createStagedFollowUp|SessionLocalMessages|createAppShell(?:Chat|Revision|Turn)Actions|createAppShellStopAction/,
+    );
+    for (const name of [
+      'createRevisionAwareOnSend', 'createStagedFollowUp', 'useComposerSubmission', 'createChatActions',
+      'createRevisionActions', 'createStopAction', 'createTurnActions', 'SessionLocalMessages',
+    ]) {
       assert.equal(name in Conversation, false, `${name} is not a public Conversation capability`);
     }
   });

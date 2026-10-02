@@ -27,6 +27,8 @@ export type DesktopComposerSubmissionBridge = {
     | 'remove'
     | 'reviseBeforeTurn'
     | 'abandonSessionCopy'
+    | 'stop'
+    | 'branchFromTurn'
     | 'respondToSandboxBoundary'
     | 'respondToUserQuestion'
   >;
@@ -43,6 +45,8 @@ export function createDesktopComposerSubmissionServices(
     removeUnsentSession: (sessionId) => bridge.sessions.remove(sessionId),
     reviseBeforeTurn: (sessionId, input) => bridge.sessions.reviseBeforeTurn(sessionId, input),
     abandonSessionCopy: (sourceSessionId, copyId) => bridge.sessions.abandonSessionCopy(sourceSessionId, copyId),
+    stop: (sessionId, input) => bridge.sessions.stop(sessionId, input),
+    branchFromTurn: (sessionId, input) => bridge.sessions.branchFromTurn(sessionId, input),
     respondToSandboxBoundary: (sessionId, response) => bridge.sessions.respondToSandboxBoundary(sessionId, response),
     respondToUserQuestion: (sessionId, response) => bridge.sessions.respondToUserQuestion(sessionId, response),
   };

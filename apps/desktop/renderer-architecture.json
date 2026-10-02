@@ -12,8 +12,6 @@
     "src/renderer/app-shell-effects.ts",
     "src/renderer/app-shell-overlays.tsx",
     "src/renderer/app-shell-project-actions.ts",
-    "src/renderer/app-shell-stop-action.ts",
-    "src/renderer/app-shell-turn-actions.ts",
     "src/renderer/app-shell.tsx",
     "src/renderer/app.tsx",
     "src/renderer/astryx-theme-mode.ts",
@@ -524,48 +522,8 @@
         "importSpecifiers": 7,
         "nonTriviaTokens": 2157
       },
-      "src/renderer/app-shell-stop-action.ts": {
-        "importDeclarations": 0,
-        "bridgePaths": {
-          "window.maka.sessions.stop": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [
-          "createAppShellStopAction"
-        ],
-        "dependencyPaths": {
-          "./application/contracts/conversation-copy.js": 1,
-          "./locales/shell-copy.js": 1
-        },
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 292
-      },
-      "src/renderer/app-shell-turn-actions.ts": {
-        "importDeclarations": 1,
-        "bridgePaths": {
-          "window.maka.sessions.branchFromTurn": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [
-          "createAppShellTurnActions"
-        ],
-        "dependencyPaths": {
-          "./application/contracts/conversation-copy.js": 1,
-          "./application/contracts/session-copy-attempt.js": 1,
-          "./locales/shell-copy.js": 1,
-          "./session-workspace-errors.js": 1
-        },
-        "importSpecifiers": 2,
-        "nonTriviaTokens": 561
-      },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 45,
+        "importDeclarations": 43,
         "bridgePaths": {
           "window.maka.attachments.readBytes": 1,
           "window.maka.onboarding.setMilestone": 1,
@@ -598,7 +556,7 @@
           "useShellLiveTurn": 1,
           "useShellMemoryPill": 1,
           "useShellResume": 1,
-          "useStableActions": 2,
+          "useStableActions": 1,
           "useState": 6,
           "useSystemUiLocale": 1,
           "useToast": 1,
@@ -614,8 +572,6 @@
           "./app-shell-e2e-fixture": 1,
           "./app-shell-effects": 1,
           "./app-shell-overlays": 1,
-          "./app-shell-stop-action": 1,
-          "./app-shell-turn-actions": 1,
           "./application/contracts/conversation-copy": 1,
           "./application/contracts/desktop-slash-command.js": 1,
           "./application/contracts/turn-presentation": 1,
@@ -673,8 +629,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 65,
-        "nonTriviaTokens": 8372
+        "importSpecifiers": 63,
+        "nonTriviaTokens": 8225
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -3683,14 +3639,6 @@
       "targetZone": "split-by-capability",
       "legacyPaths": [
         "src/renderer/app-shell.tsx"
-      ]
-    },
-    {
-      "capability": "session-controls-and-turn-actions",
-      "targetZone": "features/conversation",
-      "legacyPaths": [
-        "src/renderer/app-shell-stop-action.ts",
-        "src/renderer/app-shell-turn-actions.ts"
       ]
     },
     {
