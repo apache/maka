@@ -18,30 +18,26 @@
  */
 
 import { useMemo, type ReactNode } from 'react';
-import { ToastProvider, type ToastErrorAction } from '@maka/ui';
+import { ToastProvider, useUiLocale, type ToastErrorAction } from '@maka/ui';
+import { getShellCopy } from '../../../locales/shell-copy.js';
 import { useDiagnosticsServices } from '../services-context.js';
-
-/** The report action's copy. AppShell supplies it from the shared shell catalog. */
-interface DiagnosticReportToastLabels {
-  readonly label: string;
-  readonly failureTitle: string;
-  readonly failureDescription: string;
-}
 
 /**
  * The renderer's toast layer, with the Desktop diagnostic report offered on
  * error toasts.
  *
- * The report action is rebuilt only when a label changes; the injected
- * services are created once at composition, so toast consumers do not see a
- * new action on unrelated renders.
+ * The action's words stay in the shared shell catalog beside the Error
+ * Boundary and command palette copy that use the same ones. The report action
+ * is rebuilt only when the locale changes; the injected services are created
+ * once at composition, so toast consumers do not see a new action on
+ * unrelated renders.
  */
-export function DiagnosticReportToastProvider(props: {
-  readonly labels: DiagnosticReportToastLabels;
-  readonly children?: ReactNode;
-}) {
+export function DiagnosticReportToastProvider(props: { readonly children?: ReactNode }) {
   const services = useDiagnosticsServices();
-  const { label, failureTitle, failureDescription } = props.labels;
+  const copy = getShellCopy(useUiLocale());
+  const label = copy.errorBoundary.copyReport;
+  const failureTitle = copy.commandActions.copyFailedTitle;
+  const failureDescription = copy.commandActions.clipboardDenied;
   const errorAction = useMemo<ToastErrorAction>(
     () => ({
       label,

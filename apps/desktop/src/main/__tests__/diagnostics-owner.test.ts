@@ -23,6 +23,7 @@ import { join, relative, resolve } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { act, createElement, useEffect, type ReactNode } from 'react';
+import type { SessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   AstryxLocaleProvider,
@@ -32,6 +33,12 @@ import {
   type ToastDiagnosticTarget,
 } from '@maka/ui';
 import type { DesktopDiagnosticInput } from '../../preload/diagnostics-contract.js';
+import {
+  buildAppShellCommandList,
+  type AppShellCommandListOptions,
+} from '../../renderer/app-shell-command-actions.js';
+import { ErrorBoundary } from '../../renderer/error-boundary.js';
+import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import {
   createDesktopDiagnosticsServices,
   type DesktopDiagnosticsBridge,
@@ -43,6 +50,8 @@ import {
   createFakeDiagnosticsServices,
   getDiagnosticsCopy,
   type DiagnosticsServices,
+  type ManualDiagnosticTarget,
+  type RendererCrashDiagnosticReport,
   type ToastDiagnosticReport,
 } from '../../renderer/features/diagnostics/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
@@ -202,10 +211,11 @@ describe('PreviousMainProcessInterruptionNotice', () => {
 });
 
 describe('DiagnosticReportToastProvider', () => {
+  const shellCopy = getShellCopy('en');
   const labels = {
-    label: 'Copy report',
-    failureTitle: 'Copy failed',
-    failureDescription: 'Clipboard unavailable',
+    label: shellCopy.errorBoundary.copyReport,
+    failureTitle: shellCopy.commandActions.copyFailedTitle,
+    failureDescription: shellCopy.commandActions.clipboardDenied,
   };
   const target: ToastDiagnosticTarget = { sessionId: 'session-1', turnId: 'turn-1', eventId: 'event-1' };
 
@@ -229,7 +239,7 @@ describe('DiagnosticReportToastProvider', () => {
     await act(async () => root.render(localized(
       'en',
       services,
-      createElement(DiagnosticReportToastProvider, { labels, children: createElement(ErrorProbe) }),
+      createElement(DiagnosticReportToastProvider, { children: createElement(ErrorProbe) }),
     )));
 
     await clickButton(container, labels.label);
@@ -240,7 +250,21 @@ describe('DiagnosticReportToastProvider', () => {
     assert.deepEqual(reports[0]?.diagnosticTarget, target);
   });
 
-  test('reports a failed copy with the supplied labels', async () => {
+  test('names the report action in the current locale', async () => {
+    const { root, container } = installReactRenderer();
+    const services = createFakeDiagnosticsServices();
+    await act(async () => root.render(localized(
+      'zh-CN',
+      services,
+      createElement(DiagnosticReportToastProvider, { children: createElement(ErrorProbe) }),
+    )));
+
+    const label = getShellCopy('zh-CN').errorBoundary.copyReport;
+    assert.ok(elements(container, 'BUTTON').some((button) => button.textContent === label));
+    assert.equal(occurrences(container, labels.label), 0);
+  });
+
+  test('reports a failed copy with the shell catalog\'s words', async () => {
     const { root, container } = installReactRenderer();
     const services = createFakeDiagnosticsServices({
       copyToastReport: async () => {
@@ -250,7 +274,7 @@ describe('DiagnosticReportToastProvider', () => {
     await act(async () => root.render(localized(
       'en',
       services,
-      createElement(DiagnosticReportToastProvider, { labels, children: createElement(ErrorProbe) }),
+      createElement(DiagnosticReportToastProvider, { children: createElement(ErrorProbe) }),
     )));
 
     await clickButton(container, labels.label);
@@ -305,12 +329,204 @@ describe('Desktop diagnostics adapter', () => {
     ]);
   });
 
+  test('sends a manual report with the target only when the caller had one', async () => {
+    const { bridge, inputs } = recordingBridge();
+    const services = createDesktopDiagnosticsServices(bridge);
+
+    await services.copyManualReport();
+    await services.copyManualReport({ sessionId: 'session-1' });
+    await services.copyManualReport({ profileId: 'profile-1' });
+
+    assert.deepEqual(inputs, [
+      { surface: 'manual' },
+      { surface: 'manual', target: { sessionId: 'session-1' } },
+      { surface: 'manual', target: { profileId: 'profile-1' } },
+    ]);
+  });
+
+  test('sends a renderer crash report with its title and details', async () => {
+    const { bridge, inputs } = recordingBridge();
+    const services = createDesktopDiagnosticsServices(bridge);
+
+    await services.copyRendererCrashReport({ title: 'TypeError: boom', details: 'TypeError: boom\n\nStack:\nframe' });
+
+    assert.deepEqual(inputs, [
+      { surface: 'renderer_crash', title: 'TypeError: boom', details: 'TypeError: boom\n\nStack:\nframe' },
+    ]);
+  });
+
   test('delegates the previous-run read and report', async () => {
     const { bridge, calls } = recordingBridge();
     const services = createDesktopDiagnosticsServices(bridge);
     assert.equal(await services.takePreviousMainProcessInterruption(), true);
     await services.copyPreviousMainProcessInterruption();
     assert.deepEqual(calls, ['take', 'copy']);
+  });
+});
+
+describe('ErrorBoundary crash report', () => {
+  function Crash(): ReactNode {
+    const error = new TypeError('boom');
+    error.stack = 'TypeError: boom\n    at Crash';
+    throw error;
+  }
+
+  const boundary = createElement(ErrorBoundary, { locale: 'en', children: createElement(Crash) });
+  const copy = getShellCopy('en').errorBoundary;
+
+  function hasButton(root: TreeNode, label: string): boolean {
+    return elements(root, 'BUTTON').some((button) => button.textContent === label);
+  }
+
+  test('copies the crash through the diagnostics feature', async (t) => {
+    t.mock.method(console, 'error', () => {});
+    const { root, container } = installReactRenderer();
+    const reports: RendererCrashDiagnosticReport[] = [];
+    const services = createFakeDiagnosticsServices({
+      copyRendererCrashReport: async (report) => {
+        reports.push(report);
+      },
+    });
+    await act(async () => root.render(localized('en', services, boundary)));
+    assert.equal(occurrences(container, copy.title), 1);
+
+    await clickButton(container, copy.copyReport);
+    await act(async () => {});
+
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0]?.title, 'TypeError: boom');
+    assert.match(reports[0]?.details ?? '', /^TypeError: boom\n\nStack:\nTypeError: boom\n {4}at Crash/);
+    assert.ok(hasButton(container, copy.copied));
+  });
+
+  test('shows the failure when the diagnostics feature cannot copy', async (t) => {
+    t.mock.method(console, 'error', () => {});
+    const { root, container } = installReactRenderer();
+    let attempts = 0;
+    const services = createFakeDiagnosticsServices({
+      copyRendererCrashReport: async () => {
+        attempts += 1;
+        throw new Error('denied');
+      },
+    });
+    await act(async () => root.render(localized('en', services, boundary)));
+
+    await clickButton(container, copy.copyReport);
+    await act(async () => {});
+
+    assert.equal(attempts, 1);
+    assert.ok(hasButton(container, copy.copyFailed));
+    assert.equal(occurrences(container, copy.clipboardFailure), 1);
+  });
+
+  test('without Desktop composition, still renders the fallback and copies the browser report', async (t) => {
+    t.mock.method(console, 'error', () => {});
+    const writes: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          writes.push(text);
+        },
+      },
+    });
+    restoreAfterEach.push(() => {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    });
+    const { root, container } = installReactRenderer();
+    await act(async () => root.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, { children: boundary }),
+    })));
+    assert.equal(occurrences(container, copy.title), 1);
+
+    await clickButton(container, copy.copyReport);
+    await act(async () => {});
+
+    assert.equal(writes.length, 1);
+    assert.match(writes[0] ?? '', /^Maka renderer error report\n/);
+    assert.match(writes[0] ?? '', /TypeError: boom/);
+    assert.ok(hasButton(container, copy.copied));
+  });
+});
+
+describe('Command palette manual report', () => {
+  const copy = getShellCopy('en').commandActions;
+
+  function paletteCommands(
+    copyManualDiagnosticReport: AppShellCommandListOptions['copyManualDiagnosticReport'],
+    toasts: string[],
+  ) {
+    const options: AppShellCommandListOptions = {
+      uiLocale: 'en',
+      activeId: 'session-1',
+      activePermissionMode: undefined,
+      canSetPermissionMode: false,
+      clientPathsAccessible: false,
+      connections: [],
+      defaultConnection: null,
+      readMessages: () => [],
+      newTaskProfileId: 'new-task-profile',
+      settingsOpen: false,
+      settingsProfileId: undefined,
+      sessionCatalog: {} as SessionCatalogController,
+      themePref: 'auto',
+      hiddenSessionIds: new Set(),
+      captureComposerImportOwner: () => ({ sessionId: 'session-1', navSection: 'sessions' }),
+      copyManualDiagnosticReport,
+      createSession() {},
+      openSideConversation() {},
+      openHelp() {},
+      openScheduledTaskCreate() {},
+      openProjectFolder: async () => {},
+      openSessionInChat() {},
+      openSettings() {},
+      openSettingsSection() {},
+      openWorkspaceFolder: async () => {},
+      refreshConnections: async () => {},
+      copyTodayDailyReview: async () => {},
+      pasteTodayDailyReview: async () => {},
+      saveTodayDailyReview: async () => {},
+      setNavSelection() {},
+      setPermissionMode: async () => true,
+      setThemePref() {},
+      toastApi: {
+        success: (title) => toasts.push(`success:${title}`),
+        info() {},
+        error: (title, _description, _details, target) => toasts.push(`error:${title}:${JSON.stringify(target)}`),
+      },
+    };
+    return buildAppShellCommandList({ current: options });
+  }
+
+  async function runCopyDiagnostics(commands: ReturnType<typeof paletteCommands>): Promise<void> {
+    const command = commands.find(({ id }) => id === 'diag:copy-diagnostics');
+    assert.ok(command, 'missing diag:copy-diagnostics');
+    await command.run();
+  }
+
+  test('copies through the injected command with the current target, then confirms', async () => {
+    const targets: Array<ManualDiagnosticTarget | undefined> = [];
+    const toasts: string[] = [];
+    await runCopyDiagnostics(paletteCommands(async (target) => {
+      targets.push(target);
+    }, toasts));
+
+    assert.deepEqual(targets, [{ sessionId: 'session-1' }]);
+    assert.deepEqual(toasts, [`success:${copy.diagnosticsCopiedTitle}`]);
+  });
+
+  test('reports a failed copy against the same target', async (t) => {
+    t.mock.method(console, 'error', () => {});
+    const toasts: string[] = [];
+    let attempts = 0;
+    await runCopyDiagnostics(paletteCommands(async () => {
+      attempts += 1;
+      throw new Error('denied');
+    }, toasts));
+
+    assert.equal(attempts, 1);
+    assert.deepEqual(toasts, [`error:${copy.copyFailedTitle}:${JSON.stringify({ sessionId: 'session-1' })}`]);
   });
 });
 
@@ -335,7 +551,14 @@ describe('Diagnostics ownership', () => {
   test('mounts each owner once and reaches Desktop diagnostics through one adapter', () => {
     assert.deepEqual(sourcesMatching(/<(?:Diagnostics\.)?PreviousMainProcessInterruptionNotice\b/), ['app-shell.tsx']);
     assert.deepEqual(sourcesMatching(/<(?:Diagnostics\.)?DiagnosticReportToastProvider\b/), ['app-shell.tsx']);
+    assert.deepEqual(
+      sourcesMatching(/<(?:Diagnostics\.)?ManualDiagnosticReportConsumer\b/),
+      ['app-shell.tsx', 'settings/about-settings-page.tsx'],
+    );
+    assert.deepEqual(sourcesMatching(/<(?:Diagnostics\.)?RendererCrashReportConsumer\b/), ['error-boundary.tsx']);
     assert.deepEqual(sourcesMatching(/create-diagnostics-services/), ['composition/desktop-feature-services.tsx']);
+    assert.deepEqual(sourcesMatching(/\.\s*copyReport\(/), ['platform/desktop/create-diagnostics-services.ts']);
+    assert.deepEqual(sourcesMatching(/\bmaka\s*\??\.\s*diagnostics\b/), []);
     assert.deepEqual(
       sourcesMatching(/\.\s*(?:takePreviousMainProcessInterruption|copyPreviousMainProcessInterruption)\(/),
       ['features/diagnostics/ui/previous-main-process-interruption-notice.tsx', 'platform/desktop/create-diagnostics-services.ts'],

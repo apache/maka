@@ -30,6 +30,7 @@ import {
   runOnDefaultRuntimeHost,
 } from './platform/desktop/default-runtime-host-operation.js';
 import { buildCommandList } from "./command-palette-commands.js";
+import type { CopyManualDiagnosticReport } from './features/diagnostics/index.js';
 import type { Command } from './features/overlays/index.js';
 import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';
 import { renderConversationMarkdown } from "./conversation-markdown.js";
@@ -77,6 +78,7 @@ export interface AppShellCommandListOptions {
   /** Sessions the rail hides (mounted side-chat forks) — the palette skips them too. */
   hiddenSessionIds: ReadonlySet<string>;
   captureComposerImportOwner: () => ComposerImportOwner;
+  copyManualDiagnosticReport: CopyManualDiagnosticReport;
   createSession: () => void;
   openSideConversation: () => void;
   openHelp: () => void;
@@ -319,6 +321,7 @@ export function buildAppShellCommandList(
     onCopyDiagnostics: async () => {
       const {
         captureComposerImportOwner,
+        copyManualDiagnosticReport,
         newTaskProfileId,
         settingsOpen,
         settingsProfileId,
@@ -332,10 +335,7 @@ export function buildAppShellCommandList(
         settingsProfileId,
       );
       try {
-        await window.maka.diagnostics.copyReport({
-          surface: "manual",
-          ...(target ? { target } : {}),
-        });
+        await copyManualDiagnosticReport(target);
         toastApi.success(copy.diagnosticsCopiedTitle, copy.diagnosticsCopiedDescription);
       } catch (err) {
         toastApi.error(

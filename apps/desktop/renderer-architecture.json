@@ -378,7 +378,6 @@
         "bridgePaths": {
           "window.maka.connections.setDefault": 1,
           "window.maka.connections.test": 1,
-          "window.maka.diagnostics.copyReport": 1,
           "window.maka.memory.openFile": 1,
           "window.maka.sessions.saveConversationToFile": 1,
           "window.maka.settings.testNetworkProxy": 1
@@ -403,7 +402,7 @@
           "react": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 2188
+        "nonTriviaTokens": 2179
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 1,
@@ -729,7 +728,7 @@
           "react": 1
         },
         "importSpecifiers": 74,
-        "nonTriviaTokens": 9080
+        "nonTriviaTokens": 9075
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -1095,10 +1094,7 @@
         }
       },
       "src/renderer/error-boundary.tsx": {
-        "bridgePaths": {
-          "window.maka.diagnostics": 3,
-          "window.maka.diagnostics.copyReport": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {
           "navigator": 1,
           "navigator.clipboard.writeText": 1,
@@ -1119,6 +1115,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./features/diagnostics/index.js": 1,
           "./locales/shell-copy.js": 1,
           "@maka/core/diagnostic-log": 1,
           "@maka/ui": 1,
@@ -1657,8 +1654,7 @@
       },
       "src/renderer/settings/about-settings-page.tsx": {
         "bridgePaths": {
-          "window.maka.app.info": 1,
-          "window.maka.diagnostics.copyReport": 1
+          "window.maka.app.info": 1
         },
         "environmentCapabilities": {},
         "hookCalls": {
@@ -1674,6 +1670,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../features/app-update/index.js": 1,
+          "../features/diagnostics/index.js": 1,
           "../locales/settings-preferences-copy.js": 1,
           "../platform/desktop/default-runtime-host-operation.js": 1,
           "./about-update-status.js": 1,

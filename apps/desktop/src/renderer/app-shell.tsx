@@ -175,7 +175,6 @@ export function AppShell() {
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
   const uiLocale = resolveUiLocale(uiLocalePreference, systemUiLocale, uiLocaleOverride);
-  const copy = getShellCopy(uiLocale);
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
@@ -184,13 +183,7 @@ export function AppShell() {
           `useUiLocale()` throws before anything renders. Still above every
           Astryx subtree. */}
       <AstryxLocaleProvider>
-        <Diagnostics.DiagnosticReportToastProvider
-          labels={{
-            label: copy.errorBoundary.copyReport,
-            failureTitle: copy.commandActions.copyFailedTitle,
-            failureDescription: copy.commandActions.clipboardDenied,
-          }}
-        >
+        <Diagnostics.DiagnosticReportToastProvider>
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
               <RuntimeHostHandoffOverlay />
@@ -204,9 +197,13 @@ export function AppShell() {
                           <WorkbarShellRoot>
                             {(workbar) => (
                               <Conversation.ConversationProvider>
-                                <AppShellContent
-                                  {...{ taskEntry, overlays, sharedSessionDialog, workbar, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                                />
+                                <Diagnostics.ManualDiagnosticReportConsumer>
+                                  {(copyManualDiagnosticReport) => (
+                                    <AppShellContent
+                                      {...{ taskEntry, overlays, sharedSessionDialog, workbar, copyManualDiagnosticReport, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                                    />
+                                  )}
+                                </Diagnostics.ManualDiagnosticReportConsumer>
                               </Conversation.ConversationProvider>
                             )}
                           </WorkbarShellRoot>
@@ -240,6 +237,7 @@ function AppShellContent({
   overlays,
   sharedSessionDialog,
   workbar: { bridge, commands, selectors, LiveContextUsageProbe },
+  copyManualDiagnosticReport,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
@@ -249,6 +247,7 @@ function AppShellContent({
   overlays: OverlaysShellProjection;
   sharedSessionDialog: SessionCollaborationDialogProjection;
   workbar: WorkbarShellProjection;
+  copyManualDiagnosticReport: Diagnostics.CopyManualDiagnosticReport;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
@@ -1414,6 +1413,7 @@ function AppShellContent({
     themePref,
     hiddenSessionIds: selectors.hiddenSessionIds,
     captureComposerImportOwner,
+    copyManualDiagnosticReport,
     createSession,
     openHelp,
     openScheduledTaskCreate: () => {
