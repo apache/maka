@@ -201,6 +201,27 @@ directory pickers still require the original draft and Host to remain current.
 Staging uses `activeId ?? NEW_TASK_PENDING_KEY`; the editor's new-task persistence
 key remains distinct. Do not key this provider or the Composer's parent by Session.
 
-Readiness, revision draft state, send-pending state, delivery recovery and the
-remaining send orchestration are later M3 work. They can use captured submission
-commands without restoring root subscriptions or acquiring the private controller.
+Revision draft state, send-pending state, delivery recovery and the remaining
+send orchestration are later M3 work. They can use captured submission commands
+without restoring root subscriptions or acquiring the private controller.
+
+## Task readiness ownership (R2 M3)
+
+`TaskReadinessProvider` alone calls the readiness controller. It is mounted
+beside `ComposerStagingProvider` and stays mounted across Session and section
+switches, so hiding the transcript neither drops nor restarts the read. AppShell
+supplies the request projection (model target and working directory), the owner
+Session or new-task target, the onboarding snapshot as a refresh key, and the
+workspace-picker command. It receives no snapshot, refresh command or notice.
+`TaskReadinessNoticeConsumer` is the only reader: the transcript surface renders
+it in the notice slot, a workspace blocker opens the picker, and every other
+action reads again.
+
+The Desktop adapter injects the two Host reads as `TaskReadinessServices`; the
+feature does not access `window.maka`. A changed request, target or refresh key
+clears the previous snapshot before reading again, and a sequence fence admits
+only the latest read. A shared Session has neither an owner Session nor a
+new-task target and reads nothing. The snapshot context is module-local and
+`controllerOwners` fixes the controller at the provider. Send-time admission
+(`checkTaskSubmissionReadiness`) does not read this snapshot; it moves with
+submission ownership.

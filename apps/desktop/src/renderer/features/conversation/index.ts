@@ -17,12 +17,7 @@
  * under the License.
  */
 
-export {
-  deriveTaskReadinessNotice,
-  isTaskSubmissionHardBlocked,
-  resolveTaskReadinessModelTarget,
-  type TaskReadinessNotice,
-} from './model/task-readiness-notice.js';
+export { resolveTaskReadinessModelTarget } from './model/task-readiness-notice.js';
 export type {
   AppShellSessionUiStateController,
   SessionPendingClaim,
@@ -92,3 +87,5 @@ export { ComposerStagingServicesProvider, type ComposerStagingServices } from '.
 export { ComposerStagingProvider } from './ui/composer-staging-provider.js';
 export { StagedComposer, type ComposerStagingProp } from './ui/staged-composer.js';
 export { StagedQuoteChatView } from './ui/staged-quote-chat-view.js';
+export { TaskReadinessServicesProvider, type TaskReadinessServices } from './readiness-services.js';
+export { TaskReadinessProvider, TaskReadinessNoticeConsumer } from './ui/task-readiness-provider.js';

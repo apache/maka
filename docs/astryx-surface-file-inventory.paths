@@ -45,6 +45,7 @@ apps/desktop/src/renderer/features/conversation/ui/plan-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-surfaces.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-composer.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-quote-chat-view.tsx
+apps/desktop/src/renderer/features/conversation/ui/task-readiness-provider.tsx
 apps/desktop/src/renderer/features/diagnostics/services-context.tsx
 apps/desktop/src/renderer/features/diagnostics/ui/diagnostic-report-toast-provider.tsx
 apps/desktop/src/renderer/features/diagnostics/ui/previous-main-process-interruption-notice.tsx

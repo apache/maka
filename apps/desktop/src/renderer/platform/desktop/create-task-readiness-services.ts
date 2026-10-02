@@ -17,9 +17,19 @@
  * under the License.
  */
 
-export {
-  deriveTaskReadinessNotice,
-  isTaskSubmissionHardBlocked,
-  resolveTaskReadinessModelTarget,
-  type TaskReadinessNotice,
-} from './features/conversation/index.js';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { TaskReadinessServices } from '../../features/conversation/index.js';
+
+export type DesktopTaskReadinessBridge = {
+  readonly taskReadiness: Pick<MakaBridge['taskReadiness'], 'getSnapshot'>;
+  readonly newTasks: Pick<MakaBridge['newTasks'], 'getReadiness'>;
+};
+
+export function createDesktopTaskReadinessServices(
+  bridge: DesktopTaskReadinessBridge = window.maka,
+): TaskReadinessServices {
+  return {
+    readSession: (sessionId, request) => bridge.taskReadiness.getSnapshot(request, sessionId),
+    readNewTask: (target, request) => bridge.newTasks.getReadiness(target, request),
+  };
+}

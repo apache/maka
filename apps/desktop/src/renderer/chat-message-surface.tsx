@@ -30,9 +30,8 @@ import {
 import { OnboardingHero } from './onboarding-hero';
 import type { SessionHealthNoticeView, SessionUiReads } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
-import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { StagedQuoteChatView } from './features/conversation/index.js';
+import { StagedQuoteChatView, TaskReadinessNoticeConsumer } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
@@ -73,8 +72,6 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionHealthNotice?: SessionHealthNoticeView;
   sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
-  taskReadinessNotice?: TaskReadinessNotice;
-  onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
   onOpenSettings: (section?: SettingsSection) => void;
@@ -104,8 +101,6 @@ export function ChatMessageSurface({
   sessionHealthNotice,
   sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
-  taskReadinessNotice,
-  onTaskReadinessAction,
   showOnboardingHero,
   onboardingState,
   onOpenSettings,
@@ -211,15 +206,7 @@ export function ChatMessageSurface({
           />
         )}
       </ChatViewGoalProjectionConsumer>
-      {taskReadinessNotice && (
-        <ChatRecoveryNotice
-          status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
-          title={taskReadinessNotice.title}
-          description={taskReadinessNotice.description}
-          actionLabel={taskReadinessNotice.actionLabel}
-          onAction={onTaskReadinessAction}
-        />
-      )}
+      <TaskReadinessNoticeConsumer surface={ChatRecoveryNotice} />
       {workspaceReadinessRecovery && (
         <ChatRecoveryNotice
           status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}

@@ -122,3 +122,4 @@ export { TranscriptReadingPositionController, type TranscriptReadingPositionComm
 export { useComposerAttachments } from './controller/use-composer-attachments.js';
 export { useComposerQuotes } from './controller/use-composer-quotes.js';
 export { useComposerStaging } from './ui/composer-staging-context.js';
+export { deriveTaskReadinessNotice, isTaskSubmissionHardBlocked } from './model/task-readiness-notice.js';

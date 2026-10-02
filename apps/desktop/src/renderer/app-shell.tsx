@@ -61,7 +61,6 @@ import {
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { ChatMessageSurface } from './chat-message-surface';
-import { useTaskSubmissionReadiness } from './use-task-submission-readiness';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import * as Conversation from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
@@ -921,13 +920,6 @@ function AppShellContent({
     ...Conversation.resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
     ...(taskReadinessWorkspace ? { cwd: taskReadinessWorkspace } : {}),
   };
-  const taskReadiness = useTaskSubmissionReadiness(
-    taskReadinessRequest,
-    onboarding.snapshot,
-    ownerActiveId,
-    activeId ? undefined : taskEntry.selectors.target,
-  );
-  const taskReadinessNotice = Conversation.deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
   const taskSubmissionHardBlocked =
     !activeId && !taskEntry.selectors.target;
   // The titlebar names the directory the ACTIVE session runs in, so it reads
@@ -1454,6 +1446,11 @@ function AppShellContent({
     // on catalog moves.
     <Conversation.ComposerStagingProvider commands={composerStaging}
       draftKey={attachmentDraftKey} directoryHostId={directoryHostId} supportsVision={composerSupportsVision}>
+    <Conversation.TaskReadinessProvider request={taskReadinessRequest} refreshKey={onboarding.snapshot}
+      sessionId={ownerActiveId} newTaskTarget={activeId ? undefined : taskEntry.selectors.target}
+      openWorkspacePicker={activeSession
+        ? () => openSessionWorkspaceRecovery(activeSession.id)
+        : taskEntry.selectors.canAddProject ? taskEntry.commands.addProject : undefined}>
     <Conversation.PlanProvider session={ownerActiveId ? activeHostSession : undefined}>
     <SessionSettingsProvider
       bridge={sessionSettingIntent.bridge}
@@ -1914,16 +1911,6 @@ function AppShellContent({
                   activeBoundarySurface.localInteractionAvailable
                 }
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
-                taskReadinessNotice={taskReadinessNotice}
-                onTaskReadinessAction={
-                  taskReadinessNotice?.action === 'workspace_picker'
-                    ? activeSession
-                      ? () => openSessionWorkspaceRecovery(activeSession.id)
-                      : taskEntry.selectors.canAddProject
-                        ? taskEntry.commands.addProject
-                        : undefined
-                    : taskReadiness.refresh
-                }
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}
                 onOpenSettings={openSettingsSection}
@@ -2014,6 +2001,7 @@ function AppShellContent({
     </Goals.GoalProvider>
     </SessionSettingsProvider>
     </Conversation.PlanProvider>
+    </Conversation.TaskReadinessProvider>
     </Conversation.ComposerStagingProvider>
   );
 }
