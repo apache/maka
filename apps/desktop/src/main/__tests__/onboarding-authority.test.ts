@@ -126,6 +126,12 @@ describe('createOnboardingAuthority', () => {
     assert.equal(fake.calls.at(-1), 'unsubscribe', 'the root is the subscriber that keeps the reads alive');
   });
 
+  it('fails without its provider instead of holding the first-run gate closed', () => {
+    const { root } = installReactRenderer();
+    assert.throws(() => act(() => root.render(createElement(OnboardingProjectionRoot, { children: () => null }))),
+      /OnboardingAuthorityProvider is missing/);
+  });
+
   it('re-pulls after a skip lands, and not after a skip fails', async () => {
     let skipFails = false;
     const fake = source({

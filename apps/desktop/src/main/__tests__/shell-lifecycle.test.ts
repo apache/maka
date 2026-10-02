@@ -24,6 +24,7 @@ import { act, createElement } from 'react';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type { SessionChangedEvent } from '@maka/core/session';
 import {
+  createShellLifecycleHandlers,
   ShellLifecycleSourcesProvider,
   ShellLifecycleSubscriptions,
   type ShellLifecycleHandlers,
@@ -135,4 +136,61 @@ test('Desktop supplies the lifecycle events and tags the document; the effects r
 test('AppShell itself reaches no Desktop bridge path', () => {
   const shell = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)), 'utf8');
   assert.deepEqual(shell.split('\n').filter((line) => /\bwindow\.maka\b/.test(line)), []);
+});
+
+test('the shell reacts to each lifecycle event with the same refreshes as before', async () => {
+  const calls: string[] = [];
+  const record = (name: string) => () => { calls.push(name); return Promise.resolve(); };
+  const handlers = createShellLifecycleHandlers({
+    uiLocale: 'en',
+    activeIdRef: { current: undefined },
+    clearPendingTurnActionsForSession: () => {},
+    createSession: () => { calls.push('createSession'); },
+    handleConnectionEvent: (event) => { calls.push(`connection:${event.type}`); },
+    openHelp: () => { calls.push('openHelp'); },
+    openSettings: () => { calls.push('openSettings'); },
+    refreshConnections: record('refreshConnections'),
+    refreshMemoryActive: record('refreshMemoryActive'),
+    refreshMessages: async () => true,
+    refreshProjects: record('refreshProjects'),
+    refreshShellSettings: record('refreshShellSettings'),
+    refreshSessions: async () => { calls.push('refreshSessions'); return []; },
+    refreshChangedSession: async (sessionId) => { calls.push(`refreshChangedSession:${sessionId}`); },
+    retireSession: (sessionId) => { calls.push(`retire:${sessionId}`); },
+    retiredSessionIds: () => ['gone'],
+    isSessionRemoved: () => false,
+    sessionsRef: { current: [] },
+    recordSessionChange: () => {},
+    toastApi: { info() {} },
+  });
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  for (const id of ['newTask', 'openSettings', 'openHelp'] as const) handlers.onWindowCommand({ id });
+  handlers.onConnectionEvent({ type: 'connection_list_changed' } as ConnectionEvent);
+  handlers.onClientSettingsChanged();
+  handlers.onExternalSettingsChanged();
+  handlers.onSessionChange({ sessionId: 'a', reason: 'updated', ts: 1 } as SessionChangedEvent);
+  await settle();
+  assert.deepEqual(calls.splice(0), [
+    'createSession', 'openSettings', 'openHelp', 'connection:connection_list_changed',
+    'refreshShellSettings', 'refreshShellSettings', 'refreshConnections', 'refreshChangedSession:a',
+  ]);
+  handlers.onRuntimeHostChange({ readiness: 'connecting', isDefault: true });
+  await settle();
+  assert.deepEqual(calls.splice(0), ['refreshSessions', 'retire:gone'], 'a Host that is not ready only refreshes Sessions');
+  handlers.onRuntimeHostChange({ readiness: 'ready', isDefault: true });
+  await settle();
+  assert.deepEqual(calls.splice(0), [
+    'refreshSessions', 'refreshShellSettings', 'refreshConnections', 'refreshProjects', 'refreshMemoryActive', 'retire:gone',
+  ]);
+});
+
+test('a composition without the lifecycle sources fails instead of going quiet', () => {
+  const { root } = installReactRenderer();
+  const handler = () => {};
+  const catalog = createSessionCatalogController({ list: async () => [], subscribeChanges: () => () => {} });
+  assert.throws(() => act(() => root.render(createElement(SessionCatalogContext.Provider, { value: catalog, children:
+    createElement(ShellLifecycleSubscriptions, {
+      onWindowCommand: handler, onConnectionEvent: handler, onRuntimeHostChange: handler,
+      onClientSettingsChanged: handler, onExternalSettingsChanged: handler, onSessionChange: handler,
+    }) }))), /ShellLifecycleSourcesProvider is missing/);
 });

@@ -73,3 +73,9 @@ test('Desktop backs the catalog source with the Session bridge', async () => {
   source.subscribeChanges(handler);
   assert.deepEqual(calls, ['list', 'subscribe']);
 });
+
+test('a catalog built without a source cannot be read through it', async () => {
+  const catalog = createSessionCatalogController();
+  await assert.rejects(catalog.source.list(), /created without a source/);
+  assert.throws(() => catalog.source.subscribeChanges(() => {}), /created without a source/);
+});

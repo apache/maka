@@ -118,6 +118,8 @@ function ControllerProbe(props: ControllerProbeInput) {
 
 const connectedServices = new WeakSet<WorkbarServices>();
 
+const WORKHUB_OFF = { isEnabled: () => false, subscribe: () => () => {} };
+
 function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: WorkbarServices,
@@ -143,7 +145,7 @@ function renderController(
       children: createElement(
         WorkbarServicesProvider,
         { services },
-        createElement(ControllerProbe, input),
+        createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(ControllerProbe, input)),
       ),
     },
   );
@@ -318,7 +320,7 @@ function renderWorkBoardComposition(
         createElement(
           WorkbarServicesProvider,
           { services: workbarServices },
-          createElement(WorkBoardCompositionProbe, { ownerRef }),
+          createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(WorkBoardCompositionProbe, { ownerRef })),
         ),
       ),
     }),

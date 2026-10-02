@@ -70,23 +70,25 @@ export function createWorkHubEnablement(source: WorkHubEnablementSource): WorkHu
   };
 }
 
-const DISABLED: WorkHubEnablement = { isEnabled: () => false, subscribe: () => () => {} };
-const EnablementContext = createContext<WorkHubEnablement>(DISABLED);
+const EnablementContext = createContext<WorkHubEnablement | null>(null);
 export const WorkHubEnablementProvider = EnablementContext.Provider;
 
 /** Invocation-time reads, for commands that must not act while WorkHub is off. */
 export function useWorkHubEnablement(): WorkHubEnablement {
-  return useContext(EnablementContext);
+  const enablement = useContext(EnablementContext);
+  // A composition without the switch is a bug, not a WorkHub that is quietly off.
+  if (!enablement) throw new Error('WorkHubEnablementProvider is missing');
+  return enablement;
 }
 
 export function useWorkHubEnabled(): boolean {
-  const enablement = useContext(EnablementContext);
+  const enablement = useWorkHubEnablement();
   return useSyncExternalStore(enablement.subscribe, enablement.isEnabled);
 }
 
 /** Navigation the shell owns follows the switch: turning it on opens WorkHub, turning it off leaves it. */
 export function WorkHubEnablementWatch(props: { onEnabled(): void; onDisabled(): void }) {
-  const enablement = useContext(EnablementContext);
+  const enablement = useWorkHubEnablement();
   const follow = useEffectEvent((enabled: boolean) => (enabled ? props.onEnabled() : props.onDisabled()));
   useEffect(() => {
     let followed = false;

@@ -65,10 +65,11 @@ export interface SessionCatalogSource {
   subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
 }
 
-/** A catalog that is only ever committed to, as in tests and stories. */
+const NO_SOURCE = 'This session catalog was created without a source';
+/** A catalog that is only ever committed to, as in tests and stories; reading through it fails. */
 const DETACHED_SOURCE: SessionCatalogSource = {
-  list: async () => [],
-  subscribeChanges: () => () => {},
+  list: () => Promise.reject(new Error(NO_SOURCE)),
+  subscribeChanges: () => { throw new Error(NO_SOURCE); },
 };
 
 export function createSessionCatalogController(source: SessionCatalogSource = DETACHED_SOURCE) {

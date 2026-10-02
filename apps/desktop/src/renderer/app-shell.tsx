@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { WorkHubControlOverlay, WorkHubDock, WorkHubEnablementWatch, WorkHubMainNavigation } from './features/workhub';
+import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
+import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
   useCallback,

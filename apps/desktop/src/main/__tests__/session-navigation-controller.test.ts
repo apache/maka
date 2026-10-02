@@ -213,10 +213,12 @@ function navigationTree(
     getSnapshot: () => EMPTY_STREAMING_SESSIONS,
     subscribe: () => () => undefined,
   },
+  authorities: { workHub?: WorkHubEnablement; onboarding?: OnboardingAuthority } = {},
 ) {
   return createElement(LocaleProvider, {
     locale: 'en',
-    children: createElement(
+    children: createElement(WorkHubEnablementProvider, { value: authorities.workHub ?? WORKHUB_OFF },
+      createElement(OnboardingAuthorityProvider, { value: authorities.onboarding ?? onboardingWith(null) }, createElement(
       SessionNavigationServicesProvider,
       { services: fakeServices },
       sibling,
@@ -239,8 +241,18 @@ function navigationTree(
         },
         child,
       ),
-    ),
+    ))),
   });
+}
+
+const WORKHUB_OFF: WorkHubEnablement = { isEnabled: () => false, subscribe: () => () => {} };
+function onboardingWith(snapshot: OnboardingSnapshot | null): OnboardingAuthority {
+  return {
+    getProjection: () => ({ snapshot, failed: false }),
+    subscribe: () => () => {},
+    refresh: () => {},
+    skipInitialOnboarding: async () => {},
+  };
 }
 
 const linkedCatalog = [
@@ -628,20 +640,14 @@ describe('SessionNavigationProvider selection', () => {
       rail = useSessionRailData();
       return null;
     }
-    const snapshot = {
+    const onboarding = onboardingWith({
       sessionSendOutcomes: { remote: { kind: 'blocked', reason: 'connection_missing', connectionLocked: false } },
-    } as unknown as OnboardingSnapshot;
-    const onboarding: OnboardingAuthority = {
-      getProjection: () => ({ snapshot, failed: false }),
-      subscribe: () => () => {},
-      refresh: () => {},
-      skipInitialOnboarding: async () => {},
-    };
+    } as unknown as OnboardingSnapshot);
     const catalog = createSessionCatalogController();
     catalog.commitSessions(linkedCatalog);
     const { root } = installReactRenderer();
-    await act(async () => root.render(createElement(OnboardingAuthorityProvider, { value: onboarding },
-      navigationTree(catalog, { activeSessionId: 'root', workHubActive: false }, null, createElement(Rail)))));
+    await act(async () => root.render(navigationTree(catalog, { activeSessionId: 'root', workHubActive: false },
+      null, createElement(Rail), undefined, { onboarding })));
     assert.deepEqual([...(rail?.staleSessionIds ?? [])], ['remote']);
     await act(async () => root.unmount());
   });
@@ -665,12 +671,11 @@ describe('SessionNavigationProvider selection', () => {
     const catalog = createSessionCatalogController();
     catalog.commitSessions(linkedCatalog);
     const { root } = installReactRenderer();
-    await act(async () => root.render(createElement(WorkHubEnablementProvider, { value: enablement },
-      navigationTree(catalog, {
-        activeSessionId: 'root',
-        workHubActive: false,
-        workHubEntry: { active: false, label: 'WorkHub', onSelect: () => opened.push('workhub') },
-      }, null, createElement(ChromeProbe)))));
+    await act(async () => root.render(navigationTree(catalog, {
+      activeSessionId: 'root',
+      workHubActive: false,
+      workHubEntry: { active: false, label: 'WorkHub', onSelect: () => opened.push('workhub') },
+    }, null, createElement(ChromeProbe), undefined, { workHub: enablement })));
     const workHubEntry = () => chrome?.workHubEntry;
     assert.equal(workHubEntry(), undefined);
     enabled = true;

@@ -319,14 +319,18 @@ export function createOnboardingAuthority(source: OnboardingSource): OnboardingA
   };
 }
 
-const IDLE: OnboardingAuthority = {
-  getProjection: () => INITIAL,
-  subscribe: () => () => {},
-  refresh: () => {},
-  skipInitialOnboarding: async () => {},
-};
-const AuthorityContext = createContext<OnboardingAuthority>(IDLE);
+const AuthorityContext = createContext<OnboardingAuthority | null>(null);
 export const OnboardingAuthorityProvider = AuthorityContext.Provider;
+
+/**
+ * A missing provider fails here: an idle stand-in would hold the first-run
+ * gate (and the launch overlay) closed forever without saying why.
+ */
+function useOnboardingAuthority(): OnboardingAuthority {
+  const authority = useContext(AuthorityContext);
+  if (!authority) throw new Error('OnboardingAuthorityProvider is missing');
+  return authority;
+}
 
 export type OnboardingShellProjection =
   OnboardingProjection & Pick<OnboardingAuthority, 'refresh' | 'skipInitialOnboarding'>;
@@ -340,7 +344,7 @@ export type OnboardingShellProjection =
 export function OnboardingProjectionRoot(props: {
   children(onboarding: OnboardingShellProjection): ReactNode;
 }) {
-  const authority = useContext(AuthorityContext);
+  const authority = useOnboardingAuthority();
   const projection = useSyncExternalStore(authority.subscribe, authority.getProjection);
   return props.children({
     ...projection,
@@ -353,6 +357,6 @@ const selectSendOutcomes = (authority: OnboardingAuthority) => authority.getProj
 
 /** Per-Session send outcomes, for readers that need nothing else from onboarding. */
 export function useOnboardingSessionSendOutcomes(): Readonly<Record<string, SessionSendProjection>> | undefined {
-  const authority = useContext(AuthorityContext);
+  const authority = useOnboardingAuthority();
   return useSyncExternalStore(authority.subscribe, () => selectSendOutcomes(authority));
 }

@@ -468,8 +468,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./application/contracts/conversation-copy.js": 1,
-          "./application/contracts/session-catalog/session-change-effects.js": 1,
+          "./application/contracts/shell-lifecycle.js": 1,
           "./browser-storage": 1,
           "./theme": 1,
           "./titlebar-modal-sync": 1,
@@ -477,7 +476,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 1140
+        "nonTriviaTokens": 886
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -656,6 +655,7 @@
           "./application/contracts/session-catalog/catalog-row-watch.js": 1,
           "./application/contracts/shell-lifecycle.js": 1,
           "./application/contracts/turn-presentation": 1,
+          "./application/contracts/workhub-workspace/workhub-enablement.js": 1,
           "./chat-composer-region": 1,
           "./chat-message-surface": 1,
           "./composer-defaults": 1,
@@ -713,7 +713,7 @@
           "react": 1
         },
         "importSpecifiers": 71,
-        "nonTriviaTokens": 8898
+        "nonTriviaTokens": 8903
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

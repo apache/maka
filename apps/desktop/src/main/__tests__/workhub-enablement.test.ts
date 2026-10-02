@@ -101,3 +101,9 @@ test('Desktop reads the client WorkHub switch; AppShell no longer reaches it', a
   const shell = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)), 'utf8');
   assert.deepEqual(shell.split('\n').filter((line) => /\bsettings\s*\.\s*(?:getClient|subscribeClientChanged)\b|\bworkHubEnabled\b/.test(line)), []);
 });
+
+test('a composition without the WorkHub switch fails instead of reading off', () => {
+  const { root } = installReactRenderer();
+  assert.throws(() => act(() => root.render(createElement(WorkHubEnablementWatch, { onEnabled() {}, onDisabled() {} }))),
+    /WorkHubEnablementProvider is missing/);
+});
