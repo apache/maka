@@ -168,7 +168,36 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     return visible(window.contentView);
   });
   const actions = page.getByRole('button', { name: /Sidebar task.*任务操作$/ });
+  // A delayed native capture must not expose an empty dock. This boundary
+  // needs the sibling WebContentsView; DOM tests only cover decode/ack ordering.
+  await app.evaluate(({ webContents }) => {
+    const contents = webContents.getAllWebContents().find(contents => contents.getURL().includes('surface=workhub'))!;
+    const capture = contents.capturePage.bind(contents);
+    const probe = globalThis as unknown as { previewCaptureStarted: boolean; releasePreviewCapture: () => void };
+    probe.previewCaptureStarted = false;
+    contents.capturePage = async (...args) => {
+      contents.capturePage = capture;
+      probe.previewCaptureStarted = true;
+      await new Promise<void>(resolve => { probe.releasePreviewCapture = resolve; });
+      return capture(...args);
+    };
+  });
   await page.getByRole('button').filter({ has: page.getByText('Sidebar task', { exact: true }) }).hover();
+  const preview = page.locator('.maka-sidebar-hover-card').filter({ hasText: 'Sidebar task' });
+  await expect.poll(() => app.evaluate(() => (globalThis as unknown as { previewCaptureStarted: boolean }).previewCaptureStarted)).toBe(true);
+  expect(await nativeWorkHubVisible()).toBe(true);
+  await expect(preview).toBeHidden();
+  await expect(page.locator('[data-workhub-preview-pending]')).toHaveCount(1);
+  await app.evaluate(() => (globalThis as unknown as { releasePreviewCapture: () => void }).releasePreviewCapture());
+  await expect(preview).toBeVisible();
+  await expect.poll(nativeWorkHubVisible).toBe(false);
+  expect(await page.locator('.workHubDockBackdrop').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('sidebar-preview-ready.png') });
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  await expect.poll(nativeWorkHubVisible).toBe(true);
+  await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
+  await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
   await actions.click();
   await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
