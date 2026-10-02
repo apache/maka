@@ -52,6 +52,7 @@ export interface BotRegistryDeps {
 export class BotRegistry {
   private bridges = new Map<BotPlatform, BotBridge>();
   private statuses = new Map<BotPlatform, BotStatus>();
+  private unwire = new WeakMap<BotBridge, () => void>();
   private applyQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: BotRegistryDeps) {}
@@ -128,17 +129,25 @@ export class BotRegistry {
   }
 
   private async stopAllNow(): Promise<void> {
-    await Promise.all([...this.bridges.values()].map((bridge) => bridge.stop().catch(() => {})));
+    const bridges = [...this.bridges.values()];
     this.bridges.clear();
+    await Promise.all(bridges.map((bridge) => this.stopBridge(bridge)));
     this.statuses.clear();
+  }
+
+  private async stopBridge(bridge: BotBridge): Promise<void> {
+    // Retire before awaiting stop: pending SDK callbacks may still emit while it settles.
+    if (this.bridges.get(bridge.platform) === bridge) this.bridges.delete(bridge.platform);
+    this.unwire.get(bridge)?.();
+    this.unwire.delete(bridge);
+    await bridge.stop().catch(() => {});
   }
 
   private async reconcileOne(platform: BotPlatform, settings: BotChannelSettings): Promise<void> {
     const existing = this.bridges.get(platform);
     if (!settings.enabled) {
       if (existing) {
-        await existing.stop().catch(() => {});
-        this.bridges.delete(platform);
+        await this.stopBridge(existing);
       }
       this.statuses.set(platform, defaultStatus(platform));
       this.deps.onStatusChange(this.getStatus(platform));
@@ -150,19 +159,7 @@ export class BotRegistry {
         existing as { updateSettings?: (next: BotChannelSettings) => { needsRestart: boolean } }
       ).updateSettings;
       if (update && !update.call(existing, settings).needsRestart) return;
-      await existing.stop().catch(() => {});
-      // Drop our 'message' / 'statusChange' listeners on the old
-      // bridge before dereferencing it. Some bridges (Discord
-      // gateway, WeChat poll) hold async tasks that can still emit
-      // after `stop()` returns; without removeAllListeners those
-      // emissions would race-call onIncomingMessage / onStatusChange
-      // against a bridge the registry already considers gone.
-      try {
-        (existing as BotBridge & EventEmitter).removeAllListeners('message');
-        (existing as BotBridge & EventEmitter).removeAllListeners('statusChange');
-      } catch {
-        // best-effort — non-EventEmitter bridges don't have listeners to clear.
-      }
+      await this.stopBridge(existing);
     }
     this.statuses.delete(platform);
 
@@ -193,8 +190,18 @@ export class BotRegistry {
 
   private wire(bridge: BotBridge): void {
     const emitter = bridge as BotBridge & EventEmitter;
-    emitter.on('message', (message: BotIncomingMessage) => this.deps.onIncomingMessage(message));
-    emitter.on('statusChange', (status: BotStatus) => this.deps.onStatusChange(status));
+    const onMessage = (message: BotIncomingMessage) => {
+      if (this.bridges.get(bridge.platform) === bridge) this.deps.onIncomingMessage(message);
+    };
+    const onStatusChange = (status: BotStatus) => {
+      if (this.bridges.get(bridge.platform) === bridge) this.deps.onStatusChange(status);
+    };
+    emitter.on('message', onMessage);
+    emitter.on('statusChange', onStatusChange);
+    this.unwire.set(bridge, () => {
+      emitter.off('message', onMessage);
+      emitter.off('statusChange', onStatusChange);
+    });
   }
 }
 

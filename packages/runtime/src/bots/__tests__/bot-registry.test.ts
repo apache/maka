@@ -23,9 +23,115 @@ import { describe, test } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/settings';
 import type { BotChatSettings, BotProvider } from '@maka/core/bot-chat-settings';
 import { BotRegistry } from '../bot-registry.js';
-import type { BotStatus } from '../types.js';
+import type { BotIncomingMessage, BotStatus } from '../types.js';
+import { WeComBotBridge } from '../wecom-bridge.js';
 
 describe('BotRegistry', () => {
+  for (const action of ['disable', 'stopAll', 'restart'] as const) {
+    test(`${action} ignores retired bridge events during and after stop`, async (t) => {
+      const messages: BotIncomingMessage[] = [];
+      const statuses: BotStatus[] = [];
+      const bridges: WeComBotBridge[] = [];
+      const registry = new BotRegistry({
+        onIncomingMessage: (message) => messages.push(message),
+        onStatusChange: (status) => statuses.push(status),
+      });
+      let markStopping!: () => void;
+      let finishStop!: () => void;
+      const stopping = new Promise<void>((resolve) => {
+        markStopping = resolve;
+      });
+      const stopped = new Promise<void>((resolve) => {
+        finishStop = resolve;
+      });
+      t.mock.method(WeComBotBridge.prototype, 'start', async function (this: WeComBotBridge) {
+        bridges.push(this);
+      });
+      t.mock.method(WeComBotBridge.prototype, 'stop', async () => {
+        markStopping();
+        await stopped;
+      });
+      const enabled = settingsWith({
+        wecom: { enabled: true, appId: 'test-bot', appSecret: 'old' },
+      });
+      await registry.applySettings(enabled);
+      const retired = bridges[0];
+      const message: BotIncomingMessage = {
+        platform: 'wecom',
+        userId: 'test-user',
+        chatId: 'test-chat',
+        userName: 'test-user',
+        sourceMessageId: 'test-message',
+        isGroup: false,
+        text: 'late message',
+        receivedAt: 1,
+      };
+      const status: BotStatus = {
+        platform: 'wecom',
+        running: true,
+        readiness: 'operational',
+        connection: 'gateway',
+      };
+      const onMessage = retired.listeners('message')[0];
+      const onStatus = retired.listeners('statusChange')[0];
+      const otherMessageListener = () => {};
+      const otherStatusListener = () => {};
+      retired.on('message', otherMessageListener);
+      retired.on('statusChange', otherStatusListener);
+      retired.emit('message', message);
+      retired.emit('statusChange', status);
+      assert.deepEqual(messages, [message]);
+      assert.equal(statuses.at(-1), status);
+
+      const retirement =
+        action === 'stopAll'
+          ? registry.stopAll()
+          : registry.applySettings(
+              action === 'disable'
+                ? settingsWith({})
+                : settingsWith({
+                    wecom: { enabled: true, appId: 'test-bot', appSecret: 'new' },
+                  }),
+            );
+      await stopping;
+      const assertRetiredEventsIgnored = () => {
+        const messageCount = messages.length;
+        const statusCount = statuses.length;
+        retired.emit('message', message);
+        retired.emit('statusChange', status);
+        // EventEmitter may already have captured a listener before it was detached.
+        onMessage(message);
+        onStatus(status);
+        assert.equal(messages.length, messageCount);
+        assert.equal(statuses.length, statusCount);
+      };
+      try {
+        assertRetiredEventsIgnored();
+      } finally {
+        finishStop();
+        await retirement;
+      }
+      assertRetiredEventsIgnored();
+      assert.deepEqual(retired.listeners('message'), [otherMessageListener]);
+      assert.deepEqual(retired.listeners('statusChange'), [otherStatusListener]);
+
+      if (action === 'restart') {
+        assert.equal(bridges.length, 2);
+        bridges[1].emit('message', message);
+        bridges[1].emit('statusChange', status);
+        assert.deepEqual(messages, [message, message]);
+        assert.equal(statuses.at(-1), status);
+      } else {
+        assert.equal(registry.getStatus('wecom').reason, 'disabled');
+        await registry.applySettings(enabled);
+        bridges[1].emit('message', message);
+        assert.deepEqual(messages, [message, message]);
+        assertRetiredEventsIgnored();
+      }
+      await registry.stopAll();
+    });
+  }
+
   test('reports lazy SDK loading failures through bot status', async () => {
     const statuses: BotStatus[] = [];
     const registry = new BotRegistry({
