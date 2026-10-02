@@ -265,11 +265,8 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
     if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.summary;
 
     const parsed = await readTranscriptSummary(path);
-    // Sub-agent transcripts are whole files, never records interleaved into a
-    // parent — so exclusion is per file. Importing one would present a
-    // fragment of a conversation as a conversation.
     const summary =
-      parsed && !parsed.isSidechain
+      parsed && !parsed.isSidechain && parsed.cwd
         ? {
             id: sessionId,
             name: parsed.title || sessionId,
@@ -397,34 +394,45 @@ async function convertClaudeTranscript(
   try {
     const indexer = new TranscriptLineageIndexer();
     let cwd = '';
-    let isSidechain = false;
+    let hasMainConversation = false;
+    let hasSidechainConversation = false;
     const titles: ClaudeTitleCandidates = {};
     let records = 0;
     for await (const record of snapshot.records(sessionId, limits)) {
       records += 1;
       indexer.accept(record);
-      if (record.isSidechain === true) isSidechain = true;
+      if (record.type === 'user' || record.type === 'assistant') {
+        if (record.isSidechain === true) hasSidechainConversation = true;
+        else hasMainConversation = true;
+      }
+      if (record.isSidechain === true) continue;
       if (!cwd && typeof record.cwd === 'string' && record.cwd) cwd = record.cwd;
       collectClaudeTitle(record, titles);
       collectLegacyClaudeTitle(record, titles);
     }
     if (records === 0) throw new Error(`Claude Code transcript could not be read: ${sessionId}`);
-    if (isSidechain) {
+    if (hasSidechainConversation && !hasMainConversation) {
       throw new Error(`Claude Code transcript is a sub-agent sidechain: ${sessionId}`);
     }
+    if (!cwd) throw new Error(`Claude Code transcript could not be read: ${sessionId}`);
 
     const lineage = indexer.finish();
     const fragmentFilter = lineage.createFilter();
     const responseCollector = new ClaudeResponseCollector(limits.maxConvertedBytes);
     for await (const record of snapshot.records(sessionId, limits)) {
-      if (!fragmentFilter.keep(record) || record.type !== 'assistant') continue;
+      if (
+        record.isSidechain === true ||
+        !fragmentFilter.keep(record) ||
+        record.type !== 'assistant'
+      )
+        continue;
       responseCollector.accept(record);
     }
 
     const converter = new ClaudeTranscriptConverter(sessionId, responseCollector.responses, limits);
     const conversionFilter = lineage.createFilter();
     for await (const record of snapshot.records(sessionId, limits)) {
-      if (conversionFilter.keep(record)) converter.accept(record);
+      if (record.isSidechain !== true && conversionFilter.keep(record)) converter.accept(record);
     }
     return {
       sourceSessionId: sessionId,
@@ -624,7 +632,12 @@ function parseClaudeTranscriptLine(bytes: Buffer): TranscriptRecord | undefined 
 async function readTranscriptSummary(path: string): Promise<TranscriptSummary | undefined> {
   const handle = await open(path, 'r').catch(() => undefined);
   if (!handle) return undefined;
-  const scan: TranscriptSummaryScan = { titles: {}, cwd: '', isSidechain: false };
+  const scan: TranscriptSummaryScan = {
+    titles: {},
+    cwd: '',
+    hasMainConversation: false,
+    hasSidechainConversation: false,
+  };
   try {
     const info = await handle.stat();
     if (!info.isFile()) return undefined;
@@ -646,7 +659,7 @@ async function readTranscriptSummary(path: string): Promise<TranscriptSummary | 
       title: pickClaudeTitle(scan.titles),
       ...(scan.createdAt !== undefined ? { createdAt: scan.createdAt } : {}),
       ...(scan.updatedAt !== undefined ? { updatedAt: scan.updatedAt } : {}),
-      isSidechain: scan.isSidechain,
+      isSidechain: scan.hasSidechainConversation && !scan.hasMainConversation,
     };
   } catch {
     return undefined;
@@ -658,15 +671,20 @@ async function readTranscriptSummary(path: string): Promise<TranscriptSummary | 
 interface TranscriptSummaryScan {
   readonly titles: ClaudeTitleCandidates;
   cwd: string;
-  isSidechain: boolean;
+  hasMainConversation: boolean;
+  hasSidechainConversation: boolean;
   createdAt?: number;
   updatedAt?: number;
 }
 
 function observeSummaryRecord(record: TranscriptRecord, scan: TranscriptSummaryScan): void {
+  if (record.type === 'user' || record.type === 'assistant') {
+    if (record.isSidechain === true) scan.hasSidechainConversation = true;
+    else scan.hasMainConversation = true;
+  }
+  if (record.isSidechain === true) return;
   collectClaudeTitle(record, scan.titles);
   collectLegacyClaudeTitle(record, scan.titles);
-  if (record.isSidechain === true) scan.isSidechain = true;
   if (!scan.cwd && typeof record.cwd === 'string' && record.cwd) scan.cwd = record.cwd;
   const ts = timestampMs(record);
   if (ts !== undefined) {

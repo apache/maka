@@ -475,6 +475,25 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('does not import a repeated completed item twice', async () => {
+    await withCodexHome(async (codexHome) => {
+      const id = 'codex-repeated-item-completed';
+      const lines = (await readFile(ITEM_COMPLETED_FIXTURE, 'utf8'))
+        .replaceAll('codex-item-completed', id)
+        .trimEnd()
+        .split('\n');
+      const completed = lines.find((line) => {
+        const record = JSON.parse(line) as { type?: string; payload?: { type?: string } };
+        return record.type === 'event_msg' && record.payload?.type === 'item_completed';
+      });
+      assert.ok(completed);
+      lines.splice(lines.indexOf(completed) + 1, 0, completed);
+      await seedRawRollout(codexHome, id, `${lines.join('\n')}\n`);
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(id);
+      assert.equal(session.messages.filter((message) => message.type === 'user').length, 1);
+    });
+  });
+
   test('imports terminal errors as failed without failing turns on non-terminal errors', async () => {
     await withCodexHome(async (codexHome) => {
       const sessionId = 'codex-error-semantics';
