@@ -38,7 +38,8 @@ const TaskReadinessContext = createContext<TaskReadinessOwner | undefined>(undef
  * Sole owner of the Composer's task readiness. It stays mounted beside
  * `ComposerStagingProvider`, so section switches and transcript unmounts
  * neither restart nor drop the read. AppShell supplies the request projection,
- * the targets and the workspace-picker command; it receives no snapshot.
+ * the targets and the stable workspace-recovery commands; it receives no
+ * snapshot.
  */
 export function TaskReadinessProvider(props: {
   readonly request: TaskReadinessRequest;
@@ -46,8 +47,11 @@ export function TaskReadinessProvider(props: {
   readonly refreshKey: unknown;
   readonly sessionId?: string;
   readonly newTaskTarget?: ConversationNewTaskTarget;
-  /** Where a workspace blocker's action leads; absent when nothing can be picked. */
-  readonly openWorkspacePicker?: () => void;
+  /** A workspace blocker on this Session opens its workspace recovery. */
+  readonly workspaceRecoverySessionId?: string;
+  readonly openSessionWorkspaceRecovery: (sessionId: string) => void;
+  /** Without a Session, a workspace blocker adds a project; absent when it cannot. */
+  readonly addProject?: () => void;
   readonly children?: ReactNode;
 }) {
   const { snapshot, refresh } = useTaskSubmissionReadiness(
@@ -57,9 +61,16 @@ export function TaskReadinessProvider(props: {
     props.sessionId,
     props.newTaskTarget,
   );
+  const { workspaceRecoverySessionId: recoverySessionId, openSessionWorkspaceRecovery, addProject } = props;
+  // Facts and stable commands, so a shell render with the same Session and
+  // permission leaves the notice reader alone.
+  const openWorkspacePicker = useMemo(
+    () => recoverySessionId ? () => openSessionWorkspaceRecovery(recoverySessionId) : addProject,
+    [recoverySessionId, openSessionWorkspaceRecovery, addProject],
+  );
   const owner = useMemo<TaskReadinessOwner>(
-    () => ({ snapshot, refresh, openWorkspacePicker: props.openWorkspacePicker }),
-    [snapshot, refresh, props.openWorkspacePicker],
+    () => ({ snapshot, refresh, openWorkspacePicker }),
+    [snapshot, refresh, openWorkspacePicker],
   );
   return <TaskReadinessContext.Provider value={owner}>{props.children}</TaskReadinessContext.Provider>;
 }

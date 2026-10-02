@@ -22,11 +22,11 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { userFacingText } from '@maka/core/session';
 import type { ComposerHandle } from '@maka/ui';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
-import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
-} from '../model/session-workspace-toast.js';
+} from '../../../application/contracts/session-workspace-errors.js';
 import type { ComposerSubmissionServices } from '../submission-services.js';
 import {
   acquireSessionCopyAttempt,
@@ -323,7 +323,7 @@ export function createRevisionActions(deps: {
       // must be surfaced before it runs — checking after it is always stale.
       if (selectionIsCurrent()) {
         if (isSessionWorkspaceUnavailableError(error)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+          showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, {
             sessionId: sourceSessionId,
           });
         } else {

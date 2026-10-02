@@ -37,7 +37,7 @@ import type { DesktopSessionSummary } from '../../../../shared/desktop-session-p
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
-} from '../model/session-workspace-toast.js';
+} from '../../../application/contracts/session-workspace-errors.js';
 import * as skillFeedback from '../model/skill-invocation-feedback.js';
 import { canSubmitExecutor, newTaskConfiguration, type ExecutorSubmission } from '../model/executor-submission.js';
 import type { NewChatExecutionTarget } from './use-shell-chat-model.js';
@@ -436,7 +436,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
           diagnosticTarget,
         );
       } else if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, diagnosticTarget);
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, diagnosticTarget);
       } else {
         toastApi.error(
           copy.sendFailedTitle,
@@ -509,7 +509,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
       } else {
         toastApi.error(
           copy.responseFailedTitle,

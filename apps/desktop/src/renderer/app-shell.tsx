@@ -1238,9 +1238,8 @@ function AppShellContent({
       draftKey={attachmentDraftKey} directoryHostId={directoryHostId} supportsVision={composerSupportsVision}>
     <Conversation.TaskReadinessProvider request={taskReadinessRequest} refreshKey={onboarding.snapshot}
       sessionId={ownerActiveId} newTaskTarget={activeId ? undefined : taskEntry.selectors.target}
-      openWorkspacePicker={activeSession
-        ? () => openSessionWorkspaceRecovery(activeSession.id)
-        : taskEntry.selectors.canAddProject ? taskEntry.commands.addProject : undefined}>
+      workspaceRecoverySessionId={activeSession?.id} openSessionWorkspaceRecovery={openSessionWorkspaceRecovery}
+      addProject={taskEntry.selectors.canAddProject ? taskEntry.commands.addProject : undefined}>
     <Conversation.ComposerSubmissionProvider commands={composerSubmission} staging={composerStaging}
       sharedSessionActive={sharedSessionActive}
       newTask={{

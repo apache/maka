@@ -245,7 +245,10 @@ beside `ComposerStagingProvider` and stays mounted across Session and section
 switches, so hiding the transcript neither drops nor restarts the read. AppShell
 supplies the request projection (model target and working directory), the owner
 Session or new-task target, the onboarding snapshot as a refresh key, and the
-workspace-picker command. It receives no snapshot, refresh command or notice.
+Session whose workspace recovery a blocker opens, with the stable recovery and
+Add Project commands. The provider resolves the picker action from those facts,
+so a shell render with the same facts leaves the notice reader alone. It
+receives no snapshot, refresh command or notice.
 `TaskReadinessNoticeConsumer` is the only reader: the transcript surface renders
 it in the notice slot, a workspace blocker opens the picker, and every other
 action reads again.

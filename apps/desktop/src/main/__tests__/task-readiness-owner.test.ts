@@ -111,16 +111,22 @@ function noticeRecorder() {
   return { Surface, rendered, latest: () => rendered.at(-1) };
 }
 
-function owner(
-  services: TaskReadinessServices,
-  props: Omit<Parameters<typeof TaskReadinessProvider>[0], 'children'>,
-  children: ReactNode,
-) {
+type OwnerProps = Omit<Parameters<typeof TaskReadinessProvider>[0], 'children' | 'openSessionWorkspaceRecovery'> & {
+  openSessionWorkspaceRecovery?: (sessionId: string) => void;
+};
+
+const ignoreRecovery = () => {};
+
+function owner(services: TaskReadinessServices, props: OwnerProps, children: ReactNode) {
   return createElement(LocaleProvider, {
     locale: 'en',
     children: createElement(TaskReadinessServicesProvider, {
       services,
-      children: createElement(TaskReadinessProvider, { ...props, children }),
+      children: createElement(TaskReadinessProvider, {
+        openSessionWorkspaceRecovery: ignoreRecovery,
+        ...props,
+        children,
+      }),
     }),
   });
 }
@@ -215,31 +221,61 @@ describe('TaskReadinessProvider', () => {
     assert.equal(container.textContent, '', 'retry clears the notice until the new answer');
   });
 
-  test('routes a workspace blocker to the picker, and hides the action without one', async () => {
+  test('routes a workspace blocker to its Session\'s recovery or to Add Project, and hides the action without one', async () => {
     const { root } = installReactRenderer();
     const { services, reads } = recordingServices();
     const notice = noticeRecorder();
     const view = createElement(TaskReadinessNoticeConsumer, { surface: notice.Surface });
     const refreshKey = {};
-    let picks = 0;
-    const openWorkspacePicker = () => { picks += 1; };
+    const recovered: string[] = [];
+    const openSessionWorkspaceRecovery = (sessionId: string) => { recovered.push(sessionId); };
+    let added = 0;
+    const addProject = () => { added += 1; };
 
-    await act(async () => root.render(owner(services, { request: sessionRequest, refreshKey, sessionId: 'a', openWorkspacePicker }, view)));
+    await act(async () => root.render(owner(services, {
+      request: sessionRequest, refreshKey, sessionId: 'a', workspaceRecoverySessionId: 'a', openSessionWorkspaceRecovery, addProject,
+    }, view)));
     await act(async () => reads[0]!.answer.resolve(snapshot('workspace', { picker: true })));
     assert.equal(notice.latest()?.actionLabel, copy.workspace.actionLabel.workspace_picker);
     await act(async () => notice.latest()?.onAction?.());
-    assert.equal(picks, 1);
+    assert.deepEqual(recovered, ['a'], 'a Session\'s blocker opens that Session\'s recovery');
+    assert.equal(added, 0);
     assert.equal(reads.length, 1, 'the picker action does not read again');
+
+    await act(async () => root.render(owner(services, { request: sessionRequest, refreshKey, sessionId: 'a', addProject }, view)));
+    await act(async () => notice.latest()?.onAction?.());
+    assert.equal(added, 1, 'without a Session the blocker adds a project');
 
     await act(async () => root.render(owner(services, { request: sessionRequest, refreshKey, sessionId: 'a' }, view)));
     assert.equal(notice.latest()?.onAction, undefined);
 
-    await act(async () => root.render(owner(services, { request: sessionRequest, refreshKey: {}, sessionId: 'a', openWorkspacePicker }, view)));
+    await act(async () => root.render(owner(services, { request: sessionRequest, refreshKey: {}, sessionId: 'a', addProject }, view)));
     await act(async () => reads[1]!.answer.resolve(snapshot('workspace')));
     assert.equal(notice.latest()?.actionLabel, copy.workspace.actionLabel.retry);
     await act(async () => notice.latest()?.onAction?.());
-    assert.equal(picks, 1);
+    assert.equal(added, 1);
     assert.equal(reads.length, 3, 'a workspace blocker without a picker target retries');
+  });
+
+  test('a shell render with the same facts and commands leaves the notice reader alone', async () => {
+    const { root } = installReactRenderer();
+    const { services, reads } = recordingServices();
+    const notice = noticeRecorder();
+    const view = createElement(TaskReadinessNoticeConsumer, { surface: notice.Surface });
+    const refreshKey = {};
+    const openSessionWorkspaceRecovery = () => {};
+    const render = (recoverySessionId: string) => owner(services, {
+      request: { ...sessionRequest }, refreshKey, sessionId: 'a',
+      workspaceRecoverySessionId: recoverySessionId, openSessionWorkspaceRecovery,
+    }, view);
+
+    await act(async () => root.render(render('a')));
+    await act(async () => reads[0]!.answer.resolve(snapshot('workspace', { picker: true })));
+    const rendered = notice.rendered.length;
+    await act(async () => root.render(render('a')));
+    assert.equal(notice.rendered.length, rendered, 'a fresh request object and equal facts publish nothing new');
+    await act(async () => root.render(render('b')));
+    assert.equal(notice.rendered.length, rendered + 1, 'a new recovery target does');
   });
 
   test('model blockers stay with their own recovery surfaces', async () => {

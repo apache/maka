@@ -46,7 +46,7 @@ import {
   useAppShellSessionUiState,
   type ComposerSubmissionServices,
 } from '../../renderer/features/conversation/index.js';
-import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
+import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import {
   createDesktopComposerSubmissionServices,
   type DesktopComposerSubmissionBridge,
@@ -65,7 +65,7 @@ type Owner = { sessionId: string | undefined };
 type ProviderProps = Parameters<typeof ComposerSubmissionProvider<Owner>>[0];
 
 interface RegionProps {
-  onSend(text: string): Promise<boolean | void>;
+  onSend(text: string, metadata?: { followUpMode?: 'steer' | 'queue' }): Promise<boolean | void>;
   newTaskSendPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
   contextPickEnabled: boolean;
@@ -136,10 +136,12 @@ function harness(options: {
   const staging = createComposerStagingCommands();
   const services = stubSubmissionServices(options.services);
   let target!: ReturnType<typeof useAppShellSessionUiState>;
+  let conversation!: ReturnType<typeof useConversationOwner>;
   let region: RegionProps | undefined;
   function Composer(props: RegionProps) { region = props; return null; }
   function Shell() {
     target = useAppShellSessionUiState();
+    conversation = useConversationOwner();
     return createElement(Fragment, null,
       createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
@@ -176,6 +178,7 @@ function harness(options: {
   return {
     root, commands, published,
     get target() { return target; },
+    get conversation() { return conversation; },
     get region() { assert.ok(region, 'the Composer slot rendered'); return region; },
     notice: () => region?.revisionNotice,
   };
@@ -210,6 +213,40 @@ describe('ComposerSubmissionProvider', () => {
       assert.equal(await sending, true);
     });
     assert.equal(h.region.newTaskSendPending, false);
+  });
+
+  test('steers into the running Host Turn: the pending row names that Turn before the Host answers', async () => {
+    const submitted: unknown[] = [];
+    const admission = deferred<Awaited<ReturnType<ComposerSubmissionServices['submitMessage']>>>();
+    const h = harness({
+      services: {
+        submitMessage: (sessionId, placement, command) => {
+          submitted.push({ sessionId, placement, text: command.text });
+          return admission.promise;
+        },
+      },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'running')]));
+    await act(async () => h.conversation.workspace.ui.setExecution('A', {
+      type: 'host_execution', available: true,
+      rootTurn: { sessionId: 'A', turnId: 'host-turn-1', runId: 'run-1', status: 'running' },
+    }));
+
+    let sending!: Promise<boolean | void>;
+    await act(async () => { sending = h.region.onSend('steer here', { followUpMode: 'steer' }); });
+    assert.deepEqual(submitted, [{ sessionId: 'A', placement: 'current_turn', text: 'steer here' }]);
+    const pending = h.conversation.workspace.publication.getSnapshot().transientMessages
+      .find((message) => message.text === 'steer here');
+    assert.equal(pending?.hostTurnId, 'host-turn-1');
+
+    await act(async () => {
+      admission.resolve({
+        ok: true, disposition: 'steering', turnId: 'host-turn-1', attachments: [], inlineReferences: [],
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      });
+      assert.equal(await sending, true);
+    });
   });
 
   test('creates a new task with the new-task settings it was given and keeps an unconsumed choice', async () => {

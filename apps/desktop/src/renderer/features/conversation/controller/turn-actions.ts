@@ -21,11 +21,11 @@ import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { TurnFooterActionMeta } from '@maka/ui';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
-import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
-} from '../model/session-workspace-toast.js';
+} from '../../../application/contracts/session-workspace-errors.js';
 import { acquireSessionCopyAttempt } from '../../../application/contracts/session-copy-attempt.js';
 import type { ComposerSubmissionServices } from '../submission-services.js';
 
@@ -104,7 +104,7 @@ export function createTurnActions(deps: {
     } catch (error) {
       if (!selectionIsCurrent()) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
       } else {
         toastApi.error(
           copy.operationFailedTitle,
