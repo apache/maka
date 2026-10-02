@@ -352,8 +352,8 @@
           "./skill-invocation-feedback.js": 1,
           "@maka/core/session-name": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2931
+        "importSpecifiers": 7,
+        "nonTriviaTokens": 2893
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 1,

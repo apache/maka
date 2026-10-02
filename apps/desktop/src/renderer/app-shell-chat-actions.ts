@@ -35,10 +35,7 @@ import {
 } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import { preflightAttachmentItems } from './attachment-preflight.js';
-import {
-  isSessionWorkspaceUnavailableError,
-  showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors.js';
+import { notifyInteractionResponseFailure } from './session-workspace-errors.js';
 import * as skillFeedback from './skill-invocation-feedback.js';
 import * as Conversation from './features/conversation/index.js';
 import type { NewChatExecutionTarget, PendingAttachment, ExecutorSubmission } from './features/conversation/index.js';
@@ -516,17 +513,12 @@ export function createAppShellChatActions(deps: {
       onApplied?.(sessionId);
       settleInteraction(sessionId, response.requestId);
     } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
-      } else {
-        toastApi.error(
-          copy.responseFailedTitle,
-          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
-          undefined,
-          { sessionId },
-        );
-      }
+      notifyInteractionResponseFailure(activeIdRef.current === sessionId, error, {
+        toastApi,
+        locale: uiLocale,
+        sessionId,
+      });
+      throw error;
     }
   }
 
