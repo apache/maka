@@ -181,11 +181,13 @@ export class BotRegistry {
                     : new TelegramBotBridge(platform, settings);
     this.wire(bridge);
     this.bridges.set(platform, bridge);
+    this.deps.onStatusChange(bridge.getStatus());
     await bridge
       .start()
       .catch((error) =>
         console.error(`[BotRegistry] ${platform} start failed: ${generalizedErrorMessage(error)}`),
       );
+    this.deps.onStatusChange(bridge.getStatus());
   }
 
   private wire(bridge: BotBridge): void {

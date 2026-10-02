@@ -20,9 +20,11 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { describe, test } from 'node:test';
+import type { WebSocket } from 'undici';
 import { createDefaultBotChannel } from '@maka/core/settings';
 import type { BotChatSettings, BotProvider } from '@maka/core/bot-chat-settings';
 import { BotRegistry } from '../bot-registry.js';
+import { DiscordBotBridge } from '../discord-bridge.js';
 import type { BotIncomingMessage, BotStatus } from '../types.js';
 import { WeComBotBridge } from '../wecom-bridge.js';
 
@@ -129,6 +131,95 @@ describe('BotRegistry', () => {
         assertRetiredEventsIgnored();
       }
       await registry.stopAll();
+    });
+  }
+
+  for (const action of ['clear-token', 'replace-token'] as const) {
+    test(`${action} publishes replacement status without waiting for SDK events`, async (t) => {
+      const statuses: BotStatus[] = [];
+      const sockets: RegistryTestSocket[] = [];
+      const registry = new BotRegistry({
+        onIncomingMessage: () => {},
+        onStatusChange: (status) => statuses.push(status),
+      });
+      let markStarting!: () => void;
+      let finishStart!: (url: string) => void;
+      const starting = new Promise<void>((resolve) => {
+        markStarting = resolve;
+      });
+      const gatewayUrl = new Promise<string>((resolve) => {
+        finishStart = resolve;
+      });
+      let fetchCalls = 0;
+      const prototype = DiscordBotBridge.prototype as unknown as {
+        fetchGatewayUrl(): Promise<string | null>;
+        createWebSocket(url: string): WebSocket;
+      };
+      t.mock.method(prototype, 'fetchGatewayUrl', async () => {
+        if (++fetchCalls === 1) return 'wss://test.invalid';
+        markStarting();
+        return gatewayUrl;
+      });
+      t.mock.method(prototype, 'createWebSocket', () => {
+        const socket = new RegistryTestSocket();
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      });
+      const connect = (socket: RegistryTestSocket) => {
+        socket.dispatchEvent(new Event('open'));
+        socket.dispatchEvent(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              op: 0,
+              t: 'READY',
+              s: 1,
+              d: {
+                session_id: 'test-session',
+                resume_gateway_url: 'wss://test.invalid',
+                user: { id: 'test-bot', username: 'test-bot' },
+              },
+            }),
+          }),
+        );
+      };
+      const lastStatus = () => statuses.filter((status) => status.platform === 'discord').at(-1);
+      try {
+        await registry.applySettings(settingsWith({ discord: { enabled: true, token: 'old' } }));
+        connect(sockets[0]);
+        assert.equal(lastStatus()?.running, true);
+        assert.equal(lastStatus()?.readiness, 'operational');
+
+        const replacement = registry.applySettings(
+          settingsWith({
+            discord: { enabled: true, token: action === 'clear-token' ? '' : 'new' },
+          }),
+        );
+        if (action === 'clear-token') {
+          await replacement;
+          assert.equal(lastStatus()?.running, false);
+          assert.equal(lastStatus()?.readiness, 'scaffolded');
+          assert.equal(lastStatus()?.reason, 'token_missing');
+          assert.equal(lastStatus()?.identity, undefined);
+          assert.deepEqual(lastStatus(), registry.getStatus('discord'));
+        } else {
+          await starting;
+          try {
+            assert.equal(lastStatus()?.running, false);
+            assert.equal(lastStatus()?.readiness, 'configured');
+            assert.equal(lastStatus()?.identity, undefined);
+            assert.deepEqual(lastStatus(), registry.getStatus('discord'));
+          } finally {
+            finishStart('wss://test.invalid');
+            await replacement;
+          }
+          connect(sockets[1]);
+          assert.equal(lastStatus()?.running, true);
+          assert.equal(lastStatus()?.readiness, 'operational');
+          assert.deepEqual(lastStatus(), registry.getStatus('discord'));
+        }
+      } finally {
+        await registry.stopAll();
+      }
     });
   }
 
@@ -263,6 +354,16 @@ describe('BotRegistry', () => {
     assert.equal(registry.getStatus('wecom').reason, 'disabled');
   });
 });
+
+class RegistryTestSocket extends EventTarget {
+  readyState = 1;
+
+  close(): void {
+    this.readyState = 3;
+  }
+
+  send(): void {}
+}
 
 function settingsWith(
   overrides: Partial<Record<BotProvider, Partial<ReturnType<typeof createDefaultBotChannel>>>>,
