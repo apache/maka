@@ -135,6 +135,8 @@ describe('async gateway lifecycle', () => {
   for (const operation of ['identify', 'resume'] as const) {
     for (const result of [null, { token: 'retired' }]) {
       it(`ignores retired ${operation} ${result ? 'success' : 'failure'} after reconnect`, async (t) => {
+        // Keep heartbeat timers from racing the authentication assertions.
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
         const bridge = new AsyncGateway('qq', settings('qq'));
         const sockets = installSockets(bridge);
         t.after(() => bridge.stop());
@@ -382,6 +384,8 @@ describe('QQ async authentication lifecycle', () => {
   for (const operation of ['identify', 'resume'] as const) {
     for (const outcome of ['success', 'http failure', 'network failure'] as const) {
       it(`discards retired ${operation} token ${outcome} after stop/start`, async (t) => {
+        // Keep heartbeat timers from racing the authentication assertions.
+        t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
         const agent = mockHttp(t);
         const bridge = new QQBotBridge('qq', settings('qq'));
         const sockets = installSockets(bridge);
