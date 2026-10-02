@@ -168,6 +168,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
     return visible(window.contentView);
   });
   const actions = page.getByRole('button', { name: /Sidebar task.*任务操作$/ });
+  const sidebarTask = page.getByRole('button').filter({ has: page.getByText('Sidebar task', { exact: true }) });
   // A delayed native capture must not expose an empty dock. This boundary
   // needs the sibling WebContentsView; DOM tests only cover decode/ack ordering.
   await app.evaluate(({ webContents }) => {
@@ -182,7 +183,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       return capture(...args);
     };
   });
-  await page.getByRole('button').filter({ has: page.getByText('Sidebar task', { exact: true }) }).hover();
+  await sidebarTask.hover();
   const preview = page.locator('.maka-sidebar-hover-card').filter({ hasText: 'Sidebar task' });
   await expect.poll(() => app.evaluate(() => (globalThis as unknown as { previewCaptureStarted: boolean }).previewCaptureStarted)).toBe(true);
   expect(await nativeWorkHubVisible()).toBe(true);
@@ -198,6 +199,8 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(nativeWorkHubVisible).toBe(true);
   await expect(page.locator('.workHubDockBackdrop')).toHaveCount(0);
   await expect(workhub.locator(COMPOSER_INPUT)).toHaveText(draftBeforeOverlays);
+  // Dismissal/restoration is a separate interaction; do not reuse its hover state.
+  await sidebarTask.hover();
   await actions.click();
   await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeVisible();
   await expect.poll(nativeWorkHubVisible).toBe(false);
@@ -312,13 +315,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(thinking).toContainText(/高|High/);
   await workhub.screenshot({ animations: 'disabled', path: testInfo.outputPath('floating-composer-controls.png') });
   const compactHeight = await workhub.evaluate(() => innerHeight);
-  const screenLayout = async () => {
-    const origin = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());
-    return workhub.evaluate(({ x, y }) => Array.from(document.querySelectorAll('.maka-composer-editor, .maka-composer button, .workHubExpandButton')).map((element) => {
-      const rect = element.getBoundingClientRect();
-      return { x: x + rect.x, y: y + rect.y, width: rect.width, height: rect.height };
-    }), origin);
-  };
+  const floatingBounds = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.getTitle() === 'WorkHub')!.getContentBounds());
   await model.click();
   const wheel = workhub.getByRole('listbox');
   await expect(wheel).toBeVisible();
@@ -353,7 +350,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect(wheel.getByRole('option')).toHaveCount(3);
   await expect.poll(() => workhub.evaluate(() => innerHeight === Math.ceil(document.querySelector('.workHubComposerSurface')!.getBoundingClientRect().height))).toBe(true);
   const dragInitialTop = await wheel.evaluate((element) => element.scrollTop);
-  const beforeDrag = await screenLayout();
+  const beforeDrag = await floatingBounds();
   const dragDistance = dragInitialTop > 0 ? 32 : -32;
   const wheelBounds = (await wheel.boundingBox())!;
   const dragX = wheelBounds.x + wheelBounds.width / 2;
@@ -363,7 +360,8 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await workhub.mouse.move(dragX, dragY + dragDistance, { steps: 8 });
   await expect.poll(() => wheel.evaluate((element) => element.scrollTop)).toBe(dragInitialTop - dragDistance);
   await workhub.mouse.up();
-  await expect.poll(screenLayout).toEqual(beforeDrag);
+  // A model label may resize; dragging the no-drag wheel must not move its window.
+  await expect.poll(floatingBounds).toEqual(beforeDrag);
   await expect(wheel).toBeVisible();
   const draggedIndex = Math.round((dragInitialTop - dragDistance + 44) / 44) % modelChoices.length;
   await expectSnappedSelection(draggedIndex);
