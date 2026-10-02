@@ -104,7 +104,15 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 200 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 202 as const;
+// 202: `session.remove.preview` takes a bounded list of Sessions and reports the
+// child tasks, worktrees and optionally the bytes their removal would delete;
+// `session.remove` takes `requireArchivedForMs` and may answer `too_recent`.
+// Epoch-201 peers reject the new input and result shapes, so the pair must
+// fail admission.
+// 201: Session catalog projections may carry `archivedAt`, the time the
+// Session last entered the archive. Epoch-200 peers reject the unknown key, so
+// a newer Desktop against an older Host would lose session catalog reads.
 // 200: Agent Graph operator snapshots carry bounded output previews and metrics.
 // Older peers reject the additional `output` field on strict operator shapes.
 // 199: `storage.usage.query` and `storage.usage.sessions.query` report storage

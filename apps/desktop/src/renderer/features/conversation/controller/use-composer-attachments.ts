@@ -24,12 +24,10 @@ import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { useConversationServices } from '../services.js';
 import { useComposerQuotes } from './use-composer-quotes.js';
 import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
-export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 
 /** Desktop staging surface for everything the composer carries into a send:
- * attachments, directory picks, and staged transcript quotes. One hook keeps
- * the quote bucket out of AppShell's hook-call ledger; all three share the
- * same draft key. */
+ * attachments, directory picks, and staged transcript quotes. Called only by
+ * ComposerStagingProvider; all three share the same draft key. */
 export function useComposerAttachments(options: Omit<Parameters<typeof useSharedComposerAttachments>[0], 'copy' | 'formatError' | 'releaseRecoveryAttachments'>) {
   const locale = useUiLocale();
   const services = useConversationServices();

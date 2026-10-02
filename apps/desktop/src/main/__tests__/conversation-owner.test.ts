@@ -107,7 +107,7 @@ function harness(options: {
     return createElement(Fragment, null,
       createElement(Profiler, { id: 'conversation-lifecycle', onRender: () => { lifecycleCommits += 1; } }, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
-        onContextCompactionOutcome() {}, showModelSetupToast() {}, onTurnCompleted() {},
+        showModelSetupToast() {}, onTurnCompleted() {},
         searchTarget: null, clearSearchTarget() {}, listTurnLandmarks: options.listTurnLandmarks ?? (async () => ({ landmarks: [] })),
       })),
       visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript }) : null,

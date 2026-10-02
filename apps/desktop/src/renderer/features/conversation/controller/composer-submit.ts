@@ -28,8 +28,9 @@ import type {
   TransientUserMessageProjection,
 } from '@maka/ui';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
+import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
 
-import { composerSend } from './composer-follow-up.js';
+import { composerSend, composerFollowUp } from './composer-follow-up.js';
 
 type RefBox<T> = { current: T };
 type WorkspaceFileReference = NonNullable<ComposerSendMetadata['workspaceFileReferences']>[number];
@@ -86,19 +87,7 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
   revisionDraftRef: RefBox<TDraft | null>;
   composerRef: RefBox<ComposerHandle | null>;
   retractedWorkspaceReferencesRef: RefBox<Record<string, InlineReference[]>>;
-  hasPendingContext: boolean;
-  hasStagedQuotes: boolean;
-  submittableAttachments: readonly PendingAttachment[] | undefined;
-  directoryOptions: {
-    directoryReferences?: NonNullable<
-      TransientUserMessageProjection['directoryReferences']
-    >;
-  };
-  quotesForSend: () => QuoteRef[] | undefined;
-  clearSubmittedContext: (
-    submitted?: readonly PendingAttachment[],
-  ) => void;
-  clearQuotes: () => void;
+  captureStaging(): ComposerStagingSubmission;
   prepareRevisionSend: (text: string) => Promise<boolean>;
   send: (text: string, pending?: readonly PendingAttachment[], options?: SubmitOptions) => Promise<boolean>;
   enqueueFollowUp: (
@@ -106,6 +95,7 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
     text: string,
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
+    staging?: ComposerStagingSubmission,
   ) => Promise<boolean>;
   settleNewTaskImageNoticeOwner: (sourceSessionId?: string) => void;
   commitRevisionDraft: (draft: TDraft | null) => void;
@@ -141,7 +131,33 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
 
 export interface RevisionAwareOnSendPorts<TDraft extends RevisionDraftIdentity> extends RevisionSendPorts<TDraft> {
   setNewTaskSendPending: (pending: boolean) => void;
-  retainAttachments: (pending: readonly PendingAttachment[] | undefined) => () => void;
+}
+
+/** Shared by Shell's follow-up callback and its production-owner tests. */
+export function createStagedFollowUp(ports: {
+  captureStaging(): ComposerStagingSubmission;
+  enqueueMessage(
+    sessionId: string,
+    text: string,
+    placement: 'current_turn' | 'next_turn',
+    pending: readonly PendingAttachment[] | undefined,
+    options: Pick<SubmitOptions, 'directoryReferences' | 'quotes' | 'workspaceFileReferences' | 'replacesLocalMessageId'>,
+  ): Promise<boolean>;
+  onError(sessionId: string, error: unknown): void;
+}): RevisionSendPorts<RevisionDraftIdentity>['enqueueFollowUp'] {
+  return async (sessionId, text, mode, metadata, captured) => {
+    const staging = captured ?? ports.captureStaging();
+    return composerFollowUp({
+      pending: staging.submittableAttachments,
+      retainAttachments: staging.retainAttachments,
+      quotes: staging.quotesForSend() ?? [],
+      directoryOptions: staging.directoryOptions,
+      enqueueMessage: ports.enqueueMessage,
+      clearSubmittedContext: staging.clearSubmittedContext,
+      clearQuotes: staging.clearQuotes,
+      onError: ports.onError,
+    })(sessionId, text, mode, metadata);
+  };
 }
 
 /**
@@ -156,13 +172,16 @@ export interface RevisionAwareOnSendPorts<TDraft extends RevisionDraftIdentity> 
  */
 export function createRevisionAwareOnSend<TDraft extends RevisionDraftIdentity>(
   ports: RevisionAwareOnSendPorts<TDraft>,
-): (text: string, metadata?: ComposerSendMetadata) => Promise<boolean | void> {
-  return composerSend({
-    pending: ports.submittableAttachments,
-    retainAttachments: ports.retainAttachments,
-    setPending: ports.setNewTaskSendPending,
-    send: (text, metadata) => revisionAwareSend(ports, text, metadata),
-  });
+): (text: string, metadata?: ComposerSendMetadata, captured?: ComposerStagingSubmission) => Promise<boolean | void> {
+  return (text, metadata, captured) => {
+    const staging = captured ?? ports.captureStaging();
+    return composerSend({
+      pending: staging.submittableAttachments,
+      retainAttachments: staging.retainAttachments,
+      setPending: ports.setNewTaskSendPending,
+      send: (value, context) => revisionAwareSend({ ...ports, captureStaging: () => staging }, value, context),
+    })(text, metadata);
+  };
 }
 
 /**
@@ -179,6 +198,7 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   text: string,
   metadata?: ComposerSendMetadata,
 ): Promise<boolean | void> {
+  const staging = ports.captureStaging();
   const revision = ports.revisionDraftRef.current;
   const revisionSend = Boolean(
     revision && ports.activeIdRef.current === revision.draftSessionId,
@@ -196,13 +216,13 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     const queued = await ports.enqueueFollowUp(sessionId, text, followUpAtSubmit, {
       ...metadata,
       workspaceFileReferences,
-    });
+    }, staging);
     if (queued) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
     return queued;
   }
   if (revisionSend && revision) {
     const actionCopy = ports.revisionUnavailableCopy;
-    if (ports.hasPendingContext) {
+    if (staging.hasPendingContext) {
       ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
       return false;
     }
@@ -226,8 +246,8 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
       return false;
     }
     if (
-      ports.hasPendingContext ||
-      ports.hasStagedQuotes ||
+      staging.hasPendingContext ||
+      staging.hasStagedQuotes ||
       metadata?.workspaceFileReferences?.length
     ) {
       ports.toastApi.info(
@@ -265,11 +285,11 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
       }
       return changed;
     }
-    const pending = ports.submittableAttachments;
-    const quotes = ports.quotesForSend();
+    const pending = staging.submittableAttachments;
+    const quotes = staging.quotesForSend();
     const ok = await ports.send(swarmCommand.task, pending, {
       turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-      ...ports.directoryOptions,
+      ...staging.directoryOptions,
       ...(metadata?.replacesLocalMessageId
         ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
         : {}),
@@ -285,8 +305,8 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
         : {}),
     });
     if (ok !== false) {
-      ports.clearSubmittedContext(pending);
-      if (quotes) ports.clearQuotes();
+      staging.clearSubmittedContext(pending);
+      if (quotes) staging.clearQuotes();
       ports.settleNewTaskImageNoticeOwner(sessionId);
     }
     return ok;
@@ -317,11 +337,11 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
       }
       return changed;
     }
-    const pending = ports.submittableAttachments;
-    const quotes = ports.quotesForSend();
+    const pending = staging.submittableAttachments;
+    const quotes = staging.quotesForSend();
     const ok = await ports.send(graphCommand.task, pending, {
       turnOrchestration: { mode: 'graph', source: 'slash_command' },
-      ...ports.directoryOptions,
+      ...staging.directoryOptions,
       ...(metadata?.replacesLocalMessageId
         ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
         : {}),
@@ -337,22 +357,22 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
         : {}),
     });
     if (ok !== false) {
-      ports.clearSubmittedContext(pending);
-      if (quotes) ports.clearQuotes();
+      staging.clearSubmittedContext(pending);
+      if (quotes) staging.clearQuotes();
       ports.settleNewTaskImageNoticeOwner(sessionId);
     }
     return ok;
   }
-  const pending = ports.submittableAttachments;
+  const pending = staging.submittableAttachments;
   const expectedRevisionDraft = revisionSend
     ? ports.revisionDraftRef.current
     : undefined;
-  const quotes = ports.quotesForSend();
+  const quotes = staging.quotesForSend();
   const ok = await ports.send(text, pending, {
     waitForHostAdmission: revisionSend,
     targetSessionId: expectedRevisionDraft?.draftSessionId,
     onSessionResolved: ports.resolveNewTaskSessionHandler(),
-    ...ports.directoryOptions,
+    ...staging.directoryOptions,
     ...(metadata?.replacesLocalMessageId
       ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
       : {}),
@@ -362,8 +382,8 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
       : {}),
   });
   if (ok !== false) {
-    ports.clearSubmittedContext(pending);
-    if (quotes) ports.clearQuotes();
+    staging.clearSubmittedContext(pending);
+    if (quotes) staging.clearQuotes();
     ports.settleNewTaskImageNoticeOwner(sessionId);
     if (sessionId) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
   }

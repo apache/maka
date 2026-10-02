@@ -23,7 +23,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { MessageQueueEntryProjection } from "@maka/core/events";
 import type { SessionSummary } from "@maka/core/session";
 import { Composer, type ChatModelChoice, type ComposerHandle, type TransientUserMessageProjection } from "@maka/ui";
-import { ConversationServicesProvider, SessionLocalMessages } from "../src/renderer/features/conversation";
+import { SessionLocalMessages } from "../src/renderer/features/conversation/testing.js";
+import { ConversationServicesProvider } from "../src/renderer/features/conversation";
 import { stubConversationServices } from "../src/renderer/features/conversation/testing";
 
 interface QueueStoryState {

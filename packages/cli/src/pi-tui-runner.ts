@@ -1222,7 +1222,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   // Refill the editor from a retract result, prepended to any current draft.
-  // Shared by the interrupt path and the alt+↑ path. The text always comes
+  // Shared by the interrupt path and the Shift+← path. The text always comes
   // from `driver.retractQueued()` — an authoritative queue mutation — never
   // from the render mirror, which can
   // lag a step-boundary consumption and would resurrect an already-consumed
@@ -1315,7 +1315,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     // First-run has no connection, so the wizard is the only surface. This is
-    // the single choke point for idle submits (Enter, Alt+Enter, steer
+    // the single choke point for idle submits (Enter, steer
     // fallback): reopen the wizard instead of opening a turn against a
     // connection-less driver. Slash commands above already routed to the
     // command layer (/exit still exits, /help still shows help).
@@ -1403,27 +1403,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     submitMessage(text, 'current_turn');
   };
 
-  // Alt+Enter: during a turn, queue the text to open the next turn; when idle,
-  // it submits like Enter.
-  const handleAltEnter = () => {
-    // Mirror Enter's control-busy guard BEFORE touching the editor: during a
-    // control action (busy without a running turn) submitPrompt would drop the
-    // prompt, so keep the draft in place instead of clearing it into the void.
-    if (busy && !turnRunning) return;
-    // Interrupt convergence window: the turn is being stopped, so nothing may
-    // be queued onto it and no fresh turn may open — keep the draft.
-    if (interruptRequested) return;
+  // Tab: during a turn, queue the draft to open the next turn. Idle Tab never
+  // reaches this — it stays the editor's completion trigger (key handler gate).
+  const queueDraftForNextTurn = () => {
     const text = editor.getExpandedText().trim();
     if (!text) return;
     editor.setText('');
-    if (!turnRunning) {
-      submitPrompt(text);
-      return;
-    }
     submitMessage(text, 'next_turn');
   };
 
-  // Alt+↑: take back every queued message from the Runtime Host, joined and
+  // Shift+←: take back every queued message from the Runtime Host, joined and
   // prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
     void (async () => {
@@ -4798,20 +4787,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
       return { consume: true };
     }
-    // Alt+Enter: queue a followup (during a turn) or submit (when idle). Alt+↑:
-    // take back the queued messages to re-edit. Neither is an editor binding
-    // (newline is shift+enter/ctrl+j; history is plain up), so intercepting
-    // here does not collide with the editor's own keys.
-    if (matchesKey(data, Key.alt('enter')) && !isKeyRepeat(data)) {
-      handleAltEnter();
+    // Tab: queue a followup during a turn — the route terminals deliver
+    // reliably, unlike the Alt chords they claim for themselves (#3538;
+    // Codex's default). The editor owns Tab everywhere else: it
+    // triggers/accepts completion, so a turn-running Tab only queues a
+    // non-empty draft while no completion popup is open. Idle Tab stays
+    // with the editor rather than submitting.
+    if (
+      turnRunning &&
+      !interruptRequested &&
+      !editorPastePending &&
+      editor.getText().trim().length > 0 &&
+      !editor.isShowingAutocomplete() &&
+      matchesKey(data, Key.tab) &&
+      !isKeyRepeat(data)
+    ) {
+      queueDraftForNextTurn();
       return { consume: true };
     }
-    if (matchesKey(data, Key.alt('up')) && !isKeyRepeat(data)) {
+    // Shift+←: retract queued messages (Codex's edit_queued_message
+    // default). Not an editor binding, and an empty retract refill is a
+    // no-op, so consuming unconditionally loses nothing — same rationale
+    // the old Alt+↑ binding used.
+    if (matchesKey(data, Key.shift('left')) && !isKeyRepeat(data)) {
       // Always retract from the authority: the render mirror lags the
-      // queue_update event, so an enqueue followed by Alt+Up in the same
+      // queue_update event, so an enqueue followed by Shift+← in the same
       // tick would see an empty mirror while the runtime holds the message.
-      // Alt+Up is not an editor binding, and an empty retract refill is a
-      // no-op, so consuming unconditionally loses nothing.
       retractQueuedMessages();
       return { consume: true };
     }

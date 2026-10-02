@@ -34,7 +34,8 @@ import {
   type ComposerHandle,
   type TransientUserMessageProjection,
 } from '@maka/ui';
-import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
+import { SessionLocalMessages } from '../../renderer/features/conversation/testing.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
 import { stubConversationServices, useSessionMessageQueue } from '../../renderer/features/conversation/testing.js';
 import type { RestoredDraftContent } from '../../renderer/application/contracts/transient-message-projection.js';
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';

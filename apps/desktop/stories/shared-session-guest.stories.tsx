@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, waitFor } from 'storybook/test';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
@@ -30,6 +30,16 @@ import {
   type SessionCollaborationServices,
 } from '../src/renderer/features/session-collaboration/index.js';
 import { createFakeSessionCollaborationServices } from '../src/renderer/features/session-collaboration/testing.js';
+
+import {
+  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands,
+  type ComposerStagingServices,
+} from '../src/renderer/features/conversation/index.js';
+
+const stagingServices: ComposerStagingServices = {
+  pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
+  previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+};
 
 const SESSION_ID = 'shared-session-story';
 const SHARED_SESSION: SessionSummary = {
@@ -143,7 +153,10 @@ const reconnectServices = services(async () => {
 // ChatComposerRegion, which sends Turn requests while the Session is shared.
 function GuestComposer(props: { sessionId: string }) {
   const composerRef = useRef<ComposerHandle>(null);
+  const stagingCommands = useMemo(createComposerStagingCommands, []);
   return (
+    <ComposerStagingServicesProvider services={stagingServices}>
+    <ComposerStagingProvider commands={stagingCommands} draftKey={props.sessionId}>
     <GuestTurnRequests sessionId={props.sessionId} composerRef={composerRef}>
       {(guest) => (
         <ChatComposerRegion
@@ -168,13 +181,16 @@ function GuestComposer(props: { sessionId: string }) {
           respondToUserForm={() => undefined}
           stop={() => undefined}
           onOpenContextUsage={() => undefined}
-          directoryComposerProps={{}}
+          canStageContext={false}
+          contextPickEnabled={false}
           directoryPickerEnabled={false}
           onSend={() => false}
           onStop={() => undefined}
         />
       )}
     </GuestTurnRequests>
+    </ComposerStagingProvider>
+    </ComposerStagingServicesProvider>
   );
 }
 

@@ -22,6 +22,7 @@ import { useToast, useUiLocale, dequeueInteractionByRequestId } from '@maka/ui';
 import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { recordSessionEventStreamChange } from '../../../application/contracts/session-catalog/session-event-health.js';
 import { createTranscriptCommands } from '../model/transcript-commands.js';
+import { createContextCompactionCommands } from '../model/context-compaction.js';
 import { createConversationWorkspace } from '../model/conversation-workspace.js';
 import { useConversationServices } from '../services.js';
 
@@ -54,6 +55,11 @@ export function useConversationController() {
         });
       },
       ...createTranscriptCommands(workspace, feedback),
+      ...createContextCompactionCommands({
+        compact: (sessionId) => services.sessions.compact(sessionId),
+        isCurrentSession: (sessionId) => workspace.activeIdRef.current === sessionId,
+        feedback,
+      }),
       clearOwnedSessionState(sessionId: string) {
         events.current?.discardDisplayEvents(sessionId);
         workspace.commands.clearOwnedSessionState(sessionId);

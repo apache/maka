@@ -58,13 +58,12 @@ const RELEASES_URL = `${REPOSITORY_URL}/releases`;
  * "is for actions like saving, deleting, or submitting"; `Link` is for
  * "navigating between pages or to external URLs" and its docs say not to use
  * it "for actions that do not navigate". So 检查更新, 重启安装, 复制 and 查看
- * are buttons, and the places that leave the app are links. The row-end link
- * takes the button's inline inset so both faces end on one text edge.
+ * are buttons, and the inline places that leave the app (源码, 发行说明) are
+ * links. A row END is a control column, though: every row-end action there is
+ * a secondary Button, and 报告问题's 打开 is one too, given `href` so it still
+ * renders as an `<a>` that navigates — one face per column, link semantics
+ * kept.
  */
-
-/* The ghost `sm` button pads its label by one spacing step; without the same
-   inset the link's text sits 12px further right than the buttons' text. */
-const linkInRowEnd = { paddingInline: 'var(--spacing-3)' } as const;
 type AboutCopy = ReturnType<typeof getSettingsPreferencesCopy>['about'];
 
 /**
@@ -257,8 +256,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           description={copy.copyHelp}
           end={(
             <Button
-              variant="ghost"
-              size="sm"
+              variant="secondary"
               isLoading={copyingDiagnostics}
               onClick={() => void copyDiagnostics()}
               aria-label={copy.copyDiagnostics}
@@ -270,15 +268,14 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           label={copy.reportIssueLabel}
           description={copy.reportIssueHelp}
           end={(
-            <Link
+            <Button
+              variant="secondary"
               href={ISSUE_TRACKER_URL}
               target="_blank"
               rel="noreferrer noopener"
-              label={copy.reportIssueLabel}
-              style={linkInRowEnd}
-            >
-              {copy.reportIssueOpen}
-            </Link>
+              aria-label={copy.reportIssueLabel}
+              label={copy.reportIssueOpen}
+            />
           )}
         />
         {props.onOpenKeyboardHelp ? (
@@ -287,8 +284,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
             description={copy.keyboardShortcutsHelp}
             end={(
               <Button
-                variant="ghost"
-                size="sm"
+                variant="secondary"
                 onClick={props.onOpenKeyboardHelp}
                 aria-label={copy.keyboardShortcuts}
                 label={copy.keyboardShortcutsOpen}

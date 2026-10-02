@@ -32,6 +32,7 @@
  * the production submit path must fail this test.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
@@ -39,7 +40,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  AstryxLocaleProvider,
   LocaleProvider,
   type ComposerHandle,
   type ComposerSendMetadata,
@@ -248,13 +248,17 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     revisionDraftRef,
     composerRef: composer,
     retractedWorkspaceReferencesRef: { current: {} },
-    hasPendingContext: false,
-    hasStagedQuotes: false,
-    submittableAttachments: undefined,
-    directoryOptions: {},
-    quotesForSend: () => undefined,
-    clearSubmittedContext: () => {},
-    clearQuotes: () => {},
+    captureStaging: () => ({
+      draftKey: 'draft',
+      retainAttachments: () => () => {},
+      hasPendingContext: false,
+      hasStagedQuotes: false,
+      submittableAttachments: undefined,
+      directoryOptions: {},
+      quotesForSend: () => undefined,
+      clearSubmittedContext: () => {},
+      clearQuotes: () => {},
+    }),
     prepareRevisionSend: (text: string) => revisionActions.prepareRevisionSend(text),
     completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
     parseSlashCommand: parseDesktopSlashCommand,
@@ -296,7 +300,6 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   // wrapper only observes the submitted text, then forwards.
   const productionOnSend = createRevisionAwareOnSend({
     ...ports,
-    retainAttachments: () => () => {},
     setNewTaskSendPending: (pending: boolean) => {
       sendPendingFlags.push(pending);
     },
@@ -310,7 +313,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     root.render(
       createElement(LocaleProvider, {
         locale: 'en',
-        children: createElement(AstryxLocaleProvider, {
+        children: createElement(ComposerStagingFixture, {
+          draftKey: SESSION_1,
           children: createElement(ChatComposerRegion, {
             composerRef: composer,
             active: true,
@@ -327,7 +331,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
             respondToUserForm: () => undefined,
             stop: () => undefined,
             onOpenContextUsage: () => undefined,
-            directoryComposerProps: {},
+            canStageContext: true,
+            contextPickEnabled: true,
             directoryPickerEnabled: false,
             onSend: (text: string, metadata?: ComposerSendMetadata) => {
               submittedTexts.push(text);
@@ -406,28 +411,31 @@ for (const text of ['edited message', '/swarm task edited message', '/graph task
   test(`submit preserves replacement and attachment ownership: ${text}`, async () => {
     const world = await mountRevisionWorld();
     try {
-      world.ports.submittableAttachments = [{
+      const staging = { ...world.ports.captureStaging(), submittableAttachments: [{
         stagingKey: 'restored-file', displayName: 'notes.txt', kind: 'doc', size: 4,
         source: { type: 'approval', approvalId: 'restored-approval', name: 'notes.txt' },
-      }];
+      }] as NonNullable<ReturnType<typeof world.ports.captureStaging>['submittableAttachments']> };
       const events: string[] = [];
       let finish!: (ok: boolean) => void;
       const result = new Promise<boolean>((resolve) => { finish = resolve; });
       const onSend = createRevisionAwareOnSend({
         ...world.ports,
-        retainAttachments: (pending) => {
-          assert.equal(pending, world.ports.submittableAttachments);
-          events.push('retain');
-          return () => { events.push('release'); };
-        },
+        captureStaging: () => ({
+          ...staging,
+          clearSubmittedContext: () => { assert.fail('refused send must retain context'); },
+          retainAttachments: (pending) => {
+            assert.equal(pending, staging.submittableAttachments);
+            events.push('retain');
+            return () => { events.push('release'); };
+          },
+        }),
         setNewTaskSendPending: (pending) => { events.push(`pending:${pending}`); },
         send: async (_text, _pending, options) => {
-          assert.equal(_pending, world.ports.submittableAttachments);
+          assert.equal(_pending, staging.submittableAttachments);
           assert.equal(options?.replacesLocalMessageId, 'paused-original');
           events.push('send');
           return result;
         },
-        clearSubmittedContext: () => { assert.fail('refused send must retain context'); },
       });
       const sent = onSend(text, { replacesLocalMessageId: 'paused-original' });
       assert.deepEqual(events, ['retain', 'pending:true', 'send']);
@@ -446,10 +454,10 @@ test('submit releases attachment ownership when sending throws', async () => {
     const events: string[] = [];
     const onSend = createRevisionAwareOnSend({
       ...world.ports,
-      retainAttachments: () => {
+      captureStaging: () => ({ ...world.ports.captureStaging(), retainAttachments: () => {
         events.push('retain');
         return () => { events.push('release'); };
-      },
+      } }),
       setNewTaskSendPending: (pending) => { events.push(`pending:${pending}`); },
       send: async () => { throw new Error('send failed'); },
     });

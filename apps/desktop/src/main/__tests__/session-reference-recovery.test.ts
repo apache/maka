@@ -17,19 +17,15 @@
  * under the License.
  */
 
-import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
+import { stubConversationServices, SessionLocalMessages, composerMessageRecovery, useComposerStaging } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider, type ComposerHandle, type TransientUserMessageProjection } from '@maka/ui';
-import { useComposerAttachments } from '../../renderer/features/conversation/index.js';
 import {
   ComposerMentionsProvider,
   ConversationServicesProvider,
-  SessionLocalMessages,
-  composerMessageRecovery,
   useComposerMentionsContext,
-  useComposerQuotes,
   type ComposerMentions,
 } from '../../renderer/features/conversation/index.js';
 import {
@@ -39,6 +35,7 @@ import {
 import type { DesktopLocalMessageDraft } from '../../shared/session-local-contract.js';
 import { getSessionLocalCopy } from '../../renderer/locales/session-local-copy.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 
 afterEach(cleanupFakeDom);
 
@@ -66,8 +63,8 @@ async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
   const released: string[][] = [];
   let releaseRead!: (value: DesktopLocalMessageDraft) => void;
   let mentions!: ComposerMentions;
-  let quotes!: ReturnType<typeof useComposerQuotes>;
-  let attachments!: ReturnType<typeof useComposerAttachments>;
+  let quotes!: ReturnType<typeof useComposerStaging>;
+  let attachments!: ReturnType<typeof useComposerStaging>;
   const composerRef: { current: Pick<ComposerHandle, 'getText' | 'setText'> } = {
     current: { getText: () => text, setText(value) { text = value; } },
   };
@@ -96,6 +93,7 @@ async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
   const publish = (_sessionId: string, message: TransientUserMessageProjection) => { messages.set(message.id, message); };
   const copy = getSessionLocalCopy('en');
   function Probe() {
+    quotes = attachments = useComposerStaging();
     mentions = useComposerMentionsContext()!;
     return createElement(SessionLocalMessages, {
       sessionId, publish, update: publish, retire: () => {},
@@ -111,20 +109,17 @@ async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
     });
   }
   function ComposerOwner() {
-    quotes = useComposerQuotes({ draftKey: sessionId });
-    attachments = useComposerAttachments({
-      draftKey: sessionId, directoryHostId: 'host',
-      toastApi: { error: (title) => assert.fail(title) },
-      service: {
-        pickFiles: async () => ({ ok: true, files: [{ approvalId: 'new', name: 'new.txt', size: 1 }] }),
-        previewApproval: async () => ({ ok: false, reason: 'unused' }),
-        pickDirectory: async () => ({ ok: true, reference: { hostId: 'host', path: '/new' } }),
+    return createElement(ComposerStagingFixture, {
+      draftKey: sessionId, directoryHostId: 'host', conversationServices: services,
+      services: {
+        pickFiles: async () => ({ ok: true as const, files: [{ approvalId: 'new', name: 'new.txt', size: 1 }] }),
+        previewApproval: async () => ({ ok: false as const, reason: 'unused' }),
+        pickDirectory: async () => ({ ok: true as const, reference: { hostId: 'host', path: '/new' } }),
       },
-    });
-    return createElement(ComposerMentionsProvider, {
-      sessionId, skillCatalogRevision: 0,
-      onAddQuote: quotes.addQuote, pendingQuotes: quotes.pendingQuotes,
-      children: createElement(Probe),
+      children: createElement(ComposerMentionsProvider, {
+        sessionId, skillCatalogRevision: 0,
+        children: createElement(Probe),
+      }),
     });
   }
   const render = () => act(async () => root.render(createElement(LocaleProvider, {

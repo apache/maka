@@ -7,7 +7,6 @@
     "src/renderer/app-shell-chat-actions.ts",
     "src/renderer/app-shell-chrome-actions.tsx",
     "src/renderer/app-shell-command-actions.ts",
-    "src/renderer/app-shell-context-compaction.ts",
     "src/renderer/app-shell-copy.ts",
     "src/renderer/app-shell-detail-panel.tsx",
     "src/renderer/app-shell-e2e-fixture.ts",
@@ -185,7 +184,6 @@
     "src/renderer/use-shell-connections.ts",
     "src/renderer/use-shell-live-turn.ts",
     "src/renderer/use-shell-memory-pill.ts",
-    "src/renderer/use-shell-resume.ts",
     "src/renderer/use-stable-actions.ts",
     "src/renderer/use-system-ui-locale.ts",
     "src/renderer/use-task-submission-readiness.ts",
@@ -224,6 +222,13 @@
       "symbol": "useAppUpdateController",
       "owner": "src/renderer/features/app-update/ui/app-update-provider.tsx",
       "ownerSymbol": "AppUpdateProvider",
+      "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/conversation/controller/use-composer-attachments.ts",
+      "symbol": "useComposerAttachments",
+      "owner": "src/renderer/features/conversation/ui/composer-staging-provider.tsx",
+      "ownerSymbol": "ComposerStagingProvider",
       "count": 1
     },
     {
@@ -306,13 +311,17 @@
   ],
   "featurePrivateModules": [
     "src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx",
+    "src/renderer/features/conversation/controller/use-composer-quotes.ts",
     "src/renderer/features/conversation/controller/use-conversation-observation.ts",
+    "src/renderer/features/conversation/model/composer-staging-binding.ts",
+    "src/renderer/features/conversation/model/context-compaction.ts",
     "src/renderer/features/conversation/model/conversation-workspace.ts",
     "src/renderer/features/conversation/model/session-events.ts",
     "src/renderer/features/conversation/model/session-ui-reads.ts",
     "src/renderer/features/conversation/model/session-ui-state.ts",
     "src/renderer/features/conversation/model/session-workspace-actions.ts",
     "src/renderer/features/conversation/model/transcript-commands.ts",
+    "src/renderer/features/conversation/ui/composer-staging-context.ts",
     "src/renderer/features/conversation/ui/conversation-context.ts"
   ],
   "legacyAppShell": {
@@ -395,20 +404,6 @@
         },
         "importSpecifiers": 8,
         "nonTriviaTokens": 2188
-      },
-      "src/renderer/app-shell-context-compaction.ts": {
-        "importDeclarations": 0,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-copy.js": 1
-        },
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 610
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 1,
@@ -618,15 +613,10 @@
         "nonTriviaTokens": 561
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 53,
+        "importDeclarations": 50,
         "bridgePaths": {
-          "window.maka.attachments": 1,
           "window.maka.attachments.readBytes": 1,
-          "window.maka.diagnostics.copyPreviousMainProcessInterruption": 1,
-          "window.maka.diagnostics.copyReport": 1,
-          "window.maka.diagnostics.takePreviousMainProcessInterruption": 1,
           "window.maka.onboarding.setMilestone": 1,
-          "window.maka.sessions.compact": 1,
           "window.maka.sessions.listTurnLandmarks": 1,
           "window.maka.settings.getClient": 1,
           "window.maka.settings.subscribeClientChanged": 1
@@ -644,12 +634,11 @@
           "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
-          "useComposerAttachments": 1,
-          "useEffect": 3,
+          "useEffect": 2,
           "useLayoutEffect": 1,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
-          "useRef": 8,
+          "useRef": 7,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
           "useShellAppearance": 1,
@@ -672,7 +661,6 @@
           "./agent-graph-panel": 1,
           "./app-shell-chat-actions": 1,
           "./app-shell-chrome-actions": 1,
-          "./app-shell-context-compaction": 1,
           "./app-shell-detail-panel": 1,
           "./app-shell-e2e-fixture": 1,
           "./app-shell-effects": 1,
@@ -695,6 +683,7 @@
           "./features/app-update/index.js": 1,
           "./features/conversation": 1,
           "./features/conversation/index.js": 1,
+          "./features/diagnostics/index.js": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
           "./features/overlays/index.js": 1,
@@ -707,14 +696,12 @@
           "./features/workhub": 1,
           "./follow-up-submit-routing": 1,
           "./locales/shell-copy": 1,
-          "./locales/shell-remaining-copy.js": 1,
           "./model-connection-errors": 1,
           "./nav-selection": 1,
           "./pending-items": 1,
           "./pending-session-view": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
-          "./session-workspace-errors": 1,
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
@@ -727,7 +714,6 @@
           "./use-shell-connections": 1,
           "./use-shell-live-turn": 1,
           "./use-shell-memory-pill": 1,
-          "./use-shell-resume": 1,
           "./use-stable-actions": 1,
           "./use-system-ui-locale": 1,
           "./use-task-submission-readiness": 1,
@@ -742,8 +728,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 80,
-        "nonTriviaTokens": 9769
+        "importSpecifiers": 74,
+        "nonTriviaTokens": 9069
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -945,6 +931,7 @@
           "./application/contracts/new-task-reload-intent.js": 1,
           "./application/contracts/session-inspector/latest-request-usage.js": 1,
           "./composer-mentions.js": 1,
+          "./features/conversation/index.js": 1,
           "@maka/ui": 1,
           "react": 1
         }
@@ -1664,6 +1651,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./application/contracts/session-workspace-errors.js": 1,
           "./locales/shell-copy.js": 1
         }
       },
@@ -1786,8 +1774,7 @@
           "./settings-section": 1,
           "@astryxdesign/core": 1,
           "@maka/core/settings": 1,
-          "@maka/ui": 2,
-          "@maka/ui/icons": 1
+          "@maka/ui": 2
         }
       },
       "src/renderer/settings/bot-chat-settings-page.tsx": {
@@ -2593,13 +2580,13 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../application/contracts/settings-presentation/index.js": 1,
           "../features/connection-settings": 1,
           "./provider-catalog-page": 1,
           "./provider-connection-detail": 1,
           "./provider-connection-status": 1,
           "./provider-display": 1,
           "./provider-oauth-section": 1,
-          "./runtime-host-settings-target.js": 1,
           "./settings-error-copy": 1,
           "./settings-route-focus": 1,
           "./settings-route-header": 1,
@@ -3017,6 +3004,7 @@
           "../features/connection-settings": 1,
           "../features/external-agent-settings/index.js": 1,
           "../features/session-bundle": 1,
+          "../features/session-navigation": 1,
           "../locales/settings-navigation-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "./about-settings-page": 1,
@@ -3105,17 +3093,12 @@
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
-        "dependencyPaths": {
-          "../features/session-navigation/index.js": 1
-        }
+        "dependencyPaths": {}
       },
       "src/renderer/settings/tasks-settings-page.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useMountedRef": 1,
-          "useState": 2,
-          "useToast": 1,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
@@ -3123,17 +3106,12 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../features/storage-usage/index.js": 1,
-          "../locales/settings-shared-copy.js": 1,
           "../locales/settings-tasks-copy.js": 1,
           "../locales/storage-usage-copy.js": 1,
-          "./settings-error-copy": 1,
           "./settings-section": 1,
           "./task-catalog-rows": 1,
-          "@astryxdesign/core": 1,
           "@astryxdesign/core/List": 1,
-          "@astryxdesign/core/TextInput": 1,
           "@maka/core/relative-time": 1,
-          "@maka/runtime-host/profile-kind": 1,
           "@maka/ui": 1,
           "@maka/ui/icons": 1,
           "react": 1
@@ -3529,23 +3507,6 @@
           "react": 1
         }
       },
-      "src/renderer/use-shell-resume.ts": {
-        "bridgePaths": {
-          "window.maka.sessions.resumeLatest": 1
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useState": 2
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-copy.js": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
-      },
       "src/renderer/use-stable-actions.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -3883,7 +3844,6 @@
       "capability": "session-controls-and-turn-actions",
       "targetZone": "features/conversation",
       "legacyPaths": [
-        "src/renderer/app-shell-context-compaction.ts",
         "src/renderer/app-shell-revision-actions.ts",
         "src/renderer/app-shell-stop-action.ts",
         "src/renderer/app-shell-turn-actions.ts"

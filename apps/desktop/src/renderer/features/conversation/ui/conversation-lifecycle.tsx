@@ -19,7 +19,6 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useToast, useUiLocale, reconcileInteractions } from '@maka/ui';
-import type { ContextCompactionOutcome } from '@maka/core/events';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import { selectActiveSessionId, selectSessionById, useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { transcriptErrorMessage } from '../../../application/contracts/transcript-copy.js';
@@ -40,7 +39,6 @@ import { INITIAL_OBSERVATION_AUTHORITY, reconcileObservationAuthority } from '..
 export function ConversationLifecycle(props: {
   refreshSessions(): Promise<unknown>;
   onExecutionBoundaryChanged(sessionId: string): void;
-  onContextCompactionOutcome(sessionId: string, turnId: string, outcome: ContextCompactionOutcome): void;
   showModelSetupToast(description: string, reason?: string, diagnosticTarget?: { sessionId: string }): void;
   onTurnCompleted(sessionId: string): void;
   searchTarget: { sessionId: string; turnId: string; nonce?: number } | null;
@@ -95,6 +93,7 @@ export function ConversationLifecycle(props: {
   const handlers = useStableActions(createAppShellSessionEventHandlers, {
     ...props, uiLocale, toastApi, activeIdRef, displayBatch,
     onInteractionChanged: commands.markInteractionChanged,
+    onContextCompactionOutcome: commands.finishContextCompaction,
     liveTurnBySessionRef: ui.liveTurnBySessionRef,
     refreshMessages: commands.refreshMessages,
     setLiveTurnBySession: ui.setLiveTurnBySession,

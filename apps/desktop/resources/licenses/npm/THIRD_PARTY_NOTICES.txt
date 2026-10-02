@@ -6191,7 +6191,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: axios@1.18.1
+Package: axios@1.20.0
 Declared license: MIT
 Selected license: MIT
 Repository: https://github.com/axios/axios.git
@@ -6891,7 +6891,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: brace-expansion@5.0.9
+Package: brace-expansion@5.0.12
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/juliangruber/brace-expansion.git
@@ -9882,7 +9882,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: fast-uri@3.1.7
+Package: fast-uri@3.1.8
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: git+https://github.com/fastify/fast-uri.git

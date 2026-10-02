@@ -20,7 +20,8 @@
 import type { ReactNode } from 'react';
 import { WorkHubServicesProvider } from '../features/workhub';
 import { createDesktopWorkHubServices } from '../platform/desktop/create-workhub-services';
-import { ConversationServicesProvider, PlanServicesProvider } from '../features/conversation';
+import { ConversationServicesProvider, PlanServicesProvider, ComposerStagingServicesProvider } from '../features/conversation';
+import { createDesktopComposerStagingServices } from '../platform/desktop/create-composer-staging-services.js';
 import { createDesktopConversationPlanServices } from '../platform/desktop/create-conversation-plan-services.js';
 import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 import { AppUpdateServicesProvider } from '../features/app-update/index.js';
@@ -41,6 +42,8 @@ import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
 import { OverlaysServicesProvider } from '../features/overlays/index.js';
 import { createDesktopAppUpdateServices } from '../platform/desktop/create-app-update-services';
+import { DiagnosticsServicesProvider } from '../features/diagnostics/index.js';
+import { createDesktopDiagnosticsServices } from '../platform/desktop/create-diagnostics-services.js';
 import { createDesktopClientPluginServices } from '../platform/desktop/create-client-plugin-services.js';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
@@ -76,9 +79,11 @@ export function createDesktopFeatureServices() {
     sessionCatalog: createSessionCatalogController(),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
+    diagnostics: createDesktopDiagnosticsServices(),
     workHub: createDesktopWorkHubServices(),
     conversation: createDesktopConversationServices(),
     conversationPlan: createDesktopConversationPlanServices(),
+    composerStaging: createDesktopComposerStagingServices(),
     connectionSettings: createDesktopConnectionSettingsServices(),
     externalAgentSettings: createDesktopExternalAgentSettingsServices(),
     goal: createDesktopGoalServices(),
@@ -104,6 +109,7 @@ export function DesktopFeatureServicesProvider(props: {
     <ClientPluginServicesProvider services={props.services.clientPlugins}>
       <ClientPluginRoot>
         <AppUpdateServicesProvider services={props.services.appUpdate}>
+        <DiagnosticsServicesProvider services={props.services.diagnostics}>
       <ConnectionSettingsServicesProvider services={props.services.connectionSettings}>
       <ExternalAgentSettingsServicesProvider services={props.services.externalAgentSettings}>
         <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
@@ -116,6 +122,7 @@ export function DesktopFeatureServicesProvider(props: {
                       <WorkbarServicesProvider services={props.services.workbar}>
                         <ConversationServicesProvider services={props.services.conversation}>
                           <PlanServicesProvider services={props.services.conversationPlan}>
+                          <ComposerStagingServicesProvider services={props.services.composerStaging}>
                             <WorkHubServicesProvider services={props.services.workHub}>
                               <SessionBundleServicesProvider services={props.services.sessionBundle}>
                                 <OverlaysServicesProvider services={props.services.overlays}>
@@ -125,6 +132,7 @@ export function DesktopFeatureServicesProvider(props: {
                                 </OverlaysServicesProvider>
                               </SessionBundleServicesProvider>
                             </WorkHubServicesProvider>
+                          </ComposerStagingServicesProvider>
                           </PlanServicesProvider>
                         </ConversationServicesProvider>
                       </WorkbarServicesProvider>
@@ -137,6 +145,7 @@ export function DesktopFeatureServicesProvider(props: {
         </RuntimeHostManagementServicesProvider>
       </ExternalAgentSettingsServicesProvider>
       </ConnectionSettingsServicesProvider>
+        </DiagnosticsServicesProvider>
         </AppUpdateServicesProvider>
       </ClientPluginRoot>
     </ClientPluginServicesProvider>

@@ -49,9 +49,7 @@ import {
   MakaUriContext,
   AstryxLocaleProvider,
   LocaleProvider,
-  ToastProvider,
   type ToastDiagnosticTarget,
-  type ToastErrorAction,
   type NavSelection,
   type ProjectRowActions,
   SessionListPanel,
@@ -104,7 +102,7 @@ import {
   confirmBypassPermission,
   sessionSettingFailureCopy,
 } from './locales/shell-copy';
-import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
+import * as Diagnostics from './features/diagnostics/index.js';
 import { getDesktopConversationCopy } from './application/contracts/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
@@ -116,7 +114,6 @@ import { readNavigationState, selectNavigation } from './nav-selection';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
-import { createContextCompactionPresentation, presentContextCompactionResult } from './app-shell-context-compaction';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
@@ -141,10 +138,6 @@ import {
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
 import {
-  isSessionWorkspaceUnavailableError,
-  showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors';
-import {
   useAppShellBootstrapSubscriptions,
   useAppShellHostEffects,
   useAppShellPersistenceEffects,
@@ -155,9 +148,9 @@ import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
   desktopSlashCommandPresentation,
   useActiveExecutionBoundary,
-  useComposerAttachments,
   useNewTaskChoice,
   useShellChatModel,
+  useShellResume,
 } from './features/conversation/index.js';
 import {
   type ComposerMentionsSurfaceInput,
@@ -167,7 +160,6 @@ import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
 import { useShellLiveTurn } from './use-shell-live-turn';
-import { useShellResume } from './use-shell-resume';
 
 import { useSystemUiLocale } from './use-system-ui-locale';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
@@ -183,21 +175,7 @@ export function AppShell() {
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
   const uiLocale = resolveUiLocale(uiLocalePreference, systemUiLocale, uiLocaleOverride);
-  const errorToastAction = useMemo<ToastErrorAction>(
-    () => ({
-      label: getShellCopy(uiLocale).errorBoundary.copyReport,
-      failureTitle: getShellCopy(uiLocale).commandActions.copyFailedTitle,
-      failureDescription: getShellCopy(uiLocale).commandActions.clipboardDenied,
-      onClick: (input) => window.maka.diagnostics.copyReport({
-        surface: 'toast',
-        title: input.title,
-        ...(input.description ? { description: input.description } : {}),
-        ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
-        ...(input.diagnosticTarget ? { target: input.diagnosticTarget } : {}),
-      }),
-    }),
-    [uiLocale],
-  );
+  const copy = getShellCopy(uiLocale);
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
@@ -206,7 +184,13 @@ export function AppShell() {
           `useUiLocale()` throws before anything renders. Still above every
           Astryx subtree. */}
       <AstryxLocaleProvider>
-        <ToastProvider errorAction={errorToastAction}>
+        <Diagnostics.DiagnosticReportToastProvider
+          labels={{
+            label: copy.errorBoundary.copyReport,
+            failureTitle: copy.commandActions.copyFailedTitle,
+            failureDescription: copy.commandActions.clipboardDenied,
+          }}
+        >
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
               <RuntimeHostHandoffOverlay />
@@ -234,7 +218,7 @@ export function AppShell() {
               </TaskEntry.TaskEntryRoot>
             </AppUpdateProvider>
           </ErrorBoundary>
-        </ToastProvider>
+        </Diagnostics.DiagnosticReportToastProvider>
       </AstryxLocaleProvider>
     </LocaleProvider>
   );
@@ -271,7 +255,6 @@ function AppShellContent({
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
-  const previousInterruptionShownRef = useRef(false);
   const {
     readMessages,
     refreshMessages,
@@ -301,6 +284,7 @@ function AppShellContent({
     settleInteraction,
     clearMessageLoadError,
     recordSessionChange,
+    compactSession,
     sessionCatalogController,
     commitSession,
     activeCatalogSession,
@@ -347,39 +331,7 @@ function AppShellContent({
     : (taskEntry.selectors.selectedHost?.kind === 'local'
         ? taskEntry.selectors.target?.hostId
         : undefined);
-  const {
-    pendingAttachments,
-    submittableAttachments,
-    hasPendingContext,
-    hasPendingContextNow,
-    directoryOptions,
-    directoryComposerProps,
-    pickAttachments,
-    attachFilePaths,
-    restoreQueuedDraftContext,
-    restoreMessageContext,
-    retainAttachments,
-    restoreQuotes,
-    removeAttachment,
-    clearSubmittedContext,
-    imageNoticeLifecycle,
-    pendingQuotes,
-    hasStagedQuotes,
-    quotesForSend,
-    addQuote,
-    clearQuotes,
-    composerQuoteProps,
-    chatViewQuoteProps,
-  } = useComposerAttachments({
-    draftKey: attachmentDraftKey,
-    directoryHostId,
-    toastApi,
-    service: window.maka.attachments,
-    imageNotice: {
-      supportsVision: () => composerSupportsVision,
-      notify: toastApi.info,
-    },
-  });
+  const composerStaging = useMemo(Conversation.createComposerStagingCommands, []);
 
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
@@ -524,8 +476,6 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
-  const previousInterruptionCopy =
-    getShellRemainingCopy(uiLocale).previousMainProcessInterruption;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
   /**
    * What this draft would start in: the user's choice for it if they made one,
@@ -539,40 +489,11 @@ function AppShellContent({
     newTaskPermissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
     'bypass';
-  useEffect(() => {
-    if (!appearanceHydrated) return;
-    let cancelled = false;
-    void window.maka.diagnostics
-      .takePreviousMainProcessInterruption()
-      .then((interrupted) => {
-        if (cancelled || !interrupted || previousInterruptionShownRef.current) return;
-        previousInterruptionShownRef.current = true;
-        toastApi.toast({
-          variant: 'warning',
-          title: previousInterruptionCopy.title,
-          description: previousInterruptionCopy.description,
-          duration: 10_000,
-          action: {
-            label: previousInterruptionCopy.copyDiagnostics,
-            onClick: () =>
-              window.maka.diagnostics.copyPreviousMainProcessInterruption(),
-          },
-        });
-      })
-      .catch((error) =>
-        console.error('[diagnostics] previous-session notice failed:', error),
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [appearanceHydrated, previousInterruptionCopy, toastApi]);
   // Persisted composer defaults seed the empty-state model, project path, and
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
   const composerRef = queueSurface.composer;
-  const restoreLocalMessageDraft = queueSurface.restoreDraft;
-  queueSurface.draftContextRestorer.current = restoreQueuedDraftContext;
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
@@ -602,11 +523,14 @@ function AppShellContent({
     [commitRevisionDraft],
   );
 
-  const {
-    resumePendingSessionId,
-    resumeParkDescriptionBySession,
-    resumeInterruptedSession,
-  } = useShellResume({ activeId: ownerActiveId, toastApi, shellCopy, uiLocale });
+  const { safeResumeAction, composerResumeAction, noteUserStoppedTurn } = useShellResume({
+    activeId,
+    ownerActiveId,
+    sharedSessionActive,
+    toastApi,
+    shellCopy,
+    uiLocale,
+  });
   const rendererMountedRef = useRef(true);
   const activeSession = activeCatalogSession;
   const sessionSettingIntent = useSessionSettingIntent(activeId);
@@ -946,7 +870,6 @@ function AppShellContent({
     projects,
     projectCapabilities,
     activeProjectCapabilities,
-    localProjects,
     currentProjectId,
     currentProject,
     projectPickerPendingRef,
@@ -1016,7 +939,7 @@ function AppShellContent({
         projectPath: projectInfo?.projectPath,
       });
   const openNewTaskSurface = useCallback(() => {
-    imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
+    composerStaging.resetImageNotice(NEW_TASK_PENDING_KEY);
     const ownerToken = startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
@@ -1027,7 +950,7 @@ function AppShellContent({
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
     return ownerToken;
-  }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
+  }, [composerStaging, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -1066,26 +989,10 @@ function AppShellContent({
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode,
-    onAddQuote: addQuote,
-    pendingQuotes,
   };
 
   const hasModalOpen = overlays.selectors.anyModalOpen || sharedSessionDialog.isOpen;
   const shellObscured = hasModalOpen || settingsOpen;
-  const contextCompactionPresentation = useMemo(
-    () =>
-      createContextCompactionPresentation({
-        toastApi,
-        presentTerminal(sessionId, notice) {
-          if (notice.level === 'error') {
-            toastApi.error(notice.title, notice.description, undefined, { sessionId });
-            return;
-          }
-          toastApi[notice.level](notice.title, notice.description);
-        },
-      }),
-    [toastApi],
-  );
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
   const openSession = useMemo(
     () =>
@@ -1134,15 +1041,10 @@ function AppShellContent({
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
       catalog: sessionCatalogController,
-      projects: localProjects,
-      onRestore: (sessionId) =>
-        void sessionNavigationCommandsRef.current?.unarchiveSession(sessionId),
-      onDelete: (sessionId) =>
-        void sessionNavigationCommandsRef.current?.deleteSession(sessionId),
-      onPurge: (sessionIds) =>
-        sessionNavigationCommandsRef.current!.purgeSessions(sessionIds),
+      projectScopes: taskEntry.selectors.projectScopes,
+      commands: sessionNavigationCommandsRef,
     }),
-    [sessionCatalogController, localProjects],
+    [sessionCatalogController, taskEntry.selectors.projectScopes],
   );
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
@@ -1228,7 +1130,7 @@ function AppShellContent({
     captureSelection,
     composerRef,
     readMessages,
-    hasPendingAttachments: () => hasPendingContext,
+    hasPendingAttachments: () => composerStaging.captureSubmission().hasPendingContext,
     openSessionInChat,
     refreshSessions,
     commitRevisionDraft,
@@ -1239,13 +1141,13 @@ function AppShellContent({
   function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
     const createdSessionId = activeIdRef.current;
     if (!sourceSessionId && createdSessionId)
-      imageNoticeLifecycle.transfer(NEW_TASK_PENDING_KEY, createdSessionId);
+      composerStaging.transferImageNotice(NEW_TASK_PENDING_KEY, createdSessionId);
   }
 
-  const enqueueFollowUp = Conversation.composerFollowUp({
-    pending: submittableAttachments, quotes: pendingQuotes, directoryOptions,
-    enqueueMessage, retainAttachments, clearSubmittedContext, clearQuotes,
-    onError: (sessionId, error) => {
+  const enqueueFollowUp = Conversation.createStagedFollowUp({
+    captureStaging: composerStaging.captureSubmission,
+    enqueueMessage,
+    onError(sessionId, error) {
       if (activeIdRef.current === sessionId) {
         const copy = desktopConversationCopy.actions;
         showSessionError(
@@ -1255,30 +1157,6 @@ function AppShellContent({
       }
     },
   });
-
-  async function compactSession(sessionId: string): Promise<boolean> {
-    try {
-      const result = await window.maka.sessions.compact(sessionId);
-      return presentContextCompactionResult(
-        contextCompactionPresentation,
-        sessionId,
-        result,
-        uiLocale,
-      );
-    } catch (error) {
-      if (activeIdRef.current !== sessionId) return false;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
-      } else {
-        showSessionError(
-          sessionId,
-          shellCopy.compactErrorTitle,
-          localizedShellErrorMessage(error, shellCopy.compactErrorFallback, uiLocale),
-        );
-      }
-      return false;
-    }
-  }
 
   // The composer's submit callback. Built by the shared factory (same one the
   // regression test drives), so there is no local submit logic here that could
@@ -1291,14 +1169,7 @@ function AppShellContent({
       revisionDraftRef,
       composerRef,
       retractedWorkspaceReferencesRef,
-      hasPendingContext,
-      hasStagedQuotes,
-      submittableAttachments,
-      retainAttachments,
-      directoryOptions,
-      quotesForSend,
-      clearSubmittedContext,
-      clearQuotes,
+      captureStaging: composerStaging.captureSubmission,
       prepareRevisionSend,
       send,
       completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
@@ -1326,6 +1197,16 @@ function AppShellContent({
     removeTransientMessage,
     toastApi,
   });
+  // #5904: the composer's Stop and its Resume offer share one send slot, so
+  // the slot must never offer to restart the very Turn the user just stopped
+  // from it — a repeated click would. Every composer stop path (the Stop
+  // button and Escape, both gated on streaming) notes the stop here, and the
+  // resume tracker suppresses exactly the offer that stop produces; the
+  // interrupted-Turn banner remains the deliberate resume path for it.
+  const stopOwningItsTarget = () => {
+    noteUserStoppedTurn(activeIdRef.current);
+    void stop();
+  };
 
   useAppShellNavRefSync({
     navSelection,
@@ -1569,6 +1450,8 @@ function AppShellContent({
     // readers. Composer mentions still wrap the frame so one projection serves
     // every composer, including side-chat panels, without rebuilding the frame
     // on catalog moves.
+    <Conversation.ComposerStagingProvider commands={composerStaging}
+      draftKey={attachmentDraftKey} directoryHostId={directoryHostId} supportsVision={composerSupportsVision}>
     <Conversation.PlanProvider session={ownerActiveId ? activeHostSession : undefined}>
     <SessionSettingsProvider
       bridge={sessionSettingIntent.bridge}
@@ -1622,18 +1505,12 @@ function AppShellContent({
     <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
       render={renderComposerMentionsProvider(composerMentionsSurface)}
     >
-    <Conversation.SessionLocalMessages
+    <Conversation.StagedLocalMessages
       sessionId={activeId}
       queue={activeMessageQueue?.entries}
       session={activeSession}
-      restoreUnsentDraft={restoreLocalMessageDraft}
-      publish={addTransientMessage} update={updateTransientMessage}
-      retire={removeTransientMessage}
-      {...Conversation.composerMessageRecovery({
-        sessionId: activeId, directoryHostId, composerRef,
-        enabled: navSelection.section === 'sessions' && canStageComposerContext && !revisionDraft,
-        hasPendingContext: hasPendingContextNow, pendingQuotes, restoreMessageContext, restoreQuotes,
-      })}
+      directoryHostId={directoryHostId}
+      enabled={navSelection.section === 'sessions' && canStageComposerContext && !revisionDraft}
     />
     <SessionCollaboration.SessionTurnRequestInboxProvider
       catalog={sessionCatalogController}
@@ -1678,10 +1555,10 @@ function AppShellContent({
         sessionListWidth,
       })}
     >
+      <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
         onExecutionBoundaryChanged={reloadActiveExecutionBoundary}
-        onContextCompactionOutcome={(sessionId, turnId, outcome) => contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale)}
         showModelSetupToast={showModelSetupToast}
         onTurnCompleted={(sessionId) => { if (activeIdRef.current === sessionId) setPetCompletionNonce((current) => current + 1); }}
         searchTarget={searchScrollTarget} clearSearchTarget={() => setSearchScrollTarget(null)}
@@ -1878,7 +1755,6 @@ function AppShellContent({
                   respondToUserQuestion={respondToUserQuestion}
                   respondToUserForm={respondToUserForm}
                   stop={stop}
-                  directoryComposerProps={directoryComposerProps}
                   directoryPickerEnabled={Boolean(
                     canStageComposerContext && directoryHostId && !revisionDraft
                   )}
@@ -1887,8 +1763,8 @@ function AppShellContent({
                   // screen (first token, or a slow provider's step-to-step lull).
                   streaming={turnActive}
                   onSend={sendOwningItsTarget}
-                  retainSendContext={() => retainAttachments(submittableAttachments)}
-                  onStop={stop}
+                  onStop={stopOwningItsTarget}
+                  resumeAction={composerResumeAction}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? queueSurface.promoteQueuedEntry : undefined}
@@ -1906,12 +1782,9 @@ function AppShellContent({
                       : undefined
                   }
                   slashCommands={desktopSlashCommands}
-                  pendingAttachments={pendingAttachments}
                   allowAttachmentOnlySend={canStageComposerContext}
-                  onRemoveAttachment={removeAttachment}
-                  {...composerQuoteProps(canStageComposerContext)}
-                  onPickAttachments={contextPickEnabled ? pickAttachments : undefined}
-                  onAttachFilePaths={contextPickEnabled ? attachFilePaths : undefined}
+                  canStageContext={canStageComposerContext}
+                  contextPickEnabled={contextPickEnabled}
                   {...Conversation.executorComposerProps(executor, {activeId, turnActive, taskSubmissionHardBlocked, connectionCount: connections.length, onSetup: () => openSettingsSection('external-agents'), onNewTask: openNewTaskSurface})}
                   activeSession={activeSessionForView}
                   {...{ executorTarget, onExecutorTargetChange }}
@@ -1983,7 +1856,6 @@ function AppShellContent({
               >
                 {sessionsSelected ? (
                   <Conversation.ConversationTranscriptRegion surface={ChatMessageSurface}
-                {...chatViewQuoteProps}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
                 activeSession={activeSessionForView}
                 activeConnectionLabel={activeConnectionLabel}
@@ -2000,11 +1872,7 @@ function AppShellContent({
                 deriveTurnPresentation={deriveTurnPresentation}
                 onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
-                safeResumeAction={!sharedSessionActive && activeId ? {
-                  pending: resumePendingSessionId === activeId,
-                  detail: resumeParkDescriptionBySession[activeId],
-                  onResume: () => { void resumeInterruptedSession(); },
-                } : undefined}
+                safeResumeAction={safeResumeAction}
                 onLineageBadgeClick={(turnId) => { if (activeId) openSessionInChat(activeId, turnId); }}
                 onReadAttachmentBytes={window.maka.attachments.readBytes}
                 onOpenLinkedSession={openSessionInChat}
@@ -2025,7 +1893,7 @@ function AppShellContent({
                   sharedSessionActive
                     ? undefined
                     : (selection) => {
-                        addQuote(selection);
+                        composerStaging.addQuote(selection);
                         composerRef.current?.focus();
                       }
                 }
@@ -2145,5 +2013,6 @@ function AppShellContent({
     </Goals.GoalProvider>
     </SessionSettingsProvider>
     </Conversation.PlanProvider>
+    </Conversation.ComposerStagingProvider>
   );
 }
