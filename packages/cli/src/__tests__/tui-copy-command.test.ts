@@ -100,7 +100,7 @@ describe('serializeTranscriptText', () => {
   });
 
   test('keeps two adjacent user turns in separate blocks', () => {
-    // Queued steering (Alt+Enter) appends a user entry before any assistant
+    // Queued steering (Tab) appends a user entry before any assistant
     // text, so two user entries can sit adjacent. They are distinct messages,
     // not one message with two paragraphs, and must not merge.
     const state = stateWith([
