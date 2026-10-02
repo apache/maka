@@ -132,7 +132,7 @@ export async function publishAcpPromptAttachments(
         kind: 'begin',
         ...identity,
         name: attachment.name,
-        mimeType: resolveAttachmentMimeType(bytes, attachment.mimeType, attachment.name),
+        mimeType,
         totalBytes: bytes.length,
         contentSha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       });
