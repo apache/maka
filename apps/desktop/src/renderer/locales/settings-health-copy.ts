@@ -28,7 +28,7 @@ import type {
   HealthSignalStatus,
 } from '@maka/core/health';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 /**
  * Health signals carry their own severity ladder — error > warning > info > ok
@@ -104,9 +104,7 @@ const layersEn: HealthCenterCopy['layers'] = {
   runtime_probe: { label: 'Runtime probe', description: 'The latest real send, stream, or event-receipt observation.' },
   storage: { label: 'Storage', description: 'Health of workspace files, JSONL, SQLite, and other local storage.' },
 };
-
-const SETTINGS_HEALTH_COPY = {
-  'zh-CN': {
+const settingsHealthCopyZhCn: HealthCenterCopy = {
     loading: '正在加载健康快照', readFailed: '无法读取健康快照', noData: '健康服务未返回数据。', readAgain: '重新读取',
     title: '健康中心', subtitle: '各项能力当前的运行状况检查。',
     badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '按状态筛选健康信号', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 项，当前筛选；再次按下显示全部` : `仅显示${label}健康信号，共 ${count} 项`,
@@ -124,8 +122,8 @@ const SETTINGS_HEALTH_COPY = {
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 运行态` : signal.label),
     signalMessage: (signal) => signalMessagesZh[signal.message],
     signalDetail: (signal) => signalDetailZh(signal.detail),
-  },
-  'zh-TW': {
+  };
+const settingsHealthCopyZhTw: HealthCenterCopy = {
     loading: '正在載入健康快照', readFailed: '無法讀取健康快照', noData: '健康服務未返回資料。', readAgain: '重新讀取',
     title: '健康中心', subtitle: '各項能力目前的執行狀況檢查。',
     badge: '只讀快照', lastRead: '最近一次讀取：', refresh: '重新整理', summaryAria: '按狀態篩選健康訊號', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 項，目前篩選；再次按下顯示全部` : `僅顯示${label}健康訊號，共 ${count} 項`,
@@ -143,8 +141,8 @@ const SETTINGS_HEALTH_COPY = {
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 執行狀態` : signal.label),
     signalMessage: (signal) => signalMessagesZhTw[signal.message],
     signalDetail: (signal) => signalDetailZhTw(signal.detail),
-  },
-  en: {
+  };
+const settingsHealthCopyEn: HealthCenterCopy = {
     loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',
     title: 'Health center', subtitle: 'How each capability is currently doing.',
     badge: 'Read-only snapshot', lastRead: 'Last read: ', refresh: 'Refresh', summaryAria: 'Filter health signals by status', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}; filter selected. Press again to show all signals` : `Show only ${label.toLowerCase()} health signals, ${count}`,
@@ -162,8 +160,9 @@ const SETTINGS_HEALTH_COPY = {
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} runtime` : signal.label),
     signalMessage: (signal) => signalMessagesEn[signal.message],
     signalDetail: (signal) => signalDetailEn(signal.detail),
-  },
-} satisfies UiCatalog<HealthCenterCopy>;
+  };
+
+const SETTINGS_HEALTH_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<HealthCenterCopy>()({ 'zh-CN': settingsHealthCopyZhCn, 'zh-TW': settingsHealthCopyZhTw, en: settingsHealthCopyEn }));
 
 export function getHealthCenterCopy(locale: UiLocale): HealthCenterCopy {
   return SETTINGS_HEALTH_COPY[locale];
@@ -228,30 +227,29 @@ const signalMessagesEn: Record<HealthSignalMessageCode, string> = {
   capability_denied: 'The capability is blocked by a required system permission.',
   capability_degraded: 'The capability runtime probe is degraded.',
 };
-
-const connectionTestErrorMessages = {
-  'zh-CN': {
+const connectiontesterrormessagesZhCn: Record<HealthConnectionTestErrorClass, string> = {
     auth: '鉴权失败',
     timeout: '请求超时',
     provider_unavailable: '模型服务返回错误',
     network: '网络错误',
     unknown: '连接测试失败',
-  },
-  'zh-TW': {
+  };
+const connectiontesterrormessagesZhTw: Record<HealthConnectionTestErrorClass, string> = {
     auth: '驗證失敗',
     timeout: '請求逾時',
     provider_unavailable: '模型服務傳回錯誤',
     network: '網路錯誤',
     unknown: '連線測試失敗',
-  },
-  en: {
+  };
+const connectiontesterrormessagesEn: Record<HealthConnectionTestErrorClass, string> = {
     auth: 'Authentication failed',
     timeout: 'Request timed out',
     provider_unavailable: 'Model service returned an error',
     network: 'Network error',
     unknown: 'Connection test failed',
-  },
-} satisfies UiCatalog<Record<HealthConnectionTestErrorClass, string>>;
+  };
+
+const connectionTestErrorMessages = resolveUiMessageCatalog(defineUiMessageCatalog<Record<HealthConnectionTestErrorClass, string>>()({ 'zh-CN': connectiontesterrormessagesZhCn, 'zh-TW': connectiontesterrormessagesZhTw, en: connectiontesterrormessagesEn }));
 
 function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
@@ -336,12 +334,11 @@ function signalDetailEn(detail: HealthSignalDetail | undefined): string | undefi
       return unhandledDetail(detail);
   }
 }
+const unknownruntimeerrorclassZhCn: string = '未知错误';
+const unknownruntimeerrorclassZhTw: string = '未知錯誤';
+const unknownruntimeerrorclassEn: string = 'Unknown error';
 
-const unknownRuntimeErrorClass = {
-  'zh-CN': '未知错误',
-  'zh-TW': '未知錯誤',
-  en: 'Unknown error',
-} satisfies UiCatalog<string>;
+const unknownRuntimeErrorClass = resolveUiMessageCatalog(defineUiMessageCatalog<string>()({ 'zh-CN': unknownruntimeerrorclassZhCn, 'zh-TW': unknownruntimeerrorclassZhTw, en: unknownruntimeerrorclassEn }));
 
 // Runtime probes carry the turn's failure class (rate_limit, context_overflow,
 // …), a wider vocabulary than connection tests; unmapped classes stay visible.

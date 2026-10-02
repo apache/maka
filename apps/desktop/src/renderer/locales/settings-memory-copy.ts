@@ -20,7 +20,7 @@
 import type { LocalMemoryOperationCode, LocalMemoryState } from '@maka/core/local-memory';
 import type { MemoryMutationRejectionReason } from '@maka/runtime-host/protocol';
 
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type MemoryTextKey =
   | 'localFile' | 'localFileHelp' | 'enableLocalFile' | 'agentReadable' | 'agentReadableHelp' | 'enableAgentRead'
@@ -93,9 +93,7 @@ const zhTwText = {
 const enText = {
   localFile: 'Local MEMORY.md', localFileHelp: 'A transparent Markdown file stored in the current local workspace. Content is never extracted from chats automatically.', enableLocalFile: 'Enable local MEMORY.md', agentReadable: 'Available to model context', agentReadableHelp: 'Off by default. When enabled, local memory is given to the model along with your message; incognito mode still withholds it.', enableAgentRead: 'Allow model context to read local memory', waitingFile: 'Waiting to create MEMORY.md', waitingBackup: 'Waiting to create a previous-version backup', dirty: 'Unsaved changes', savedDraft: 'Draft saved', backupCandidates: 'Backup candidates', backupCandidatesAria: 'Local memory backup candidates', opening: 'Opening…', open: 'Open', restoring: 'Restoring…', restore: 'Restore', copying: 'Copying…', copyReference: 'Copy reference', backupHelp: 'Previous-version actions use the latest candidate. Only metadata is shown here, never backup contents.', savedAt: 'Saved ', previewPaused: 'Draft entry preview paused', filterAria: 'Filter local memory', filterPlaceholder: 'Filter title, content, ID, or tags', clear: 'Clear', filterEmpty: 'No matching memory entries', filterEmptyHelp: 'Filtering does not modify MEMORY.md. Clear the filter to show all entries.', activeMemories: 'Active memories', archivedMemories: 'Archived memories', waitingEntry: 'Ready to add a memory entry', waitingEntryHelp: 'Confirm a memory in chat, or use "Add memory" above.', manualAddAria: 'Add local memory manually', manualAdd: 'Add memory manually', manualAddHelp: 'Written to the local MEMORY.md immediately.', title: 'Memory title', titlePlaceholder: 'Title', tags: 'Memory tags', tagsPlaceholder: 'Tags (comma-separated, optional)', content: 'Memory content', contentPlaceholder: 'Content', addDraft: 'Add memory', sensitiveDraft: 'Draft may contain sensitive fields', sensitiveDraftHelp: 'Suspected tokens, API keys, and passwords are redacted before MEMORY.md is written.', fileContent: 'MEMORY.md content', fileActionsAria: 'MEMORY.md file actions', saving: 'Saving…', save: 'Save', saved: 'Saved', openFile: 'Open MEMORY.md', openFolder: 'Open containing folder', loading: 'Loading…', reload: 'Reload', openPrevious: 'Open previous version', copyPath: 'Copy path', copyPrevious: 'Copy previous-version reference', resetting: 'Resetting…', resetBackup: 'Reset and back up', restorePrevious: 'Restore previous version', archiveDraftNotice: 'Archive and restore actions update only the draft until you save MEMORY.md.', noMatchEntry: 'No matching entries.', noEntry: 'No entries yet.', created: 'Created ', updated: 'Updated ', archivedNoPrompt: 'Archived; not given to the model', activePrompt: 'Active entry; given to the model when you send', locateDraft: 'Locate in draft', promptPreview: 'Model context preview', willInject: 'Included when sending', willNotInject: 'Not currently included', copyContext: 'Copy context', promptPreviewHelp: 'What will be given to the model when you send. Archived entries are excluded and suspected secrets are redacted.', safeModePreview: 'MEMORY.md is too large, so no model-context preview is generated.', emptyPromptPreview: 'No active memories will be given to the model.', loadFailed: 'Failed to load local memory', reloaded: 'MEMORY.md reloaded', reloadDiscarded: 'Unsaved draft changes were discarded.', toggleFailed: 'Failed to update local memory', agentReadFailed: 'Failed to update model read access', saveBlocked: 'Save blocked', safeMode: 'MEMORY.md is too large and entered safe mode.', savedRedacted: 'Saved with sensitive fields redacted', savedFile: 'MEMORY.md saved', saveFailed: 'Failed to save MEMORY.md', resetDone: 'MEMORY.md reset', resetDoneDetail: 'The previous version was saved as a backup.', resetFailed: 'Failed to reset MEMORY.md', noBackup: 'No backup available to restore', noBackupDetail: 'A previous-version backup is created after you save or reset MEMORY.md.', restoreLatestTitle: 'Restore the previous MEMORY.md version?', restoreCandidateTitle: 'Restore this MEMORY.md backup?', confirmRestore: 'Restore', cancel: 'Cancel', restoredLatest: 'Previous MEMORY.md version restored', restoredCandidate: 'MEMORY.md backup candidate restored', restoredDetail: 'The file from before the restore was saved as restore.bak.', restoreFailed: 'Restore failed', restoreLatestFailed: 'Failed to restore previous version', restoreCandidateFailed: 'Failed to restore backup', openFailed: 'Open failed', openPreviousFailed: 'Failed to open previous version', pathCopied: 'Path copied', copyFailed: 'Copy failed', copyFailedDetail: 'The clipboard is unavailable or access was denied by the system.', backupReferenceCopied: 'Previous-version reference copied', entryReferenceCopied: 'Memory reference copied', locateFailed: 'Could not locate memory', locateFailedDetail: 'This memory is not in the current draft. Save or reload, then try again.', emptyTitle: 'Title is required', emptyTitleDetail: 'Give this memory a short title.', emptyContent: 'Content is required', emptyContentDetail: 'Enter the preference or fact to retain.', draftOversize: 'Draft is too large', oversizeDetail: 'MEMORY.md exceeds the safety limit. Remove older content first.', addedDraft: 'Memory added', addedDraftDetail: 'Written to MEMORY.md.', updateFailed: 'Could not update memory', invalidIdDetail: 'This memory has no recognizable ID, so the update was stopped.', archivedDraft: 'Memory archived in draft', restoredDraft: 'Memory restored in draft', updateBlocked: 'Update blocked', archived: 'Memory archived', restored: 'Memory restored', archiveFailed: 'Failed to archive memory', entryRestoreFailed: 'Failed to restore memory', promptCopied: 'Model context preview copied', promptCopiedDetail: 'Uses the same prompt-preview and redaction path.', restoreDraftAction: 'Restore to draft', archiveDraftAction: 'Archive in draft', restoreAction: 'Restore', archiveAction: 'Archive',
 } satisfies Record<MemoryTextKey, string>;
-
-const SETTINGS_MEMORY_COPY = {
-  'zh-CN': {
+const settingsMemoryCopyZhCn: MemorySettingsCopy = {
     intlLocale: 'zh-CN',
     text: zhText,
     countActive: (count, draft) => draft ? `草稿 ${count} 条生效` : `${count} 条生效`,
@@ -137,8 +135,8 @@ const SETTINGS_MEMORY_COPY = {
       upload_conflict: '另一个记忆上传正在进行，请重试。',
     },
     origins: { manual: '手动记录', imported: '导入记录', extracted: '确认提取', unknown: '手写条目' }, entryStatuses: { draft: '草稿', review_required: '待确认', active: '生效', archived: '已归档', rejected: '已拒绝', unknown: '未识别' }, backupKinds: { reset: '重置前备份', restore: '恢复前备份', save: '保存前备份' }, memoryStatuses: { ok: '本地文件已就绪', disabled: '已关闭', safe_mode: '安全模式', incognito_blocked: '隐身禁用', error: '读取失败' }, promptBlocked: { disabled: '本地记忆已关闭。', incognito: '隐身模式下不会提供本地记忆。', safeMode: 'MEMORY.md 过大，当前不会提供。', agentRead: '模型上下文读取未开启。' }, backupOversize: '备份过大，无法预览条目', previewOversize: '草稿过大，条目预览已暂停；保存前请先删减 MEMORY.md 内容。', previewTruncationMarker: '[本地记忆已按长度截断]',
-  },
-  'zh-TW': {
+  };
+const settingsMemoryCopyZhTw: MemorySettingsCopy = {
     intlLocale: 'zh-TW',
     text: zhTwText,
     countActive: (count, draft) => draft ? `草稿 ${count} 則生效` : `${count} 則生效`,
@@ -180,8 +178,8 @@ const SETTINGS_MEMORY_COPY = {
       upload_conflict: '另一個記憶上傳正在進行，請重試。',
     },
     origins: { manual: '手動記錄', imported: '匯入記錄', extracted: '確認提取', unknown: '手寫條目' }, entryStatuses: { draft: '草稿', review_required: '待確認', active: '生效', archived: '已歸檔', rejected: '已拒絕', unknown: '未識別' }, backupKinds: { reset: '重置前備份', restore: '恢復前備份', save: '儲存前備份' }, memoryStatuses: { ok: '本地檔案已就緒', disabled: '已關閉', safe_mode: '安全模式', incognito_blocked: '隱身停用', error: '讀取失敗' }, promptBlocked: { disabled: '本地記憶已關閉。', incognito: '隱身模式下不會提供本地記憶。', safeMode: 'MEMORY.md 過大，目前不會提供。', agentRead: '模型上下文讀取未開啟。' }, backupOversize: '備份過大，無法預覽條目', previewOversize: '草稿過大，條目預覽已暫停；儲存前請先刪減 MEMORY.md 內容。', previewTruncationMarker: '[本地記憶已按長度截斷]',
-  },
-  en: {
+  };
+const settingsMemoryCopyEn: MemorySettingsCopy = {
     intlLocale: 'en-US',
     text: enText,
     countActive: (count, draft) => draft
@@ -227,8 +225,9 @@ const SETTINGS_MEMORY_COPY = {
       upload_conflict: 'Another memory upload is in progress. Try again.',
     },
     origins: { manual: 'Manual entry', imported: 'Imported entry', extracted: 'Confirmed extraction', unknown: 'Handwritten entry' }, entryStatuses: { draft: 'Draft', review_required: 'Needs review', active: 'Active', archived: 'Archived', rejected: 'Rejected', unknown: 'Unrecognized' }, backupKinds: { reset: 'Before reset', restore: 'Before restore', save: 'Before save' }, memoryStatuses: { ok: 'Local file ready', disabled: 'Off', safe_mode: 'Safe mode', incognito_blocked: 'Disabled in incognito', error: 'Read failed' }, promptBlocked: { disabled: 'Local memory is disabled.', incognito: 'Local memory is never added in incognito mode.', safeMode: 'MEMORY.md is too large and will not be added.', agentRead: 'Model context access is disabled.' }, backupOversize: 'Backup is too large to preview entries', previewOversize: 'The draft is too large, so entry preview is paused. Reduce MEMORY.md before saving.', previewTruncationMarker: '[Local memory truncated to the length limit]',
-  },
-} satisfies UiCatalog<MemorySettingsCopy>;
+  };
+
+const SETTINGS_MEMORY_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<MemorySettingsCopy>()({ 'zh-CN': settingsMemoryCopyZhCn, 'zh-TW': settingsMemoryCopyZhTw, en: settingsMemoryCopyEn }));
 
 export function getMemorySettingsCopy(locale: UiLocale): MemorySettingsCopy { return SETTINGS_MEMORY_COPY[locale]; }
 

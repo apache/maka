@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { StorageUsageKind } from '@maka/runtime-host/protocol';
 
 export type StorageUsageCopy = {
@@ -43,7 +43,7 @@ export type StorageUsageCopy = {
   taskSizeNote: string;
 };
 
-const STORAGE_USAGE_COPY = {
+const STORAGE_USAGE_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<StorageUsageCopy>()({
   'zh-CN': {
     title: '存储占用',
     help: '当前运行时主机的数据占用。此处只读，不会删除或压缩任何内容。',
@@ -140,7 +140,7 @@ const STORAGE_USAGE_COPY = {
     taskSizeNote:
       'Task sizes are estimates. Offloaded context is counted for every task that references it, so shared content is counted more than once. Usage history is kept after a task is deleted.',
   },
-} satisfies UiCatalog<StorageUsageCopy>;
+}));
 
 export function getStorageUsageCopy(locale: UiLocale): StorageUsageCopy {
   return STORAGE_USAGE_COPY[locale];

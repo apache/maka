@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface TaskReadinessCopy {
   readonly runtime: {
@@ -32,7 +32,7 @@ export interface TaskReadinessCopy {
   };
 }
 
-const TASK_READINESS_COPY = {
+const TASK_READINESS_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<TaskReadinessCopy>()({
   'zh-CN': {
     runtime: {
       title: 'Maka 运行服务暂时不可用。',
@@ -69,7 +69,7 @@ const TASK_READINESS_COPY = {
       actionLabel: { workspace_picker: 'Choose workspace', retry: 'Check again' },
     },
   },
-} satisfies UiCatalog<TaskReadinessCopy>;
+}));
 
 export function getTaskReadinessCopy(locale: UiLocale): TaskReadinessCopy {
   return TASK_READINESS_COPY[locale];

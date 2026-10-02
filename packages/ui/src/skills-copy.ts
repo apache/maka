@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { ManagedSkillCategory, SkillEntry } from './module-panel-types.js';
 
 type ManagedUpdateStatus = NonNullable<SkillEntry['managedUpdateStatus']>;
@@ -122,9 +122,7 @@ export interface SkillsCopy {
     pathLabel: string;
   };
 }
-
-const SKILLS_COPY = {
-  'zh-CN': {
+const skillsCopyZhCn: SkillsCopy = {
     categories: { '内容创作': '内容创作', '数据与AI': '数据与 AI', '设计与UI': '设计与 UI', 'DevOps与部署': 'DevOps 与部署', '文档与写作': '文档与写作', '效率工具': '效率工具', '研究与分析': '研究与分析' },
     discover: { builtinFallback: '应用自带 Skill。', sourceFallback: '本地来源库 Skill。' },
     install: { action: (name) => `安装 ${name}`, short: '安装' },
@@ -137,8 +135,8 @@ const SKILLS_COPY = {
     page: { title: '技能', actionsAria: '技能操作', installed: '已安装', discover: '发现', add: '添加', importLocal: '导入本地 Skill', searchMatches: (count) => `${count} 个匹配`, search: '搜索技能', clearSearch: '清空搜索', locations: '技能位置…', refreshing: '刷新中…', refresh: '刷新' },
     locations: { labels: { 'project:maka': '项目 · Maka', 'project:agents': '项目 · Agents', 'workspace:legacy': '工作区兼容目录', 'user:maka': '用户 · Maka', 'user:agents': '用户 · Agents' }, count: (count) => `${count} 个 Skill`, missing: '创建并打开', blocked: '路径已被阻止', readFailed: '无法读取' },
     detail: { enabled: '启用', idLabel: '标识', scopeLabel: '范围', toolsLabel: '工具', pathLabel: '路径' },
-  },
-  'zh-TW': {
+  };
+const skillsCopyZhTw: SkillsCopy = {
     categories: { '内容创作': '內容創作', '数据与AI': '資料與 AI', '设计与UI': '設計與 UI', 'DevOps与部署': 'DevOps 與部署', '文档与写作': '文件與寫作', '效率工具': '效率工具', '研究与分析': '研究與分析' },
     discover: { builtinFallback: '應用自帶 Skill。', sourceFallback: '本地來源庫 Skill。' },
     install: { action: (name) => `安裝 ${name}`, short: '安裝' },
@@ -151,8 +149,8 @@ const SKILLS_COPY = {
     page: { title: '技能', actionsAria: '技能操作', installed: '已安裝', discover: '探索', add: '新增', importLocal: '匯入本地 Skill', searchMatches: (count) => `${count} 個符合`, search: '搜尋技能', clearSearch: '清空搜尋', locations: '技能位置…', refreshing: '重新整理中…', refresh: '重新整理' },
     locations: { labels: { 'project:maka': '專案 · Maka', 'project:agents': '專案 · Agents', 'workspace:legacy': '工作區相容目錄', 'user:maka': '使用者 · Maka', 'user:agents': '使用者 · Agents' }, count: (count) => `${count} 個 Skill`, missing: '建立並開啟', blocked: '路徑已被阻止', readFailed: '無法讀取' },
     detail: { enabled: '啟用', idLabel: '標識', scopeLabel: '範圍', toolsLabel: '工具', pathLabel: '路徑' },
-  },
-  en: {
+  };
+const skillsCopyEn: SkillsCopy = {
     categories: { '内容创作': 'Content creation', '数据与AI': 'Data & AI', '设计与UI': 'Design & UI', 'DevOps与部署': 'DevOps & deployment', '文档与写作': 'Documents & writing', '效率工具': 'Productivity', '研究与分析': 'Research & analysis' },
     discover: { builtinFallback: 'Skill included with the app.', sourceFallback: 'Local source-library Skill.' },
     install: { action: (name) => `Install ${name}`, short: 'Install' },
@@ -165,8 +163,9 @@ const SKILLS_COPY = {
     page: { title: 'Skills', actionsAria: 'Skill actions', installed: 'Installed', discover: 'Discover', add: 'Add', importLocal: 'Import local Skill', searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`, search: 'Search skills', clearSearch: 'Clear search', locations: 'Skill locations…', refreshing: 'Refreshing…', refresh: 'Refresh' },
     locations: { labels: { 'project:maka': 'Project · Maka', 'project:agents': 'Project · Agents', 'workspace:legacy': 'Workspace compatibility folder', 'user:maka': 'User · Maka', 'user:agents': 'User · Agents' }, count: (count) => count === 1 ? '1 Skill' : `${count} Skills`, missing: 'Create and open', blocked: 'Path blocked', readFailed: 'Could not read' },
     detail: { enabled: 'Enabled', idLabel: 'ID', scopeLabel: 'Scope', toolsLabel: 'Tools', pathLabel: 'Path' },
-  },
-} satisfies UiCatalog<SkillsCopy>;
+  };
+
+const SKILLS_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<SkillsCopy>()({ 'zh-CN': skillsCopyZhCn, 'zh-TW': skillsCopyZhTw, en: skillsCopyEn }));
 
 export function getSkillsCopy(locale: UiLocale): SkillsCopy {
   return SKILLS_COPY[locale];

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type McpCopy = {
   errors: {
@@ -62,9 +62,7 @@ export type McpCopy = {
     protocolHelp: string; sseProtocolHelp: string; advanced: string; stdioProtocolHelp: string;
   };
 };
-
-const MCP_COPY = {
-  'zh-CN': {
+const mcpCopyZhCn: McpCopy = {
     errors: {
       load: '载入 MCP 失败', save: '保存 MCP 失败',
       invalidConfigFile: (path) => `${path} 中的 JSON 无效，文件未被修改。请关闭应用，备份并修复此文件后重试。`,
@@ -125,8 +123,8 @@ const MCP_COPY = {
       protocolHelp: '自动协商会按服务支持的版本连接；遇到兼容性问题时再固定版本。', sseProtocolHelp: '旧版 SSE 使用传统协议。', advanced: '高级设置',
       stdioProtocolHelp: '自动协商或仅使用新版协议时，会额外启动一次服务器进行探测。',
     },
-  },
-  'zh-TW': {
+  };
+const mcpCopyZhTw: McpCopy = {
     errors: {
       load: '載入 MCP 失敗', save: '儲存 MCP 失敗',
       invalidConfigFile: (path) => `${path} 中的 JSON 無效，檔案未被修改。請關閉應用程式，備份並修復此檔案後重試。`,
@@ -187,8 +185,8 @@ const MCP_COPY = {
       protocolHelp: '自動協商會依服務支援的版本連線；遇到相容性問題時再固定版本。', sseProtocolHelp: '舊版 SSE 使用傳統協議。', advanced: '進階設定',
       stdioProtocolHelp: '自動協商或僅使用新版協議時，會額外啟動一次伺服器進行探測。',
     },
-  },
-  en: {
+  };
+const mcpCopyEn: McpCopy = {
     errors: {
       load: 'Failed to load MCP', save: 'Failed to save MCP',
       invalidConfigFile: (path) => `Invalid JSON in ${path}. The file is unchanged. Close the app, back up and repair this file before retrying.`,
@@ -249,8 +247,9 @@ const MCP_COPY = {
       protocolHelp: 'Auto-negotiation uses a version the service supports; pin a version only for compatibility.', sseProtocolHelp: 'Legacy SSE uses the legacy protocol.', advanced: 'Advanced settings',
       stdioProtocolHelp: 'Auto-negotiation or modern-only mode starts the server one extra time to check protocol support.',
     },
-  },
-} satisfies UiCatalog<McpCopy>;
+  };
+
+const MCP_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<McpCopy>()({ 'zh-CN': mcpCopyZhCn, 'zh-TW': mcpCopyZhTw, en: mcpCopyEn }));
 
 export function getMcpCopy(locale: UiLocale): McpCopy {
   return MCP_COPY[locale];

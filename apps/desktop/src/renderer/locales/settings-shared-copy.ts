@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type SettingsSharedCopy = {
   modalLabel: string;
@@ -67,7 +67,7 @@ export type SettingsSharedCopy = {
   };
 };
 
-const SETTINGS_SHARED_COPY_BY_LOCALE = {
+const SETTINGS_SHARED_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<SettingsSharedCopy>()({
   'zh-CN': {
     modalLabel: '设置',
     contentLabel: '设置内容',
@@ -188,7 +188,7 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       reviewScheduleHelp: 'When the daily review runs, and which model writes it.',
     },
   },
-} satisfies UiCatalog<SettingsSharedCopy>;
+}));
 
 export function getSettingsSharedCopy(locale: UiLocale): SettingsSharedCopy {
   return SETTINGS_SHARED_COPY_BY_LOCALE[locale];

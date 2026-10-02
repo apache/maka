@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type BrowserCopy = {
   unsupportedScheme: string;
@@ -57,9 +57,7 @@ export type BrowserCopy = {
   title: string;
   description: string;
 };
-
-const BROWSER_COPY = {
-  'zh-CN': {
+const browserCopyZhCn: BrowserCopy = {
     unsupportedScheme: '嵌入式浏览器只支持打开 HTTP/HTTPS 网页地址。',
     invalidUrl: '这个地址无法识别，请检查网址后重试。',
     openFailed: '无法打开地址',
@@ -96,8 +94,8 @@ const BROWSER_COPY = {
     restorePreview: '还原分栏',
     title: '嵌入式浏览器',
     description: '输入网址打开页面，或让助手帮你导航并操作。',
-  },
-  'zh-TW': {
+  };
+const browserCopyZhTw: BrowserCopy = {
     unsupportedScheme: '嵌入式瀏覽器只支援開啟 HTTP/HTTPS 網頁地址。',
     invalidUrl: '這個地址無法識別，請檢查網址後重試。',
     openFailed: '無法開啟地址',
@@ -134,8 +132,8 @@ const BROWSER_COPY = {
     restorePreview: '還原分欄',
     title: '嵌入式瀏覽器',
     description: '輸入網址開啟頁面，或讓助手幫你導航並操作。',
-  },
-  en: {
+  };
+const browserCopyEn: BrowserCopy = {
     unsupportedScheme: 'The embedded browser only supports HTTP and HTTPS addresses.',
     invalidUrl: 'This address is not valid. Check it and try again.',
     openFailed: 'Could not open address',
@@ -172,8 +170,9 @@ const BROWSER_COPY = {
     restorePreview: 'Restore split view',
     title: 'Embedded browser',
     description: 'Enter an address, or ask the assistant to navigate and interact with a page.',
-  },
-} satisfies UiCatalog<BrowserCopy>;
+  };
+
+const BROWSER_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<BrowserCopy>()({ 'zh-CN': browserCopyZhCn, 'zh-TW': browserCopyZhTw, en: browserCopyEn }));
 
 export function getBrowserCopy(locale: UiLocale): BrowserCopy {
   return BROWSER_COPY[locale];

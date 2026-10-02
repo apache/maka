@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface ResumeParkToastCopy {
   title: string;
@@ -69,7 +69,7 @@ interface ResumeParkCopy {
   reasons: ResumeParkReasonCopy;
 }
 
-const RESUME_PARK_COPY = {
+const RESUME_PARK_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ResumeParkCopy>()({
   'zh-CN': {
     title: '暂时无法继续这一轮',
     fallbackDescription: '当前任务不满足继续的条件。',
@@ -187,7 +187,7 @@ const RESUME_PARK_COPY = {
       resume_feature_disabled: 'Resuming interrupted tasks is not enabled.',
     },
   },
-} satisfies UiCatalog<ResumeParkCopy>;
+}));
 
 export function resumeParkToastCopy(reasons: readonly string[], locale: UiLocale): ResumeParkToastCopy {
   const copy = RESUME_PARK_COPY[locale];

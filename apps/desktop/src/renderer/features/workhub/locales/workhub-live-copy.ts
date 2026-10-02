@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import type { UiCatalog } from '@maka/core/ui-locale';
-export const workHubLiveCopy = {
+import { defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+export const workHubLiveCopy = resolveUiMessageCatalog(defineUiMessageCatalog<Record<string, string>>()({
   en: { filterConversation: 'Filter conversation by Work', clearConversationFilter: 'Show all conversations', noWorkConversation: 'No conversations for this Work in this part of history.', work: 'Work', attachmentLimit: 'Attachment count or size exceeds the limit', attachmentUploadFailed: 'Attachment upload did not return a reference', reviewAttachments: 'Please review the attachments.', sendFailed: 'Could not send',
     retrySteering: 'Retry the original text and attachments with Cmd/Ctrl+Enter to resolve the previous submission first.',
     retryFollowup: 'Retry the original text and attachments with Enter to resolve the previous submission first.',
@@ -91,4 +91,4 @@ export const workHubLiveCopy = {
     restore: '收回工作台',
     openWork: '開啟任務', openResult: '開啟結果',
   },
-} satisfies UiCatalog<Record<string, string>>;
+}));

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type UsageSettingsCopy = {
   staleTitle: string; staleBody: string; loadFailed: string; capacityBody: string; retainedBody: string;
@@ -38,9 +38,7 @@ export type UsageSettingsCopy = {
     toolEmptyTitle: string; toolEmptyBody: string; pricingEmptyBody: string;
   };
 };
-
-const SETTINGS_USAGE_COPY = {
-  'zh-CN': {
+const settingsUsageCopyZhCn: UsageSettingsCopy = {
     staleTitle: "统计已更新", staleBody: "当前显示的是之前的完整结果。请刷新后继续浏览。", loadFailed: "无法加载使用统计", capacityBody: "统计结果超出显示容量，请求未返回任何部分数据。", retainedBody: "当前仍显示上次成功加载的结果，新查询尚未生效。",
     saveFailed: '保存使用统计设置失败', toolbarAria: '使用统计范围与刷新', rangeAria: '使用统计时间范围', ranges: ['24h', '7天', '30天', '全部'],
     refreshingAria: '正在刷新使用统计', refreshAria: '刷新使用统计', summaryAria: '使用统计汇总指标', totalRequests: '模型调用', totalCost: '总费用', costHelp: '以模型供应商最终结算为准',
@@ -64,8 +62,8 @@ const SETTINGS_USAGE_COPY = {
       toolEmptyTitle: '暂无工具调用', toolEmptyBody: '智能体调用工具后，这里会按工具聚合调用次数、成功、错误与平均耗时。',
       pricingEmptyBody: '未配置定价覆盖时，费用按内置模型定价表结算；在此可为特定模型登记自定义价格。',
     },
-  },
-  'zh-TW': {
+  };
+const settingsUsageCopyZhTw: UsageSettingsCopy = {
     staleTitle: "統計已更新", staleBody: "目前顯示先前的完整結果。請重新整理後繼續瀏覽。", loadFailed: "無法載入使用統計", capacityBody: "統計結果超出顯示容量，請求未傳回任何部分資料。", retainedBody: "目前仍顯示上次成功載入的結果，新查詢尚未生效。",
     tokenTooltip: { total: '總計', input: '輸入', output: '輸出', cached: '快取', new: '新', hit: '命中', created: '建立' },
     saveFailed: '儲存使用統計設定失敗', toolbarAria: '使用統計範圍與重新整理', rangeAria: '使用統計時間範圍', ranges: ['24h', '7天', '30天', '全部'],
@@ -89,8 +87,8 @@ const SETTINGS_USAGE_COPY = {
       toolEmptyTitle: '暫無工具呼叫', toolEmptyBody: '智慧體呼叫工具後，這裡會按工具聚合呼叫次數、成功、錯誤與平均耗時。',
       pricingEmptyBody: '未設定定價覆蓋時，費用按內建模型定價表結算；在此可為特定模型登記自訂價格。',
     },
-  },
-  en: {
+  };
+const settingsUsageCopyEn: UsageSettingsCopy = {
     staleTitle: 'Usage has changed', staleBody: 'The previous complete result is still shown. Refresh to continue browsing.', loadFailed: 'Unable to load Usage', capacityBody: 'This complete result exceeds the display capacity. No partial result was loaded.', retainedBody: 'The last successfully loaded result is still shown; the new query has not taken effect.',
     saveFailed: 'Failed to save usage settings', toolbarAria: 'Usage range and refresh', rangeAria: 'Usage time range', ranges: ['24h', '7 days', '30 days', 'All'],
     refreshingAria: 'Refreshing usage', refreshAria: 'Refresh usage', summaryAria: 'Usage summary metrics', totalRequests: 'Model calls', totalCost: 'Total cost', costHelp: 'Final billing is determined by the model provider',
@@ -114,8 +112,9 @@ const SETTINGS_USAGE_COPY = {
       toolEmptyTitle: 'No tool calls', toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, and average duration appear here by tool.',
       pricingEmptyBody: 'Without pricing overrides, costs use the built-in model pricing table. Add custom prices here for specific models.',
     },
-  },
-} satisfies UiCatalog<UsageSettingsCopy>;
+  };
+
+const SETTINGS_USAGE_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<UsageSettingsCopy>()({ 'zh-CN': settingsUsageCopyZhCn, 'zh-TW': settingsUsageCopyZhTw, en: settingsUsageCopyEn }));
 
 export function getUsageSettingsCopy(locale: UiLocale): UsageSettingsCopy {
   return SETTINGS_USAGE_COPY[locale];

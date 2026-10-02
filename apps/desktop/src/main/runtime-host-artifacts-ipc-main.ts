@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -320,8 +320,8 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-const ARTIFACT_DIALOG_COPY = {
+const ARTIFACT_DIALOG_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<{ saveAs(name: string): string }>()({
   'zh-CN': { saveAs: (name: string) => `另存为 ${name}` },
   'zh-TW': { saveAs: (name: string) => `另存為 ${name}` },
   en: { saveAs: (name: string) => `Save ${name} as` },
-} satisfies UiCatalog<{ saveAs(name: string): string }>;
+}));

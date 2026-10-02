@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { CorruptSettingsRecovery } from '@maka/storage/settings-store';
 
 interface RecoveryCopy {
@@ -28,7 +28,9 @@ interface RecoveryCopy {
   acknowledge: string;
 }
 
-const COPY = {
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<Record<CorruptSettingsRecovery['outcome'], { title: string; body: string }> & {
+  review: string; settings: string; backup: string; acknowledge: string;
+}>()({
   'zh-CN': {
     recovered: {
       title: '设置已恢复为默认值',
@@ -71,9 +73,7 @@ const COPY = {
     backup: 'Original file backup: ',
     acknowledge: 'OK',
   },
-} satisfies UiCatalog<Record<CorruptSettingsRecovery['outcome'], { title: string; body: string }> & {
-  review: string; settings: string; backup: string; acknowledge: string;
-}>;
+}));
 
 export function settingsRecoveryCopy(
   recovery: CorruptSettingsRecovery,

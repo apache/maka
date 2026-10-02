@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { SessionAttention } from '@maka/runtime-host/protocol';
 
 export interface RunNotificationGate {
@@ -36,7 +36,7 @@ export interface RunNotificationCopy {
   readonly body: string;
 }
 
-const RUN_NOTIFICATION_COPY = {
+const RUN_NOTIFICATION_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<Record<SessionAttention['kind'], RunNotificationCopy>>()({
   'zh-CN': {
     errored: { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' },
     completed: { title: '回答已生成', body: 'Maka 已完成本轮回答，点击查看。' },
@@ -52,7 +52,7 @@ const RUN_NOTIFICATION_COPY = {
     completed: { title: 'Response ready', body: 'Maka finished this response. Click to view it.' },
     waiting: { title: 'Waiting for you', body: 'Maka needs your answer to continue. Click to view it.' },
   },
-} satisfies UiCatalog<Record<SessionAttention['kind'], RunNotificationCopy>>;
+}));
 
 export interface RunNotificationEvent extends SessionAttention {
   readonly title?: string;

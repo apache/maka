@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 interface SessionLocalCopy {
   saved: string;
@@ -29,7 +29,7 @@ interface SessionLocalCopy {
   updateError: string;
 }
 
-const catalog = {
+const catalog = resolveUiMessageCatalog(defineUiMessageCatalog<SessionLocalCopy>()({
   en: {
     saved: 'Waiting to send',
     unknown: 'Delivery unconfirmed. Do not send again.',
@@ -57,7 +57,7 @@ const catalog = {
     check: '檢查是否送達',
     updateError: '無法更新已儲存的訊息',
   },
-} satisfies UiCatalog<SessionLocalCopy>;
+}));
 
 export function getSessionLocalCopy(locale: UiLocale): SessionLocalCopy {
   return catalog[locale];

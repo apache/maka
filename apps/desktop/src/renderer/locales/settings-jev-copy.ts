@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import type { UiCatalog } from '@maka/core/ui-locale';
+import { defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
-export const JEV_COPY = {
+export const JEV_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<Record<'advanced' | 'title' | 'help' | 'key' | 'saved' | 'save' | 'saving' | 'clear' | 'behavior' | 'failure', string>>()({
   'zh-CN': {
     advanced: '高级设置', title: 'Jev 辅助决策',
     help: '使用 TypeSafe Jev 辅助 WorkHub 的意图分类和工作路由。会发送当前消息、近期对话与候选工作摘要；对话、执行和标题仍使用原模型。',
@@ -44,4 +44,4 @@ export const JEV_COPY = {
     behavior: 'Uncertain decisions ask for clarification; service failures use the existing router.',
     failure: 'Could not save Jev settings. Please try again.',
   },
-} satisfies UiCatalog<Record<'advanced' | 'title' | 'help' | 'key' | 'saved' | 'save' | 'saving' | 'clear' | 'behavior' | 'failure', string>>;
+}));

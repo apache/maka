@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface SharedUiCopy {
   capabilityAudit: {
@@ -112,9 +112,7 @@ export interface SharedUiCopy {
   artifact: { unknownSize: string };
   providers: { minimaxChina: string; custom: string; claudeSubscription: string };
 }
-
-const SHARED_UI_COPY = {
-  'zh-CN': {
+const sharedUiCopyZhCn: SharedUiCopy = {
     capabilityAudit: {
       ariaLabel: '能力风险提示',
       needsAuthorization: (count) => `${count} 个来源等待授权`,
@@ -193,8 +191,8 @@ const SHARED_UI_COPY = {
     stream: { assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', toolChunkTruncated: '\n[…已截断]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中国站', custom: '自定义', claudeSubscription: 'Claude 订阅' },
-  },
-  'zh-TW': {
+  };
+const sharedUiCopyZhTw: SharedUiCopy = {
     capabilityAudit: {
       ariaLabel: '能力風險提示',
       needsAuthorization: (count) => `${count} 個來源等待授權`,
@@ -273,8 +271,8 @@ const SHARED_UI_COPY = {
     stream: { assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', toolChunkTruncated: '\n[…已截斷]\n' },
     artifact: { unknownSize: '未知大小' },
     providers: { minimaxChina: 'MiniMax 中國站', custom: '自訂', claudeSubscription: 'Claude 訂閱' },
-  },
-  en: {
+  };
+const sharedUiCopyEn: SharedUiCopy = {
     capabilityAudit: {
       ariaLabel: 'Capability risks',
       needsAuthorization: (count) => `${count} ${count === 1 ? 'source' : 'sources'} awaiting authorization`,
@@ -353,8 +351,9 @@ const SHARED_UI_COPY = {
     stream: { assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },
     artifact: { unknownSize: 'Unknown size' },
     providers: { minimaxChina: 'MiniMax China', custom: 'Custom', claudeSubscription: 'Claude subscription' },
-  },
-} satisfies UiCatalog<SharedUiCopy>;
+  };
+
+const SHARED_UI_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<SharedUiCopy>()({ 'zh-CN': sharedUiCopyZhCn, 'zh-TW': sharedUiCopyZhTw, en: sharedUiCopyEn }));
 
 export function getSharedUiCopy(locale: UiLocale): SharedUiCopy {
   return SHARED_UI_COPY[locale];

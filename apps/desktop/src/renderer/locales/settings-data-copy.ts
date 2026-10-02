@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 
 export type DataSettingsCopy = {
@@ -40,7 +40,7 @@ export type DataSettingsCopy = {
   exportConfig: string; importConfig: string;
 };
 
-const SETTINGS_DATA_COPY = {
+const SETTINGS_DATA_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<DataSettingsCopy>()({
   'zh-CN': {
     categories: {
       connections: { label: '模型连接', detail: '供应商连接与默认模型（不含密钥）' },
@@ -125,7 +125,7 @@ const SETTINGS_DATA_COPY = {
     sensitiveWarning: '⚠️ Secrets will be written to the export file as plain text. Anyone with this file can use them. Store it securely and do not share it.',
     conflictAria: 'How to handle connections with the same name during import', skip: 'Skip', overwrite: 'Overwrite', exportConfig: 'Export configuration…', importConfig: 'Import configuration…',
   },
-} satisfies UiCatalog<DataSettingsCopy>;
+}));
 
 export function getDataSettingsCopy(locale: UiLocale): DataSettingsCopy {
   return SETTINGS_DATA_COPY[locale];

@@ -27,7 +27,7 @@ import { pathToFileURL } from 'node:url';
 import { createDefaultBotChannel } from '@maka/core/bot-chat-settings';
 import { MAX_ALLOWED_USER_IDS, createDefaultSettings } from '@maka/core/settings';
 import { BotRegistry, SlackBotBridge, WechatBridge, type BotStatus } from '@maka/runtime/bots';
-import { UI_LOCALES, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { UI_LOCALES, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
 import { build } from 'esbuild';
 import { parseHTML } from 'linkedom';
@@ -69,7 +69,11 @@ after(async () => {
 });
 
 const invalidUsers = ['@alice', '@bob', '@carol', '@dave', '@eve'];
-const expectedCopy = {
+const expectedCopy = resolveUiMessageCatalog(defineUiMessageCatalog<{
+  help: string;
+  cappedHelp: string;
+  warnings: [number, string][];
+}>()({
   'zh-CN': {
     help: 'Telegram 用户 ID 是 64 位整数；填入后只接收列表里这些 ID 的来信，其它人发的消息会被静默忽略（不会回弹任何提示）。',
     cappedHelp: 'Telegram 用户 ID 是 64 位整数；填入后只接收列表里这些 ID 的来信，其它人发的消息会被静默忽略（不会回弹任何提示）。 （已达到上限）',
@@ -100,11 +104,7 @@ const expectedCopy = {
       [5, 'These entries are not numeric IDs and may be usernames, so they will not match anyone: @alice, @bob, @carol and 2 more'],
     ],
   },
-} satisfies UiCatalog<{
-  help: string;
-  cappedHelp: string;
-  warnings: [number, string][];
-}>;
+}));
 
 for (const locale of UI_LOCALES) {
   const expected = expectedCopy[locale];

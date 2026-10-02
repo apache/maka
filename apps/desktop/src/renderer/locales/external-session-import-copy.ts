@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { ExternalSessionLimit } from '@maka/core/external-session';
 
 /**
@@ -117,9 +117,7 @@ type ExternalSessionImportCopy = {
   bundleUnreadable: string;
   bundleFailed: string;
 };
-
-const COPY = {
-  'zh-CN': {
+const copyZhCn: ExternalSessionImportCopy = {
     modeLabel: '导入或导出',
     modeImport: '导入任务',
     modeExport: '导出任务',
@@ -200,8 +198,8 @@ const COPY = {
     batchNothingImported: '没有对话被导入。',
     importOutcomeUnknownDescription: (names) =>
       `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。可以先在任务列表中查找，也可以再次导入；再次导入会创建独立任务。`,
-  },
-  'zh-TW': {
+  };
+const copyZhTw: ExternalSessionImportCopy = {
     modeLabel: '匯入或匯出',
     modeImport: '匯入任務',
     modeExport: '匯出任務',
@@ -282,8 +280,8 @@ const COPY = {
     batchNothingImported: '沒有匯入任何對話。',
     importOutcomeUnknownDescription: (names) =>
       `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。可以先在任務列表中查詢，也可以再次匯入；再次匯入會建立獨立任務。`,
-  },
-  en: {
+  };
+const copyEn: ExternalSessionImportCopy = {
     modeLabel: 'Import or export',
     modeImport: 'Import tasks',
     modeExport: 'Export tasks',
@@ -368,8 +366,9 @@ const COPY = {
     batchNothingImported: 'No conversation was imported.',
     importOutcomeUnknownDescription: (names) =>
       `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Check the task list or import again; importing again creates an independent task.`,
-  },
-} satisfies UiCatalog<ExternalSessionImportCopy>;
+  };
+
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ExternalSessionImportCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn }));
 
 export function getExternalSessionImportCopy(locale: UiLocale): ExternalSessionImportCopy {
   return COPY[locale];

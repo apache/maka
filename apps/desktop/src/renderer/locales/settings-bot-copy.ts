@@ -23,7 +23,7 @@ import type { BotStatusCode, BotTestErrorCode, WechatBridgeQrHintCode } from '@m
 import type { BotOnboardingErrorCode, BotOnboardingProvider, BotOnboardingSnapshot, BotOnboardingRetryFailureCategory } from '@maka/core/bot-onboarding';
 import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -33,7 +33,7 @@ type WidenCopy<T> = T extends string
 
 // Bot transport failures name the platform, not the model service that the
 // shared generalized copy describes.
-const BOT_TRANSPORT_ERRORS = {
+const BOT_TRANSPORT_ERRORS = resolveUiMessageCatalog(defineUiMessageCatalog<Record<GeneralizedErrorClass, string>>()({
   'zh-CN': {
     timeout: '请求超时，请稍后重试',
     rate_limited: '请求过于频繁，请稍后重试',
@@ -55,7 +55,7 @@ const BOT_TRANSPORT_ERRORS = {
     provider_error: 'The platform is temporarily unavailable. Try again later',
     network_error: 'Network error. Check the network and proxy settings',
   },
-} satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
+}));
 
 const zhCopy = {
   providers: {
@@ -419,11 +419,11 @@ const enCopy: BotSettingsCopy = {
   wechat: { token: 'WeChat Bot Token', tokenPlaceholder: 'Local wechat-bridge Bearer Token', collapseAdvanced: 'Hide advanced settings', expandAdvanced: 'Advanced settings (Official Account / local bridge URL)', bridgeAddress: 'Local bridge URL', appId: 'Official Account App ID', appIdPlaceholder: 'WeChat Official Account App ID', appSecret: 'Official Account App Secret', appSecretPlaceholder: 'WeChat Official Account App Secret', advancedNotice: 'The local bridge defaults to http://127.0.0.1:18400. Official Account App ID and App Secret are used only for Official Account messaging; personal WeChat QR sign-in uses the local bridge.', readQrFailed: 'Could not read a QR code from the local wechat-bridge. Make sure the bridge is running.', title: 'WeChat QR sign-in', subtitle: 'Scan the QR code with WeChat and confirm signing in to the local wechat-bridge on your phone.', close: 'Close WeChat QR sign-in', generating: 'Generating QR code…', loggedIn: 'WeChat is signed in. Return to test the connection or restart the listener.', expired: 'QR code expired', expiredHint: 'Refresh the QR code and scan again to continue signing in.', refreshing: 'Refreshing…', refresh: 'Refresh QR code', qrAlt: 'WeChat sign-in QR code', waiting: 'Waiting for confirmation… Sign-in status refreshes every 3 seconds.', retrying: 'Retrying…', retry: 'Retry', bridgeGenerating: 'The bridge is generating a QR code', bridgeGeneratingHint: 'The QR code appears automatically once ready; you can also fetch it again.', fetching: 'Fetching…', fetchAgain: 'Fetch again' },
 };
 
-const BOT_SETTINGS_COPY = {
+const BOT_SETTINGS_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<BotSettingsCopy>()({
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
-} satisfies UiCatalog<BotSettingsCopy>;
+}));
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];

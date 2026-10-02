@@ -19,7 +19,7 @@
 
 import type { DailyReviewArchive } from '@maka/core/daily-review';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type ArchiveSectionKey = keyof DailyReviewArchive['sections'];
 
@@ -102,9 +102,7 @@ export interface DailyReviewCopy {
     requestCount: (count: number) => string;
   };
 }
-
-const DAILY_REVIEW_COPY = {
-  'zh-CN': {
+const dailyReviewCopyZhCn: DailyReviewCopy = {
     archive: {
       section: { summary: '任务摘要', gaps: '遗漏提醒', usage: '使用洞察', code: '代码建议' },
       status: { ok: '已生成', no_model: '缺少模型', no_data: '无数据', failed: '生成失败', skipped: '已跳过' },
@@ -138,8 +136,8 @@ const DAILY_REVIEW_COPY = {
     markdown: {
       separator: '：', title: (dayLabel) => `# Maka · 每日回顾 · ${dayLabel}`, conversations: '任务', requests: '模型调用', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃任务', modelUsage: '模型使用', toolCalls: '工具调用', requestCount: (count) => `${count} 次`,
     },
-  },
-  'zh-TW': {
+  };
+const dailyReviewCopyZhTw: DailyReviewCopy = {
     archive: {
       section: { summary: '任務摘要', gaps: '遺漏提醒', usage: '使用洞察', code: '程式碼建議' },
       status: { ok: '已生成', no_model: '缺少模型', no_data: '無資料', failed: '生成失敗', skipped: '已跳過' },
@@ -173,8 +171,8 @@ const DAILY_REVIEW_COPY = {
     markdown: {
       separator: '：', title: (dayLabel) => `# Maka · 每日回顧 · ${dayLabel}`, conversations: '任務', requests: '請求', tokens: 'Token', cost: '費用', errors: '錯誤', activeConversations: '活躍任務', modelUsage: '模型使用', toolCalls: '工具呼叫', requestCount: (count) => `${count} 次`,
     },
-  },
-  en: {
+  };
+const dailyReviewCopyEn: DailyReviewCopy = {
     archive: {
       section: { summary: 'Task summary', gaps: 'Missed items', usage: 'Usage insights', code: 'Code suggestions' },
       status: { ok: 'Generated', no_model: 'Model unavailable', no_data: 'No data', failed: 'Generation failed', skipped: 'Skipped' },
@@ -208,8 +206,9 @@ const DAILY_REVIEW_COPY = {
     markdown: {
       separator: ':', title: (dayLabel) => `# Maka · Daily review · ${dayLabel}`, conversations: 'Tasks', requests: 'Model calls', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active tasks', modelUsage: 'Model usage', toolCalls: 'Tool calls', requestCount: (count) => `${count} ${count === 1 ? 'call' : 'calls'}`,
     },
-  },
-} satisfies UiCatalog<DailyReviewCopy>;
+  };
+
+const DAILY_REVIEW_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<DailyReviewCopy>()({ 'zh-CN': dailyReviewCopyZhCn, 'zh-TW': dailyReviewCopyZhTw, en: dailyReviewCopyEn }));
 
 export function getDailyReviewCopy(locale: UiLocale): DailyReviewCopy {
   return DAILY_REVIEW_COPY[locale];

@@ -20,7 +20,7 @@
 import type { SettingsTestResult, SettingsTestResultCode } from '@maka/core/settings';
 import type { BotTestErrorCode } from '@maka/runtime/bots';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { lookupCopy } from '@maka/core/ui-locale';
 
 type SettingsTestResultCopy = {
@@ -48,9 +48,7 @@ type SettingsTestResultCopy = {
     >;
   };
 };
-
-const COPY = {
-  'zh-CN': {
+const copyZhCn: SettingsTestResultCopy = {
     proxy: {
       reachable: (endpoint, location) =>
         ["代理配置有效", endpoint, location].filter(Boolean).join(" · "),
@@ -84,8 +82,8 @@ const COPY = {
         wechat_ilink_credentials_incomplete: '请先完成微信扫码登录，保存 iLink bot token 与 base URL。',
       },
     },
-  },
-  'zh-TW': {
+  };
+const copyZhTw: SettingsTestResultCopy = {
     proxy: {
       reachable: (endpoint, location) =>
         ["代理設定有效", endpoint, location].filter(Boolean).join(" · "),
@@ -119,8 +117,8 @@ const COPY = {
         wechat_ilink_credentials_incomplete: '請先完成微信掃碼登入，儲存 iLink bot token 與 base URL。',
       },
     },
-  },
-  en: {
+  };
+const copyEn: SettingsTestResultCopy = {
     proxy: {
       reachable: (endpoint, location) =>
         ["The proxy is reachable", endpoint, location]
@@ -161,8 +159,9 @@ const COPY = {
         wechat_ilink_credentials_incomplete: 'Complete WeChat QR sign-in first to save the iLink bot token and base URL.',
       },
     },
-  },
-} satisfies UiCatalog<SettingsTestResultCopy>;
+  };
+
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<SettingsTestResultCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn }));
 
 export function settingsTestResultMessage(
   result: SettingsTestResult,

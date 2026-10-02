@@ -18,7 +18,7 @@
  */
 import type { AppIcon, ThemePalette, ThemePreference } from '@maka/core/settings';
 
-import type { UiCatalog, UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
+import { type UiLocale, type UiLocalePreference, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type OptionCopy = { label: string; help: string };
 
@@ -267,9 +267,7 @@ export type SettingsPreferencesCopy = {
     value: string;
   };
 };
-
-const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
-  'zh-CN': {
+const settingsPreferencesCopyByLocaleZhCn: SettingsPreferencesCopy = {
     personalization: {
       saveFailed: '保存失败', displayName: '显示名称', displayNameHelp: 'Maka 在聊天里会以这个名字称呼你。留空就用默认的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未设置，Maka 会称呼你“你”', displayNameChange: '更改', displayNameSet: '设置',
       interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
@@ -374,8 +372,8 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       sourceCode: '源码', releaseNotes: '发行说明',
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
-  },
-  'zh-TW': {
+  };
+const settingsPreferencesCopyByLocaleZhTw: SettingsPreferencesCopy = {
     personalization: {
       saveFailed: '儲存失敗', displayName: '顯示名稱', displayNameHelp: 'Maka 在聊天裡會以這個名字稱呼你。留空就用預設的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未設定，Maka 會稱呼你“你”', displayNameChange: '更改', displayNameSet: '設定',
       interfaceLanguage: '介面語言', interfaceLanguageHelp: '選擇 Maka 介面的顯示語言。切換後立即生效，重新啟動後仍會保留。', localeOptions: [['auto', '自動（跟隨系統）'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
@@ -472,8 +470,8 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       sourceCode: '原始碼', releaseNotes: '發行說明',
     },
     password: { copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', copying: '複製中', copied: '已複製', copy: '複製', hide: '隱藏', show: '顯示', value: '憑據值' },
-  },
-  en: {
+  };
+const settingsPreferencesCopyByLocaleEn: SettingsPreferencesCopy = {
     personalization: {
       saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh-CN', 'Simplified Chinese'], ['zh-TW', 'Traditional Chinese'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
     },
@@ -541,8 +539,9 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       sourceCode: 'Source code', releaseNotes: 'Release notes',
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
-  },
-} satisfies UiCatalog<SettingsPreferencesCopy>;
+  };
+
+const SETTINGS_PREFERENCES_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<SettingsPreferencesCopy>()({ 'zh-CN': settingsPreferencesCopyByLocaleZhCn, 'zh-TW': settingsPreferencesCopyByLocaleZhTw, en: settingsPreferencesCopyByLocaleEn }));
 
 export function getSettingsPreferencesCopy(locale: UiLocale): SettingsPreferencesCopy {
   return SETTINGS_PREFERENCES_COPY_BY_LOCALE[locale];

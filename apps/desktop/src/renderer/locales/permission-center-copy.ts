@@ -27,7 +27,7 @@ import type {
   RuntimeProbeState,
 } from '@maka/core/capabilities';
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type Tone = StatusSemantic;
 type StatusCopy = { label: string; tone: Tone };
@@ -99,9 +99,7 @@ export type PermissionCenterCopy = {
   cuBackendStatus(missingPermissionLabels: readonly string[], health: RuntimeProbeState): string;
   reasonFallback: string;
 };
-
-const PERMISSION_CENTER_COPY = {
-  'zh-CN': {
+const permissionCenterCopyZhCn: PermissionCenterCopy = {
     readiness: {
       not_configured: { label: '等待配置', detail: '需要先打开开关或补齐配置才能启用。', tone: 'neutral' },
       denied: { label: '系统拒绝', detail: '所需系统权限被拒绝或当前平台不支持。', tone: 'error' },
@@ -157,8 +155,8 @@ const PERMISSION_CENTER_COPY = {
         not_run: 'service 将在首次调用时启动；按目标与动作类别授权后可操作本机应用。',
       } satisfies Record<RuntimeProbeState, string>)[health],
     reasonFallback: '状态详情请查看运行日志。',
-  },
-  'zh-TW': {
+  };
+const permissionCenterCopyZhTw: PermissionCenterCopy = {
     readiness: {
       not_configured: { label: '等待設定', detail: '需要先開啟開關或補齊設定才能啟用。', tone: 'neutral' },
       denied: { label: '系統拒絕', detail: '所需系統權限被拒絕或目前平臺不支援。', tone: 'error' },
@@ -214,8 +212,8 @@ const PERMISSION_CENTER_COPY = {
         not_run: 'service 將在首次呼叫時啟動；依目標與動作類別授權後可操作本機應用程式。',
       } satisfies Record<RuntimeProbeState, string>)[health],
     reasonFallback: '狀態詳情請查看執行日誌。',
-  },
-  en: {
+  };
+const permissionCenterCopyEn: PermissionCenterCopy = {
     readiness: {
       not_configured: { label: 'Needs setup', detail: 'Enable the feature or complete its configuration first.', tone: 'neutral' },
       denied: { label: 'Denied by system', detail: 'A required system permission was denied or is unsupported on this platform.', tone: 'error' },
@@ -271,8 +269,9 @@ const PERMISSION_CENTER_COPY = {
         not_run: 'The service starts on first use; grant by target and action category to operate local apps.',
       } satisfies Record<RuntimeProbeState, string>)[health],
     reasonFallback: 'See the runtime logs for details.',
-  },
-} satisfies UiCatalog<PermissionCenterCopy>;
+  };
+
+const PERMISSION_CENTER_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<PermissionCenterCopy>()({ 'zh-CN': permissionCenterCopyZhCn, 'zh-TW': permissionCenterCopyZhTw, en: permissionCenterCopyEn }));
 
 export function getPermissionCenterCopy(locale: UiLocale): PermissionCenterCopy {
   return PERMISSION_CENTER_COPY[locale];

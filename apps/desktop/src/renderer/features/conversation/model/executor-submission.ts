@@ -22,7 +22,7 @@ import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { NewChatModel } from './shell-chat-model-selection.js';
 
 export interface ExecutorSubmission {
@@ -30,7 +30,7 @@ export interface ExecutorSubmission {
   executorEntry?: Pick<ExecutorCatalogEntry, 'readiness' | 'supportsAttachments'>;
 }
 
-const SUBMISSION_COPY = {
+const SUBMISSION_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<{ attachments: string; unavailable: string }>()({
   en: {
     attachments: 'Remove unsupported attachments or select Maka. Your draft is preserved.',
     unavailable: 'Check External Agents settings or start a new task.',
@@ -43,7 +43,7 @@ const SUBMISSION_COPY = {
     attachments: '請移除不支援的附件或選擇 Maka，草稿會保留。',
     unavailable: '請檢查外部 Agent 設定，或建立新任務。',
   },
-} satisfies UiCatalog<{ attachments: string; unavailable: string }>;
+}));
 
 export function executorSubmissionError(
   input: ExecutorSubmission,

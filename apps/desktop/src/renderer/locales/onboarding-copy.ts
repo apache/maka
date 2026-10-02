@@ -18,7 +18,7 @@
  */
 
 import type { OnboardingState } from '@maka/core/onboarding';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { OnboardingHeroCopy } from '../onboarding-hero-copy.js';
 
 // Blocked states are keyed by reason, not just by kind: a new blocked reason
@@ -50,7 +50,7 @@ export interface OnboardingCatalog {
   snapshotErrorFallback: string;
 }
 
-const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
+const ONBOARDING_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<OnboardingCatalog>()({
   'zh-CN': {
     hero: {
       needs_connection: {
@@ -198,7 +198,7 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
     skip: 'Skip onboarding',
     snapshotErrorFallback: 'First-run status is temporarily unavailable. Try again later.',
   },
-};
+}));
 
 export function getOnboardingCopy(locale: UiLocale): OnboardingCatalog {
   return ONBOARDING_COPY_BY_LOCALE[locale];

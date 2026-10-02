@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 /**
  * Copy for the native open/save panels. Format names (`Markdown`,
@@ -35,7 +35,7 @@ interface NativeFileDialogCopy {
   readonly allFiles: string;
 }
 
-const COPY = {
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<NativeFileDialogCopy>()({
   'zh-CN': {
     referenceFolder: '引用文件夹',
     addAttachments: '添加附件',
@@ -63,7 +63,7 @@ const COPY = {
     saveConversation: 'Save conversation',
     allFiles: 'All Files',
   },
-} satisfies UiCatalog<NativeFileDialogCopy>;
+}));
 
 export function nativeFileDialogCopy(locale: UiLocale): NativeFileDialogCopy {
   return COPY[locale];

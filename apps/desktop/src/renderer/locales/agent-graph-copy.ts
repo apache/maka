@@ -21,7 +21,7 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface AgentGraphPanelCopy {
   title: string;
@@ -51,9 +51,7 @@ export interface AgentGraphPanelCopy {
   operatorStatus(status: AgentGraphClientOperator['status']): string;
   wait(operator: AgentGraphClientOperator): string | undefined;
 }
-
-const AGENT_GRAPH_PANEL_COPY = {
-  'zh-CN': {
+const agentGraphPanelCopyZhCn: AgentGraphPanelCopy = {
     title: 'Agent Graph',
     loading: '正在读取 Graph 状态…',
     retry: '重试',
@@ -101,8 +99,8 @@ const AGENT_GRAPH_PANEL_COPY = {
         cancelled: '取消',
       })[status],
     wait: waitReasonZh,
-  },
-  'zh-TW': {
+  };
+const agentGraphPanelCopyZhTw: AgentGraphPanelCopy = {
     title: 'Agent Graph',
     loading: '正在讀取 Graph 狀態…',
     retry: '重試',
@@ -150,8 +148,8 @@ const AGENT_GRAPH_PANEL_COPY = {
         cancelled: '已取消',
       })[status],
     wait: waitReasonZhTw,
-  },
-  en: {
+  };
+const agentGraphPanelCopyEn: AgentGraphPanelCopy = {
     title: 'Agent Graph',
     loading: 'Loading graph state…',
     retry: 'Retry',
@@ -199,8 +197,9 @@ const AGENT_GRAPH_PANEL_COPY = {
         cancelled: 'Cancelled',
       })[status],
     wait: waitReasonEn,
-  },
-} satisfies UiCatalog<AgentGraphPanelCopy>;
+  };
+
+const AGENT_GRAPH_PANEL_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<AgentGraphPanelCopy>()({ 'zh-CN': agentGraphPanelCopyZhCn, 'zh-TW': agentGraphPanelCopyZhTw, en: agentGraphPanelCopyEn }));
 
 export function getAgentGraphPanelCopy(locale: UiLocale): AgentGraphPanelCopy {
   return AGENT_GRAPH_PANEL_COPY[locale];

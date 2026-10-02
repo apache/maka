@@ -19,7 +19,7 @@
 
 import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import type { SubscriptionActionCode, SubscriptionActionFailureReason } from '@maka/core/oauth-subscription';
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type SubscriptionResultCode =
   | SubscriptionActionCode
@@ -773,11 +773,11 @@ const enCopy: ProviderSettingsCopy = {
   },
 };
 
-const PROVIDER_SETTINGS_COPY = {
+const PROVIDER_SETTINGS_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ProviderSettingsCopy>()({
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
-} satisfies UiCatalog<ProviderSettingsCopy>;
+}));
 
 export function getProviderSettingsCopy(locale: UiLocale): ProviderSettingsCopy {
   return PROVIDER_SETTINGS_COPY[locale];
