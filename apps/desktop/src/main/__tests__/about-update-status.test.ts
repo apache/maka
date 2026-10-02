@@ -115,7 +115,7 @@ test('a failure names the step that failed and offers the check again', () => {
       message: 'ECONNRESET',
     },
     copy,
-    { errorDetail: (message) => `网络错误：${message}` },
+    { errorDetail: (status) => `网络错误：${status.message}` },
   );
   assert.deepEqual(download, {
     label: '下载更新失败',
