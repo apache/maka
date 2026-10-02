@@ -872,28 +872,15 @@ function AppShellContent({
     activeProjectCapabilities,
     currentProjectId,
     currentProject,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
     refreshProjects,
-    relinkProject,
-    renameProject,
-    archiveProject,
-    restoreProject,
-    openProjectFolder,
-    openWorkspaceFolder,
   } = useAppShellProjectContext({
-    uiLocale,
     rendererMountedRef,
     sessionId: ownerActiveId,
     sessionCwd: sharedSessionActive ? undefined : activeSession?.cwd,
     sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
     sessionProfileKind: sharedSessionActive ? undefined : activeSession?.profileKind,
-    onProjectSelected: (ownerSessionId) => {
-      void moduleHubCommands.refreshProjectSkills();
-      if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
-    },
-    toastApi,
   });
+  const openProjectFolder = () => taskEntry.commands.openProjectFolder(ownerActiveId);
   const captureActiveComposerClaim = useCallback(() => {
     const sessionId = activeIdRef.current;
     const composer = composerRef.current;
@@ -1226,8 +1213,6 @@ function AppShellContent({
     openHelp,
     openSettings,
     clearPendingTurnActions: turnActionRegistry.clearAll,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
     refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
@@ -1425,7 +1410,7 @@ function AppShellContent({
     openSideConversation: () => commands.openTool('side-chat'),
     openSettings,
     openSettingsSection,
-    openWorkspaceFolder,
+    openWorkspaceFolder: taskEntry.commands.openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
     copyTodayDailyReview: moduleHubCommands.copyTodayDailyReview,
     pasteTodayDailyReview: moduleHubCommands.pasteTodayDailyReview,

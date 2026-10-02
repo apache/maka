@@ -22,6 +22,7 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
+import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeTaskEntryServices,
@@ -29,6 +30,7 @@ import {
   useTaskEntryController,
   type TaskEntryCatalog,
   type TaskEntryController,
+  type TaskEntryFolderOpenResult,
   type TaskEntryHost,
   type TaskEntryServices,
 } from '../../renderer/features/task-entry/testing.js';
@@ -767,5 +769,101 @@ describe('useTaskEntryController', () => {
       description: 'A task is running. Wait for it to finish before moving this one.',
       profileId: 'local',
     }]);
+  });
+
+  describe('folders', () => {
+    const copy = getShellCopy('en');
+    const projectTitle = copy.projectActions.openFailedTitle(copy.projectActions.openPathLabels.project);
+    const workspaceTitle = copy.projectActions.openFailedTitle(copy.projectActions.openPathLabels.workspace);
+
+    async function openFolders(
+      results: { project?: TaskEntryFolderOpenResult; workspace?: TaskEntryFolderOpenResult },
+      run: (commands: TaskEntryController['commands']) => Promise<void>,
+    ) {
+      const { root } = installReactRenderer();
+      const errors: unknown[] = [];
+      const requests: Array<string | undefined> = [];
+      const services = createFakeTaskEntryServices({
+        folders: {
+          openProjectFolder: async (sessionId) => {
+            requests.push(sessionId);
+            return results.project ?? { kind: 'opened' };
+          },
+          openWorkspaceFolder: async () => {
+            requests.push('workspace');
+            return results.workspace ?? { kind: 'opened' };
+          },
+        },
+      });
+      await act(async () => renderController(root, services, errors));
+      await act(async () => run(controller().commands));
+      return { errors, requests };
+    }
+
+    it('reports nothing when the folder opens', async () => {
+      const { errors, requests } = await openFolders({}, async (commands) => {
+        await commands.openProjectFolder('session-1');
+        await commands.openProjectFolder();
+        await commands.openWorkspaceFolder();
+      });
+
+      assert.deepEqual(requests, ['session-1', undefined, 'workspace']);
+      assert.deepEqual(errors, []);
+    });
+
+    it('reports a refusal with its closed reason and the target the adapter named', async () => {
+      const { errors } = await openFolders({
+        project: { kind: 'refused', reason: 'missing', diagnosticTarget: { sessionId: 'session-1' } },
+        workspace: { kind: 'refused', reason: 'raw-host-text', diagnosticTarget: { profileId: 'local' } },
+      }, async (commands) => {
+        await commands.openProjectFolder('session-1');
+        await commands.openWorkspaceFolder();
+      });
+
+      assert.deepEqual(errors, [
+        {
+          title: projectTitle,
+          description: copy.projectActions.openPathFailures.missing,
+          sessionId: 'session-1',
+        },
+        {
+          title: workspaceTitle,
+          description: copy.projectActions.openPathFailures.unknown,
+          profileId: 'local',
+        },
+      ]);
+    });
+
+    it('turns a vanished task workspace into the workspace-unavailable notice', async () => {
+      const unavailable = Object.assign(new Error('gone'), { code: 'SESSION_WORKSPACE_UNAVAILABLE' });
+      const { errors } = await openFolders({
+        project: { kind: 'failed', error: unavailable, diagnosticTarget: { sessionId: 'session-1' } },
+      }, async (commands) => {
+        await commands.openProjectFolder('session-1');
+      });
+
+      assert.deepEqual(errors, [{
+        title: copy.errors.workspaceUnavailableTitle,
+        description: copy.errors.workspaceUnavailableDescription,
+        sessionId: 'session-1',
+      }]);
+    });
+
+    it('classifies other failures and keeps the Host authority, or none when it was never resolved', async (t) => {
+      t.mock.method(console, 'error', () => undefined);
+      const timeout = new Error('request timeout');
+      const { errors } = await openFolders({
+        project: { kind: 'failed', error: timeout },
+        workspace: { kind: 'failed', error: timeout, diagnosticTarget: { profileId: 'local' } },
+      }, async (commands) => {
+        await commands.openProjectFolder();
+        await commands.openWorkspaceFolder();
+      });
+
+      assert.deepEqual(errors, [
+        { title: projectTitle, description: 'Request timed out' },
+        { title: workspaceTitle, description: 'Request timed out', profileId: 'local' },
+      ]);
+    });
   });
 });

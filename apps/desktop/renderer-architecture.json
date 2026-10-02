@@ -12,7 +12,6 @@
     "src/renderer/app-shell-e2e-fixture.ts",
     "src/renderer/app-shell-effects.ts",
     "src/renderer/app-shell-overlays.tsx",
-    "src/renderer/app-shell-project-actions.ts",
     "src/renderer/app-shell-revision-actions.ts",
     "src/renderer/app-shell-stop-action.ts",
     "src/renderer/app-shell-turn-actions.ts",
@@ -418,7 +417,7 @@
           "@maka/core/redaction": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 311
+        "nonTriviaTokens": 249
       },
       "src/renderer/app-shell-detail-panel.tsx": {
         "importDeclarations": 0,
@@ -486,7 +485,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 1361
+        "nonTriviaTokens": 1331
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -517,36 +516,6 @@
         },
         "importSpecifiers": 8,
         "nonTriviaTokens": 858
-      },
-      "src/renderer/app-shell-project-actions.ts": {
-        "importDeclarations": 4,
-        "bridgePaths": {
-          "window.maka.app.openPath": 3,
-          "window.maka.app.resolveProjectGitInfo": 1,
-          "window.maka.projects.add": 1,
-          "window.maka.projects.archive": 1,
-          "window.maka.projects.getDefaultContext": 1,
-          "window.maka.projects.relink": 1,
-          "window.maka.projects.rename": 1,
-          "window.maka.projects.restore": 1,
-          "window.maka.projects.select": 3
-        },
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [
-          "createAppShellProjectActions"
-        ],
-        "dependencyPaths": {
-          "./app-shell-copy": 1,
-          "./locales/shell-copy.js": 1,
-          "./open-path": 1,
-          "./platform/desktop/default-runtime-host-operation.js": 1,
-          "./session-workspace-errors": 1
-        },
-        "importSpecifiers": 7,
-        "nonTriviaTokens": 2157
       },
       "src/renderer/app-shell-revision-actions.ts": {
         "importDeclarations": 3,
@@ -728,7 +697,7 @@
           "react": 1
         },
         "importSpecifiers": 74,
-        "nonTriviaTokens": 9075
+        "nonTriviaTokens": 9042
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -3417,17 +3386,14 @@
         "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 4,
-          "useRef": 3,
-          "useStableActions": 1,
-          "useState": 8
+          "useRef": 1,
+          "useState": 7
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./app-shell-project-actions": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
-          "./use-stable-actions.js": 1,
           "react": 1
         }
       },
@@ -3859,13 +3825,6 @@
       "legacyPaths": [
         "src/renderer/use-app-shell-session-list.ts",
         "src/renderer/use-app-shell-session-workspace.ts"
-      ]
-    },
-    {
-      "capability": "workspace-projection",
-      "targetZone": "application/workspace",
-      "legacyPaths": [
-        "src/renderer/app-shell-project-actions.ts"
       ]
     },
     {

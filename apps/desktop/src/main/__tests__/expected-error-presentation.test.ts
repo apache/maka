@@ -28,8 +28,8 @@ import { sessionCollaborationImportErrorMessage } from '../../renderer/features/
 import {
   commandPaletteActionErrorMessage,
   commandPaletteConnectionTestFailureMessage,
-  openPathActionErrorMessage,
 } from '../../renderer/app-shell-copy.js';
+import { folderOpenFailure } from '../../renderer/features/task-entry/testing.js';
 import {
   getShellCopy,
   localizedShellErrorMessage,
@@ -172,9 +172,12 @@ test('every shell error-copy entry classifies, and keeps its contextual fallback
   assert.equal(transcriptErrorMessage(timeout, 'zh-CN', 'refresh'), '请求超时');
   assert.equal(transcriptErrorMessage(opaque, 'zh-CN', 'refresh'), '任务内容暂时无法刷新，请稍后重试。');
 
-  assert.equal(openPathActionErrorMessage(timeout, 'workspace', 'zh-CN'), '请求超时');
   assert.equal(
-    openPathActionErrorMessage(opaque, 'workspace', 'zh-CN'),
+    folderOpenFailure('workspace', { kind: 'failed', error: timeout }, 'zh-CN')?.description,
+    '请求超时',
+  );
+  assert.equal(
+    folderOpenFailure('workspace', { kind: 'failed', error: opaque }, 'zh-CN')?.description,
     copy.errors.openPath(copy.paths.workspace),
   );
 

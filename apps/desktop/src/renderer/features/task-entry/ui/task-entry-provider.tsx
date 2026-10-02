@@ -96,6 +96,8 @@ const EMPTY_CONTROLLER: TaskEntryController = {
       _target: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[0],
       _draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
     ): ReturnType<TaskEntryControllerCommands['prepareWorkBoardDraft']> => undefined,
+    async openProjectFolder() {},
+    async openWorkspaceFolder() {},
   },
   selectors: {
     draftKey: taskEntryDraftKey(undefined),
@@ -160,6 +162,9 @@ function createTaskEntryOwner(): TaskEntryOwner & {
         draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
       ) =>
         current.commands.prepareWorkBoardDraft(target, draft),
+      openProjectFolder: (sessionId?: string) =>
+        current.commands.openProjectFolder(sessionId),
+      openWorkspaceFolder: () => current.commands.openWorkspaceFolder(),
     },
     publish(controller: TaskEntryController): void {
       if (current === controller) return;
@@ -313,8 +318,13 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   const owner = ownership.owner as ReturnType<typeof createTaskEntryOwner>;
   const toastApi = useToast();
   const reportError = useCallback(
-    ({ title, description, profileId }: TaskEntryError) => {
-      toastApi.error(title, description, undefined, { profileId });
+    ({ title, description, profileId, sessionId }: TaskEntryError) => {
+      toastApi.error(
+        title,
+        description,
+        undefined,
+        sessionId ? { sessionId } : profileId !== undefined ? { profileId } : undefined,
+      );
     },
     [toastApi],
   );
