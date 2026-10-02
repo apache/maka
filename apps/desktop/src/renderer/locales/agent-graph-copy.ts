@@ -21,7 +21,7 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface AgentGraphPanelCopy {
   title: string;
@@ -199,7 +199,7 @@ const agentGraphPanelCopyEn: AgentGraphPanelCopy = {
     wait: waitReasonEn,
   };
 
-const AGENT_GRAPH_PANEL_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<AgentGraphPanelCopy>()({ 'zh-CN': agentGraphPanelCopyZhCn, 'zh-TW': agentGraphPanelCopyZhTw, en: agentGraphPanelCopyEn }));
+const AGENT_GRAPH_PANEL_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<AgentGraphPanelCopy>()({ 'zh-CN': agentGraphPanelCopyZhCn, 'zh-TW': agentGraphPanelCopyZhTw, en: agentGraphPanelCopyEn })) satisfies UiCatalog<AgentGraphPanelCopy>;
 
 export function getAgentGraphPanelCopy(locale: UiLocale): AgentGraphPanelCopy {
   return AGENT_GRAPH_PANEL_COPY[locale];

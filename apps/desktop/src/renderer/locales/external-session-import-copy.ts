@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { ExternalSessionLimit } from '@maka/core/external-session';
 
 /**
@@ -372,7 +372,7 @@ const copyEn: ExternalSessionImportCopy = {
       `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Check the task list or import again; importing again creates an independent task.`,
   };
 
-const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ExternalSessionImportCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn }));
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ExternalSessionImportCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn })) satisfies UiCatalog<ExternalSessionImportCopy>;
 
 export function getExternalSessionImportCopy(locale: UiLocale): ExternalSessionImportCopy {
   return COPY[locale];

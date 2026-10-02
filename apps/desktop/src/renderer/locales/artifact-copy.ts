@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type ReasonCopy = { title: string; description: string };
 
@@ -209,7 +209,7 @@ const artifactCopyEn: ArtifactCopy = {
     },
   };
 
-const ARTIFACT_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ArtifactCopy>()({ 'zh-CN': artifactCopyZhCn, 'zh-TW': artifactCopyZhTw, en: artifactCopyEn }));
+const ARTIFACT_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ArtifactCopy>()({ 'zh-CN': artifactCopyZhCn, 'zh-TW': artifactCopyZhTw, en: artifactCopyEn })) satisfies UiCatalog<ArtifactCopy>;
 
 export function getArtifactCopy(locale: UiLocale): ArtifactCopy {
   return ARTIFACT_COPY[locale];

@@ -28,7 +28,7 @@ import type {
   HealthSignalStatus,
 } from '@maka/core/health';
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 /**
  * Health signals carry their own severity ladder — error > warning > info > ok
@@ -163,7 +163,7 @@ const settingsHealthCopyEn: HealthCenterCopy = {
     signalDetail: (signal) => signalDetailEn(signal.detail),
   };
 
-const SETTINGS_HEALTH_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<HealthCenterCopy>()({ 'zh-CN': settingsHealthCopyZhCn, 'zh-TW': settingsHealthCopyZhTw, en: settingsHealthCopyEn }));
+const SETTINGS_HEALTH_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<HealthCenterCopy>()({ 'zh-CN': settingsHealthCopyZhCn, 'zh-TW': settingsHealthCopyZhTw, en: settingsHealthCopyEn })) satisfies UiCatalog<HealthCenterCopy>;
 
 export function getHealthCenterCopy(locale: UiLocale): HealthCenterCopy {
   return SETTINGS_HEALTH_COPY[locale];
@@ -250,7 +250,7 @@ const connectiontesterrormessagesEn: Record<HealthConnectionTestErrorClass, stri
     unknown: 'Connection test failed',
   };
 
-const connectionTestErrorMessages = resolveUiMessageCatalog(defineUiMessageCatalog<Record<HealthConnectionTestErrorClass, string>>()({ 'zh-CN': connectiontesterrormessagesZhCn, 'zh-TW': connectiontesterrormessagesZhTw, en: connectiontesterrormessagesEn }));
+const connectionTestErrorMessages = resolveUiMessageCatalog(defineUiMessageCatalog<Record<HealthConnectionTestErrorClass, string>>()({ 'zh-CN': connectiontesterrormessagesZhCn, 'zh-TW': connectiontesterrormessagesZhTw, en: connectiontesterrormessagesEn })) satisfies UiCatalog<Record<HealthConnectionTestErrorClass, string>>;
 
 function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
@@ -339,7 +339,7 @@ const unknownruntimeerrorclassZhCn: string = '未知错误';
 const unknownruntimeerrorclassZhTw: string = '未知錯誤';
 const unknownruntimeerrorclassEn: string = 'Unknown error';
 
-const unknownRuntimeErrorClass = resolveUiMessageCatalog(defineUiMessageCatalog<string>()({ 'zh-CN': unknownruntimeerrorclassZhCn, 'zh-TW': unknownruntimeerrorclassZhTw, en: unknownruntimeerrorclassEn }));
+const unknownRuntimeErrorClass = resolveUiMessageCatalog(defineUiMessageCatalog<string>()({ 'zh-CN': unknownruntimeerrorclassZhCn, 'zh-TW': unknownruntimeerrorclassZhTw, en: unknownruntimeerrorclassEn })) satisfies UiCatalog<string>;
 
 // Runtime probes carry the turn's failure class (rate_limit, context_overflow,
 // …), a wider vocabulary than connection tests; unmapped classes stay visible.

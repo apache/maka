@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { lookupCopy } from '@maka/core/ui-locale';
 import type { WorkBoardErrorCode } from '../../shared/work-board-ipc.js';
 
@@ -48,7 +48,7 @@ const WORK_BOARD_ERROR_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<Wor
     must_archive_first: 'Archive this item before deleting it.',
     unknown: 'The action failed. Try again later.',
   },
-}));
+})) satisfies UiCatalog<WorkBoardErrorCopy>;
 
 export function getWorkBoardErrorCopy(locale: UiLocale): WorkBoardErrorCopy {
   return WORK_BOARD_ERROR_COPY[locale];

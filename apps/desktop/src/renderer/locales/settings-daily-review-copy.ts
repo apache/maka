@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type DailyReviewSettingsCopy = {
   defaultModel: string;
@@ -97,7 +97,7 @@ const SETTINGS_DAILY_REVIEW_COPY = resolveUiMessageCatalog(defineUiMessageCatalo
     model: 'Analysis model',
     modelHelp: 'Follows the current task default when unspecified.',
   },
-}));
+})) satisfies UiCatalog<DailyReviewSettingsCopy>;
 
 export function getDailyReviewSettingsCopy(locale: UiLocale): DailyReviewSettingsCopy {
   return SETTINGS_DAILY_REVIEW_COPY[locale];

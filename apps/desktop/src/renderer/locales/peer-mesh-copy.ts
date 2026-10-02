@@ -18,7 +18,7 @@
  */
 
 import type { PeerMeshMemberProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface PeerMeshCopy {
   readonly title: string;
@@ -626,7 +626,7 @@ const PEER_MESH_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<PeerMeshCo
     localHostMissingHint:
       'Add it so other members can reach tasks shared from this device through the Mesh.',
   },
-}));
+})) satisfies UiCatalog<PeerMeshCopy>;
 
 export function getPeerMeshCopy(locale: UiLocale): PeerMeshCopy {
   return PEER_MESH_COPY[locale];

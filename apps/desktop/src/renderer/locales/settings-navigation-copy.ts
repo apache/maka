@@ -18,7 +18,7 @@
  */
 
 import type { SettingsSection } from '@maka/core/settings';
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { SettingsNavGroup } from '../settings/nav-group-summary.js';
 
 export type SettingsNavigationCopy = {
@@ -108,7 +108,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessa
       about: { label: 'About', description: 'Version, updates, and support.' },
     },
   },
-}));
+})) satisfies UiCatalog<SettingsNavigationCopy>;
 
 export function getSettingsNavigationCopy(locale: UiLocale): SettingsNavigationCopy {
   return SETTINGS_NAVIGATION_COPY_BY_LOCALE[locale];

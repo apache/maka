@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 /**
  * Restoring and deleting a single task speak through the rail's own row
@@ -231,7 +231,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCat
     emptyTitle: 'Nothing archived',
     emptyBody: 'Archive a task from the rail to restore or permanently delete it here.',
   },
-}));
+})) satisfies UiCatalog<SettingsTasksCopy>;
 
 export function getSettingsTasksCopy(locale: UiLocale): SettingsTasksCopy {
   return SETTINGS_TASKS_COPY_BY_LOCALE[locale];

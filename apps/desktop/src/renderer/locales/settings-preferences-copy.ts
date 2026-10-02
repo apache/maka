@@ -18,7 +18,7 @@
  */
 import type { AppIcon, ThemePalette, ThemePreference } from '@maka/core/settings';
 
-import { type UiLocale, type UiLocalePreference, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, type UiLocalePreference, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type OptionCopy = { label: string; help: string };
 
@@ -541,7 +541,7 @@ const settingsPreferencesCopyByLocaleEn: SettingsPreferencesCopy = {
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
   };
 
-const SETTINGS_PREFERENCES_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<SettingsPreferencesCopy>()({ 'zh-CN': settingsPreferencesCopyByLocaleZhCn, 'zh-TW': settingsPreferencesCopyByLocaleZhTw, en: settingsPreferencesCopyByLocaleEn }));
+const SETTINGS_PREFERENCES_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<SettingsPreferencesCopy>()({ 'zh-CN': settingsPreferencesCopyByLocaleZhCn, 'zh-TW': settingsPreferencesCopyByLocaleZhTw, en: settingsPreferencesCopyByLocaleEn })) satisfies UiCatalog<SettingsPreferencesCopy>;
 
 export function getSettingsPreferencesCopy(locale: UiLocale): SettingsPreferencesCopy {
   return SETTINGS_PREFERENCES_COPY_BY_LOCALE[locale];

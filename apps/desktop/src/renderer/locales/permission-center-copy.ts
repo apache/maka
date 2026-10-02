@@ -27,7 +27,7 @@ import type {
   RuntimeProbeState,
 } from '@maka/core/capabilities';
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type Tone = StatusSemantic;
 type StatusCopy = { label: string; tone: Tone };
@@ -271,7 +271,7 @@ const permissionCenterCopyEn: PermissionCenterCopy = {
     reasonFallback: 'See the runtime logs for details.',
   };
 
-const PERMISSION_CENTER_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<PermissionCenterCopy>()({ 'zh-CN': permissionCenterCopyZhCn, 'zh-TW': permissionCenterCopyZhTw, en: permissionCenterCopyEn }));
+const PERMISSION_CENTER_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<PermissionCenterCopy>()({ 'zh-CN': permissionCenterCopyZhCn, 'zh-TW': permissionCenterCopyZhTw, en: permissionCenterCopyEn })) satisfies UiCatalog<PermissionCenterCopy>;
 
 export function getPermissionCenterCopy(locale: UiLocale): PermissionCenterCopy {
   return PERMISSION_CENTER_COPY[locale];

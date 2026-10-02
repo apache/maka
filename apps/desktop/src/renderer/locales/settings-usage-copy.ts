@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type UsageSettingsCopy = {
   staleTitle: string; staleBody: string; loadFailed: string; capacityBody: string; retainedBody: string;
@@ -114,7 +114,7 @@ const settingsUsageCopyEn: UsageSettingsCopy = {
     },
   };
 
-const SETTINGS_USAGE_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<UsageSettingsCopy>()({ 'zh-CN': settingsUsageCopyZhCn, 'zh-TW': settingsUsageCopyZhTw, en: settingsUsageCopyEn }));
+const SETTINGS_USAGE_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<UsageSettingsCopy>()({ 'zh-CN': settingsUsageCopyZhCn, 'zh-TW': settingsUsageCopyZhTw, en: settingsUsageCopyEn })) satisfies UiCatalog<UsageSettingsCopy>;
 
 export function getUsageSettingsCopy(locale: UiLocale): UsageSettingsCopy {
   return SETTINGS_USAGE_COPY[locale];

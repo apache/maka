@@ -20,7 +20,7 @@
 import type { SettingsTestResult, SettingsTestResultCode } from '@maka/core/settings';
 import type { BotTestErrorCode } from '@maka/runtime/bots';
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { lookupCopy } from '@maka/core/ui-locale';
 
 type SettingsTestResultCopy = {
@@ -161,7 +161,7 @@ const copyEn: SettingsTestResultCopy = {
     },
   };
 
-const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<SettingsTestResultCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn }));
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<SettingsTestResultCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn })) satisfies UiCatalog<SettingsTestResultCopy>;
 
 export function settingsTestResultMessage(
   result: SettingsTestResult,

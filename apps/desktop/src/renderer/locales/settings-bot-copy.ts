@@ -23,7 +23,7 @@ import type { BotStatusCode, BotTestErrorCode, WechatBridgeQrHintCode } from '@m
 import type { BotOnboardingErrorCode, BotOnboardingProvider, BotOnboardingSnapshot, BotOnboardingRetryFailureCategory } from '@maka/core/bot-onboarding';
 import type { GeneralizedErrorClass } from '@maka/core/redaction';
 
-import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -55,7 +55,7 @@ const BOT_TRANSPORT_ERRORS = resolveUiMessageCatalog(defineUiMessageCatalog<Reco
     provider_error: 'The platform is temporarily unavailable. Try again later',
     network_error: 'Network error. Check the network and proxy settings',
   },
-}));
+})) satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
 
 const zhCopy = {
   providers: {
@@ -423,7 +423,7 @@ const BOT_SETTINGS_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<BotSett
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
-}));
+})) satisfies UiCatalog<BotSettingsCopy>;
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];

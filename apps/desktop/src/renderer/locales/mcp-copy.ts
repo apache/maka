@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type McpCopy = {
   errors: {
@@ -249,7 +249,7 @@ const mcpCopyEn: McpCopy = {
     },
   };
 
-const MCP_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<McpCopy>()({ 'zh-CN': mcpCopyZhCn, 'zh-TW': mcpCopyZhTw, en: mcpCopyEn }));
+const MCP_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<McpCopy>()({ 'zh-CN': mcpCopyZhCn, 'zh-TW': mcpCopyZhTw, en: mcpCopyEn })) satisfies UiCatalog<McpCopy>;
 
 export function getMcpCopy(locale: UiLocale): McpCopy {
   return MCP_COPY[locale];

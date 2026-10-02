@@ -21,7 +21,7 @@ import type { SubagentProfile } from '@maka/core/subagent-settings';
 
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type ProfileCopy = {
   label: string;
@@ -346,7 +346,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessag
       max: 'Maximum',
     },
   },
-}));
+})) satisfies UiCatalog<SubagentSettingsCopy>;
 
 export function getSubagentSettingsCopy(locale: UiLocale): SubagentSettingsCopy {
   return SETTINGS_SUBAGENTS_COPY_BY_LOCALE[locale];

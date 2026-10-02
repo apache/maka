@@ -18,7 +18,7 @@
  */
 
 import type { RuntimeHostServiceErrorCode } from '@maka/runtime-host/operator';
-import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type SettingsProjectsCopy = {
   runtimeHost: {
@@ -1367,7 +1367,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessage
       'Add a project folder and new tasks can start in it, with the sidebar grouping tasks by project.',
     moreActions: (projectName: string) => `More actions for ${projectName}`,
   },
-}));
+})) satisfies UiCatalog<SettingsProjectsCopy>;
 
 export function getSettingsProjectsCopy(locale: UiLocale): SettingsProjectsCopy {
   return SETTINGS_PROJECTS_COPY_BY_LOCALE[locale];

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type BrowserCopy = {
   unsupportedScheme: string;
@@ -172,7 +172,7 @@ const browserCopyEn: BrowserCopy = {
     description: 'Enter an address, or ask the assistant to navigate and interact with a page.',
   };
 
-const BROWSER_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<BrowserCopy>()({ 'zh-CN': browserCopyZhCn, 'zh-TW': browserCopyZhTw, en: browserCopyEn }));
+const BROWSER_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<BrowserCopy>()({ 'zh-CN': browserCopyZhCn, 'zh-TW': browserCopyZhTw, en: browserCopyEn })) satisfies UiCatalog<BrowserCopy>;
 
 export function getBrowserCopy(locale: UiLocale): BrowserCopy {
   return BROWSER_COPY[locale];

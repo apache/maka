@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 interface SessionLocalCopy {
   saved: string;
@@ -57,7 +57,7 @@ const catalog = resolveUiMessageCatalog(defineUiMessageCatalog<SessionLocalCopy>
     check: '檢查是否送達',
     updateError: '無法更新已儲存的訊息',
   },
-}));
+})) satisfies UiCatalog<SessionLocalCopy>;
 
 export function getSessionLocalCopy(locale: UiLocale): SessionLocalCopy {
   return catalog[locale];

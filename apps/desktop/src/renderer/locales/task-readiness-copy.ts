@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface TaskReadinessCopy {
   readonly runtime: {
@@ -69,7 +69,7 @@ const TASK_READINESS_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<TaskR
       actionLabel: { workspace_picker: 'Choose workspace', retry: 'Check again' },
     },
   },
-}));
+})) satisfies UiCatalog<TaskReadinessCopy>;
 
 export function getTaskReadinessCopy(locale: UiLocale): TaskReadinessCopy {
   return TASK_READINESS_COPY[locale];

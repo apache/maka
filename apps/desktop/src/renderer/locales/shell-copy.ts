@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -2366,7 +2366,7 @@ const shellCopyByLocaleEn: ShellCopy = {
     },
   };
 
-const SHELL_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<ShellCopy>()({ 'zh-CN': shellCopyByLocaleZhCn, 'zh-TW': shellCopyByLocaleZhTw, en: shellCopyByLocaleEn }));
+const SHELL_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<ShellCopy>()({ 'zh-CN': shellCopyByLocaleZhCn, 'zh-TW': shellCopyByLocaleZhTw, en: shellCopyByLocaleEn })) satisfies UiCatalog<ShellCopy>;
 
 export function getShellCopy(locale: UiLocale): ShellCopy {
   return SHELL_COPY_BY_LOCALE[locale];

@@ -18,7 +18,7 @@
  */
 
 import type { PlanExecutionStep, PlanProposal } from '@maka/core/plan';
-import { lookupCopy, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, lookupCopy, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { PlanControlErrorCode } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../../shared/plan-mode-ipc.js';
 
@@ -157,7 +157,7 @@ const copyEn: PlanModeCopy = {
     },
   };
 
-const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<PlanModeCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn }));
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<PlanModeCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn })) satisfies UiCatalog<PlanModeCopy>;
 
 export function getPlanModeCopy(locale: UiLocale): PlanModeCopy {
   return COPY[locale];

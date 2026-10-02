@@ -20,7 +20,7 @@
 import type { LocalMemoryOperationCode, LocalMemoryState } from '@maka/core/local-memory';
 import type { MemoryMutationRejectionReason } from '@maka/runtime-host/protocol';
 
-import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type MemoryTextKey =
   | 'localFile' | 'localFileHelp' | 'enableLocalFile' | 'agentReadable' | 'agentReadableHelp' | 'enableAgentRead'
@@ -227,7 +227,7 @@ const settingsMemoryCopyEn: MemorySettingsCopy = {
     origins: { manual: 'Manual entry', imported: 'Imported entry', extracted: 'Confirmed extraction', unknown: 'Handwritten entry' }, entryStatuses: { draft: 'Draft', review_required: 'Needs review', active: 'Active', archived: 'Archived', rejected: 'Rejected', unknown: 'Unrecognized' }, backupKinds: { reset: 'Before reset', restore: 'Before restore', save: 'Before save' }, memoryStatuses: { ok: 'Local file ready', disabled: 'Off', safe_mode: 'Safe mode', incognito_blocked: 'Disabled in incognito', error: 'Read failed' }, promptBlocked: { disabled: 'Local memory is disabled.', incognito: 'Local memory is never added in incognito mode.', safeMode: 'MEMORY.md is too large and will not be added.', agentRead: 'Model context access is disabled.' }, backupOversize: 'Backup is too large to preview entries', previewOversize: 'The draft is too large, so entry preview is paused. Reduce MEMORY.md before saving.', previewTruncationMarker: '[Local memory truncated to the length limit]',
   };
 
-const SETTINGS_MEMORY_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<MemorySettingsCopy>()({ 'zh-CN': settingsMemoryCopyZhCn, 'zh-TW': settingsMemoryCopyZhTw, en: settingsMemoryCopyEn }));
+const SETTINGS_MEMORY_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<MemorySettingsCopy>()({ 'zh-CN': settingsMemoryCopyZhCn, 'zh-TW': settingsMemoryCopyZhTw, en: settingsMemoryCopyEn })) satisfies UiCatalog<MemorySettingsCopy>;
 
 export function getMemorySettingsCopy(locale: UiLocale): MemorySettingsCopy { return SETTINGS_MEMORY_COPY[locale]; }
 

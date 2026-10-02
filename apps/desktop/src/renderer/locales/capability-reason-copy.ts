@@ -18,7 +18,7 @@
  */
 
 import type { CapabilityReasonCode } from '@maka/core/capabilities';
-import { type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type CapabilityReasonCopy = Record<CapabilityReasonCode, string>;
 
@@ -98,7 +98,7 @@ const CAPABILITY_REASON_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<Ca
     notifications_unsupported: 'Electron notifications are unavailable',
     permission_probe_failed: 'Permission probe failed',
   },
-}));
+})) satisfies UiCatalog<CapabilityReasonCopy>;
 
 export function getCapabilityReasonCopy(locale: UiLocale): CapabilityReasonCopy {
   return CAPABILITY_REASON_COPY[locale];

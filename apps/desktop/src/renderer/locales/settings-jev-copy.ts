@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export const JEV_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<Record<'advanced' | 'title' | 'help' | 'key' | 'saved' | 'save' | 'saving' | 'clear' | 'behavior' | 'failure', string>>()({
   'zh-CN': {
@@ -44,4 +44,4 @@ export const JEV_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<Record<'a
     behavior: 'Uncertain decisions ask for clarification; service failures use the existing router.',
     failure: 'Could not save Jev settings. Please try again.',
   },
-}));
+})) satisfies UiCatalog<Record<'advanced' | 'title' | 'help' | 'key' | 'saved' | 'save' | 'saving' | 'clear' | 'behavior' | 'failure', string>>;
