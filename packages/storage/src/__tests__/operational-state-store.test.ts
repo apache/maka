@@ -23,7 +23,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import type { GoalAuthorityRecord } from '@maka/core/goal';
 import type { SessionHeader } from '@maka/core/session';
+import { createSqliteGoalAuthority } from '../goal-authority.js';
 import {
   acquireOperationalStateDatabase,
   OperationalStateMigrationBlockedError,
@@ -33,6 +35,7 @@ import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from '../sqlite-session-metadata-schema.js';
 import { SQLITE_USAGE_SCHEMA_VERSION } from '../sqlite-usage-schema.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
+import { SQLITE_WORKFLOW_SCHEMA_VERSION } from '../sqlite-workflow-schema.js';
 
 test('shares one operational database and produces an online backup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-state-'));
@@ -68,6 +71,174 @@ test('shares one operational database and produces an online backup', async () =
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('workflow 12 upgrade adds wait storage atomically and preserves every released row and schema scope', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-workflow-12-'));
+  const databasePath = join(root, 'runtime.sqlite');
+  const goal: GoalAuthorityRecord = {
+    schemaVersion: 1,
+    goal: {
+      id: 'goal-1',
+      revision: 4,
+      sessionId: 'session-1',
+      condition: 'Preserve the existing Goal during upgrade.',
+      status: 'active',
+      setAt: 1,
+      iterations: 3,
+      maxIterations: 50,
+      consecutiveNoProgress: 1,
+      blockCap: 8,
+      tokensAtStart: 100,
+      tokensNow: 200,
+      tokensBaselinePending: false,
+    },
+    controlLease: { goalId: 'goal-1', generation: 3 },
+    currentExecution: {
+      execution: { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' },
+      checkpoint: { goalId: 'goal-1', revision: 4 },
+      controlLease: { goalId: 'goal-1', generation: 3 },
+    },
+    pendingContinuation: null,
+  };
+  try {
+    const setup = acquireOperationalStateDatabase(root, { now: () => 10 });
+    const metadata = createSqliteSessionMetadataStore(databasePath, { databaseLease: setup });
+    try {
+      await metadata.create({ ...sessionHeader(), labels: ['preserved'] });
+      const goals = createSqliteGoalAuthority(root);
+      try {
+        assert.equal(
+          goals.commit({ sessionId: 'session-1', expectedAuthorityRevision: null, record: goal })
+            .kind,
+          'committed',
+        );
+      } finally {
+        goals.close();
+      }
+    } finally {
+      metadata.close();
+    }
+
+    const released = new DatabaseSync(databasePath);
+    let before: ReturnType<typeof readOperationalDatabaseSnapshot>;
+    try {
+      // These are the only structural differences from the released workflow-12
+      // builder: its Goal authority and every other table already match v13.
+      released.exec('DROP TABLE workflow_event_waits');
+      released
+        .prepare("UPDATE operational_schema_migrations SET version = 12 WHERE scope = 'workflow'")
+        .run();
+      before = readOperationalDatabaseSnapshot(released);
+    } finally {
+      released.close();
+    }
+
+    // Registry publication fails after building the new table, so the whole
+    // upgrade must roll back, including the indexes and preserved Goal bytes.
+    assert.throws(
+      () => acquireOperationalStateDatabase(root, { now: () => -1 }),
+      /CHECK constraint/,
+    );
+    const rolledBack = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.deepEqual(readOperationalDatabaseSnapshot(rolledBack), before);
+    } finally {
+      rolledBack.close();
+    }
+
+    const migrated = acquireOperationalStateDatabase(root, { now: () => 20 });
+    try {
+      const after = readOperationalDatabaseSnapshot(migrated.database);
+      assert.deepEqual(
+        after.schema.filter(({ tbl_name }) => tbl_name !== 'workflow_event_waits'),
+        before.schema,
+      );
+      const oldRows = { ...after.rows };
+      assert.deepEqual(oldRows.workflow_event_waits, []);
+      delete oldRows.workflow_event_waits;
+      oldRows.operational_schema_migrations = before.rows.operational_schema_migrations;
+      assert.deepEqual(oldRows, before.rows);
+      assert.equal(after.runtimeVersion, before.runtimeVersion);
+      assert.deepEqual(
+        after.rows.operational_schema_migrations,
+        before.rows.operational_schema_migrations!.map((row) =>
+          row.scope === 'workflow'
+            ? { ...row, version: SQLITE_WORKFLOW_SCHEMA_VERSION, applied_at: 20 }
+            : row,
+        ),
+      );
+      assert.deepEqual(
+        after.schema
+          .filter(({ tbl_name }) => tbl_name === 'workflow_event_waits')
+          .map(({ name }) => name),
+        [
+          'workflow_event_waits_by_session',
+          'workflow_event_waits_one_active_session',
+          'workflow_event_waits_pending',
+          'workflow_event_waits',
+        ],
+      );
+      const goals = createSqliteGoalAuthority(root);
+      try {
+        assert.deepEqual(goals.read('session-1'), { authorityRevision: 0, record: goal });
+      } finally {
+        goals.close();
+      }
+    } finally {
+      migrated.close();
+    }
+
+    const future = new DatabaseSync(databasePath);
+    let futureSnapshot: ReturnType<typeof readOperationalDatabaseSnapshot>;
+    try {
+      future
+        .prepare("UPDATE operational_schema_migrations SET version = ? WHERE scope = 'workflow'")
+        .run(SQLITE_WORKFLOW_SCHEMA_VERSION + 1);
+      futureSnapshot = readOperationalDatabaseSnapshot(future);
+    } finally {
+      future.close();
+    }
+    assert.throws(() => acquireOperationalStateDatabase(root), /workflow is newer than supported/);
+    const preserved = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      assert.deepEqual(readOperationalDatabaseSnapshot(preserved), futureSnapshot);
+    } finally {
+      preserved.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function readOperationalDatabaseSnapshot(database: DatabaseSync) {
+  const schema = database
+    .prepare(
+      "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    )
+    .all()
+    .map((row) => ({ ...row })) as Array<{
+    type: string;
+    name: string;
+    tbl_name: string;
+    sql: string;
+  }>;
+  const rows = Object.fromEntries(
+    schema
+      .filter(({ type }) => type === 'table')
+      .map(({ name }) => [
+        name,
+        database
+          .prepare(`SELECT * FROM "${name}"`)
+          .all()
+          .map((row) => ({ ...row })),
+      ]),
+  );
+  return {
+    schema,
+    rows,
+    runtimeVersion: database.prepare('PRAGMA user_version').get()!.user_version,
+  };
+}
 
 test('atomically reapplies current owner schema without republishing its registry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-current-convergence-'));
