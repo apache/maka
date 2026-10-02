@@ -361,7 +361,10 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
   }
 
   protected override async openConnection(): Promise<void> {
-    const token = await this.refreshTokenIfNeeded();
+    const isCurrent = this.beginConnectionAttempt();
+    if (!isCurrent()) return;
+    const token = await this.refreshTokenIfNeeded(isCurrent);
+    if (!isCurrent()) return;
     if (!token) {
       this.readiness = 'configured';
       this.emitStatusChange();
@@ -390,6 +393,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
       const json = (await response
         .json()
         .catch(() => null)) as DingTalkConnectionOpenResponse | null;
+      if (!isCurrent()) return;
       if (
         !response.ok ||
         !json ||
@@ -404,6 +408,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
       }
       this.connect(`${json.endpoint}?ticket=${encodeURIComponent(json.ticket)}`);
     } catch (error) {
+      if (!isCurrent()) return;
       this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
@@ -512,7 +517,9 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
     }
   }
 
-  private async refreshTokenIfNeeded(): Promise<string | null> {
+  private async refreshTokenIfNeeded(
+    isCurrent: () => boolean = () => true,
+  ): Promise<string | null> {
     const now = Date.now();
     if (this.token && this.token.expiresAt - TOKEN_REFRESH_SKEW_MS > now) {
       return this.token.value;
@@ -533,6 +540,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
         errcode?: number;
         errmsg?: string;
       } | null;
+      if (!isCurrent()) return null;
       if (!json || (json.errcode !== undefined && json.errcode !== 0)) {
         this.recordFailure(json?.errmsg ?? 'gettoken failed', 'dingtalk_no_access_token');
         return null;
@@ -545,6 +553,7 @@ export class DingTalkBotBridge extends WsBridgeBase implements SendCapable {
       };
       return this.token.value;
     } catch (error) {
+      if (!isCurrent()) return null;
       this.recordFailure(error);
       return null;
     }
