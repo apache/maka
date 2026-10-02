@@ -37,9 +37,9 @@ export type PdfPreflightResult =
  *   {@link PDF_HEADER_SCAN_BYTES} window defined in `@maka/core/attachments`.
  *
  * - **Encryption**: Searches for an active `/Encrypt` dictionary definition
- *   (`/Encrypt <<` or `/Encrypt N N R`). A document that merely *mentions*
- *   the word `/Encrypt` outside a dictionary context will not trigger a
- *   false positive.
+ *   (`/Encrypt <<` or `/Encrypt N N R`). This is a best-effort text-level scan
+ *   and may falsely match uncompressed stream content containing those exact
+ *   sequences.
  *
  * - **Page count**: Best-effort bounded regex scan for
  *   `/Type /Pages ... /Count N`. The regex only matches outside of stream

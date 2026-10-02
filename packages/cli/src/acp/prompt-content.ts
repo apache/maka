@@ -23,7 +23,6 @@ import { open, realpath } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RequestError, type ContentBlock } from '@agentclientprotocol/sdk';
-import { validatePdfBytes } from '@maka/runtime/pdf-preflight';
 import {
   attachmentKindFromMimeType,
   MAX_ATTACHMENT_BYTES,
@@ -124,12 +123,6 @@ export async function publishAcpPromptAttachments(
     options.assertActive();
 
     const mimeType = resolveAttachmentMimeType(bytes, attachment.mimeType, attachment.name);
-    if (mimeType === 'application/pdf') {
-      const preflight = validatePdfBytes(bytes);
-      if (!preflight.ok && preflight.reason !== 'encrypted') {
-        throw invalidPrompt('attachments', `pdf_${preflight.reason}`);
-      }
-    }
 
     const uploadId = randomUUID();
     const identity = { sessionId: options.sessionId, uploadId };
