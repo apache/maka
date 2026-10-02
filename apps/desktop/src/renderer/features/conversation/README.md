@@ -127,6 +127,7 @@ Remaining transitional capabilities have explicit consumers and removal work:
 | Stop pending claim and semantic send/transient/interaction commands | AppShell chat actions and composer submission | M3 persistent Composer owner |
 | `useAppShellSessionUiReads` | AppShell chrome and Composer prop assembly | M3 regional readers; retain only required chrome |
 | Invocation-time published-message read | Copy/Save and revision commands | M3 command ownership / bounded-history export integration |
+| `compactSession` command | AppShell composer submission (`/compact` port) | M3 submission ownership |
 
 M2 owns presentation and observation; it does not add a Catalog, Host cache or
 execution state machine, or complete the remaining Composer migration.
@@ -153,6 +154,22 @@ Session-scoped and uses the existing observer/control APIs. Revisit this boundar
 if an accepted architecture decision changes that target or moves Plan into an
 independent domain; do not restore a full-model export to adapt callers.
 
+## Context compaction (R2 M2)
+
+The Conversation controller owns the renderer's one context-compaction
+presentation. `compactSession` calls the injected `sessions.compact` service and
+opens the running notice; `ConversationLifecycle` hands the Host's terminal
+`contextCompactionOutcome` to the same presentation, which dismisses that notice
+and shows the outcome once. A reply that arrives after the Host has settled its
+Turn adds nothing. A rejected request is reported against its Session only while
+that Session is still published; a missing working directory keeps its own
+notice, classified by `application/contracts/session-workspace-errors.ts`.
+
+AppShell no longer builds the presentation, calls the bridge, or threads the
+outcome into the lifecycle. It forwards the stable `compactSession` command to
+composer submission's `/compact` port until M3 moves submission below the
+Composer owner. `model/context-compaction.ts` is private; tests use `testing.ts`.
+Side Chat keeps its fork-scoped presentation in Workbar.
 
 ## Composer staging ownership (R2 M3, first slice)
 

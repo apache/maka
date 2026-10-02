@@ -20,7 +20,9 @@
 import type { ContextCompactionOutcome } from '@maka/core/events';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
-import { getShellCopy } from './locales/shell-copy.js';
+import type { ToastApi } from '@maka/ui';
+import { isSessionWorkspaceUnavailableError } from '../../../application/contracts/session-workspace-errors.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 
 const SETTLED_PRESENTATION_LIMIT = 128;
 
@@ -127,4 +129,60 @@ export function presentContextCompactionResult(
 
 function compactionKey(sessionId: string, turnId: string): string {
   return `${sessionId}\u0000${turnId}`;
+}
+
+/**
+ * `/compact` and the Host's terminal outcome share one presentation, so the
+ * running toast a command opens is the one the outcome event dismisses.
+ */
+export function createContextCompactionCommands(input: {
+  compact(sessionId: string): Promise<ContextCompactResult>;
+  isCurrentSession(sessionId: string): boolean;
+  feedback: {
+    readonly current: {
+      readonly locale: UiLocale;
+      readonly toast: Pick<ToastApi, 'toast' | 'dismiss' | 'success' | 'info' | 'error'>;
+    };
+  };
+}) {
+  const presentation = createContextCompactionPresentation({
+    toastApi: {
+      toast: (notice) => input.feedback.current.toast.toast(notice),
+      dismiss: (id) => input.feedback.current.toast.dismiss(id),
+    },
+    presentTerminal(sessionId, notice) {
+      const { toast } = input.feedback.current;
+      if (notice.level === 'error') {
+        toast.error(notice.title, notice.description, undefined, { sessionId });
+        return;
+      }
+      toast[notice.level](notice.title, notice.description);
+    },
+  });
+  return {
+    async compactSession(sessionId: string): Promise<boolean> {
+      try {
+        const result = await input.compact(sessionId);
+        return presentContextCompactionResult(presentation, sessionId, result, input.feedback.current.locale);
+      } catch (error) {
+        if (!input.isCurrentSession(sessionId)) return false;
+        const { locale, toast } = input.feedback.current;
+        const copy = getShellCopy(locale);
+        if (isSessionWorkspaceUnavailableError(error)) {
+          toast.error(copy.errors.workspaceUnavailableTitle, copy.errors.workspaceUnavailableDescription, undefined, { sessionId });
+        } else {
+          toast.error(
+            copy.app.compactErrorTitle,
+            localizedShellErrorMessage(error, copy.app.compactErrorFallback, locale),
+            undefined,
+            { sessionId },
+          );
+        }
+        return false;
+      }
+    },
+    finishContextCompaction(sessionId: string, turnId: string, outcome: ContextCompactionOutcome): void {
+      presentation.finished(sessionId, turnId, outcome, input.feedback.current.locale);
+    },
+  };
 }

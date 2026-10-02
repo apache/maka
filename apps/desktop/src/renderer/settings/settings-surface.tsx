@@ -950,7 +950,7 @@ function SettingsSurfaceContent(
             <Layout
               /* The rounded main pane owns page scrolling. Keeping scroll on
                  the centered LayoutContent made the wide gutters inert and
-                 parked the scrollbar beside the 920px content column. */
+                 parked the scrollbar beside the centered content column. */
               height="auto"
               padding={0}
               /* One column width for EVERY section. Usage used to get 920
@@ -958,8 +958,12 @@ function SettingsSurfaceContent(
                  visibly shifted the left edge — the title jumped ~120px
                  between 使用统计 and any other page. A settings surface is
                  one place; its margins must not depend on which page is
-                 open. */
-              contentWidth={920}
+                 open. The column is the app's one reading measure
+                 (DESIGN.md §7, One Measure Rule), plus LayoutContent's 24px
+                 inline padding on each side. It is wrapped in calc() because
+                 Astryx aligns a bare var() differently from an arithmetic
+                 width. */
+              contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
               header={headerCopy ? (
                 <LayoutHeader padding={6}>
                   <div className="settingsPageHeader">
