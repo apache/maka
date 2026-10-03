@@ -18,7 +18,12 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { SessionEvent, ShellRunStateResult, ShellRunUpdate } from '@maka/core/events';
+import type {
+  SessionEvent,
+  QuoteRef,
+  ShellRunStateResult,
+  ShellRunUpdate,
+} from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -67,6 +72,12 @@ export interface MakaSessionSwitchResult {
 
 export interface MakaSessionRewindResult extends MakaSessionSwitchResult {
   prompt: string;
+  /**
+   * The rewound turn's QuoteRefs when it carried any. A surface that can
+   * stage them must carry them into the replacement submit; refilling the
+   * prompt text alone would silently drop them (#5109).
+   */
+  quotes?: readonly QuoteRef[];
 }
 
 export interface MakaSideConversationOpenResult extends MakaSessionSwitchResult {
@@ -114,11 +125,23 @@ export interface MakaSubmitMessageOptions {
   modelText?: string;
   /** Exact-Turn intent carried to Runtime Host, which decides how to admit it. */
   turnOrchestration?: TurnOrchestration;
+  /**
+   * QuoteRefs submitted verbatim alongside the text — the rewound turn's
+   * restored context a surface stages for the replacement submit (#5109).
+   */
+  quotes?: readonly QuoteRef[];
 }
 
 export interface MakaRetractedMessages {
   text: string;
   messageIds: readonly string[];
+  /**
+   * The queued messages' inline excerpts, returned verbatim by the Host's
+   * `queue.retract` — the full `MessageContent` comes back with the
+   * retraction, so a queued submit's quotes can restage instead of
+   * vanishing with the queue row (#5109 review).
+   */
+  quotes: readonly QuoteRef[];
 }
 
 /**

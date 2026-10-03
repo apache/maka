@@ -93,7 +93,9 @@ import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
+  type MakaRetractedMessages,
   type MakaSessionDriver,
+  type MakaSessionRewindResult,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
 } from './session-driver.js';
@@ -408,7 +410,12 @@ interface TuiRewindCopy {
   readonly doneKeptDraft: string;
   readonly noTargets: string;
   readonly busy: string;
-  readonly unsupportedQuotes: string;
+  readonly quotesRestored: string;
+  readonly quotesRestoredUnknown: string;
+  readonly quotesCleared: string;
+  readonly quotesNone: string;
+  readonly quotesUsage: string;
+  readonly quotesListHeading: string;
   readonly unsupportedAttachments: string;
   readonly unsupportedDirectoryReferences: string;
   readonly pickerHint: string;
@@ -646,6 +653,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         readonly sideSessionId: string;
         parentDraft: string;
         sideDraft: string;
+        // Quotes recovered by a retraction ride the draft they were restored
+        // into: parked here while the other view is active, staged back when
+        // the view returns (#5265 review).
+        parentQuotes: StagedQuoteRefs;
+        sideQuotes: StagedQuoteRefs;
         parentStatus?: MakaSideConversationParentStatus;
         stopParentObserver?: () => Promise<void>;
       }
@@ -688,6 +700,67 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
   let pendingAttachedTurn: AttachedTurnContext | undefined;
   const resolvedInteractionIds = new Set<string>();
+  // Quotes restored by a rewind (#5109) wait here for the next submit. The
+  // staging is keyed to the session it was restored in, so it only renders
+  // while that session is active, and every session change clears it
+  // outright (applySwitchResult) — a switch must not be able to resurrect
+  // the quotes into a later submit unnoticed; a refused or failed submit
+  // keeps them for the retry.
+  //
+  // Retraction-restored quotes (#5265 review) are the exception: they come
+  // back attached to the retracted message's text, whose only remaining copy
+  // is the editor/draft the restore handed it to, so they follow that text —
+  // into the staging (while it is in the editor) or into the side
+  // conversation's draft slots (when the text is parked there) — instead of
+  // dying on a switch. followDraft marks that lane; the session key still
+  // gates turn-staged quotes exactly as #5109 left it.
+  type StagedQuoteRefs = NonNullable<MakaSessionRewindResult['quotes']>;
+  let stagedRewindQuotes: StagedQuoteRefs = [];
+  let stagedQuotesSessionId: string | null = null;
+  let stagedQuotesFollowDraft = false;
+  let stagedGeneration = 0;
+  const effectiveStagedQuotes = () =>
+    stagedQuotesFollowDraft ||
+    (stagedQuotesSessionId !== null && stagedQuotesSessionId === input.driver.getSessionId())
+      ? stagedRewindQuotes
+      : [];
+  // Every write to the staging pair is a new generation. In-flight submits
+  // capture the generation at dispatch and only restage their quotes when no
+  // write has landed since, so a write that skips this setter would let a
+  // stale failure callback overwrite newer staging (#5109 review).
+  const setStagedQuotes = (
+    quotes: StagedQuoteRefs,
+    sessionId: string | null,
+    followDraft = false,
+  ) => {
+    stagedRewindQuotes = quotes;
+    stagedQuotesSessionId = sessionId;
+    stagedQuotesFollowDraft = followDraft;
+    stagedGeneration += 1;
+  };
+  const clearStagedQuotes = () => setStagedQuotes([], null);
+  // Quotes riding the recovered draft text move with it: taking them clears
+  // the staging (the text is leaving the editor for a draft slot), staging
+  // them back re-arms them for the view that owns the text (#5265 review).
+  const takeDraftQuotes = (): StagedQuoteRefs => {
+    if (!stagedQuotesFollowDraft || stagedRewindQuotes.length === 0) return [];
+    const quotes = stagedRewindQuotes;
+    clearStagedQuotes();
+    return quotes;
+  };
+  const stageDraftQuotes = (quotes: StagedQuoteRefs, sessionId: string) => {
+    if (quotes.length === 0) return;
+    setStagedQuotes(quotes, sessionId, true);
+  };
+  // Some actions supersede a pending restoration without writing the staging
+  // pair, because the staging is already empty: an ordinary submit that
+  // carries no quotes, or an explicit `/quotes clear` that finds nothing.
+  // Both still advance the generation, so an in-flight submit's failure
+  // callback cannot re-arm quotes the conversation has moved past (#5109
+  // review, second round).
+  const supersedePendingRestage = () => {
+    stagedGeneration += 1;
+  };
   let startAttachedTurn: ((attached: AttachedTurnContext) => void) | undefined;
   const startPendingAttachedTurn = () => {
     if (busy || turnRunning) return;
@@ -764,6 +837,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     providerRetry: state.providerRetry,
     uiLocale: locale,
     goal: input.driver.getGoal?.() ?? null,
+    stagedQuoteCount: effectiveStagedQuotes().length,
     ...(sideConversation
       ? {
           sideConversation: {
@@ -1248,6 +1322,37 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       await Promise.allSettled([...pendingEnqueueTasks]);
     }
   };
+  // An in-flight retraction serializes navigation: a session switch waits
+  // for it, so the retracted text and quotes land in the session they were
+  // asked for instead of being discarded after the driver re-keyed (#5109
+  // review).
+  const pendingRetractionTasks = new Set<Promise<void>>();
+  const trackRetraction = (task: Promise<void>): void => {
+    pendingRetractionTasks.add(task);
+    void task.finally(() => pendingRetractionTasks.delete(task));
+  };
+  const settleRetractions = async (): Promise<void> => {
+    while (pendingRetractionTasks.size > 0) {
+      await Promise.allSettled([...pendingRetractionTasks]);
+    }
+  };
+  // A session switch re-keys the driver only partway through its work: the
+  // driver stops user commands and opens the target Session's channel before
+  // adopting the new id, and Alt+Up stays live through that whole window. A
+  // retraction asked for there starts after the switch's `settleRetractions`
+  // drain yet still addresses the old Session — the Host removes the queued
+  // entries while the driver re-keys, and the switched-session fence then
+  // discards the returned text and quotes. New retractions are blocked for
+  // the entire switch instead (#5265 review).
+  let sessionSwitchesInFlight = 0;
+  const holdSwitchWindow = async <T>(body: () => Promise<T>): Promise<T> => {
+    sessionSwitchesInFlight += 1;
+    try {
+      return await body();
+    } finally {
+      sessionSwitchesInFlight -= 1;
+    }
+  };
 
   const requestTurnInterrupt = () => {
     // A detach in flight is not the running Turn's owner acting on it — the
@@ -1265,9 +1370,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // for re-editing, while anything already consumed stays in the transcript.
     // Serializing these operations also preserves that ordering over a Host
     // connection where both calls are asynchronous.
-    void (async () => {
+    const retractionTask = (async () => {
+      // Fence the retraction and the stop to the session they were asked for:
+      // a mid-turn `/session` landing while enqueues or the Host call are in
+      // flight re-keys the driver, and the abandoned retraction must neither
+      // retract the new session's queue nor stop its running turn, nor land
+      // its text or quotes there (#5109 review).
+      const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      if (input.driver.getSessionId() !== retractionSessionId) return;
+      const retracted = (await input.driver.retractQueued?.()) ?? {
+        text: '',
+        messageIds: [],
+        quotes: [],
+      };
+      if (input.driver.getSessionId() !== retractionSessionId) {
+        return;
+      }
       acceptRetraction(retracted);
       requestRender();
       await input.driver.stop();
@@ -1276,13 +1395,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       editor.disableSubmit = false;
       reportError(error);
     });
+    trackRetraction(retractionTask);
   };
 
   // Open a fresh turn from a submitted prompt (idle path). Control actions hold
   // `busy`, so a prompt typed mid-switch goes back to the editor rather than
   // racing it. Exiting is never held back.
   const submitPrompt = (prompt: string) => {
-    if (!prompt.trim()) {
+    // Staged rewind quotes are the replacement content on their own: an empty
+    // text with quotes present is a meaningful quote-only submission (#5109).
+    if (!prompt.trim() && effectiveStagedQuotes().length === 0) {
       requestRender();
       return;
     }
@@ -1342,9 +1464,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (index >= 0) state.entries.splice(index, 1);
   };
 
-  const acceptRetraction = (retracted: { text: string; messageIds: readonly string[] }) => {
+  const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
     refillEditorFromQueues(retracted.text);
+    // The Host returns the full MessageContent with a retraction: quotes that
+    // rode a queued or steered message come back with it and restage here, so
+    // the re-edited retry does not go out without them (#5109 review). They
+    // ride the restored draft text, so they follow it across switches and
+    // draft parking (#5265 review).
+    if (retracted.quotes.length > 0) {
+      setStagedQuotes(retracted.quotes, input.driver.getSessionId(), true);
+    }
   };
 
   /**
@@ -1361,14 +1491,63 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const messageId = randomUUID();
     appendUserPrompt(state, text, messageId, true);
     requestRender();
+    // Quotes staged by a rewind (#5109) ride this message and only this one:
+    // the staging clears as the message dispatches, and a refusal or failure
+    // restages them for the retry.
+    const staged = effectiveStagedQuotes();
+    const originSessionId = input.driver.getSessionId();
+    // The lane the quotes were staged in must be read before the dispatch's
+    // own clear: clearStagedQuotes() resets the flag, so a read after it
+    // always records turn-staged and a failed submit's restage would hand the
+    // quotes to the next switch's staging clear (#5265 review).
+    const originFollowDraft = stagedQuotesFollowDraft;
+    if (staged.length > 0) clearStagedQuotes();
+    else supersedePendingRestage();
+    // The generation is read after the dispatch's own clear: the restore
+    // guard compares against the staging state this submit actually left
+    // behind, so an ordinary failure still passes while a Session switch, a
+    // newer rewind, or an explicit clear landing while the admission was in
+    // flight has since bumped it and must not inherit context meant for the
+    // original conversation (#5109 review).
+    const originGeneration = stagedGeneration;
+    const restageForRetry = (): boolean => {
+      if (!staged.length) return false;
+      if (input.driver.getSessionId() !== originSessionId) return false;
+      if (stagedGeneration !== originGeneration) return false;
+      setStagedQuotes(staged, originSessionId, originFollowDraft);
+      return true;
+    };
     const task = input.driver
-      .submitMessage(text, { messageId, placement, ...options })
+      .submitMessage(text, {
+        messageId,
+        placement,
+        ...options,
+        ...(staged.length > 0 ? { quotes: staged } : {}),
+      })
       .then((result) => {
         // Runtime Host resolved the Skills this Message named and refused it.
         // Retire the row it belongs to and report the failure in its place.
         if (result?.disposition === 'blocked') {
           removeTransientUserMessage(messageId);
+          restageForRetry();
           showSkillInvocation(result.skillInvocation);
+          return;
+        }
+        // A resolved-but-receipt-less submit is the real driver's outcome
+        // unknown path (`outcome_unknown`, or an interruption after the
+        // dispatch went out): admission cannot be proven either way. The
+        // dispatch already consumed the staging, so restage it — losing the
+        // user's explicit context to an unproven outcome is worse than a
+        // visible duplicate ride, which the status line surfaces and
+        // `/quotes clear` discards (#5109 review).
+        if (!result) {
+          if (restageForRetry()) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesRestoredUnknown,
+            });
+          }
           return;
         }
         // It admitted them instead. The receipt says what was loaded and what
@@ -1384,6 +1563,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // The Message never became anything, so its row goes with the failure
         // notice that replaces it. The text stays in editor history for a retry.
         removeTransientUserMessage(messageId);
+        restageForRetry();
         reportError(error);
       })
       .finally(() => {
@@ -1396,7 +1576,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // step boundary. The Host alone decides whether it steers or starts a
   // successor Turn if the previous Turn settled during admission.
   const steerRunningTurn = (text: string) => {
-    if (!text.trim()) {
+    if (!text.trim() && effectiveStagedQuotes().length === 0) {
       requestRender();
       return;
     }
@@ -1407,7 +1587,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // reaches this — it stays the editor's completion trigger (key handler gate).
   const queueDraftForNextTurn = () => {
     const text = editor.getExpandedText().trim();
-    if (!text) return;
+    if (!text && effectiveStagedQuotes().length === 0) return;
     editor.setText('');
     submitMessage(text, 'next_turn');
   };
@@ -1415,12 +1595,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Shift+←: take back every queued message from the Runtime Host, joined and
   // prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
-    void (async () => {
+    // A session switch blocks new retractions for its entire window: the
+    // switch's own settle drain only covers retractions asked for before it,
+    // and past that drain a retraction would still address the old Session
+    // while the driver is busy re-keying (#5265 review). Swallowing the
+    // keypress loses nothing: the entries stay queued and Alt+Up works once
+    // the switch lands.
+    if (sessionSwitchesInFlight > 0) return;
+    const retractionTask = (async () => {
+      // Same session fence as the interrupt path: a mid-turn `/session` that
+      // lands while enqueues or the retraction are in flight must neither
+      // retract the new session's queue nor inherit the quotes or the text
+      // of the session we left (#5109 review).
+      const retractionSessionId = input.driver.getSessionId();
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      if (input.driver.getSessionId() !== retractionSessionId) return;
+      const retracted = (await input.driver.retractQueued?.()) ?? {
+        text: '',
+        messageIds: [],
+        quotes: [],
+      };
+      if (input.driver.getSessionId() !== retractionSessionId) return;
       acceptRetraction(retracted);
       requestRender();
     })().catch(reportError);
+    trackRetraction(retractionTask);
   };
 
   // Onboarding wizard (#1098 UX redesign): one overlay spans provider search,
@@ -1863,6 +2062,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   }: MakaSessionSwitchResult): Promise<void> => {
     resetTranscriptViewer();
     closeTodoOverlay();
+    // Every session change invalidates turn-staged rewind quotes outright:
+    // keying the staging to its session only hides it while the user is
+    // elsewhere, and a silent resurrection on return would send context the
+    // user can no longer see (#5109 review). The rewind re-stages its own
+    // quotes after this returns.
+    //
+    // Retraction-restored quotes are the exception (#5265 review): they belong
+    // to the recovered text the editor is still holding across this switch,
+    // and the Host already removed the queue entries they came from — the
+    // staging here is the only copy. They stay live, keyed to wherever that
+    // text lives next (this session's editor, or the draft slot a side
+    // toggle/open parks it in right after this returns).
+    if (!stagedQuotesFollowDraft) clearStagedQuotes();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     syncInteractionOverlays();
@@ -1880,7 +2092,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The driver validates the durable cwd before adopting the resumed session.
   // A failure leaves the active session untouched and the next prompt still
   // lands on the old one.
-  const switchSession = async (sessionId: string, relocateCwd?: string) => {
+  const runSessionSwitch = async (sessionId: string, relocateCwd?: string) => {
+    // A session switch waits for an in-flight retraction: the retracted text
+    // and quotes must land in the session they were asked for before the
+    // driver re-keys (#5109 review).
+    await settleRetractions();
     resolvedInteractionIds.clear();
     const result = await input.driver.switchSession(
       sessionId,
@@ -1924,6 +2140,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     requestRender();
   };
+  // The whole switch — its settle drain, the driver's asynchronous re-key,
+  // and the adoption — runs inside the switch window so Alt+Up cannot send a
+  // retraction for the session being left (#5265 review).
+  const switchSession = (sessionId: string, relocateCwd?: string): Promise<void> =>
+    holdSwitchWindow(() => runSessionSwitch(sessionId, relocateCwd));
 
   // Mid-turn `/session` switch-away (#3380): adopt another Session while a
   // Turn is still running on the current one. In Runtime Host mode the Turn is
@@ -1933,7 +2154,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // tail unwinds through the superseded branch and releases busy/activity,
   // then either that tail or the startPendingAttachedTurn below starts the
   // freshly attached Turn, whichever observes an idle runner first.
-  const switchAwayMidTurn = async (sessionId: string) => {
+  const runMidTurnSwitch = async (sessionId: string) => {
+    // Same serialization as the idle switch: the in-flight retraction lands
+    // its payload in the session it was asked for first (#5109 review).
+    await settleRetractions();
     resolvedInteractionIds.clear();
     detaching = true;
     try {
@@ -1977,6 +2201,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       startPendingAttachedTurn();
     }
   };
+  // Same window as the idle switch: the mid-turn detach also re-keys the
+  // driver through asynchronous work, so Alt+Up waits it out (#5265 review).
+  const switchAwayMidTurn = (sessionId: string): Promise<void> =>
+    holdSwitchWindow(() => runMidTurnSwitch(sessionId));
 
   const stopSideParentObserver = async (
     pair: NonNullable<typeof sideConversation>,
@@ -2032,18 +2260,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!pair || detaching || (busy && !turnRunning)) return;
     const fromSide = input.driver.getSessionId() === pair.sideSessionId;
     const targetSessionId = fromSide ? pair.parentSessionId : pair.sideSessionId;
-    const currentDraft = editor.getText();
     const switchView = async () => {
       if (turnRunning) await switchAwayMidTurn(targetSessionId);
       else await switchSession(targetSessionId);
       if (sideConversation !== pair) return;
+      // Capture after the switch: both switch paths drain a pending
+      // retraction first, and the drain may have restored text (and its
+      // quotes) into the editor. Capturing before the wait would write that
+      // stale draft back over the recovery — side editor, parent editor, and
+      // Host queue all empty with no notice (#5265 review).
+      const currentDraft = editor.getText();
+      const currentQuotes = takeDraftQuotes();
       if (fromSide) {
         pair.sideDraft = currentDraft;
+        pair.sideQuotes = currentQuotes;
         editor.setText(pair.parentDraft);
+        stageDraftQuotes(pair.parentQuotes, pair.parentSessionId);
+        pair.parentQuotes = [];
         await stopSideParentObserver(pair);
       } else {
         pair.parentDraft = currentDraft;
+        pair.parentQuotes = currentQuotes;
         editor.setText(pair.sideDraft);
+        stageDraftQuotes(pair.sideQuotes, pair.sideSessionId);
+        pair.sideQuotes = [];
         await startSideParentObserver(pair);
       }
       requestRender();
@@ -2106,6 +2346,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const previousActivity = currentActivityCompletion;
     let opened = false;
     const adopt = async () => {
+      // The window blocks only retractions asked inside it: one already in
+      // flight when the open started must drain here, while the driver still
+      // points at the parent — the Host removes the parent's queued entries as
+      // the retraction resolves, and a response landing after the re-key onto
+      // the side Session would be discarded by the side-session fence (#5265
+      // review).
+      await settleRetractions();
       const result = await input.driver.openSideConversation!();
       if (turnRunning) turnEpoch += 1;
       await applySwitchResult(result);
@@ -2113,8 +2360,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         parentSessionId: result.parentSessionId,
         sideSessionId: result.sideSessionId,
         parentDraft: editor.getText(),
+        // The drain may have restored the parent's recovered text — and the
+        // quotes riding it — into the editor before the re-key; both are
+        // captured here, and the editor switches to the side view's own
+        // (empty) draft — pressing Enter here must not resubmit the parent's
+        // message inside the side conversation (#5265 review).
+        parentQuotes: takeDraftQuotes(),
         sideDraft: '',
+        sideQuotes: [],
       };
+      editor.setText(sideConversation.sideDraft);
       await startSideParentObserver(sideConversation);
       opened = true;
       state.entries.push({
@@ -2124,11 +2379,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       });
       requestRender();
     };
+    // Opening re-keys the driver onto the side Session through asynchronous
+    // work (the Host forks the parent and switches onto the fork), the same
+    // switchSession re-key path as `/session`, so both entry paths hold the
+    // switch window: a retraction asked inside it would address the parent
+    // while the Host removes its queued entries, and the side-session fence
+    // would then discard what the Host removed (#5265 review).
     if (turnRunning) {
       if (detaching) return;
       detaching = true;
       try {
-        await adopt();
+        await holdSwitchWindow(adopt);
       } catch (error) {
         reportError(error);
       } finally {
@@ -2136,22 +2397,60 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         startPendingAttachedTurn();
       }
     } else {
-      await runControl(adopt);
+      await runControl(() => holdSwitchWindow(adopt));
     }
     if (!opened || !prompt) return;
     await previousActivity?.catch(() => undefined);
     submitPrompt(prompt);
   };
 
-  const closeSideConversation = async (): Promise<void> => {
+  const runCloseSideConversation = async (): Promise<void> => {
     const pair = sideConversation;
     if (!pair || !input.driver.closeSideConversation) return;
+    // Same drain as the open: a retraction asked while the side Session was
+    // active must land while the driver still points at it — past the re-key
+    // onto the parent, the close's session fence discards the text and quotes
+    // the Host already removed from the side queue (#5265 review).
+    await settleRetractions();
+    // The close is only admitted from an empty editor with nothing staged:
+    // recovered text in the editor (or staged quotes with no text — a
+    // quote-only retraction) is the only copy left, and closing here would
+    // overwrite it with the parent draft below or clear it on the switch.
+    // Aborting keeps it visible; a later Ctrl+C clears it like any draft
+    // (#5265 review).
+    const keptDraft = editor.getText().length > 0;
+    const keptQuotes = effectiveStagedQuotes().length > 0;
+    if (keptDraft || keptQuotes) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: keptDraft
+          ? 'Side conversation kept open — the editor draft was kept.'
+          : 'Side conversation kept open — the staged quotes were kept.',
+      });
+      requestRender();
+      return;
+    }
     const result = await input.driver.closeSideConversation(
       pair.sideSessionId,
       pair.parentSessionId,
     );
     await applySwitchResult(result);
-    editor.setText(pair.parentDraft);
+    // The switch window only disabled submit: anything typed while the close
+    // was in flight is live user input and outranks the parked parent draft.
+    // Keep it — appending the parent draft below when both exist — instead of
+    // letting the restore silently drop it (#5265 review).
+    const liveDraft = editor.getText();
+    editor.setText(
+      liveDraft.length > 0
+        ? pair.parentDraft.length > 0
+          ? `${liveDraft}\n\n${pair.parentDraft}`
+          : liveDraft
+        : pair.parentDraft,
+    );
+    // The parent view's own quotes come back with its draft, still keyed to
+    // the session their text lives in (#5265 review).
+    stageDraftQuotes(pair.parentQuotes, pair.parentSessionId);
     await stopSideParentObserver(pair);
     sideConversation = undefined;
     if (result.cleanup === 'pending') {
@@ -2163,6 +2462,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
     requestRender();
   };
+  // Same window as the open: closing re-keys the driver back onto the parent
+  // Session through its own asynchronous switch, so Alt+Up waits it out
+  // (#5265 review).
+  const closeSideConversation = (): Promise<void> => holdSwitchWindow(runCloseSideConversation);
   const interruptAndCloseSideConversation = (): void => {
     if (interruptRequested) return;
     const completion = currentActivityCompletion;
@@ -2194,29 +2497,51 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push(pendingNotice);
     requestRender();
     try {
-      const result = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
-        // The driver refuses rewind with a machine code when the selected
-        // turn carries structured context the TUI cannot restore (#5109).
-        // Render the localized catalog copy for that code instead of the
-        // driver's English fallback.
-        const code = (error as { code?: unknown })?.code;
-        if (
-          code === 'rewind_unsupported_quotes' ||
-          code === 'rewind_unsupported_attachments' ||
-          code === 'rewind_unsupported_directory_references'
-        ) {
-          const localized =
-            code === 'rewind_unsupported_quotes'
-              ? TUI_REWIND_COPY[locale].unsupportedQuotes
-              : code === 'rewind_unsupported_attachments'
+      const result = await holdSwitchWindow(async () => {
+        // Same switch window as /session: rewind re-keys the driver through
+        // its own asynchronous branch-and-switch, and a retraction crossing
+        // that window would address the session being left (#5265 review).
+        // That window blocks only retractions asked inside it — one already in
+        // flight drains here, before the branch re-keys onto a fresh Session
+        // whose fence would otherwise discard the response (#5265 review).
+        await settleRetractions();
+        const rewind = await input.driver.rewindToTurn(turnId).catch((error: unknown) => {
+          // The driver refuses rewind with a machine code when the selected
+          // turn carries structured context the TUI cannot restore (#5109).
+          // Render the localized catalog copy for that code instead of the
+          // driver's English fallback.
+          const code = (error as { code?: unknown })?.code;
+          if (
+            code === 'rewind_unsupported_attachments' ||
+            code === 'rewind_unsupported_directory_references'
+          ) {
+            const localized =
+              code === 'rewind_unsupported_attachments'
                 ? TUI_REWIND_COPY[locale].unsupportedAttachments
                 : TUI_REWIND_COPY[locale].unsupportedDirectoryReferences;
-          throw new Error(localized);
-        }
-        throw error;
+            throw new Error(localized);
+          }
+          throw error;
+        });
+        await applySwitchResult(rewind);
+        return rewind;
       });
-      await applySwitchResult(result);
       await discardCurrentSidePair();
+      // The rewound turn's own quotes replace anything staged — including
+      // draft quotes a drained retraction restored: replacement, not
+      // accumulation (#5109, #5265 review). When the branch carries no quotes
+      // of its own, retraction-restored quotes stay staged and keep riding
+      // the recovered text, which the rewind preserved in the editor (#5265
+      // review).
+      if (result.quotes?.length) {
+        clearStagedQuotes();
+        setStagedQuotes(result.quotes, input.driver.getSessionId());
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: TUI_REWIND_COPY[locale].quotesRestored,
+        });
+      }
       // Record the discarded turn's prompt in the editor history before
       // deciding on the refill: prompts submitted in this TUI process are
       // already there (addToHistory dedupes consecutive duplicates), but a
@@ -4581,6 +4906,66 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         void runControl(resumeSession);
+      },
+    },
+    quotes: {
+      description: primaryGuidance.commands.quotes,
+      // Composer-side staging only: listing or clearing it never touches the
+      // running Turn, so it routes through mid-turn like other local views.
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        if (parts.length === 2 && parts[1] === 'clear') {
+          // Nothing staged (or the staged quotes already left on an in-flight
+          // submit): say so instead of claiming a discard that did nothing.
+          // The explicit intent still supersedes an in-flight submit's
+          // pending restoration.
+          if (effectiveStagedQuotes().length === 0) {
+            supersedePendingRestage();
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesNone,
+            });
+            requestRender();
+            return;
+          }
+          clearStagedQuotes();
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: TUI_REWIND_COPY[locale].quotesCleared,
+          });
+        } else if (parts.length === 1) {
+          const staged = effectiveStagedQuotes();
+          if (staged.length === 0) {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesNone,
+            });
+          } else {
+            state.entries.push({
+              kind: 'notice',
+              level: 'info',
+              text: TUI_REWIND_COPY[locale].quotesListHeading,
+            });
+            for (const quote of staged) {
+              const preview = quote.label ? `${quote.label}: ${quote.text}` : quote.text;
+              state.entries.push({
+                kind: 'notice',
+                level: 'info',
+                text: `  · ${preview.slice(0, 120)}`,
+              });
+            }
+          }
+        } else {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: TUI_REWIND_COPY[locale].quotesUsage,
+          });
+        }
+        requestRender();
       },
     },
     rewind: {

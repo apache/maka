@@ -572,6 +572,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         content: {
           text: modelText,
           ...(modelText === text ? {} : { displayText: text }),
+          ...(options.quotes?.length ? { quotes: [...options.quotes] } : {}),
         },
         placement: options.placement,
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
@@ -612,7 +613,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   async retractQueued(): Promise<MakaRetractedMessages> {
-    if (!this.#sessionId) return { text: '', messageIds: [] };
+    if (!this.#sessionId) return { text: '', messageIds: [], quotes: [] };
     const result = await this.#request('queue.retract', {
       originHostEpoch: this.#connection.hostEpoch,
       sessionId: this.#sessionId,
@@ -621,6 +622,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return {
       text: result.retracted.map((entry) => entry.content.text).join('\n\n'),
       messageIds: result.retracted.map((entry) => entry.messageId),
+      // The Host returns the full MessageContent for every retracted entry:
+      // the quotes ride back so the runner can restage them (#5109 review).
+      quotes: result.retracted.flatMap((entry) => entry.content.quotes ?? []),
     };
   }
 
@@ -892,21 +896,20 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (promptMessage.origin) {
       throw new Error(`Cannot rewind to turn ${turnId}: Host-triggered prompts are read-only.`);
     }
+    // Attachments and directory references stay fail-closed: refilling only
+    // the human-facing text would silently drop them from the replacement
+    // submit (#5109), and the TUI cannot re-attach files. Quotes ride the
+    // result verbatim instead, so the TUI can stage them into the replacement
+    // submit. The machine code lets the runner render a localized notice
+    // naming the carrier; the message text is the depth-of-defence fallback
+    // and deliberately promises nothing about other surfaces.
     const unsupported =
-      (promptMessage.quotes?.length ?? 0) > 0
-        ? 'rewind_unsupported_quotes'
-        : (promptMessage.attachments?.length ?? 0) > 0
-          ? 'rewind_unsupported_attachments'
-          : (promptMessage.directoryReferences?.length ?? 0) > 0
-            ? 'rewind_unsupported_directory_references'
-            : null;
+      (promptMessage.attachments?.length ?? 0) > 0
+        ? 'rewind_unsupported_attachments'
+        : (promptMessage.directoryReferences?.length ?? 0) > 0
+          ? 'rewind_unsupported_directory_references'
+          : null;
     if (unsupported) {
-      // Refilling only the human-facing text would silently drop the turn's
-      // structured context from the replacement submit (#5109). Fail closed
-      // until the TUI can carry it. The machine code lets the runner render
-      // a localized notice naming the carrier; the message text is the
-      // depth-of-defence fallback and deliberately promises nothing about
-      // other surfaces.
       const error = new Error(
         `Cannot rewind to turn ${turnId}: it carries structured context the TUI cannot restore into the replacement prompt.`,
       ) as Error & { code?: string };
@@ -927,6 +930,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         return {
           ...(await this.switchSession(requireSession(result.session).id)),
           prompt: userFacingText(promptMessage),
+          ...(promptMessage.quotes?.length ? { quotes: promptMessage.quotes } : {}),
         };
       }
     }
