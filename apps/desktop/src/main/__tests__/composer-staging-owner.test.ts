@@ -18,22 +18,29 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
-import { act, createElement, createRef, Fragment, Profiler, StrictMode, useLayoutEffect } from 'react';
+import { fileURLToPath } from 'node:url';
+import { act, createElement, createRef, Fragment, Profiler, StrictMode, useLayoutEffect, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { ChatSurfaceLayout, LocaleProvider, type ComposerHandle } from '@maka/ui';
 import type { AttachmentRef, DirectoryReference } from '@maka/core/events';
+import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
-  createComposerStagingCommands, createRevisionAwareOnSend, createStagedFollowUp,
+  createComposerStagingCommands,
   StagedComposer, StagedQuoteChatView, PlanProvider, PlanServicesProvider,
-  type PlanServices, type RevisionSendPorts, type ComposerStagingSubmission,
+  type PlanServices, type ComposerStagingServices, type ComposerStagingSubmission,
 } from '../../renderer/features/conversation/index.js';
-import { useComposerStaging } from '../../renderer/features/conversation/testing.js';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
-import { createAppShellRevisionActions, type TurnRevisionDraft } from '../../renderer/app-shell-revision-actions.js';
-import { createActionsDeps, createTransientState, EMPTY_SKILL_INVOCATION } from './app-shell-chat-actions-fixture.js';
+import {
+  createRevisionAwareOnSend, createStagedFollowUp, useComposerStaging, type RevisionSendPorts,
+} from '../../renderer/features/conversation/testing.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
+import { createRevisionActions, type TurnRevisionDraft } from '../../renderer/features/conversation/testing.js';
+import { createDesktopComposerStagingServices } from '../../renderer/platform/desktop/create-composer-staging-services.js';
+import { createActionsDeps, createTransientState, EMPTY_SKILL_INVOCATION, windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import { ComposerStagingFixture } from './composer-staging-fixture.js';
+import { renderTranscriptMarkup } from './transcript-test-dom.js';
 
 const saved = Object.fromEntries([
   'window', 'document', 'Element', 'HTMLBRElement', 'sessionStorage', 'HTMLElement', 'HTMLIFrameElement', 'Event', 'Node', 'CSS',
@@ -282,7 +289,7 @@ for (const mode of ['queue', 'steer'] as const) {
             attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
         },
       } } });
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(), ...transient.deps, activeIdRef, getRunningTurnId: () => 'running-turn',
       });
       const enqueue = createStagedFollowUp({
@@ -343,7 +350,7 @@ test('Shell follow-up without quotes still submits through the production enqueu
     },
   } } });
   const transient = createTransientState();
-  const actions = createAppShellChatActions({ ...createActionsDeps(), ...transient.deps, activeIdRef: { current: 'draft-a' } });
+  const actions = createChatActions({ ...createActionsDeps(), ...transient.deps, activeIdRef: { current: 'draft-a' } });
   const enqueue = createStagedFollowUp({
     captureStaging: view.commands.captureSubmission, enqueueMessage: actions.enqueueMessage,
     onError: (_sessionId, error) => assert.fail(String(error)),
@@ -360,7 +367,8 @@ for (const context of ['attachment', 'directory'] as const) {
     const activeIdRef = { current: 'draft-a' };
     const revisionDraftRef = { current: null as TurnRevisionDraft | null };
     const currentRevision = () => revisionDraftRef.current;
-    const actions = createAppShellRevisionActions({
+    const actions = createRevisionActions({
+      services: windowSubmissionServices(),
       uiLocale: 'en', activeIdRef, captureSelection: () => () => true, composerRef: view.composer,
       readMessages: () => [{ type: 'user', id: 'message', turnId: `guard-${context}`, text: 'original', ts: 1 }],
       hasPendingAttachments: () => view.commands.captureSubmission().hasPendingContext,
@@ -391,3 +399,54 @@ for (const context of ['attachment', 'directory'] as const) {
     assert.equal(currentRevision()?.sourceSessionId, 'draft-a', 'cleanup releases the guard');
   });
 }
+
+test('the transcript reads attachment bytes only through the injected attachment port', async () => {
+  const reads: string[] = [];
+  const callerReads: string[] = [];
+  const services: ComposerStagingServices = {
+    pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
+    previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+    readBytes: async (sessionId, artifactId) => {
+      reads.push(`${sessionId}/${artifactId}`);
+      return { ok: true, base64: 'aW1n', mimeType: 'image/png' };
+    },
+  };
+  const activeSession = { id: 'session-1', name: 'Images', status: 'active', labels: [] } as unknown as SessionSummary;
+  const message: StoredMessage = {
+    type: 'user', id: 'ask', turnId: 'turn-1', ts: 1, text: 'show this',
+    attachments: [{
+      kind: 'image', name: 'preview.png', mimeType: 'image/png', bytes: 3,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-123' },
+    }],
+  };
+  // The contract omits the prop; a caller that forces one in is still overridden.
+  const transcript = {
+    activeSession, messages: [message], onNew: () => {}, scrollBehavior: 'auto',
+    onReadAttachmentBytes: async (sessionId: string, artifactId: string) => {
+      callerReads.push(`${sessionId}/${artifactId}`);
+      return { ok: false, reason: 'not_found' };
+    },
+  } as ComponentProps<typeof StagedQuoteChatView>;
+  const markup = await renderTranscriptMarkup(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(ComposerStagingFixture, { draftKey: 'session-1', services, children:
+      createElement(PlanServicesProvider, { services: planServices, children:
+        createElement(PlanProvider, { session: undefined, children:
+          createElement(ChatSurfaceLayout, { scrollToBottomLabel: 'Scroll to bottom', composer: null, children:
+            createElement(StagedQuoteChatView, transcript),
+          }),
+        }),
+      }),
+    }),
+  }));
+  assert.deepEqual([...new Set(reads)], ['session-1/attachment-123']);
+  assert.deepEqual(callerReads, []);
+  assert.match(markup, /src="data:image\/png;base64,aW1n"/);
+});
+
+test('Desktop backs the attachment port with the bridge reader; AppShell no longer reaches it', () => {
+  const readBytes: ComposerStagingServices['readBytes'] = async () => ({ ok: false, reason: 'not_found' });
+  const bridge = { attachments: { readBytes } } as unknown as Parameters<typeof createDesktopComposerStagingServices>[0];
+  assert.equal(createDesktopComposerStagingServices(bridge).readBytes, readBytes);
+  const shell = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)), 'utf8');
+  assert.deepEqual(shell.split('\n').filter((line) => /\battachments\s*\.\s*readBytes\b|\bonReadAttachmentBytes\b/.test(line)), []);
+});

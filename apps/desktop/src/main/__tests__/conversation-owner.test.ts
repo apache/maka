@@ -19,15 +19,16 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement, Fragment, Profiler, useEffect, useState, type ComponentProps } from 'react';
+import { act, createElement, Fragment, Profiler, useEffect, useState } from 'react';
 import { LocaleProvider, ToastProvider, type TransientUserMessageProjection } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
-import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices } from '../../renderer/features/conversation/index.js';
+import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
 import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { withComposerSubmission } from './composer-submission-fixture.js';
 
 const row = (id: string): DesktopSessionSummary => ({
   id, name: id, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -40,7 +41,7 @@ const message = (id: string): StoredMessage => ({ type: 'user', id, text: id, tu
 function harness(options: {
   locale?: UiLocale;
   hasOlder?: boolean;
-  listTurnLandmarks?: ComponentProps<typeof ConversationLifecycle>['listTurnLandmarks'];
+  listTurnLandmarks?: ConversationServices['sessions']['listTurnLandmarks'];
 } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
@@ -50,7 +51,9 @@ function harness(options: {
     publish(messages: StoredMessage[]): void; error(error: unknown): void;
   }> = [];
   const observations: Array<{ sessionId: string; closed: boolean; phase: Parameters<ConversationObservationServices['subscribeEvents']>[2]; fail: () => void }> = [];
-  const services = stubConversationServices();
+  const services = stubConversationServices(
+    options.listTurnLandmarks ? { sessions: { listTurnLandmarks: options.listTurnLandmarks } } : {},
+  );
   services.observation.openTranscript = (sessionId, error) => {
     let messages: StoredMessage[] = [];
     let ready = false;
@@ -107,8 +110,8 @@ function harness(options: {
     return createElement(Fragment, null,
       createElement(Profiler, { id: 'conversation-lifecycle', onRender: () => { lifecycleCommits += 1; } }, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
-        onContextCompactionOutcome() {}, showModelSetupToast() {}, onTurnCompleted() {},
-        searchTarget: null, clearSearchTarget() {}, listTurnLandmarks: options.listTurnLandmarks ?? (async () => ({ landmarks: [] })),
+        showModelSetupToast() {}, onTurnCompleted() {},
+        searchTarget: null, clearSearchTarget() {},
       })),
       visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript }) : null,
       createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer }),
@@ -118,7 +121,7 @@ function harness(options: {
     createElement(ToastProvider, { children:
       createElement(SessionCatalogContext.Provider, { value: catalog, children:
         createElement(ConversationServicesProvider, { services, children:
-          createElement(ConversationProvider, { children: createElement(Shell) }),
+          createElement(ConversationProvider, { children: withComposerSubmission(createElement(Shell)) }),
         }),
       }),
     }),

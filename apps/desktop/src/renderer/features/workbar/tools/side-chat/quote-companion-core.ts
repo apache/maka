@@ -48,7 +48,7 @@ import {
   readSessionCopyAttempt,
   startSessionCopyAttempt,
   type SessionCopyAttemptKey,
-} from '../../../../session-copy-attempt.js';
+} from '../../../../application/contracts/session-copy-attempt.js';
 import { sessionEventErrorMessage } from '../../../../model-connection-errors.js';
 import { parseDesktopSessionKey } from '../../../../../shared/runtime-host-identity.js';
 

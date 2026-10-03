@@ -6,6 +6,7 @@
   "type": "module",
   "private": true,
   "exports": {
+    "./antigravity-program": "./dist/antigravity-program.js",
     "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",

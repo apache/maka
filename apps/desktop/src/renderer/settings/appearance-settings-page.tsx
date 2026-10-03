@@ -487,7 +487,7 @@ export function AppearanceSettingsPage(props: {
             <Switch
               label={copy.workbar.titlebarToggle}
               isLabelHidden
-              value={props.workbarTogglePosition === 'titlebar'}
+              value={props.workbarTogglePosition !== 'edge'}
               onChange={(enabled) => void persistAppearance({ workbarTogglePosition: enabled ? 'titlebar' : 'edge' })}
             />
           }
@@ -545,7 +545,6 @@ export function AppearanceSettingsPage(props: {
         action={appIconLoadFailed ? undefined : (
           <Button
             variant="secondary"
-            size="sm"
             isDisabled={appIconBusy}
             label={appIconBusy ? copy.appIconImporting : copy.appIconImport}
             onClick={() => void importAppIcon()}

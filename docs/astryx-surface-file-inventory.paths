@@ -37,6 +37,7 @@ apps/desktop/src/renderer/features/conversation/controller/session-local-message
 apps/desktop/src/renderer/features/conversation/controller/transcript-reading-position-controller.tsx
 apps/desktop/src/renderer/features/conversation/ui/composer-mentions-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/composer-staging-provider.tsx
+apps/desktop/src/renderer/features/conversation/ui/composer-submission-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/conversation-lifecycle.tsx
 apps/desktop/src/renderer/features/conversation/ui/conversation-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/conversation-readers.tsx
@@ -45,6 +46,11 @@ apps/desktop/src/renderer/features/conversation/ui/plan-provider.tsx
 apps/desktop/src/renderer/features/conversation/ui/plan-surfaces.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-composer.tsx
 apps/desktop/src/renderer/features/conversation/ui/staged-quote-chat-view.tsx
+apps/desktop/src/renderer/features/conversation/ui/task-readiness-provider.tsx
+apps/desktop/src/renderer/features/diagnostics/services-context.tsx
+apps/desktop/src/renderer/features/diagnostics/ui/diagnostic-report-toast-provider.tsx
+apps/desktop/src/renderer/features/diagnostics/ui/previous-main-process-interruption-notice.tsx
+apps/desktop/src/renderer/features/diagnostics/ui/report-consumers.tsx
 apps/desktop/src/renderer/features/external-agent-settings/page.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx

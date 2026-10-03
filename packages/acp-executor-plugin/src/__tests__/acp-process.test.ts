@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AcpExecutor, type AcpAgentAdapter, type AcpContinuityRecord } from '../index.js';
@@ -165,6 +165,27 @@ test('file read rejects invalid ranges and honors a zero limit', async () => {
     assert.equal(await readWorkspaceTextFile(cwd, path, undefined, 0), '');
   } finally {
     await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('real stdio discovery keeps Agent startup history out of the selected project', async () => {
+  const f = await fixture();
+  try {
+    const catalog = await f.executor.discover({
+      cwd: f.root,
+      signal: new AbortController().signal,
+    });
+    assert.equal(catalog.readiness, 'ready');
+    // This Agent writes its history during session/new, even without a prompt.
+    assert.deepEqual(await readdir(f.root), ['agent.cjs']);
+    const result = await f.executor.execute(f.request('first-task'), f.context());
+    assert.equal(result.status, 'completed');
+    assert.equal(
+      JSON.parse(await readFile(join(f.root, '.acp-fixture-history.json'), 'utf8')).length,
+      2,
+    );
+  } finally {
+    await f.dispose();
   }
 });
 

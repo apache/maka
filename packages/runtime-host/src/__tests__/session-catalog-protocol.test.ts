@@ -837,7 +837,9 @@ test('executor configuration rejects ambiguous routes and malformed values', () 
     null,
     { model: '' },
     { model: 'bad\nvalue' },
-    { mode: 'yolo' },
+    { mode: '' },
+    { mode: 'bad\nvalue' },
+    { mode: 4 },
     { model: 4 },
   ]) {
     assert.throws(

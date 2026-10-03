@@ -18,20 +18,12 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useStableActions } from './use-stable-actions.js';
 import type { ProjectRecord } from '@maka/core/project';
-import type { UiLocale } from '@maka/core/ui-locale';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import type {
   DesktopProjectCapabilities,
   DesktopRuntimeHostRef,
 } from '../preload/bridge-contract.js';
-import {
-  createAppShellProjectActions,
-  type AppShellProjectActions,
-  type RendererAppInfo,
-  type SessionProjectInfoState,
-} from './app-shell-project-actions';
 import {
   runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
@@ -39,10 +31,15 @@ import {
 
 type RefBox<T> = { current: T };
 
-type ToastApi = {
-  success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
-};
+interface RendererAppInfo {
+  projectId?: string | null;
+  projectPath: string;
+  projectGit: { isGitRepo: boolean; branch?: string };
+}
+
+interface SessionProjectInfoState extends RendererAppInfo {
+  sessionId: string;
+}
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
   chooseClientDirectory: false,
@@ -53,27 +50,19 @@ const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
 };
 
 /**
- * Owns the workspace / project-picker cluster: the new-task project, active
- * session project projection, the persistent project catalog, and the
- * project-picker pending state / dedup refs. Seeds appInfo from the persisted composer defaults so the home view
- * is populated before the async `app:info`
- * round-trip completes on mount.
- *
- * The picker refs are returned so AppShell can hand them to the bootstrap
- * unmount cleanup (which cancels an in-flight pick), and the action helpers
- * (createAppShellProjectActions) are created here so their setters never
- * have to be threaded back out through AppShell.
+ * Owns the workspace projection AppShell reads: the default Host's project,
+ * the active session's project, and the persistent project catalog behind
+ * them. Project mutations and the open-folder commands belong to Task Entry.
  */
 export function useAppShellProjectContext(options: {
-  uiLocale: UiLocale;
   rendererMountedRef: RefBox<boolean>;
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
   sessionProfileKind?: RuntimeHostProfileKind;
-  onProjectSelected(ownerSessionId?: string): void;
-  toastApi: ToastApi;
-}): AppShellProjectActions & {
+}): {
+  /** Re-reads the default Host's project context; resolves to its projects. */
+  refreshProjects(): Promise<ProjectRecord[]>;
   projectInfo: RendererAppInfo | null;
   projects: ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
@@ -82,19 +71,13 @@ export function useAppShellProjectContext(options: {
   selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
-  projectPickerPending: boolean;
-  projectPickerPendingRef: RefBox<boolean>;
-  projectPickerRequestRef: RefBox<number>;
 } {
   const {
-    uiLocale,
     rendererMountedRef,
     sessionId,
     sessionCwd,
     sessionProjectId,
     sessionProfileKind,
-    onProjectSelected,
-    toastApi,
   } = options;
   const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(null);
   const [sessionProjectInfo, setSessionProjectInfo] = useState<SessionProjectInfoState | null>(null);
@@ -108,9 +91,6 @@ export function useAppShellProjectContext(options: {
     capabilities: DesktopProjectCapabilities;
   } | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
-  const [projectPickerPending, setProjectPickerPending] = useState(false);
-  const projectPickerPendingRef = useRef(false);
-  const projectPickerRequestRef = useRef(0);
   const defaultRefreshGenerationRef = useRef(0);
 
   const refreshDefaultProjectState = async (
@@ -252,26 +232,13 @@ export function useAppShellProjectContext(options: {
         (project) =>
           project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
       );
-  // Stable identities, because the rail's Project rows are built from these:
-  // rebuilt per render they put the whole list back on every AppShell commit
-  // (#4109). Same facade the shell's other action factories already use
-  // (#1043); this one was the last bare call site.
-  const actions = useStableActions(createAppShellProjectActions, {
-    uiLocale,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
-    rendererMountedRef,
-    setProjectPickerPending,
-    refreshDefaultProjectState,
-    selectedProjectId,
-    projects,
-    projectCapabilities,
-    sessionId,
-    onProjectSelected,
-    toastApi,
-  });
+  // Read through an effect event by the bootstrap subscriptions, so a fresh
+  // identity per render costs nothing.
+  const refreshProjects = async (): Promise<ProjectRecord[]> =>
+    (await runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host))).value;
 
   return {
+    refreshProjects,
     projectInfo,
     projects,
     projectCapabilities,
@@ -280,9 +247,5 @@ export function useAppShellProjectContext(options: {
     selectedProjectId,
     currentProjectId,
     currentProject,
-    projectPickerPending,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
-    ...actions,
   };
 }

@@ -316,7 +316,14 @@ export class AiSdkCompaction {
       if (previousCheckpoint) {
         const match = matchHistoryCompactCheckpointPrefix(previousCheckpoint, runtimeContext);
         if (!match.reason && match.successorRuntimeEvents.length === 0) {
-          {
+          // Raw identity is not enough: a projection transition committed
+          // after the fold rewrites the covered span's effective view without
+          // touching the raw ledger, so reuse requires the pinned effective
+          // digest to still match — the same gate the pre-send path applies
+          // (#5929). On drift, fall through to the planner, whose roll-forward
+          // currency check discards the stale checkpoint and re-summarizes.
+          const effectiveCovered = await this.foldEffectiveModelHistory(match.coveredRuntimeEvents);
+          if (this.checkpointEffectiveCoverageMatches(previousCheckpoint, effectiveCovered)) {
             const projectedEvents = projectHistoryCompactCheckpointReplay(
               previousCheckpoint,
               match.coveredRuntimeEvents,

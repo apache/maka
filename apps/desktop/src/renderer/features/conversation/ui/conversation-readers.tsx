@@ -18,12 +18,14 @@
  */
 
 import { createElement, useMemo, useSyncExternalStore, type ComponentType, type ComponentProps } from 'react';
-import { ChatView } from '@maka/ui';
+import { ChatView, useUiLocale, type ComposerProps as UiComposerProps } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import type { SessionUiReads } from '../model/session-ui-reads.js';
 import { useSessionUiRead } from '../controller/use-session-ui-read.js';
 import { transcriptRestoreTarget } from '../controller/transcript-reading-position.js';
 import { useConversationOwner } from './conversation-context.js';
+import { useComposerSubmissionReader, type ComposerSubmissionReader } from './composer-submission-context.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 
 type ChatProps = ComponentProps<typeof ChatView>;
 type TranscriptProps = Pick<ChatProps,
@@ -63,25 +65,73 @@ export function ConversationTranscriptRegion<P extends object>(
   return createElement(surface, { ...presentation, ...owned } as unknown as P);
 }
 
-type ComposerProps = { processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsageTokens?: number };
-/** Lives in the persistent composer slot, outside the conditional transcript. */
+type SubmissionProps = Pick<ComposerSubmissionReader,
+  | 'onSend' | 'newTaskSendPending' | 'stop'
+  | 'respondToSandboxBoundary' | 'respondToUserQuestion' | 'respondToUserForm'
+> & {
+  onStop: ComposerSubmissionReader['stop'];
+  stopPending: boolean;
+  revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
+};
+type ComposerProps = SubmissionProps & {
+  processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsageTokens?: number;
+};
+/** The shell's picker gates; an edit-and-resend draft narrows them here. */
+type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean } &
+  Pick<UiComposerProps, 'executorPicker' | 'sendBlocked'>;
+/**
+ * Lives in the persistent composer slot, outside the conditional transcript.
+ * Submission state (send pending, Stop pending, the edit-and-resend draft) and
+ * the submit, Stop and interaction-answer callbacks come from the Composer
+ * submission owner.
+ */
 export function ConversationComposerRegion<P extends object>(
   props: { surface: ComponentType<P>; usageModel?: string; usageRoute?: { llmConnectionId?: string } } & Omit<P, keyof ComposerProps>,
 ) {
   const { surface, usageModel, usageRoute, ...presentation } = props;
   const { workspace } = useConversationOwner();
+  const submission = useComposerSubmissionReader();
+  const actionCopy = getDesktopConversationCopy(useUiLocale()).actions;
+  const activeId = useSyncExternalStore(workspace.target.subscribe, workspace.target.getSnapshot);
   const view = useSyncExternalStore(workspace.composer.subscribe, workspace.composer.getSnapshot);
   const usage = useMemo(() => workspace.usage(usageModel, usageRoute?.llmConnectionId), [workspace, usageModel, usageRoute?.llmConnectionId]);
   const latestRequestUsageTokens = useSyncExternalStore(usage.subscribe, usage.getSnapshot);
-  return createElement(surface, {
-    ...presentation,
+  const stopPending = useSessionUiRead(workspace.ui.reads, 'stop', activeId);
+  const draft = submission.revisionDraft;
+  const editing = draft !== null && activeId === draft.draftSessionId;
+  const gates = presentation as ComposerPickGates;
+  const owned: ComposerProps & ComposerPickGates = {
+    onSend: submission.onSend,
+    newTaskSendPending: submission.newTaskSendPending,
+    sendBlocked: gates.sendBlocked || submission.newTaskSendPending,
+    ...(gates.executorPicker ? {
+      executorPicker: { ...gates.executorPicker, disabled: gates.executorPicker.disabled || submission.newTaskSendPending },
+    } : {}),
+    onStop: submission.stop,
+    stop: submission.stop,
+    stopPending,
+    respondToSandboxBoundary: submission.respondToSandboxBoundary,
+    respondToUserQuestion: submission.respondToUserQuestion,
+    respondToUserForm: submission.respondToUserForm,
+    revisionNotice: editing
+      ? {
+          title: actionCopy.revisionBannerTitle,
+          detail: actionCopy.revisionBannerDetail,
+          cancelLabel: actionCopy.revisionCancelLabel,
+          onCancel: submission.cancelRevisionDraft,
+        }
+      : undefined,
+    ...(gates.contextPickEnabled !== undefined ? { contextPickEnabled: gates.contextPickEnabled && !editing } : {}),
+    ...(gates.directoryPickerEnabled !== undefined
+      ? { directoryPickerEnabled: gates.directoryPickerEnabled && draft === null }
+      : {}),
     processing: view.transientMessages.length > 0,
     pendingMessages: view.transientMessages,
     latestRequestUsageTokens,
-  } as unknown as P);
+  };
+  return createElement(surface, { ...presentation, ...owned } as unknown as P);
 }
 
-/** A cross-feature leaf can read published messages without routing them through Shell. */
 export function ConversationMessageConsumer<P extends { messages: readonly StoredMessage[] }>(
   props: { surface: ComponentType<P> } & Omit<P, 'messages'>,
 ) {

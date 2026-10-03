@@ -63,6 +63,7 @@ async function mount(
     list?: boolean;
     executable?: string;
     remote?: boolean;
+    selectExecutable?: () => Promise<string | undefined>;
     start?: (value: ExternalAgentSetupStart) => Promise<ExternalAgentSetupProjection>;
   } = {},
 ) {
@@ -112,7 +113,7 @@ async function mount(
         }),
       },
       externalAgents: {
-        selectExecutable: async () => '/existing/agy_acp_server.par',
+        selectExecutable: input.selectExecutable ?? (async () => '/existing/agy_acp_server.par'),
         start: async (value: ExternalAgentSetupStart) => {
           starts.push(value);
           return input.start ? input.start(value) : { ...value, phase: 'succeeded' };
@@ -306,6 +307,22 @@ test('saved program exposes file selection without an advanced path editor', asy
   assert.deepEqual(page.updates, ['/existing/agy_acp_server.par']);
   assert.equal(page.starts.length, 0);
 });
+
+for (const failure of ['executable_unavailable', 'helper_unavailable'] as const) {
+  test(`invalid program selection reports ${failure} without changing the saved path`, async () => {
+    const page = await mount({
+      selectExecutable: async () => {
+        throw new Error(`Error invoking remote method 'external-agents:select-executable': Error: Antigravity program: ${failure}`);
+      },
+    });
+    await act(async () => page.button('Choose existing program').click());
+    assert.match(page.document.querySelector('[role="alert"]')?.textContent ?? '',
+      failure === 'helper_unavailable' ? /localharness_external helper is missing/ : /executable is missing/);
+    assert.deepEqual(page.updates, []);
+    assert.deepEqual(page.starts, []);
+    assert.equal(page.button('Choose existing program').disabled, false);
+  });
+}
 
 test('first setup offers managed install and an official source without exposing a path editor', async () => {
   const page = await mount({ executable: '' });

@@ -29,7 +29,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { TransientUserMessageProjection } from '@maka/ui';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
 import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 
@@ -49,7 +49,7 @@ describe('busy-raced send settlement', () => {
       },
     } });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(), activeIdRef: { current: 'session-a' },
         getRunningTurnId: () => { throw new Error('Message intent must not depend on observation'); },
       });
@@ -71,7 +71,7 @@ describe('busy-raced send settlement', () => {
       },
     } });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(), activeIdRef: { current: 'session-a' },
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
       });
@@ -89,7 +89,7 @@ describe('busy-raced send settlement', () => {
       },
     } });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(), activeIdRef: { current: 'session-a' },
         getRunningTurnId: () => 'running-turn',
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
@@ -133,7 +133,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
@@ -165,7 +165,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
@@ -202,7 +202,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
@@ -232,7 +232,7 @@ describe('busy-raced send settlement', () => {
       }),
     } });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         toastApi: {
@@ -262,7 +262,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
       });
@@ -285,7 +285,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
       });
@@ -331,7 +331,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
@@ -389,7 +389,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         addTransientMessage: (_sessionId, message) => transient.set(message.id, message),
@@ -435,7 +435,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         ...transientState.deps,
@@ -470,7 +470,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(), activeIdRef,
         activateSessionForFirstSend: async (session) => { activeIdRef.current = session.id; },
         addTransientMessage: (_sessionId, message) => {
@@ -511,7 +511,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         activateSessionForFirstSend: async (session) => {
@@ -552,7 +552,7 @@ describe('busy-raced send settlement', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         activateSessionForFirstSend: async (session) => {

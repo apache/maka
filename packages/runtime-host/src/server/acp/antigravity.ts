@@ -17,13 +17,12 @@
  * under the License.
  */
 
-import { constants } from 'node:fs';
-import { access, realpath, stat } from 'node:fs/promises';
-import { dirname, join, isAbsolute } from 'node:path';
+import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { ExternalAgentSetupAction } from '../../protocol/external-agent-setup.js';
 import { AcpSetupError, withAcpConnection } from './connection.js';
+import { checkAntigravityProgram, AntigravityProgramError } from '../../antigravity-program.js';
 
 const AUTH_PREFIX = 'Open the following link to authenticate the ACP server: ';
 const INITIALIZE_TIMEOUT_MS = 30_000;
@@ -59,11 +58,7 @@ export async function runAntigravitySetup(input: {
   });
   try {
     signal.throwIfAborted();
-    const executable = await checkedFile(input.executable, 'executable_unavailable');
-    const helper = await checkedFile(
-      join(dirname(executable), 'localharness_external'),
-      'helper_unavailable',
-    );
+    const { executable, helper } = await checkAntigravityProgram(input.executable);
     await withAcpConnection(
       {
         executable,
@@ -117,26 +112,12 @@ export async function runAntigravitySetup(input: {
       },
     );
   } catch (error) {
+    if (error instanceof AntigravityProgramError) throw new AcpSetupError(error.failure);
     if (error instanceof AcpSetupError) throw error;
     signal.throwIfAborted();
     throw new AcpSetupError('connection_failed');
   } finally {
     clearTimeout(timeout);
-  }
-}
-
-async function checkedFile(
-  path: string,
-  failure: 'executable_unavailable' | 'helper_unavailable',
-): Promise<string> {
-  try {
-    if (!isAbsolute(path)) throw new Error('Absolute path required');
-    const resolved = await realpath(path);
-    if (!(await stat(resolved)).isFile()) throw new Error('File required');
-    await access(resolved, constants.X_OK);
-    return resolved;
-  } catch {
-    throw new AcpSetupError(failure);
   }
 }
 

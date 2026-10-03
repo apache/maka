@@ -1950,8 +1950,8 @@ const makaBridge = {
     },
   },
   newTasks: {
-    async getExecutors(target, cwd) {
-      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd);
+    async getExecutors(target, cwd, refresh) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh);
     },
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();
@@ -2331,6 +2331,11 @@ const makaBridge = {
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
     > {
       return invokeSessionRuntimeHost('sessions:resumeLatest', sessionId);
+    },
+    queryResumeLatest(
+      sessionId: string,
+    ): Promise<import('@maka/runtime-host/protocol').TurnResumePlan> {
+      return invokeSessionRuntimeHost('sessions:queryResumeLatest', sessionId);
     },
     stop(
       sessionId: string,
