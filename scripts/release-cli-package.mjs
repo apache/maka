@@ -41,6 +41,7 @@ import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy
 import { assertProductNightlyVersion } from './release-version.mjs';
 import {
   isCurrentDevelopmentJavaScript,
+  isCliThirdPartyReleasePath,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
@@ -452,9 +453,12 @@ function copyRuntimeDist(source, destination, packageName = 'maka-agent') {
 }
 
 function copyThirdPartyPackage(source, destination) {
-  if (!existsSync(join(source, 'package.json'))) {
+  const manifestPath = join(source, 'package.json');
+  if (!existsSync(manifestPath)) {
     throw new Error(`Installed dependency has no package.json: ${source}`);
   }
+  const manifest = readJson(manifestPath);
+  const packageKey = `${manifest.name}@${manifest.version}`;
   rmSync(destination, { recursive: true, force: true });
   cpSync(source, destination, {
     recursive: true,
@@ -464,7 +468,8 @@ function copyThirdPartyPackage(source, destination) {
       const relativePath = relative(source, path);
       return (
         !relativePath.split(sep).includes('node_modules') &&
-        !isThirdPartyDevelopmentArtifact(relativePath)
+        !isThirdPartyDevelopmentArtifact(relativePath) &&
+        isCliThirdPartyReleasePath(packageKey, relativePath)
       );
     },
   });
