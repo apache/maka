@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog } from './ui-locale.js';
+import { defineUiMessageCatalog, resolveUiMessageCatalog } from './ui-locale.js';
 
 export const RELATIVE_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
 export const JUST_NOW_MS = 60_000;
@@ -28,11 +28,13 @@ export const MONTH_MS = 30 * DAY_MS;
 export const YEAR_MS = 12 * MONTH_MS;
 const MAX_SIDEBAR_REFRESH_MS = 24 * DAY_MS;
 
-export const JUST_NOW: UiCatalog<string> = {
-  'zh-CN': '刚刚',
-  'zh-TW': '剛剛',
-  en: 'just now',
-};
+export const JUST_NOW = resolveUiMessageCatalog(
+  defineUiMessageCatalog<string>()({
+    'zh-CN': '刚刚',
+    'zh-TW': '剛剛',
+    en: 'just now',
+  }),
+);
 
 const SIDEBAR_TIME_BUCKETS = [
   { unitMs: MINUTE_MS, maxValue: 60, suffix: 'min' },

@@ -17,14 +17,14 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 interface RuntimeHostHandoffCopy {
   readonly copyDiagnostics: string;
   readonly diagnosticsCopied: string;
 }
 
-const COPY_BY_LOCALE: UiCatalog<RuntimeHostHandoffCopy> = {
+const COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<RuntimeHostHandoffCopy>()({
   'zh-CN': {
     copyDiagnostics: '复制诊断信息',
     diagnosticsCopied: '诊断信息已复制',
@@ -37,7 +37,7 @@ const COPY_BY_LOCALE: UiCatalog<RuntimeHostHandoffCopy> = {
     copyDiagnostics: 'Copy diagnostics',
     diagnosticsCopied: 'Diagnostics copied',
   },
-};
+}));
 
 export function getRuntimeHostHandoffCopy(locale: UiLocale): RuntimeHostHandoffCopy {
   return COPY_BY_LOCALE[locale];

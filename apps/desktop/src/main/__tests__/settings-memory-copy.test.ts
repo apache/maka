@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { UI_LOCALES, type UiCatalog } from '@maka/core/ui-locale';
+import { UI_LOCALES, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import {
   getMemorySettingsCopy,
   memoryResultMessage,
@@ -51,7 +51,14 @@ test('falls back for an unknown Runtime Host memory rejection code', () => {
   }
 });
 
-const formattedCopy = {
+const formattedCopy = resolveUiMessageCatalog(defineUiMessageCatalog<{
+  counts: string[][];
+  summaries: string[][];
+  redacted: string[];
+  backupFailures: string[];
+  preview: string[];
+  labels: string[];
+}>()({
   'zh-CN': {
     counts: [
       ['0 条生效', '草稿 0 条生效', '0 条已归档', '草稿 0 条已归档', '0 条记忆'],
@@ -145,14 +152,7 @@ const formattedCopy = {
       'The current MEMORY.md will be backed up before the selected backup replaces it. Restore: Backup #2',
     ],
   },
-} satisfies UiCatalog<{
-  counts: string[][];
-  summaries: string[][];
-  redacted: string[];
-  backupFailures: string[];
-  preview: string[];
-  labels: string[];
-}>;
+}));
 
 for (const locale of UI_LOCALES) {
   const expected = formattedCopy[locale];

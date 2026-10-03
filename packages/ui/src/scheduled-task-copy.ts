@@ -18,7 +18,7 @@
  */
 
 import type { ScheduledTask, ScheduledTaskRunOutcome, ScheduledTaskStatus } from '@maka/core/scheduled-task';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type {
   ScheduledTaskDelivery,
   ScheduledTaskRecurrence,
@@ -161,9 +161,7 @@ export interface ScheduledTaskCopy {
     agentDelivery: string;
   };
 }
-
-const SCHEDULED_TASK_COPY = {
-  'zh-CN': {
+const scheduledTaskCopyZhCn: ScheduledTaskCopy = {
     templates: [
       { id: 'daily-download-cleanup', title: '每日下载文件夹清理', note: '请帮我整理「下载」文件夹，把截图、安装包和临时文档按类型归档，并列出可删除项。', scheduleLabel: '每天 18:30', recurrence: 'cron', cronExpression: '30 18 * * *', nextRun: { hour: 18, minute: 30 } },
       { id: 'midday-reset', title: '午间充电站', note: '午休时间到了，帮我回顾上午完成了什么，并给下午列一个轻量可执行计划。', scheduleLabel: '工作日 12:30', recurrence: 'cron', cronExpression: '30 12 * * 1-5', nextRun: { hour: 12, minute: 30 } },
@@ -196,8 +194,8 @@ const SCHEDULED_TASK_COPY = {
       agentSourceHint: '到点后，Maka 会使用创建时的执行设置启动新任务。',
       agentDelivery: '交给 Agent 执行',
     },
-  },
-  'zh-TW': {
+  };
+const scheduledTaskCopyZhTw: ScheduledTaskCopy = {
     templates: [
       { id: 'daily-download-cleanup', title: '每日下載資料夾清理', note: '請幫我整理「下載」資料夾，把截圖、安裝包和臨時文件按型別歸檔，並列出可刪除項。', scheduleLabel: '每天 18:30', recurrence: 'cron', cronExpression: '30 18 * * *', nextRun: { hour: 18, minute: 30 } },
       { id: 'midday-reset', title: '午間充電站', note: '午休時間到了，幫我回顧上午完成了什麼，並給下午列一個輕量可執行計劃。', scheduleLabel: '工作日 12:30', recurrence: 'cron', cronExpression: '30 12 * * 1-5', nextRun: { hour: 12, minute: 30 } },
@@ -230,8 +228,8 @@ const SCHEDULED_TASK_COPY = {
       agentSourceHint: '到點後，Maka 會使用建立時的執行設定啟動新任務。',
       agentDelivery: '交給 Agent 執行',
     },
-  },
-  en: {
+  };
+const scheduledTaskCopyEn: ScheduledTaskCopy = {
     templates: [
       { id: 'daily-download-cleanup', title: 'Clean up Downloads', note: 'Organize screenshots, installers, and temporary documents in Downloads by type, then list items that can be deleted.', scheduleLabel: 'Daily at 18:30', recurrence: 'cron', cronExpression: '30 18 * * *', nextRun: { hour: 18, minute: 30 } },
       { id: 'midday-reset', title: 'Midday reset', note: 'Review what I completed this morning and create a lightweight, actionable plan for the afternoon.', scheduleLabel: 'Weekdays at 12:30', recurrence: 'cron', cronExpression: '30 12 * * 1-5', nextRun: { hour: 12, minute: 30 } },
@@ -265,8 +263,9 @@ const SCHEDULED_TASK_COPY = {
         'When due, Maka starts a new task using the execution settings captured at creation.',
       agentDelivery: 'Run via the Agent',
     },
-  },
-} satisfies UiCatalog<ScheduledTaskCopy>;
+  };
+
+const SCHEDULED_TASK_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ScheduledTaskCopy>()({ 'zh-CN': scheduledTaskCopyZhCn, 'zh-TW': scheduledTaskCopyZhTw, en: scheduledTaskCopyEn }));
 
 export function getScheduledTaskCopy(locale: UiLocale): ScheduledTaskCopy {
   return SCHEDULED_TASK_COPY[locale];

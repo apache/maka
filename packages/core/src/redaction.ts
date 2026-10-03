@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from './ui-locale.js';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from './ui-locale.js';
 
 const SENSITIVE_KEY_SUFFIXES = new Set([
   'auth',
@@ -310,29 +310,31 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
 
 /** Locale copy for each {@link GeneralizedErrorClass}; catalog authors spread
  * this per-locale block instead of restating the sentences. */
-export const GENERALIZED_ERROR_COPY = {
-  'zh-CN': {
-    timeout: '请求超时',
-    rate_limited: '触发模型速率限制',
-    auth_failed: '鉴权失败',
-    provider_error: '模型服务返回错误',
-    network_error: '网络错误',
-  },
-  'zh-TW': {
-    timeout: '請求逾時',
-    rate_limited: '已達模型速率限制',
-    auth_failed: '驗證失敗',
-    provider_error: '模型服務傳回錯誤',
-    network_error: '網路錯誤',
-  },
-  en: {
-    timeout: 'Request timed out',
-    rate_limited: 'Rate limit exceeded',
-    auth_failed: 'Authentication failed',
-    provider_error: 'Provider returned an error',
-    network_error: 'Network error',
-  },
-} satisfies UiCatalog<Record<GeneralizedErrorClass, string>>;
+export const GENERALIZED_ERROR_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<Record<GeneralizedErrorClass, string>>()({
+    'zh-CN': {
+      timeout: '请求超时',
+      rate_limited: '触发模型速率限制',
+      auth_failed: '鉴权失败',
+      provider_error: '模型服务返回错误',
+      network_error: '网络错误',
+    },
+    'zh-TW': {
+      timeout: '請求逾時',
+      rate_limited: '已達模型速率限制',
+      auth_failed: '驗證失敗',
+      provider_error: '模型服務傳回錯誤',
+      network_error: '網路錯誤',
+    },
+    en: {
+      timeout: 'Request timed out',
+      rate_limited: 'Rate limit exceeded',
+      auth_failed: 'Authentication failed',
+      provider_error: 'Provider returned an error',
+      network_error: 'Network error',
+    },
+  }),
+);
 
 export function generalizedErrorMessageForLocale(
   error: unknown,

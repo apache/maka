@@ -18,7 +18,7 @@
  */
 
 import type { PlanExecutionStep, PlanProposal } from '@maka/core/plan';
-import { lookupCopy, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, lookupCopy, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { PlanControlErrorCode } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../../shared/plan-mode-ipc.js';
 
@@ -56,9 +56,7 @@ export interface PlanModeCopy {
     readonly stepStatuses: Record<PlanExecutionStep['status'], string>;
   };
 }
-
-const COPY = {
-  'zh-CN': {
+const copyZhCn: PlanModeCopy = {
     operationFailed: '计划操作失败，请稍后重试。',
     controlFailure: {
       not_found: '计划方案已不存在，请刷新后重试',
@@ -90,8 +88,8 @@ const COPY = {
       resume: '恢复执行', abandon: '放弃计划',
       stepStatuses: { pending: '未开始', in_progress: '正在执行', completed: '已完成', skipped: '已跳过' },
     },
-  },
-  'zh-TW': {
+  };
+const copyZhTw: PlanModeCopy = {
     operationFailed: '計劃操作失敗，請稍後重試。',
     controlFailure: {
       not_found: '計劃方案已不存在，請重新整理後重試',
@@ -123,8 +121,8 @@ const COPY = {
       resume: '恢復執行', abandon: '放棄計劃',
       stepStatuses: { pending: '未開始', in_progress: '正在執行', completed: '已完成', skipped: '已跳過' },
     },
-  },
-  en: {
+  };
+const copyEn: PlanModeCopy = {
     operationFailed: 'The plan action failed. Try again later.',
     controlFailure: {
       not_found: 'This plan proposal no longer exists. Refresh and try again.',
@@ -157,8 +155,9 @@ const COPY = {
       resume: 'Resume', abandon: 'Abandon plan',
       stepStatuses: { pending: 'Not started', in_progress: 'In progress', completed: 'Completed', skipped: 'Skipped' },
     },
-  },
-} satisfies UiCatalog<PlanModeCopy>;
+  };
+
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<PlanModeCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn })) satisfies UiCatalog<PlanModeCopy>;
 
 export function getPlanModeCopy(locale: UiLocale): PlanModeCopy {
   return COPY[locale];

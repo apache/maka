@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
@@ -744,9 +744,7 @@ const EN_SETTINGS_SECTIONS: Record<SettingsSection, string> = {
   health: 'Health',
   about: 'About',
 };
-
-const SHELL_COPY_BY_LOCALE = {
-  'zh-CN': {
+const shellCopyByLocaleZhCn: ShellCopy = {
     navigation: { settings: '设置' },
     actions: { retry: '重试' },
     paths: {
@@ -1269,8 +1267,8 @@ const SHELL_COPY_BY_LOCALE = {
       graphHistoryDescription: '请在 Agent Graph 面板的运行轮次菜单中查看历史记录。',
       resizeWorkbar: '调整任务工作栏宽度',
     },
-  },
-  'zh-TW': {
+  };
+const shellCopyByLocaleZhTw: ShellCopy = {
     navigation: { settings: '設定' },
     actions: { retry: '重試' },
     paths: {
@@ -1793,8 +1791,8 @@ const SHELL_COPY_BY_LOCALE = {
       graphHistoryDescription: '請在 Agent Graph 面板的執行輪次選單中檢視歷史記錄。',
       resizeWorkbar: '調整任務工作欄寬度',
     },
-  },
-  en: {
+  };
+const shellCopyByLocaleEn: ShellCopy = {
     navigation: { settings: 'Settings' },
     actions: { retry: 'Retry' },
     paths: {
@@ -2366,8 +2364,9 @@ const SHELL_COPY_BY_LOCALE = {
       graphHistoryDescription: 'Use the run menu in the Agent Graph panel to inspect history.',
       resizeWorkbar: 'Resize task workbar',
     },
-  },
-} satisfies UiCatalog<ShellCopy>;
+  };
+
+const SHELL_COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<ShellCopy>()({ 'zh-CN': shellCopyByLocaleZhCn, 'zh-TW': shellCopyByLocaleZhTw, en: shellCopyByLocaleEn })) satisfies UiCatalog<ShellCopy>;
 
 export function getShellCopy(locale: UiLocale): ShellCopy {
   return SHELL_COPY_BY_LOCALE[locale];

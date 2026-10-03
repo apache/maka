@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { resolveSystemUiLocale, type UiCatalog } from '@maka/core/ui-locale';
+import { resolveSystemUiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import {
   DEV_LOSER_EXIT_CODE,
   developmentLaunchResultFile,
@@ -263,7 +263,12 @@ if (!app.requestSingleInstanceLock()) {
     });
 }
 
-const DEV_SINGLETON_COPY = {
+const DEV_SINGLETON_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<{
+  title: string;
+  message: string;
+  detail(profilePath: string): string;
+  exit: string;
+}>()({
   'zh-CN': {
     title: 'Maka Dev 已在运行',
     message: '另一个 Maka Dev 实例正在使用此开发配置。',
@@ -282,9 +287,4 @@ const DEV_SINGLETON_COPY = {
     detail: (profilePath: string) => `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
     exit: 'Exit',
   },
-} satisfies UiCatalog<{
-  title: string;
-  message: string;
-  detail(profilePath: string): string;
-  exit: string;
-}>;
+}));

@@ -26,7 +26,7 @@ import type {
 } from '@maka/core/executor-catalog';
 export type { ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ProviderType } from '@maka/core/llm-connections';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { Settings, ICON_SIZE } from './icons.js';
 import { ModelPickerPanel, ModelPickerPanelContext } from './model-picker-panel.js';
 import { ComposerModelLabel } from './composer-model-label.js';
@@ -78,7 +78,7 @@ interface ExecutorCopy {
   selectionFailed: string;
 }
 
-const EXECUTOR_COPY = {
+const EXECUTOR_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ExecutorCopy>()({
   en: {
     title: 'Executor',
     nativeOperations: 'This operation requires Maka. Start a new Maka task.',
@@ -144,7 +144,7 @@ const EXECUTOR_COPY = {
     newTask: '建立新任務',
     selectionFailed: '模型切換失敗，請重試。',
   },
-} satisfies UiCatalog<ExecutorCopy>;
+}));
 
 export function executorCopy(locale: UiLocale): ExecutorCopy {
   return EXECUTOR_COPY[locale];

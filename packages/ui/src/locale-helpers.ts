@@ -46,7 +46,7 @@
  *      dimension.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type { UiLocale } from '@maka/core/ui-locale';
 
@@ -69,7 +69,7 @@ export type PromptSuggestion = { label: string; prompt: string };
  * translate, draft a message) so the empty-chat surface reads as a
  * general assistant first, a coding assistant second.
  */
-const PROMPT_SUGGESTIONS_BY_LOCALE: UiCatalog<PromptSuggestion[]> = {
+const PROMPT_SUGGESTIONS_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<PromptSuggestion[]>()({
   'zh-CN': [
     { label: '总结代码库', prompt: '帮我总结当前代码库的目录结构和关键模块。' },
     { label: '解释这段代码', prompt: '我贴一段代码进来，请帮我逐行解释它做什么、有没有坑：\n\n```\n\n```' },
@@ -94,7 +94,7 @@ const PROMPT_SUGGESTIONS_BY_LOCALE: UiCatalog<PromptSuggestion[]> = {
     { label: 'Draft message', prompt: 'Help me draft a ____ message to ____, with the goal of ____:\n\nPoints to cover:\n- \n- ' },
     { label: 'Review code', prompt: 'Please review this code — readability, error handling, performance concerns:\n\n```\n\n```' },
   ],
-};
+}));
 
 export function getPromptSuggestions(locale: UiLocale): PromptSuggestion[] {
   return PROMPT_SUGGESTIONS_BY_LOCALE[locale];

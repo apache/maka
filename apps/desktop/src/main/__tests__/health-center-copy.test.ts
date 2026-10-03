@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CAPABILITY_REASON_CODES } from '@maka/core/capabilities';
-import { UI_LOCALES, type UiCatalog } from '@maka/core/ui-locale';
+import { UI_LOCALES, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { connectionLastTestMessageDisplay } from '../../renderer/features/connection-settings/index.js';
 import { getHealthCenterCopy } from '../../renderer/locales/settings-health-copy.js';
 import { getCapabilityReasonCopy } from '../../renderer/locales/capability-reason-copy.js';
@@ -100,11 +100,11 @@ test('renders runtime probe details from structured params, not string parsing',
 });
 
 test('capability reason codes have copy in every locale, unknown reasons keep the fallback', () => {
-  const fallback = {
-    'zh-CN': '状态详情请见对应设置页。',
-    'zh-TW': '狀態詳細資料請參閱對應的設定頁。',
-    en: 'See the corresponding settings page for details.',
-  } satisfies UiCatalog<string>;
+  const fallback = resolveUiMessageCatalog(defineUiMessageCatalog<string>()({
+      'zh-CN': '状态详情请见对应设置页。',
+      'zh-TW': '狀態詳細資料請參閱對應的設定頁。',
+      en: 'See the corresponding settings page for details.',
+    }));
   assert.equal(getCapabilityReasonCopy('zh-CN').platform_credentials_missing, '未配置平台凭据');
   for (const locale of UI_LOCALES) {
     const reasons = getCapabilityReasonCopy(locale);

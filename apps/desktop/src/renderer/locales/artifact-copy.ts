@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type ReasonCopy = { title: string; description: string };
 
@@ -94,9 +94,7 @@ export type ArtifactCopy = {
     loadingImage: string;
   };
 };
-
-const ARTIFACT_COPY = {
-  'zh-CN': {
+const artifactCopyZhCn: ArtifactCopy = {
     pane: {
       refreshFailed: '刷新生成文件失败', openFailed: '无法在 Finder 中打开生成文件', copyFailed: '复制失败',
       readTextFailed: '无法读取生成文件文本内容。', copied: '已复制生成文件文本', saved: '已另存生成文件', saveFailed: '另存失败',
@@ -133,8 +131,8 @@ const ARTIFACT_COPY = {
       readFailed: { title: '加载预览失败', description: '无法读取文件内容（可能已被删除、移动或权限不足）。请通过「在 Finder 中打开」检查文件。' },
       unsupported: '暂不支持的预览', name: '名称', unnamed: '(未命名)', type: '类型', size: '大小', openInFinder: '在 Finder 中打开', loadingImage: '加载图片预览…',
     },
-  },
-  'zh-TW': {
+  };
+const artifactCopyZhTw: ArtifactCopy = {
     pane: {
       refreshFailed: '重新整理生成檔案失敗', openFailed: '無法在 Finder 中開啟生成檔案', copyFailed: '複製失敗',
       readTextFailed: '無法讀取生成檔案文本內容。', copied: '已複製生成檔案文本', saved: '已另存生成檔案', saveFailed: '另存失敗',
@@ -171,8 +169,8 @@ const ARTIFACT_COPY = {
       readFailed: { title: '載入預覽失敗', description: '無法讀取檔案內容（可能已被刪除、移動或權限不足）。請透過「在 Finder 中開啟」檢查檔案。' },
       unsupported: '暫不支援的預覽', name: '名稱', unnamed: '(未命名)', type: '型別', size: '大小', openInFinder: '在 Finder 中開啟', loadingImage: '載入圖片預覽…',
     },
-  },
-  en: {
+  };
+const artifactCopyEn: ArtifactCopy = {
     pane: {
       refreshFailed: 'Failed to refresh generated files', openFailed: 'Could not show generated file in Finder', copyFailed: 'Copy failed',
       readTextFailed: 'Could not read the generated file as text.', copied: 'Generated file text copied', saved: 'Generated file saved as', saveFailed: 'Save as failed',
@@ -209,8 +207,9 @@ const ARTIFACT_COPY = {
       readFailed: { title: 'Failed to load preview', description: 'The file could not be read. It may have been deleted, moved, or blocked by permissions. Use “Show in Finder” to inspect it.' },
       unsupported: 'Unsupported preview', name: 'Name', unnamed: '(unnamed)', type: 'Type', size: 'Size', openInFinder: 'Show in Finder', loadingImage: 'Loading image preview…',
     },
-  },
-} satisfies UiCatalog<ArtifactCopy>;
+  };
+
+const ARTIFACT_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ArtifactCopy>()({ 'zh-CN': artifactCopyZhCn, 'zh-TW': artifactCopyZhTw, en: artifactCopyEn })) satisfies UiCatalog<ArtifactCopy>;
 
 export function getArtifactCopy(locale: UiLocale): ArtifactCopy {
   return ARTIFACT_COPY[locale];

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiLocale, UiCatalog } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { ExternalAgentSetupFailure } from '@maka/runtime-host/protocol';
 const en = {
   programTitle: "Program",
@@ -201,7 +201,7 @@ const zhTW: typeof en = {
     cleanup_failed: '無法釋放暫時程序，請重新啟動 Host 後重試。',
   },
 };
-const catalog = { en, 'zh-CN': zh, 'zh-TW': zhTW } satisfies UiCatalog<typeof en>;
+const catalog = resolveUiMessageCatalog(defineUiMessageCatalog<typeof en>()({ en, 'zh-CN': zh, 'zh-TW': zhTW })) satisfies UiCatalog<typeof en>;
 export function getExternalAgentsCopy(locale: UiLocale) {
   return catalog[locale];
 }

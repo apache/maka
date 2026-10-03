@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 interface NativeDiagnosticDialogCopy {
   readonly dialog: {
@@ -55,9 +55,7 @@ interface NativeDiagnosticDialogCopy {
     readonly exit: string;
   };
 }
-
-const COPY = {
-  en: {
+const copyEn: NativeDiagnosticDialogCopy = {
     dialog: {
       copy: 'Copy Diagnostics',
       copyAgain: 'Copy Again',
@@ -95,8 +93,8 @@ const COPY = {
       repair: 'Repair Workspace',
       exit: 'Exit',
     },
-  },
-  'zh-CN': {
+  };
+const copyZhCn: NativeDiagnosticDialogCopy = {
     dialog: {
       copy: '复制诊断信息',
       copyAgain: '再次复制',
@@ -133,8 +131,8 @@ const COPY = {
       repair: '修复工作区',
       exit: '退出',
     },
-  },
-  'zh-TW': {
+  };
+const copyZhTw: NativeDiagnosticDialogCopy = {
     dialog: {
       copy: '複製診斷資訊',
       copyAgain: '再次複製',
@@ -171,8 +169,9 @@ const COPY = {
       repair: '修復工作區',
       exit: '退出',
     },
-  },
-} satisfies UiCatalog<NativeDiagnosticDialogCopy>;
+  };
+
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<NativeDiagnosticDialogCopy>()({ en: copyEn, 'zh-CN': copyZhCn, 'zh-TW': copyZhTw }));
 
 export function getNativeDiagnosticDialogCopy(locale: UiLocale): NativeDiagnosticDialogCopy {
   return COPY[locale];
