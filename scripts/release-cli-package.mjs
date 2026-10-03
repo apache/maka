@@ -261,8 +261,11 @@ function copyNativePrebuildInputToCleanTree(cleanRoot) {
 
 function validateNodeVersion() {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
-  if (major < 22 || (major === 22 && minor < 19)) {
-    throw new Error(`Node.js >=22.19.0 is required; found ${process.versions.node}`);
+  // Node 23 satisfies a naive `>=22.19.0` check but lacks `node:sqlite`
+  // `DatabaseSync.isTransaction` (added in 22.16 / 24.0 only), which the
+  // storage layer relies on. Accept 22.19+ and 24+, matching root `engines`.
+  if (major < 22 || (major === 22 && minor < 19) || major === 23) {
+    throw new Error(`Node.js ^22.19.0 || >=24.0.0 is required; found ${process.versions.node}`);
   }
 }
 
