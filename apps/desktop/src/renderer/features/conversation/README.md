@@ -240,6 +240,22 @@ stable `ComposerSubmissionCommands` handle, whose `beginEditUserMessage` and
 `handleTurnFooterAction` serve the transcript. The handle throws
 while the owner is unmounted. The binding and reader context are private.
 
+## Composer editing intents (R2 M3)
+
+The editor handle stays inside Conversation: `ConversationComposerRegion`
+attaches it to the Composer, and the submission owner and draft restoration use
+it internally. Everyone else gets `ComposerEditingCommands`:
+- `appendText`, `replaceText`, `focus` and `openModelPicker` for the visible draft;
+- `seedDraft` for Work Board's new-task draft, and `discardDraft` for a Guest's
+  settled turn request;
+- `claimVisibleDraft` for Module Hub's later append, which stays current only
+  while the same editor is mounted.
+
+None of them reads a draft back. The shell reaches them through its queue
+surface, which carries only these intents and the plate's entry actions. Workbar
+and Session Collaboration take the two keyed intents structurally, without
+importing Conversation.
+
 ## Task readiness ownership (R2 M3)
 
 `TaskReadinessProvider` alone calls the readiness controller. It is mounted

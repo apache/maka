@@ -442,10 +442,8 @@ function AppShellContent({
   // recent workspace history so the home view is populated before the async
   // `app:info` round-trip completes on mount.
   const persistedComposerDefaults = loadComposerDefaults();
-  const composerRef = queueSurface.composer;
-  const openComposerModelPicker = useCallback(() => {
-    composerRef.current?.openModelPicker();
-  }, []);
+  // Named Composer edits; the editor handle stays with Conversation.
+  const composerEditing = queueSurface.editing;
   const { safeResumeAction, composerResumeAction } = useShellResume({
     activeId,
     ownerActiveId,
@@ -557,7 +555,7 @@ function AppShellContent({
       : true,
     modelPickerDisabled: !modelSwitchAvailability.available,
     openSettingsSection,
-    openModelPicker: openComposerModelPicker,
+    openModelPicker: composerEditing.openModelPicker,
     refreshModelChoices: sessionHostConnections.refreshConnections,
     setSessionExecutor,
   });
@@ -647,8 +645,8 @@ function AppShellContent({
     (_skillId: string, skillName: string) => {
     setNavSelection({ section: 'sessions' });
     const seed = () => {
-        composerRef.current?.appendText(shellCopy.useSkillPrompt(skillName));
-      composerRef.current?.focus();
+        composerEditing.appendText(shellCopy.useSkillPrompt(skillName));
+      composerEditing.focus();
     };
     if (activeIdRef.current) window.requestAnimationFrame(seed);
     else void createSession().then(() => window.requestAnimationFrame(seed));
@@ -807,22 +805,18 @@ function AppShellContent({
   );
   const captureActiveComposerClaim = useCallback(() => {
     const sessionId = activeIdRef.current;
-    const composer = composerRef.current;
-    if (
-      !sessionId ||
-      !composer ||
-      navSelectionRef.current.section !== 'sessions'
-    ) {
-      return undefined;
-    }
+    const claim = navSelectionRef.current.section === 'sessions' && sessionId
+      ? composerEditing.claimVisibleDraft()
+      : undefined;
+    if (!claim) return undefined;
     return {
       isCurrent: () =>
         activeIdRef.current === sessionId &&
         navSelectionRef.current.section === 'sessions' &&
-        composerRef.current === composer,
-      append: (text: string) => composer.appendText(text),
+        claim.isCurrent(),
+      append: claim.append,
     };
-  }, []);
+  }, [composerEditing]);
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
@@ -852,9 +846,9 @@ function AppShellContent({
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
-    window.requestAnimationFrame(() => composerRef.current?.focus());
+    window.requestAnimationFrame(() => composerEditing.focus());
     return ownerToken;
-  }, [composerStaging, sessionSettingIntent.commands, setNavSelection, setSearchScrollTarget, startNewSession]);
+  }, [composerEditing, composerStaging, sessionSettingIntent.commands, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -1057,8 +1051,8 @@ function AppShellContent({
    *
    *   - `kind: 'settings'` → `openSettingsSection(section)` (existing
    *     Settings modal jump, persisted via localStorage).
-   *   - `kind: 'compose'` → write text into the composer via
-   *     `composerRef.current.setText(...)` and focus it. We do NOT
+   *   - `kind: 'compose'` → replace the composer's text through
+   *     `composerEditing.replaceText(...)` and focus it. We do NOT
    *     auto-submit the prompt; the user still presses Enter. That
    *     keeps an injected `maka://compose?text=ransfer my keys...`
    *     from sending without a human in the loop.
@@ -1074,8 +1068,8 @@ function AppShellContent({
         openSettingsSection(dest.section);
         return;
       case 'compose':
-        composerRef.current?.setText(dest.text);
-        composerRef.current?.focus();
+        composerEditing.replaceText(dest.text);
+        composerEditing.focus();
         return;
       default: {
         const _exhaustive: never = dest;
@@ -1287,7 +1281,7 @@ function AppShellContent({
       clientPathsAccessible={projectCapabilities.viewClientPath}
       useSkillInChat={useSkillInChat}
       openSession={openSessionInChat}
-      appendComposerText={(text) => composerRef.current?.appendText(text)}
+      appendComposerText={composerEditing.appendText}
       captureActiveComposerClaim={captureActiveComposerClaim}
       commandPort={moduleHubCommands}
     >
@@ -1311,7 +1305,7 @@ function AppShellContent({
         shellObscured,
         modelChoices: chatModelChoices,
         toastApi,
-        composerRef,
+        composerDraft: composerEditing,
         openNewTaskSurface,
         openSessionInChat,
         resolveWorkBoardTarget,
@@ -1511,12 +1505,11 @@ function AppShellContent({
                         {(workspacePicker) => (
                           <SessionCollaboration.GuestTurnRequests
                             sessionId={sharedSessionActive ? activeId : undefined}
-                            composerRef={composerRef}
+                            discardDraft={composerEditing.discardDraft}
                           >
                             {(guest) => (
                               <Conversation.ConversationComposerRegion surface={ChatComposerRegion}
                   workspacePicker={workspacePicker}
-                  composerRef={composerRef}
                   guest={guest}
                   active={sessionsSelected}
                   onboardingComposerHidden={
@@ -1645,13 +1638,13 @@ function AppShellContent({
                 revisionNavigation={revisionNavigation}
                 onRevisionNavigate={openSessionInChat}
                 onNew={createSession}
-                onPromptSuggestion={(prompt) => composerRef.current?.appendText(prompt)}
+                onPromptSuggestion={composerEditing.appendText}
                 onQuoteSelection={
                   sharedSessionActive
                     ? undefined
                     : (selection) => {
                         composerStaging.addQuote(selection);
-                        composerRef.current?.focus();
+                        composerEditing.focus();
                       }
                 }
                 onAskAboutSelection={

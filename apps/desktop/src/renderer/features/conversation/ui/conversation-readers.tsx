@@ -24,6 +24,7 @@ import type { SessionUiReads } from '../model/session-ui-reads.js';
 import { useSessionUiRead } from '../controller/use-session-ui-read.js';
 import { transcriptRestoreTarget } from '../controller/transcript-reading-position.js';
 import { useConversationOwner } from './conversation-context.js';
+import { useConversationQueueCommands } from './conversation-provider.js';
 import { useComposerSubmissionReader, type ComposerSubmissionReader } from './composer-submission-context.js';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 
@@ -74,6 +75,8 @@ type SubmissionProps = Pick<ComposerSubmissionReader,
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
 };
 type ComposerProps = SubmissionProps & {
+  /** The owner's editor handle; regions outside Conversation get named edits instead. */
+  composerRef: ReturnType<typeof useConversationQueueCommands>['composer'];
   processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsageTokens?: number;
 };
 /** The shell's picker gates; an edit-and-resend draft narrows them here. */
@@ -90,6 +93,7 @@ export function ConversationComposerRegion<P extends object>(
   const { surface, usageModel, usageRoute, ...presentation } = props;
   const { workspace } = useConversationOwner();
   const submission = useComposerSubmissionReader();
+  const composerRef = useConversationQueueCommands().composer;
   const actionCopy = getDesktopConversationCopy(useUiLocale()).actions;
   const activeId = useSyncExternalStore(workspace.target.subscribe, workspace.target.getSnapshot);
   const view = useSyncExternalStore(workspace.composer.subscribe, workspace.composer.getSnapshot);
@@ -100,6 +104,7 @@ export function ConversationComposerRegion<P extends object>(
   const editing = draft !== null && activeId === draft.draftSessionId;
   const gates = presentation as ComposerPickGates;
   const owned: ComposerProps & ComposerPickGates = {
+    composerRef,
     onSend: submission.onSend,
     newTaskSendPending: submission.newTaskSendPending,
     onStop: submission.stop,

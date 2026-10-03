@@ -26,7 +26,7 @@ import { act, createElement, Fragment } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider, type ComposerHandle } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import {
   createSessionCatalogController,
@@ -65,6 +65,7 @@ type Owner = { sessionId: string | undefined };
 type ProviderProps = Parameters<typeof ComposerSubmissionProvider<Owner>>[0];
 
 interface RegionProps {
+  composerRef: { current: Partial<ComposerHandle> | null };
   onSend(text: string, metadata?: { followUpMode?: 'steer' | 'queue' }): Promise<boolean | void>;
   newTaskSendPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
@@ -415,6 +416,47 @@ describe('ComposerSubmissionProvider', () => {
     assert.deepEqual(h.region.pendingMessages.map((message) => message.id), ['saved-follow-up']);
   });
 
+  test('the Composer slot holds the editor handle; the shell edits it only through named intents', async () => {
+    const h = harness();
+    assert.deepEqual(Object.keys(h.target.queueSurface).sort(), [
+      'deleteQueuedEntry', 'editing', 'promoteQueuedEntry', 'reorderQueuedEntries', 'updateQueuedEntry',
+    ], 'no editor handle, draft restore or restorer slot reaches the shell');
+    const calls: unknown[] = [];
+    const editor = (name: string) => ({
+      appendText: (text: string) => { calls.push([name, 'append', text]); },
+      setText: (text: string) => { calls.push([name, 'set', text]); },
+      setDraft: (key: string, text: string) => { calls.push([name, 'setDraft', key, text]); },
+      clearDraft: (key: string) => { calls.push([name, 'clearDraft', key]); },
+      focus: () => { calls.push([name, 'focus']); },
+      openModelPicker: () => { calls.push([name, 'picker']); },
+    });
+    const { editing } = h.target.queueSurface;
+    h.region.composerRef.current = editor('first');
+    editing.appendText('suggested');
+    editing.replaceText('maka://compose text');
+    editing.seedDraft('new-task:board', 'board draft');
+    editing.discardDraft('session-A');
+    editing.focus();
+    editing.openModelPicker();
+    const claim = editing.claimVisibleDraft();
+    assert.ok(claim);
+    assert.equal(claim.isCurrent(), true);
+    h.region.composerRef.current = editor('second');
+    assert.equal(claim.isCurrent(), false, 'a claim ends when another editor mounts');
+    claim.append('late');
+    assert.deepEqual(calls, [
+      ['first', 'append', 'suggested'],
+      ['first', 'set', 'maka://compose text'],
+      ['first', 'setDraft', 'new-task:board', 'board draft'],
+      ['first', 'clearDraft', 'session-A'],
+      ['first', 'focus'],
+      ['first', 'picker'],
+      ['first', 'append', 'late'],
+    ]);
+    h.region.composerRef.current = null;
+    assert.equal(editing.claimVisibleDraft(), undefined);
+  });
+
   test('the shell\'s command handle works only while the owner is mounted', async () => {
     const unmounted = createComposerSubmissionCommands();
     assert.throws(() => unmounted.beginEditUserMessage('turn-1'), /ComposerSubmissionProvider is not mounted/);
@@ -502,6 +544,7 @@ describe('Composer submission ownership', () => {
 
   test('AppShell holds no submission state and the public entry no submit construction', () => {
     const shell = readFileSync(join(rendererRoot, 'app-shell.tsx'), 'utf8');
+    assert.doesNotMatch(shell, /composerRef/, 'the shell keeps no editor handle');
     assert.doesNotMatch(
       shell,
       /revisionDraft|newTaskSendPending|stopPending|createRevisionAwareOnSend|createStagedFollowUp|SessionLocalMessages|createAppShell(?:Chat|Revision|Turn)Actions|createAppShellStopAction/,
