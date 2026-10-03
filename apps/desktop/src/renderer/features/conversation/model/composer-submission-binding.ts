@@ -17,12 +17,10 @@
  * under the License.
  */
 
-export { useWorkHubController } from './controller/use-workhub-controller.js';
+import type { ComposerSubmissionCommands } from './composer-submission-contract.js';
 
-export { WorkHubComposer } from './ui/workhub-composer.js';
-export { WorkHubConversation } from './ui/workhub-conversation.js';
-
-export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
-export { workspaceNameFromCwd } from './model/workspace-name.js';
-export { allocateWorkHubHues } from './model/identity-colors.js';
-export { workHubLinkedWork } from './model/linked-work.js';
+// Binding is feature-private. The shell cannot publish an implementation or
+// reach the owner's draft state through the public command handle.
+export const submissionBindings = new WeakMap<ComposerSubmissionCommands, {
+  current?: ComposerSubmissionCommands;
+}>();

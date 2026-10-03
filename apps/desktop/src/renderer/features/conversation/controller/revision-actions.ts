@@ -19,15 +19,15 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { userFacingText } from '@maka/core/session';
 import type { ComposerHandle } from '@maka/ui';
-import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors.js';
+} from '../../../application/contracts/session-workspace-errors.js';
+import type { ComposerSubmissionServices } from '../submission-services.js';
 import {
   acquireSessionCopyAttempt,
   abandonSessionCopyAttempt,
@@ -35,7 +35,7 @@ import {
   startSessionCopyAttempt,
   type SessionCopyAttemptPhase,
   type SessionCopyAttemptKey,
-} from './session-copy-attempt.js';
+} from '../../../application/contracts/session-copy-attempt.js';
 
 type ReadonlyRef<T> = { readonly current: T };
 
@@ -49,7 +49,7 @@ type ToastApi = {
   ): void;
 };
 
-/** Active edit-and-resend draft owned by the desktop shell. */
+/** Active edit-and-resend draft, owned by the Composer submission owner. */
 export type TurnRevisionDraft = {
   sourceSessionId: string;
   sourceTurnId: string;
@@ -62,7 +62,7 @@ export type TurnRevisionDraft = {
   previousComposerText: string;
 };
 
-export interface AppShellRevisionActions {
+export interface RevisionActions {
   beginEditUserMessage(turnId: string): void;
   /** Lazily create the before-turn branch immediately before normal send. */
   prepareRevisionSend(text: string): Promise<boolean>;
@@ -83,7 +83,8 @@ export interface AppShellRevisionActions {
  * retained historical attachments are fine — the Host revision copier
  * rewrites their Session refs losslessly.
  */
-export function createAppShellRevisionActions(deps: {
+export function createRevisionActions(deps: {
+  services: Pick<ComposerSubmissionServices, 'reviseBeforeTurn' | 'abandonSessionCopy'>;
   uiLocale: UiLocale;
   activeIdRef: ReadonlyRef<string | undefined>;
   captureSelection(): () => boolean;
@@ -91,12 +92,13 @@ export function createAppShellRevisionActions(deps: {
   readMessages(): readonly StoredMessage[];
   hasPendingAttachments: () => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  refreshSessions: () => Promise<DesktopSessionSummary[]>;
+  refreshSessions: () => Promise<unknown>;
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
   revisionDraftRef: ReadonlyRef<TurnRevisionDraft | null>;
   toastApi: ToastApi;
-}): AppShellRevisionActions {
+}): RevisionActions {
   const {
+    services,
     uiLocale,
     activeIdRef,
     captureSelection,
@@ -239,7 +241,7 @@ export function createAppShellRevisionActions(deps: {
     try {
       // Main acknowledges only after the cleanup intent is durable; physical
       // removal may finish after this renderer has closed the draft.
-      await window.maka.sessions.abandonSessionCopy(draft.sourceSessionId, draft.copyId);
+      await services.abandonSessionCopy(draft.sourceSessionId, draft.copyId);
       completeTurnRevisionCopyAttempt(draft);
       return { acknowledged: true, draft: abandoningDraft };
     } catch {
@@ -293,7 +295,7 @@ export function createAppShellRevisionActions(deps: {
     const sourceSessionId = startedDraft.sourceSessionId;
     let preparedSessionId: string | undefined;
     try {
-      const newSession = await window.maka.sessions.reviseBeforeTurn(sourceSessionId, {
+      const newSession = await services.reviseBeforeTurn(sourceSessionId, {
         sourceTurnId: startedDraft.sourceTurnId,
         copyId: startedDraft.copyId,
       });
@@ -321,7 +323,7 @@ export function createAppShellRevisionActions(deps: {
       // must be surfaced before it runs — checking after it is always stale.
       if (selectionIsCurrent()) {
         if (isSessionWorkspaceUnavailableError(error)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+          showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, {
             sessionId: sourceSessionId,
           });
         } else {
@@ -384,6 +386,7 @@ export function completeTurnRevisionCopyAttempt(draft: TurnRevisionDraft): void 
 }
 
 export async function abandonTurnRevisionCopyAttempt(
+  services: Pick<ComposerSubmissionServices, 'abandonSessionCopy'>,
   draft: TurnRevisionDraft,
 ): Promise<boolean> {
   const key: SessionCopyAttemptKey = {
@@ -393,7 +396,7 @@ export async function abandonTurnRevisionCopyAttempt(
   };
   abandonSessionCopyAttempt(key, draft.copyId);
   try {
-    await window.maka.sessions.abandonSessionCopy(draft.sourceSessionId, draft.copyId);
+    await services.abandonSessionCopy(draft.sourceSessionId, draft.copyId);
     completeSessionCopyAttempt(key, draft.copyId);
     return true;
   } catch {

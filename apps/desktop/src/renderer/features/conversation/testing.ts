@@ -122,3 +122,19 @@ export { TranscriptReadingPositionController, type TranscriptReadingPositionComm
 export { useComposerAttachments } from './controller/use-composer-attachments.js';
 export { useComposerQuotes } from './controller/use-composer-quotes.js';
 export { useComposerStaging } from './ui/composer-staging-context.js';
+export { deriveTaskReadinessNotice, isTaskSubmissionHardBlocked } from './model/task-readiness-notice.js';
+export { mergeWorkspaceReferences, rebaseWorkspaceFileReferences } from './model/follow-up-submit-routing.js';
+export { createChatActions } from './controller/chat-actions.js';
+export {
+  completeTurnRevisionCopyAttempt,
+  createRevisionActions,
+  type TurnRevisionDraft,
+} from './controller/revision-actions.js';
+export {
+  createRevisionAwareOnSend,
+  createStagedFollowUp,
+  type RevisionSendPorts,
+} from './controller/composer-submit.js';
+export { SessionLocalMessages } from './controller/session-local-messages.js';
+export { createStopAction } from './controller/stop-action.js';
+export { createTurnActions } from './controller/turn-actions.js';

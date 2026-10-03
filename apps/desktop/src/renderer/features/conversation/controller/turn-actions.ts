@@ -19,15 +19,15 @@
 
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { TurnFooterActionMeta } from '@maka/ui';
-import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors.js';
-import { acquireSessionCopyAttempt } from './session-copy-attempt.js';
+} from '../../../application/contracts/session-workspace-errors.js';
+import { acquireSessionCopyAttempt } from '../../../application/contracts/session-copy-attempt.js';
+import type { ComposerSubmissionServices } from '../submission-services.js';
 
 type ToastApi = {
   info(title: string, description?: string): void;
@@ -40,11 +40,12 @@ type ToastApi = {
   ): void;
 };
 
-export interface AppShellTurnActions {
+export interface TurnActions {
   handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']): Promise<void>;
 }
 
-export function createAppShellTurnActions(deps: {
+export function createTurnActions(deps: {
+  services: Pick<ComposerSubmissionServices, 'branchFromTurn'>;
   uiLocale: UiLocale;
   activeIdRef: { readonly current: string | undefined };
   captureSelection(): () => boolean;
@@ -54,10 +55,11 @@ export function createAppShellTurnActions(deps: {
     keyOf(sessionId: string, turnId: string, actionId: string): string;
   };
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  refreshSessions: () => Promise<DesktopSessionSummary[]>;
+  refreshSessions: () => Promise<unknown>;
   toastApi: ToastApi;
-}): AppShellTurnActions {
+}): TurnActions {
   const {
+    services,
     uiLocale,
     activeIdRef,
     captureSelection,
@@ -88,7 +90,7 @@ export function createAppShellTurnActions(deps: {
           },
           turnId,
         );
-        const newSession = await window.maka.sessions.branchFromTurn(sessionId, {
+        const newSession = await services.branchFromTurn(sessionId, {
           sourceTurnId: copyAttempt.sourceTurnId,
           copyId: copyAttempt.copyId,
         });
@@ -102,7 +104,7 @@ export function createAppShellTurnActions(deps: {
     } catch (error) {
       if (!selectionIsCurrent()) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
       } else {
         toastApi.error(
           copy.operationFailedTitle,

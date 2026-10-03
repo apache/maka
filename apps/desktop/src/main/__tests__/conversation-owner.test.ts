@@ -28,6 +28,7 @@ import { createSessionCatalogController, SessionCatalogContext } from '../../ren
 import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices } from '../../renderer/features/conversation/index.js';
 import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { withComposerSubmission } from './composer-submission-fixture.js';
 
 const row = (id: string): DesktopSessionSummary => ({
   id, name: id, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -118,7 +119,7 @@ function harness(options: {
     createElement(ToastProvider, { children:
       createElement(SessionCatalogContext.Provider, { value: catalog, children:
         createElement(ConversationServicesProvider, { services, children:
-          createElement(ConversationProvider, { children: createElement(Shell) }),
+          createElement(ConversationProvider, { children: withComposerSubmission(createElement(Shell)) }),
         }),
       }),
     }),

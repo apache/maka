@@ -17,29 +17,14 @@
  * under the License.
  */
 
-import type { UiLocale } from '@maka/core/ui-locale';
-import type { ToastDiagnosticTarget } from '@maka/ui';
-import { getShellCopy } from './locales/shell-copy.js';
+import { createContext, useContext } from 'react';
+import type { useComposerSubmission } from '../controller/use-composer-submission.js';
 
-export { isSessionWorkspaceUnavailableError } from './application/contracts/session-workspace-errors.js';
+export type ComposerSubmissionReader = ReturnType<typeof useComposerSubmission>['reader'];
 
-export function showSessionWorkspaceUnavailableToast(
-  toastApi: {
-    error(
-      title: string,
-      description?: string,
-      diagnosticDetails?: string,
-      diagnosticTarget?: ToastDiagnosticTarget,
-    ): void;
-  },
-  locale: UiLocale,
-  diagnosticTarget?: ToastDiagnosticTarget,
-): void {
-  const copy = getShellCopy(locale).errors;
-  toastApi.error(
-    copy.workspaceUnavailableTitle,
-    copy.workspaceUnavailableDescription,
-    undefined,
-    diagnosticTarget,
-  );
+export const ComposerSubmissionContext = createContext<ComposerSubmissionReader | undefined>(undefined);
+export function useComposerSubmissionReader() {
+  const reader = useContext(ComposerSubmissionContext);
+  if (!reader) throw new Error('ComposerSubmissionProvider is required');
+  return reader;
 }
