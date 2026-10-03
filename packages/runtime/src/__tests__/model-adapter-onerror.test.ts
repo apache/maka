@@ -33,6 +33,16 @@ const ZERO_USAGE: LanguageModelV4Usage = {
   outputTokens: { total: 0, text: 0, reasoning: 0 },
 };
 
+const UNAVAILABLE_USAGE: LanguageModelV4Usage = {
+  inputTokens: {
+    total: undefined,
+    noCache: undefined,
+    cacheRead: undefined,
+    cacheWrite: undefined,
+  },
+  outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+};
+
 function newAdapter(): ModelAdapter {
   return new ModelAdapter({
     connection: { providerType: 'openai' } as never,
@@ -72,6 +82,7 @@ describe('settleModelStepOutcome', () => {
       aborted: false,
       failure,
       sawFinish: true,
+      sawStepOutput: false,
       finishReason: 'content-filter',
     });
 
@@ -83,6 +94,7 @@ describe('settleModelStepOutcome', () => {
     const outcome = settleModelStepOutcome({
       aborted: false,
       sawFinish: true,
+      sawStepOutput: false,
       finishReason: 'error',
       rawFinishReason: '503',
     });
@@ -91,6 +103,59 @@ describe('settleModelStepOutcome', () => {
     assert.equal(outcome.failure.kind, 'provider_unavailable');
     assert.equal(outcome.failure.code, '503');
     assert.equal(outcome.failure.retryable, false);
+  });
+
+  test('rejects an output-free unmetered stop as retryable provider unavailability', () => {
+    const outcome = settleModelStepOutcome({
+      aborted: false,
+      sawFinish: true,
+      sawStepOutput: false,
+      finishReason: 'stop',
+      rawFinishReason: 'stop',
+    });
+
+    assert.ok(outcome.kind === 'failed');
+    assert.equal(outcome.failure.kind, 'provider_unavailable');
+    assert.equal(outcome.failure.retryable, true);
+    assert.equal(outcome.failure.message, 'Provider ended the stream with no output');
+  });
+
+  test('routes an output-free network_error finish through the network retry policy', () => {
+    const outcome = settleModelStepOutcome({
+      aborted: false,
+      sawFinish: true,
+      sawStepOutput: false,
+      finishReason: 'stop',
+      rawFinishReason: 'network_error',
+    });
+
+    assert.ok(outcome.kind === 'failed');
+    assert.equal(outcome.failure.kind, 'network');
+    assert.equal(outcome.failure.retryable, true);
+  });
+
+  test('accepts an output-free stop when usage is authoritative zero', () => {
+    const outcome = settleModelStepOutcome({
+      aborted: false,
+      sawFinish: true,
+      sawStepOutput: false,
+      finishReason: 'stop',
+      rawFinishReason: 'stop',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheHitInputTokens: 0,
+        cacheMissInputTokens: 0,
+        cacheMissInputSource: 'explicit',
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0,
+        rawFinishReason: 'stop',
+      },
+    });
+
+    assert.equal(outcome.kind, 'completed');
   });
 });
 
@@ -385,6 +450,62 @@ describe('ModelAdapter.startStream onError', () => {
     assert.equal(outcome.failure.message, 'Provider stream ended without finishing (other)');
     assert.equal(outcome.continuation, 'none');
   });
+
+  test('settles an output-free unmetered stop as retryable provider unavailability', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
+    assert.equal(outcome.failure.kind, 'provider_unavailable');
+    assert.equal(outcome.failure.retryable, true);
+  });
+
+  test('settles an output-free network_error finish as retryable network failure', async () => {
+    const outcome = await settle([
+      { type: 'stream-start', warnings: [] },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'network_error' },
+        usage: UNAVAILABLE_USAGE,
+      },
+    ]);
+
+    assert.equal(outcome.kind, 'failed');
+    if (outcome.kind !== 'failed') return;
+    assert.equal(outcome.failure.kind, 'network');
+    assert.equal(outcome.failure.retryable, true);
+  });
+
+  for (const providerExecuted of [false, true]) {
+    test(`rejects an output-free stop after only a tool-input marker (providerExecuted=${providerExecuted})`, async () => {
+      const outcome = await settle([
+        { type: 'stream-start', warnings: [] },
+        {
+          type: 'tool-input-start',
+          id: 'search-1',
+          toolName: 'web_search',
+          ...(providerExecuted ? { providerExecuted: true } : {}),
+        },
+        {
+          type: 'finish',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: UNAVAILABLE_USAGE,
+        },
+      ]);
+
+      assert.equal(outcome.kind, 'failed');
+      if (outcome.kind !== 'failed') return;
+      assert.equal(outcome.failure.kind, 'provider_unavailable');
+      assert.equal(outcome.failure.retryable, true);
+    });
+  }
 
   test('preserves a provider reason hidden by the SDK other bucket', async () => {
     const outcome = await settle([

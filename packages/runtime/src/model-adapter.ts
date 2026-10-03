@@ -445,6 +445,7 @@ export class ModelAdapter {
       async *[Symbol.asyncIterator]() {
         let failure: ModelFailure | undefined;
         let sawFinish = false;
+        let sawStepOutput = false;
         let streamedFinishReason: string | undefined;
         let streamedRawFinishReason: string | undefined;
         let sawUnfinalizedPlaintextSummary = false;
@@ -478,6 +479,7 @@ export class ModelAdapter {
               continuation.runtimeToolName,
             )) {
               if (event.kind === 'error') failure = event.failure;
+              if (streamEventCountsAsStepOutput(event)) sawStepOutput = true;
               yield event;
             }
           }
@@ -513,6 +515,7 @@ export class ModelAdapter {
             aborted: continuation.abortSignal.aborted,
             failure,
             sawFinish,
+            sawStepOutput,
             finishReason,
             rawFinishReason,
             usage,
@@ -528,6 +531,7 @@ export class ModelAdapter {
               aborted: continuation.abortSignal.aborted,
               failure,
               sawFinish,
+              sawStepOutput,
               finishReason,
               rawFinishReason,
               usage,
@@ -652,13 +656,15 @@ interface ModelStepSettlementEvidence {
   aborted: boolean;
   failure?: ModelFailure;
   sawFinish: boolean;
+  sawStepOutput: boolean;
   finishReason: ModelFinishReason;
   rawFinishReason?: string;
   usage?: NormalizedUsage;
 }
 
 export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): ModelStepOutcome {
-  const { aborted, failure, sawFinish, finishReason, rawFinishReason, usage } = evidence;
+  const { aborted, failure, sawFinish, sawStepOutput, finishReason, rawFinishReason, usage } =
+    evidence;
   if (aborted || failure?.kind === 'abort') {
     return failedStepOutcome(
       failure ??
@@ -685,6 +691,14 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
         : modelStepFailure('unknown', 'Provider stopped the stream on a content filter');
     return failedStepOutcome(terminalFailure, usage);
   }
+  if (!sawStepOutput) {
+    if (rawFinishReason === 'network_error') {
+      return failedStepOutcome(outputFreeNetworkFailure(), usage);
+    }
+    if (finishReason === 'stop' && usage === undefined) {
+      return failedStepOutcome(outputFreeStopFailure(), usage);
+    }
+  }
   return {
     kind: 'completed',
     finishReason,
@@ -693,8 +707,40 @@ export function settleModelStepOutcome(evidence: ModelStepSettlementEvidence): M
   };
 }
 
+function streamEventCountsAsStepOutput(event: ModelStreamEvent): boolean {
+  switch (event.kind) {
+    case 'text':
+      return event.text.length > 0;
+    case 'thinking':
+      return event.text.length > 0;
+    case 'tool-call':
+    case 'provider-tool-result':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function modelStepFailure(kind: ModelFailureKind, message: string): ModelFailure {
   return { type: 'model_failure', kind, message, retryable: kind === 'stream_truncated' };
+}
+
+function outputFreeNetworkFailure(): ModelFailure {
+  return {
+    type: 'model_failure',
+    kind: 'network',
+    message: 'Provider ended the stream with a network error and no output',
+    retryable: true,
+  };
+}
+
+function outputFreeStopFailure(): ModelFailure {
+  return {
+    type: 'model_failure',
+    kind: 'provider_unavailable',
+    message: 'Provider ended the stream with no output',
+    retryable: true,
+  };
 }
 
 function providerFinishFailure(rawFinishReason: string | undefined): ModelFailure {
