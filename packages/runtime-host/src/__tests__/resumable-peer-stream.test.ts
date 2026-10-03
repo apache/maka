@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { duplexPair, type Duplex } from 'node:stream';
 import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { connect, createServer, type Socket } from 'node:net';
 import { once } from 'node:events';
 import { performance } from 'node:perf_hooks';
@@ -45,6 +45,11 @@ import {
   PeerResumeRejectedError,
 } from '../transport/resumable-peer-stream.js';
 import type { RuntimeHostPeerNativeStream } from '../transport/peer-native.js';
+
+// 内存 duplex 没有真实 socket 的活跃句柄；生产心跳刻意 unref，测试需自行
+// 持有生命周期，否则 Node 22 会在等待恢复时判定事件循环已结束。
+const syntheticTransportLifetime = setInterval(() => {}, 1_000);
+after(() => clearInterval(syntheticTransportLifetime));
 
 function wire(socket: Duplex, peerId: string, dropAck = false): RuntimeHostPeerNativeStream {
   const iterator = socket[Symbol.asyncIterator]();
