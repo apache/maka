@@ -16146,7 +16146,12 @@ describe('AiSdkBackend steering durability and identity', () => {
     const prompt = JSON.stringify(model.doStreamCalls[0]);
     assert.match(prompt, /provider-call-1/);
     assert.match(prompt, /outcome_unknown/);
-    assert.match(prompt, /may or may not have happened/);
+    assert.match(prompt, /no durable result was recorded/);
+    assert.doesNotMatch(
+      prompt,
+      /A prior execution was interrupted/,
+      'the unknown outcome travels in the tool result alone; the system prompt must stay byte-stable',
+    );
     assert.match(prompt, /check whether the marker exists/);
     assert.doesNotMatch(
       prompt,
@@ -16191,7 +16196,8 @@ describe('AiSdkBackend steering durability and identity', () => {
     const checkpointedPrompt = JSON.stringify(checkpointedModel.doStreamCalls[0]);
     assert.match(checkpointedPrompt, /provider-call-1/);
     assert.match(checkpointedPrompt, /outcome_unknown/);
-    assert.match(checkpointedPrompt, /may or may not have happened/);
+    assert.match(checkpointedPrompt, /no durable result was recorded/);
+    assert.doesNotMatch(checkpointedPrompt, /A prior execution was interrupted/);
     assert.doesNotMatch(checkpointedPrompt, /checkpoint omitted the unresolved provider call/);
 
     const inconsistentModel = textCompletionModel('must not be sent');
@@ -16340,11 +16346,9 @@ describe('AiSdkBackend steering durability and identity', () => {
     );
     assert.equal(automatedModel.doStreamCalls.length, 1);
     assert.equal(
-      JSON.stringify(automatedModel.doStreamCalls[0]?.prompt).includes(
-        'A prior execution was interrupted',
-      ),
+      JSON.stringify(automatedModel.doStreamCalls[0]?.prompt).includes('outcome_unknown'),
       false,
-      'a retired unknown must not be projected again',
+      'a retired unknown must not be projected again, as notice or as tool result',
     );
 
     // An explicit turn that failed never projected a usable answer, so the
