@@ -218,6 +218,8 @@ export async function seedE2eFixture(input: {
   workspaceRoot: string;
   fixture: E2eFixture;
   now?: number;
+  /** Test seam: bounds lagging runs per fold pass; unset keeps the ledger default. */
+  projectionCatchUpLimit?: number;
 }): Promise<void> {
   const now = input.now ?? E2E_FIXTURE_NOW;
   const scenario = input.fixture.scenario;
@@ -302,7 +304,14 @@ export async function seedE2eFixture(input: {
       await runStore.close?.();
       // Fold the appended attempts into the read model so the page's first read
       // sees canonical usage (production's readCanonicalUsage also repairs).
-      await usage.modelCalls.catchUpModelCallProjection();
+      // One pass bounds how many lagging runs it processes, and the padded
+      // fixture creates hundreds of runs, so fold until nothing is pending.
+      for (;;) {
+        const projection = await usage.modelCalls.catchUpModelCallProjection({
+          limit: input.projectionCatchUpLimit,
+        });
+        if (projection.pendingRuns === 0) break;
+      }
       await usage.flush();
     } finally {
       await usage.close();
