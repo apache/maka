@@ -77,6 +77,7 @@ continuation = Maka subject 内部的 Runtime Host 行为
 ## 阅读路径
 
 - Host 权责、准入、观察、Client 隔离与生命周期：[Runtime Host 架构](./docs/architecture/runtime-host-architecture.zh-CN.md)。
+- Desktop 对话投影：主对话、Side Chat、WorkHub 以 Host 执行事实为准：[以 Host 投影为唯一执行依据](./docs/architecture/desktop-conversation-host-projection.zh-CN.md)。
 - 网络身份、成员关系、路径选择与 stream 恢复：[Peer Mesh 架构](./docs/architecture/peer-mesh-architecture.zh-CN.md)。
 - Runtime 事实与 projection：[Runtime core](./docs/architecture/runtime-core-architecture-draft.zh-CN.md) 与 [compaction](./docs/architecture/llm-compaction-events-log-projection-draft.zh-CN.md)。
 - Crash recovery 与 continuation：[Runtime resume](./docs/architecture/runtime-resume-architecture.zh-CN.md)。
