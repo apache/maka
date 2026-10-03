@@ -44,6 +44,9 @@ on:
       - 'packages/storage/src/native-file-lock.ts'
       - 'scripts/generate-runtime-host-peer-*'
       - 'scripts/release-cli-package.mjs'
+      - 'scripts/release-cli-publication.mjs'
+      - 'scripts/release-cli-publication.test.mjs'
+      - 'scripts/release-cli-workflow-policy.test.mjs'
       - 'scripts/qualify-released-cli-state-root.mjs'
       - 'scripts/qualify-released-cli-state-root.test.mjs'
       - 'scripts/released-cli-state-root-fixture.mjs'
@@ -60,6 +63,11 @@ on:
         required: false
         type: string
         default: ''
+      fence_predecessor:
+        description: Require the Nightly source commit to be an ancestor of the validation checkout
+        required: false
+        type: boolean
+        default: true
     outputs:
       release_candidate_artifact_id:
         description: Immutable artifact produced by the build job
@@ -76,7 +84,16 @@ on:
       release_predecessor_integrity:
         description: npm SHA-512 integrity of the Nightly tarball qualified against this candidate
         value: ${{ jobs.state-root-qualification.outputs.release_predecessor_integrity }}
+      release_predecessor_source_commit:
+        description: Source commit proven for the npm Nightly predecessor
+        value: ${{ jobs.state-root-qualification.outputs.release_predecessor_source_commit }}
   workflow_dispatch:
+    inputs:
+      fence_predecessor:
+        description: Require the Nightly source commit to precede the validation checkout
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -339,10 +356,12 @@ jobs:
       release_predecessor_version: ${{ steps.predecessor.outputs.version }}
       release_predecessor_tarball_url: ${{ steps.predecessor.outputs.tarball_url }}
       release_predecessor_integrity: ${{ steps.predecessor.outputs.integrity }}
+      release_predecessor_source_commit: ${{ steps.predecessor.outputs.source_commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_commit || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -366,7 +385,7 @@ jobs:
       # is now this job's output.
       - name: Resolve the current npm Nightly as immutable evidence
         id: predecessor
-        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT" "${{ (github.event_name == 'pull_request' || inputs.fence_predecessor) && 'fence' || 'unfenced' }}"
       # Three runs of one script against one sandbox, not three runners. Two of
       # these transitions are between tarballs that were published and frozen,
       # so nothing in a pull request can change their outcome except the
@@ -379,6 +398,7 @@ jobs:
           MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
           PREDECESSOR_TARBALL_URL: ${{ steps.predecessor.outputs.tarball_url }}
           PREDECESSOR_INTEGRITY: ${{ steps.predecessor.outputs.integrity }}
+          PREDECESSOR_SOURCE_COMMIT: ${{ steps.predecessor.outputs.source_commit }}
         run: |
           set -euo pipefail
           evidence_root="$RUNNER_TEMP/released-state-root"
@@ -458,11 +478,13 @@ jobs:
           PREDECESSOR_VERSION: ${{ steps.predecessor.outputs.version }}
           PREDECESSOR_TARBALL_URL: ${{ steps.predecessor.outputs.tarball_url }}
           PREDECESSOR_INTEGRITY: ${{ steps.predecessor.outputs.integrity }}
+          PREDECESSOR_SOURCE_COMMIT: ${{ steps.predecessor.outputs.source_commit }}
         run: |
           node scripts/release-cli-publication.mjs assert-nightly-predecessor \
             "$PREDECESSOR_VERSION" \
             "$PREDECESSOR_TARBALL_URL" \
-            "$PREDECESSOR_INTEGRITY"
+            "$PREDECESSOR_INTEGRITY" \
+            "$PREDECESSOR_SOURCE_COMMIT"
 
   eval:
     name: Validate installed CLI Eval
