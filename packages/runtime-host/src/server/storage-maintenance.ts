@@ -24,10 +24,17 @@ const ACTIVE_DELAY_MS = 100;
 const IDLE_DELAY_MS = 60_000;
 const MAX_BATCH_ITEMS = 64;
 const MAX_BATCH_BYTES = 16 * 1024 * 1024;
+// Archive retention deletes user data, so it moves slower than reclamation:
+// one bounded batch a second while work remains, otherwise a check every
+// quarter hour.
+const RETENTION_ACTIVE_DELAY_MS = 1000;
+const RETENTION_IDLE_DELAY_MS = 15 * 60_000;
 
 interface MaintenanceLane {
   readonly name: string;
   readonly run: () => Promise<boolean>;
+  readonly activeDelay: number;
+  readonly idleDelay: number;
   timer?: ReturnType<typeof setTimeout>;
   pending?: Promise<void>;
   failures: number;
@@ -43,6 +50,8 @@ export class HostStorageMaintenance {
   constructor(input: {
     artifacts: Pick<InteractiveArtifactStoreWriter, 'reclaimUpgradeResidue'>;
     contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage'>;
+    /** The opt-in archived-task retention sweep; true while candidates remain. */
+    retention?: { sweep(): Promise<boolean> };
     onError: (name: string, error: unknown) => void;
   }) {
     this.#onError = input.onError;
@@ -51,6 +60,8 @@ export class HostStorageMaintenance {
       {
         name: 'artifact upgrade cleanup',
         failures: 0,
+        activeDelay: ACTIVE_DELAY_MS,
+        idleDelay: IDLE_DELAY_MS,
         run: async () => {
           const result = await input.artifacts.reclaimUpgradeResidue({
             after,
@@ -72,6 +83,8 @@ export class HostStorageMaintenance {
       this.#lanes.push({
         name: 'context garbage collection',
         failures: 0,
+        activeDelay: ACTIVE_DELAY_MS,
+        idleDelay: IDLE_DELAY_MS,
         run: async () =>
           (
             await context.collectGarbage({
@@ -81,12 +94,21 @@ export class HostStorageMaintenance {
             })
           ).hasMore,
       });
+    const retention = input.retention;
+    if (retention)
+      this.#lanes.push({
+        name: 'archive retention',
+        failures: 0,
+        activeDelay: RETENTION_ACTIVE_DELAY_MS,
+        idleDelay: RETENTION_IDLE_DELAY_MS,
+        run: () => retention.sweep(),
+      });
   }
 
   start(): void {
     if (this.#started || this.#draining) return;
     this.#started = true;
-    for (const lane of this.#lanes) this.#schedule(lane, ACTIVE_DELAY_MS);
+    for (const lane of this.#lanes) this.#schedule(lane, lane.activeDelay);
   }
 
   beginDrain(): void {
@@ -113,10 +135,10 @@ export class HostStorageMaintenance {
     try {
       const more = await lane.run();
       lane.failures = 0;
-      delay = more ? ACTIVE_DELAY_MS : IDLE_DELAY_MS;
+      delay = more ? lane.activeDelay : lane.idleDelay;
     } catch (error) {
       lane.failures = Math.min(lane.failures + 1, 7);
-      delay = Math.min(IDLE_DELAY_MS, 1000 * 2 ** (lane.failures - 1));
+      delay = Math.min(lane.idleDelay, 1000 * 2 ** (lane.failures - 1));
       this.#report(lane.name, error);
     }
     this.#schedule(lane, delay);

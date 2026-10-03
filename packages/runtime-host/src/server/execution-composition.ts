@@ -243,6 +243,7 @@ import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
 import { HostStorageUsageCoordinator } from './storage-usage-coordinator.js';
+import { HostArchiveRetentionCoordinator } from './archive-retention-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
@@ -2845,9 +2846,15 @@ export async function createExecutionRuntimeHostComposition(
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     const storageUsage = new HostStorageUsageCoordinator({ footprint: storage.footprint });
+    const archiveRetention = new HostArchiveRetentionCoordinator({
+      document: storage.archiveRetention,
+      catalog: stores.sessionStore,
+      retirement: sessionRetirement,
+    });
     const storageMaintenance = new HostStorageMaintenance({
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
+      retention: archiveRetention,
       onError: (name, error) =>
         console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
     });
@@ -2861,6 +2868,11 @@ export async function createExecutionRuntimeHostComposition(
         id: 'storage-usage',
         handlers: [storageUsage.handlers],
         drain: [() => storageUsage.beginDrain()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'archive-retention',
+        handlers: [archiveRetention.handlers],
+        drain: [() => archiveRetention.beginDrain()],
       }),
       createRuntimeHostDomainModule({
         id: 'plugin-platform',

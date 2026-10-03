@@ -186,6 +186,7 @@ import {
 } from './recall-fold.js';
 import {
   buildSqliteSessionCatalogPageQuery,
+  sqliteArchivedTaskRowPredicate,
   type SqliteSessionCatalogCursor,
 } from './sqlite-session-catalog-query.js';
 import {
@@ -1282,6 +1283,121 @@ export class SqliteSessionMetadataStore {
             )
             .all(sessionId);
     return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
+  }
+
+  /**
+   * Archive-retention candidates, oldest archive first: the rows Settings ›
+   * Archived tasks shows (the catalog's own archived-row predicate), less
+   * Agent Graph operators, which retire only with their root, and less any
+   * family a pinned member keeps. A row that no longer decodes is returned as
+   * such, so a sweep can count it and move past it.
+   */
+  async listArchiveRetentionCandidates(query: {
+    readonly archivedBefore?: number;
+    readonly after?: { readonly archivedAt?: number; readonly sessionId: string };
+    readonly limit: number;
+  }): Promise<
+    Array<
+      | (SessionMetadataRecord & { readonly archivedAt?: number })
+      | { readonly undecodable: true; readonly sessionId: string; readonly archivedAt?: number }
+    >
+  > {
+    this.assertOpen();
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 256) {
+      throw new Error('Archive retention candidate limit must be between 1 and 256');
+    }
+    const candidate = archiveRetentionCandidatePredicate();
+    const where = [candidate.sql];
+    const parameters: Array<string | number> = [...candidate.parameters];
+    if (query.archivedBefore !== undefined) {
+      where.push('(metadata.archived_at IS NULL OR metadata.archived_at < ?)');
+      parameters.push(query.archivedBefore);
+    }
+    if (query.after) {
+      assertSafeSessionId(query.after.sessionId);
+      where.push('(COALESCE(metadata.archived_at, -1), metadata.session_id) > (?, ?)');
+      parameters.push(query.after.archivedAt ?? -1, query.after.sessionId);
+    }
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          metadata.session_id,
+          metadata.payload_json,
+          metadata.metadata_version,
+          metadata.committed_at,
+          metadata.archived_at
+        FROM session_metadata metadata
+        JOIN session_catalog_projection projection
+          ON projection.session_id = metadata.session_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY COALESCE(metadata.archived_at, -1), metadata.session_id
+        LIMIT ?
+      `,
+      )
+      .all(...parameters, query.limit) as unknown as Array<
+      SessionMetadataRow & { archived_at: number | null }
+    >;
+    return rows.map((row) => {
+      const position = typeof row.archived_at === 'number' ? { archivedAt: row.archived_at } : {};
+      try {
+        const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
+        return { ...decodeRecord(row), ...(archivedAt === undefined ? {} : { archivedAt }) };
+      } catch {
+        return { undecodable: true as const, sessionId: row.session_id, ...position };
+      }
+    });
+  }
+
+  /**
+   * How many families `listArchiveRetentionCandidates` would offer, and the
+   * earliest clock start among them under a policy enabled at `enabledAt`: a
+   * family starts when its most recently archived member did, and never before
+   * enablement.
+   */
+  async countArchiveRetentionCandidates(
+    enabledAt: number,
+  ): Promise<{ readonly families: number; readonly firstStart?: number }> {
+    this.assertOpen();
+    const candidate = archiveRetentionCandidatePredicate();
+    const row = this.db
+      .prepare(
+        `
+        SELECT COUNT(*) AS families, MIN(start) AS first_start
+        FROM (
+          SELECT MAX(MAX(COALESCE(metadata.archived_at, ?), ?)) AS start
+          FROM session_metadata metadata
+          JOIN session_catalog_projection projection
+            ON projection.session_id = metadata.session_id
+          WHERE ${candidate.sql}
+          GROUP BY COALESCE(metadata.revision_root_session_id, metadata.session_id)
+        )
+      `,
+      )
+      .get(enabledAt, enabledAt, ...candidate.parameters) as {
+      families: number;
+      first_start: number | null;
+    };
+    return {
+      families: row.families,
+      ...(typeof row.first_start === 'number' ? { firstStart: row.first_start } : {}),
+    };
+  }
+
+  async readLatestSessionMetadataTime(): Promise<number | undefined> {
+    this.assertOpen();
+    const row = this.db
+      .prepare(
+        `
+        SELECT MAX(committed_at) AS committed_at, MAX(archived_at) AS archived_at
+        FROM session_metadata
+      `,
+      )
+      .get() as { committed_at: number | null; archived_at: number | null } | undefined;
+    const times = [row?.committed_at, row?.archived_at].filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value),
+    );
+    return times.length === 0 ? undefined : Math.max(...times);
   }
 
   async reconcileOrphanedAgentGraphRetirements(): Promise<string[]> {
@@ -6371,6 +6487,28 @@ function agentGraphScheduleUpdateRequest(
 ): AgentGraphScheduleUpdateRequest {
   const { revision: _revision, committedAt: _committedAt, ...request } = update;
   return request;
+}
+
+function archiveRetentionCandidatePredicate(): { sql: string; parameters: readonly string[] } {
+  const row = sqliteArchivedTaskRowPredicate();
+  return {
+    // The pinned-family exclusion is deliberately uncorrelated: SQLite
+    // evaluates the pinned family roots once, instead of rescanning
+    // session_metadata for every candidate. The correlated form was quadratic
+    // (about 1 s at 10k Sessions) and runs synchronously on the Host thread.
+    // No index covers is_flagged/is_archived (migration 26 dropped them).
+    sql: `(
+      metadata.is_flagged = 0
+      AND ${row.sql}
+      AND json_type(metadata.payload_json, '$.subagentParent.graph') IS NULL
+      AND COALESCE(metadata.revision_root_session_id, metadata.session_id) NOT IN (
+        SELECT COALESCE(pinned.revision_root_session_id, pinned.session_id)
+        FROM session_metadata pinned
+        WHERE pinned.is_flagged = 1
+      )
+    )`,
+    parameters: row.parameters,
+  };
 }
 
 function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
