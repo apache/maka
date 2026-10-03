@@ -66,9 +66,10 @@ export function ConversationTranscriptRegion<P extends object>(
 }
 
 type SubmissionProps = Pick<ComposerSubmissionReader,
-  | 'onSend' | 'newTaskSendPending' | 'onStop' | 'stop'
+  | 'onSend' | 'newTaskSendPending' | 'stop'
   | 'respondToSandboxBoundary' | 'respondToUserQuestion' | 'respondToUserForm'
 > & {
+  onStop: ComposerSubmissionReader['stop'];
   stopPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
 };
@@ -101,7 +102,7 @@ export function ConversationComposerRegion<P extends object>(
   const owned: ComposerProps & ComposerPickGates = {
     onSend: submission.onSend,
     newTaskSendPending: submission.newTaskSendPending,
-    onStop: submission.onStop,
+    onStop: submission.stop,
     stop: submission.stop,
     stopPending,
     respondToSandboxBoundary: submission.respondToSandboxBoundary,

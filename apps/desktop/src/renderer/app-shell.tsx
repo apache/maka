@@ -462,7 +462,7 @@ function AppShellContent({
   const openComposerModelPicker = useCallback(() => {
     composerRef.current?.openModelPicker();
   }, []);
-  const { safeResumeAction, composerResumeAction, noteUserStoppedTurn } = useShellResume({
+  const { safeResumeAction, composerResumeAction } = useShellResume({
     activeId,
     ownerActiveId,
     sharedSessionActive,
@@ -1270,7 +1270,6 @@ function AppShellContent({
         showModelSetupToast,
         bindNewTaskSessionResolver: commands.bindNewTaskSessionResolver,
         openSideChat: (options) => commands.openTool('side-chat', 'right', options),
-        noteUserStoppedTurn,
         turnActions: turnActionRegistry,
         orchestrationMode: () => activeOrchestrationMode,
         setOrchestrationModeActive,

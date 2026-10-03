@@ -60,8 +60,6 @@ export interface ComposerSubmissionShell<Owner extends ComposerSurfaceOwner> {
   showModelSetupToast(description: string, reason?: string, diagnosticTarget?: ToastDiagnosticTarget): void;
   bindNewTaskSessionResolver(selectionRevision: number): (sessionId: string, newTaskDraftKey?: string) => void;
   openSideChat(options: { initialPrompt?: string }): void;
-  /** Lets the resume offer skip the Turn the user just stopped from the Composer. */
-  noteUserStoppedTurn(sessionId: string | undefined): void;
   /** The shell's pending mask for Turn footer actions; it also renders the mask. */
   turnActions: {
     addKey(key: string): boolean;

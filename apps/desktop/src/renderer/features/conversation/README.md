@@ -223,9 +223,9 @@ The Host operations reach the owner as `ComposerSubmissionServices`, one named
 operation each; the Desktop adapter is the only caller of those bridge paths.
 The shell supplies a `shell` port of commands it already owns (surface
 ownership, navigation, catalog refresh, execution-boundary reload, the Workbar's
-form answer, side chat and new-task resolver, the model-setup toast, the resume
-tracker's stopped-Turn note, the Turn-action pending registry the transcript
-renders, and the selected Session's orchestration write) and a `newTask`
+form answer, side chat and new-task resolver, the model-setup toast, the
+Turn-action pending registry the transcript renders, and the selected Session's
+orchestration write) and a `newTask`
 projection read at send time. Session Settings owns the new-task Plan, orchestration and permission
 choices; the projection carries them, and creation consumes the permission
 choice through `clearPermissionChoice`.

@@ -65,7 +65,6 @@ export function stubSubmissionShell(
     showModelSetupToast: () => {},
     bindNewTaskSessionResolver: () => () => {},
     openSideChat: () => {},
-    noteUserStoppedTurn: () => {},
     turnActions: { addKey: () => true, clearKey: () => {}, keyOf: (...parts) => parts.join(':') },
     orchestrationMode: () => 'default',
     setOrchestrationModeActive: async () => true,

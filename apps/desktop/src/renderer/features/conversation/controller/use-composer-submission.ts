@@ -191,21 +191,11 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     refreshSessions: shell.refreshSessions,
     toastApi,
   });
-  const { stop, onStop } = useStableActions((deps: Parameters<typeof createStopAction>[0] & {
-    noteUserStoppedTurn(sessionId: string | undefined): void;
-  }) => {
+  // The Composer's Stop button, Escape and a question prompt's Stop all land
+  // here; the send slot may then offer Resume for the stopped Turn (#5923).
+  const { stop } = useStableActions((deps: Parameters<typeof createStopAction>[0]) => {
     const stopSession = createStopAction(deps);
-    return {
-      stop: () => { void stopSession(); },
-      // #5904: the Composer's Stop and its Resume offer share one send slot,
-      // so the slot must never offer to restart the very Turn the user just
-      // stopped from it. Stop and Escape note the stop here; the interrupted-
-      // Turn banner remains the deliberate resume path for it.
-      onStop: () => {
-        deps.noteUserStoppedTurn(activeIdRef.current);
-        void stopSession();
-      },
-    };
+    return { stop: () => { void stopSession(); } };
   }, {
     services,
     uiLocale,
@@ -213,7 +203,6 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     stopPending: workspace.ui.stopPending,
     removeTransientMessage: commands.removeTransientMessage,
     toastApi,
-    noteUserStoppedTurn: shell.noteUserStoppedTurn,
   });
 
   // The draft survives on exactly two catalog rows; their departure retires it.
@@ -246,8 +235,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     respondToUserQuestion: chat.respondToUserQuestion,
     respondToUserForm: chat.respondToUserForm,
     stop,
-    onStop,
-  }), [chat, newTaskSendPending, onSend, onStop, revision, revisionDraft, stop]);
+  }), [chat, newTaskSendPending, onSend, revision, revisionDraft, stop]);
   return {
     shellCommands,
     reader,

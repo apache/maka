@@ -349,28 +349,31 @@ describe('ComposerSubmissionProvider', () => {
     ]);
   });
 
-  test('owns Stop: claims it for the published Session, drops retracted rows and notes the stopped Turn', async () => {
+  test('owns Stop: claims it for the published Session and drops the rows the Host retracts', async () => {
     const stopping = deferred<Awaited<ReturnType<ComposerSubmissionServices['stop']>>>();
     const calls: unknown[] = [];
     const h = harness({
       services: {
-        stop: (sessionId, input) => { calls.push(['stop', sessionId, input]); return stopping.promise; },
+        stop: (sessionId, input) => { calls.push([sessionId, input]); return stopping.promise; },
       },
-      shell: { noteUserStoppedTurn: (sessionId) => { calls.push(['noted', sessionId]); } },
     });
+    const pendingIds = () => h.conversation.workspace.publication.getSnapshot().transientMessages.map((message) => message.id);
     await act(async () => h.target.setActiveId('A'));
     await act(async () => h.published[0]!([userTurn('turn-1', 'running')]));
-    await act(async () => h.region.onStop());
-    assert.deepEqual(calls, [['noted', 'A'], ['stop', 'A', { source: 'stop_button' }]]);
-    assert.equal(h.region.stopPending, true, 'the Stop claim is read in the Composer slot');
-    await act(async () => h.region.onStop());
-    assert.equal(calls.length, 3, 'a second Stop notes the Turn but the claim refuses a second request');
-    await act(async () => stopping.resolve({ kind: 'interrupted', retractedMessageIds: [] }));
-    assert.equal(h.region.stopPending, false);
+    await act(async () => h.conversation.commands.addTransientMessage('A', {
+      id: 'queued-1', text: 'queued', ts: 1, transientPlacement: 'transcript',
+    }));
+    assert.deepEqual(pendingIds(), ['queued-1']);
 
-    calls.length = 0;
+    await act(async () => h.region.onStop());
+    assert.deepEqual(calls, [['A', { source: 'stop_button' }]]);
+    assert.equal(h.region.stopPending, true, 'the Stop claim is read in the Composer slot');
     await act(async () => h.region.stop());
-    assert.deepEqual(calls.map((call) => (call as unknown[])[0]), ['stop'], 'a question prompt\'s Stop does not suppress Resume');
+    assert.equal(calls.length, 1, 'a question prompt\'s Stop shares the claim, so no second request is sent');
+
+    await act(async () => stopping.resolve({ kind: 'interrupted', retractedMessageIds: ['queued-1'] }));
+    assert.equal(h.region.stopPending, false);
+    assert.deepEqual(pendingIds(), [], 'the retracted row leaves the transcript');
   });
 
   test('branches a Turn for the shell through its port and opens the copy', async () => {

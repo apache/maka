@@ -252,7 +252,9 @@
   flex: 1;
   padding-block: 0 var(--space-1-5);
 }
-.maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+/* local: VStack owns the column and gap; this is only the flex-child floor
+   that lets long diagnostics shrink inside the ChatMessage column. */
+.maka-assistant-answer-content { min-width: 0; }
 /* Holds the answer's place, unseen and unannounced, until the Host names the Turn. */
 .maka-pending-turn[data-awaiting-host] .maka-assistant-answer { visibility: hidden; }
 .maka-subagent-session-label,
@@ -905,16 +907,13 @@
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 
 .maka-turn-host-origin {
+  /* local: HStack owns display/gap/padding/width; the chip surface (tone,
+     radius, right-edge self-alignment, rhythm) has no props to move onto. */
   font: var(--maka-text-supporting);
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
   align-self: flex-end;
-  gap: var(--space-1);
   margin-inline: 0;
   margin-bottom: var(--space-1);
   border-radius: var(--radius-control);
-  padding: var(--space-0-5) var(--space-1-5);
   background: var(--foreground-5);
   color: var(--muted-foreground);
 }
@@ -943,16 +942,6 @@
 }
 .maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
-.maka-turn-lineage-row,
-.maka-turn-footer {
-  display: flex;
-  width: 100%;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-0-5);
-}
-
 .maka-turn-lineage-row {
   margin-top: var(--space-0-5);
   margin-bottom: var(--space-1);
@@ -962,10 +951,8 @@
 .maka-turn-lineage-row-reverse { margin-top: var(--space-1); }
 
 .maka-turn-lineage-badge {
-  border: 0;
+  /* local: lineage navigation keeps its pill silhouette; Button has no radius prop. */
   border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.05);
-  color: var(--muted-foreground);
 }
 
 .maka-turn-lineage-badge[data-direction="forward"] {
@@ -979,6 +966,10 @@
 }
 
 .maka-turn-footer {
+  /* local: ChatMessageMetadata owns flex/centering, but has no width, wrap or gap props. */
+  width: 100%;
+  flex-wrap: wrap;
+  gap: var(--space-0-5);
   min-height: var(--size-element-sm, 28px);
   margin-top: var(--space-0-5);
 }
