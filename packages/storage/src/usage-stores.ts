@@ -41,6 +41,8 @@ import {
   ModelCallLedgerPublicationError,
   type ModelCallLedger,
   type ModelCallLedgerReader,
+  type RunSettlementCoverage,
+  type UsageUnknownModelCallRecord,
 } from './model-call-ledger.js';
 import {
   PricingCommitUnknownError,
@@ -127,12 +129,24 @@ export interface ModelCallIndexReader {
     offset: number,
     limit: number,
   ): Promise<ModelCallLedgerResult<ModelCallUsageLogs>>;
+  /**
+   * The rows one Session's own run left unsettled (#5691) — what hosted
+   * execution settlement checks instead of the ledger-wide coverage, which
+   * must also count rows no run owns.
+   */
+  modelCallRunSettlementCoverage(sessionId: string): Promise<RunSettlementCoverage>;
 }
 
 export interface ModelCallIndexWriter extends ModelCallIndexReader {
   catchUpModelCallProjection(
     input?: CatchUpModelCallProjectionInput,
   ): Promise<CatchUpModelCallProjectionResult>;
+  /**
+   * Records one usage-unknown row for a model call outside any AgentRun
+   * (#5691) — auxiliary Host calls the event stream cannot project. The owning
+   * Session, when known, is published after the write.
+   */
+  recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void>;
 }
 
 export interface PricingAuthorityReader {
@@ -526,7 +540,13 @@ function createWriterFacade(
         read(() => modelCalls.buckets(query, groupBy, now)),
       modelCallLogs: (query, now, offset, limit) =>
         read(() => modelCalls.logs(query, now, offset, limit)),
+      modelCallRunSettlementCoverage: (sessionId) =>
+        read(() => modelCalls.runSettlementCoverage(sessionId)),
       catchUpModelCallProjection: admitModelCallProjectionCatchUp,
+      recordUsageUnknownAttempt: (record) =>
+        admitSessionUsageMutation(record.sessionId, () =>
+          modelCalls.recordUsageUnknownAttempt(record),
+        ),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),
@@ -578,6 +598,8 @@ function modelCallReader(
       run(() => ledger.buckets(query, groupBy, now)),
     modelCallLogs: (query: UsageQuery, now: number, offset: number, limit: number) =>
       run(() => ledger.logs(query, now, offset, limit)),
+    modelCallRunSettlementCoverage: (sessionId: string) =>
+      run(() => ledger.runSettlementCoverage(sessionId)),
   });
 }
 

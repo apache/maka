@@ -4441,12 +4441,36 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       });
       await closing;
       assert.equal(transportCloses, 1);
-      const abortedLogs = await usage.telemetry.logs({ range: 'all' });
+      // An aborted auxiliary call knows no token counts: it records in the
+      // canonical ledger as a usage-unknown row (#5691), never as a zero-token
+      // legacy row that reads as a free call.
+      const abortedAttempts = await usage.modelCalls.modelCallLogs(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+        0,
+        10,
+      );
       assert.ok(
-        abortedLogs.rows.some(
+        abortedAttempts.projection.rows.some(
           (row) =>
             row.callId === `goal_evaluation_${session.id}_call-2` && row.status === 'aborted',
         ),
+      );
+      const abortedSummary = await usage.modelCalls.modelCallSummary(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+      );
+      // Every failed auxiliary call above — the 401 recap, the timed-out
+      // recap, and the aborted goal evaluation — is recorded under the
+      // no-run sentinel turn, and the ledger-wide coverage still counts all
+      // three: real unknown-usage calls stay visible in the public
+      // provenance. Keeping a hosted run to its own rows is settlement's
+      // run-scoped check, not this field's job.
+      assert.equal(abortedSummary.projection.coverage.usageMissingAttempts, 3);
+      const abortedLegacyLogs = await usage.telemetry.logs({ range: 'all' });
+      assert.equal(
+        abortedLegacyLogs.rows.some((row) => row.callId === `goal_evaluation_${session.id}_call-2`),
+        false,
       );
     } finally {
       abort.abort(new DOMException('Goal evaluator test cleanup', 'AbortError'));
@@ -4459,6 +4483,198 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     await execution.sessionStore.close?.();
     await owner.close();
     await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('Host auxiliary aborts, errors and usage-unknown completions record canonical usage-unknown rows', {
+  timeout: 20_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-aux-usage-unknown-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'usage-unknown-provider',
+        name: 'Usage unknown provider',
+        providerType: 'opencode-go',
+        baseUrl: 'http://usage-unknown.test/v1',
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'usage-unknown-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    let callCounter = 0;
+    const evaluator = (
+      fetchImpl: (request: unknown, init?: { signal?: AbortSignal }) => Promise<unknown>,
+    ) =>
+      createHostGoalEvaluator({
+        runtimePolicy: policy,
+        oauthCredentials: new HostOAuthExecutionAuthority(policy),
+        usage,
+        requestDrain: () => assert.fail('Auxiliary accounting must not drain the Host'),
+        readSessionHeader: (sessionId: string) =>
+          execution.sessionStore.readHeaderSnapshot(sessionId),
+        newId: () => `call-${++callCounter}`,
+        createFetchTransport: () => ({
+          fetch: fetchImpl as unknown as ProxiedFetchTransport['fetch'],
+          close: async () => undefined,
+        }),
+      });
+    const callId = (suffix: string) => `goal_evaluation_${session.id}_${suffix}`;
+    const canonicalRow = async (suffix: string) => {
+      const logs = await usage.modelCalls.modelCallLogs(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+        0,
+        10,
+      );
+      return logs.projection.rows.find((row) => row.callId === callId(suffix));
+    };
+    const legacyGoalRows = async () => {
+      const logs = await usage.telemetry.logs({ range: 'all' });
+      return logs.rows.filter((row) => row.callKind === 'goal_evaluation');
+    };
+    const assertSummary = async (expected: {
+      requests: number;
+      missing: number;
+      errors: number;
+    }) => {
+      const summary = await usage.modelCalls.modelCallSummary(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+      );
+      assert.equal(summary.projection.totalRequests, expected.requests);
+      // The ledger-wide coverage counts every usage-unknown row it holds —
+      // the auxiliary rows under test included, each recorded under the
+      // no-run sentinel turn. Hiding them here would make an incomplete
+      // total read as complete; settlement scopes itself to the run's own
+      // rows instead.
+      assert.equal(summary.projection.coverage.usageMissingAttempts, expected.missing);
+      assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
+      assert.equal(summary.projection.errorRequests, expected.errors);
+      assert.equal(summary.projection.totalTokens.total, 0);
+      assert.equal(summary.projection.totalCostUsd, 0);
+    };
+
+    // Aborted mid-flight: usage can never be known, so the canonical row says
+    // so instead of posing as a free call in the legacy table.
+    let abortSignal: AbortSignal | undefined;
+    const abortDispatched = deferred<void>();
+    const abortReleased = deferred<void>();
+    const abortingEvaluator = evaluator(async (_request, init) => {
+      abortSignal = init?.signal ?? undefined;
+      abortDispatched.resolve();
+      await abortReleased.promise;
+      throw abortSignal?.reason ?? new DOMException('Aborted', 'AbortError');
+    });
+    const abort = new AbortController();
+    const abortedCall = abortingEvaluator.evaluate(
+      'Judge the completed Goal.',
+      session.id,
+      abort.signal,
+    );
+    await settleWithin(abortDispatched.promise);
+    abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
+    abortReleased.resolve();
+    await assert.rejects(settleWithin(abortedCall));
+    await assertSummary({ requests: 1, missing: 1, errors: 0 });
+    const abortedRow = await canonicalRow('call-1');
+    assert.ok(abortedRow);
+    assert.equal(abortedRow.status, 'aborted');
+    assert.equal(abortedRow.callKind, 'goal_evaluation');
+    assert.deepEqual(await legacyGoalRows(), []);
+
+    // A provider error without an abort is usage-unknown all the same.
+    const failingEvaluator = evaluator(async () => {
+      throw new Error('provider exploded');
+    });
+    await assert.rejects(
+      failingEvaluator.evaluate(
+        'Judge the completed Goal.',
+        session.id,
+        new AbortController().signal,
+      ),
+    );
+    await assertSummary({ requests: 2, missing: 2, errors: 1 });
+    const failedRow = await canonicalRow('call-2');
+    assert.ok(failedRow);
+    assert.equal(failedRow.status, 'error');
+    assert.equal(failedRow.errorClass, 'Error');
+    assert.deepEqual(await legacyGoalRows(), []);
+
+    // A completion the provider answered without usage stays on the legacy
+    // zero path for now: with settlement scoped to a run's own rows a
+    // canonical missing row here would no longer flip any hosted run
+    // indeterminate, so routing it to the canonical ledger is a free-standing
+    // recording question (#5691), not a settlement constraint. Aborted and
+    // failed calls above already keep their canonical usage-unknown rows.
+    const silentEvaluator = evaluator(async () =>
+      Response.json({
+        id: 'chatcmpl-usage-unknown',
+        object: 'chat.completion',
+        created: 1,
+        model: MODEL_ID,
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: RESPONSE_TEXT },
+            finish_reason: 'stop',
+          },
+        ],
+      }),
+    );
+    assert.equal(
+      await silentEvaluator.evaluate(
+        'Judge the completed Goal.',
+        session.id,
+        new AbortController().signal,
+      ),
+      RESPONSE_TEXT,
+    );
+    await assertSummary({ requests: 2, missing: 2, errors: 1 });
+    const silentLegacy = (await legacyGoalRows()).find((row) => row.callId === callId('call-3'));
+    assert.ok(silentLegacy);
+    assert.equal(silentLegacy.status, 'success');
+    assert.equal(silentLegacy.inputTokens, 0);
+    assert.equal(silentLegacy.outputTokens, 0);
+  } finally {
+    await usage.close();
+    await execution.sessionStore.close?.();
+    await owner.close();
     await rm(base, { recursive: true, force: true });
   }
 });
