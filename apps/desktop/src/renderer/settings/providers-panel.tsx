@@ -37,7 +37,6 @@ import {
 } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { dotForStatus, useMountedRef, useUiLocale } from '@maka/ui';
-import { settingsActionErrorMessage } from './settings-error-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import {
   CATALOG_INITIAL_FILTER,
@@ -55,6 +54,7 @@ import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
 import {
   getProviderSettingsCopy,
+  ConnectionDefaultAction,
   providerPanelActionErrorMessage,
   ConnectionSaveUncertaintyObserver,
   type ApiKeyOnboardingBridge,
@@ -351,7 +351,13 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
         // the standard SPA answer to "where does focus go when the page
         // swaps", and it draws no ring.
         (<VStack gap={5} tabIndex={-1} role="region" aria-labelledby={detailTitleId} className="settingsRouteLevel" data-maka-contract="connection-detail">
-          <SettingsRouteHeader
+          <ConnectionDefaultAction
+            key={selected.connectionId}
+            connection={selected}
+            bridge={bridge}
+            onChanged={async () => { await reload(); }}
+          >
+          {(defaultAction) => <SettingsRouteHeader
             onBack={goToList}
             backLabel={copy.backToList}
             logo={<ProviderLogo type={selected.providerType} compact />}
@@ -372,29 +378,10 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
                   label={copy.default}
                 />
               )
-              : (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  label={copy.setDefault}
-                  tooltip={copy.setDefaultTitle}
-                  clickAction={async () => {
-                    try {
-                      await bridge.setDefault({ connectionId: selected.connectionId, slug: selected.slug });
-                      await reload();
-                    } catch (error) {
-                      // The state is unchanged on failure, so the Badge stays
-                      // where it was and the button remains the way to retry.
-                      reportHostError(
-                        copy.setDefaultFailed,
-                        settingsActionErrorMessage(error, locale),
-                      );
-                    }
-                  }}
-                />
-              )}
+              : defaultAction}
             subtitle={connectionSubtitle(selected, locale)}
-          />
+          />}
+          </ConnectionDefaultAction>
           <ConnectionDetail
             key={selected.connectionId ?? selected.slug}
             bridge={bridge}
