@@ -187,6 +187,8 @@ export interface PluginExecutorProvider {
 
 export interface PluginExecutorExecutionOptions {
   readonly signal?: AbortSignal;
+  /** Called when the provider returns a terminal result, before the Runtime validates it. */
+  readonly onSettled?: () => void;
   readonly onEvent?: (event: PluginExecutorOutputEvent) => void;
   readonly onPermissionRequest?: (
     request: PluginExecutorPermissionRequest,
@@ -527,6 +529,11 @@ export class PluginExecutorService extends Service {
               return normalizePermissionResult(result, normalized);
             },
           });
+          try {
+            options.onSettled?.();
+          } catch {
+            // A settlement observer must not change external execution.
+          }
           if (signal.aborted) {
             const cancelled = cancelledResult(signal.reason);
             const normalized = normalizeResult(result);

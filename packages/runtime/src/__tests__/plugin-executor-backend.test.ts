@@ -118,6 +118,37 @@ test('failed Plugin acknowledgement abandons the settled external execution', as
   }
 });
 
+test('a settled Plugin result that the Runtime rejects is abandoned once', async () => {
+  const { root, backend, acknowledged, abandoned } = recordingFixture(async () => ({
+    status: 'completed',
+    text: 'x'.repeat(256 * 1024 + 1),
+  }));
+  try {
+    const events = await collect(backend.send({ turnId: 'turn-a', text: 'task' }));
+    assert.match(events[0]?.type === 'error' ? events[0].message : '', /completion text exceeds/u);
+    assert.deepEqual(acknowledged, []);
+    assert.deepEqual(abandoned, ['session-a/turn-a']);
+  } finally {
+    await backend.dispose();
+    await root.fiber.dispose();
+  }
+});
+
+test('a Plugin execution that fails before settling is neither acknowledged nor abandoned', async () => {
+  const { root, backend, acknowledged, abandoned } = recordingFixture(async () => {
+    throw new Error('transient transport failure');
+  });
+  try {
+    const events = await collect(backend.send({ turnId: 'turn-a', text: 'task' }));
+    assert.match(events[0]?.type === 'error' ? events[0].message : '', /transient transport/u);
+    assert.deepEqual(acknowledged, []);
+    assert.deepEqual(abandoned, []);
+  } finally {
+    await backend.dispose();
+    await root.fiber.dispose();
+  }
+});
+
 test('executor backend converts plugin output and result to ordinary Session events', async () => {
   const { root, binding } = fixture(async (request, context) => {
     assert.equal(request.instructions, 'child instructions');
@@ -455,6 +486,38 @@ function fixture(
     })
     .executors.register({ id: 'remote', execute, ...(capabilities ? { capabilities } : {}) });
   return { root, binding: service.bind('session-a', 'remote'), dispose };
+}
+
+function recordingFixture(execute: Parameters<PluginExecutorService['register']>[0]['execute']): {
+  root: Context;
+  backend: PluginExecutorBackend;
+  acknowledged: string[];
+  abandoned: string[];
+} {
+  const root = new Context();
+  const service = new PluginExecutorService(root);
+  const acknowledged: string[] = [];
+  const abandoned: string[] = [];
+  root
+    .extend({
+      maka: { rootId: 'profile', packageId: 'fixture', entryId: 'provider', generation: 1 },
+    })
+    .executors.register({
+      id: 'remote',
+      execute,
+      acknowledgeExecution: async (conversationKey, turnId) => {
+        acknowledged.push(`${conversationKey}/${turnId}`);
+      },
+      abandonExecution: async (conversationKey, turnId) => {
+        abandoned.push(`${conversationKey}/${turnId}`);
+      },
+    });
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding: service.bind('session-a', 'remote'),
+  });
+  return { root, backend, acknowledged, abandoned };
 }
 
 function ids(): () => string {
