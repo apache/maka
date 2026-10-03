@@ -95,6 +95,20 @@ export function countableFilter(
   equals('provider_id', query.providerId);
   equals('model_id', query.modelId);
   equals('connection_slug', query.connectionSlug);
+  if (query.callKinds !== undefined) {
+    if (query.callKinds.length === 0) {
+      // An empty allowlist addresses no rows at all; SQL has no `IN ()`, so
+      // the honest translation is a clause that is never true.
+      clauses.push('0');
+    } else {
+      // Rows written before call_kind was recorded (call_kind IS NULL) are
+      // legacy and cannot be classified: a callKinds filter excludes them on
+      // purpose, so pre-callKind Sessions report only their newer calls
+      // (#5691 review).
+      clauses.push(`call_kind IN (${query.callKinds.map(() => '?').join(', ')})`);
+      parameters.push(...query.callKinds);
+    }
+  }
   if (query.status !== undefined && query.status !== 'all') {
     // `interrupted` joins `aborted`: both mean the call stopped short without
     // the provider reporting a failure.

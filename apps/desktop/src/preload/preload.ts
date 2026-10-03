@@ -92,6 +92,7 @@ import type {
   AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import { loadSessionUsageSummaryVia } from './usage-summary.js';
 import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
 import {
   projectDesktopExternalSessionCatalogItem,
@@ -1359,12 +1360,7 @@ async function loadSessionTracePage(
 async function loadSessionUsageSummary(
   sessionId: string,
 ): Promise<Result<DesktopSessionUsageSummary>> {
-  const session = await runtimeHostSessionRef(sessionId);
-  return invokeWhenReady(
-    'usage:summary',
-    session.scope,
-    { range: 'all', sessionId: session.sessionId },
-  ) as Promise<Result<DesktopSessionUsageSummary>>;
+  return loadSessionUsageSummaryVia(invokeWhenReady, await runtimeHostSessionRef(sessionId));
 }
 
 async function updateDailyReviewConfig(
