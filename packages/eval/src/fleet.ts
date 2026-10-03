@@ -54,7 +54,7 @@ export interface FleetReport {
   result: EvalResult;
   execution: 'completed' | 'subject_failed' | 'not_started' | 'unknown';
   verification: 'valid' | 'invalid' | 'not_run';
-  usage: 'complete' | 'partial' | 'missing';
+  usage: 'complete' | 'partial' | 'missing' | 'unknown';
   cleanup: 'confirmed' | 'unknown';
   artifacts: FleetArtifact[];
   /** A deterministic environment defect blocks this run until explicitly repaired. */
@@ -363,7 +363,7 @@ export function validateFleetReport(value: FleetReport): FleetReport {
   report.result = decodeEvalResult(value.result);
   member(report.execution, ['completed', 'subject_failed', 'not_started', 'unknown'], 'execution');
   member(report.verification, ['valid', 'invalid', 'not_run'], 'verification');
-  member(report.usage, ['complete', 'partial', 'missing'], 'usage');
+  member(report.usage, ['complete', 'partial', 'missing', 'unknown'], 'usage');
   member(report.cleanup, ['confirmed', 'unknown'], 'cleanup');
   if (report.environmentFailure !== null) nonempty(report.environmentFailure, 'environmentFailure');
   if (!Array.isArray(report.artifacts)) throw new Error('invalid artifacts');
