@@ -34,6 +34,7 @@ import {
 } from './custom-app-icon-store.js';
 import { appIconLoadOrder, pickReadableAppIconPath, resolveAppIconPath } from './app-icon.js';
 import { desktopAssetRoot } from './desktop-assets.js';
+import { applyWindowsTaskbarAppDetails } from './windows-taskbar-icon.js';
 
 /**
  * One choice's artwork path — shipped art under the asset root, imported art
@@ -110,7 +111,39 @@ export function applyAppIcon(value: unknown, onIconError: (error: unknown) => vo
       app.dock.setIcon(image);
       return;
     }
-    for (const window of BrowserWindow.getAllWindows()) window.setIcon(image);
+    for (const window of BrowserWindow.getAllWindows()) applyWindowAppIcon(window, image);
+  } catch (error) {
+    onIconError(error);
+  }
+}
+
+/**
+ * Apply both icon surfaces owned by one Windows window. `setIcon` changes the
+ * HICON returned by WM_GETICON; Explorer can still render the installed
+ * shortcut/executable icon for the taskbar group unless the window's
+ * AppUserModel property store names the selected artwork too.
+ */
+function applyWindowAppIcon(window: BrowserWindow, image: Electron.NativeImage): void {
+  window.setIcon(image);
+  if (process.platform !== 'win32') return;
+  applyWindowsTaskbarAppDetails(window, app.getPath('userData'), image);
+}
+
+/** Update a newly created window before it is ever revealed. */
+export function applyInitialWindowAppIcon(
+  window: BrowserWindow,
+  value: unknown,
+  onIconError: (error: unknown) => void,
+): void {
+  if (process.platform !== 'win32') return;
+  try {
+    const icon = toAppIconChoice(value);
+    const image = loadAppIcon(icon);
+    if (!image) {
+      onIconError(new Error(`no readable artwork for app icon "${icon}"`));
+      return;
+    }
+    applyWindowAppIcon(window, image);
   } catch (error) {
     onIconError(error);
   }
