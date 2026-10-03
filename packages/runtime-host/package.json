@@ -26,6 +26,7 @@
     "build": "tsc -p tsconfig.json",
     "benchmark:session-copy": "node scripts/session-copy-cost-benchmark.mjs",
     "benchmark:transcript": "node scripts/transcript-data-plane-benchmark.mjs",
+    "benchmark:startup-profile": "node scripts/startup-profile.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
