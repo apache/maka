@@ -72,6 +72,19 @@ import {
   createSessionCatalogController,
   SessionCatalogContext,
 } from '../application/contracts/session-catalog/session-catalog-state.js';
+import { createDesktopSessionCatalogSource } from '../platform/desktop/session-catalog-sync.js';
+import {
+  createWorkHubEnablement,
+  WorkHubEnablementProvider,
+} from '../application/contracts/workhub-workspace/workhub-enablement.js';
+import { createDesktopWorkHubEnablementSource } from '../platform/desktop/create-workhub-enablement-source.js';
+import {
+  createOnboardingAuthority,
+  OnboardingAuthorityProvider,
+} from '../application/contracts/onboarding/onboarding-authority.js';
+import { createDesktopOnboardingSource } from '../platform/desktop/create-onboarding-source.js';
+import { ShellLifecycleSourcesProvider } from '../application/contracts/shell-lifecycle.js';
+import { createDesktopShellLifecycleSources } from '../platform/desktop/create-shell-lifecycle-sources.js';
 
 if (import.meta.env.DEV) {
   const stopObserving = observeReactPerformanceMeasures();
@@ -84,7 +97,14 @@ export function createDesktopFeatureServices() {
     // service — it is created once with the other app singletons and read
     // through `useSessionCatalogController` so providers below do not need it
     // drilled through the shell.
-    sessionCatalog: createSessionCatalogController(),
+    sessionCatalog: createSessionCatalogController(createDesktopSessionCatalogSource()),
+    // Client-global, like the catalog: the shell, Workbar, the rail and the
+    // WorkHub dock all follow the same switch.
+    workHubEnablement: createWorkHubEnablement(createDesktopWorkHubEnablementSource()),
+    // First-run state is read by the shell, the rail and composer readiness.
+    onboarding: createOnboardingAuthority(createDesktopOnboardingSource()),
+    // The root lifecycle's Desktop events; only ShellLifecycleSubscriptions reads them.
+    shellLifecycle: createDesktopShellLifecycleSources(),
     appUpdate: createDesktopAppUpdateServices(),
     clientPlugins: createDesktopClientPluginServices(),
     diagnostics: createDesktopDiagnosticsServices(),
@@ -116,6 +136,9 @@ export function DesktopFeatureServicesProvider(props: {
 }) {
   return (
     <SessionCatalogContext.Provider value={props.services.sessionCatalog}>
+    <WorkHubEnablementProvider value={props.services.workHubEnablement}>
+    <OnboardingAuthorityProvider value={props.services.onboarding}>
+    <ShellLifecycleSourcesProvider value={props.services.shellLifecycle}>
     <ClientPluginServicesProvider services={props.services.clientPlugins}>
       <ClientPluginRoot>
         <AppUpdateServicesProvider services={props.services.appUpdate}>
@@ -163,6 +186,9 @@ export function DesktopFeatureServicesProvider(props: {
         </AppUpdateServicesProvider>
       </ClientPluginRoot>
     </ClientPluginServicesProvider>
+    </ShellLifecycleSourcesProvider>
+    </OnboardingAuthorityProvider>
+    </WorkHubEnablementProvider>
     </SessionCatalogContext.Provider>
   );
 }

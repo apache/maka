@@ -165,7 +165,6 @@
     "src/renderer/use-app-shell-session-list.ts",
     "src/renderer/use-app-shell-session-ui-reads.ts",
     "src/renderer/use-app-shell-session-workspace.ts",
-    "src/renderer/use-onboarding-snapshot.ts",
     "src/renderer/use-project-context.ts",
     "src/renderer/use-shell-appearance.ts",
     "src/renderer/use-shell-connections.ts",
@@ -606,30 +605,20 @@
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 5,
-        "bridgePaths": {
-          "window.maka.app.info": 1,
-          "window.maka.appWindow.subscribeCommand": 1,
-          "window.maka.connections.subscribeEvents": 1,
-          "window.maka.runtimeHostProfiles.subscribeChanges": 1,
-          "window.maka.sessions.subscribeChanges": 1,
-          "window.maka.settings.subscribeClientChanged": 1,
-          "window.maka.settings.subscribeExternalChanged": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {
           "cancelAnimationFrame": 1,
-          "document.documentElement.setAttribute": 1,
           "requestAnimationFrame": 1
         },
         "hookCalls": {
-          "useEffect": 7,
+          "useEffect": 6,
           "useHotkeys": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./application/contracts/conversation-copy.js": 1,
-          "./application/contracts/session-catalog/session-change-effects.js": 1,
+          "./application/contracts/shell-lifecycle.js": 1,
           "./browser-storage": 1,
           "./theme": 1,
           "./titlebar-modal-sync": 1,
@@ -637,7 +626,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 1331
+        "nonTriviaTokens": 856
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -670,14 +659,8 @@
         "nonTriviaTokens": 858
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 43,
-        "bridgePaths": {
-          "window.maka.attachments.readBytes": 1,
-          "window.maka.onboarding.setMilestone": 1,
-          "window.maka.sessions.listTurnLandmarks": 1,
-          "window.maka.settings.getClient": 1,
-          "window.maka.settings.subscribeClientChanged": 1
-        },
+        "importDeclarations": 42,
+        "bridgePaths": {},
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
         },
@@ -691,10 +674,9 @@
           "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
-          "useEffect": 2,
+          "useEffect": 1,
           "useLayoutEffect": 1,
-          "useOnboardingSnapshot": 1,
-          "useRef": 5,
+          "useRef": 4,
           "useSessionNavigationReads": 1,
           "useSessionSettingIntent": 1,
           "useShellAppearance": 1,
@@ -704,7 +686,7 @@
           "useShellMemoryPill": 1,
           "useShellResume": 1,
           "useStableActions": 1,
-          "useState": 6,
+          "useState": 5,
           "useSystemUiLocale": 1,
           "useToast": 1,
           "useTurnActionRegistry": 1
@@ -721,7 +703,10 @@
           "./app-shell-overlays": 1,
           "./application/contracts/conversation-copy": 1,
           "./application/contracts/desktop-slash-command.js": 1,
+          "./application/contracts/onboarding/onboarding-authority.js": 1,
+          "./application/contracts/shell-lifecycle.js": 1,
           "./application/contracts/turn-presentation": 1,
+          "./application/contracts/workhub-workspace/workhub-enablement.js": 1,
           "./chat-composer-region": 1,
           "./chat-message-surface": 1,
           "./composer-defaults": 1,
@@ -757,7 +742,6 @@
           "./shell/frame-style": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
-          "./use-onboarding-snapshot": 1,
           "./use-project-context": 1,
           "./use-shell-appearance": 1,
           "./use-shell-connections": 1,
@@ -776,14 +760,12 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 63,
-        "nonTriviaTokens": 8201
+        "importSpecifiers": 60,
+        "nonTriviaTokens": 8017
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
-        "bridgePaths": {
-          "window.maka.sessions.list": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
           "useExternalStoreSelector": 1,
@@ -806,7 +788,7 @@
           "react": 1
         },
         "importSpecifiers": 5,
-        "nonTriviaTokens": 481
+        "nonTriviaTokens": 479
       },
       "src/renderer/use-app-shell-session-ui-reads.ts": {
         "importDeclarations": 0,
@@ -3347,24 +3329,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./theme": 1
-        }
-      },
-      "src/renderer/use-onboarding-snapshot.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useEffect": 1,
-          "useRef": 2,
-          "useState": 2,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./platform/desktop/onboarding-snapshot-bridge.js": 2,
-          "@maka/ui": 1,
-          "react": 1
         }
       },
       "src/renderer/use-project-context.ts": {

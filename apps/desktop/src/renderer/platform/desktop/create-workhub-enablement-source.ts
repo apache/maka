@@ -16,16 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { WorkHubEnablementSource } from '../../application/contracts/workhub-workspace/workhub-enablement.js';
 
-import type { ComponentProps } from 'react';
-import { PlanChatView } from './plan-surfaces.js';
-import { useComposerStaging } from './composer-staging-context.js';
-import { useComposerStagingServices } from '../staging-services.js';
-
-/** Transcript attachment reads come from the injected attachment port, never from the caller. */
-export function StagedQuoteChatView(props: Omit<ComponentProps<typeof PlanChatView>,
-  'handleRef' | 'pendingQuotes' | 'onQuoteAnnotationSubmit' | 'onReadAttachmentBytes'>) {
-  const staging = useComposerStaging();
-  const { readBytes } = useComposerStagingServices();
-  return <PlanChatView {...props} {...staging.chatViewQuoteProps} onReadAttachmentBytes={readBytes} />;
+export function createDesktopWorkHubEnablementSource(
+  bridge: { settings: Pick<MakaBridge['settings'], 'getClient' | 'subscribeClientChanged'> } = window.maka,
+): WorkHubEnablementSource {
+  return {
+    read: async () => (await bridge.settings.getClient()).workHub.enabled,
+    subscribeChanges: (handler) => bridge.settings.subscribeClientChanged(handler),
+  };
 }

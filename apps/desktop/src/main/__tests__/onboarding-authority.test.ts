@@ -18,15 +18,162 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { afterEach, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { act, createElement } from 'react';
 import type { OnboardingState } from '@maka/core/onboarding';
 import {
   applyOnboardingSessionUpdate,
+  createOnboardingAuthority,
   createOnboardingSnapshotPoller,
   getOnboardingActivationCandidate,
+  OnboardingAuthorityProvider,
+  OnboardingProjectionRoot,
   onboardingSnapshotProjectionEqual,
-} from '../../renderer/use-onboarding-snapshot.js';
+  type OnboardingShellProjection,
+  type OnboardingSource,
+} from '../../renderer/application/contracts/onboarding/onboarding-authority.js';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { createDesktopOnboardingSource } from '../../renderer/platform/desktop/create-onboarding-source.js';
 import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
+
+describe('createOnboardingAuthority', () => {
+  afterEach(cleanupFakeDom);
+
+  function source(overrides: Partial<OnboardingSource> = {}) {
+    const calls: string[] = [];
+    let invalidate: ((sessionId?: string) => void) | undefined;
+    const snapshots = [READY_SNAPSHOT, NEEDS_CONNECTION_SNAPSHOT];
+    const value: OnboardingSource = {
+      getSnapshot: async () => { calls.push('snapshot'); return snapshots.shift() ?? NEEDS_CONNECTION_SNAPSHOT; },
+      getSessionUpdate: async (sessionId) => {
+        calls.push(`session:${sessionId}`);
+        return { kind: 'delta', sessionId, outcome: { kind: 'blocked', reason: 'connection_missing', connectionLocked: false } };
+      },
+      subscribeInvalidations(handler) {
+        calls.push('subscribe');
+        invalidate = handler;
+        return () => { calls.push('unsubscribe'); invalidate = undefined; };
+      },
+      skipInitialOnboarding: async () => { calls.push('skip'); },
+      ...overrides,
+    };
+    return { value, calls, invalidate: (sessionId?: string) => invalidate?.(sessionId) };
+  }
+
+  it('reads only while subscribed and keeps the snapshot for the next reader', async () => {
+    const fake = source();
+    const authority = createOnboardingAuthority(fake.value);
+    authority.refresh();
+    await flushMicrotasks();
+    assert.deepEqual(fake.calls, [], 'no reader, no read');
+    let notified = 0;
+    const unsubscribe = authority.subscribe(() => { notified += 1; });
+    await flushMicrotasks();
+    assert.equal(authority.getProjection().snapshot, READY_SNAPSHOT);
+    fake.invalidate('one');
+    await flushMicrotasks();
+    assert.deepEqual(authority.getProjection().snapshot?.sessionSendOutcomes, {
+      one: { kind: 'blocked', reason: 'connection_missing', connectionLocked: false },
+    });
+    assert.equal(notified, 2);
+    unsubscribe();
+    assert.deepEqual(fake.calls, ['snapshot', 'subscribe', 'session:one', 'unsubscribe']);
+    assert.notEqual(authority.getProjection().snapshot, null, 'the accepted snapshot survives the last reader');
+  });
+
+  it('flags a failed read without dropping the snapshot, and clears it on the next success', async () => {
+    let fail = false;
+    const fake = source({
+      getSnapshot: async () => {
+        if (fail) throw new Error('Authorization: Bearer sk-live-secret-token-value');
+        return READY_SNAPSHOT;
+      },
+    });
+    const authority = createOnboardingAuthority(fake.value);
+    const unsubscribe = authority.subscribe(() => {});
+    await flushMicrotasks();
+    fail = true;
+    fake.invalidate();
+    await flushMicrotasks();
+    assert.deepEqual(authority.getProjection(), { snapshot: READY_SNAPSHOT, failed: true });
+    fail = false;
+    authority.refresh();
+    await flushMicrotasks();
+    assert.deepEqual(authority.getProjection(), { snapshot: READY_SNAPSHOT, failed: false });
+    unsubscribe();
+  });
+
+  it('hands the shell the live projection and the authority commands through its root', async () => {
+    const fake = source();
+    const authority = createOnboardingAuthority(fake.value);
+    const seen: OnboardingShellProjection[] = [];
+    const { root } = installReactRenderer();
+    await act(async () => root.render(createElement(OnboardingAuthorityProvider, { value: authority },
+      createElement(OnboardingProjectionRoot, {
+        children: (onboarding: OnboardingShellProjection) => {
+          seen.push(onboarding);
+          return null;
+        },
+      }))));
+    await act(async () => flushMicrotasks());
+    assert.equal(seen.at(-1)?.snapshot, READY_SNAPSHOT);
+    assert.equal(seen.at(-1)?.refresh, authority.refresh);
+    await act(async () => { fake.invalidate(); await flushMicrotasks(); });
+    assert.equal(seen.at(-1)?.snapshot, NEEDS_CONNECTION_SNAPSHOT);
+    await act(async () => root.unmount());
+    assert.equal(fake.calls.at(-1), 'unsubscribe', 'the root is the subscriber that keeps the reads alive');
+  });
+
+  it('fails without its provider instead of holding the first-run gate closed', () => {
+    const { root } = installReactRenderer();
+    assert.throws(() => act(() => root.render(createElement(OnboardingProjectionRoot, { children: () => null }))),
+      /OnboardingAuthorityProvider is missing/);
+  });
+
+  it('re-pulls after a skip lands, and not after a skip fails', async () => {
+    let skipFails = false;
+    const fake = source({
+      skipInitialOnboarding: async () => {
+        fake.calls.push('skip');
+        if (skipFails) throw new Error('Host unavailable');
+      },
+    });
+    const authority = createOnboardingAuthority(fake.value);
+    const unsubscribe = authority.subscribe(() => {});
+    await flushMicrotasks();
+    fake.calls.length = 0;
+    await authority.skipInitialOnboarding();
+    await flushMicrotasks();
+    assert.deepEqual(fake.calls, ['skip', 'snapshot']);
+    fake.calls.length = 0;
+    skipFails = true;
+    await assert.rejects(authority.skipInitialOnboarding(), /Host unavailable/);
+    await flushMicrotasks();
+    assert.deepEqual(fake.calls, ['skip']);
+    unsubscribe();
+  });
+
+  it('Desktop invalidates on named Session, connection and owner-profile events; AppShell no longer writes the milestone', async () => {
+    const handlers: Record<string, (event?: unknown) => void> = {};
+    const invalidations: Array<string | undefined> = [];
+    const listen = (name: string) => (handler: (event?: unknown) => void) => { handlers[name] = handler; return () => {}; };
+    const desktop = createDesktopOnboardingSource({
+      sessions: { subscribeChanges: listen('sessions') },
+      connections: { subscribeEvents: listen('connections') },
+      runtimeHostProfiles: { subscribeChanges: listen('profiles') },
+    } as unknown as Parameters<typeof createDesktopOnboardingSource>[0]);
+    desktop.subscribeInvalidations((sessionId) => invalidations.push(sessionId));
+    handlers.sessions?.({ sessionId: 'one' });
+    handlers.connections?.();
+    handlers.profiles?.({ profileAccess: 'guest', isDefault: false });
+    handlers.profiles?.({ profileAccess: 'owner', isDefault: false });
+    assert.deepEqual(invalidations, ['one', undefined, undefined]);
+    const shell = readFileSync(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url)), 'utf8');
+    assert.deepEqual(shell.split('\n').filter((line) => /\bonboarding\s*\.\s*setMilestone\b|\buseOnboardingSnapshot\b/.test(line)), []);
+  });
+});
 
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -164,8 +311,8 @@ describe('createOnboardingSnapshotPoller', () => {
     }, {
       onSnapshot: (snapshot) => emitted.push(snapshot),
       onSessionUpdate: (update) => emitted.push(update),
-      onError: (error) => assert.fail(error),
-    }, () => 'zh-CN');
+      onError: () => assert.fail('unexpected onboarding read failure'),
+    });
     await poller.pull();
     await poller.pullSession('one');
     assert.equal(fullReads, 1);
@@ -175,20 +322,20 @@ describe('createOnboardingSnapshotPoller', () => {
 
   it('keeps the accepted snapshot on a targeted failure until a complete resync succeeds', async () => {
     const snapshots: OnboardingSnapshot[] = [];
-    const errors: string[] = [];
+    let failures = 0;
     let fullReads = 0;
     const poller = createOnboardingSnapshotPoller({
       getSnapshot: async () => ++fullReads === 1 ? READY_SNAPSHOT : NEEDS_CONNECTION_SNAPSHOT,
       getSessionUpdate: async () => { throw new Error('Host disconnected'); },
     }, {
       onSnapshot: (snapshot) => snapshots.push(snapshot),
-      onError: (message) => errors.push(message),
-    }, () => 'zh-CN');
+      onError: () => { failures += 1; },
+    });
     await poller.pull();
     await poller.pullSession('one');
     assert.deepEqual(snapshots, [READY_SNAPSHOT, NEEDS_CONNECTION_SNAPSHOT]);
     assert.equal(fullReads, 2, 'the failed delta needs an authoritative resync');
-    assert.equal(errors.length, 1);
+    assert.equal(failures, 1);
   });
 
   it('coalesces a repeat while a targeted read is in flight', async () => {
@@ -206,8 +353,8 @@ describe('createOnboardingSnapshotPoller', () => {
     }, {
       onSnapshot: () => {},
       onSessionUpdate: (update) => emitted.push(update.sessionId),
-      onError: (error) => assert.fail(error),
-    }, () => 'zh-CN');
+      onError: () => assert.fail('unexpected onboarding read failure'),
+    });
     await poller.pull();
     const first = poller.pullSession('one');
     void poller.pullSession('one');
@@ -230,8 +377,8 @@ describe('createOnboardingSnapshotPoller', () => {
     }, {
       onSnapshot: () => {},
       onSessionUpdate: () => assert.fail('superseded update must not publish'),
-      onError: (error) => assert.fail(error),
-    }, () => 'zh-CN');
+      onError: () => assert.fail('unexpected onboarding read failure'),
+    });
     await poller.pull();
     const first = poller.pullSession('active');
     for (let index = 0; index < 65; index++) void poller.pullSession(`pending-${index}`);
@@ -241,7 +388,7 @@ describe('createOnboardingSnapshotPoller', () => {
     assert.equal(fullReads, 2);
   });
 
-  it('scrubs getSnapshot rejections before routing them to onError', async () => {
+  it('reports a getSnapshot rejection without carrying its text', async () => {
     const events: Array<{ type: 'snap' | 'err'; payload: unknown }> = [];
     const poller = createOnboardingSnapshotPoller(
       {
@@ -251,14 +398,12 @@ describe('createOnboardingSnapshotPoller', () => {
       },
       {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
-        onError: (m) => events.push({ type: 'err', payload: m }),
+        onError: () => events.push({ type: 'err', payload: undefined }),
       },
-      () => 'zh-CN',
     );
     await poller.pull();
-    assert.deepEqual(events, [{ type: 'err', payload: '鉴权失败' }]);
-    assert.notEqual(String(events[0]?.payload).includes('/Users/demo'), true);
-    assert.notEqual(String(events[0]?.payload).includes('sk-live-secret'), true);
+    // Nothing renders the failure's text, so none of it (paths, tokens) is kept.
+    assert.deepEqual(events, [{ type: 'err', payload: undefined }]);
   });
 
   it('a pull issued while another is in flight runs once after it settles', async () => {
@@ -277,7 +422,6 @@ describe('createOnboardingSnapshotPoller', () => {
           /* not expected */
         },
       },
-      () => 'zh-CN',
     );
     const pull1 = poller.pull();
     const pull2 = poller.pull();
@@ -308,7 +452,6 @@ describe('createOnboardingSnapshotPoller', () => {
           /* not expected */
         },
       },
-      () => 'zh-CN',
     );
     void poller.pull();
     void poller.pull();
@@ -339,7 +482,6 @@ describe('createOnboardingSnapshotPoller', () => {
           /* not expected */
         },
       },
-      () => 'zh-CN',
     );
     const pull = poller.pull();
     poller.dispose();
@@ -361,9 +503,8 @@ describe('createOnboardingSnapshotPoller', () => {
       },
       {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
-        onError: (m) => events.push({ type: 'err', payload: m }),
+        onError: () => events.push({ type: 'err', payload: undefined }),
       },
-      () => 'zh-CN',
     );
 
     const pull = poller.pull();
@@ -386,9 +527,8 @@ describe('createOnboardingSnapshotPoller', () => {
       },
       {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
-        onError: (m) => events.push({ type: 'err', payload: m }),
+        onError: () => events.push({ type: 'err', payload: undefined }),
       },
-      () => 'zh-CN',
     );
 
     const pull = poller.pull();
@@ -405,9 +545,8 @@ describe('createOnboardingSnapshotPoller', () => {
       { getSnapshot: async () => READY_SNAPSHOT },
       {
         onSnapshot: (s) => events.push({ type: 'snap', payload: s }),
-        onError: (m) => events.push({ type: 'err', payload: m }),
+        onError: () => events.push({ type: 'err', payload: undefined }),
       },
-      () => 'zh-CN',
     );
 
     poller.dispose();

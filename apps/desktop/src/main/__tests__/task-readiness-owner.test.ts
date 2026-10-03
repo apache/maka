@@ -27,6 +27,11 @@ import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission
 import { LocaleProvider } from '@maka/ui';
 import * as Conversation from '../../renderer/features/conversation/index.js';
 import {
+  OnboardingAuthorityProvider,
+  type OnboardingAuthority,
+  type OnboardingSnapshot,
+} from '../../renderer/application/contracts/onboarding/onboarding-authority.js';
+import {
   TaskReadinessNoticeConsumer,
   TaskReadinessProvider,
   TaskReadinessServicesProvider,
@@ -113,19 +118,34 @@ function noticeRecorder() {
 
 type OwnerProps = Omit<Parameters<typeof TaskReadinessProvider>[0], 'children' | 'openSessionWorkspaceRecovery'> & {
   openSessionWorkspaceRecovery?: (sessionId: string) => void;
+  /** Delivered as the onboarding authority's snapshot; a new value reads again. */
+  refreshKey: unknown;
 };
+
+/** An onboarding authority whose snapshot is the given key, so a new key is a new snapshot. */
+function onboardingWith(snapshot: unknown): OnboardingAuthority {
+  return {
+    getProjection: () => ({ snapshot: snapshot as OnboardingSnapshot, failed: false }),
+    subscribe: () => () => {},
+    refresh: () => {},
+    skipInitialOnboarding: async () => {},
+  };
+}
 
 const ignoreRecovery = () => {};
 
-function owner(services: TaskReadinessServices, props: OwnerProps, children: ReactNode) {
+function owner(services: TaskReadinessServices, { refreshKey, ...props }: OwnerProps, children: ReactNode) {
   return createElement(LocaleProvider, {
     locale: 'en',
-    children: createElement(TaskReadinessServicesProvider, {
-      services,
-      children: createElement(TaskReadinessProvider, {
-        openSessionWorkspaceRecovery: ignoreRecovery,
-        ...props,
-        children,
+    children: createElement(OnboardingAuthorityProvider, {
+      value: onboardingWith(refreshKey),
+      children: createElement(TaskReadinessServicesProvider, {
+        services,
+        children: createElement(TaskReadinessProvider, {
+          openSessionWorkspaceRecovery: ignoreRecovery,
+          ...props,
+          children,
+        }),
       }),
     }),
   });

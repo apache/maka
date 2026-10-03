@@ -70,7 +70,7 @@ export function useAppShellSessionList(
     return createSessionListRefresher({
       listSessions: () => {
         observedAtRevision = catalog.getState().revision;
-        return window.maka.sessions.list();
+        return catalog.source.list();
       },
       currentSessions: () => [...sessionsRef.current],
       commitSessions: (next) =>

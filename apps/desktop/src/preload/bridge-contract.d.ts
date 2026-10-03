@@ -324,27 +324,9 @@ export interface RecallSearchResult {
   readonly searchedEverySession: boolean;
 }
 
-export interface OnboardingSnapshot {
-  state: OnboardingState;
-  milestones: OnboardingMilestone[];
-  sessions: DesktopSessionSummary[];
-  connections: import('@maka/core/llm-connections').ProjectedLlmConnection[];
-  defaultSlug: string | null;
-  chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
-  sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
-}
-
-export type DesktopOnboardingSessionUpdate =
-  | { kind: 'resync' }
-  | {
-      kind: 'delta';
-      sessionId: string;
-      outcome: import('@maka/core/session-send-projection').SessionSendProjection | null;
-      defaultHost?: {
-        state: OnboardingState;
-        milestones: OnboardingMilestone[];
-      };
-    };
+// Shared with the renderer's application onboarding authority, which may not import preload.
+import type { OnboardingSnapshot, DesktopOnboardingSessionUpdate } from '../shared/onboarding-snapshot.js';
+export type { OnboardingSnapshot, DesktopOnboardingSessionUpdate } from '../shared/onboarding-snapshot.js';
 
 export interface DesktopTaskSubmissionReadinessRequest {
   connectionSlug?: string;
