@@ -111,9 +111,7 @@ export const ALLOWED = {
     useAppShellNavRefSync: 1,
     useAppShellPersistenceEffects: 1,
     useAppShellProjectContext: 1,
-    useAppShellSessionUiReads: 1,
     useAppShellSessionWorkspace: 1,
-    useAppShellTurnPresentation: 1,
     useEffect: 1,
     useLayoutEffect: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
@@ -132,18 +130,10 @@ export const ALLOWED = {
     useShellAppearance: 1,
     useShellChatModel: 1,
     useShellConnections: 3,
-    useShellLiveTurn: 1,
     useShellMemoryPill: 1,
-    useShellResume: 1,
     useStableActions: 1,
     useState: 3,
     useToast: 1,
-    // The last of the three `useKeyedPendingRegistry` call sites this entry
-    // replaces: #4113 moved the other two onto the session UI store, which is
-    // already an external store, so their scope left this fiber entirely. This
-    // one stays because the shell body reads `keys` to build the turn footer's
-    // disabled mask.
-    useTurnActionRegistry: 1,
   },
 };
 

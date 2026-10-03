@@ -33,7 +33,7 @@ import type { QuoteRef } from '@maka/core/events';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { useUiLocale, type ComposerHandle, type ToastApi } from '@maka/ui';
+import { useUiLocale, type ToastApi } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
@@ -125,7 +125,8 @@ export interface UseWorkbarControllerInput {
   modelChoices: readonly ChatModelChoice[];
   /** Toast surface owned by the shell composition zone. */
   toastApi: ToastApi;
-  composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
+  /** The main Composer's Work Board edits: write a new-task draft, then focus it. */
+  composerDraft?: { seedDraft(draftKey: string, text: string): void; focus(): void };
   openNewTaskSurface?(): number;
   openSessionInChat?(sessionId: string, turnId?: string): void;
   resolveWorkBoardTarget?(item: WorkBoardItem):
@@ -346,8 +347,8 @@ export function useWorkbarController(
         draftKey,
       };
       globalThis.requestAnimationFrame(() => {
-        input.composerRef?.current?.setDraft(draftKey, draft);
-        input.composerRef?.current?.focus();
+        input.composerDraft?.seedDraft(draftKey, draft);
+        input.composerDraft?.focus();
       });
     },
     [input, locale, settlePendingWorkBoardLink],

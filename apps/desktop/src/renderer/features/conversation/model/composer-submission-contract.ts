@@ -38,6 +38,8 @@ export interface ComposerSurfaceOwner {
 export interface ComposerSubmissionCommands {
   beginEditUserMessage(turnId: string): void;
   handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']): Promise<void>;
+  /** Drops the pending Turn-footer marks of one retired Session. */
+  clearPendingTurnActions(sessionId: string): void;
 }
 
 /**
@@ -60,12 +62,6 @@ export interface ComposerSubmissionShell<Owner extends ComposerSurfaceOwner> {
   showModelSetupToast(description: string, reason?: string, diagnosticTarget?: ToastDiagnosticTarget): void;
   bindNewTaskSessionResolver(selectionRevision: number): (sessionId: string, newTaskDraftKey?: string) => void;
   openSideChat(options: { initialPrompt?: string }): void;
-  /** The shell's pending mask for Turn footer actions; it also renders the mask. */
-  turnActions: {
-    addKey(key: string): boolean;
-    clearKey(key: string): void;
-    keyOf(sessionId: string, turnId: string, actionId: string): string;
-  };
   orchestrationMode(): OrchestrationMode;
   setOrchestrationModeActive(mode: Exclude<OrchestrationMode, 'default'>, active: boolean): Promise<boolean>;
 }

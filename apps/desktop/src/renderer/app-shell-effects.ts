@@ -105,7 +105,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
   openSettings: () => void;
-  clearPendingTurnActions: () => void;
   refreshConnections: () => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
@@ -157,7 +156,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const cleanupPendingRefs = useEffectEvent(() => {
     options.rendererMountedRef.current = false;
-    options.clearPendingTurnActions();
   });
 
   useEffect(() => {

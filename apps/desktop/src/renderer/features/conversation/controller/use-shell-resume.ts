@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { resumeParkToastCopy } from '@maka/ui';
 import { localizedShellErrorMessage, type getShellCopy } from '../../../locales/shell-copy.js';
@@ -160,19 +160,19 @@ export function useShellResume(options: {
     }
   }
 
-  const safeResumeAction = !sharedSessionActive && activeId
-    ? {
-        pending: resumePendingSessionId === activeId,
-        detail: resumeParkDescriptionBySession[activeId],
-        onResume: () => { void resumeInterruptedSession(); },
-      }
-    : undefined;
-  const composerResumeAction = activeId && resumeAvailableBySession[activeId]
-    ? {
-        pending: resumePendingSessionId === activeId,
-        onResume: () => { void resumeInterruptedSession(); },
-      }
-    : undefined;
+  // The click reaches the latest handler, so the actions keep their identity
+  // until something they render changes.
+  const resumeRef = useRef(resumeInterruptedSession);
+  resumeRef.current = resumeInterruptedSession;
+  const pending = activeId !== undefined && resumePendingSessionId === activeId;
+  const detail = activeId ? resumeParkDescriptionBySession[activeId] : undefined;
+  const available = activeId ? resumeAvailableBySession[activeId] === true : false;
+  const safeResumeAction = useMemo(() => !sharedSessionActive && activeId
+    ? { pending, detail, onResume: () => { void resumeRef.current(); } }
+    : undefined, [activeId, detail, pending, sharedSessionActive]);
+  const composerResumeAction = useMemo(() => available
+    ? { pending, onResume: () => { void resumeRef.current(); } }
+    : undefined, [available, pending]);
 
   return { safeResumeAction, composerResumeAction };
 }

@@ -27,7 +27,6 @@
     "src/renderer/computer-use-overlay/engine/cursor-candidate-grid.ts",
     "src/renderer/computer-use-overlay/engine/cursor-engine.ts",
     "src/renderer/computer-use-overlay/engine/palette.ts",
-    "src/renderer/conversation-markdown.ts",
     "src/renderer/custom-pet-companion-model.ts",
     "src/renderer/custom-pet-companion.tsx",
     "src/renderer/daily-review-actions.ts",
@@ -163,16 +162,13 @@
     "src/renderer/titlebar-dim-color.ts",
     "src/renderer/titlebar-modal-sync.ts",
     "src/renderer/use-app-shell-session-list.ts",
-    "src/renderer/use-app-shell-session-ui-reads.ts",
     "src/renderer/use-app-shell-session-workspace.ts",
     "src/renderer/use-project-context.ts",
     "src/renderer/use-shell-appearance.ts",
     "src/renderer/use-shell-connections.ts",
-    "src/renderer/use-shell-live-turn.ts",
     "src/renderer/use-shell-memory-pill.ts",
     "src/renderer/use-stable-actions.ts",
     "src/renderer/use-system-ui-locale.ts",
-    "src/renderer/use-turn-action-registry.ts",
     "src/renderer/use-work-board.ts",
     "src/renderer/work-board-panel.tsx",
     "src/renderer/workspace-readiness-recovery.ts"
@@ -346,7 +342,9 @@
       "appShell": [
         "ComposerStagingProvider",
         "ComposerSubmissionProvider",
+        "ConversationActivityConsumer",
         "ConversationComposerRegion",
+        "ConversationHomeSurface",
         "ConversationLifecycle",
         "ConversationMessageConsumer",
         "ConversationProvider",
@@ -355,18 +353,13 @@
         "PlanExecutionSurface",
         "PlanProvider",
         "TaskReadinessProvider",
-        "chatTurnActivity",
         "createComposerStagingCommands",
         "createComposerSubmissionCommands",
         "createExecutorSessionActivator",
-        "desktopSlashCommandPresentation",
-        "executorComposerProps",
         "resolveTaskReadinessModelTarget",
         "useActiveExecutionBoundary",
-        "useAppShellSessionUiReads",
         "useAppShellSessionUiState",
-        "useShellChatModel",
-        "useShellResume"
+        "useShellChatModel"
       ],
       "composition": [
         "ComposerStagingServicesProvider",
@@ -531,7 +524,7 @@
         "nonTriviaTokens": 122
       },
       "src/renderer/app-shell-command-actions.ts": {
-        "importDeclarations": 5,
+        "importDeclarations": 4,
         "bridgePaths": {},
         "environmentCapabilities": {
           "navigator.clipboard.writeText": 1
@@ -545,15 +538,14 @@
         "dependencyPaths": {
           "./app-shell-copy.js": 1,
           "./command-palette-commands.js": 1,
-          "./conversation-markdown.js": 1,
           "./locales/settings-memory-copy.js": 1,
           "./locales/settings-test-result-copy.js": 1,
           "./locales/shell-copy.js": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2172
+        "importSpecifiers": 7,
+        "nonTriviaTokens": 2158
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 1,
@@ -627,7 +619,7 @@
           "react": 1
         },
         "importSpecifiers": 7,
-        "nonTriviaTokens": 856
+        "nonTriviaTokens": 843
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 5,
@@ -660,7 +652,7 @@
         "nonTriviaTokens": 858
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 42,
+        "importDeclarations": 37,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
@@ -672,9 +664,7 @@
           "useAppShellNavRefSync": 1,
           "useAppShellPersistenceEffects": 1,
           "useAppShellProjectContext": 1,
-          "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
-          "useAppShellTurnPresentation": 1,
           "useEffect": 1,
           "useLayoutEffect": 1,
           "useRef": 4,
@@ -683,14 +673,11 @@
           "useShellAppearance": 1,
           "useShellChatModel": 1,
           "useShellConnections": 3,
-          "useShellLiveTurn": 1,
           "useShellMemoryPill": 1,
-          "useShellResume": 1,
           "useStableActions": 1,
           "useState": 5,
           "useSystemUiLocale": 1,
-          "useToast": 1,
-          "useTurnActionRegistry": 1
+          "useToast": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -703,17 +690,14 @@
           "./app-shell-effects": 1,
           "./app-shell-overlays": 1,
           "./application/contracts/conversation-copy": 1,
-          "./application/contracts/desktop-slash-command.js": 1,
           "./application/contracts/onboarding/onboarding-authority.js": 1,
           "./application/contracts/shell-lifecycle.js": 1,
-          "./application/contracts/turn-presentation": 1,
           "./application/contracts/workhub-workspace/workhub-enablement.js": 1,
           "./chat-composer-region": 1,
           "./chat-message-surface": 1,
           "./composer-defaults": 1,
           "./composer-mentions": 1,
           "./custom-pet-companion": 1,
-          "./custom-pet-companion-model": 1,
           "./desktop-execution-boundary-surface": 1,
           "./error-boundary": 1,
           "./features/app-update/index.js": 1,
@@ -741,28 +725,24 @@
           "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
           "./shell/frame-style": 1,
-          "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
           "./use-project-context": 1,
           "./use-shell-appearance": 1,
           "./use-shell-connections": 1,
-          "./use-shell-live-turn": 1,
           "./use-shell-memory-pill": 1,
           "./use-stable-actions": 1,
           "./use-system-ui-locale": 1,
-          "./use-turn-action-registry": 1,
           "./workspace-readiness-recovery": 1,
           "@astryxdesign/core/AppShell": 1,
           "@maka/core/onboarding-milestone": 1,
           "@maka/core/session": 1,
           "@maka/core/session-revisions": 1,
-          "@maka/core/slash-command-catalog": 1,
           "@maka/core/ui-locale": 1,
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 60,
-        "nonTriviaTokens": 8009
+        "importSpecifiers": 55,
+        "nonTriviaTokens": 7490
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -790,20 +770,6 @@
         },
         "importSpecifiers": 5,
         "nonTriviaTokens": 479
-      },
-      "src/renderer/use-app-shell-session-ui-reads.ts": {
-        "importDeclarations": 0,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./features/conversation/index.js": 1
-        },
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 9
       },
       "src/renderer/use-app-shell-session-workspace.ts": {
         "importDeclarations": 1,
@@ -1022,19 +988,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./features/conversation/index.js": 2
-        }
-      },
-      "src/renderer/conversation-markdown.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-remaining-copy.js": 1,
-          "@maka/core/session": 1,
-          "@maka/ui": 1
         }
       },
       "src/renderer/custom-pet-companion-model.ts": {
@@ -3398,17 +3351,6 @@
           "react": 1
         }
       },
-      "src/renderer/use-shell-live-turn.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./application/contracts/session-execution.js": 1
-        }
-      },
       "src/renderer/use-shell-memory-pill.ts": {
         "bridgePaths": {
           "window.maka.memory.getState": 2
@@ -3457,23 +3399,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "@maka/core/ui-locale": 1,
-          "react": 1
-        }
-      },
-      "src/renderer/use-turn-action-registry.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {
-          "clearTimeout": 2,
-          "setTimeout": 1
-        },
-        "hookCalls": {
-          "useRef": 3,
-          "useState": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
           "react": 1
         }
       },
@@ -3734,13 +3659,6 @@
       "targetZone": "split-by-capability",
       "legacyPaths": [
         "src/renderer/app-shell.tsx"
-      ]
-    },
-    {
-      "capability": "conversation-runtime-and-presentation",
-      "targetZone": "features/conversation",
-      "legacyPaths": [
-        "src/renderer/use-app-shell-session-ui-reads.ts"
       ]
     },
     {

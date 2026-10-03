@@ -278,33 +278,28 @@ or reason, which stays with review.
 | `AppShell` | `useState` | `uiLocalePreference` | `LocaleProvider`; appearance settings | AppShell | the persisted locale preference and its setter | locale | — |
 | `AppShell` | `useState` | `uiLocaleOverride` | `LocaleProvider`; E2E locale override | AppShell | a runtime locale override above every region | locale | — |
 | `AppShell` | `useSystemUiLocale` | `systemUiLocale` | `resolveUiLocale` for `LocaleProvider` | AppShell | read the OS locale and its changes | locale | — |
-| `AppShellContent` | `useActiveExecutionBoundary` | `activeExecutionBoundary` | Composer permission control; the Composer submission owner reloads it after a boundary answer | Conversation | read and reload the owner Session's execution boundary | — | M3 |
+| `AppShellContent` | `useActiveExecutionBoundary` | `activeExecutionBoundary` | Composer permission control and unreadable notice; the palette's permission-mode command; the Session Collaboration dialog gate; the health notice's picker gate; reloaded by the Composer submission owner and Conversation lifecycle | Conversation | read and reload the owner Session's execution boundary | cross-region command | — |
 | `AppShellContent` | `useAppShellBootstrapSubscriptions` | Main change subscriptions | Session, connection, Host-profile and settings refreshers; app-window commands | legacy `app-shell-effects.ts` | startup refreshes, the global shortcuts and the handlers `ShellLifecycleSubscriptions` subscribes with the injected `ShellLifecycleSources`; no bridge access | application lifecycle | — |
 | `AppShellContent` | `useAppShellHostEffects` | titlebar modal sync | titlebar | legacy `app-shell-effects.ts` | observe top-layer modals; the `data-os` platform tag is applied by `ShellLifecycleSources` | layout | — |
 | `AppShellContent` | `useAppShellNavRefSync` | `navSelectionRef` | ownership checks of async results | AppShell | mirror the navigation selection into a ref | navigation | — |
 | `AppShellContent` | `useAppShellPersistenceEffects` | theme and navigation persistence | `<html>` theme class and palette; stored navigation | legacy `app-shell-effects.ts` | apply the theme preference and palette; persist the navigation state | layout | — |
 | `AppShellContent` | `useAppShellProjectContext` | project context | titlebar project name and path; Workbar, Module Hub and palette project inputs; the default-Host project refresh | legacy `use-project-context.ts` | read the owner Session's and the default Host's project projection; project mutations and the open-folder commands belong to Task Entry | — | M5 |
-| `AppShellContent` | `useAppShellSessionUiReads` | displayed Session chrome | interaction, queue, live-turn and execution chrome; Composer props | Conversation (transitional reader) | fixed-purpose reads of the displayed and owner Session | — | M3 |
 | `AppShellContent` | `useAppShellSessionWorkspace` | Session workspace | every region's requested, published and owner Session | legacy `use-app-shell-session-workspace.ts` over the Session catalog and Conversation | Session selection and the catalog controller | navigation | — |
-| `AppShellContent` | `useAppShellTurnPresentation` | `deriveTurnPresentation` | `ChatView` turn footer | application contract `turn-presentation` | derive turn presentation from the transcript projection and pending turn actions | — | M3 |
 | `AppShellContent` | `useEffect` | `defaultHostConnections`: onboarding connection seed | default-Host connection projection | AppShell | seed default-Host connections from the onboarding authority's read-only projection | — | M5 |
 | `AppShellContent` | `useLayoutEffect` | `openSessionInChatRef` publication | turn footer, Module Hub, titlebar parent link | AppShell | publish the current open-Session command into a ref | cross-region command | — |
 | `AppShellContent` | `useSessionNavigationReads` | rail reads | command palette sessions, titlebar parent, `--maka-sidenav-width` | Session Navigation | revision navigation, the active parent Session and the rail layout | navigation | — |
-| `AppShellContent` | `useSessionSettingIntent` | selected-Session setting overlay | Composer model and mode controls; new-task settings for creation | Session Settings | an equality-selected overlay read, the new-task settings and setting commands | — | M3 |
+| `AppShellContent` | `useSessionSettingIntent` | selected-Session setting overlay | Composer model, thinking and mode controls; the transcript's model picker; the palette's permission-mode command; new-task settings for creation; Session teardown | Session Settings | an equality-selected overlay read, the new-task settings and setting commands | cross-region command | — |
 | `AppShellContent` | `useShellAppearance` | appearance settings | theme, palette, user label, Workbar toggle position, locale update gate | legacy `use-shell-appearance.ts` | read and write client appearance settings | layout | — |
-| `AppShellContent` | `useShellChatModel` | Composer model selection | model picker, health notice, new-chat model | Conversation (transitional) | derive model, thinking and executor selection | — | M3 |
+| `AppShellContent` | `useShellChatModel` | Composer model selection | Composer model and executor pickers; the transcript's model labels and health notice; the staging vision gate; the readiness and new-task submission model; the first-send Session activation, which adopts the submitted executor catalog; Workbar model choices | Conversation | derive the model, thinking and executor selection and set the new-task choice | cross-region command | — |
 | `AppShellContent` | `useShellConnections` | `newTaskConnections` | new-task model choices | legacy `use-shell-connections.ts` | the new-task target's connection snapshot and refresh | application lifecycle | — |
 | `AppShellContent` | `useShellConnections` | `defaultHostConnections` | Settings, global commands, model setup | legacy `use-shell-connections.ts` | the default Host's connection snapshot and refresh | application lifecycle | — |
 | `AppShellContent` | `useShellConnections` | `sessionHostConnections` | owner Session model choices | legacy `use-shell-connections.ts` | the owner Session Host's connection snapshot and refresh | application lifecycle | — |
-| `AppShellContent` | `useShellLiveTurn` | live-turn flags | mode-change gating, model switch, pet activity | Conversation reads | derive streaming and settled flags from the owner Session snapshot | — | M3 |
 | `AppShellContent` | `useShellMemoryPill` | memory pill | titlebar memory pill | legacy `use-shell-memory-pill.ts` | read and refresh the owner Session's memory state | layout | — |
-| `AppShellContent` | `useShellResume` | resume offer | Composer send slot | Conversation | per-Session resume availability | — | M3 |
 | `AppShellContent` | `useStableActions` | `createAppShellE2eFixtureActions` | E2E fixture command | AppShell | apply test fixtures across navigation, rail, Workbar and appearance | cross-region command | — |
 | `AppShellContent` | `useState` | `petCompletionNonce` | custom pet companion | AppShell | a counter the transcript bumps when the active Turn completes | cross-region command | — |
 | `AppShellContent` | `useState` | `navigationState` | navigation sections; stored navigation | AppShell | the selected section and each hub's module | navigation | — |
 | `AppShellContent` | `useState` | `workHubActive` | WorkHub or Session surface | AppShell | whether the WorkHub surface is shown | navigation | — |
 | `AppShellContent` | `useToast` | `toastApi` | toasts of every legacy action | Astryx toast provider | show toasts | cross-region command | — |
-| `AppShellContent` | `useTurnActionRegistry` | pending turn actions | turn footer disabled mask; the Composer submission owner's Turn branch; bootstrap clears | legacy `use-turn-action-registry.ts` | pending action keys per Session | — | M3 |
 <!-- retained-root-hooks:end -->
 
 ### Transitional feature exports outside Conversation
@@ -313,21 +308,22 @@ Conversation keeps its own table of transitional capabilities in its README.
 Outside it, the public exports the root takes that are not plain assembly
 components (providers, roots, hosts and overlays mounted through JSX) are the
 following. Exports only tests or Storybook read live in each feature's
-`testing.ts`, not its public entry.
+`testing.ts`, not its public entry. A feature cannot depend on another, so a
+projection one feature makes into another's region is composed here.
 
 | Feature | Export | Root consumer | Kind | Stays because / Removal |
 | --- | --- | --- | --- | --- |
 | overlays | `OverlaysConsumer` | `app-shell-overlays.tsx` (Settings modal, palette command list) | render-prop projection of overlay state | M5, with the legacy command actions |
 | diagnostics | `ManualDiagnosticReportConsumer` | command palette options in `app-shell.tsx` | render-prop manual report command | M5, with the legacy command actions |
-| task-entry | `TaskEntryWorkspacePickerConsumer` | Composer region in `app-shell.tsx` | render-prop workspace picker | M3 |
-| session-collaboration | `GuestTurnRequests` | Composer region in `app-shell.tsx` | render-prop guest composer projection over the Composer ref | M3 |
-| module-hub | `ModuleHubSkillCatalogRevisionBoundary` | Composer mentions provider | render-prop skill catalog revision | M3 |
+| task-entry | `TaskEntryWorkspacePickerConsumer` | Composer region in `app-shell.tsx` | render-prop workspace picker | stays: cross-region projection into the Composer |
+| session-collaboration | `GuestTurnRequests` | Composer region in `app-shell.tsx` | render-prop guest composer projection; discards a settled request's draft through the named Composer edit | stays: cross-region projection into the Composer |
+| module-hub | `ModuleHubSkillCatalogRevisionBoundary` | Composer mentions provider | render-prop skill catalog revision | stays: cross-region projection into the Composer |
 | module-hub | `ModuleHubScheduledTasksBoundary` | Session rail (`SessionNavigationProvider`) | render-prop scheduled tasks | stays: cross-region projection into navigation |
 | module-hub | `createModuleHubCommandPort` | command palette; project selection | command port | stays: cross-region command |
 | session-navigation | `createSessionOpenCommand` | open-Session command | command factory | stays: cross-region command |
 | session-navigation | `sessionRailLayoutStore` | rail collapse handle; E2E fixture | layout store | stays: layout |
 | session-navigation | `useSessionNavigationReads` | see the retained-root table | read hook | stays: navigation |
-| session-settings | `useSessionSettingIntent` | Composer model and mode controls | read hook and commands | M3 |
+| session-settings | `useSessionSettingIntent` | see the retained-root table | read hook and commands | stays: cross-region command |
 
 `settings/` holds the settings pages and the `SettingsModal` shell — one page per `SettingsSection` (defined in `@maka/core`); the models/providers page is `ProvidersPanel`. Plus the `provider-*` files and the shared `settings-rows` / `settings-skeleton` / `settings-surface` helpers.
 

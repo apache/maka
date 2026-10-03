@@ -20,7 +20,7 @@
 import { useMemo, useRef } from "react";
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { SessionSummary } from '@maka/core/session';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from "@maka/ui";
@@ -33,7 +33,6 @@ import { buildCommandList } from "./command-palette-commands.js";
 import type { CopyManualDiagnosticReport } from './features/diagnostics/index.js';
 import type { Command, OverlayPaletteActions } from './features/overlays/index.js';
 import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';
-import { renderConversationMarkdown } from "./conversation-markdown.js";
 import {
   commandPaletteActionErrorMessage,
   commandPaletteConnectionTestFailureMessage,
@@ -69,7 +68,8 @@ export interface AppShellCommandListOptions {
   clientPathsAccessible: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
-  readMessages(): readonly StoredMessage[];
+  /** Copy and Save's Markdown export of the published conversation. */
+  renderPublishedConversation(sessionName: string, locale: UiLocale): string;
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
   settingsProfileId: string | undefined;
@@ -217,14 +217,10 @@ export function buildAppShellCommandList(
       : {}),
     onSelectModule: (selection) => optionsRef.current.setNavSelection(selection),
     onExportActiveConversation: async () => {
-      const { activeId, readMessages, sessionCatalog, toastApi } = optionsRef.current;
+      const { activeId, renderPublishedConversation, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
       const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
-      const markdown = renderConversationMarkdown(
-        session?.name ?? copy.newConversation,
-        readMessages(),
-        locale,
-      );
+      const markdown = renderPublishedConversation(session?.name ?? copy.newConversation, locale);
       try {
         await navigator.clipboard.writeText(markdown);
         toastApi.success(
@@ -236,15 +232,11 @@ export function buildAppShellCommandList(
       }
     },
     onSaveActiveConversationToFile: async () => {
-      const { activeId, paletteActions, readMessages, sessionCatalog, toastApi } = optionsRef.current;
+      const { activeId, paletteActions, renderPublishedConversation, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
       const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const sessionName = session?.name ?? copy.newConversation;
-      const markdown = renderConversationMarkdown(
-        sessionName,
-        readMessages(),
-        locale,
-      );
+      const markdown = renderPublishedConversation(sessionName, locale);
       const now = new Date();
       const yyyy = now.getFullYear();
       const mm = String(now.getMonth() + 1).padStart(2, "0");
