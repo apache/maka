@@ -24,7 +24,16 @@ Applied on root `postinstall` via `scripts/apply-dependency-patches.mjs`
 in `node_modules`, then run `node node_modules/patch-package/index.js <name>`.
 After a dependency upgrade, apply the still-needed edits to the new version
 before regenerating. The command records the installed files, not the old
-patch text.
+patch text. Runtime builds and the incremental Desktop dev launcher run the
+same script with `--strict`; when patch-package reports a patch-file version
+mismatch, regenerate the versioned patch for that installed dependency version.
+Running `npm ci` only restores the lockfile's version and cannot repair an
+intentional upgrade with an old patch.
+
+These gates validate the patch files that remain in `patches/`. They cannot
+detect a patch that was deleted or narrowed after its older, broader form was
+already applied to `node_modules`; use a clean install and review/regenerate
+the affected patch when changing its scope.
 
 Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
