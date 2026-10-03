@@ -116,7 +116,6 @@ export const ALLOWED = {
     useAppShellTurnPresentation: 1,
     useEffect: 1,
     useLayoutEffect: 1,
-    useNewTaskChoice: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
     // `SessionNavigationProvider`. The entry shrinks rather than disappearing,
     // because the shell body does read the rail: the command palette lists the
@@ -136,9 +135,8 @@ export const ALLOWED = {
     useShellLiveTurn: 1,
     useShellMemoryPill: 1,
     useShellResume: 1,
-    useStableActions: 4,
-    useState: 7,
-    useTaskSubmissionReadiness: 1,
+    useStableActions: 1,
+    useState: 3,
     useToast: 1,
     // The last of the three `useKeyedPendingRegistry` call sites this entry
     // replaces: #4113 moved the other two onto the session UI store, which is

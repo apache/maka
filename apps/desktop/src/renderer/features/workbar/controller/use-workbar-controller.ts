@@ -38,7 +38,7 @@ import type { ChatModelChoice } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
-import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
+import { sideChatTitleFromPrompt } from '../../../application/contracts/side-chat-command.js';
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import { useWorkHubWorkspace } from '../../../application/contracts/workhub-workspace/use-workhub-workspace.js';
 import { useWorkHubEnabled } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';

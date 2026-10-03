@@ -17,12 +17,19 @@
  * under the License.
  */
 
-export { useWorkHubController } from './controller/use-workhub-controller.js';
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { TaskReadinessServices } from '../../features/conversation/index.js';
 
-export { WorkHubComposer } from './ui/workhub-composer.js';
-export { WorkHubConversation } from './ui/workhub-conversation.js';
+export type DesktopTaskReadinessBridge = {
+  readonly taskReadiness: Pick<MakaBridge['taskReadiness'], 'getSnapshot'>;
+  readonly newTasks: Pick<MakaBridge['newTasks'], 'getReadiness'>;
+};
 
-export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
-export { workspaceNameFromCwd } from './model/workspace-name.js';
-export { allocateWorkHubHues } from './model/identity-colors.js';
-export { workHubLinkedWork } from './model/linked-work.js';
+export function createDesktopTaskReadinessServices(
+  bridge: DesktopTaskReadinessBridge = window.maka,
+): TaskReadinessServices {
+  return {
+    readSession: (sessionId, request) => bridge.taskReadiness.getSnapshot(request, sessionId),
+    readNewTask: (target, request) => bridge.newTasks.getReadiness(target, request),
+  };
+}

@@ -17,12 +17,14 @@
  * under the License.
  */
 
-export { useWorkHubController } from './controller/use-workhub-controller.js';
+import { createContext, useContext } from 'react';
+import type { useComposerSubmission } from '../controller/use-composer-submission.js';
 
-export { WorkHubComposer } from './ui/workhub-composer.js';
-export { WorkHubConversation } from './ui/workhub-conversation.js';
+export type ComposerSubmissionReader = ReturnType<typeof useComposerSubmission>['reader'];
 
-export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
-export { workspaceNameFromCwd } from './model/workspace-name.js';
-export { allocateWorkHubHues } from './model/identity-colors.js';
-export { workHubLinkedWork } from './model/linked-work.js';
+export const ComposerSubmissionContext = createContext<ComposerSubmissionReader | undefined>(undefined);
+export function useComposerSubmissionReader() {
+  const reader = useContext(ComposerSubmissionContext);
+  if (!reader) throw new Error('ComposerSubmissionProvider is required');
+  return reader;
+}

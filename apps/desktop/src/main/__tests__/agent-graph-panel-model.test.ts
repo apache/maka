@@ -23,7 +23,7 @@ import {
   createAgentGraphPanelModel,
   reduceAgentGraphPanelModel,
   shouldShowAgentGraphPanel,
-} from '../../renderer/features/overlays/index.js';
+} from '../../renderer/features/overlays/testing.js';
 
 describe('AgentGraphPanelModel', () => {
   it('keeps presentation state separate from backend snapshots', () => {

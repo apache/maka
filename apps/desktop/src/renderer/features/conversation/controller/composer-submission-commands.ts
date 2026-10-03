@@ -17,12 +17,19 @@
  * under the License.
  */
 
-export { useWorkHubController } from './controller/use-workhub-controller.js';
+import type { ComposerSubmissionCommands } from '../model/composer-submission-contract.js';
+import { submissionBindings } from '../model/composer-submission-binding.js';
 
-export { WorkHubComposer } from './ui/workhub-composer.js';
-export { WorkHubConversation } from './ui/workhub-conversation.js';
-
-export { WorkHubHighlightContext } from './ui/workhub-work-identity.js';
-export { workspaceNameFromCwd } from './model/workspace-name.js';
-export { allocateWorkHubHues } from './model/identity-colors.js';
-export { workHubLinkedWork } from './model/linked-work.js';
+export function createComposerSubmissionCommands(): ComposerSubmissionCommands {
+  const binding: { current?: ComposerSubmissionCommands } = {};
+  const requireOwner = () => {
+    if (!binding.current) throw new Error('ComposerSubmissionProvider is not mounted');
+    return binding.current;
+  };
+  const commands: ComposerSubmissionCommands = {
+    beginEditUserMessage: (turnId) => requireOwner().beginEditUserMessage(turnId),
+    handleTurnFooterAction: (turnId, actionId) => requireOwner().handleTurnFooterAction(turnId, actionId),
+  };
+  submissionBindings.set(commands, binding);
+  return commands;
+}

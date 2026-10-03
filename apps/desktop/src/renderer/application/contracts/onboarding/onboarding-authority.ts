@@ -353,6 +353,12 @@ export function OnboardingProjectionRoot(props: {
   });
 }
 
+/** The current snapshot, for readers that check something again whenever onboarding changes. */
+export function useCurrentOnboardingSnapshot(): OnboardingSnapshot | null {
+  const authority = useOnboardingAuthority();
+  return useSyncExternalStore(authority.subscribe, () => authority.getProjection().snapshot);
+}
+
 const selectSendOutcomes = (authority: OnboardingAuthority) => authority.getProjection().snapshot?.sessionSendOutcomes;
 
 /** Per-Session send outcomes, for readers that need nothing else from onboarding. */
