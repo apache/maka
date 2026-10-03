@@ -37,6 +37,7 @@ import {
 } from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { resolveModelNativePdfInputSupport } from '@maka/runtime/model-runtime';
 import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
@@ -177,6 +178,7 @@ async function buildHostAiSdkBackend(
     input.context.header.thinkingLevel,
   );
   const contextWindow = resolveSelectedModelContextWindow(target.connection, target.model);
+  const supportsNativePdfInput = resolveModelNativePdfInputSupport(target.connection, target.model);
   let modelComposition: HostRunComposer;
   try {
     modelComposition = await readDuringBackendCreation(
@@ -409,6 +411,7 @@ async function buildHostAiSdkBackend(
           target.model,
           modelOverride(target.connection, target.model)?.vision,
         ),
+        ...(supportsNativePdfInput ? { supportsNativePdfInput } : {}),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,
           sessionId: input.context.sessionId,

@@ -1176,6 +1176,156 @@ test('handoff composition preparation fails closed without a durable recorder', 
   }
 });
 
+function createOnePagePdf(): Buffer {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Contents 4 0 R >>',
+    '<< /Length 0 >>\nstream\n\nendstream',
+  ];
+  let body = '%PDF-1.4\n';
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(body, 'ascii'));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(body, 'ascii');
+  body += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) {
+    body += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  }
+  body += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return Buffer.from(body, 'ascii');
+}
+
+test('Host composition carries verified native PDF input through the provider wire', async () => {
+  const modelId = 'gpt-4o';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-native-pdf-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const pdfBytes = createOnePagePdf();
+  const provider = await startProvider();
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  let artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
+  try {
+    artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await artifacts.create({
+      id: 'brief',
+      sessionId: 'backend-creation-session',
+      turnId: 'pdf-upload',
+      name: 'brief.pdf',
+      kind: 'pdf',
+      mimeType: 'application/pdf',
+      content: pdfBytes,
+      source: 'user_upload',
+    });
+    assert.deepEqual(
+      await artifacts.readDurableAttachmentBinary({
+        artifactId: 'brief',
+        sessionId: 'backend-creation-session',
+      }),
+      {
+        ok: true,
+        base64: pdfBytes.toString('base64'),
+        mimeType: 'application/pdf',
+      },
+    );
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        modelId,
+        resolveExecutionConnection: async () => ({
+          kind: 'ready',
+          connection: {
+            slug: 'backend-creation-connection',
+            providerType: 'openai',
+            enabledModelIds: [modelId],
+            models: [
+              {
+                id: modelId,
+                capabilities: { chat: true, functionCalling: true },
+                modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+                contextWindow: 8_192,
+                maxOutputTokens: 1_024,
+              },
+            ],
+          },
+          networkProxy: { enabled: false },
+          secretMaterial: { connection: { secret: API_KEY } },
+        }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        createFetchTransport: () => ({
+          fetch: (input, init) => {
+            const url = new URL(input instanceof Request ? input.url : String(input));
+            const local = new URL(provider.baseUrl);
+            url.protocol = local.protocol;
+            url.host = local.host;
+            return fetch(url, init);
+          },
+          close: async () => {},
+        }),
+        artifacts,
+      }),
+    );
+
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'pdf-composition-invocation',
+      runId: 'pdf-composition-run',
+      turnId: 'pdf-composition-turn',
+      text: 'Read the attached PDF.',
+      attachments: [
+        {
+          kind: 'pdf',
+          name: 'brief.pdf',
+          mimeType: 'application/pdf',
+          bytes: pdfBytes.byteLength,
+          ref: {
+            kind: 'session_file',
+            sessionId: 'backend-creation-session',
+            relativePath: 'brief',
+          },
+        },
+      ],
+      context: [],
+      runtimeContext: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'end_turn',
+      JSON.stringify({ events, providerRequests: provider.requests }),
+    );
+    assert.equal(provider.requests.length, 1);
+    const messages = provider.requests[0]?.body.messages;
+    assert.ok(Array.isArray(messages));
+    const filePart = messages
+      .flatMap((message: { content?: unknown }) =>
+        Array.isArray(message.content) ? message.content : [],
+      )
+      .find((part: { type?: unknown }) => part.type === 'file');
+    assert.deepEqual(filePart, {
+      type: 'file',
+      file: {
+        filename: 'brief.pdf',
+        file_data: `data:application/pdf;base64,${pdfBytes.toString('base64')}`,
+      },
+    });
+  } finally {
+    await backend?.dispose();
+    artifacts?.close();
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;

@@ -238,6 +238,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    */
   supportsVision?: boolean;
   maxProviderImageRequestBytes?: number;
+  /** Native PDF input is allowed only for a verified first-party provider and wire. */
+  supportsNativePdfInput?: boolean;
+  maxProviderPdfRequestBytes?: number;
+  maxProviderBinaryRequestBytes?: number;
   /** Host-owned bounded long-term-memory extraction. Source tools are Runtime-reserved. */
   memoryExtraction?: MemoryExtractionSourceCapabilities;
 }
@@ -378,8 +382,11 @@ export class AiSdkBackend implements AgentBackend {
       modelAdapter: this.modelAdapter,
       applyPatchProfile,
       supportsVision: input.supportsVision,
+      supportsNativePdfInput: input.supportsNativePdfInput,
       readAttachmentBytes: input.readAttachmentBytes,
       maxProviderImageRequestBytes: input.maxProviderImageRequestBytes,
+      maxProviderPdfRequestBytes: input.maxProviderPdfRequestBytes,
+      maxProviderBinaryRequestBytes: input.maxProviderBinaryRequestBytes,
     });
     this.compaction = new AiSdkCompaction({
       input,
@@ -391,13 +398,13 @@ export class AiSdkBackend implements AgentBackend {
         this.providerTelemetry.createTracker(trackerInput),
       materializeRuntimeReplayPlan: (
         plan,
-        imageBudget,
+        attachmentBudget,
         checkpoint,
         providerReasoningReplayEventIds,
       ) =>
         this.messageProjection.materializeRuntimeReplayPlan(
           plan,
-          imageBudget,
+          attachmentBudget,
           checkpoint,
           providerReasoningReplayEventIds,
         ),

@@ -98,6 +98,7 @@ describe('artifact attachment authority', () => {
       assert.deepEqual(await reader(sessionFileRef('image-1')), {
         ok: true,
         bytes: Buffer.from(png),
+        mimeType: 'image/png',
       });
       await store.deleteUserArtifactInSession('session-1', 'image-1');
       assert.deepEqual(await reader(sessionFileRef('image-1')), {

@@ -93,7 +93,7 @@ describe('prepared prompt composition', () => {
           content: [
             {
               type: 'file',
-              data: { type: 'data', data: new Uint8Array([1, 2, 3]) },
+              data: { type: 'data', data: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]) },
               mediaType: 'application/octet-stream',
             },
           ],
@@ -102,6 +102,8 @@ describe('prepared prompt composition', () => {
     });
 
     assert.ok((composition?.segments[0]?.bytes ?? 0) > 0);
+    assert.equal(JSON.stringify(composition).includes('JVBERi0='), false);
+    assert.equal(JSON.stringify(composition).includes('%PDF-'), false);
   });
 
   test('folds a long conversation into one row without losing its bytes', () => {
