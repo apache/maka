@@ -397,6 +397,50 @@ test('a term the stored form escapes bypasses the candidate source', async () =>
   assert.equal(asked, 0);
 });
 
+test('a term with an unpaired surrogate bypasses the candidate source', async () => {
+  // `JSON.stringify` writes a lone surrogate as a `\ud800` escape, and SQLite
+  // binds one as U+FFFD, so the candidate source cannot vouch for a term
+  // containing one. The parsed text still matches it.
+  const data = corpus([
+    {
+      session: session('s-lone', 'lone surrogate'),
+      messages: [userMessage('m-lone', 't-lone', 'abc\uD800def')],
+    },
+    {
+      session: session('s-emoji', 'emoji'),
+      messages: [userMessage('m-emoji', 't-emoji', 'ship it 🚀 today')],
+    },
+  ]);
+  for (const [term, anchor] of [
+    ['\uD800', 'm-lone'],
+    ['c\uD800d', 'm-lone'],
+    // Either half of the pair in the stored emoji: this double finds it, SQLite
+    // does not.
+    ['\uD83D', 'm-emoji'],
+    ['\uDE80', 'm-emoji'],
+  ] as const) {
+    const result = await runRecall({ terms: [term] }, candidateDeps(data));
+    assert.ok(result.ok);
+    assert.equal(
+      result.scannedFully,
+      true,
+      `${JSON.stringify(term)} must not use the candidate source`,
+    );
+    assert.deepEqual(
+      anchorIds(result.passages),
+      [anchor],
+      `${JSON.stringify(term)} must return its passage`,
+    );
+  }
+
+  // A surrogate pair is one character, stored literally, so the candidate
+  // source can still vouch for it.
+  const paired = await runRecall({ terms: ['🚀'] }, candidateDeps(data));
+  assert.ok(paired.ok);
+  assert.equal(paired.scannedFully, false);
+  assert.deepEqual(anchorIds(paired.passages), ['m-emoji']);
+});
+
 test('a dense tool result does not outrank the answer that explains it', async () => {
   const data = mixedCorpus();
   // `m3` is shaped like a grep result: forty repetitions of every term. BM25's
