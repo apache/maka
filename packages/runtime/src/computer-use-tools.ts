@@ -1407,6 +1407,7 @@ export function buildComputerUseTools(deps: {
     // -1 is not undefined — an unguarded field would hand `window:-1:0` to the
     // reorder and rely on it throwing.
     const targetWindowId = context.boundAction?.target.windowId;
+    const overlayRects = observations.get(context.sessionId)?.obscuringRects;
     const overlayContext: CuOverlayHookContext = {
       sessionId: context.sessionId,
       toolCallId: context.toolCallId,
@@ -1414,6 +1415,7 @@ export function buildComputerUseTools(deps: {
       ...(Number.isInteger(targetWindowId) && (targetWindowId as number) > 0
         ? { targetWindowId: targetWindowId as number }
         : {}),
+      ...(overlayRects && overlayRects.length > 0 ? { obscuringRects: overlayRects } : {}),
     };
     let fence: CuPresentationFence | undefined;
     try {
