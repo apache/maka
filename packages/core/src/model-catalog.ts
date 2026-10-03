@@ -36,6 +36,7 @@ import {
   providerFallbackModelIds,
   providerSupportsModelDiscovery,
 } from './llm-connections.js';
+import { isRetiredProvider } from './provider-retirement.js';
 import { lookupModelMetadata, resolveModelVisionSupport } from './model-metadata.js';
 import {
   modelOverride,
@@ -234,7 +235,7 @@ export function buildConnectionModelCatalogEntries(
     // renders, but they stop being selectable. Without this the pickers would
     // keep offering models that can no longer send — `runtimeAdapter:
     // 'unavailable'` blocks the send, not the choice.
-    providerRetired: defaults.retired === true,
+    providerRetired: isRetiredProvider(connection.providerType),
     ...(connection.modelOverrides ? { modelOverrides: connection.modelOverrides } : {}),
     // Keep manually configured models visible while disabled, even when no
     // provider inventory lists them. Selection still controls their use.
