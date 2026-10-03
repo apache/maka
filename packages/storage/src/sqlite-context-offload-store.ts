@@ -40,6 +40,13 @@ import {
   configureSqliteContextOffloadDatabase,
   migrateSqliteContextOffloadDatabase,
 } from './sqlite-context-offload-schema.js';
+import { readSqliteDatabaseFileSetBytes } from './sqlite-file-set.js';
+import {
+  readSqliteFreelistPages,
+  runBoundedIncrementalVacuum,
+  runPassiveWalCheckpoint,
+  type SqlitePageReclamationResult,
+} from './sqlite-page-reclamation.js';
 import {
   readStableBoundedFile,
   syncDirectory,
@@ -123,6 +130,7 @@ type PreparedContextRead =
 /** Low-level implementation; production callers must use the Storage Root authority facade. */
 export class SqliteContextOffloadStore implements ContextOffloadStore {
   readonly #database: DatabaseSync;
+  readonly #databaseFilePath: string;
   readonly #limits: ContextOffloadLimits;
   readonly #now: () => number;
   readonly #idFactory: () => string;
@@ -135,6 +143,7 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
 
   constructor(path: string, options: SqliteContextOffloadStoreOptions) {
     if (!path) throw new Error('Context-offload SQLite path is required');
+    this.#databaseFilePath = path;
     this.#limits = validateLimits(options.limits);
     this.#now = options.now ?? Date.now;
     this.#idFactory = options.idFactory ?? randomUUID;
@@ -505,6 +514,39 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
         hasMore: collected.hasMore || this.#hasPendingFileDeletions(),
       };
     });
+  }
+
+  async reclaimFreePages(input: {
+    readonly maxPages: number;
+  }): Promise<SqlitePageReclamationResult> {
+    if (!Number.isSafeInteger(input.maxPages) || input.maxPages <= 0) {
+      throw new Error('Context page reclamation limit must be a positive integer');
+    }
+    this.#assertOpen();
+    if (this.#databaseFilePath !== ':memory:') {
+      const freelistEmpty = this.#readTransaction(
+        () => readSqliteFreelistPages(this.#database) === 0,
+      );
+      if (freelistEmpty) {
+        return { reclaimedPages: 0, reclaimedBytes: 0, hasMore: false };
+      }
+    }
+    const beforeBytes =
+      this.#databaseFilePath === ':memory:'
+        ? 0
+        : await readSqliteDatabaseFileSetBytes(this.#databaseFilePath);
+    const result = this.#writeTransaction(() =>
+      runBoundedIncrementalVacuum(this.#database, input.maxPages),
+    );
+    if (result.reclaimedPages > 0) {
+      runPassiveWalCheckpoint(this.#database);
+    }
+    if (this.#databaseFilePath === ':memory:') return result;
+    const afterBytes = await readSqliteDatabaseFileSetBytes(this.#databaseFilePath);
+    return {
+      ...result,
+      reclaimedBytes: Math.max(0, beforeBytes - afterBytes),
+    };
   }
 
   async usage(sessionId?: string): Promise<ContextOffloadUsage> {

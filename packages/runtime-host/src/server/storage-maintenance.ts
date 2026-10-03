@@ -24,6 +24,7 @@ const ACTIVE_DELAY_MS = 100;
 const IDLE_DELAY_MS = 60_000;
 const MAX_BATCH_ITEMS = 64;
 const MAX_BATCH_BYTES = 16 * 1024 * 1024;
+const MAX_VACUUM_PAGES = 64;
 
 interface MaintenanceLane {
   readonly name: string;
@@ -42,7 +43,7 @@ export class HostStorageMaintenance {
 
   constructor(input: {
     artifacts: Pick<InteractiveArtifactStoreWriter, 'reclaimUpgradeResidue'>;
-    contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage'>;
+    contextOffload?: Pick<InteractiveContextOffloadWriter, 'collectGarbage' | 'reclaimFreePages'>;
     onError: (name: string, error: unknown) => void;
   }) {
     this.#onError = input.onError;
@@ -68,7 +69,7 @@ export class HostStorageMaintenance {
       },
     ];
     const context = input.contextOffload;
-    if (context)
+    if (context) {
       this.#lanes.push({
         name: 'context garbage collection',
         failures: 0,
@@ -81,6 +82,15 @@ export class HostStorageMaintenance {
             })
           ).hasMore,
       });
+      this.#lanes.push({
+        name: 'context-offload page reclamation',
+        failures: 0,
+        run: async () => {
+          const result = await context.reclaimFreePages({ maxPages: MAX_VACUUM_PAGES });
+          return result.hasMore;
+        },
+      });
+    }
   }
 
   start(): void {
