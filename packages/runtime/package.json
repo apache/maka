@@ -158,7 +158,7 @@
     "@ai-sdk/cohere": "4.0.52",
     "@ai-sdk/google": "4.0.85",
     "@ai-sdk/open-responses": "2.0.56",
-    "@ai-sdk/openai": "4.0.80",
+    "@ai-sdk/openai": "4.0.81",
     "@ai-sdk/openai-compatible": "3.0.59",
     "@ai-sdk/provider": "4.0.19",
     "@larksuiteoapi/node-sdk": "1.74.0",
@@ -183,14 +183,14 @@
     "socks-proxy-agent": "^10.1.0",
     "turndown": "^7.2.4",
     "undici": "^8.10.2",
-    "ws": "^8.21.3",
+    "ws": "^8.22.0",
     "yaml": "^2.9.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@maka/storage": "0.1.0",
     "@types/turndown": "^5.0.6",
-    "@types/ws": "^8.18.1",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.28.1"
   }
 }
