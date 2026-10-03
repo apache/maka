@@ -1613,6 +1613,13 @@ export const EmptyHome: Story = {
     }
     expect(editor.clientHeight).toBe(Number.parseFloat(getComputedStyle(editor).maxHeight));
     expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
+    // Shift+Enter at the end of a capped draft goes through the composer's
+    // scripted insertLineBreak, which unlike a native keypress does not reveal
+    // the caret (#5811): the editor must scroll the new last line into view.
+    editor.scrollTop = 0;
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+    await waitFor(() =>
+      expect(editor.scrollTop).toBeGreaterThanOrEqual(editor.scrollHeight - editor.clientHeight - 1));
     await userEvent.clear(editor);
     await userEvent.type(editor, 'send and clear');
     await userEvent.keyboard('{Enter}');
