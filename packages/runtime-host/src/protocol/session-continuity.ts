@@ -25,6 +25,7 @@ import type { SessionStatus } from '@maka/core/session';
 import {
   assertExactKeys,
   requireCount,
+  requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireId,
@@ -1108,18 +1109,6 @@ function requireUtf8BoundedString(value: unknown, label: string, maxBytes: numbe
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value;
-}
-
-function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
 }
 
 /**
