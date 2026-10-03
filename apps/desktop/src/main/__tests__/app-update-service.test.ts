@@ -504,6 +504,39 @@ describe('AppUpdateService', () => {
     assert.equal(statuses.filter((entry) => entry.state === 'error').length, 1);
   });
 
+  test('keeps final update failure evidence in diagnostic logs and the serialized status', async () => {
+    const updater = new FakeUpdater();
+    const error = Object.assign(new Error('Cannot parse releases feed: Unable to find latest version on GitHub: HttpError: 406 token=private-secret,\nXML:\n<feed>incorporate authorization review</feed>'), {
+      code: 'ERR_UPDATER_INVALID_RELEASE_FEED',
+    });
+    updater.checkForUpdates = async () => {
+      updater.emit('checking-for-update');
+      updater.emit('error', error);
+      throw error;
+    };
+    const { clock, service } = createHarness({ updater });
+    const logs: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => { logs.push(args); };
+    try {
+      const pending = service.checkForUpdatesNow();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(logs.length, 0, 'the first failure is retried silently');
+      await clock.runNext();
+      const status = await pending;
+      assert.equal(status.state, 'error');
+      if (status.state !== 'error') assert.fail('expected final check failure');
+      assert.equal(status.errorCode, error.code);
+      assert.match(status.message, /HttpError: 406/);
+      assert.doesNotMatch(status.message, /private-secret|<feed>|authorization review/);
+      assert.equal(logs.length, 1);
+      assert.match(logs[0]?.join(' ') ?? '', /\[app-update\] check failed:.*ERR_UPDATER_INVALID_RELEASE_FEED.*406/);
+      assert.doesNotMatch(logs[0]?.join(' ') ?? '', /private-secret|<feed>/);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   test('settles an in-flight retry when disposed during its backoff', async () => {
     const updater = new FakeUpdater();
     const statuses: AppUpdateStatus[] = [];

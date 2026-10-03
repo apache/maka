@@ -18,6 +18,7 @@
  */
 
 import electronUpdater from 'electron-updater';
+import { appUpdateErrorSummary } from '@maka/core/app-update-error';
 import type { AppUpdater, UpdateCheckResult } from 'electron-updater';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { DownloadedUpdateAttestationVerifier } from './app-update-attestation.js';
@@ -261,13 +262,19 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   const publishError = (
     operation: Extract<AppUpdateStatus, { state: 'error' }>['operation'],
     error: unknown,
-  ): AppUpdateStatus => publish({
-    state: 'error',
-    currentVersion: deps.currentVersion,
-    latestVersion: latestVersion(),
-    operation,
-    message: error instanceof Error ? error.message : String(error),
-  });
+  ): AppUpdateStatus => {
+    const summary = appUpdateErrorSummary(error);
+    // The updater logger is disabled. Keep the final failure in the diagnostic
+    // log without dumping the release feed XML or credentials.
+    console.error(`[app-update] ${operation} failed:`, summary.errorCode ?? '', summary.message);
+    return publish({
+      state: 'error',
+      currentVersion: deps.currentVersion,
+      latestVersion: latestVersion(),
+      operation,
+      ...summary,
+    });
+  };
 
   const disarmInstallQuitWatchdog = (): void => {
     deps.nativeUpdater.off('before-quit-for-update', armInstallQuitWatchdog);

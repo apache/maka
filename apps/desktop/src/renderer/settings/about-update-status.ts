@@ -66,7 +66,7 @@ export interface AboutUpdateRow {
 export function aboutUpdateRow(
   status: AppUpdateStatus | null,
   copy: AboutCopy,
-  options: { readonly errorDetail?: (message: string) => string } = {},
+  options: { readonly errorDetail?: (status: Extract<AppUpdateStatus, { state: 'error' }>) => string } = {},
 ): AboutUpdateRow {
   if (!status || status.state === 'idle') {
     return { label: copy.updateIdle, description: copy.updateScheduleHint, action: 'check' };
@@ -109,7 +109,7 @@ export function aboutUpdateRow(
     case 'error':
       return {
         label: copy.updateFailed[status.operation],
-        description: options.errorDetail ? options.errorDetail(status.message) : status.message,
+        description: options.errorDetail ? options.errorDetail(status) : status.message,
         action: 'check',
       };
   }
