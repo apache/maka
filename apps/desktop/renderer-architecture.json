@@ -7,7 +7,6 @@
     "src/renderer/app-shell-chrome-actions.tsx",
     "src/renderer/app-shell-command-actions.ts",
     "src/renderer/app-shell-copy.ts",
-    "src/renderer/app-shell-detail-panel.tsx",
     "src/renderer/app-shell-e2e-fixture.ts",
     "src/renderer/app-shell-effects.ts",
     "src/renderer/app-shell-overlays.tsx",
@@ -571,18 +570,6 @@
         "importSpecifiers": 1,
         "nonTriviaTokens": 249
       },
-      "src/renderer/app-shell-detail-panel.tsx": {
-        "importDeclarations": 0,
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {},
-        "importSpecifiers": 0,
-        "nonTriviaTokens": 87
-      },
       "src/renderer/app-shell-e2e-fixture.ts": {
         "importDeclarations": 1,
         "bridgePaths": {
@@ -660,7 +647,7 @@
         "nonTriviaTokens": 858
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 42,
+        "importDeclarations": 40,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
@@ -675,7 +662,6 @@
           "useAppShellSessionUiReads": 1,
           "useAppShellSessionWorkspace": 1,
           "useAppShellTurnPresentation": 1,
-          "useEffect": 1,
           "useLayoutEffect": 1,
           "useRef": 4,
           "useSessionNavigationReads": 1,
@@ -698,7 +684,6 @@
         "dependencyPaths": {
           "./agent-graph-panel": 1,
           "./app-shell-chrome-actions": 1,
-          "./app-shell-detail-panel": 1,
           "./app-shell-e2e-fixture": 1,
           "./app-shell-effects": 1,
           "./app-shell-overlays": 1,
@@ -738,8 +723,8 @@
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "./scroll-motion-policy": 1,
           "./settings/provider-brand-marks": 1,
-          "./settings/provider-display": 1,
           "./settings/runtime-host-ssh-terminal-dialog.js": 1,
+          "./shell/detail-panel": 1,
           "./shell/frame-style": 1,
           "./use-app-shell-session-ui-reads": 1,
           "./use-app-shell-session-workspace": 1,
@@ -761,8 +746,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 60,
-        "nonTriviaTokens": 8009
+        "importSpecifiers": 57,
+        "nonTriviaTokens": 7852
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -3336,16 +3321,14 @@
         "bridgePaths": {
           "window.maka.app.sessionProjectInfo": 1,
           "window.maka.projects.getDefaultContext": 1,
-          "window.maka.projects.getLocalSnapshot": 1,
           "window.maka.projects.getSnapshot": 1,
-          "window.maka.projects.subscribeChanges": 2,
-          "window.maka.projects.subscribeLocalChanges": 1
+          "window.maka.projects.subscribeChanges": 2
         },
         "environmentCapabilities": {},
         "hookCalls": {
-          "useEffect": 4,
+          "useEffect": 3,
           "useRef": 1,
-          "useState": 7
+          "useState": 6
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3725,8 +3708,7 @@
       "capability": "shell-root-and-frame",
       "targetZone": "shell",
       "legacyPaths": [
-        "src/renderer/app-shell-chrome-actions.tsx",
-        "src/renderer/app-shell-detail-panel.tsx"
+        "src/renderer/app-shell-chrome-actions.tsx"
       ]
     },
     {
@@ -3756,14 +3738,14 @@
       "targetZone": "features/overlays",
       "legacyPaths": [
         "src/renderer/app-shell-command-actions.ts",
+        "src/renderer/app-shell-copy.ts",
         "src/renderer/app-shell-overlays.tsx"
       ]
     },
     {
-      "capability": "mixed-bootstrap-and-conversation-effects",
+      "capability": "root-lifecycle-effects",
       "targetZone": "split-by-capability",
       "legacyPaths": [
-        "src/renderer/app-shell-copy.ts",
         "src/renderer/app-shell-effects.ts"
       ]
     },

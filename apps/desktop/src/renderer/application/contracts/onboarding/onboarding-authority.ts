@@ -26,7 +26,7 @@
  * projections. A failed read is reported as a flag, never as error text.
  */
 
-import { createContext, useContext, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useEffectEvent, useSyncExternalStore, type ReactNode } from 'react';
 import { hasSettledInitialOnboarding } from '@maka/core/onboarding-milestone';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
 import { valuesEqual } from '@maka/ui';
@@ -34,6 +34,7 @@ import type {
   DesktopOnboardingSessionUpdate,
   OnboardingSnapshot,
 } from '../../../../shared/onboarding-snapshot.js';
+import type { DesktopConnectionSnapshot } from '../../../../shared/desktop-connection-snapshot.js';
 
 export type { OnboardingSnapshot };
 
@@ -351,6 +352,33 @@ export function OnboardingProjectionRoot(props: {
     refresh: authority.refresh,
     skipInitialOnboarding: authority.skipInitialOnboarding,
   });
+}
+
+/**
+ * The default Host's connections ride the onboarding snapshot, so each
+ * accepted snapshot seeds that projection; when onboarding cannot be read,
+ * the projection refreshes itself instead.
+ */
+export function OnboardingConnectionSeed(props: {
+  seed(snapshot: DesktopConnectionSnapshot): void;
+  refresh(): void;
+}) {
+  const authority = useOnboardingAuthority();
+  const { snapshot, failed } = useSyncExternalStore(authority.subscribe, authority.getProjection);
+  const seed = useEffectEvent(props.seed);
+  const refresh = useEffectEvent(props.refresh);
+  useEffect(() => {
+    if (snapshot) {
+      seed({
+        connections: snapshot.connections,
+        defaultConnection: snapshot.defaultSlug,
+        chatModelChoices: snapshot.chatModelChoices,
+      });
+    } else if (failed) {
+      refresh();
+    }
+  }, [failed, snapshot]);
+  return null;
 }
 
 /** The current snapshot, for readers that check something again whenever onboarding changes. */

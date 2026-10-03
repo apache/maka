@@ -1,6 +1,5 @@
 apps/desktop/src/renderer/agent-graph-panel.tsx
 apps/desktop/src/renderer/app-shell-chrome-actions.tsx
-apps/desktop/src/renderer/app-shell-detail-panel.tsx
 apps/desktop/src/renderer/app-shell-overlays.tsx
 apps/desktop/src/renderer/app-shell.tsx
 apps/desktop/src/renderer/app.tsx
@@ -182,6 +181,7 @@ apps/desktop/src/renderer/settings/subagent-settings-page.tsx
 apps/desktop/src/renderer/settings/tasks-settings-page.tsx
 apps/desktop/src/renderer/settings/usage-settings-page.tsx
 apps/desktop/src/renderer/settings/web-search-settings-page.tsx
+apps/desktop/src/renderer/shell/detail-panel.tsx
 apps/desktop/src/renderer/shell/window-titlebar.tsx
 apps/desktop/src/renderer/styles.css
 apps/desktop/src/renderer/styles/agent-graph.css

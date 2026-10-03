@@ -22,7 +22,6 @@ import { WorkHubEnablementWatch } from './application/contracts/workhub-workspac
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -85,11 +84,11 @@ import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { desktopSlashCommandAvailability } from './application/contracts/desktop-slash-command.js';
 import {
   getOnboardingActivationCandidate,
+  OnboardingConnectionSeed,
   OnboardingProjectionRoot,
   type OnboardingShellProjection,
 } from './application/contracts/onboarding/onboarding-authority.js';
 import { ShellLifecycleSubscriptions } from './application/contracts/shell-lifecycle.js';
-import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import {
@@ -111,7 +110,7 @@ import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-bound
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
-import { AppShellDetailPanel } from './app-shell-detail-panel';
+import { AppShellDetailPanel } from './shell/detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
@@ -185,7 +184,7 @@ export function AppShell() {
                                     <Diagnostics.ManualDiagnosticReportConsumer>
                                       {(copyManualDiagnosticReport) => (
                                         <AppShellContent
-                                          {...{ taskEntry, overlays, sharedSessionDialog, workbar, onboarding, copyManualDiagnosticReport, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                                          {...{ taskEntry, overlays, sharedSessionDialog, workbar, onboarding, copyManualDiagnosticReport, uiLocale, setUiLocaleOverride, setUiLocalePreference }}
                                         />
                                       )}
                                     </Diagnostics.ManualDiagnosticReportConsumer>
@@ -227,7 +226,6 @@ function AppShellContent({
   onboarding,
   copyManualDiagnosticReport,
   uiLocale,
-  uiLocaleOverride,
   setUiLocaleOverride,
   setUiLocalePreference,
 }: {
@@ -238,7 +236,6 @@ function AppShellContent({
   onboarding: OnboardingShellProjection;
   copyManualDiagnosticReport: Diagnostics.CopyManualDiagnosticReport;
   uiLocale: UiLocale;
-  uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
@@ -516,10 +513,7 @@ function AppShellContent({
   });
   const {
     chatModelChoices,
-    activeConnection,
-    activeConnectionLabel,
     activeModel,
-    activeModelLabel,
     executor,
     composerModelProps,
     newChatModel,
@@ -721,21 +715,8 @@ function AppShellContent({
   // process (PR110a + PR110b contract) and reactively invalidates on
   // `sessions:changed` + `connections:event`. The hero renders only
   // when sessions.length === 0; any session (including archived /
-  // aborted) takes over with the existing chat surface.
-  useEffect(() => {
-    const snapshot = onboarding.snapshot;
-    if (snapshot) {
-      defaultHostConnections.seedSnapshot({
-        connections: snapshot.connections,
-        defaultConnection: snapshot.defaultSlug,
-        chatModelChoices: snapshot.chatModelChoices,
-      });
-    } else if (onboarding.failed) {
-      // Session bootstrap is independent above. If onboarding itself failed,
-      // retain the previous connection-specific recovery path as well.
-      void defaultHostConnections.refreshConnections();
-    }
-  }, [onboarding.failed, onboarding.snapshot]);
+  // aborted) takes over with the existing chat surface. The default Host's
+  // connections are seeded from the same snapshot by OnboardingConnectionSeed.
   // Nothing settled to show while the first snapshot pull is in flight. The
   // flag keeps the composer hidden and — through `data-maka-content-ready` on
   // .appFrame — holds the launch overlay until a real frame exists: sessions,
@@ -789,7 +770,6 @@ function AppShellContent({
   const moduleHubCommands = useMemo(ModuleHub.createModuleHubCommandPort, []);
   const {
     projectInfo,
-    projects,
     projectCapabilities,
     activeProjectCapabilities,
     currentProjectId,
@@ -919,7 +899,6 @@ function AppShellContent({
   const sessionNavigationPorts: SessionNavigationPorts = {
     sessionsRef,
     acquireAutomaticQueryBlock: sessionCatalogController.acquireAutomaticQueryBlock,
-    activateSession: setActiveId,
     clearSessionRendererState,
     refreshSessions,
     toastApi,
@@ -1336,6 +1315,7 @@ function AppShellContent({
     >
       <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
       <ShellLifecycleSubscriptions {...shellLifecycle} />
+      <OnboardingConnectionSeed seed={defaultHostConnections.seedSnapshot} refresh={() => void defaultHostConnections.refreshConnections()} />
       <WorkHubEnablementWatch onEnabled={() => { setWorkHubActive(true); setNavSelection({ section: 'sessions' }); }} onDisabled={exitWorkHub} />
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
@@ -1438,7 +1418,7 @@ function AppShellContent({
                 onSelect={setNavSelection}
                 onOpenSettings={openSettings}
                 onNew={createSession}
-                workHubEntry={{ active: workHubActive, label: 'WorkHub', onSelect: openWorkHub }}
+                onOpenWorkHub={openWorkHub}
                 projectActions={projectRowActions}
                 onNewProject={
                   taskEntry.selectors.canAddProject
@@ -1613,14 +1593,6 @@ function AppShellContent({
                   <Conversation.ConversationTranscriptRegion surface={ChatMessageSurface}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
                 activeSession={activeSessionForView}
-                activeConnectionLabel={activeConnectionLabel}
-                activeModelLabel={activeModelLabel}
-                activeProviderType={activeConnection?.providerType}
-                renderProviderMark={(type) => <ProviderLogo type={type} compact />}
-                modelChoices={chatModelChoices}
-                onModelChange={sharedSessionActive ? undefined : (input) => {
-                  if (activeId) void setSessionModel(activeId, input);
-                }}
                 userLabel={userLabel}
                 memoryActive={memoryActive}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}

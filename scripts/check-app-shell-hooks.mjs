@@ -114,7 +114,6 @@ export const ALLOWED = {
     useAppShellSessionUiReads: 1,
     useAppShellSessionWorkspace: 1,
     useAppShellTurnPresentation: 1,
-    useEffect: 1,
     useLayoutEffect: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
     // `SessionNavigationProvider`. The entry shrinks rather than disappearing,
