@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { InteractionRequest } from '@maka/runtime-host/protocol';
+
 export interface BotSessionCreateInput {
   readonly name: string;
   readonly labels: readonly string[];
@@ -26,7 +28,14 @@ export type BotSessionPreparation = 'ready' | 'permission_refused';
 
 export type BotSessionTurnResult =
   | { readonly kind: 'completed'; readonly text: string }
-  | { readonly kind: 'suspended' }
+  | {
+      readonly kind: 'suspended';
+      readonly pendingApprovals?: readonly {
+        readonly interactionId: string;
+        readonly turnId: string;
+        readonly request: InteractionRequest;
+      }[];
+    }
   | { readonly kind: 'errored'; readonly reason: string };
 
 export interface BotSessionAdapter {
@@ -45,6 +54,13 @@ export interface BotSessionAdapter {
      * backpressure to the Runtime Host subscription.
      */
     readonly onReplySnapshot?: (text: string) => void;
+  }): Promise<BotSessionTurnResult>;
+  respondToApproval?(input: {
+    readonly sessionId: string;
+    readonly interactionId: string;
+    readonly turnId: string;
+    readonly request: InteractionRequest;
+    readonly decision: 'allow' | 'deny';
   }): Promise<BotSessionTurnResult>;
 }
 
