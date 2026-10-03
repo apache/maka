@@ -27,12 +27,14 @@ import { useConversationOwner } from './conversation-context.js';
 import { useConversationQueueCommands } from './conversation-provider.js';
 import { useComposerSubmissionReader, type ComposerSubmissionReader } from './composer-submission-context.js';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import { useAppShellTurnPresentation } from '../../../application/contracts/turn-presentation.js';
 
 type ChatProps = ComponentProps<typeof ChatView>;
 type TranscriptProps = Pick<ChatProps,
   'onStreamingSettled' | 'messages' | 'transientMessages' | 'messageLoading' | 'messageLoadError' | 'messageLoadRetryPending' |
   'onRetryMessages' | 'hasEarlierHistory' | 'onLoadEarlierHistory' | 'transcriptTurnIndex' |
-  'onLoadTranscriptTurn' | 'restoreTargetTurn' | 'onReadingAnchorChange' | 'viewportNavigation'
+  'onLoadTranscriptTurn' | 'restoreTargetTurn' | 'onReadingAnchorChange' | 'viewportNavigation' |
+  'deriveTurnPresentation' | 'safeResumeAction'
 > & { activeSessionId: string | undefined; liveContentSeedGeneration: number; sessionUiReads: SessionUiReads };
 
 /** The actual transcript reader. Shell supplies presentation and navigation only. */
@@ -41,6 +43,14 @@ export function ConversationTranscriptRegion<P extends object>(
 ) {
   const { surface, ...presentation } = props;
   const { workspace, commands, readingCommands } = useConversationOwner();
+  const submission = useComposerSubmissionReader();
+  // Pending Turn-footer marks come from the submission owner that sets them.
+  const deriveTurnPresentation = useAppShellTurnPresentation({
+    allowBranch: !submission.sharedSessionActive,
+    activeId: submission.activeId,
+    pendingTurnActions: submission.pendingTurnActions,
+    uiLocale: useUiLocale(),
+  });
   const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
   const load = useSessionUiRead(workspace.ui.reads, 'load', view.sessionId);
   const retryPending = useSessionUiRead(workspace.ui.reads, 'retry', view.sessionId);
@@ -62,6 +72,8 @@ export function ConversationTranscriptRegion<P extends object>(
     onLoadTranscriptTurn: (turn) => readingCommands.current?.loadEarlier(turn.sequence),
     restoreTargetTurn: transcriptRestoreTarget(sessionId ? workspace.ui.transcriptReadingAnchorBySessionRef.current[sessionId] : undefined, load.unavailableTranscriptRestore),
     onReadingAnchorChange: sessionId ? (turnId) => readingCommands.current?.captureAnchor(turnId) : undefined,
+    deriveTurnPresentation,
+    safeResumeAction: submission.safeResumeAction,
   };
   return createElement(surface, { ...presentation, ...owned } as unknown as P);
 }
@@ -71,6 +83,7 @@ type SubmissionProps = Pick<ComposerSubmissionReader,
   | 'respondToSandboxBoundary' | 'respondToUserQuestion' | 'respondToUserForm'
 > & {
   onStop: ComposerSubmissionReader['stop'];
+  resumeAction: ComposerSubmissionReader['composerResumeAction'];
   stopPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
 };
@@ -107,6 +120,7 @@ export function ConversationComposerRegion<P extends object>(
     composerRef,
     onSend: submission.onSend,
     newTaskSendPending: submission.newTaskSendPending,
+    resumeAction: submission.composerResumeAction,
     onStop: submission.stop,
     stop: submission.stop,
     stopPending,

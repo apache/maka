@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useLayoutEffect, useSyncExternalStore, type ReactNode } from 'react';
+import { useLayoutEffect, type ReactNode } from 'react';
 import { CatalogRowWatch } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
 import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { SessionLocalMessages } from '../controller/session-local-messages.js';
@@ -31,7 +31,6 @@ import type {
   ComposerSurfaceOwner,
 } from '../model/composer-submission-contract.js';
 import { ComposerSubmissionContext } from './composer-submission-context.js';
-import { useConversationOwner } from './conversation-context.js';
 
 /**
  * Sole owner of the Composer's submission: the send-pending flag, the
@@ -46,6 +45,7 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
   readonly shell: ComposerSubmissionShell<Owner>;
   readonly newTask: ComposerNewTaskSubmission;
   readonly sharedSessionActive: boolean;
+  readonly ownerSessionId: string | undefined;
   readonly children?: ReactNode;
 }) {
   const submission = useComposerSubmission({
@@ -53,10 +53,9 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
     shell: props.shell,
     newTask: props.newTask,
     sharedSessionActive: props.sharedSessionActive,
+    ownerSessionId: props.ownerSessionId,
   });
   const catalog = useSessionCatalogController();
-  const { workspace } = useConversationOwner();
-  const activeId = useSyncExternalStore(workspace.target.subscribe, workspace.target.getSnapshot);
   const { shellCommands } = submission;
   useLayoutEffect(() => {
     const binding = submissionBindings.get(props.commands);
@@ -68,7 +67,7 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
     <ComposerSubmissionContext.Provider value={submission.reader}>
       <CatalogRowWatch catalog={catalog} sessionIds={submission.revisionWatch.sessionIds}
         onRows={submission.revisionWatch.onRows} />
-      <SessionLocalMessages sessionId={activeId} {...submission.localMessages} />
+      <SessionLocalMessages sessionId={submission.reader.activeId} {...submission.localMessages} />
       {props.children}
     </ComposerSubmissionContext.Provider>
   );

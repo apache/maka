@@ -29,6 +29,8 @@ export function createComposerSubmissionCommands(): ComposerSubmissionCommands {
   const commands: ComposerSubmissionCommands = {
     beginEditUserMessage: (turnId) => requireOwner().beginEditUserMessage(turnId),
     handleTurnFooterAction: (turnId, actionId) => requireOwner().handleTurnFooterAction(turnId, actionId),
+    // Cleanup only: with no owner mounted there is nothing pending to drop.
+    clearPendingTurnActions: (sessionId) => binding.current?.clearPendingTurnActions(sessionId),
   };
   submissionBindings.set(commands, binding);
   return commands;

@@ -286,7 +286,6 @@ or reason, which stays with review.
 | `AppShellContent` | `useAppShellProjectContext` | project context | titlebar project name and path; Workbar, Module Hub and palette project inputs; the default-Host project refresh | legacy `use-project-context.ts` | read the owner Session's and the default Host's project projection; project mutations and the open-folder commands belong to Task Entry | — | M5 |
 | `AppShellContent` | `useAppShellSessionUiReads` | displayed Session chrome | interaction, queue, live-turn and execution chrome; Composer props | Conversation (transitional reader) | fixed-purpose reads of the displayed and owner Session | — | M3 |
 | `AppShellContent` | `useAppShellSessionWorkspace` | Session workspace | every region's requested, published and owner Session | legacy `use-app-shell-session-workspace.ts` over the Session catalog and Conversation | Session selection and the catalog controller | navigation | — |
-| `AppShellContent` | `useAppShellTurnPresentation` | `deriveTurnPresentation` | `ChatView` turn footer | application contract `turn-presentation` | derive turn presentation from the transcript projection and pending turn actions | — | M3 |
 | `AppShellContent` | `useEffect` | `defaultHostConnections`: onboarding connection seed | default-Host connection projection | AppShell | seed default-Host connections from the onboarding authority's read-only projection | — | M5 |
 | `AppShellContent` | `useLayoutEffect` | `openSessionInChatRef` publication | turn footer, Module Hub, titlebar parent link | AppShell | publish the current open-Session command into a ref | cross-region command | — |
 | `AppShellContent` | `useSessionNavigationReads` | rail reads | command palette sessions, titlebar parent, `--maka-sidenav-width` | Session Navigation | revision navigation, the active parent Session and the rail layout | navigation | — |
@@ -298,13 +297,11 @@ or reason, which stays with review.
 | `AppShellContent` | `useShellConnections` | `sessionHostConnections` | owner Session model choices | legacy `use-shell-connections.ts` | the owner Session Host's connection snapshot and refresh | application lifecycle | — |
 | `AppShellContent` | `useShellLiveTurn` | live-turn flags | mode-change gating, model switch, pet activity | Conversation reads | derive streaming and settled flags from the owner Session snapshot | — | M3 |
 | `AppShellContent` | `useShellMemoryPill` | memory pill | titlebar memory pill | legacy `use-shell-memory-pill.ts` | read and refresh the owner Session's memory state | layout | — |
-| `AppShellContent` | `useShellResume` | resume offer | Composer send slot | Conversation | per-Session resume availability | — | M3 |
 | `AppShellContent` | `useStableActions` | `createAppShellE2eFixtureActions` | E2E fixture command | AppShell | apply test fixtures across navigation, rail, Workbar and appearance | cross-region command | — |
 | `AppShellContent` | `useState` | `petCompletionNonce` | custom pet companion | AppShell | a counter the transcript bumps when the active Turn completes | cross-region command | — |
 | `AppShellContent` | `useState` | `navigationState` | navigation sections; stored navigation | AppShell | the selected section and each hub's module | navigation | — |
 | `AppShellContent` | `useState` | `workHubActive` | WorkHub or Session surface | AppShell | whether the WorkHub surface is shown | navigation | — |
 | `AppShellContent` | `useToast` | `toastApi` | toasts of every legacy action | Astryx toast provider | show toasts | cross-region command | — |
-| `AppShellContent` | `useTurnActionRegistry` | pending turn actions | turn footer disabled mask; the Composer submission owner's Turn branch; bootstrap clears | legacy `use-turn-action-registry.ts` | pending action keys per Session | — | M3 |
 <!-- retained-root-hooks:end -->
 
 ### Transitional feature exports outside Conversation

@@ -26,7 +26,7 @@ import { act, createElement, Fragment } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { AstryxLocaleProvider, LocaleProvider, ToastProvider, type ComposerHandle } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider, type ComposerHandle, type TurnPresentation, type TurnViewModel } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import {
   createSessionCatalogController,
@@ -41,6 +41,7 @@ import {
   ConversationLifecycle,
   ConversationProvider,
   ConversationServicesProvider,
+  ConversationTranscriptRegion,
   createComposerStagingCommands,
   createComposerSubmissionCommands,
   useAppShellSessionUiState,
@@ -78,6 +79,12 @@ interface RegionProps {
   onStop(): void;
   stopPending: boolean;
   pendingMessages: ReadonlyArray<{ id: string }>;
+  resumeAction?: { pending: boolean; onResume(): void };
+}
+
+interface TranscriptProps {
+  deriveTurnPresentation(turns: readonly TurnViewModel[]): TurnPresentation;
+  safeResumeAction?: { pending: boolean; detail: string | undefined; onResume(): void };
 }
 
 const row = (id: string): DesktopSessionSummary => ({
@@ -100,15 +107,18 @@ function harness(options: {
   shell?: Partial<ProviderProps['shell']>;
   newTask?: Partial<ProviderProps['newTask']>;
   sharedSessionActive?: boolean;
+  ownerSessionId?: string;
   listMessages?: ReturnType<typeof stubConversationServices>['listMessages'];
+  resume?: ReturnType<typeof stubConversationServices>['resume'];
 } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
   catalog.commitSessions(['A', 'B'].map(row));
   const published: Array<(messages: StoredMessage[]) => void> = [];
-  const conversationServices = stubConversationServices(
-    options.listMessages ? { listMessages: options.listMessages } : {},
-  );
+  const conversationServices = stubConversationServices({
+    ...(options.listMessages ? { listMessages: options.listMessages } : {}),
+    ...(options.resume ? { resume: options.resume } : {}),
+  });
   conversationServices.observation.openTranscript = (sessionId) => {
     let messages: StoredMessage[] = [];
     let ready = false;
@@ -139,7 +149,9 @@ function harness(options: {
   let target!: ReturnType<typeof useAppShellSessionUiState>;
   let conversation!: ReturnType<typeof useConversationOwner>;
   let region: RegionProps | undefined;
+  let transcript: TranscriptProps | undefined;
   function Composer(props: RegionProps) { region = props; return null; }
+  function Transcript(props: TranscriptProps) { transcript = props; return null; }
   function Shell() {
     target = useAppShellSessionUiState();
     conversation = useConversationOwner();
@@ -149,6 +161,7 @@ function harness(options: {
         showModelSetupToast() {}, onTurnCompleted() {},
         searchTarget: null, clearSearchTarget() {},
       }),
+      createElement(ConversationTranscriptRegion<TranscriptProps>, { surface: Transcript }),
       createElement(ConversationComposerRegion<RegionProps>, {
         surface: Composer, contextPickEnabled: true, directoryPickerEnabled: true,
       }),
@@ -167,6 +180,7 @@ function harness(options: {
                 shell: stubSubmissionShell(options.shell),
                 newTask: stubNewTaskSubmission(options.newTask),
                 sharedSessionActive: options.sharedSessionActive ?? false,
+                ownerSessionId: options.ownerSessionId,
                 children: createElement(Shell),
               }),
             }),
@@ -181,6 +195,7 @@ function harness(options: {
     get target() { return target; },
     get conversation() { return conversation; },
     get region() { assert.ok(region, 'the Composer slot rendered'); return region; },
+    get transcript() { assert.ok(transcript, 'the transcript region rendered'); return transcript; },
     notice: () => region?.revisionNotice,
   };
 }
@@ -397,6 +412,80 @@ describe('ComposerSubmissionProvider', () => {
     assert.deepEqual(calls, [['branch', 'A', 'turn-1', 'string'], ['refresh'], ['open', 'C']]);
   });
 
+  test('marks a running Turn action in the transcript it owns and drops it on Session cleanup', async () => {
+    const branches: Array<ReturnType<typeof deferred<DesktopSessionSummary>>> = [];
+    const h = harness({
+      services: { branchFromTurn: () => { const next = deferred<DesktopSessionSummary>(); branches.push(next); return next.promise; } },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'source')]));
+    const turns: TurnViewModel[] = [{ turnId: 'turn-1', status: 'completed', tools: [], timeline: [], notes: [], startedAt: 1 }];
+    const branchPending = () => h.transcript.deriveTurnPresentation(turns)
+      .footerActionsByTurn['turn-1']?.find((action) => action.id === 'branch')?.pending === true;
+    assert.equal(branchPending(), false);
+
+    const settled: Array<Promise<void>> = [];
+    await act(async () => { settled.push(h.commands.handleTurnFooterAction('turn-1', 'branch')); });
+    assert.equal(branchPending(), true, 'the mark the owner sets reaches the transcript\'s footer');
+    await act(async () => h.commands.clearPendingTurnActions('B'));
+    assert.equal(branchPending(), true, 'another Session\'s cleanup keeps it');
+    await act(async () => h.commands.clearPendingTurnActions('A'));
+    assert.equal(branchPending(), false, 'the retired Session\'s mark is dropped');
+
+    await act(async () => { settled.push(h.commands.handleTurnFooterAction('turn-1', 'branch')); });
+    assert.equal(branches.length, 2, 'a dropped mark no longer swallows the next click');
+    assert.equal(branchPending(), true);
+    await act(async () => h.commands.clearPendingTurnActions());
+    assert.equal(branchPending(), false, 'a Host change drops every mark');
+    await act(async () => {
+      for (const branch of branches) branch.resolve({ ...row('C'), name: 'Copy' });
+      await Promise.all(settled);
+    });
+  });
+
+  test('a shared Session\'s transcript offers no Branch', async () => {
+    const h = harness({ sharedSessionActive: true });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'source')]));
+    const turn: TurnViewModel = { turnId: 'turn-1', status: 'completed', tools: [], timeline: [], notes: [], startedAt: 1 };
+    assert.deepEqual(h.transcript.deriveTurnPresentation([turn]).footerActionsByTurn['turn-1']?.map((action) => action.id), ['copy']);
+    assert.equal(h.transcript.safeResumeAction, undefined);
+  });
+
+  test('reads the owner Session\'s resume offer into the Composer slot and the transcript banner', async () => {
+    const calls: unknown[] = [];
+    const started = deferred<Awaited<ReturnType<ReturnType<typeof stubConversationServices>['resume']['start']>>>();
+    const h = harness({
+      ownerSessionId: 'A',
+      resume: {
+        queryPlan: async (sessionId) => {
+          calls.push(['plan', sessionId]);
+          return { disposition: 'ready' } as Awaited<ReturnType<ReturnType<typeof stubConversationServices>['resume']['queryPlan']>>;
+        },
+        start: (sessionId) => { calls.push(['start', sessionId]); return started.promise; },
+        subscribeChanges: () => () => undefined,
+      },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'interrupted')]));
+    assert.deepEqual(calls, [['plan', 'A']]);
+    assert.equal(h.region.resumeAction?.pending, false, 'the Host\'s ready plan offers Resume in the send slot');
+    assert.equal(h.transcript.safeResumeAction?.pending, false);
+    const offer = h.region.resumeAction;
+    await act(async () => h.commands.beginEditUserMessage('turn-1'));
+    assert.ok(h.notice(), 'the owner rendered again');
+    assert.equal(h.region.resumeAction, offer, 'the offer keeps its identity while nothing it shows changes');
+    await act(async () => h.notice()!.onCancel());
+
+    await act(async () => h.region.resumeAction!.onResume());
+    await act(async () => h.transcript.safeResumeAction!.onResume());
+    assert.deepEqual(calls, [['plan', 'A'], ['start', 'A']], 'one instance behind both, so the banner cannot race the slot');
+    assert.equal(h.transcript.safeResumeAction?.pending, true);
+    await act(async () => started.resolve({ disposition: 'started', runId: 'run-1', turnId: 'turn-2' }));
+    assert.equal(h.region.resumeAction, undefined, 'a started resume retracts the offer');
+    assert.equal(h.transcript.safeResumeAction?.pending, false);
+  });
+
   test('runs local delivery recovery for the published Session below the owner', async () => {
     const listed: string[] = [];
     const h = harness({
@@ -549,9 +638,15 @@ describe('Composer submission ownership', () => {
       shell,
       /revisionDraft|newTaskSendPending|stopPending|createRevisionAwareOnSend|createStagedFollowUp|SessionLocalMessages|createAppShell(?:Chat|Revision|Turn)Actions|createAppShellStopAction/,
     );
+    assert.doesNotMatch(
+      shell,
+      /useTurnActionRegistry|useShellResume|useAppShellTurnPresentation|deriveTurnPresentation|ResumeAction/,
+      'pending Turn marks, the resume offer and the footer derivation stay below the owner',
+    );
     for (const name of [
       'createRevisionAwareOnSend', 'createStagedFollowUp', 'useComposerSubmission', 'createChatActions',
       'createRevisionActions', 'createStopAction', 'createTurnActions', 'SessionLocalMessages',
+      'useShellResume', 'useTurnActionRegistry',
     ]) {
       assert.equal(name in Conversation, false, `${name} is not a public Conversation capability`);
     }

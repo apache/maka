@@ -213,8 +213,9 @@ without restoring root subscriptions or acquiring the private controller.
 `ComposerSubmissionProvider` alone calls the submission controller. It is
 mounted beside the staging and readiness owners and stays mounted across Session
 and section switches. It owns the send-pending flag, the edit-and-resend draft
-(with the catalog watch that retires it), the retracted workspace references and
-the submit, follow-up, Stop, Turn-branch and interaction-answer paths.
+(with the catalog watch that retires it), the retracted workspace references,
+the Turn-footer pending marks, the safe-boundary resume offer and the submit,
+follow-up, Stop, Turn-branch, resume and interaction-answer paths.
 `createRevisionAwareOnSend`, the staged follow-up and the chat, revision, Stop
 and Turn actions are assembled here, not in AppShell, and none of them is
 exported from `index.ts`. Local delivery recovery (`SessionLocalMessages`)
@@ -225,20 +226,26 @@ The Host operations reach the owner as `ComposerSubmissionServices`, one named
 operation each; the Desktop adapter is the only caller of those bridge paths.
 The shell supplies a `shell` port of commands it already owns (surface
 ownership, navigation, catalog refresh, execution-boundary reload, the Workbar's
-form answer, side chat and new-task resolver, the model-setup toast, the
-Turn-action pending registry the transcript renders, and the selected Session's
-orchestration write) and a `newTask`
+form answer, side chat and new-task resolver, the model-setup toast and the
+selected Session's orchestration write), the owner Session the resume offer is
+read for, and a `newTask`
 projection read at send time. Session Settings owns the new-task Plan, orchestration and permission
 choices; the projection carries them, and creation consumes the permission
 choice through `clearPermissionChoice`.
 
 `ConversationComposerRegion` reads the owner in the persistent Composer slot: it
 injects `onSend`, `newTaskSendPending`, `onStop`/`stop` with the published
-Session's Stop claim, the interaction answers and the revision notice, and
-narrows the shell's picker gates while a draft is open. The shell keeps only the
-stable `ComposerSubmissionCommands` handle, whose `beginEditUserMessage` and
-`handleTurnFooterAction` serve the transcript. The handle throws
-while the owner is unmounted. The binding and reader context are private.
+Session's Stop claim, the send-slot resume offer, the interaction answers and
+the revision notice, and narrows the shell's picker gates while a draft is open.
+`ConversationTranscriptRegion` derives the Turn presentation from the same
+owner's pending marks (Branch is withheld from a shared Session) and injects the
+interrupted-Turn banner's resume action; one resume instance sits behind both,
+so the banner cannot race the send slot. The shell keeps only the stable
+`ComposerSubmissionCommands` handle, whose `beginEditUserMessage` and
+`handleTurnFooterAction` serve the transcript and whose
+`clearPendingTurnActions` serves Session teardown and Host changes. The first
+two throw while the owner is unmounted; cleanup is a no-op then. The binding and
+reader context are private.
 
 ## Composer editing intents (R2 M3)
 

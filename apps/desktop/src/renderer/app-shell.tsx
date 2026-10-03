@@ -104,7 +104,6 @@ import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { SessionSettingsProvider, useSessionSettingIntent } from './features/session-settings';
 import { pendingSessionView } from './pending-session-view';
-import { useAppShellTurnPresentation } from './application/contracts/turn-presentation';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { readNavigationState, selectNavigation } from './nav-selection';
 import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
@@ -128,12 +127,10 @@ import {
   useAppShellNavRefSync,
 } from './app-shell-effects';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
-import { useTurnActionRegistry } from './use-turn-action-registry';
 import {
   desktopSlashCommandPresentation,
   useActiveExecutionBoundary,
   useShellChatModel,
-  useShellResume,
 } from './features/conversation/index.js';
 import {
   type ComposerMentionsSurfaceInput,
@@ -444,14 +441,6 @@ function AppShellContent({
   const persistedComposerDefaults = loadComposerDefaults();
   // Named Composer edits; the editor handle stays with Conversation.
   const composerEditing = queueSurface.editing;
-  const { safeResumeAction, composerResumeAction } = useShellResume({
-    activeId,
-    ownerActiveId,
-    sharedSessionActive,
-    toastApi,
-    shellCopy,
-    uiLocale,
-  });
   const rendererMountedRef = useRef(true);
   const activeSession = activeCatalogSession;
   const { setPermissionMode, setSessionModel, setSessionThinkingLevel, setSessionExecutor } = sessionSettingIntent.commands;
@@ -559,20 +548,11 @@ function AppShellContent({
     refreshModelChoices: sessionHostConnections.refreshConnections,
     setSessionExecutor,
   });
-  // PR109d-b: turn footer actions per turn. Derived from the
-  // materialized turn list (status + lineage descendants) + pending
-  // mask. Per @kenji PR109d review: pending state prevents double-click
-  // duplicate sibling turns by disabling the action button between
-  // click and `sessions:changed turn-status-change` arriving.
-  // Session-row mutations live in Session Navigation; the per-session mode and
-  // model claims live in the session UI store.
-  const turnActionRegistry = useTurnActionRegistry();
-
   function clearSessionRendererState(sessionId: string): void {
     // `clearOwnedSessionState` ends in `clearSessionUiState`, which drops this
     // session from every session-UI map — the four pending claims included.
     clearOwnedSessionState(sessionId);
-    turnActionRegistry.clearForSession(sessionId);
+    composerSubmission.clearPendingTurnActions(sessionId);
     sessionSettingIntent.commands.clear(sessionId);
   }
 
@@ -613,17 +593,6 @@ function AppShellContent({
     if (activeOrchestrationMode !== mode) return Promise.resolve(true);
     return setOrchestrationMode('default');
   }
-
-  // Handed to ChatView, which calls it with the turns its transcript projection
-  // produced. The shell no longer materializes the transcript a second time to
-  // derive these props, so the turn objects the projection kept are also what
-  // keeps the props a memoized TurnView reads stable (#2030).
-  const deriveTurnPresentation = useAppShellTurnPresentation({
-    allowBranch: !sharedSessionActive,
-    activeId,
-    pendingTurnActions: turnActionRegistry.keys,
-    uiLocale,
-  });
 
   const openSessionInChatRef = useRef<
     (sessionId: string, turnId?: string, sequence?: number) => void
@@ -971,13 +940,13 @@ function AppShellContent({
     activeIdRef,
     applyE2eFixture,
     bootstrapSessions,
-    clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
+    clearPendingTurnActionsForSession: composerSubmission.clearPendingTurnActions,
     createSession,
     handleConnectionEvent,
 
     openHelp,
     openSettings,
-    clearPendingTurnActions: turnActionRegistry.clearAll,
+    clearPendingTurnActions: () => composerSubmission.clearPendingTurnActions(),
     refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
@@ -1208,7 +1177,7 @@ function AppShellContent({
       workspaceRecoverySessionId={activeSession?.id} openSessionWorkspaceRecovery={openSessionWorkspaceRecovery}
       addProject={taskEntry.selectors.canAddProject ? taskEntry.commands.addProject : undefined}>
     <Conversation.ComposerSubmissionProvider commands={composerSubmission} staging={composerStaging}
-      sharedSessionActive={sharedSessionActive}
+      sharedSessionActive={sharedSessionActive} ownerSessionId={ownerActiveId}
       newTask={{
         target: taskEntry.selectors.target,
         model: newChatExecutionTarget ?? null,
@@ -1237,7 +1206,6 @@ function AppShellContent({
         showModelSetupToast,
         bindNewTaskSessionResolver: commands.bindNewTaskSessionResolver,
         openSideChat: (options) => commands.openTool('side-chat', 'right', options),
-        turnActions: turnActionRegistry,
         orchestrationMode: () => activeOrchestrationMode,
         setOrchestrationModeActive,
       }}>
@@ -1525,7 +1493,6 @@ function AppShellContent({
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
                   streaming={turnActive}
-                  resumeAction={composerResumeAction}
                   queuedMessages={activeMessageQueue?.entries}
                   queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? queueSurface.promoteQueuedEntry : undefined}
@@ -1620,10 +1587,8 @@ function AppShellContent({
                 userLabel={userLabel}
                 memoryActive={memoryActive}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
-                deriveTurnPresentation={deriveTurnPresentation}
                 onTurnFooterAction={sharedSessionActive ? undefined : composerSubmission.handleTurnFooterAction}
                 onEditUserMessage={sharedSessionActive ? undefined : composerSubmission.beginEditUserMessage}
-                safeResumeAction={safeResumeAction}
                 onLineageBadgeClick={(turnId) => { if (activeId) openSessionInChat(activeId, turnId); }}
                 onOpenLinkedSession={openSessionInChat}
                 scrollTargetTurn={
