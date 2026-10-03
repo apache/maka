@@ -53,8 +53,11 @@ import {
   type ComposerSubmissionServices,
   type ConversationActivity,
 } from '../../renderer/features/conversation/index.js';
+import { getSessionLocalCopy } from '../../renderer/locales/session-local-copy.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
-import { stubComposerGateInputs, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
+import {
+  stubComposerGateInputs, stubConversationServices, useComposerStaging, useConversationOwner, useConversationQueue,
+} from '../../renderer/features/conversation/testing.js';
 import {
   createDesktopComposerSubmissionServices,
   type DesktopComposerSubmissionBridge,
@@ -85,7 +88,7 @@ interface RegionProps {
   stop(): void;
   onStop(): void;
   stopPending: boolean;
-  pendingMessages: ReadonlyArray<{ id: string }>;
+  pendingMessages: ReadonlyArray<{ id: string; deliveryActions?: ReadonlyArray<{ label: string; onClick(): void }> }>;
   resumeAction?: { pending: boolean; onResume(): void };
   activeInteraction: ComposerInteraction | undefined;
   queuedMessages: ComposerProps['queuedMessages'];
@@ -130,6 +133,10 @@ function harness(options: {
   ownerSessionId?: string;
   listMessages?: ReturnType<typeof stubConversationServices>['listMessages'];
   resume?: ReturnType<typeof stubConversationServices>['resume'];
+  cancelMessage?: ReturnType<typeof stubConversationServices>['cancelMessage'];
+  reconcileMessage?: ReturnType<typeof stubConversationServices>['reconcileMessage'];
+  retractQueueEntry?: ReturnType<typeof stubConversationServices>['sessions']['retractQueueEntry'];
+  stagingDraftKey?: string;
   gateInputs?: ReturnType<typeof stubComposerGateInputs>;
   homeEligible?: boolean;
 } = {}) {
@@ -140,6 +147,9 @@ function harness(options: {
   const conversationServices = stubConversationServices({
     ...(options.listMessages ? { listMessages: options.listMessages } : {}),
     ...(options.resume ? { resume: options.resume } : {}),
+    ...(options.cancelMessage ? { cancelMessage: options.cancelMessage } : {}),
+    ...(options.reconcileMessage ? { reconcileMessage: options.reconcileMessage } : {}),
+    ...(options.retractQueueEntry ? { sessions: { retractQueueEntry: options.retractQueueEntry } } : {}),
   });
   conversationServices.observation.openTranscript = (sessionId) => {
     let messages: StoredMessage[] = [];
@@ -173,7 +183,10 @@ function harness(options: {
   let region: RegionProps | undefined;
   let transcript: TranscriptProps | undefined;
   let activity: ConversationActivity | undefined;
+  let staged!: ReturnType<typeof useComposerStaging>;
+  let queued!: ReturnType<typeof useConversationQueue>;
   let shellRenders = 0;
+  function Probe() { staged = useComposerStaging(); queued = useConversationQueue(); return null; }
   function Composer(props: RegionProps) { region = props; return null; }
   function Transcript(props: TranscriptProps) { transcript = props; return null; }
   function Activity(props: { activity: ConversationActivity }) { activity = props.activity; return null; }
@@ -196,6 +209,7 @@ function harness(options: {
       }),
       createElement(ConversationActivityConsumer<{ activity: ConversationActivity }>, { surface: Activity }),
       createElement(ConversationHomeSurface, { eligible: options.homeEligible ?? true, id: 'column' }),
+      createElement(Probe),
     );
   }
   act(() => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -203,7 +217,8 @@ function harness(options: {
     createElement(SessionCatalogContext.Provider, { value: catalog, children:
       createElement(ConversationServicesProvider, { services: conversationServices, children:
         createElement(ConversationProvider, { children:
-          createElement(ComposerStagingFixture, { draftKey: 'staging', commands: staging, children:
+          createElement(ComposerStagingFixture, {
+            draftKey: options.stagingDraftKey ?? 'staging', directoryHostId: 'local', commands: staging, children:
             createElement(ComposerSubmissionServicesProvider, { services, children:
               createElement(ComposerSubmissionProvider<Owner>, {
                 commands,
@@ -229,6 +244,8 @@ function harness(options: {
     get transcript() { assert.ok(transcript, 'the transcript region rendered'); return transcript; },
     get activity() { assert.ok(activity, 'the activity reader rendered'); return activity; },
     get shellRenders() { return shellRenders; },
+    get staged() { return staged; },
+    get queued() { return queued; },
     homeSurface() {
       const column = container.childNodes.find((node): node is FakeElement => 'getAttribute' in node && node.getAttribute('id') === 'column');
       assert.ok(column, 'the column rendered');
@@ -526,7 +543,9 @@ describe('ComposerSubmissionProvider', () => {
 
   test('runs local delivery recovery for the published Session below the owner', async () => {
     const listed: string[] = [];
+    const reconciled: unknown[] = [];
     const h = harness({
+      reconcileMessage: async (sessionId, messageId) => { reconciled.push([sessionId, messageId]); },
       listMessages: async (sessionId) => {
         listed.push(sessionId);
         return sessionId === 'A'
@@ -541,6 +560,76 @@ describe('ComposerSubmissionProvider', () => {
     await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
     assert.deepEqual(listed, ['A']);
     assert.deepEqual(h.region.pendingMessages.map((message) => message.id), ['saved-follow-up']);
+    const unknown = h.region.pendingMessages[0]!;
+    assert.deepEqual(unknown.deliveryActions?.map((action) => action.label), [getSessionLocalCopy('en').check],
+      'an unknown outcome is checked with the Host, never edited or removed as if unsent');
+    await act(async () => unknown.deliveryActions![0]!.onClick());
+    assert.deepEqual(reconciled, [['A', 'saved-follow-up']], 'the check keeps the Message\'s identity');
+  });
+
+  test('a cancelled local message hands its text and staged context back to the Session it left', async () => {
+    const cancelling = deferred<void>();
+    const calls: unknown[] = [];
+    const attachment = {
+      kind: 'doc' as const, name: 'notes.md', mimeType: 'text/markdown', bytes: 12,
+      ref: { kind: 'workspace_file' as const, relativePath: 'notes.md' },
+    };
+    const h = harness({
+      stagingDraftKey: 'A',
+      listMessages: async (sessionId) => sessionId === 'A'
+        ? [{
+            sessionId: 'A', messageId: 'saved-1', createdAt: 1, state: 'saved', canCancel: true,
+            placement: 'next_turn', text: 'try again', error: 'Host unavailable',
+            attachments: [attachment], directoryReferences: [{ hostId: 'local', path: '/repo' }],
+            quotes: [{ text: 'quoted' }], inlineReferences: [],
+          }]
+        : [],
+      cancelMessage: async (sessionId, messageId) => { calls.push(['cancel', sessionId, messageId]); await cancelling.promise; },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
+    h.region.composerRef.current = {
+      appendDraft: (key: string, text: string) => { calls.push(['append', key, text]); },
+    } as Partial<ComposerHandle>;
+    const saved = h.region.pendingMessages.find((message) => message.id === 'saved-1');
+    const edit = saved?.deliveryActions?.[0];
+    assert.ok(edit, 'a never-dispatched message offers Edit');
+
+    await act(async () => edit.onClick());
+    await act(async () => h.target.setActiveId('B'));
+    await act(async () => h.published[1]!([userTurn('turn-b', 'elsewhere')]));
+    assert.equal(h.conversation.workspace.target.getSnapshot(), 'B', 'the user has moved on before the Host answers');
+    await act(async () => cancelling.resolve());
+    assert.deepEqual(calls, [['cancel', 'A', 'saved-1'], ['append', 'A', 'try again']]);
+    assert.deepEqual(h.staged.pendingAttachments.map((item) => item.displayName), ['notes.md'],
+      'the attachment returns to the draft of the Session it left, after navigation');
+    assert.deepEqual(h.staged.pendingDirectories.map((item) => item.path), ['/repo']);
+    assert.deepEqual(h.staged.pendingQuotes.map((quote) => quote.text), ['quoted']);
+  });
+
+  test('editing a queued steering bubble hands its staged context back to its Session', async () => {
+    const calls: unknown[] = [];
+    const h = harness({
+      stagingDraftKey: 'A',
+      retractQueueEntry: async (sessionId, entryId) => { calls.push(['retract', sessionId, entryId]); },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'running')]));
+    await act(async () => h.conversation.workspace.ui.setMessageQueueBySession((current) => ({
+      ...current,
+      A: {
+        ts: 1, queueRevision: 1,
+        entries: [{
+          entryId: 'entry-1', messageId: 'message-steer', placement: 'current_turn',
+          content: { text: 'steer this way', quotes: [{ text: 'queued quote' }] },
+        }],
+      },
+    } as never)));
+    const bubble = h.queued.transientMessages.find((message) => message.id === 'message-steer');
+    assert.ok(bubble?.deliveryActions?.[0], 'the steering bubble offers Edit');
+    await act(async () => bubble.deliveryActions![0]!.onClick());
+    assert.deepEqual(calls, [['retract', 'A', 'entry-1']]);
+    assert.deepEqual(h.staged.pendingQuotes.map((quote) => quote.text), ['queued quote']);
   });
 
   test('the Composer slot holds the editor handle; the shell edits it only through named intents', async () => {

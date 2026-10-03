@@ -218,8 +218,13 @@ directory pickers still require the original draft and Host to remain current.
 Staging uses `activeId ?? NEW_TASK_PENDING_KEY`; the editor's new-task persistence
 key remains distinct. Do not key this provider or the Composer's parent by Session.
 
-Delivery recovery is later M3 work. It can use captured submission commands
-without restoring root subscriptions or acquiring the private controller.
+Delivery recovery stays bound to the Session and Message it started from. A
+cancelled local message or an edited queue entry hands its text to the editor's
+keyed draft and its attachments, directories and quotes to staging's
+`restoreContext`, both under the key of the Session it left, so the restore
+lands there even after navigation. The submission owner binds that restore; with
+no staging owner mounted it does nothing. A message whose outcome is unknown
+keeps its id and offers only the Host check.
 
 ## Composer submission ownership (R2 M3)
 
