@@ -48,14 +48,10 @@ export {
 export { chatTurnActivity } from '../../application/contracts/session-execution.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
 export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
-export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';
-export * from './model/shell-chat-model-selection.js';
-export * from './model/session-health-notice.js';
-export * from './controller/use-shell-chat-model.js';
-export * from './model/executor-submission.js';
-export * from './model/executor-composer.js';
+export { useShellChatModel, type SessionHealthNoticeView } from './controller/use-shell-chat-model.js';
+export { executorComposerProps } from './model/executor-composer.js';
 
 export { PlanProvider } from './ui/plan-provider.js';
 export { PlanChatView, PlanExecutionSurface } from './ui/plan-surfaces.js';

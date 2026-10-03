@@ -34,7 +34,7 @@ import {
 import {
   composerModelSupportsVision,
   type NewChatModel,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by

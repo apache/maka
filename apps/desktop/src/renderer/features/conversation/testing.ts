@@ -139,3 +139,16 @@ export {
 export { SessionLocalMessages } from './controller/session-local-messages.js';
 export { createStopAction } from './controller/stop-action.js';
 export { createTurnActions } from './controller/turn-actions.js';
+export {
+  INITIAL_LIVE_CONTENT_SEED,
+  INITIAL_OBSERVATION_AUTHORITY,
+  beginLiveContentSeed,
+  ownsLiveContentSeed,
+  reconcileObservationAuthority,
+  revealLiveContentSeed,
+  visibleLiveContentGeneration,
+} from './model/observation-visibility.js';
+export { composerModelSupportsVision, pickNewChatModel, type NewChatModel } from './model/shell-chat-model-selection.js';
+export { deriveSessionHealthNotice } from './model/session-health-notice.js';
+export { resolveNewChatExecutionThinkingLevel } from './controller/use-shell-chat-model.js';
+export { newTaskConfiguration } from './model/executor-submission.js';
