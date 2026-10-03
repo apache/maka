@@ -320,6 +320,9 @@ export function rawFinishReasonString(reason: unknown): string | undefined {
  */
 export type ModelFinishReason = string;
 
+/** Adapter-owned classification of a provider finish boundary. */
+export type ModelFinishDisposition = 'authoritative' | 'incomplete' | 'retryable-network-failure';
+
 // ---------------------------------------------------------------------------
 // Failure contract
 // ---------------------------------------------------------------------------
@@ -406,18 +409,25 @@ export type ModelStreamEvent =
     }
   | { kind: 'error'; failure: ModelFailure };
 
+/**
+ * Authoritative settlement for one physical provider request. The monotonic
+ * response-evidence fact lets Runtime retry policy avoid replaying observable
+ * model or provider activity without parsing the stream a second time.
+ */
 export type ModelStepOutcome =
   | {
       kind: 'completed';
       finishReason: ModelFinishReason;
       usage?: NormalizedUsage;
       continuation: 'none' | 'pending';
+      hasResponseEvidence: boolean;
     }
   | {
       kind: 'failed';
       failure: ModelFailure;
       usage?: NormalizedUsage;
       continuation: 'none';
+      hasResponseEvidence: boolean;
     };
 
 /** One physical provider request: live output plus one authoritative settlement. */
