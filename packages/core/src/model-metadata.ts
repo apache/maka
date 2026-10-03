@@ -509,6 +509,12 @@ const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
   'MiniMaxAI/MiniMax-M3': { thinkingOptions: { efforts: ['low', 'medium', 'high'] } },
 };
 
+const MINIMAX_MODEL_OVERRIDES: Record<string, ModelMetadata> = {
+  'MiniMax-M3': {
+    thinkingOptions: { toggle: true, offBehavior: 'anthropic-thinking-disabled' },
+  },
+};
+
 // Facts that models.dev cannot express: provider wire controls and
 // access-path-specific aliases/limits. Standard model facts stay generated.
 //
@@ -516,6 +522,8 @@ const COMMAND_CODE_MODEL_METADATA: Record<string, ModelMetadata> = {
 // derived from a provider's catalog cover models a refresh introduced.
 function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata {
   return {
+    MiniMax: MINIMAX_MODEL_OVERRIDES,
+    'MiniMax-cn': MINIMAX_MODEL_OVERRIDES,
     anthropic: ANTHROPIC_MODEL_OVERRIDES,
     openai: OPENAI_GPT6_MODEL_OVERRIDES,
     'claude-subscription': claudeSubscriptionModelMetadata(active),
