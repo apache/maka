@@ -17,25 +17,15 @@
  * under the License.
  */
 
-export {
-  deriveTaskReadinessNotice,
-  isTaskSubmissionHardBlocked,
-  resolveTaskReadinessModelTarget,
-  type TaskReadinessNotice,
-} from './model/task-readiness-notice.js';
-export type {
-  AppShellSessionUiStateController,
-  SessionPendingClaim,
-} from './model/session-ui-state.js';
+export { resolveTaskReadinessModelTarget } from './model/task-readiness-notice.js';
+export type { AppShellSessionUiStateController } from './model/session-ui-state.js';
 export type { SessionUiReads } from './model/session-ui-reads.js';
 export { useAppShellSessionUiReads } from './controller/use-session-ui-reads.js';
 export type { ConversationHostChange, ConversationServices } from './ports.js';
 export { ConversationServicesProvider } from './services.js';
-export { SessionLocalMessages } from './controller/session-local-messages.js';
 
 
 export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
-export { type PendingAttachment, toSubmittedAttachments } from '@maka/ui/composer-attachments';
 export {
   NEW_TASK_PENDING_KEY,
   selectPending,
@@ -55,19 +45,14 @@ export {
   type ComposerMentionsSurface,
 } from './ui/composer-mentions-provider.js';
 
-export { activeHostTurn, chatTurnActivity } from '../../application/contracts/session-execution.js';
+export { chatTurnActivity } from '../../application/contracts/session-execution.js';
 export { sessionIdSetsEqual, type LiveTurnSnapshot } from './model/live-turn-snapshot.js';
 export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
-export {
-  createRevisionAwareOnSend,
-  type RevisionSendPorts,
-} from './controller/composer-submit.js';
 export * from './model/observation-visibility.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';
 export * from './model/shell-chat-model-selection.js';
 export * from './model/session-health-notice.js';
-export * from './controller/use-new-task-choice.js';
 export * from './controller/use-shell-chat-model.js';
 export * from './model/executor-submission.js';
 export * from './model/executor-composer.js';
@@ -86,9 +71,13 @@ export { ConversationLifecycle } from './ui/conversation-lifecycle.js';
 
 export { ConversationTranscriptRegion, ConversationComposerRegion, ConversationMessageConsumer } from './ui/conversation-readers.js';
 export { createComposerStagingCommands } from './controller/composer-staging-commands.js';
-export { createStagedFollowUp } from './controller/composer-submit.js';
 export type { ComposerStagingCommands, ComposerStagingSubmission } from './model/composer-staging-contract.js';
 export { ComposerStagingServicesProvider, type ComposerStagingServices } from './staging-services.js';
 export { ComposerStagingProvider } from './ui/composer-staging-provider.js';
 export { StagedComposer, type ComposerStagingProp } from './ui/staged-composer.js';
 export { StagedQuoteChatView } from './ui/staged-quote-chat-view.js';
+export { TaskReadinessServicesProvider, type TaskReadinessServices } from './readiness-services.js';
+export { TaskReadinessProvider, TaskReadinessNoticeConsumer } from './ui/task-readiness-provider.js';
+export { createComposerSubmissionCommands } from './controller/composer-submission-commands.js';
+export { ComposerSubmissionServicesProvider, type ComposerSubmissionServices } from './submission-services.js';
+export { ComposerSubmissionProvider } from './ui/composer-submission-provider.js';

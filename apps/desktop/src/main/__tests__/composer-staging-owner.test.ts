@@ -25,14 +25,16 @@ import { parseHTML } from 'linkedom';
 import { ChatSurfaceLayout, LocaleProvider, type ComposerHandle } from '@maka/ui';
 import type { AttachmentRef, DirectoryReference } from '@maka/core/events';
 import {
-  createComposerStagingCommands, createRevisionAwareOnSend, createStagedFollowUp,
+  createComposerStagingCommands,
   StagedComposer, StagedQuoteChatView, PlanProvider, PlanServicesProvider,
-  type PlanServices, type RevisionSendPorts, type ComposerStagingSubmission,
+  type PlanServices, type ComposerStagingSubmission,
 } from '../../renderer/features/conversation/index.js';
-import { useComposerStaging } from '../../renderer/features/conversation/testing.js';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
-import { createAppShellRevisionActions, type TurnRevisionDraft } from '../../renderer/app-shell-revision-actions.js';
-import { createActionsDeps, createTransientState, EMPTY_SKILL_INVOCATION } from './app-shell-chat-actions-fixture.js';
+import {
+  createRevisionAwareOnSend, createStagedFollowUp, useComposerStaging, type RevisionSendPorts,
+} from '../../renderer/features/conversation/testing.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
+import { createRevisionActions, type TurnRevisionDraft } from '../../renderer/features/conversation/testing.js';
+import { createActionsDeps, createTransientState, EMPTY_SKILL_INVOCATION, windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import { ComposerStagingFixture } from './composer-staging-fixture.js';
 
 const saved = Object.fromEntries([
@@ -282,7 +284,7 @@ for (const mode of ['queue', 'steer'] as const) {
             attachments: [], inlineReferences: [], skillInvocation: EMPTY_SKILL_INVOCATION };
         },
       } } });
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(), ...transient.deps, activeIdRef, getRunningTurnId: () => 'running-turn',
       });
       const enqueue = createStagedFollowUp({
@@ -343,7 +345,7 @@ test('Shell follow-up without quotes still submits through the production enqueu
     },
   } } });
   const transient = createTransientState();
-  const actions = createAppShellChatActions({ ...createActionsDeps(), ...transient.deps, activeIdRef: { current: 'draft-a' } });
+  const actions = createChatActions({ ...createActionsDeps(), ...transient.deps, activeIdRef: { current: 'draft-a' } });
   const enqueue = createStagedFollowUp({
     captureStaging: view.commands.captureSubmission, enqueueMessage: actions.enqueueMessage,
     onError: (_sessionId, error) => assert.fail(String(error)),
@@ -360,10 +362,11 @@ for (const context of ['attachment', 'directory'] as const) {
     const activeIdRef = { current: 'draft-a' };
     const revisionDraftRef = { current: null as TurnRevisionDraft | null };
     const currentRevision = () => revisionDraftRef.current;
-    const actions = createAppShellRevisionActions({
+    const actions = createRevisionActions({
+      services: windowSubmissionServices(),
       uiLocale: 'en', activeIdRef, captureSelection: () => () => true, composerRef: view.composer,
       readMessages: () => [{ type: 'user', id: 'message', turnId: `guard-${context}`, text: 'original', ts: 1 }],
-      composerStaging: view.commands,
+      staging: view.commands,
       openSessionInChat() {}, refreshSessions: async () => [],
       commitRevisionDraft: (draft) => { revisionDraftRef.current = draft; }, revisionDraftRef,
       toastApi: { info() {}, error: () => assert.fail('unexpected revision error') },

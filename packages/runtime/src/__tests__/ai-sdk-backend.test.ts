@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { RunHandoffGate } from '../run-handoff-gate.js';
-import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import {
+  buildModelProjectionTransition,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -78,6 +81,7 @@ import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../model-history.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
+import { compatibilityToolResultProjection } from '../durable-tool-result-projection.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import {
@@ -5232,6 +5236,123 @@ describe('AiSdkBackend model history', () => {
     assert.deepEqual(result.outcome, { kind: 'unchanged', reason: 'already_compacted' });
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'unchanged');
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.reason, 'already_compacted');
+  });
+
+  test('manual compactHistory re-folds when a transition drifted the covered effective history (#5929)', async () => {
+    // The reuse fast path matches the RAW prefix; a projection transition
+    // committed after the fold rewrites a covered event's effective view
+    // without touching the raw ledger. Reuse must also require the pinned
+    // effective digest to still match — the same currency gate the pre-send
+    // path applies — or the stale checkpoint survives as already_compacted.
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const summarizerInputs: string[] = [];
+    const resultContent = {
+      kind: 'function_response' as const,
+      id: 'tool-drift-1',
+      name: 'Read',
+      result: { body: 'RAW_DRIFTED_TOOL_BODY' },
+      isError: false,
+    };
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'manual-drift-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'manual drift user text',
+      }),
+      runtimeEvent({
+        id: 'manual-drift-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-drift-1',
+          name: 'Read',
+          args: { path: 'big.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'manual-drift-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: resultContent,
+      }),
+    ];
+    const previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: priorEvents,
+      summary: sectionedSummary('MANUAL_DRIFT_PREVIOUS_SUMMARY'),
+      charsPerToken: 1,
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      contextBudget: { name: 'manual-drift-test', charsPerToken: 1 },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1) ?? previous,
+      summarizeHistoryCompact: async (input) => {
+        const echoed = `ECHO ${input.source.foldedRuntimeEvents
+          .map((event) => JSON.stringify(event.content))
+          .join(' ')}`;
+        summarizerInputs.push(echoed);
+        return structuredSummary(echoed);
+      },
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+    });
+    const compact = (runId: string) =>
+      backend.compactHistory({
+        turnId: 'turn-compact',
+        runId,
+        runtimeContext: structuredClone(priorEvents),
+      });
+
+    // A projection transition committed after the fold rewrites the covered
+    // result's effective view; the raw ledger is untouched.
+    const sourceProjection = compatibilityToolResultProjection(resultContent, 'session-1');
+    assert.ok(sourceProjection);
+    transitions.push(
+      buildModelProjectionTransition({
+        sessionId: 'session-1',
+        target: {
+          runtimeEventId: 'manual-drift-result',
+          part: 'tool_result',
+          toolCallId: 'tool-drift-1',
+          toolName: 'Read',
+        },
+        sourceProjection,
+        replacement: { version: 1, kind: 'text', text: 'EFFECTIVE_DRIFTED_RESULT' },
+        now: 1,
+      }),
+    );
+
+    // The raw prefix still matches but the pinned digest is stale: manual
+    // compaction must re-fold from the current effective view instead of
+    // reporting already_compacted.
+    const first = await compact('run-compact-1');
+    assert.equal(first.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+    assert.equal(summarizerInputs.length, 1);
+    assert.match(summarizerInputs[0]!, /EFFECTIVE_DRIFTED_RESULT/);
+    assert.doesNotMatch(summarizerInputs[0]!, /RAW_DRIFTED_TOOL_BODY/);
+
+    // With the current effective view pinned by the fresh checkpoint, a repeat
+    // is a true no-op again — a live ledger must not spuriously invalidate it.
+    const second = await compact('run-compact-2');
+    assert.deepEqual(second.outcome, { kind: 'unchanged', reason: 'already_compacted' });
+    assert.equal(summarizerInputs.length, 1);
+    assert.equal(recorded.length, 1);
   });
 
   test('manual compactHistory reports output-length exhaustion instead of empty_summary', async () => {

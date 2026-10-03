@@ -22,10 +22,10 @@ import { describe, it } from 'node:test';
 
 import type { StoredMessage } from '@maka/core/session';
 import {
-  createAppShellRevisionActions,
+  createRevisionActions,
   type TurnRevisionDraft,
-} from '../../renderer/app-shell-revision-actions.js';
-import { installWindow } from './app-shell-chat-actions-fixture.js';
+} from '../../renderer/features/conversation/testing.js';
+import { installWindow, windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 const SESSION_2 = JSON.stringify(['host-1', 'session-2']);
@@ -55,7 +55,8 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
     clearedKeys: string[];
   } = { quotes: [], restoredQuotes: [], restoredAttachments: [], clearedKeys: [] };
   const revisionDraftRef: { current: unknown } = { current: null };
-  const actions = createAppShellRevisionActions({
+  const actions = createRevisionActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en' as never,
     activeIdRef,
     captureSelection: () => {
@@ -76,7 +77,7 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
       } as never,
     },
     readMessages: () => input.messages,
-    composerStaging: {
+    staging: {
       captureSubmission: () => ({ hasPendingContext: false }),
       stagedContext: () => ({
         quotes: staged.quotes,
@@ -300,7 +301,8 @@ describe('revision draft lifecycle over a prepared send', () => {
     const clearedDrafts: string[] = [];
     let composerText = options.composerText ?? '';
     const revisionDraftRef: { current: TurnRevisionDraft | null } = { current: null };
-    const actions = createAppShellRevisionActions({
+    const actions = createRevisionActions({
+      services: windowSubmissionServices(),
       uiLocale: 'en' as never,
       activeIdRef,
       captureSelection: () => {
@@ -320,7 +322,7 @@ describe('revision draft lifecycle over a prepared send', () => {
         },
       },
       readMessages: () => [userMessage('turn-1', 'original message')],
-      composerStaging: {
+      staging: {
         captureSubmission: () => ({ hasPendingContext: false }),
         stagedContext: () => ({
           quotes: [],

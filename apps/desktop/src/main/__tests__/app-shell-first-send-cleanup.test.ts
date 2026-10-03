@@ -45,7 +45,7 @@ import { createSessionCatalogController } from '../../renderer/application/contr
 
 import { LocaleProvider, ToastProvider, type LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
 import { prepareTranscriptForSend, stubConversationServices, createConversationWorkspace, createTranscriptCommands } from '../../renderer/features/conversation/testing.js';
 
 import {
@@ -68,7 +68,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         captureComposerImportOwner: () => ({
@@ -98,7 +98,7 @@ describe('composer first-send cleanup', () => {
       newTasks: { create: async () => { creates += 1; return { id: 'stale-session' }; } },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         captureComposerImportOwner: () => ({
           sessionId: undefined,
@@ -140,7 +140,7 @@ describe('composer first-send cleanup', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         captureComposerImportOwner: () => ({
           sessionId: undefined,
@@ -196,7 +196,7 @@ describe('composer first-send cleanup', () => {
           model: 'mimo-v2.5-free',
         },
       };
-      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+      assert.equal(await createChatActions(deps).send('hello'), true);
     } finally {
       restoreWindow();
     }
@@ -243,7 +243,7 @@ describe('composer first-send cleanup', () => {
         ...createActionsDeps(),
         newChatPermissionChoice: 'bypass' as const,
       };
-      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+      assert.equal(await createChatActions(deps).send('hello'), true);
     } finally {
       restoreWindow();
     }
@@ -288,15 +288,15 @@ describe('composer first-send cleanup', () => {
           choice = undefined;
         },
       });
-      assert.equal(await createAppShellChatActions(deps()).send('task A'), false);
+      assert.equal(await createChatActions(deps()).send('task A'), false);
       assert.equal(choice, 'ask');
       assert.deepEqual(removed, ['session-1']);
-      assert.equal(await createAppShellChatActions(deps()).send('retry task A'), false);
+      assert.equal(await createChatActions(deps()).send('retry task A'), false);
       assert.equal(choice, 'ask');
       assert.deepEqual(removed, ['session-1', 'session-2']);
-      assert.equal(await createAppShellChatActions(deps()).send('retry task A again'), true);
+      assert.equal(await createChatActions(deps()).send('retry task A again'), true);
       assert.equal(choice, undefined);
-      assert.equal(await createAppShellChatActions(deps()).send('task B'), true);
+      assert.equal(await createChatActions(deps()).send('task B'), true);
     } finally {
       restoreWindow();
     }
@@ -337,7 +337,7 @@ describe('composer first-send cleanup', () => {
           projectId: 'project-docs',
         },
       };
-      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+      assert.equal(await createChatActions(deps).send('hello'), true);
     } finally {
       restoreWindow();
     }
@@ -364,7 +364,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      assert.equal(await createAppShellChatActions(createActionsDeps()).send('hello'), false);
+      assert.equal(await createChatActions(createActionsDeps()).send('hello'), false);
     } finally {
       restoreWindow();
     }
@@ -392,7 +392,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         captureComposerImportOwner: () => ({
           sessionId: undefined,
@@ -435,7 +435,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions(createActionsDeps());
+      const actions = createChatActions(createActionsDeps());
       const result = await actions.send('hello', undefined, {
         onSessionResolved: () => {
           resolved += 1;
@@ -469,7 +469,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const sending = createAppShellChatActions({
+      const sending = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         addTransientMessage: () => {
@@ -512,7 +512,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         activateSessionForFirstSend: async (session) => {
@@ -557,7 +557,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'existing-session' },
       });
@@ -587,7 +587,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'existing-session' },
       });
@@ -627,7 +627,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions(createActionsDeps());
+      const actions = createChatActions(createActionsDeps());
       const result = await actions.send('hello', undefined, {
         onSessionResolved: () => {
           resolved += 1;
@@ -657,7 +657,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const sending = createAppShellChatActions({
+      const sending = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         onFollowLatest: (sessionId) => prepareTranscriptForSend({
@@ -749,7 +749,7 @@ describe('composer send failure feedback', () => {
     const restoreWindow = installWindow(readinessFailure());
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         // The user is on 技能 now. `activeId` is still 'session-a' — that is
@@ -771,7 +771,7 @@ describe('composer send failure feedback', () => {
     const restoreWindow = installWindow(readinessFailure());
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         isShellSurfaceOwnerActive: () => true,

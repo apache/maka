@@ -66,6 +66,7 @@ async function mount(options: {
   catalog.commitSessions([session('a'), session('b')]);
   let selected: string | undefined = 'a';
   let owner: { sessionId?: string } = { sessionId: selected };
+  let newTaskChoiceKey = 'new-task:project-a';
   let snapshot!: ReturnType<typeof useSessionSettingIntent>;
   let renders = 0;
   let frameRenders = 0;
@@ -80,6 +81,7 @@ async function mount(options: {
       input: {
         catalog,
         isActiveSession: (id) => id === selected,
+        newTaskChoiceKey,
         newSessionPermissionMode: 'ask',
         refreshCatalog: options.refreshCatalog ?? (async () => {}),
         saveComposerDefaults: () => {},
@@ -91,7 +93,6 @@ async function mount(options: {
         },
         captureOwner: () => owner,
         isOwnerActive: (claim) => claim === owner,
-        setNewTaskPermissionMode: () => {},
         confirmBypass: options.confirmBypass ?? (async () => true),
       },
     }, createElement(Frame));
@@ -111,8 +112,49 @@ async function mount(options: {
       owner = { sessionId: selected };
       await act(render);
     },
+    retargetNewTask: async (key: string) => {
+      newTaskChoiceKey = key;
+      await act(render);
+    },
   };
 }
+
+test('the provider owns what a new task starts with; the shell reads it without its overlay moving', async () => {
+  const h = await mount();
+  await h.select(undefined);
+  const { commands, overlay } = h.current();
+  assert.deepEqual(h.current().newTask, { planMode: false, orchestrationMode: 'default' });
+
+  await act(() => { commands.setNewTaskPlanMode(true); });
+  await act(() => { commands.setNewTaskOrchestrationMode('swarm'); });
+  await act(async () => { assert.equal(await commands.setPermissionMode('bypass'), true); });
+  assert.deepEqual(h.current().newTask, { permissionChoice: 'bypass', planMode: true, orchestrationMode: 'swarm' });
+  assert.equal(h.current().overlay, overlay, 'new-task choices leave the Session overlay identity alone');
+
+  // The permission choice belongs to its target; Plan and orchestration follow the draft.
+  await h.retargetNewTask('new-task:project-b');
+  assert.deepEqual(h.current().newTask, { planMode: true, orchestrationMode: 'swarm' });
+  await h.retargetNewTask('new-task:project-a');
+  assert.equal(h.current().newTask.permissionChoice, 'bypass');
+
+  await act(() => { commands.clearNewTaskPermissionChoice(); });
+  assert.equal(h.current().newTask.permissionChoice, undefined);
+});
+
+test('a Session owner writes its own permission, never the new-task choice', async () => {
+  const writes: unknown[] = [];
+  const h = await mount({
+    services: services({
+      setPermissionMode: async (id, mode) => {
+        writes.push([id, mode]);
+        return { ...session(id), permissionMode: mode, revision: 2 };
+      },
+    }),
+  });
+  await act(async () => { assert.equal(await h.current().commands.setPermissionMode('bypass'), true); });
+  assert.deepEqual(writes, [['a', 'bypass']]);
+  assert.equal(h.current().newTask.permissionChoice, undefined);
+});
 
 test('inactive Session writes keep the shell and frame asleep; selection reads the right overlay immediately', async () => {
   const write = deferred<DesktopSessionSummary>();
@@ -171,7 +213,7 @@ test('catalog observations retire only the acknowledged Session overlay without 
   const initialRenders = h.renders();
   const initialFrames = h.frameRenders();
   await act(async () => { assert.equal(await commands.setSessionModel('b', model), true); });
-  const overlay = () => h.current().bridge.getState().modelConfiguration.b;
+  const overlay = () => h.current().bridge.getState().overlays.modelConfiguration.b;
   assert.equal(overlay()?.modelTarget.model, 'next');
 
   await act(() => h.catalog.commitSessions([{ ...session('a'), revision: 2 }, session('b')]));

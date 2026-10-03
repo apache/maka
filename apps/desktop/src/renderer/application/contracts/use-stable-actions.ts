@@ -50,8 +50,8 @@ function createDelegatingActions<A extends object>(latestRef: { current: A }): A
  * supersedes hand-rolled `handlersRef.current = handlers` mirrors, which
  * published during render.
  *
- * `createAppShellStopAction` is deliberately NOT wrapped: it returns a bare
- * function (no object to facade) and only feeds JSX props, never effect deps.
+ * A factory that returns a bare function (no object to facade) wraps it in an
+ * object first, as the Composer submission owner does for its Stop action.
  *
  * The identity guarantee is asserted in `use-stable-actions.test.ts` rather
  * than argued for in review — see that file for why this is a contract.

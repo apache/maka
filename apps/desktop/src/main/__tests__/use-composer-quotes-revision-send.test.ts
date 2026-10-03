@@ -23,13 +23,14 @@ import { act, createElement } from 'react';
 import type { QuoteRef } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 // The feature index stopped re-exporting controller hooks (#5868); the test
-// support entry is the sanctioned channel for driving the quote bucket.
-import { useComposerQuotes } from '../../renderer/features/conversation/testing.js';
+// support entry is the sanctioned channel for driving the quote bucket and
+// the revision lifecycle.
 import {
-  createAppShellRevisionActions,
+  createRevisionActions,
+  useComposerQuotes,
   type TurnRevisionDraft,
-} from '../../renderer/app-shell-revision-actions.js';
-import { installWindow } from './app-shell-chat-actions-fixture.js';
+} from '../../renderer/features/conversation/testing.js';
+import { installWindow, windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
@@ -72,7 +73,8 @@ test('the in-flight revision send still reads the re-keyed plate (#5274 review)'
   }
   await act(async () => root.render(createElement(Probe)));
 
-  const actions = createAppShellRevisionActions({
+  const actions = createRevisionActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en' as never,
     activeIdRef,
     captureSelection: () => () => true,
@@ -90,7 +92,7 @@ test('the in-flight revision send still reads the re-keyed plate (#5274 review)'
       } as never,
     },
     readMessages: () => [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
-    composerStaging: {
+    staging: {
       captureSubmission: () => ({ hasPendingContext: false }),
       stagedContext: () => ({
         quotes: surface.pendingQuotes,

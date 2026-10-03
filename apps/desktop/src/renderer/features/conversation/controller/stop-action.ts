@@ -18,9 +18,10 @@
  */
 
 import type { UiLocale } from '@maka/core/ui-locale';
-import { localizedShellErrorMessage } from './locales/shell-copy.js';
-import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
-import type { SessionPendingClaim } from './features/conversation/index.js';
+import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import type { SessionPendingClaim } from '../model/session-ui-state.js';
+import type { ComposerSubmissionServices } from '../submission-services.js';
 
 type ToastApi = {
   error(
@@ -31,7 +32,8 @@ type ToastApi = {
   ): void;
 };
 
-export function createAppShellStopAction(deps: {
+export function createStopAction(deps: {
+  services: Pick<ComposerSubmissionServices, 'stop'>;
   uiLocale: UiLocale;
   activeIdRef: { readonly current: string | undefined };
   stopPending: SessionPendingClaim;
@@ -39,6 +41,7 @@ export function createAppShellStopAction(deps: {
   toastApi: ToastApi;
 }): () => Promise<void> {
   const {
+    services,
     uiLocale,
     activeIdRef,
     stopPending,
@@ -50,7 +53,7 @@ export function createAppShellStopAction(deps: {
     const sessionId = activeIdRef.current;
     if (!sessionId || !stopPending.claim(sessionId)) return;
     try {
-      const result = await window.maka.sessions.stop(sessionId, { source: 'stop_button' });
+      const result = await services.stop(sessionId, { source: 'stop_button' });
       if (result?.kind === 'interrupted') {
         for (const messageId of result.retractedMessageIds) {
           removeTransientMessage(sessionId, messageId);

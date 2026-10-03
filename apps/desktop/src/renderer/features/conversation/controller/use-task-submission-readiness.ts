@@ -19,16 +19,20 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TaskSubmissionReadinessSnapshot } from '@maka/core/task-submission-readiness';
-import type {
-  DesktopNewTaskTarget,
-  DesktopTaskSubmissionReadinessRequest,
-} from '../preload/bridge-contract.js';
+import type { ConversationNewTaskTarget } from '../ports.js';
+import type { TaskReadinessRequest, TaskReadinessServices } from '../readiness-services.js';
 
+/**
+ * Called only by `TaskReadinessProvider`. A changed request, target or refresh
+ * key clears the previous snapshot before reading again; only the latest read
+ * publishes, so a slow answer for an earlier target cannot replace a newer one.
+ */
 export function useTaskSubmissionReadiness(
-  request: DesktopTaskSubmissionReadinessRequest,
+  services: TaskReadinessServices,
+  request: TaskReadinessRequest,
   refreshKey: unknown,
   sessionId?: string,
-  newTaskTarget?: DesktopNewTaskTarget,
+  newTaskTarget?: ConversationNewTaskTarget,
 ) {
   const [snapshot, setSnapshot] = useState<TaskSubmissionReadinessSnapshot>();
   const [revision, setRevision] = useState(0);
@@ -39,17 +43,16 @@ export function useTaskSubmissionReadiness(
     const sequence = ++requestSequence.current;
     try {
       const next = sessionId
-        ? await window.maka.taskReadiness.getSnapshot(request, sessionId)
+        ? await services.readSession(sessionId, request)
         : newTaskTarget
-          ? await window.maka.newTasks.getReadiness(newTaskTarget, request)
+          ? await services.readNewTask(newTaskTarget, request)
           : undefined;
       if (requestSequence.current === sequence) setSnapshot(next);
-      return next;
     } catch {
       if (requestSequence.current === sequence) setSnapshot(undefined);
-      return undefined;
     }
   }, [
+    services,
     request.connectionSlug,
     request.model,
     request.cwd,
@@ -65,5 +68,5 @@ export function useTaskSubmissionReadiness(
     void checkNow();
   }, [checkNow, refreshKey, revision]);
 
-  return { snapshot, refresh, checkNow };
+  return { snapshot, refresh };
 }

@@ -32,6 +32,11 @@ export {
 } from './model/settings-modal-state.js';
 export type { OverlaysShellProjection } from './model/overlays-projection.js';
 export type { OverlaysServices } from './ports.js';
+export {
+  createAgentGraphPanelModel,
+  reduceAgentGraphPanelModel,
+  shouldShowAgentGraphPanel,
+} from './model/agent-graph-panel-model.js';
 
 export function createFakeOverlaysServices(
   overrides: Partial<OverlaysServices> = {},

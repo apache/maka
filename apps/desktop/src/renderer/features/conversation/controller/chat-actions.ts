@@ -19,8 +19,8 @@
 
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
-import type * as DesktopBridge from '../preload/bridge-contract.js';
 import type { QuoteRef } from '@maka/core/events';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
@@ -29,19 +29,21 @@ import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
-import {
-  type NavSelection,
-  type TransientUserMessageProjection,
-} from '@maka/ui';
-import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
-import { preflightAttachmentItems } from './attachment-preflight.js';
+import type { TransientUserMessageProjection } from '@maka/ui';
+import { toSubmittedAttachments, type PendingAttachment } from '@maka/ui/composer-attachments';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import { preflightAttachmentItems } from '../../../application/contracts/attachment-preflight.js';
+import type { DesktopSessionSummary } from '../../../../shared/desktop-session-projection.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
-} from './session-workspace-errors.js';
-import * as skillFeedback from './skill-invocation-feedback.js';
-import * as Conversation from './features/conversation/index.js';
-import type { NewChatExecutionTarget, PendingAttachment, ExecutorSubmission } from './features/conversation/index.js';
+} from '../../../application/contracts/session-workspace-errors.js';
+import * as skillFeedback from '../model/skill-invocation-feedback.js';
+import { canSubmitExecutor, newTaskConfiguration, type ExecutorSubmission } from '../model/executor-submission.js';
+import type { NewChatExecutionTarget } from './use-shell-chat-model.js';
+import type { ConversationNewTaskTarget } from '../ports.js';
+import type { ComposerSubmissionServices, ConversationMessageCommand } from '../submission-services.js';
+import type { ComposerSurfaceOwner } from '../model/composer-submission-contract.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -51,24 +53,14 @@ import {
   isNoRealConnectionError,
   noRealConnectionReasonFromError,
   noRealConnectionSetupDescription,
-} from './model-connection-errors.js';
+} from '../../../application/contracts/model-connection-errors.js';
 
-type ComposerImportOwner = {
-  sessionId: string | undefined;
-  navSection: NavSelection['section'];
-  newTaskDraftKey?: string;
-};
 
 type RefBox<T> = { current: T };
 
 type PendingNewChatModel = NewChatExecutionTarget | null;
 
 type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
-type DesktopNewTaskTarget = DesktopBridge.DesktopNewTaskTarget;
-type DesktopSessionSummary = DesktopBridge.DesktopSessionSummary;
-type InteractionFormResponse = Parameters<
-  DesktopBridge.MakaBridge['sessions']['respondToUserForm']
->[1];
 
 type ToastApi = {
   error(
@@ -101,7 +93,7 @@ function copiedArray<K extends string, T>(
   return values?.length ? { [key]: [...values] } as Record<K, T[]> : {};
 }
 
-export interface AppShellChatActions {
+export interface ChatActions {
   send(
     text: string,
     pending?: readonly PendingAttachment[],
@@ -124,19 +116,20 @@ export interface AppShellChatActions {
   respondToUserForm(response: InteractionFormResponse): Promise<void>;
 }
 
-export function createAppShellChatActions(deps: {
+export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
+  services: ComposerSubmissionServices;
   uiLocale: UiLocale;
   getRunningTurnId?: (sessionId: string) => string | undefined;
   activeIdRef: Readonly<RefBox<string | undefined>>;
-  captureComposerImportOwner: () => ComposerImportOwner;
+  captureComposerImportOwner: () => Owner;
   captureSelection: () => () => boolean;
   checkTaskSubmissionReadiness: () => Promise<boolean>;
-  isNewChatSendSurfaceActive: (owner: ComposerImportOwner) => boolean;
+  isNewChatSendSurfaceActive: (owner: Owner) => boolean;
   /** The shell's one answer to "is this owner still the surface the user is
    *  looking at". Both halves matter — the section AND the session id — which
    *  is why the send path asks it instead of comparing the id itself. */
-  isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
-  refreshSessions: () => Promise<DesktopSessionSummary[]>;
+  isShellSurfaceOwnerActive: (owner: Owner) => boolean;
+  refreshSessions: () => Promise<unknown>;
   activateSessionForFirstSend: (session: DesktopSessionSummary) => Promise<void>;
   retireSession: (sessionId: string) => void;
   clearMessageLoadError(sessionId: string): void;
@@ -156,7 +149,7 @@ export function createAppShellChatActions(deps: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
-  respondToUserForm: DesktopBridge.MakaBridge['sessions']['respondToUserForm'];
+  respondToUserForm: (sessionId: string, response: InteractionFormResponse) => Promise<void>;
   showModelSetupToast: (
     description: string,
     reason?: string,
@@ -182,9 +175,10 @@ export function createAppShellChatActions(deps: {
   clearNewChatPermissionChoice: () => void;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
-  newTaskTarget: DesktopNewTaskTarget | undefined;
-}): AppShellChatActions {
+  newTaskTarget: ConversationNewTaskTarget | undefined;
+}): ChatActions {
   const {
+    services,
     uiLocale,
     activeIdRef,
     captureComposerImportOwner,
@@ -225,10 +219,7 @@ export function createAppShellChatActions(deps: {
     sessionId: string;
     messageId: string;
     placement: 'current_turn' | 'next_turn';
-    command: Omit<
-      Parameters<typeof window.maka.sessions.submitMessage>[2],
-      'messageId'
-    >;
+    command: Omit<ConversationMessageCommand, 'messageId'>;
     displayText?: string;
     quotes?: readonly QuoteRef[];
     waitForHostAdmission?: boolean;
@@ -237,7 +228,7 @@ export function createAppShellChatActions(deps: {
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
     const directoryReferences = input.command.directoryReferences;
-    const result = await window.maka.sessions.submitMessage(sessionId, placement, {
+    const result = await services.submitMessage(sessionId, placement, {
       ...input.command,
       messageId,
     }, { waitForHostAdmission: input.waitForHostAdmission });
@@ -283,7 +274,7 @@ export function createAppShellChatActions(deps: {
   ): Promise<boolean> {
     const { directoryReferences, quotes } = options;
     const initialSessionId = options.targetSessionId ?? activeIdRef.current;
-    if (!Conversation.canSubmitExecutor(deps, pending?.length ?? 0)) return false;
+    if (!canSubmitExecutor(deps, pending?.length ?? 0)) return false;
     const sendOwner = captureComposerImportOwner();
     const selectionIsCurrent = captureSelection();
     if (!initialSessionId && !newTaskTarget) return false;
@@ -310,7 +301,7 @@ export function createAppShellChatActions(deps: {
       const sessionId = unsentSessionId;
       unsentSessionId = undefined;
       try {
-        await window.maka.sessions.remove(sessionId);
+        await services.removeUnsentSession(sessionId);
         retireSession(sessionId);
         await refreshSessions();
       } catch {
@@ -319,7 +310,7 @@ export function createAppShellChatActions(deps: {
     };
     try {
       async function submitIntoSession(sessionId: string, messageId: string) {
-        const attachments = Conversation.toSubmittedAttachments(pending ?? []);
+        const attachments = toSubmittedAttachments(pending ?? []);
         const sendCommand = {
           text,
           localDisplayPlacement: 'current_turn' as const,
@@ -347,9 +338,9 @@ export function createAppShellChatActions(deps: {
       if (!initialSessionId) {
         if (!newTaskTarget) return false;
         if (pending?.length) preflightAttachmentItems(pending);
-        const session = await window.maka.newTasks.create(newTaskTarget, {
+        const session = await services.createNewTask(newTaskTarget, {
           name: DEFAULT_SESSION_NAME,
-          ...Conversation.newTaskConfiguration(deps),
+          ...newTaskConfiguration(deps),
         });
         unsentSessionId = session.id;
         // Creation can also yield while a same-target New Task is reopened.
@@ -445,7 +436,7 @@ export function createAppShellChatActions(deps: {
           diagnosticTarget,
         );
       } else if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, diagnosticTarget);
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, diagnosticTarget);
       } else {
         toastApi.error(
           copy.sendFailedTitle,
@@ -469,7 +460,7 @@ export function createAppShellChatActions(deps: {
     const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
     const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
-    const { attachmentItems, retainedAttachments = [] } = Conversation.toSubmittedAttachments(pending ?? []);
+    const { attachmentItems, retainedAttachments = [] } = toSubmittedAttachments(pending ?? []);
     publishTransientUserMessage(sessionId, {
       id: messageId, text, attachments: retainedAttachments,
       ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
@@ -518,7 +509,7 @@ export function createAppShellChatActions(deps: {
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
       } else {
         toastApi.error(
           copy.responseFailedTitle,
@@ -546,11 +537,11 @@ export function createAppShellChatActions(deps: {
     respondToSandboxBoundary: (response) =>
       respondToInteraction(
         response,
-        window.maka.sessions.respondToSandboxBoundary,
+        services.respondToSandboxBoundary,
         onExecutionBoundaryChanged,
       ),
     respondToUserQuestion: (response) =>
-      respondToInteraction(response, window.maka.sessions.respondToUserQuestion),
+      respondToInteraction(response, services.respondToUserQuestion),
     respondToUserForm: (response) => respondToInteraction(response, submitUserForm),
   };
 }

@@ -20,7 +20,7 @@
 import type { AttachmentIngestBlockedCode } from '@maka/core/attachments';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
-import { getShellCopy } from './locales/shell-copy.js';
+import { getShellCopy } from '../../../locales/shell-copy.js';
 
 type FeedbackToastApi = {
   error(
