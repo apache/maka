@@ -119,6 +119,18 @@ const row = (id: string): DesktopSessionSummary => ({
 });
 const userTurn = (turnId: string, text: string): StoredMessage => ({ type: 'user', id: `message-${turnId}`, text, turnId, ts: 1 });
 
+/** Gate inputs with a ready executor selected; `overrides` adjust its selection state. */
+function selectedExecutor(overrides: { changing?: boolean } = {}) {
+  const gateInputs = stubComposerGateInputs();
+  gateInputs.executorComposer.selection = {
+    ...gateInputs.executorComposer.selection,
+    selection: { executorId: 'codex' },
+    entry: { id: 'codex', readiness: 'ready' },
+    ...overrides,
+  } as unknown as typeof gateInputs.executorComposer.selection;
+  return gateInputs;
+}
+
 function deferred<T>() {
   let resolvePromise!: (value: T) => void;
   const promise = new Promise<T>((resolveValue) => { resolvePromise = resolveValue; });
@@ -264,6 +276,7 @@ describe('ComposerSubmissionProvider', () => {
     const submitted: unknown[] = [];
     const admission = deferred<Awaited<ReturnType<ComposerSubmissionServices['submitMessage']>>>();
     const h = harness({
+      gateInputs: selectedExecutor(),
       services: {
         submitMessage: (sessionId, placement, command) => {
           submitted.push({ sessionId, placement, text: command.text });
@@ -274,10 +287,14 @@ describe('ComposerSubmissionProvider', () => {
     await act(async () => h.target.setActiveId('A'));
     await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
     assert.equal(h.region.newTaskSendPending, false);
+    assert.equal(h.region.executorPicker?.disabled, false);
+    assert.equal(h.region.sendBlocked, false);
 
     let sending!: Promise<boolean | void>;
     await act(async () => { sending = h.region.onSend('hello'); });
     assert.equal(h.region.newTaskSendPending, true, 'the flag is the owner\'s, read by the Composer slot');
+    assert.equal(h.region.executorPicker?.disabled, true, 'executor changes stay locked until Host admission settles');
+    assert.equal(h.region.sendBlocked, true);
     assert.deepEqual(submitted, [{ sessionId: 'A', placement: 'next_turn', text: 'hello' }]);
 
     await act(async () => {
@@ -288,6 +305,17 @@ describe('ComposerSubmissionProvider', () => {
       assert.equal(await sending, true);
     });
     assert.equal(h.region.newTaskSendPending, false);
+    assert.equal(h.region.executorPicker?.disabled, false);
+    assert.equal(h.region.sendBlocked, false);
+  });
+
+  test('retains existing executor and send gates while no submission is pending', () => {
+    const gateInputs = selectedExecutor({ changing: true });
+    gateInputs.executorComposer.taskSubmissionHardBlocked = true;
+    const h = harness({ gateInputs });
+    assert.equal(h.region.newTaskSendPending, false);
+    assert.equal(h.region.executorPicker?.disabled, true);
+    assert.equal(h.region.sendBlocked, true);
   });
 
   test('steers into the running Host Turn: the pending row names that Turn before the Host answers', async () => {
@@ -720,13 +748,7 @@ describe('Conversation Turn readers', () => {
   const hasCompact = (region: RegionProps) => region.slashCommands.some((command) => command.id === 'compact');
 
   test('a running Turn repaints the Composer\'s held controls and the transcript, not the shell', async () => {
-    const gateInputs = stubComposerGateInputs();
-    gateInputs.executorComposer.selection = {
-      ...gateInputs.executorComposer.selection,
-      selection: { executorId: 'codex' },
-      entry: { id: 'codex', readiness: 'ready' },
-    } as unknown as typeof gateInputs.executorComposer.selection;
-    const h = harness({ ownerSessionId: 'A', gateInputs });
+    const h = harness({ ownerSessionId: 'A', gateInputs: selectedExecutor() });
     await act(async () => h.target.setActiveId('A'));
     await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
     const ui = h.conversation.workspace.ui;

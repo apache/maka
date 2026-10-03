@@ -355,6 +355,7 @@
         "TaskReadinessProvider",
         "createComposerStagingCommands",
         "createComposerSubmissionCommands",
+        "createExecutorSessionActivator",
         "resolveTaskReadinessModelTarget",
         "useActiveExecutionBoundary",
         "useAppShellSessionUiState",
@@ -741,7 +742,7 @@
           "react": 1
         },
         "importSpecifiers": 55,
-        "nonTriviaTokens": 7498
+        "nonTriviaTokens": 7490
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

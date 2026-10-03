@@ -46,6 +46,7 @@ export { sessionIdSetsEqual } from './model/live-turn-snapshot.js';
 export { createAppShellQueueActions } from './controller/app-shell-queue-actions.js';
 
 export { useExecutorSelection } from './controller/use-executor-selection.js';
+export { createExecutorSessionActivator } from './model/executor-submission.js';
 export { useShellChatModel, type SessionHealthNoticeView } from './controller/use-shell-chat-model.js';
 
 export { PlanProvider } from './ui/plan-provider.js';

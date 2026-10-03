@@ -110,7 +110,7 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
   const [availabilityRetry, setAvailabilityRetry] = useState(0);
   const [projection, setProjection] = useState<ExternalAgentSetupProjection>();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<boolean | 'executable_unavailable' | 'helper_unavailable'>(false);
   const guard = useActionGuard<string>();
   const attempt = useRef<string | undefined>(undefined);
   const mounted = useRef(false);
@@ -158,8 +158,14 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
       setConnectionVerified(false);
       setProjection(undefined);
       await props.onUpdate({ externalAgents: { antigravity: { executable: selected } } });
-    } catch {
-      if (mounted.current) setError(true);
+    } catch (selectionError) {
+      if (mounted.current) {
+        // Electron preserves Error messages, including its own IPC prefix.
+        const failure = selectionError instanceof Error
+          ? selectionError.message.match(/Antigravity program: (executable_unavailable|helper_unavailable)\b/)?.[1]
+          : undefined;
+        setError(failure === 'executable_unavailable' || failure === 'helper_unavailable' ? failure : true);
+      }
     } finally {
       if (mounted.current) setBusy(false);
       guard.finish();
@@ -226,7 +232,7 @@ function AntigravitySetup(props: Props & { onBack(): void }) {
     }
   }
   const status = error
-    ? copy.error
+    ? typeof error === 'string' ? copy.failures[error] : copy.error
     : available === undefined
       ? copy.loading
       : !available

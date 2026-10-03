@@ -500,6 +500,7 @@ function AppShellContent({
     newTaskKey: currentNewTaskDraftKey,
     executorTarget: taskEntry.selectors.target,
     executorCwd: activeSession?.cwd ?? taskEntry.selectors.projectPath,
+    executorSessionPending: activeSession?.localState === 'pending',
     activationCandidate: modelSettingsOwnsComposerHost
       ? onboardingActivationCandidate
       : undefined,
@@ -1131,11 +1132,7 @@ function AppShellContent({
         captureOwner: captureComposerImportOwner,
         isOwnerActive: isShellSurfaceOwnerActive,
         isNewChatOwnerActive: isNewChatSendSurfaceActive,
-        activateFirstSendSession: async (session) => {
-          commitSession(session);
-          setNavSelection({ section: 'sessions' });
-          setActiveId(session.id);
-        },
+        activateFirstSendSession: Conversation.createExecutorSessionActivator(executor, commitSession, setNavSelection, setActiveId),
         openSession: openSessionInChat,
         retireSession: clearSessionRendererState,
         refreshSessions,

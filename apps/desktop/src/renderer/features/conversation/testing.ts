@@ -60,7 +60,7 @@ export function stubComposerGateInputs(overrides: {
     executorComposer: {
       selection: {
         selection: undefined, catalog: [], entry: undefined,
-        select: async () => {}, restore: async () => {}, refresh: async () => {},
+        select: async () => {}, restore: async () => {}, refresh: async () => {}, adoptSession: () => {},
         changing: false, loading: false, error: undefined,
       },
       taskSubmissionHardBlocked: false,
@@ -175,5 +175,6 @@ export {
 export { composerModelSupportsVision, pickNewChatModel, type NewChatModel } from './model/shell-chat-model-selection.js';
 export { deriveSessionHealthNotice } from './model/session-health-notice.js';
 export { resolveNewChatExecutionThinkingLevel } from './controller/use-shell-chat-model.js';
-export { newTaskConfiguration } from './model/executor-submission.js';
+export { executorSubmissionError, newTaskConfiguration } from './model/executor-submission.js';
+export { executorComposerProps } from './model/executor-composer.js';
 export { renderConversationMarkdown } from './model/conversation-markdown.js';

@@ -131,7 +131,7 @@ type ComposerProps = SubmissionProps & TurnGatedProps & {
 type ComposerGateInputs = {
   /** The displayed Session's catalog row: whether it has arrived, and its status. */
   sessionState: { loaded: boolean; status: SessionStatus | undefined };
-  executorComposer: Omit<Parameters<typeof executorComposerProps>[1], 'activeId' | 'turnActive'> & {
+  executorComposer: Omit<Parameters<typeof executorComposerProps>[1], 'activeId' | 'turnActive' | 'sendPending'> & {
     selection: Parameters<typeof executorComposerProps>[0];
   };
 };
@@ -187,7 +187,10 @@ export function ConversationComposerRegion<P extends object>(
       streamingLive: turn.streamingLive,
       copy: shellCopy,
     }),
-    ...executorComposerProps(executor, { ...executorInput, activeId, turnActive: turn.turnActive }),
+    // Executor changes and sends stay locked until the pending send's Host admission settles.
+    ...executorComposerProps(executor, {
+      ...executorInput, activeId, turnActive: turn.turnActive, sendPending: submission.newTaskSendPending,
+    }),
     onSend: submission.onSend,
     newTaskSendPending: submission.newTaskSendPending,
     resumeAction: submission.composerResumeAction,
