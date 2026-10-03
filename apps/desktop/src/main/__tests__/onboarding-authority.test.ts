@@ -29,6 +29,9 @@ import {
   createOnboardingSnapshotPoller,
   getOnboardingActivationCandidate,
   OnboardingAuthorityProvider,
+  OnboardingConnectionSeed,
+  type OnboardingAuthority,
+  type OnboardingProjection,
   OnboardingProjectionRoot,
   onboardingSnapshotProjectionEqual,
   type OnboardingShellProjection,
@@ -124,6 +127,33 @@ describe('createOnboardingAuthority', () => {
     assert.equal(seen.at(-1)?.snapshot, NEEDS_CONNECTION_SNAPSHOT);
     await act(async () => root.unmount());
     assert.equal(fake.calls.at(-1), 'unsubscribe', 'the root is the subscriber that keeps the reads alive');
+  });
+
+  it('seeds the default Host connections from each new snapshot, and refreshes them when reads fail', async () => {
+    let projection: OnboardingProjection = { snapshot: null, failed: false };
+    const listeners = new Set<() => void>();
+    const authority: OnboardingAuthority = {
+      getProjection: () => projection,
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      refresh: () => {},
+      skipInitialOnboarding: async () => {},
+    };
+    const publish = (next: OnboardingProjection) => act(() => { projection = next; listeners.forEach((listener) => listener()); });
+    const calls: unknown[] = [];
+    const { root } = installReactRenderer();
+    await act(async () => root.render(createElement(OnboardingAuthorityProvider, { value: authority,
+      children: createElement(OnboardingConnectionSeed, {
+        seed: (snapshot) => calls.push(snapshot),
+        refresh: () => calls.push('refresh'),
+      }) })));
+    assert.deepEqual(calls, [], 'nothing to seed before the first read');
+    const withConnections = { ...READY_SNAPSHOT, defaultSlug: 'openai' };
+    publish({ snapshot: withConnections, failed: false });
+    publish({ snapshot: withConnections, failed: false });
+    assert.deepEqual(calls.splice(0), [{ connections: [], defaultConnection: 'openai', chatModelChoices: [] }]);
+    publish({ snapshot: null, failed: true });
+    assert.deepEqual(calls.splice(0), ['refresh']);
+    await act(async () => root.unmount());
   });
 
   it('fails without its provider instead of holding the first-run gate closed', () => {

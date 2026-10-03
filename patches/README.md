@@ -176,6 +176,15 @@ Delete when the ambiguity and blank-name tests pass against an unpatched package
 
 ## `@astryxdesign/core@0.6.3`
 
+`ToastViewport` keeps its portal host inside the active native modal and opens
+its popover after that modal. Opening the empty viewport only once leaves it
+below later dialog backdrops; reopening alone still leaves it inert outside
+the modal. Moving a stable portal host preserves toast timers and React event
+handling when the dialog closes. The public LayerProvider API cannot change
+the viewport's host. The MCP detail Storybook play checks hit testing, focus
+and dismissal after testing a connection. Remove this hunk when upstream
+provides equivalent modal-aware toast placement.
+
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short
 label can also be a sliced string retaining its entire Markdown message after

@@ -64,6 +64,98 @@ const PREFIX_PROOF_TEST_BUDGET = {
 };
 
 describe('SqliteRuntimeStore', () => {
+  it('reads a complete Session from one snapshot while another connection commits its terminal', async (t) => {
+    await withStore(async (store, dbPath) => {
+      const opening = invocationOpeningEvent(1);
+      await store.appendRuntimeEvent(opening.sessionId, opening.runId, opening);
+      const terminal: RuntimeEvent = {
+        ...opening,
+        id: 'concurrent-terminal',
+        ts: 20,
+        content: undefined,
+        status: 'completed',
+        actions: { endInvocation: true },
+      };
+      const writer = new DatabaseSync(dbPath);
+      const db = (store as unknown as { db: DatabaseSync }).db;
+      const prepare = db.prepare.bind(db);
+      let committed = false;
+      t.mock.method(db, 'prepare', (sql: string) => {
+        if (!committed && sql.includes("CASE WHEN event_kind = 'invocation_opened'")) {
+          committed = true;
+          writer.exec('BEGIN');
+          writer
+            .prepare(`INSERT INTO runtime_events
+            (event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at)
+            VALUES (?, ?, ?, ?, ?, 2, 'invocation_end', ?, ?)`)
+            .run(
+              terminal.id,
+              terminal.sessionId,
+              terminal.invocationId,
+              terminal.runId,
+              terminal.turnId,
+              JSON.stringify(terminal),
+              terminal.ts,
+            );
+          writer
+            .prepare(
+              'INSERT INTO runtime_session_event_ordinals (session_id, ordinal, event_id) VALUES (?, 2, ?)',
+            )
+            .run(terminal.sessionId, terminal.id);
+          writer.exec('COMMIT');
+        }
+        return prepare(sql);
+      });
+      try {
+        const snapshot = await store.readSessionRuntimeSnapshot(opening.sessionId);
+        assert.ok(committed);
+        assert.equal(snapshot.invocations[0]?.terminalEvent, undefined);
+        assert.deepEqual(
+          snapshot.eventsByRun.get(opening.runId)?.map((event) => event.id),
+          [opening.id],
+        );
+        assert.deepEqual([...snapshot.durableEventOrdinalById], [[opening.id, 1]]);
+        const next = await store.readSessionRuntimeSnapshot(opening.sessionId);
+        assert.equal(next.invocations[0]?.terminalEvent?.id, terminal.id);
+        assert.deepEqual(
+          next.eventsByRun.get(opening.runId)?.map((event) => event.id),
+          [opening.id, terminal.id],
+        );
+        assert.equal(next.durableEventOrdinalById.get(terminal.id), 2);
+      } finally {
+        t.mock.restoreAll();
+        writer.close();
+      }
+    });
+  });
+
+  it('batch Session reads retain event identity validation', async () => {
+    await withStore(async (store, dbPath) => {
+      const opening = invocationOpeningEvent(1);
+      await store.appendRuntimeEvent(opening.sessionId, opening.runId, opening);
+      const text = functionCallEvent({
+        id: 'corrupt-text',
+        content: { kind: 'text', text: 'hello' },
+      });
+      await store.appendRuntimeEvent(text.sessionId, text.runId, text);
+      const writer = new DatabaseSync(dbPath);
+      try {
+        writer
+          .prepare(
+            "UPDATE runtime_events SET payload_json = json_set(payload_json, '$.sessionId', 'wrong-session') WHERE event_id = ?",
+          )
+          .run(text.id);
+        await assert.rejects(
+          store.readRuntimeEvents(text.sessionId, text.runId),
+          /identity mismatch/,
+        );
+        await assert.rejects(store.readSessionRuntimeSnapshot(text.sessionId), /identity mismatch/);
+      } finally {
+        writer.close();
+      }
+    });
+  });
+
   it('applies versioned migrations and reopens the same database without rewriting schema', async () => {
     await withStore(async (store, dbPath) => {
       assert.equal(store.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);

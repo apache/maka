@@ -152,7 +152,6 @@ export interface SessionNavigationServices {
 export interface SessionNavigationPorts {
   sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
   acquireAutomaticQueryBlock(sessionIds: readonly string[]): { release(): void };
-  activateSession(sessionId: string | undefined): void;
   clearSessionRendererState(sessionId: string): void;
   refreshSessions(): Promise<ReadonlyArray<SessionSummary>>;
   toastApi: SessionNavigationToastApi;

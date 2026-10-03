@@ -18,6 +18,7 @@
  */
 
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
 import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
@@ -45,7 +46,7 @@ import {
   createFakeModuleHubServices,
   McpPage,
 } from '../src/renderer/features/module-hub/testing';
-import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
+import { AppShellDetailPanel } from '../src/renderer/shell/detail-panel';
 import { withSkillLocationCounts } from '../src/shared/skill-location-counts';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -1264,6 +1265,27 @@ export const ExtensionsMcpDetail: Story = {
     const body = canvasElement.ownerDocument.body;
     await waitForStoryText(body, '退出授权');
     await waitForStoryText(body, 'notion-search');
+    const page = within(body);
+    await userEvent.click(page.getByRole('button', { name: '测试连接' }));
+    const notice = await page.findByText('MCP 连接正常');
+    // A toast can exist and be "visible" while a native dialog's backdrop
+    // paints over it and makes it inert. Hit-test the actual rendered text.
+    await waitFor(() => {
+      const rect = notice.getBoundingClientRect();
+      const hit = body.ownerDocument.elementFromPoint(
+        rect.x + rect.width / 2,
+        rect.y + rect.height / 2,
+      );
+      expect(hit === notice || notice.contains(hit)).toBe(true);
+    });
+    const notificationRegion = notice.closest('[role="region"]');
+    if (!(notificationRegion instanceof HTMLElement)) throw new Error('Missing toast region');
+    const dismiss = within(notificationRegion).getByRole('button');
+    dismiss.focus();
+    await expect(dismiss).toHaveFocus();
+    await userEvent.click(dismiss);
+    await waitFor(() => expect(notice).not.toBeVisible());
+    await expect(page.getByRole('button', { name: '测试连接' })).toBeVisible();
   },
 };
 
