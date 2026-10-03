@@ -48,6 +48,7 @@ import {
 } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { tryLock, unlock } from 'fs-native-extensions';
+import { syncDirectory } from './stable-storage.js';
 
 const MANAGED_DEPENDENCY_IDENTITY_DOMAIN = 'maka.managed_dependency_environment.v1\0';
 const MANAGED_DEPENDENCY_TREE_DOMAIN = 'maka.managed_dependency_environment.tree.v1\0';
@@ -1377,17 +1378,6 @@ function decrementCount(counts: Map<string, number>, key: string): void {
   const remaining = (counts.get(key) ?? 1) - 1;
   if (remaining > 0) counts.set(key, remaining);
   else counts.delete(key);
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } catch (error) {
-    if (process.platform !== 'win32') throw error;
-  } finally {
-    await handle.close();
-  }
 }
 
 async function syncRegularFile(path: string, mode: number): Promise<void> {

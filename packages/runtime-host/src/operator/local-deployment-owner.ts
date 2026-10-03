@@ -23,6 +23,7 @@ import { chmod, lstat, mkdir, open, readdir, rename, rm, unlink } from 'node:fs/
 import { userInfo } from 'node:os';
 import { dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
 import { withProcessLifetimeFileUpdateLock } from '@maka/storage/process-lifetime-file-update-lock';
+import { syncDirectory as syncStorageDirectory } from '@maka/storage/stable-storage';
 import { z } from 'zod';
 import {
   isProductReleaseVersion,
@@ -820,14 +821,8 @@ async function syncDirectory(
   purpose: LocalHostDeploymentDirectorySyncPurpose,
   options: LocalHostDeploymentAuthorityOptions,
 ): Promise<void> {
-  if (process.platform === 'win32') return;
   await options.beforeDirectorySync?.(path, purpose);
-  const directory = await open(path, 'r');
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
-  }
+  await syncStorageDirectory(path);
 }
 
 function authorityIo(message: string, cause: unknown): LocalHostDeploymentAuthorityError {

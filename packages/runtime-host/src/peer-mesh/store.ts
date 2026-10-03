@@ -19,6 +19,7 @@
 
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { syncDirectory } from '@maka/storage/stable-storage';
 import {
   acquireFileLifetimeOwner,
   type FileLifetimeOwner,
@@ -738,16 +739,6 @@ function decodeSecretDigest(value: unknown): string {
     throw new Error('Invalid Peer Mesh secretDigest');
   }
   return digest;
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
