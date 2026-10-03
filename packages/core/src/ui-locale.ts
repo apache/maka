@@ -32,7 +32,10 @@ export const UI_LOCALE_PREFERENCES = ['auto', ...UI_LOCALES] as const;
 /** A catalog must carry copy for every supported resolved locale. */
 export type UiCatalog<T> = Record<UiLocale, T>;
 
-type DeepPartial<T> = T extends readonly unknown[]
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MessageFunction = (...args: any[]) => unknown;
+
+type DeepPartial<T> = T extends readonly unknown[] | MessageFunction
   ? T
   : T extends object
     ? { readonly [Key in keyof T]?: DeepPartial<T[Key]> }
@@ -44,20 +47,24 @@ export type UiMessageCatalog<T> = {
   readonly [Locale in Exclude<UiLocale, 'en'>]: DeepPartial<T>;
 }>;
 
-type ExactMessageShape<Actual, Expected> = Actual extends readonly unknown[]
-  ? NonNullable<Expected> extends readonly unknown[]
+type ExactMessageShape<Actual, Expected> = Actual extends MessageFunction
+  ? NonNullable<Expected> extends MessageFunction
     ? Actual
     : never
-  : Actual extends object
-    ? Exclude<keyof Actual, keyof NonNullable<Expected>> extends never
-      ? {
-          readonly [Key in keyof Actual]: ExactMessageShape<
-            Actual[Key],
-            NonNullable<Expected>[Key & keyof NonNullable<Expected>]
-          >;
-        }
+  : Actual extends readonly unknown[]
+    ? NonNullable<Expected> extends readonly unknown[]
+      ? Actual
       : never
-    : Actual;
+    : Actual extends object
+      ? Exclude<keyof Actual, keyof NonNullable<Expected>> extends never
+        ? {
+            readonly [Key in keyof Actual]: ExactMessageShape<
+              Actual[Key],
+              NonNullable<Expected>[Key & keyof NonNullable<Expected>]
+            >;
+          }
+        : never
+      : Actual;
 
 const messageFormatters = new Map<string, IntlMessageFormat>();
 
