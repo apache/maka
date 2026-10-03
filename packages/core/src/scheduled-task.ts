@@ -616,34 +616,34 @@ function asFiniteNumber(value: unknown): number | null {
   return null;
 }
 
+/**
+ * 日历重复保留 Date 的本地时间规则：夏令时缺失时间向后平移，重复时间取首次。
+ * 每次仍从锚点重建，平移不延续到下一周期；cron 则跳过不存在的本地时间。
+ */
 function nextCalendarFireAt(
   schedule: Extract<ScheduledTaskSchedule, { kind: 'calendar' }>,
   after: number,
 ): number {
   const anchor = new Date(schedule.anchorAt);
-  if (schedule.recurrence === 'daily') {
-    const next = new Date(after);
-    next.setHours(
-      anchor.getHours(),
-      anchor.getMinutes(),
-      anchor.getSeconds(),
-      anchor.getMilliseconds(),
-    );
-    if (next.getTime() <= after) next.setDate(next.getDate() + 1);
-    return next.getTime();
-  }
-  if (schedule.recurrence === 'weekly') {
-    const next = new Date(after);
-    next.setHours(
-      anchor.getHours(),
-      anchor.getMinutes(),
-      anchor.getSeconds(),
-      anchor.getMilliseconds(),
-    );
-    const dayDelta = (anchor.getDay() - next.getDay() + 7) % 7;
-    next.setDate(next.getDate() + dayDelta);
-    if (next.getTime() <= after) next.setDate(next.getDate() + 7);
-    return next.getTime();
+  if (schedule.recurrence === 'daily' || schedule.recurrence === 'weekly') {
+    const base = new Date(after);
+    const dayOffset =
+      schedule.recurrence === 'daily' ? 0 : (anchor.getDay() - base.getDay() + 7) % 7;
+    const periodDays = schedule.recurrence === 'daily' ? 1 : 7;
+    // Build each occurrence from the anchor: a DST gap may normalize today's
+    // wall time, but that adjusted hour must not carry into another date.
+    const occurrence = (offset: number): number =>
+      new Date(
+        base.getFullYear(),
+        base.getMonth(),
+        base.getDate() + offset,
+        anchor.getHours(),
+        anchor.getMinutes(),
+        anchor.getSeconds(),
+        anchor.getMilliseconds(),
+      ).getTime();
+    const next = occurrence(dayOffset);
+    return next > after ? next : occurrence(dayOffset + periodDays);
   }
   const afterDate = new Date(after);
   for (let offset = 0; offset <= 480; offset += 1) {
