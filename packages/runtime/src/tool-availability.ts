@@ -376,7 +376,13 @@ export class ToolAvailabilityRuntime {
       name: TOOL_SEARCH_NAME,
       description: renderInventory(this.groups),
       parameters: z.object({
-        query: z.string().trim().min(1).describe('Search query describing the needed capability.'),
+        query: z
+          .string()
+          .trim()
+          .min(1)
+          .describe(
+            'Search query describing the needed capability. An exact catalog tool name activates only that tool.',
+          ),
         limit: z
           .number()
           .int()
@@ -387,11 +393,7 @@ export class ToolAvailabilityRuntime {
       }),
       impl: ({ query, limit = TOOL_SEARCH_DEFAULT_LIMIT }, context) => {
         const normalizedQuery = query.trim();
-        const ranked = this.searchIndex!.search(normalizedQuery)
-          .map((result) => String(result.id))
-          .filter((name) => !activeTools.has(name))
-          .slice(0, TOOL_SEARCH_MAX_LIMIT)
-          .filter((name) => this.searchableNames.has(name));
+        const ranked = this.rankDeferredSearchHits(normalizedQuery, activeTools);
         const activated: string[] = [];
         let blocked: ToolSearchResult['blocked'];
         let schemaChars = 0;
@@ -438,6 +440,39 @@ export class ToolAvailabilityRuntime {
         };
       },
     };
+  }
+
+  /**
+   * Rank deferred tools for one search. An exact catalog name (case-sensitive,
+   * then unique case-insensitive) never expands into MiniSearch neighbors, so
+   * naming one tool cannot invalidate the prompt-cache prefix with up to
+   * `TOOL_SEARCH_DEFAULT_LIMIT` extra schemas.
+   */
+  private rankDeferredSearchHits(
+    query: string,
+    activeTools: ReadonlyMap<string, string>,
+  ): string[] {
+    const exactName = this.resolveExactCatalogName(query);
+    if (exactName !== undefined) {
+      return this.searchableNames.has(exactName) && !activeTools.has(exactName) ? [exactName] : [];
+    }
+    return this.searchIndex!.search(query)
+      .map((result) => String(result.id))
+      .filter((name) => !activeTools.has(name))
+      .slice(0, TOOL_SEARCH_MAX_LIMIT)
+      .filter((name) => this.searchableNames.has(name));
+  }
+
+  private resolveExactCatalogName(query: string): string | undefined {
+    if (this.toolsByName.has(query)) return query;
+    const lowered = query.toLowerCase();
+    let match: string | undefined;
+    for (const name of this.toolsByName.keys()) {
+      if (name.toLowerCase() !== lowered) continue;
+      if (match !== undefined) return undefined;
+      match = name;
+    }
+    return match;
   }
 
   private buildDiagnostic(

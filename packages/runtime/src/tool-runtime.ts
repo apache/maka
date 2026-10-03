@@ -3032,7 +3032,8 @@ function racePromiseWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Prom
 export function formatDeferredNotLoadedText(toolName: string): string {
   return (
     `Tool "${toolName}" is available but not loaded yet. ` +
-    `Call tool_search to activate it first, then call "${toolName}" on a later step.`
+    `Call tool_search with query "${toolName}" to activate it first, ` +
+    `then call "${toolName}" on a later step.`
   );
 }
 
