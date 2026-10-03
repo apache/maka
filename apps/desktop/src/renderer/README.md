@@ -316,8 +316,8 @@ following. Exports only tests or Storybook read live in each feature's
 
 | Feature | Export | Root consumer | Kind | Stays because / Removal |
 | --- | --- | --- | --- | --- |
-| overlays | `OverlaysConsumer` | `app-shell-overlays.tsx` (Settings modal, palette command list) | render-prop projection of overlay state | M5, with the legacy command actions |
-| diagnostics | `ManualDiagnosticReportConsumer` | command palette options in `app-shell.tsx` | render-prop manual report command | M5, with the legacy command actions |
+| overlays | `OverlaysConsumer` | `app-shell-overlays.tsx` (Settings modal, palette command list) | render-prop projection of overlay state | stays: root composition of the legacy Settings surface and the palette command list, which a feature cannot import; it moves when the Settings surface migrates, outside R2 |
+| diagnostics | `ManualDiagnosticReportConsumer` | command palette options in `app-shell.tsx` | render-prop manual report command | stays: cross-region command (the diagnostics owner's manual report, handed to the shell-built palette options) |
 | task-entry | `TaskEntryWorkspacePickerConsumer` | Composer region in `app-shell.tsx` | render-prop workspace picker | M3 |
 | session-collaboration | `GuestTurnRequests` | Composer region in `app-shell.tsx` | render-prop guest composer projection over the Composer ref | M3 |
 | module-hub | `ModuleHubSkillCatalogRevisionBoundary` | Composer mentions provider | render-prop skill catalog revision | M3 |
