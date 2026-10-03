@@ -760,7 +760,7 @@
           "react": 1
         },
         "importSpecifiers": 59,
-        "nonTriviaTokens": 7967
+        "nonTriviaTokens": 7965
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
@@ -3334,16 +3334,14 @@
         "bridgePaths": {
           "window.maka.app.sessionProjectInfo": 1,
           "window.maka.projects.getDefaultContext": 1,
-          "window.maka.projects.getLocalSnapshot": 1,
           "window.maka.projects.getSnapshot": 1,
-          "window.maka.projects.subscribeChanges": 2,
-          "window.maka.projects.subscribeLocalChanges": 1
+          "window.maka.projects.subscribeChanges": 2
         },
         "environmentCapabilities": {},
         "hookCalls": {
-          "useEffect": 4,
+          "useEffect": 3,
           "useRef": 1,
-          "useState": 7
+          "useState": 6
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,

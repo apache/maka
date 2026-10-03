@@ -775,7 +775,6 @@ function AppShellContent({
   const moduleHubCommands = useMemo(ModuleHub.createModuleHubCommandPort, []);
   const {
     projectInfo,
-    projects,
     projectCapabilities,
     activeProjectCapabilities,
     currentProjectId,
