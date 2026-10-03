@@ -1269,6 +1269,139 @@ describe('models.dev provider conformance', () => {
     );
   });
 
+  test('connection probe picks from the fetched account inventory before the shipped fallback when nothing is enabled', async () => {
+    // #5493: a fresh OpenRouter connection with nothing enabled was probed with
+    // the first hard-coded fallback (a premium model) even though the account's
+    // own list was already fetched. That list is what this key can serve, so it
+    // answers the credential question without charging for a model nobody chose.
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const inventory = ['acme/model-a', 'acme/model-b'];
+    const result = await testConnection(
+      {
+        slug: 'openrouter-inventory',
+        name: 'OpenRouter',
+        providerType: 'openrouter',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: '',
+        enabledModelIds: [],
+        models: inventory.map((id) => ({ id })),
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'openrouter-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(requestedModels, ['acme/model-a']);
+    assert.ok(
+      inventory.every((id) => !PROVIDER_REGISTRY.openrouter.fallbackModels.includes(id)),
+      'the fixture stops proving anything once the fallback list ships these ids',
+    );
+  });
+
+  test('connection probe prefers a no-cost model from the fetched inventory when nothing is enabled', async () => {
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const result = await testConnection(
+      {
+        slug: 'openrouter-free',
+        name: 'OpenRouter',
+        providerType: 'openrouter',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: '',
+        enabledModelIds: [],
+        models: [
+          { id: PROVIDER_REGISTRY.openrouter.fallbackModels[0]! },
+          { id: 'acme/model-a' },
+          { id: 'acme/model-b:free' },
+        ],
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'openrouter-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, 'acme/model-b:free');
+    assert.deepEqual(requestedModels, ['acme/model-b:free']);
+  });
+
+  test('connection probe skips a no-cost inventory model that cannot chat', async () => {
+    // The probe is a chat request and tries one model, so an image-only `:free`
+    // entry would report a valid credential as failed.
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const result = await testConnection(
+      {
+        slug: 'openrouter-image-free',
+        name: 'OpenRouter',
+        providerType: 'openrouter',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: '',
+        enabledModelIds: [],
+        models: [
+          { id: 'acme/image:free', capabilities: { chat: false, imageGeneration: true } },
+          { id: 'acme/chat', capabilities: { chat: true } },
+        ],
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'openrouter-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(requestedModels, ['acme/chat']);
+  });
+
+  test('connection probe keeps the provider fallback ahead of a shipped snapshot when nothing is enabled', async () => {
+    // Only an account-enumerated list may displace the fallback. A snapshot this
+    // build shipped says nothing about what the key can serve (#1584).
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const result = await testConnection(
+      {
+        slug: 'openrouter-snapshot',
+        name: 'OpenRouter',
+        providerType: 'openrouter',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: '',
+        enabledModelIds: [],
+        models: [{ id: 'acme/model-a:free' }],
+        modelSource: 'fallback',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'openrouter-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(requestedModels, [PROVIDER_REGISTRY.openrouter.fallbackModels[0]]);
+  });
+
   test('connection probe tests the model the user chose, not the snapshot beside it', async () => {
     const requestedModels: string[] = [];
     const server = await startJsonServer(async (request, response) => {
