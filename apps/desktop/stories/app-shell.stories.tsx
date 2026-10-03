@@ -61,7 +61,7 @@ import {
   SESSION_WORKBAR_DEFAULT_WIDTH,
   type WorkbarLayoutState,
 } from '../src/renderer/features/workbar/testing';
-import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
+import { AppShellDetailPanel } from '../src/renderer/shell/detail-panel';
 import { deriveChatTurnPresentation } from '../src/renderer/application/contracts/turn-presentation';
 import {
   deriveSessionRail,
@@ -219,10 +219,6 @@ const baseChatProps: ChatViewProps = {
   messages: conversation,
   scrollBehavior: 'smooth',
   activeSession,
-  activeConnectionLabel: 'Anthropic',
-  activeModel: 'claude-sonnet-4-5',
-  activeModelLabel: 'Claude Sonnet 4.5',
-  modelChoices,
   userLabel: '你',
   onNew: noop,
   onPromptSuggestion: noop,

@@ -132,7 +132,14 @@ describe('command palette Desktop actions', () => {
       saveConversationToFile: async () => outcomes.shift()!,
     });
     const toasts: string[] = [];
-    const options = appShellCommandOptions(toasts, { paletteActions: palette });
+    const exports: unknown[][] = [];
+    const options = appShellCommandOptions(toasts, {
+      paletteActions: palette,
+      renderPublishedConversation: (sessionName, locale) => {
+        exports.push([sessionName, locale]);
+        return '# Long task export';
+      },
+    });
 
     for (let index = 0; index < 3; index += 1) {
       await runPaletteCommand(options, 'diag:save-conversation-file');
@@ -142,6 +149,8 @@ describe('command palette Desktop actions', () => {
     const [name, input] = calls[0] ?? [];
     assert.equal(name, 'saveConversationToFile');
     assert.deepEqual(Object.keys(input as object), ['markdown', 'defaultName']);
+    assert.equal((input as { markdown: string }).markdown, '# Long task export', 'Save writes the Conversation-owned export');
+    assert.deepEqual(exports, Array(3).fill(['Long task', 'en']));
     assert.match((input as { defaultName: string }).defaultName, /^maka-Long-task-\d{4}-\d{2}-\d{2}\.md$/);
     assert.equal(toasts.length, 2);
     assert.equal(toasts[0], `success:${copy.conversationSavedTitle}`);

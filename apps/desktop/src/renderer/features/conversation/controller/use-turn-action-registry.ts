@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type RefBox<T> = { current: T };
 
@@ -58,8 +58,6 @@ export interface TurnActionRegistry {
   clearKey(key: string): void;
   /** Clears every pending key prefixed with `${sessionId}:` (session teardown). */
   clearForSession(sessionId: string): void;
-  /** Clears every key and timer (unmount, or a Runtime Host generation change). */
-  clearAll(): void;
 }
 
 export function useTurnActionRegistry(): TurnActionRegistry {
@@ -95,16 +93,16 @@ export function useTurnActionRegistry(): TurnActionRegistry {
         if (key.startsWith(prefix)) clearKey(key);
       }
     };
-    const clearAll = (): void => {
-      for (const timeoutHandle of timersRef.current.values()) {
-        clearTimeout(timeoutHandle);
-      }
-      timersRef.current.clear();
-      keysRef.current.clear();
-      syncState();
-    };
-    controllerRef.current = { keysRef, keyOf, addKey, clearKey, clearForSession, clearAll };
+    controllerRef.current = { keysRef, keyOf, addKey, clearKey, clearForSession };
   }
+
+  // The owner unmounting ends every mark: nothing renders them afterwards, and
+  // a timer must not outlive the registry it would clear.
+  useEffect(() => () => {
+    for (const timeoutHandle of timersRef.current.values()) clearTimeout(timeoutHandle);
+    timersRef.current.clear();
+    keysRef.current.clear();
+  }, []);
 
   return { keys, ...controllerRef.current };
 }

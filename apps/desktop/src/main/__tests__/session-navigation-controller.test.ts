@@ -156,7 +156,6 @@ function ports(
   return {
     sessionsRef: { current: sessions },
     acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
-    activateSession: (sessionId) => calls.push(`activate:${sessionId ?? 'none'}`),
     clearSessionRendererState: (sessionId) => calls.push(`clear:${sessionId}`),
     refreshSessions: async () => sessions,
     toastApi: {
@@ -205,7 +204,7 @@ function navigationTree(
   shell: {
     activeSessionId: string;
     workHubActive: boolean;
-    workHubEntry?: { active: boolean; label: string; onSelect(): void };
+    onOpenWorkHub?(): void;
   },
   sibling: ReactNode,
   child: ReactNode,
@@ -674,7 +673,7 @@ describe('SessionNavigationProvider selection', () => {
     await act(async () => root.render(navigationTree(catalog, {
       activeSessionId: 'root',
       workHubActive: false,
-      workHubEntry: { active: false, label: 'WorkHub', onSelect: () => opened.push('workhub') },
+      onOpenWorkHub: () => opened.push('workhub'),
     }, null, createElement(ChromeProbe), undefined, { workHub: enablement })));
     const workHubEntry = () => chrome?.workHubEntry;
     assert.equal(workHubEntry(), undefined);

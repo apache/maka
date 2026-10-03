@@ -50,9 +50,11 @@ const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
 };
 
 /**
- * Owns the workspace projection AppShell reads: the default Host's project,
- * the active session's project, and the persistent project catalog behind
- * them. Project mutations and the open-folder commands belong to Task Entry.
+ * The read-only project projection the root composes into the titlebar,
+ * Workbar, Module Hub, command palette and mentions: the owner Session's
+ * project (path, Git state, current project, capabilities) and, with no
+ * Session, the default Host's. Project mutations and the open-folder
+ * commands belong to Task Entry.
  */
 export function useAppShellProjectContext(options: {
   rendererMountedRef: RefBox<boolean>;
@@ -64,11 +66,8 @@ export function useAppShellProjectContext(options: {
   /** Re-reads the default Host's project context; resolves to its projects. */
   refreshProjects(): Promise<ProjectRecord[]>;
   projectInfo: RendererAppInfo | null;
-  projects: ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
   activeProjectCapabilities: DesktopProjectCapabilities;
-  localProjects: readonly ProjectRecord[];
-  selectedProjectId: string | null | undefined;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
 } {
@@ -84,7 +83,6 @@ export function useAppShellProjectContext(options: {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [projectCapabilities, setProjectCapabilities] =
     useState<DesktopProjectCapabilities>(NO_PROJECT_CAPABILITIES);
-  const [localHostProjects, setLocalHostProjects] = useState<ProjectRecord[]>([]);
   const [sessionProjectSnapshot, setSessionProjectSnapshot] = useState<{
     sessionId: string;
     projects: ProjectRecord[];
@@ -135,29 +133,6 @@ export function useAppShellProjectContext(options: {
     refresh();
     return () => {
       defaultRefreshGenerationRef.current += 1;
-      unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let refreshGeneration = 0;
-    const refresh = () => {
-      const generation = ++refreshGeneration;
-      return window.maka.projects.getLocalSnapshot().then(
-        (snapshot) => {
-          if (cancelled || generation !== refreshGeneration) return;
-          setLocalHostProjects([...snapshot.projects]);
-        },
-        () => {
-          // The Local Host may be reconnecting; its ready event retries this read.
-        },
-      );
-    };
-    const unsubscribe = window.maka.projects.subscribeLocalChanges(() => void refresh());
-    void refresh();
-    return () => {
-      cancelled = true;
       unsubscribe();
     };
   }, []);
@@ -240,11 +215,8 @@ export function useAppShellProjectContext(options: {
   return {
     refreshProjects,
     projectInfo,
-    projects,
     projectCapabilities,
     activeProjectCapabilities,
-    localProjects: localHostProjects,
-    selectedProjectId,
     currentProjectId,
     currentProject,
   };

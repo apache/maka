@@ -49,9 +49,10 @@ submission owner reads them from the controller. Its
 published Session reference is a frozen getter, and consuming contracts declare
 it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
-`readMessages()` is an invocation-time, readonly view of the **published range**;
-it is used by Copy/Save and is not a full-history promise. Revision commands read
-the same range from the controller inside the Composer submission owner.
+Copy and Save call `renderPublishedConversation(sessionName, locale)`, which
+renders the **published range** as Markdown at invocation; the shell gets the
+export, not the messages, and it is not a full-history promise. Revision commands
+read the same range from the controller inside the Composer submission owner.
 
 The Desktop adapter supplies `ConversationObservationServices`. The feature
 never imports the Desktop range implementation or accesses `window.maka`.
@@ -113,8 +114,22 @@ with viewport navigation passed separately. `LiveTurnReconciler` receives only
 the live-content reader and its existing semantic reconciliation command.
 Neither reader receives the complete controller.
 
-The shell's temporary `useAppShellSessionUiReads` projection uses the published
-Session for content/queue/pending and the owner Session for interactions.
+The shell takes no Session UI read. Each region reads what it renders, for the
+displayed Session and, for interactions, the owner Session:
+- `ConversationComposerRegion`: the Turn summary behind Stop and the controls a
+  running Turn holds (mode, permission, goal, model switch, executor and
+  `/compact`), the queue and the owner Session's interaction. The shell passes
+  only what the gates combine with: whether the catalog row has arrived, its
+  status, and the executor selection.
+- `ConversationTranscriptRegion`: the running Turn's activity, which also holds
+  the health notice's model picker. The shell passes the boundary's
+  `localInteractionAvailable` as a typed region input.
+- `ConversationActivityConsumer`: whether an observable Turn runs and whether
+  the owner Session waits on an answer, for the custom pet.
+- `ConversationHomeSurface`: the main column, marked as the home surface while
+  the shell's empty-transcript condition holds and there is no live Turn
+  content and no failed load.
+
 The Conversation provider separately reads only its published queue.
 `LiveTurnReconciler` still follows all retained Turns within that Session,
 including predecessors; it must not subscribe only to the execution root.
@@ -124,12 +139,11 @@ State and reader construction modules are private under
 exports reader contracts and consumer hooks, not state constructors or arbitrary
 selectors. Whole-state inspection is available from `testing.ts` only.
 
-Remaining transitional capabilities have explicit consumers and removal work:
+Remaining transitional capabilities have explicit consumers and removal work.
+None remain; a new one needs a row here.
 
 | Capability | Current consumer | Removal module |
 | --- | --- | --- |
-| `useAppShellSessionUiReads` | AppShell chrome and Composer prop assembly | M3 regional readers; retain only required chrome |
-| Invocation-time published-message read | Copy/Save | M3 command ownership / bounded-history export integration |
 
 M2 owns presentation and observation; it does not add a Catalog, Host cache or
 execution state machine, or complete the remaining Composer migration.
@@ -205,16 +219,22 @@ directory pickers still require the original draft and Host to remain current.
 Staging uses `activeId ?? NEW_TASK_PENDING_KEY`; the editor's new-task persistence
 key remains distinct. Do not key this provider or the Composer's parent by Session.
 
-Delivery recovery is later M3 work. It can use captured submission commands
-without restoring root subscriptions or acquiring the private controller.
+Delivery recovery stays bound to the Session and Message it started from. A
+cancelled local message or an edited queue entry hands its text to the editor's
+keyed draft and its attachments, directories and quotes to staging's
+`restoreContext`, both under the key of the Session it left, so the restore
+lands there even after navigation. The submission owner binds that restore; with
+no staging owner mounted it does nothing. A message whose outcome is unknown
+keeps its id and offers only the Host check.
 
 ## Composer submission ownership (R2 M3)
 
 `ComposerSubmissionProvider` alone calls the submission controller. It is
 mounted beside the staging and readiness owners and stays mounted across Session
 and section switches. It owns the send-pending flag, the edit-and-resend draft
-(with the catalog watch that retires it), the retracted workspace references and
-the submit, follow-up, Stop, Turn-branch and interaction-answer paths.
+(with the catalog watch that retires it), the retracted workspace references,
+the Turn-footer pending marks, the safe-boundary resume offer and the submit,
+follow-up, Stop, Turn-branch, resume and interaction-answer paths.
 `createRevisionAwareOnSend`, the staged follow-up and the chat, revision, Stop
 and Turn actions are assembled here, not in AppShell, and none of them is
 exported from `index.ts`. Local delivery recovery (`SessionLocalMessages`)
@@ -225,20 +245,45 @@ The Host operations reach the owner as `ComposerSubmissionServices`, one named
 operation each; the Desktop adapter is the only caller of those bridge paths.
 The shell supplies a `shell` port of commands it already owns (surface
 ownership, navigation, catalog refresh, execution-boundary reload, the Workbar's
-form answer, side chat and new-task resolver, the model-setup toast, the
-Turn-action pending registry the transcript renders, and the selected Session's
-orchestration write) and a `newTask`
+form answer, side chat and new-task resolver, the model-setup toast and the
+selected Session's orchestration write), the owner Session the resume offer is
+read for, and a `newTask`
 projection read at send time. Session Settings owns the new-task Plan, orchestration and permission
 choices; the projection carries them, and creation consumes the permission
 choice through `clearPermissionChoice`.
 
 `ConversationComposerRegion` reads the owner in the persistent Composer slot: it
 injects `onSend`, `newTaskSendPending`, `onStop`/`stop` with the published
-Session's Stop claim, the interaction answers and the revision notice, and
-narrows the shell's picker gates while a draft is open. The shell keeps only the
-stable `ComposerSubmissionCommands` handle, whose `beginEditUserMessage` and
-`handleTurnFooterAction` serve the transcript. The handle throws
-while the owner is unmounted. The binding and reader context are private.
+Session's Stop claim, the send-slot resume offer, the interaction answers and
+the revision notice, and narrows the shell's picker gates while a draft is open.
+`ConversationTranscriptRegion` derives the Turn presentation from the same
+owner's pending marks (Branch is withheld from a shared Session) and injects the
+interrupted-Turn banner's resume action; one resume instance sits behind both,
+so the banner cannot race the send slot. The transcript and the activity reader
+read a narrow Turn reader (displayed and owner Session, pending marks, the
+banner action), so a send or an edit draft does not repaint the transcript. The
+marks end with the owner: the registry clears its timers when it unmounts. The
+shell keeps only the stable `ComposerSubmissionCommands` handle, whose
+`beginEditUserMessage` and `handleTurnFooterAction` serve the transcript and
+whose `clearPendingTurnActions(sessionId)` serves Session teardown. The first
+two throw while the owner is unmounted; cleanup is a no-op then. The binding and
+reader contexts are private.
+
+## Composer editing intents (R2 M3)
+
+The editor handle stays inside Conversation: `ConversationComposerRegion`
+attaches it to the Composer, and the submission owner and draft restoration use
+it internally. Everyone else gets `ComposerEditingCommands`:
+- `appendText`, `replaceText`, `focus` and `openModelPicker` for the visible draft;
+- `seedDraft` for Work Board's new-task draft, and `discardDraft` for a Guest's
+  settled turn request;
+- `claimVisibleDraft` for Module Hub's later append, which stays current only
+  while the same editor is mounted.
+
+None of them reads a draft back. The shell reaches them through its queue
+surface, which carries only these intents and the plate's entry actions. Workbar
+and Session Collaboration take the two keyed intents structurally, without
+importing Conversation.
 
 ## Task readiness ownership (R2 M3)
 

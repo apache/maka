@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { InlineReference } from '@maka/core/events';
 import { useToast, useUiLocale } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '@maka/ui/pending-items';
@@ -42,6 +42,8 @@ import { createChatActions } from './chat-actions.js';
 import { createRevisionAwareOnSend, createStagedFollowUp } from './composer-submit.js';
 import { createStopAction } from './stop-action.js';
 import { createTurnActions } from './turn-actions.js';
+import { useTurnActionRegistry } from './use-turn-action-registry.js';
+import { useShellResume } from './use-shell-resume.js';
 import {
   abandonTurnRevisionCopyAttempt,
   completeTurnRevisionCopyAttempt,
@@ -60,8 +62,10 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   readonly shell: ComposerSubmissionShell<Owner>;
   readonly newTask: ComposerNewTaskSubmission;
   readonly sharedSessionActive: boolean;
+  /** The readable, non-shared Host Session; the resume offer is read for it. */
+  readonly ownerSessionId: string | undefined;
 }) {
-  const { staging, shell, newTask, sharedSessionActive } = input;
+  const { staging, shell, newTask, sharedSessionActive, ownerSessionId } = input;
   const services = useComposerSubmissionServices();
   const { workspace, commands } = useConversationOwner();
   const queue = useConversationQueueCommands();
@@ -69,6 +73,29 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   const uiLocale = useUiLocale();
   const toastApi = useToast();
   const activeIdRef = workspace.publishedSession;
+  const activeId = useSyncExternalStore(workspace.target.subscribe, workspace.target.getSnapshot);
+  // Pending Turn-footer marks: the actions below set them, the transcript reads them.
+  const turnActionRegistry = useTurnActionRegistry();
+  // One instance behind both the banner and the send slot, so the two can never
+  // race a second resume request past the first.
+  const resume = useShellResume({
+    activeId,
+    ownerActiveId: ownerSessionId,
+    sharedSessionActive,
+    toastApi,
+    shellCopy: getShellCopy(uiLocale).app,
+    uiLocale,
+  });
+  // A withdrawn send — an edited queue entry or a cancelled local message —
+  // hands its staged context back under the key of the Session it left, so the
+  // restore lands there even after navigation; the text goes through the
+  // editor's keyed draft beside it.
+  useLayoutEffect(() => {
+    const slot = queue.draftContextRestorer;
+    const restore: NonNullable<typeof slot.current> = (sessionId, draft) => staging.restoreContext(sessionId, draft);
+    slot.current = restore;
+    return () => { if (slot.current === restore) slot.current = undefined; };
+  }, [queue, staging]);
 
   // Held for the whole of a send; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
@@ -188,7 +215,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     uiLocale,
     activeIdRef,
     captureSelection: commands.captureSelection,
-    turnActionRegistry: shell.turnActions,
+    turnActionRegistry,
     openSessionInChat: shell.openSession,
     refreshSessions: shell.refreshSessions,
     toastApi,
@@ -227,7 +254,8 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   const shellCommands = useMemo<ComposerSubmissionCommands>(() => ({
     beginEditUserMessage: (turnId) => revision.beginEditUserMessage(turnId),
     handleTurnFooterAction: (turnId, actionId) => turn.handleTurnFooterAction(turnId, actionId),
-  }), [revision, turn]);
+    clearPendingTurnActions: (sessionId) => turnActionRegistry.clearForSession(sessionId),
+  }), [revision, turn, turnActionRegistry.clearForSession]);
   const reader = useMemo(() => ({
     onSend,
     newTaskSendPending,
@@ -237,10 +265,21 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     respondToUserQuestion: chat.respondToUserQuestion,
     respondToUserForm: chat.respondToUserForm,
     stop,
-  }), [chat, newTaskSendPending, onSend, revision, revisionDraft, stop]);
+    composerResumeAction: resume.composerResumeAction,
+  }), [chat, newTaskSendPending, onSend, resume.composerResumeAction, revision, revisionDraft, stop]);
+  // What the transcript and the chrome readers take, apart from the Composer's
+  // submission state, so a send or an edit draft does not repaint the transcript.
+  const turnReader = useMemo(() => ({
+    activeId,
+    ownerSessionId,
+    sharedSessionActive,
+    pendingTurnActions: turnActionRegistry.keys,
+    safeResumeAction: resume.safeResumeAction,
+  }), [activeId, ownerSessionId, resume.safeResumeAction, sharedSessionActive, turnActionRegistry.keys]);
   return {
     shellCommands,
     reader,
+    turnReader,
     // Local delivery recovery publishes into, and restores drafts for, the
     // Session the Composer shows.
     localMessages: {

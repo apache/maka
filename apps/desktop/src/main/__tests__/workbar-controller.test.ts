@@ -251,7 +251,7 @@ function workBoardInput(
       ownerRef.current += 1;
       return ownerRef.current;
     },
-    composerRef: { current: { setDraft: () => undefined, focus: () => undefined } },
+    composerDraft: { seedDraft: () => undefined, focus: () => undefined },
     ...overrides,
   };
 }
