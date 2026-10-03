@@ -26,6 +26,7 @@
     "build": "tsc -p tsconfig.json",
     "benchmark:session-copy": "node scripts/session-copy-cost-benchmark.mjs",
     "benchmark:transcript": "node scripts/transcript-data-plane-benchmark.mjs",
+    "benchmark:hydration-e2e": "node scripts/hydration-e2e-benchmark.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
