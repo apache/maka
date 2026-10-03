@@ -53,6 +53,24 @@ export function isSessionWorkspaceUnavailableError(error: unknown): boolean {
   );
 }
 
+export function notifyWorkspaceUnavailableIfNeeded(
+  error: unknown,
+  toastApi: {
+    error(
+      title: string,
+      description?: string,
+      diagnosticDetails?: string,
+      diagnosticTarget?: ToastDiagnosticTarget,
+    ): void;
+  },
+  locale: UiLocale,
+  diagnosticTarget?: ToastDiagnosticTarget,
+): boolean {
+  if (!isSessionWorkspaceUnavailableError(error)) return false;
+  showSessionWorkspaceUnavailableToast(toastApi, locale, diagnosticTarget);
+  return true;
+}
+
 export function notifyInteractionResponseFailure(
   shouldNotify: boolean,
   error: unknown,
@@ -70,11 +88,8 @@ export function notifyInteractionResponseFailure(
   },
 ): void {
   if (!shouldNotify) return;
-  const copy = getShellCopy(input.locale).errors;
-  if (isSessionWorkspaceUnavailableError(error)) {
-    showSessionWorkspaceUnavailableToast(input.toastApi, input.locale, { sessionId: input.sessionId });
-    return;
-  }
+  const copy = getShellCopy(input.locale).chatActions;
+  if (notifyWorkspaceUnavailableIfNeeded(error, input.toastApi, input.locale, { sessionId: input.sessionId })) return;
   input.toastApi.error(
     copy.responseFailedTitle,
     localizedShellErrorMessage(error, copy.responseFailedFallback, input.locale),
