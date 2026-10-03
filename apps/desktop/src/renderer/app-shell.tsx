@@ -18,6 +18,7 @@
  */
 
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
+import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
   useCallback,
@@ -82,7 +83,12 @@ import * as SessionCollaboration from './features/session-collaboration';
 import type { SessionCollaborationDialogProjection } from './features/session-collaboration';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { desktopSlashCommandAvailability } from './application/contracts/desktop-slash-command.js';
-import { getOnboardingActivationCandidate, useOnboardingSnapshot } from './use-onboarding-snapshot';
+import {
+  getOnboardingActivationCandidate,
+  OnboardingProjectionRoot,
+  type OnboardingShellProjection,
+} from './application/contracts/onboarding/onboarding-authority.js';
+import { ShellLifecycleSubscriptions } from './application/contracts/shell-lifecycle.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
@@ -111,10 +117,7 @@ import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
-import {
-  defaultRuntimeHostDiagnosticTarget,
-  runOnDefaultRuntimeHost,
-} from './platform/desktop/default-runtime-host-operation.js';
+import { defaultRuntimeHostDiagnosticTarget } from './platform/desktop/default-runtime-host-operation.js';
 import { useAppShellProjectContext } from './use-project-context';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import { useStableActions } from './use-stable-actions';
@@ -155,7 +158,6 @@ export function AppShell() {
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
   const systemUiLocale = useSystemUiLocale();
   const uiLocale = resolveUiLocale(uiLocalePreference, systemUiLocale, uiLocaleOverride);
-  const copy = getShellCopy(uiLocale);
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
@@ -164,13 +166,7 @@ export function AppShell() {
           `useUiLocale()` throws before anything renders. Still above every
           Astryx subtree. */}
       <AstryxLocaleProvider>
-        <Diagnostics.DiagnosticReportToastProvider
-          labels={{
-            label: copy.errorBoundary.copyReport,
-            failureTitle: copy.commandActions.copyFailedTitle,
-            failureDescription: copy.commandActions.clipboardDenied,
-          }}
-        >
+        <Diagnostics.DiagnosticReportToastProvider>
           <ErrorBoundary locale={uiLocale}>
             <AppUpdateProvider>
               <RuntimeHostHandoffOverlay />
@@ -184,9 +180,17 @@ export function AppShell() {
                           <WorkbarShellRoot>
                             {(workbar) => (
                               <Conversation.ConversationProvider>
-                                <AppShellContent
-                                  {...{ taskEntry, overlays, sharedSessionDialog, workbar, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                                />
+                                <OnboardingProjectionRoot>
+                                  {(onboarding) => (
+                                    <Diagnostics.ManualDiagnosticReportConsumer>
+                                      {(copyManualDiagnosticReport) => (
+                                        <AppShellContent
+                                          {...{ taskEntry, overlays, sharedSessionDialog, workbar, onboarding, copyManualDiagnosticReport, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                                        />
+                                      )}
+                                    </Diagnostics.ManualDiagnosticReportConsumer>
+                                  )}
+                                </OnboardingProjectionRoot>
                               </Conversation.ConversationProvider>
                             )}
                           </WorkbarShellRoot>
@@ -220,6 +224,8 @@ function AppShellContent({
   overlays,
   sharedSessionDialog,
   workbar: { bridge, commands, selectors, LiveContextUsageProbe },
+  onboarding,
+  copyManualDiagnosticReport,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
@@ -229,6 +235,8 @@ function AppShellContent({
   overlays: OverlaysShellProjection;
   sharedSessionDialog: SessionCollaborationDialogProjection;
   workbar: WorkbarShellProjection;
+  onboarding: OnboardingShellProjection;
+  copyManualDiagnosticReport: Diagnostics.CopyManualDiagnosticReport;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
@@ -284,7 +292,6 @@ function AppShellContent({
   const { searchScrollTarget } = overlays.selectors;
   const settingsOpen = overlays.selectors.settings.open;
 
-  const onboarding = useOnboardingSnapshot();
   // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
   const { resolveWorkBoardTarget, prepareWorkBoardDraft, openSessionWorkspaceRecovery } = taskEntry.commands;
@@ -313,32 +320,9 @@ function AppShellContent({
     ));
   }, []);
   const navSelectionRef = useRef<NavSelection>(navSelection);
-  const [workHubEnabled, setWorkHubEnabled] = useState(false);
+  // Navigation only: whether WorkHub is enabled at all is the client switch
+  // the WorkHub enablement authority owns (see WorkHubEnablementWatch below).
   const [workHubActive, setWorkHubActive] = useState(false);
-  const workHubEnabledRef = useRef(false);
-  useEffect(() => {
-    let disposed = false;
-    const refresh = async () => {
-      try {
-        const enabled = (await window.maka.settings.getClient()).workHub.enabled;
-        if (disposed) return;
-        const becameEnabled = enabled && !workHubEnabledRef.current;
-        workHubEnabledRef.current = enabled;
-        setWorkHubEnabled(enabled);
-        if (!enabled || becameEnabled) setWorkHubActive(enabled);
-        if (becameEnabled) setNavSelection({ section: 'sessions' });
-      } catch {
-        // Keep the last known client-owned setting. A transient settings read
-        // must not leave the shell half-switched between WorkHub and Session.
-      }
-    };
-    void refresh();
-    const unsubscribe = window.maka.settings.subscribeClientChanged(() => void refresh());
-    return () => {
-      disposed = true;
-      unsubscribe();
-    };
-  }, [setNavSelection]);
   // #4582: read only displayed/owner Session chrome. Token content and global
   // streaming membership subscribe inside their consuming regions.
   const {
@@ -672,7 +656,6 @@ function AppShellContent({
     [shellCopy],
   );
   const openWorkHub = useCallback(() => {
-    if (!workHubEnabledRef.current) return;
     overlays.commands.closeSettings();
     setNavSelection({ section: 'sessions' });
     setWorkHubActive(true);
@@ -733,7 +716,7 @@ function AppShellContent({
     transcriptHasHistory;
   // PR110c: OnboardingState is now the single source of truth for
   // first-run UI. The renderer never re-derives provider readiness;
-  // `useOnboardingSnapshot()` pulls the derived state from the main
+  // the application onboarding authority pulls the derived state from the main
   // process (PR110a + PR110b contract) and reactively invalidates on
   // `sessions:changed` + `connections:event`. The hero renders only
   // when sessions.length === 0; any session (including archived /
@@ -746,18 +729,18 @@ function AppShellContent({
         defaultConnection: snapshot.defaultSlug,
         chatModelChoices: snapshot.chatModelChoices,
       });
-    } else if (onboarding.error) {
+    } else if (onboarding.failed) {
       // Session bootstrap is independent above. If onboarding itself failed,
       // retain the previous connection-specific recovery path as well.
       void defaultHostConnections.refreshConnections();
     }
-  }, [onboarding.error, onboarding.snapshot]);
+  }, [onboarding.failed, onboarding.snapshot]);
   // Nothing settled to show while the first snapshot pull is in flight. The
   // flag keeps the composer hidden and — through `data-maka-content-ready` on
   // .appFrame — holds the launch overlay until a real frame exists: sessions,
   // a hero, or the load-error fallback.
   const isOnboardingLoading =
-    sessionCount === 0 && onboardingState === undefined && !onboardingSettled && !onboarding.error;
+    sessionCount === 0 && onboardingState === undefined && !onboardingSettled && !onboarding.failed;
   // Only unfinished setup takes the chat surface over. A configured user with
   // no sessions is not onboarding: they land on the normal empty chat and use
   // the one real Composer, which creates the session on its first send.
@@ -810,28 +793,18 @@ function AppShellContent({
     activeProjectCapabilities,
     currentProjectId,
     currentProject,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
     refreshProjects,
-    relinkProject,
-    renameProject,
-    archiveProject,
-    restoreProject,
-    openProjectFolder,
-    openWorkspaceFolder,
   } = useAppShellProjectContext({
-    uiLocale,
     rendererMountedRef,
     sessionId: ownerActiveId,
     sessionCwd: sharedSessionActive ? undefined : activeSession?.cwd,
     sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
     sessionProfileKind: sharedSessionActive ? undefined : activeSession?.profileKind,
-    onProjectSelected: (ownerSessionId) => {
-      void moduleHubCommands.refreshProjectSkills();
-      if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
-    },
-    toastApi,
   });
+  const openProjectFolder = useCallback(
+    () => taskEntry.commands.openProjectFolder(ownerActiveId),
+    [taskEntry.commands, ownerActiveId],
+  );
   const captureActiveComposerClaim = useCallback(() => {
     const sessionId = activeIdRef.current;
     const composer = composerRef.current;
@@ -999,7 +972,7 @@ function AppShellContent({
     navSelectionRef,
   });
   useAppShellHostEffects();
-  useAppShellBootstrapSubscriptions({
+  const shellLifecycle = useAppShellBootstrapSubscriptions({
     uiLocale,
     activeIdRef,
     applyE2eFixture,
@@ -1011,8 +984,6 @@ function AppShellContent({
     openHelp,
     openSettings,
     clearPendingTurnActions: turnActionRegistry.clearAll,
-    projectPickerPendingRef,
-    projectPickerRequestRef,
     refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
@@ -1196,6 +1167,8 @@ function AppShellContent({
     themePref,
     hiddenSessionIds: selectors.hiddenSessionIds,
     captureComposerImportOwner,
+    copyManualDiagnosticReport,
+    paletteActions: overlays.paletteActions,
     createSession,
     openHelp,
     openScheduledTaskCreate: () => {
@@ -1207,7 +1180,7 @@ function AppShellContent({
     openSideConversation: () => commands.openTool('side-chat'),
     openSettings,
     openSettingsSection,
-    openWorkspaceFolder,
+    openWorkspaceFolder: taskEntry.commands.openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
     copyTodayDailyReview: moduleHubCommands.copyTodayDailyReview,
     pasteTodayDailyReview: moduleHubCommands.pasteTodayDailyReview,
@@ -1236,7 +1209,7 @@ function AppShellContent({
     // on catalog moves.
     <Conversation.ComposerStagingProvider commands={composerStaging}
       draftKey={attachmentDraftKey} directoryHostId={directoryHostId} supportsVision={composerSupportsVision}>
-    <Conversation.TaskReadinessProvider request={taskReadinessRequest} refreshKey={onboarding.snapshot}
+    <Conversation.TaskReadinessProvider request={taskReadinessRequest}
       sessionId={ownerActiveId} newTaskTarget={activeId ? undefined : taskEntry.selectors.target}
       workspaceRecoverySessionId={activeSession?.id} openSessionWorkspaceRecovery={openSessionWorkspaceRecovery}
       addProject={taskEntry.selectors.canAddProject ? taskEntry.commands.addProject : undefined}>
@@ -1328,7 +1301,7 @@ function AppShellContent({
     <WorkbarProvider
       bridge={bridge}
       input={{
-        workHub: { enabled: workHubEnabled, active: workHubActive },
+        workHub: { active: workHubActive },
         available: sessionsSelected && (workHubActive || Boolean(activeHostSession)),
         layoutSessionId: activeId,
         activeSession: activeHostSession,
@@ -1365,13 +1338,14 @@ function AppShellContent({
       })}
     >
       <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
+      <ShellLifecycleSubscriptions {...shellLifecycle} />
+      <WorkHubEnablementWatch onEnabled={() => { setWorkHubActive(true); setNavSelection({ section: 'sessions' }); }} onDisabled={exitWorkHub} />
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
         onExecutionBoundaryChanged={reloadActiveExecutionBoundary}
         showModelSetupToast={showModelSetupToast}
         onTurnCompleted={(sessionId) => { if (activeIdRef.current === sessionId) setPetCompletionNonce((current) => current + 1); }}
         searchTarget={searchScrollTarget} clearSearchTarget={() => setSearchScrollTarget(null)}
-        listTurnLandmarks={(sessionId, turnId) => window.maka.sessions.listTurnLandmarks(sessionId, turnId)}
       />
       {/* Window chrome is frame-level hit-test only (not AppShell topNav): a
           transparent drag overlay so column surfaces paint to the window top.
@@ -1455,7 +1429,6 @@ function AppShellContent({
                 hiddenSessionIds={selectors.hiddenSessionIds}
                 projectScopes={taskEntry.selectors.projectScopes}
                 streamingSessions={sessionUiReads.streaming}
-                sessionSendOutcomes={onboarding.snapshot?.sessionSendOutcomes}
                 SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
                 NavigationExtras={SessionCollaboration.SessionCollaborationNavigation}
                 ports={sessionNavigationPorts}
@@ -1468,11 +1441,7 @@ function AppShellContent({
                 onSelect={setNavSelection}
                 onOpenSettings={openSettings}
                 onNew={createSession}
-                workHubEntry={workHubEnabled ? {
-                  active: workHubActive,
-                  label: 'WorkHub',
-                  onSelect: openWorkHub,
-                } : undefined}
+                workHubEntry={{ active: workHubActive, label: 'WorkHub', onSelect: openWorkHub }}
                 projectActions={projectRowActions}
                 onNewProject={
                   taskEntry.selectors.canAddProject
@@ -1504,7 +1473,7 @@ function AppShellContent({
               <WorkHubMainNavigation workbarReady={workHubActive && selectors.ready}
                 onOpenUsage={() => commands.toggleTool('inspector')} onToggleWorkbar={commands.toggleRightPanel}
                 onOpenWorkHub={openWorkHub} onOpenSession={(sessionId) => { closeSettings(); openSession(sessionId); }} />
-              <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} enabled={workHubEnabled} visible={workHubActive && sessionsSelected && !shellObscured} />
+              <WorkHubDock workbar={selectors} workbarTogglePosition={workbarTogglePosition} visible={workHubActive && sessionsSelected && !shellObscured} />
               <ChatSurfaceLayout
                 data-session-history-surface="true"
                 // ChatView positions this transcript: switching conversations,
@@ -1663,7 +1632,6 @@ function AppShellContent({
                 onEditUserMessage={sharedSessionActive ? undefined : composerSubmission.beginEditUserMessage}
                 safeResumeAction={safeResumeAction}
                 onLineageBadgeClick={(turnId) => { if (activeId) openSessionInChat(activeId, turnId); }}
-                onReadAttachmentBytes={window.maka.attachments.readBytes}
                 onOpenLinkedSession={openSessionInChat}
                 scrollTargetTurn={
                   activeId && searchScrollTarget?.sessionId === activeId
@@ -1712,14 +1680,7 @@ function AppShellContent({
                 onRefreshConnections={refreshConnections}
                 onSkip={async () => {
                   try {
-                    await runOnDefaultRuntimeHost((host) =>
-                      window.maka.onboarding.setMilestone(
-                        'initial_onboarding',
-                        'skipped',
-                        host,
-                      ),
-                    );
-                    onboarding.refresh();
+                    await onboarding.skipInitialOnboarding();
                   } catch (error) {
                     toastApi.error(
                       shellCopy.skipErrorTitle,

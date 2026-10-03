@@ -19,31 +19,32 @@
 
 # Diagnostics feature
 
-This slice owns the renderer root's use of Desktop diagnostics.
+This slice owns the renderer's use of Desktop diagnostics.
 
 ## Ownership
 
 - `DiagnosticReportToastProvider` is the renderer's toast layer. It offers the
   Desktop diagnostic report on error toasts and copies it through the injected
-  `copyToastReport` service. AppShell supplies only the action's labels, which
-  stay in the shared shell catalog beside the Error Boundary and command
-  palette copy that use the same words.
+  `copyToastReport` service. It reads the action's words from the shared shell
+  catalog, where they stay beside the Error Boundary and command palette copy
+  that use the same ones.
 - `PreviousMainProcessInterruptionNotice` alone reads whether the previous main
   process ended without finishing its shutdown, once the shell's appearance has
   hydrated, and shows that notice at most once per renderer. A read that
   resolves after its effect was replaced (for example by a locale change) is
   dropped; the replacement read shows the notice in the current locale.
+- `ManualDiagnosticReportConsumer` hands the manual report command to its two
+  callers: About, and AppShell, which passes it to the command palette in its
+  command options. Each caller keeps its own target, toasts and pending state;
+  the command takes only the optional task or Host profile target.
+- `RendererCrashReportConsumer` hands the crash report command to the Error
+  Boundary, or nothing outside Desktop composition (Storybook, renderer tests).
+  The boundary then copies its own bounded browser report, so the crash surface
+  never depends on a provider being mounted.
 - `platform/desktop/create-diagnostics-services.ts` is the only adapter from the
   Desktop bridge into this feature, and Desktop feature-services composition is
-  its only production importer. The adapter forwards only the fields an error
-  toast carried, as the `toast` report surface.
+  its only production importer. Each service fixes its report surface (`toast`,
+  `manual`, `renderer_crash`) and forwards only the fields its caller supplied.
 
-AppShell calls no diagnostics bridge method and holds no notice state.
-
-## Not in this slice
-
-The Error Boundary's crash report, the command palette's manual report
-(`app-shell-command-actions.ts`) and About's manual report still call the
-Desktop bridge from legacy renderer files. Each can move onto this feature's
-services when its owner is next changed; none of them runs in AppShell's render
-body.
+No renderer file outside that adapter calls the diagnostics bridge. AppShell
+holds no notice state and receives only the manual report command.

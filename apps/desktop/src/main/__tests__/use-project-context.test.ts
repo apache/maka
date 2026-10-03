@@ -82,10 +82,7 @@ test('discards a pending Project projection after the default Host changes', asy
 
   function Probe() {
     const context = projectContext.useAppShellProjectContext({
-      uiLocale: 'en',
       rendererMountedRef: { current: true },
-      onProjectSelected: () => {},
-      toastApi: { success: () => {}, error: () => {} },
     });
     projects = context.projects;
     selectedProjectId = context.selectedProjectId;

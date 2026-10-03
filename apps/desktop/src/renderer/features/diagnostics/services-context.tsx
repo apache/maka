@@ -20,10 +20,15 @@
 import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { DiagnosticsServices } from './ports.js';
 
-const { Provider, useServices } = createServicesContext<DiagnosticsServices>('DiagnosticsServicesProvider');
+const { Provider, useServices, useOptionalServices } =
+  createServicesContext<DiagnosticsServices>('DiagnosticsServicesProvider');
 
 export const DiagnosticsServicesProvider = Provider;
 
 export function useDiagnosticsServices(): DiagnosticsServices {
   return useServices();
+}
+
+export function useOptionalDiagnosticsServices(): DiagnosticsServices | undefined {
+  return useOptionalServices();
 }

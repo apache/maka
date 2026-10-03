@@ -18,6 +18,7 @@
  */
 
 import { createContext, useContext, useRef } from 'react';
+import type { SessionChangedEvent } from '@maka/core/session';
 import { valuesEqual } from '@maka/ui';
 import {
   compareDesktopSessionCatalogSummaries,
@@ -54,7 +55,24 @@ export interface SessionCatalogState {
   readonly removedIds: ReadonlySet<string>;
 }
 
-export function createSessionCatalogController() {
+/**
+ * Where the catalog's full lists and change events come from. Desktop
+ * supplies it at composition, so the shell's catalog refresh and change
+ * subscription do not reach the Session bridge themselves.
+ */
+export interface SessionCatalogSource {
+  list(): Promise<DesktopSessionSummary[]>;
+  subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
+}
+
+const NO_SOURCE = 'This session catalog was created without a source';
+/** A catalog that is only ever committed to, as in tests and stories; reading through it fails. */
+const DETACHED_SOURCE: SessionCatalogSource = {
+  list: () => Promise.reject(new Error(NO_SOURCE)),
+  subscribeChanges: () => { throw new Error(NO_SOURCE); },
+};
+
+export function createSessionCatalogController(source: SessionCatalogSource = DETACHED_SOURCE) {
   const state = createObservableState<SessionCatalogState>({
     sessions: [],
     revision: 0,
@@ -79,6 +97,7 @@ export function createSessionCatalogController() {
   };
 
   return {
+    source,
     getState: state.getState,
     subscribe: state.subscribe,
     isAutomaticQueryBlocked(sessionId: string): boolean {

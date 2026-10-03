@@ -171,6 +171,7 @@ const conversationServices: ConversationServices = {
     compact: async () => {
       throw new Error('Context compaction is not used in slash menu stories');
     },
+    listTurnLandmarks: async () => ({ landmarks: [] }),
   },
   runtimeHosts: { subscribeChanges: () => () => undefined },
   skills: { listInvocable: loadProjection },
@@ -214,6 +215,7 @@ function SlashMenuComposer({
 const stagingServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
   previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
 };
 
 // Match AppShell's persistent staging scope around the real mention reader.

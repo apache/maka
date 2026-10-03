@@ -24,6 +24,7 @@ import { useTaskSubmissionReadiness } from '../controller/use-task-submission-re
 import { deriveTaskReadinessNotice } from '../model/task-readiness-notice.js';
 import type { ConversationNewTaskTarget } from '../ports.js';
 import { useTaskReadinessServices, type TaskReadinessRequest } from '../readiness-services.js';
+import { useCurrentOnboardingSnapshot } from '../../../application/contracts/onboarding/onboarding-authority.js';
 
 interface TaskReadinessOwner {
   readonly snapshot: TaskSubmissionReadinessSnapshot | undefined;
@@ -39,12 +40,11 @@ const TaskReadinessContext = createContext<TaskReadinessOwner | undefined>(undef
  * `ComposerStagingProvider`, so section switches and transcript unmounts
  * neither restart nor drop the read. AppShell supplies the request projection,
  * the targets and the stable workspace-recovery commands; it receives no
- * snapshot.
+ * snapshot. A new onboarding snapshot from the application onboarding
+ * authority reads again.
  */
 export function TaskReadinessProvider(props: {
   readonly request: TaskReadinessRequest;
-  /** Any new value reads again; AppShell passes the onboarding snapshot. */
-  readonly refreshKey: unknown;
   readonly sessionId?: string;
   readonly newTaskTarget?: ConversationNewTaskTarget;
   /** A workspace blocker on this Session opens its workspace recovery. */
@@ -57,7 +57,7 @@ export function TaskReadinessProvider(props: {
   const { snapshot, refresh } = useTaskSubmissionReadiness(
     useTaskReadinessServices(),
     props.request,
-    props.refreshKey,
+    useCurrentOnboardingSnapshot(),
     props.sessionId,
     props.newTaskTarget,
   );

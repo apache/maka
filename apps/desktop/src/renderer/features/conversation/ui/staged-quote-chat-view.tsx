@@ -20,9 +20,12 @@
 import type { ComponentProps } from 'react';
 import { PlanChatView } from './plan-surfaces.js';
 import { useComposerStaging } from './composer-staging-context.js';
+import { useComposerStagingServices } from '../staging-services.js';
 
+/** Transcript attachment reads come from the injected attachment port, never from the caller. */
 export function StagedQuoteChatView(props: Omit<ComponentProps<typeof PlanChatView>,
-  'handleRef' | 'pendingQuotes' | 'onQuoteAnnotationSubmit'>) {
+  'handleRef' | 'pendingQuotes' | 'onQuoteAnnotationSubmit' | 'onReadAttachmentBytes'>) {
   const staging = useComposerStaging();
-  return <PlanChatView {...props} {...staging.chatViewQuoteProps} />;
+  const { readBytes } = useComposerStagingServices();
+  return <PlanChatView {...props} {...staging.chatViewQuoteProps} onReadAttachmentBytes={readBytes} />;
 }

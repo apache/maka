@@ -20,20 +20,15 @@
 import { useEffect, useEffectEvent } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ConnectionEvent } from '@maka/core/connections';
-import type { SessionChangedEvent, SessionSummary } from '@maka/core/session';
+import type { SessionSummary } from '@maka/core/session';
 import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
-import { getDesktopConversationCopy } from './application/contracts/conversation-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
 import { startTitlebarModalSync } from './titlebar-modal-sync';
 import { safeLocalStorageSet } from './browser-storage';
 import type { NavigationState } from './nav-selection.js';
-import { handleSessionChangedEvent } from './application/contracts/session-catalog/session-change-effects.js';
-import type {
-  DesktopRuntimeHostProfileChangedEvent,
-  WindowCommand,
-} from '../preload/bridge-contract.js';
+import { createShellLifecycleHandlers } from './application/contracts/shell-lifecycle.js';
 
 type RefBox<T> = { current: T };
 
@@ -61,27 +56,7 @@ export function useAppShellNavRefSync(options: { navSelection: NavSelection; nav
 }
 
 export function useAppShellHostEffects() {
-  // Tag the document with the host OS so glass-material CSS rules
-  // (sidebar vibrancy passthrough)
-  // can light up only on macOS, where `BrowserWindow({ vibrancy: 'sidebar' })`
-  // paints the native blur material behind the renderer. Other platforms
-  // keep their opaque chrome since vibrancy is a no-op there.
-  useEffect(() => {
-    let cancelled = false;
-    void window.maka.app
-      .info()
-      .then((info) => {
-      if (cancelled) return;
-      document.documentElement.setAttribute('data-os', info.platform);
-      })
-      .catch(() => {
-      /* swallow — leaves data-os unset, CSS falls back to opaque chrome */
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  // The host-OS tag on the document is applied by ShellLifecycleSubscriptions.
   // Modal-open titlebar dimming/hiding is driven by observing the top layer
   // (`dialog:modal`) rather than the shell's own modal state, so dialogs
   // mounted deep in module pages — the scheduled-task form above all — are
@@ -131,8 +106,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   openHelp: () => void;
   openSettings: () => void;
   clearPendingTurnActions: () => void;
-  projectPickerPendingRef: RefBox<boolean>;
-  projectPickerRequestRef: RefBox<number>;
   refreshConnections: () => Promise<void>;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
@@ -154,45 +127,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     void options.bootstrapSessions();
     void options.applyE2eFixture();
   });
-  const handleConnectionSubscriptionEvent = useEffectEvent((event: ConnectionEvent) => {
-    options.handleConnectionEvent(event);
-  });
-  const refreshRuntimeHostSettingsMirrors = () => {
-    void options.refreshShellSettings();
-    void options.refreshConnections();
-  };
-  const handleRuntimeHostChange = useEffectEvent((event: DesktopRuntimeHostProfileChangedEvent) => {
-    void options.refreshSessions().then(() => {
-      options.retiredSessionIds(options.sessionsRef.current).forEach(options.retireSession);
-    });
-    if (event.readiness !== 'ready') return;
-    if (!event.isDefault) return;
-    refreshRuntimeHostSettingsMirrors();
-    void options.refreshProjects();
-    void options.refreshMemoryActive('load');
-  });
-  // PR-2088: the macOS application menu routes New Task / Settings / Keyboard
-  // Shortcuts here through one channel. The renderer already owns these
-  // implementations; the menu is only a second entry surface. The keydown
-  // path (useHotkeys below) stays active on every platform: on macOS AppKit
-  // resolves the menu accelerator before the web contents sees the keydown,
-  // so a real keypress dispatches exactly once, while CDP-injected test keys
-  // still reach this handler for the renderer path.
-  const handleWindowCommand = useEffectEvent((command: WindowCommand) => {
-    if (command.id === 'newTask') void options.createSession();
-    else if (command.id === 'openSettings') options.openSettings();
-    else if (command.id === 'openHelp') options.openHelp();
-  });
-  const handleSessionChange = useEffectEvent(
-    (event: SessionChangedEvent) =>
-      handleSessionChangedEvent(event, {
-        ...options,
-        notifyModelRebound: (modelId) => {
-          const copy = getDesktopConversationCopy(options.uiLocale).actions;
-          options.toastApi.info(copy.modelReboundTitle, copy.modelReboundDescription(modelId));
-        },
-      }),
-  );
   // Both shortcuts fire while the composer has focus — they always did, and
   // that is the point of a global new-task / settings key — so both opt out of
   // the hook's default "stay silent while typing" rule.
@@ -223,8 +157,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const cleanupPendingRefs = useEffectEvent(() => {
     options.rendererMountedRef.current = false;
-    options.projectPickerRequestRef.current += 1;
-    options.projectPickerPendingRef.current = false;
     options.clearPendingTurnActions();
   });
 
@@ -234,31 +166,16 @@ export function useAppShellBootstrapSubscriptions(options: {
     // `refreshShellSettings` is
     // waited because it drives theme + locale before first paint settles.
     // Everything else is fire-and-forget on a rAF to keep the critical
-    // render path as short as possible.
+    // render path as short as possible. ShellLifecycleSubscriptions holds the
+    // event subscriptions for the same lifetime.
     void options.refreshShellSettings();
     // Non-critical: defer to next frame so the first paint isn't blocked.
     const startupFrame = requestAnimationFrame(runDeferredStartupRefreshes);
-    const unsubscribeConnections = window.maka.connections.subscribeEvents(handleConnectionSubscriptionEvent);
-    const unsubscribeRuntimeHostChanges =
-      window.maka.runtimeHostProfiles.subscribeChanges(handleRuntimeHostChange);
-    const unsubscribeSettingsExternal = window.maka.settings.subscribeExternalChanged(
-      refreshRuntimeHostSettingsMirrors,
-    );
-    const unsubscribeClientSettings = window.maka.settings.subscribeClientChanged(
-      () => void options.refreshShellSettings(),
-    );
-    const unsubscribeSessionChanges = window.maka.sessions.subscribeChanges(handleSessionChange);
-    const unsubscribeWindowCommand = window.maka.appWindow.subscribeCommand(handleWindowCommand);
     markRendererMounted();
     return () => {
       cancelAnimationFrame(startupFrame);
       cleanupPendingRefs();
-      unsubscribeConnections();
-      unsubscribeRuntimeHostChanges();
-      unsubscribeSettingsExternal();
-      unsubscribeClientSettings();
-      unsubscribeSessionChanges();
-      unsubscribeWindowCommand();
     };
   }, []);
+  return createShellLifecycleHandlers(options);
 }

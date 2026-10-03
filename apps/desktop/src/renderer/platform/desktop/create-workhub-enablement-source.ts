@@ -16,30 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { WorkHubEnablementSource } from '../../application/contracts/workhub-workspace/workhub-enablement.js';
 
-import type { UiLocale } from '@maka/core/ui-locale';
-import type { ToastDiagnosticTarget } from '@maka/ui';
-import { getShellCopy } from './locales/shell-copy.js';
-
-export { isSessionWorkspaceUnavailableError } from './application/contracts/session-workspace-errors.js';
-
-export function showSessionWorkspaceUnavailableToast(
-  toastApi: {
-    error(
-      title: string,
-      description?: string,
-      diagnosticDetails?: string,
-      diagnosticTarget?: ToastDiagnosticTarget,
-    ): void;
-  },
-  locale: UiLocale,
-  diagnosticTarget?: ToastDiagnosticTarget,
-): void {
-  const copy = getShellCopy(locale).errors;
-  toastApi.error(
-    copy.workspaceUnavailableTitle,
-    copy.workspaceUnavailableDescription,
-    undefined,
-    diagnosticTarget,
-  );
+export function createDesktopWorkHubEnablementSource(
+  bridge: { settings: Pick<MakaBridge['settings'], 'getClient' | 'subscribeClientChanged'> } = window.maka,
+): WorkHubEnablementSource {
+  return {
+    read: async () => (await bridge.settings.getClient()).workHub.enabled,
+    subscribeChanges: (handler) => bridge.settings.subscribeClientChanged(handler),
+  };
 }

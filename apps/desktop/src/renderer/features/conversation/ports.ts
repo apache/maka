@@ -77,6 +77,11 @@ export interface ConversationServices extends Pick<
       expectedQueueRevision: number,
     ): Promise<void>;
     compact(sessionId: string): Promise<ContextCompactResult>;
+    /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
+    listTurnLandmarks(
+      sessionId: string,
+      turnId: string | null,
+    ): Promise<{ readonly landmarks: readonly import('./controller/transcript-reading-position-controller.js').TranscriptTurnLandmark[] }>;
   };
   readonly runtimeHosts: {
     subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;

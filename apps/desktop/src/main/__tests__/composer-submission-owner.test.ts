@@ -146,7 +146,7 @@ function harness(options: {
       createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
         showModelSetupToast() {}, onTurnCompleted() {},
-        searchTarget: null, clearSearchTarget() {}, listTurnLandmarks: async () => ({ landmarks: [] }),
+        searchTarget: null, clearSearchTarget() {},
       }),
       createElement(ConversationComposerRegion<RegionProps>, {
         surface: Composer, contextPickEnabled: true, directoryPickerEnabled: true,

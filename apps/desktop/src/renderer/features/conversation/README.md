@@ -183,6 +183,8 @@ files, directory references and quote chips at the actual Composer;
 No staging state or reactive read port is returned to AppShell. The private
 context/binding modules and the controller owner entry seal this boundary.
 The Desktop attachment service is injected at the composition root.
+`StagedQuoteChatView` also takes the transcript's image `readBytes` from that
+service (R2 M5); AppShell and `ChatMessageSurface` cannot pass another reader.
 
 The shell holds only stable commands. Submission captures a draft-bound snapshot
 before awaiting revision preparation or delivery. Cleanup stays bound to that
