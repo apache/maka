@@ -76,6 +76,10 @@ import type {
 } from '../preload/bridge-contract.js';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
 import {
+  resolveSshTerminalExecutable,
+  type RuntimeHostSshTerminalExecutable,
+} from './runtime-host-ssh-executable.js';
+import {
   runtimeHostSetupPackageVersion,
   type DesktopRuntimeHostDevelopmentPeerTarget,
   type DesktopRuntimeHostSetupPackage,
@@ -260,6 +264,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly send: (channel: string, event: DesktopRuntimeHostSshTerminalEvent) => void;
   readonly spawnPty?: typeof spawnPty;
+  readonly resolveTerminalExecutable?: (executable: RuntimeHostSshTerminalExecutable) => string;
   readonly openSshTunnel?: typeof openRuntimeHostSshTunnel;
   readonly activateSshOperator?: typeof activateRuntimeHostSshOperator;
   readonly revealDelayMs?: number;
@@ -368,7 +373,8 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     if (closed) throw new Error('Runtime Host SSH terminal is closed');
     if (active) throw new Error('Another Runtime Host SSH terminal is already active');
     const sessionId = randomUUID();
-    const pty = (input.spawnPty ?? spawnPty)(executable, [...args], {
+    const executablePath = (input.resolveTerminalExecutable ?? resolveSshTerminalExecutable)(executable);
+    const pty = (input.spawnPty ?? spawnPty)(executablePath, [...args], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -509,7 +515,14 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       ) {
         throw new Error('Runtime Host SSH terminal size is invalid');
       }
-      terminal.pty.resize(request.cols, request.rows);
+      try {
+        terminal.pty.resize(request.cols, request.rows);
+      } catch {
+        // Windows node-pty marks the pty exited up to a second before it emits
+        // 'exit' (it flushes trailing output first), so a resize can arrive
+        // after the process is gone but before `active` is cleared. The exit
+        // event is the authority; a settled pty makes resize a no-op.
+      }
     },
   );
   input.ipcMain.handle(channels[3], async (_event, sessionId: string) => {
@@ -1558,6 +1571,9 @@ function terminateActiveTerminal(
 }
 
 function sshEnvironment(): Record<string, string> {
+  // Windows OpenSSH locates its system configuration and known-hosts files
+  // through ProgramData and exits 255 without printing anything when it is
+  // missing, so keep it alongside the other non-secret location variables.
   const allowed = new Set([
     'APPDATA',
     'COMSPEC',
@@ -1570,6 +1586,7 @@ function sshEnvironment(): Record<string, string> {
     'LOGNAME',
     'PATH',
     'PATHEXT',
+    'PROGRAMDATA',
     'SHELL',
     'SSH_AUTH_SOCK',
     'SYSTEMROOT',
