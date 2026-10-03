@@ -65,6 +65,24 @@ describe('Moonshot provider regions', () => {
   });
 });
 
+describe('Meta Model API provider', () => {
+  it('offers both Muse Spark 1.3 tiers over the official Responses-compatible endpoint', () => {
+    const meta = PROVIDER_REGISTRY.meta;
+
+    assert.equal(meta.baseUrl, 'https://api.meta.ai/v1');
+    assert.deepEqual(meta.fallbackModels, ['muse-spark-1.3', 'muse-spark-1.3-contributor']);
+    assert.deepEqual(meta.runtimeAdapter, {
+      kind: 'openai-compatible',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    });
+    assert.deepEqual(meta.modelDiscovery, {
+      kind: 'protocol',
+      excludeModelIdPrefixes: ['muse-image-', 'muse-voice-'],
+    });
+    assert.equal(meta.signupUrl, 'https://dev.meta.ai/');
+  });
+});
+
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
   it('exposes an endpoint source that passes the production baseUrl gate', () => {
     for (const type of CATALOG_PROVIDER_TYPES) {
@@ -123,6 +141,11 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       },
       {
         providerType: 'openai',
+        via: 'runtimeAdapter',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'meta',
         via: 'runtimeAdapter',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
