@@ -26,7 +26,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
-import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
+import { renderConversationMarkdown, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { withComposerSubmission } from './composer-submission-fixture.js';
 
@@ -182,6 +182,19 @@ describe('Conversation ownership', () => {
       await act(async () => h.root.unmount());
     });
   }
+
+  it('exports the published range for Copy and Save without handing the shell its messages', async () => {
+    const h = harness();
+    await act(async () => h.target.setActiveId('A'));
+    const published = [message('first'), message('second')];
+    await act(async () => h.opened[0]!.publish(published));
+    assert.equal(
+      h.target.renderPublishedConversation('Task A', 'en'),
+      renderConversationMarkdown('Task A', published, 'en'),
+    );
+    assert.equal('readMessages' in h.target, false, 'the shell has no invocation-time message read');
+    await act(async () => h.root.unmount());
+  });
 
   it('publishes only to regional readers and preserves the persistent composer across transcript remounts', async () => {
     const h = harness();

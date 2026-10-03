@@ -244,7 +244,7 @@ function AppShellContent({
 }) {
   const toastApi = useToast();
   const {
-    readMessages,
+    renderPublishedConversation,
     refreshMessages,
     transcriptEmpty,
     transcriptHasHistory,
@@ -1159,7 +1159,7 @@ function AppShellContent({
         : projectCapabilities.viewClientPath,
     connections: defaultHostConnections.snapshot.connections,
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
-    readMessages,
+    renderPublishedConversation,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
     settingsProfileId: overlays.selectors.settings.request.profileId,

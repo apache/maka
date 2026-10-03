@@ -152,3 +152,4 @@ export { composerModelSupportsVision, pickNewChatModel, type NewChatModel } from
 export { deriveSessionHealthNotice } from './model/session-health-notice.js';
 export { resolveNewChatExecutionThinkingLevel } from './controller/use-shell-chat-model.js';
 export { newTaskConfiguration } from './model/executor-submission.js';
+export { renderConversationMarkdown } from './model/conversation-markdown.js';

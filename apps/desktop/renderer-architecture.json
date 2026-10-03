@@ -27,7 +27,6 @@
     "src/renderer/computer-use-overlay/engine/cursor-candidate-grid.ts",
     "src/renderer/computer-use-overlay/engine/cursor-engine.ts",
     "src/renderer/computer-use-overlay/engine/palette.ts",
-    "src/renderer/conversation-markdown.ts",
     "src/renderer/custom-pet-companion-model.ts",
     "src/renderer/custom-pet-companion.tsx",
     "src/renderer/daily-review-actions.ts",
@@ -530,7 +529,7 @@
         "nonTriviaTokens": 122
       },
       "src/renderer/app-shell-command-actions.ts": {
-        "importDeclarations": 5,
+        "importDeclarations": 4,
         "bridgePaths": {},
         "environmentCapabilities": {
           "navigator.clipboard.writeText": 1
@@ -544,15 +543,14 @@
         "dependencyPaths": {
           "./app-shell-copy.js": 1,
           "./command-palette-commands.js": 1,
-          "./conversation-markdown.js": 1,
           "./locales/settings-memory-copy.js": 1,
           "./locales/settings-test-result-copy.js": 1,
           "./locales/shell-copy.js": 1,
           "./platform/desktop/default-runtime-host-operation.js": 1,
           "react": 1
         },
-        "importSpecifiers": 8,
-        "nonTriviaTokens": 2172
+        "importSpecifiers": 7,
+        "nonTriviaTokens": 2158
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 1,
@@ -1021,19 +1019,6 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./features/conversation/index.js": 2
-        }
-      },
-      "src/renderer/conversation-markdown.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/shell-remaining-copy.js": 1,
-          "@maka/core/session": 1,
-          "@maka/ui": 1
         }
       },
       "src/renderer/custom-pet-companion-model.ts": {

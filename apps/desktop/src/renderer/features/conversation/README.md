@@ -49,9 +49,10 @@ submission owner reads them from the controller. Its
 published Session reference is a frozen getter, and consuming contracts declare
 it readonly. It has no map setters, range
 controller, publication callback, writable refs, or whole-state getter.
-`readMessages()` is an invocation-time, readonly view of the **published range**;
-it is used by Copy/Save and is not a full-history promise. Revision commands read
-the same range from the controller inside the Composer submission owner.
+Copy and Save call `renderPublishedConversation(sessionName, locale)`, which
+renders the **published range** as Markdown at invocation; the shell gets the
+export, not the messages, and it is not a full-history promise. Revision commands
+read the same range from the controller inside the Composer submission owner.
 
 The Desktop adapter supplies `ConversationObservationServices`. The feature
 never imports the Desktop range implementation or accesses `window.maka`.
@@ -129,7 +130,6 @@ Remaining transitional capabilities have explicit consumers and removal work:
 | Capability | Current consumer | Removal module |
 | --- | --- | --- |
 | `useAppShellSessionUiReads` | AppShell chrome and Composer prop assembly | M3 regional readers; retain only required chrome |
-| Invocation-time published-message read | Copy/Save | M3 command ownership / bounded-history export integration |
 
 M2 owns presentation and observation; it does not add a Catalog, Host cache or
 execution state machine, or complete the remaining Composer migration.
