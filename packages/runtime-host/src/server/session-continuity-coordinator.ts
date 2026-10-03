@@ -949,6 +949,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
           | 'operation_conflict'
           | 'operation_unavailable'
           | 'persistence_failed'
+          | 'transcript_unavailable'
           | 'transcript_preparing';
         message: string;
       }
@@ -1031,14 +1032,14 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             transcript = created.state;
             transcriptBootstrap = created.bootstrap;
           } catch (error) {
-            // Record the cause before the publication-failure hook can drain the Host.
+            // A transcript bootstrap read is scoped to this subscription. Keep
+            // serving other Sessions when this one cannot seed its transcript.
             console.error(
               `[runtime-host] subscription.open transcript bootstrap failed: ${boundedFailureDiagnostic(error)}`,
             );
-            this.onPublicationFailure(error);
             return {
               ok: false as const,
-              code: 'persistence_failed' as const,
+              code: 'transcript_unavailable' as const,
               message: 'Session transcript is unavailable',
             };
           }

@@ -38,7 +38,12 @@ import {
   type RuntimeEvent,
   type RuntimeEventActions,
 } from '../runtime-event.js';
-import { decodeCanonicalMessage, isRuntimeSystemNoteKind } from '../session.js';
+import {
+  decodeCanonicalMessage,
+  isRuntimeSystemNoteKind,
+  isSystemNoteKind,
+  isUserVisibleSessionSystemNote,
+} from '../session.js';
 import { decodeTurnOrigin } from '../turn-origin.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
@@ -144,6 +149,12 @@ test('decodes a released provider dropping note that nothing writes any more', (
     'context_provider_dropping',
   );
   assert.equal(isRuntimeSystemNoteKind('context_provider_dropping'), false);
+});
+
+test('keeps reader omission notices outside the runtime-written note kinds', () => {
+  assert.equal(isSystemNoteKind('transcript_omitted'), true);
+  assert.equal(isUserVisibleSessionSystemNote('transcript_omitted'), true);
+  assert.equal(isRuntimeSystemNoteKind('transcript_omitted'), false);
 });
 
 test('shares one decoder across all TurnOrigin variants', () => {

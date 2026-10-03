@@ -39,6 +39,7 @@
     "./root-authority": "./dist/root-authority.js",
     "./read-image-snapshot-store": "./dist/read-image-snapshot-store.js",
     "./runtime-event-persistence": "./dist/runtime-event-persistence.js",
+    "./runtime-transcript-query": "./dist/runtime-transcript-query.js",
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
     "./scheduled-task-store": "./dist/scheduled-task-store.js",
     "./quiescent-session-snapshot": "./dist/quiescent-session-snapshot.js",

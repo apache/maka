@@ -99,6 +99,14 @@ function isMissingRuntimeHostSessionError(error: unknown): boolean {
   return error.code === "not_found";
 }
 
+function isTranscriptSeedFailure(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostOperationError &&
+    error.operation === 'subscription.open' &&
+    error.code === 'transcript_unavailable'
+  );
+}
+
 interface SessionObservationRegistration {
   readonly sessionId: string;
   readonly messageAdmissions: boolean;
@@ -175,6 +183,7 @@ export class RuntimeHostSessionObservationRegistry {
     source: SessionObservationSource,
     bindTarget: ObservationTargetBinding = (target) => target,
     onSessionMissing?: (sessionId: string) => void,
+    onTranscriptSeedFailure?: (sessionId: string) => void,
   ): Promise<string[]> {
     this.#assertOpen();
     if (this.#source && this.#source !== source) {
@@ -223,6 +232,9 @@ export class RuntimeHostSessionObservationRegistry {
             }
             if (registration.lifecycle === "pending") {
               this.#deleteRegistration(observerId, registration);
+            }
+            if (isTranscriptSeedFailure(error)) {
+              onTranscriptSeedFailure?.(registration.sessionId);
             }
             this.#onError(error);
           }

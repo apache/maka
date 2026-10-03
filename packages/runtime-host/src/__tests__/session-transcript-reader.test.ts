@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import {
   seedInvocation,
@@ -42,7 +43,11 @@ import { readPageSchema } from '@maka/runtime/read-page';
 import { openToolResultArchiveEvidenceReader } from '@maka/storage/tool-result-archive-evidence';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
 import type { SessionTurnContribution } from '@maka/storage/execution-stores';
-import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import {
+  openInteractiveExecutionStoresForWrite,
+  type ExecutionStoresWriter,
+} from '@maka/storage/execution-stores';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { boundedFailureDiagnostic } from '../server/failure-diagnostic.js';
 import {
@@ -1057,6 +1062,211 @@ test('continues serving durable transcript rows with only soft projection diagno
     assert.equal(page.records[0]!.message.text, 'still readable');
   });
 });
+
+for (const hasBefore of [true, false])
+  test(`omits an oversized invocation ${hasBefore ? 'between turns' : 'at session start'}`, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-oversized-transcript-'));
+    const store = createSqliteRuntimeStore(join(base, 'runtime.sqlite'));
+    const sessionId = 'oversized-session';
+    const append = (runId: string, id: string, overrides: Partial<RuntimeEvent>) =>
+      store.appendRuntimeEvent(
+        sessionId,
+        runId,
+        runtimeEvent(sessionId, {
+          id,
+          invocationId: runId,
+          runId,
+          turnId: `turn-${runId}`,
+          ...overrides,
+        }),
+      );
+    try {
+      if (hasBefore) {
+        await seedInvocation(store, {
+          sessionId,
+          runId: 'before',
+          turnId: 'turn-before',
+          openedAt: 0,
+        });
+        await append('before', 'before-text', {
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'before' },
+          refs: { storedMessageId: 'before-text' },
+        });
+        await append('before', 'before-end', {
+          status: 'completed',
+          actions: { endInvocation: true },
+        });
+      }
+
+      await seedInvocation(store, { sessionId, runId: 'large', turnId: 'turn-large', openedAt: 1 });
+      // Opening + 8,191 non-presentation events + terminal = 8,193.
+      // Insert a valid historical ledger in one transaction. Going through the
+      // production writer would make this read-path regression spend minutes on
+      // 8,191 separately validated writes.
+      const db = new DatabaseSync(join(base, 'runtime.sqlite'));
+      try {
+        const nextSequence = (
+          db
+            .prepare(
+              'SELECT MAX(event_seq) + 1 AS next FROM runtime_events WHERE invocation_id = ?',
+            )
+            .get('large') as { next: number }
+        ).next;
+        const nextOrdinal = (
+          db
+            .prepare(
+              'SELECT MAX(ordinal) + 1 AS next FROM runtime_session_event_ordinals WHERE session_id = ?',
+            )
+            .get(sessionId) as { next: number }
+        ).next;
+        const insertEvent = db.prepare(`INSERT INTO runtime_events
+        (event_id, session_id, invocation_id, run_id, turn_id, event_seq, event_kind, payload_json, committed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        const insertOrdinal = db.prepare(`INSERT INTO runtime_session_event_ordinals
+        (session_id, ordinal, event_id) VALUES (?, ?, ?)`);
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          for (let index = 0; index < 8_191; index++) {
+            const event = runtimeEvent(sessionId, {
+              id: `large-fact-${index}`,
+              invocationId: 'large',
+              runId: 'large',
+              turnId: 'turn-large',
+              ts: index + 2,
+              actions: { stateDelta: { unclaimed: true } },
+            });
+            insertEvent.run(
+              event.id,
+              sessionId,
+              'large',
+              'large',
+              'turn-large',
+              nextSequence + index,
+              'runtime_fact',
+              JSON.stringify(event),
+              event.ts,
+            );
+            insertOrdinal.run(sessionId, nextOrdinal + index, event.id);
+          }
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+      } finally {
+        db.close();
+      }
+      await append('large', 'large-end', { status: 'completed', actions: { endInvocation: true } });
+      await seedInvocation(store, { sessionId, runId: 'after', turnId: 'turn-after', openedAt: 2 });
+      await append('after', 'after-text', {
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'after' },
+        refs: { storedMessageId: 'after-text' },
+      });
+      await append('after', 'after-end', { status: 'completed', actions: { endInvocation: true } });
+
+      const read = createSessionTranscriptReader({
+        stores: { runtimeEventStore: store } as unknown as ExecutionStoresWriter<'interactive'>,
+        canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+      });
+
+      const page = await read.readDurableRecords(sessionId, {
+        direction: 'newer',
+        maxMessages: 16,
+        maxStoredBytes: 64 * 1024,
+      });
+      assert.deepEqual(
+        page.records
+          .filter(({ message }) => message.type !== 'turn_state')
+          .map(({ message }) => message.type),
+        hasBefore ? ['assistant', 'system_note', 'assistant'] : ['system_note', 'assistant'],
+      );
+      const omitted = page.records.find(({ message }) => message.type === 'system_note')?.message;
+      assert.ok(omitted?.type === 'system_note');
+      assert.equal(omitted.kind, 'transcript_omitted');
+      assert.equal(omitted.turnId, 'turn-large');
+      const inspect = new DatabaseSync(join(base, 'runtime.sqlite'));
+      const midOrdinal = (
+        inspect
+          .prepare('SELECT ordinal FROM runtime_session_event_ordinals WHERE event_id = ?')
+          .get('large-fact-100') as { ordinal: number }
+      ).ordinal;
+      inspect.close();
+      const catchUp = await read.readDurableRecords(sessionId, {
+        direction: 'newer',
+        position: midOrdinal * 8,
+        maxMessages: 16,
+        maxStoredBytes: 64 * 1024,
+      });
+      assert.ok(
+        catchUp.records.some(
+          ({ message }) => message.type === 'system_note' && message.kind === 'transcript_omitted',
+        ),
+      );
+      await assert.rejects(
+        createTurnResultReader({
+          stores: { runtimeEventStore: store } as unknown as ExecutionStoresWriter<'interactive'>,
+          canonicalPermissionOutcomes: { readPermissionOutcome: async () => undefined },
+        })(sessionId, 'turn-large'),
+        /omitted transcript result/,
+      );
+
+      const older = await read.readDurableRecords(sessionId, {
+        direction: 'older',
+        maxMessages: 16,
+        maxStoredBytes: 64 * 1024,
+      });
+      assert.deepEqual(
+        older.records
+          .filter(({ message }) => message.type !== 'turn_state')
+          .map(({ message }) => message.type),
+        hasBefore ? ['assistant', 'system_note', 'assistant'] : ['assistant', 'system_note'],
+      );
+      if (!hasBefore) {
+        let bounded = await read.readDurablePage(sessionId, {
+          direction: 'older',
+          maxMessages: 1,
+          maxBytes: 64 * 1024,
+        });
+        let foundOmission = false;
+        for (let pageIndex = 0; pageIndex < 8; pageIndex++) {
+          const message = JSON.parse(bounded.fragments[0]!.data.toString('utf8')) as StoredMessage;
+          if (message.type === 'system_note' && message.kind === 'transcript_omitted') {
+            foundOmission = true;
+            break;
+          }
+          const cursor = bounded.next;
+          assert.ok(cursor, 'a bounded page must lead to the omission');
+          bounded = await read.readDurablePage(sessionId, {
+            direction: 'older',
+            maxMessages: 1,
+            maxBytes: 64 * 1024,
+            throughSequence: bounded.throughSequence,
+            position: cursor.position,
+            ...(cursor.byteOffset === null ? {} : { byteOffset: cursor.byteOffset }),
+          });
+        }
+        assert.ok(foundOmission, 'following the cursor reaches the omitted first invocation');
+      }
+      const bootstrap = await read.readDurablePage(sessionId, {
+        direction: 'older',
+        maxMessages: 16,
+        maxBytes: 64 * 1024,
+      });
+      assert.ok(
+        bootstrap.fragments.some(
+          (fragment) =>
+            (JSON.parse(fragment.data.toString('utf8')) as StoredMessage).type === 'system_note',
+        ),
+      );
+    } finally {
+      store.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
 
 const seed = (
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,

@@ -1184,7 +1184,7 @@ test('open returns a bounded immutable durable tail', async () => {
   coordinator.close();
 });
 
-test('logs a durable bootstrap failure before reporting unavailable persistence', async (t) => {
+test('isolates a durable bootstrap failure without draining the Host', async (t) => {
   const logs: string[] = [];
   t.mock.method(console, 'error', (...args: unknown[]) => {
     logs.push(args.map(String).join(' '));
@@ -1193,11 +1193,14 @@ test('logs a durable bootstrap failure before reporting unavailable persistence'
     `injected durable bootstrap failure: api_key=sk-secretvalue123\n${'细'.repeat(4096)}`,
   );
   const publicationFailures: unknown[] = [];
+  const baseReader = transcriptReader([]);
+  let bootstrapReads = 0;
   const reader: SessionTranscriptReader = {
-    ...transcriptReader([]),
+    ...baseReader,
     readDurableHighWater: async () => 0,
-    readDurablePage: async () => {
-      throw failure;
+    readDurablePage: async (sessionId, request, project) => {
+      if (bootstrapReads++ === 0) throw failure;
+      return baseReader.readDurablePage(sessionId, request, project);
     },
   };
   const coordinator = new SessionContinuityCoordinator(
@@ -1205,7 +1208,6 @@ test('logs a durable bootstrap failure before reporting unavailable persistence'
     async () => canonical(),
     new SessionAdmissionGate(),
     (error) => {
-      assert.equal(logs.length, 1, 'log the cause before the publication-failure hook');
       publicationFailures.push(error);
     },
     reader,
@@ -1221,9 +1223,17 @@ test('logs a durable bootstrap failure before reporting unavailable persistence'
   );
   assert.deepEqual(outcome, {
     ok: false,
-    error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+    error: { code: 'transcript_unavailable', message: 'Session transcript is unavailable' },
   });
-  assert.deepEqual(publicationFailures, [failure]);
+  assert.deepEqual(publicationFailures, []);
+  const retry = await coordinator.handlers['subscription.open'](
+    {
+      sessionId: SESSION_ID,
+      transcript: { kind: 'tail', maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES },
+    },
+    connectionContext('connection-failed-bootstrap'),
+  );
+  assert.equal(retry.ok, true, 'the same Host can still serve a subsequent open');
   assert.equal(logs.length, 1);
   const prefix = '[runtime-host] subscription.open transcript bootstrap failed: ';
   const diagnostic = logs[0] ?? '';

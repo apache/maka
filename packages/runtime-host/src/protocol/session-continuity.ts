@@ -317,6 +317,7 @@ const SUBSCRIPTION_OPEN_ERRORS = [
   'not_found',
   'operation_conflict',
   'persistence_failed',
+  'transcript_unavailable',
   'internal_failure',
 ] as const;
 

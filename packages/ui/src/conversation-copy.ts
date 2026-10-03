@@ -333,6 +333,7 @@ export interface ConversationCopy {
       contextUsageUnavailable: string;
       contextUsageOpen: string;
       stepLimit: string;
+      transcriptOmitted: string;
     };
   };
   chat: {
@@ -543,6 +544,7 @@ const CONVERSATION_COPY = {
         contextUsageUnavailable: '暂无用量数据',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
+        transcriptOmitted: '这段任务记录超出显示上限，已省略。前后的记录仍可查看。',
       },
     },
     chat: {
@@ -668,6 +670,7 @@ const CONVERSATION_COPY = {
         contextUsageUnavailable: '暫無用量資料',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
+        transcriptOmitted: '這段任務記錄超出顯示上限，已省略。前後的記錄仍可查看。',
       },
     },
     chat: {
@@ -790,6 +793,7 @@ const CONVERSATION_COPY = {
         contextUsageUnavailable: 'No usage data is available for this request.',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
+        transcriptOmitted: 'This part of the task transcript exceeds the display limit and was omitted. Earlier and later records remain available.',
       },
     },
     chat: {

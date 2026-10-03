@@ -32,7 +32,7 @@ import type {
 } from '@maka/core/events';
 import {
   deriveTurnRecords,
-  isRuntimeSystemNoteKind,
+  isUserVisibleSessionSystemNote,
   STEP_LIMIT_NOTICE_TEXT,
   type StoredMessage,
   type SystemNoteMessage,
@@ -1348,7 +1348,7 @@ function tokenDelta(before: number | undefined, after: number | undefined): numb
 function systemNoteText(message: SystemNoteMessage): string | undefined {
   // Retired kinds are still decoded off legacy transcript rows, and none of
   // them ever had a line here worth reading.
-  if (!isRuntimeSystemNoteKind(message.kind)) return undefined;
+  if (!isUserVisibleSessionSystemNote(message.kind)) return undefined;
   switch (message.kind) {
     case 'context_compacted':
       return 'Context compacted to keep this task within the model window.';
@@ -1395,6 +1395,8 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
     }
     case 'step_limit':
       return STEP_LIMIT_NOTICE_TEXT;
+    case 'transcript_omitted':
+      return 'Part of this session transcript was omitted because it exceeded the display limit.';
   }
 }
 

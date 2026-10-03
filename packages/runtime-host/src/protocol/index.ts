@@ -104,7 +104,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 202 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 203 as const;
+// 203: Transcript omission notes and subscription.open transcript_unavailable require
+// newer clients to decode the note and handle isolated seed failures.
 // 202: `session.remove.preview` takes a bounded list of Sessions and reports the
 // child tasks, worktrees and optionally the bytes their removal would delete;
 // `session.remove` takes `requireArchivedForMs` and may answer `too_recent`.

@@ -370,6 +370,36 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('applies the event budget per invocation rather than per Session', async () => {
+    await withStore(async (store) => {
+      await appendSettledTurn(store, 1);
+      await appendSettledTurn(store, 2);
+      const request = {
+        direction: 'newer' as const,
+        throughOrdinal: Number.MAX_SAFE_INTEGER,
+        maxEvents: 3,
+        maxBytes: 64_000,
+        maxRecordBytes: 64_000,
+      };
+      const first = await store.readTranscriptRun(
+        'session-1',
+        { ...request, position: 0 },
+        (run, events) => ({ run, events: [...events] }),
+      );
+      assert.equal(first?.events.length, 3);
+      const second = await store.readTranscriptRun(
+        'session-1',
+        {
+          ...request,
+          position: (first?.run.lastOrdinal ?? 0) + 1,
+        },
+        (run, events) => ({ run, events: [...events] }),
+      );
+      assert.equal(second?.events.length, 3);
+      assert.notEqual(first?.run.invocation.invocationId, second?.run.invocation.invocationId);
+    });
+  });
+
   it('projects transcript RuntimeEvents from a bounded row iterator', async () => {
     await withStore(async (store) => {
       await appendSettledTurn(store, 1);

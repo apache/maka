@@ -1034,6 +1034,68 @@ test('keeps a restored observation retryable until replacement seeding succeeds'
   assert.equal(pendingAt >= 0 && readyAt > pendingAt, true);
   await replacementCandidate.close();
 }); // A failed replacement leaves the registry available to the next candidate.
+test('keeps replacement Host ready when one transcript observation cannot seed', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('transcript-source', {
+    sessionId: 'session-1',
+  });
+  const firstCandidate = await createDesktopRuntimeHostCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstIpc.invoke('sessions:observe', 'session-2', 'observer-2');
+  await firstCandidate.close();
+
+  const events: Array<{ channel: string; payload: unknown }> = [];
+  const failingHost = connectionHarness('transcript-seed-failure', {
+    sessionId: 'session-1',
+    subscribeFailure: new RuntimeHostOperationError(
+      'subscription.open',
+      'transcript_unavailable',
+      'Session transcript is unavailable',
+    ),
+    subscribeFailureSessionId: 'session-1',
+    subscriptionSnapshots: {
+      'session-2': continuitySnapshot({
+        session: { ...continuitySnapshot().session, sessionId: 'session-2' },
+        rootTurn: {
+          sessionId: 'session-2',
+          turnId: 'turn-2',
+          runId: 'run-2',
+          status: 'running',
+        },
+      }),
+    },
+  });
+  const candidate = await createDesktopRuntimeHostCandidate(
+    failingHost.connection,
+    {
+      ...deps(ipcHarness()),
+      renderer: {
+        send(channel, _host, payload) {
+          events.push({ channel, payload });
+        },
+      },
+    },
+    observations,
+  );
+  assert.deepEqual(observations.observationSessionIds(), ['session-1', 'session-2']);
+  await waitFor(() => events.some(({ channel, payload }) =>
+    channel === 'sessions:event:session-1' &&
+    (payload as { type?: string }).type === 'host_observation_error'));
+  assert.ok(events.some(({ channel, payload }) =>
+    channel === 'sessions:active-interactions-changed' &&
+    (payload as { sessionId?: string }).sessionId === 'session-2'));
+  assert.ok(!events.some(({ channel, payload }) =>
+    channel === 'sessions:event:session-2' &&
+    (payload as { type?: string }).type === 'host_observation_error'));
+  await candidate.close();
+  await observations.close();
+});
+
 test('drops a stale shared Session observation when Guest access is gone', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const firstIpc = ipcHarness();
@@ -1259,8 +1321,10 @@ function connectionHarness(
     sessionId?: string;
     revisionAbandon?: 'abandoned' | 'retained';
     subscriptionSnapshot?: SessionContinuitySnapshot;
+    subscriptionSnapshots?: Record<string, SessionContinuitySnapshot>;
     assistantStreams?: readonly SessionAssistantStreamIdentity[];
     subscribeFailure?: Error;
+    subscribeFailureSessionId?: string;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
     runtimeResourceUpdate?: ShellRunUpdate;
     sharedSessionAvailable?: boolean;
@@ -1402,7 +1466,9 @@ function connectionHarness(
       throw new Error(`Unexpected operation: ${operation}`);
     },
     openSessionSubscription: async ({ sessionId }: { sessionId: string }) => {
-      if (options.subscribeFailure) throw options.subscribeFailure;
+      if (options.subscribeFailure &&
+        (!options.subscribeFailureSessionId || options.subscribeFailureSessionId === sessionId))
+        throw options.subscribeFailure;
       const subscriptionFrames = new AsyncFrameQueue();
       activeSubscriptionFrames = subscriptionFrames;
       // The Host holds a subscription's frames until the subscriber calls
@@ -1435,7 +1501,7 @@ function connectionHarness(
           ptyListeners.add(listener);
           return () => ptyListeners.delete(listener);
         },
-        snapshot: options.subscriptionSnapshot ?? {
+        snapshot: options.subscriptionSnapshots?.[sessionId] ?? options.subscriptionSnapshot ?? {
           projectionRevision: 1,
           session: { sessionId },
         },

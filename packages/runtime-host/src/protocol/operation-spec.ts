@@ -30,6 +30,7 @@ export type HostOperationErrorCode =
   | 'session_busy'
   | 'session_binding_conflict'
   | 'transcript_preparing'
+  | 'transcript_unavailable'
   | 'candidate_set_stale'
   | 'operation_conflict'
   | 'capability_unavailable'

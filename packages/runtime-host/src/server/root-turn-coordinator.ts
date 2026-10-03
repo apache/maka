@@ -117,6 +117,7 @@ import {
   type TurnOperationHandlerMap,
 } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
+import { OmittedTurnResultError } from './session-transcript-reader.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
   type RuntimeSessionForwardedEvent,
@@ -3468,6 +3469,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (
         !(error instanceof RuntimeHostedRootConflictError) &&
         !(error instanceof RuntimeHostedRootUnavailableError) &&
+        !(error instanceof OmittedTurnResultError) &&
         !(error instanceof HostedRootAdmissionGateError) &&
         !isShutdownCancelledInteractionAdmission(error)
       ) {

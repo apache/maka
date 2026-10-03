@@ -53,6 +53,8 @@ export interface RuntimeTranscriptRun {
   readonly invocation: RuntimeInvocationRecord;
   readonly firstOrdinal: number;
   readonly lastOrdinal: number;
+  /** First actual event in this traversed stretch; boundary ordinals can be empty. */
+  readonly firstEventOrdinal: number;
 }
 
 /** One Turn of a Session transcript: every visible invocation carrying its turnId. */
@@ -307,11 +309,23 @@ export class RuntimeTranscriptQuery {
       invocationId: seeked.invocation_id,
     }) as { ordinal: number } | undefined;
     const older = request.direction === 'older';
+    const firstOrdinal = older ? (stop ? stop.ordinal + 1 : 0) : seeked.ordinal;
+    const lastOrdinal = older ? seeked.ordinal : stop ? stop.ordinal - 1 : request.throughOrdinal;
+    const firstEvent = this.db
+      .prepare(`
+      SELECT MIN(o.ordinal) AS ordinal
+      FROM runtime_session_event_ordinals o
+      JOIN runtime_events e ON e.event_id = o.event_id
+      WHERE o.session_id = ? AND e.invocation_id = ?
+        AND o.ordinal BETWEEN ? AND ?
+    `)
+      .get(sessionId, seeked.invocation_id, firstOrdinal, lastOrdinal) as { ordinal: number };
     return project(
       {
         invocation: this.invocation(sessionId, seeked.invocation_id),
-        firstOrdinal: older ? (stop ? stop.ordinal + 1 : 0) : seeked.ordinal,
-        lastOrdinal: older ? seeked.ordinal : stop ? stop.ordinal - 1 : request.throughOrdinal,
+        firstOrdinal,
+        lastOrdinal,
+        firstEventOrdinal: firstEvent.ordinal,
       },
       this.events(seeked.invocation_id, request),
     );

@@ -420,6 +420,7 @@ async function restoreSessionObservations(input: {
   sessionIds(): string[];
   announcePending(sessionId: string): void;
   attach(): Promise<string[]>;
+  isRecoverable?(sessionId: string): boolean;
 }): Promise<string[]> {
   const requested = input.sessionIds();
   for (const sessionId of requested) input.announcePending(sessionId);
@@ -428,7 +429,7 @@ async function restoreSessionObservations(input: {
   const restoredSet = new Set(restored);
   const registeredSet = new Set(input.sessionIds());
   const failed = requested.filter(
-    (sessionId) => registeredSet.has(sessionId) && !restoredSet.has(sessionId),
+    (sessionId) => registeredSet.has(sessionId) && !restoredSet.has(sessionId) && !input.isRecoverable?.(sessionId),
   );
   if (failed.length > 0) {
     throw new Error(`Failed to restore Session observations: ${failed.join(', ')}`);
@@ -768,10 +769,12 @@ export async function createDesktopRuntimeHostCandidate(
       }
     }
     observationsAttached = Boolean(sessionObserver);
+    const transcriptSeedFailures = new Set<string>();
     const restoredSessionIds = await restoreSessionObservations({
       sessionIds: () => sessionObservations.observationSessionIds(),
       announcePending: (sessionId) =>
         sendToRenderer(`sessions:event:${sessionId}`, { type: 'host_observation_pending' }),
+      isRecoverable: (sessionId) => transcriptSeedFailures.has(sessionId),
       attach: () => sessionObservations.attach(
         sessionObserver,
         (target) => ({
@@ -786,6 +789,13 @@ export async function createDesktopRuntimeHostCandidate(
           off: target.off.bind(target),
         }),
         (missingSessionId) => emitSessionsChanged("deleted", missingSessionId),
+        (failedSessionId) => {
+          transcriptSeedFailures.add(failedSessionId);
+          sendToRenderer(`sessions:event:${failedSessionId}`, {
+            type: 'host_observation_error',
+            message: 'Session transcript is unavailable',
+          });
+        },
       ),
     });
     for (const sessionId of restoredSessionIds) {

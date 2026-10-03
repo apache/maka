@@ -489,13 +489,16 @@ function transcript(
       return {
         invocation,
         firstOrdinal: events.find((e) => e.event.content?.kind === 'invocation_opened')?.ordinal,
+        firstEventOrdinal: events[0]?.ordinal,
         lastOrdinal: ending?.ordinal ?? events.at(-1)?.ordinal,
         events,
       };
     })
     .filter(
-      (i): i is typeof i & { firstOrdinal: number; lastOrdinal: number } =>
-        i.firstOrdinal !== undefined,
+      (
+        i,
+      ): i is typeof i & { firstOrdinal: number; firstEventOrdinal: number; lastOrdinal: number } =>
+        i.firstOrdinal !== undefined && i.firstEventOrdinal !== undefined,
     )
     .sort((x, y) => x.firstOrdinal - y.firstOrdinal);
 }
@@ -1189,10 +1192,16 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
             (older ? e.ordinal < seeked.ordinal : e.ordinal > seeked.ordinal) &&
             e.event.invocationId !== seeked.event.invocationId,
         );
+        const firstOrdinal = older ? (stop ? stop.ordinal + 1 : 0) : seeked.ordinal;
+        const lastOrdinal = older ? seeked.ordinal : stop ? stop.ordinal - 1 : throughOrdinal;
         return {
           ...visible.get(seeked.event.invocationId)!,
-          firstOrdinal: older ? (stop ? stop.ordinal + 1 : 0) : seeked.ordinal,
-          lastOrdinal: older ? seeked.ordinal : stop ? stop.ordinal - 1 : throughOrdinal,
+          firstOrdinal,
+          lastOrdinal,
+          firstEventOrdinal: visible
+            .get(seeked.event.invocationId)!
+            .events.find((event) => event.ordinal >= firstOrdinal && event.ordinal <= lastOrdinal)!
+            .ordinal,
         };
       });
       if (!selected) return undefined;

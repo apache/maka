@@ -34,7 +34,10 @@ import {
 } from '@maka/core/runtime-logical-execution';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { randomUUID } from 'node:crypto';
-import { createSessionTranscriptReader } from '../server/session-transcript-reader.js';
+import {
+  createSessionTranscriptReader,
+  OmittedTurnResultError,
+} from '../server/session-transcript-reader.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1375,6 +1378,36 @@ test('a failed WorkHub final target check rejects continuation without draining 
         message: 'Target model is no longer executable',
       },
     });
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('an omitted delegated result remains retryable without draining the Host', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  try {
+    await assert.rejects(
+      fixture.coordinator.startWorkHubResult(
+        {
+          kind: 'workhub_result',
+          eventId: 'omitted-result',
+          actionId: 'action',
+          delegationId: 'delegation',
+          targetSessionId: fixture.sessionId,
+          targetTurnId: 'delegated-turn',
+        },
+        async () => {
+          throw new OmittedTurnResultError('Delegated turn has an omitted transcript result');
+        },
+      ),
+      OmittedTurnResultError,
+    );
     assert.equal(fixture.drainRequested(), false);
   } finally {
     await fixture.coordinator.close();

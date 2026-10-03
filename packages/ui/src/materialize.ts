@@ -180,6 +180,7 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
     return copy.contextWindowSuggestion(tokens, declared);
   }
   if (kind === "step_limit") return copy.stepLimit;
+  if (kind === "transcript_omitted") return copy.transcriptOmitted;
   return kind;
 }
 

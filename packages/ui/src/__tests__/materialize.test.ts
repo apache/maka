@@ -278,6 +278,20 @@ describe("materializeTurns message metadata", () => {
     );
   });
 
+  test("labels an omitted transcript invocation without hiding the Turn", () => {
+    const messages: StoredMessage[] = [{
+      type: "system_note",
+      id: "transcript-omitted:invocation-1:1",
+      turnId: "turn-1",
+      ts: 1,
+      kind: "transcript_omitted",
+    }];
+    assert.equal(materializeTurns(messages, "en")[0]?.notes[0]?.text,
+      "This part of the task transcript exceeds the display limit and was omitted. Earlier and later records remain available.");
+    assert.equal(materializeTurns(messages, "zh-CN")[0]?.notes[0]?.text,
+      "这段任务记录超出显示上限，已省略。前后的记录仍可查看。");
+  });
+
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
       {

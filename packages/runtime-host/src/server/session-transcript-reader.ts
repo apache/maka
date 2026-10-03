@@ -44,6 +44,7 @@ import type {
   RuntimeTranscriptRun,
 } from '@maka/storage/execution-stores';
 import { foldTurnContribution } from '@maka/storage/session-message-projection';
+import { RuntimeTranscriptOversizedTurnError } from '@maka/storage/runtime-transcript-query';
 import type { SessionTurnLandmark } from '../protocol/index.js';
 
 const PERMISSION_OUTCOME_READ_CONCURRENCY = 8;
@@ -61,6 +62,15 @@ const TRANSCRIPT_SOURCE_MAX_BYTES =
   TRANSCRIPT_SOURCE_MAX_EVENTS * TRANSCRIPT_SOURCE_MAX_RECORD_BYTES;
 /** How much a page may scan past to fill itself when a projection hides rows. */
 const PAGE_HIDDEN_SCAN_MAX_BYTES = 16 * 1024 * 1024;
+
+class TranscriptProjectionLimitError extends Error {
+  readonly name = 'TranscriptProjectionLimitError';
+}
+
+/** A delegated result cannot be delivered until its transcript is readable. */
+export class OmittedTurnResultError extends Error {
+  readonly name = 'OmittedTurnResultError';
+}
 
 export function createSessionTranscriptReader(input: {
   stores: ExecutionStoresWriter<'interactive'>;
@@ -172,7 +182,14 @@ function createDurableLedgerTranscriptReader(input: {
   const projectTurn = async (
     turn: PendingTranscriptRun,
   ): Promise<{ sequence: number; message: StoredMessage }[]> => {
-    const projected = await turn.projection.finish(input.canonicalPermissionOutcomes);
+    if (turn.oversized) return [omittedTranscriptRecord(turn)];
+    let projected: Awaited<ReturnType<typeof turn.projection.finish>>;
+    try {
+      projected = await turn.projection.finish(input.canonicalPermissionOutcomes);
+    } catch (error) {
+      if (error instanceof TranscriptProjectionLimitError) return [omittedTranscriptRecord(turn)];
+      throw error;
+    }
     const hardDiagnostics = projected.diagnostics.filter(isHardRuntimeEventReadModelDiagnostic);
     if (hardDiagnostics.length > 0) {
       // Host diagnostics format the Error stack, so keep the failure's location
@@ -242,9 +259,19 @@ function createDurableLedgerTranscriptReader(input: {
       (turn, events) => {
         const projection = createTranscriptProjection([turn.invocation]);
         const ordinals = new Map<string, number>();
-        for (const { event, ordinal } of events) {
-          ordinals.set(event.id, ordinal);
-          projection.push(event);
+        try {
+          for (const { event, ordinal } of events) {
+            ordinals.set(event.id, ordinal);
+            projection.push(event);
+          }
+        } catch (error) {
+          if (
+            error instanceof RuntimeTranscriptOversizedTurnError ||
+            error instanceof TranscriptProjectionLimitError
+          ) {
+            return { ...turn, projection, ordinals, oversized: true };
+          }
+          throw error;
         }
         return { ...turn, projection, ordinals };
       },
@@ -321,6 +348,11 @@ function createDurableLedgerTranscriptReader(input: {
           if (!run) break;
           if (run.invocation.turnId === turnId) {
             for (const { message } of await projectTurn(run)) {
+              if (message.type === 'system_note' && message.kind === 'transcript_omitted') {
+                throw new OmittedTurnResultError(
+                  `Delegated turn ${turnId} has an omitted transcript result`,
+                );
+              }
               if (message.type === 'assistant' && message.text.trim()) result = message.text;
             }
           }
@@ -561,13 +593,13 @@ function ordinalOf(sequence: number): number {
 
 function assertTurnPresentationBounded(messages: readonly StoredMessage[]): void {
   if (messages.length > TRANSCRIPT_TURN_MAX_MESSAGES) {
-    throw new Error('Session transcript Turn exceeds its message limit');
+    throw new TranscriptProjectionLimitError('Session transcript Turn exceeds its message limit');
   }
   let encodedBytes = 0;
   for (const message of messages) {
     encodedBytes += Buffer.byteLength(JSON.stringify(message), 'utf8');
     if (encodedBytes > TRANSCRIPT_TURN_MAX_BYTES) {
-      throw new Error('Session transcript Turn exceeds its byte limit');
+      throw new TranscriptProjectionLimitError('Session transcript Turn exceeds its byte limit');
     }
   }
 }
@@ -590,7 +622,9 @@ async function readCanonicalPermissionOutcomes(
       if (!item.outcome) continue;
       encodedBytes += Buffer.byteLength(JSON.stringify(item.outcome), 'utf8');
       if (encodedBytes > TRANSCRIPT_TURN_MAX_BYTES) {
-        throw new Error('Session permission outcomes exceed the transcript byte limit');
+        throw new TranscriptProjectionLimitError(
+          'Session permission outcomes exceed the transcript byte limit',
+        );
       }
       outcomes.set(item.requestId, item.outcome);
     }
@@ -601,6 +635,24 @@ async function readCanonicalPermissionOutcomes(
 interface PendingTranscriptRun extends RuntimeTranscriptRun {
   projection: ReturnType<typeof createTranscriptProjection>;
   ordinals: Map<string, number>;
+  oversized?: boolean;
+}
+
+/** A synthetic read-only row, anchored to this run so both paging directions advance. */
+function omittedTranscriptRecord(turn: RuntimeTranscriptRun): {
+  sequence: number;
+  message: StoredMessage;
+} {
+  return {
+    sequence: turn.firstEventOrdinal * EVENT_SEQUENCE_STRIDE,
+    message: {
+      type: 'system_note',
+      id: `transcript-omitted:${turn.invocation.invocationId}:${turn.firstEventOrdinal}`,
+      turnId: turn.invocation.turnId,
+      ts: turn.invocation.openedAt,
+      kind: 'transcript_omitted',
+    },
+  };
 }
 
 /** Keep only presentation state while the storage snapshot visits complete facts. */
@@ -618,7 +670,9 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
       messageCount += 1;
       messageBytes += Buffer.byteLength(JSON.stringify(message));
       if (messageCount > TRANSCRIPT_TURN_MAX_MESSAGES || messageBytes > TRANSCRIPT_TURN_MAX_BYTES)
-        throw new Error('Session transcript projection exceeds its presentation limit');
+        throw new TranscriptProjectionLimitError(
+          'Session transcript projection exceeds its presentation limit',
+        );
     },
   });
   return {
@@ -633,9 +687,9 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
           : event;
       sourceBytes += Buffer.byteLength(JSON.stringify(measured));
       if (eventCount > TRANSCRIPT_SOURCE_MAX_EVENTS)
-        throw new Error('RuntimeEvent transcript exceeds its event limit');
+        throw new TranscriptProjectionLimitError('RuntimeEvent transcript exceeds its event limit');
       if (sourceBytes > TRANSCRIPT_TURN_MAX_BYTES)
-        throw new Error('RuntimeEvent transcript exceeds its byte limit');
+        throw new TranscriptProjectionLimitError('RuntimeEvent transcript exceeds its byte limit');
       projector.push(event);
     },
     async finish(reader: CanonicalPermissionOutcomeReader) {
