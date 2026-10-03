@@ -887,7 +887,6 @@ function AppShellContent({
 
     openHelp,
     openSettings,
-    clearPendingTurnActions: () => composerSubmission.clearPendingTurnActions(),
     refreshConnections: refreshConnectionProjections,
     refreshMemoryActive,
     refreshMessages,
@@ -1528,9 +1527,7 @@ function AppShellContent({
                     : undefined
                 }
                 sessionHealthNotice={sessionHealthNotice}
-                sessionHealthModelPickerAvailable={
-                  activeBoundarySurface.localInteractionAvailable
-                }
+                localInteractionAvailable={activeBoundarySurface.localInteractionAvailable}
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
                 showOnboardingHero={showOnboardingHero}
                 onboardingState={onboardingState}

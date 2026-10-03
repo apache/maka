@@ -113,7 +113,7 @@ function harness(options: {
         showModelSetupToast() {}, onTurnCompleted() {},
         searchTarget: null, clearSearchTarget() {},
       })),
-      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript }) : null,
+      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript, localInteractionAvailable: true }) : null,
       createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer, ...stubComposerGateInputs() }),
     );
   }

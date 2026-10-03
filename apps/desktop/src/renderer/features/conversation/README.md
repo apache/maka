@@ -122,7 +122,8 @@ displayed Session and, for interactions, the owner Session:
   only what the gates combine with: whether the catalog row has arrived, its
   status, and the executor selection.
 - `ConversationTranscriptRegion`: the running Turn's activity, which also holds
-  the health notice's model picker.
+  the health notice's model picker. The shell passes the boundary's
+  `localInteractionAvailable` as a typed region input.
 - `ConversationActivityConsumer`: whether an observable Turn runs and whether
   the owner Session waits on an answer, for the custom pet.
 - `ConversationHomeSurface`: the main column, marked as the home surface while
@@ -258,12 +259,15 @@ the revision notice, and narrows the shell's picker gates while a draft is open.
 `ConversationTranscriptRegion` derives the Turn presentation from the same
 owner's pending marks (Branch is withheld from a shared Session) and injects the
 interrupted-Turn banner's resume action; one resume instance sits behind both,
-so the banner cannot race the send slot. The shell keeps only the stable
-`ComposerSubmissionCommands` handle, whose `beginEditUserMessage` and
-`handleTurnFooterAction` serve the transcript and whose
-`clearPendingTurnActions` serves Session teardown and Host changes. The first
+so the banner cannot race the send slot. The transcript and the activity reader
+read a narrow Turn reader (displayed and owner Session, pending marks, the
+banner action), so a send or an edit draft does not repaint the transcript. The
+marks end with the owner: the registry clears its timers when it unmounts. The
+shell keeps only the stable `ComposerSubmissionCommands` handle, whose
+`beginEditUserMessage` and `handleTurnFooterAction` serve the transcript and
+whose `clearPendingTurnActions(sessionId)` serves Session teardown. The first
 two throw while the owner is unmounted; cleanup is a no-op then. The binding and
-reader context are private.
+reader contexts are private.
 
 ## Composer editing intents (R2 M3)
 

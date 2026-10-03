@@ -25,7 +25,9 @@ import { useSessionUiRead } from '../controller/use-session-ui-read.js';
 import { transcriptRestoreTarget } from '../controller/transcript-reading-position.js';
 import { useConversationOwner } from './conversation-context.js';
 import { useConversationQueueCommands } from './conversation-provider.js';
-import { useComposerSubmissionReader, type ComposerSubmissionReader } from './composer-submission-context.js';
+import {
+  useComposerSubmissionReader, useComposerTurnReader, type ComposerSubmissionReader,
+} from './composer-submission-context.js';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { chatTurnActivity } from '../../../application/contracts/session-execution.js';
 import { useAppShellTurnPresentation } from '../../../application/contracts/turn-presentation.js';
@@ -49,31 +51,35 @@ type TranscriptProps = Pick<ChatProps,
 > & {
   activeSessionId: string | undefined; liveContentSeedGeneration: number; sessionUiReads: SessionUiReads;
   activeTurn: ReturnType<typeof chatTurnActivity>;
+  sessionHealthModelPickerAvailable: boolean;
 };
-/** The shell's model-picker gate for the health notice; the running Turn narrows it here. */
-type TranscriptHealthGate = { sessionHealthModelPickerAvailable?: boolean };
+/** What the shell knows that the health notice's picker gate combines with the running Turn. */
+type TranscriptGateInputs = {
+  /** The owner Session's execution boundary admits local interaction. */
+  localInteractionAvailable: boolean;
+};
 
 /** The actual transcript reader. Shell supplies presentation and navigation only. */
 export function ConversationTranscriptRegion<P extends object>(
-  props: { surface: ComponentType<P> } & Omit<P, keyof TranscriptProps>,
+  props: { surface: ComponentType<P> } & TranscriptGateInputs & Omit<P, keyof TranscriptProps>,
 ) {
-  const { surface, ...presentation } = props;
+  const { surface, localInteractionAvailable, ...presentation } = props;
   const { workspace, commands, readingCommands } = useConversationOwner();
-  const submission = useComposerSubmissionReader();
+  // The narrow reader: a send or an edit draft does not repaint the transcript.
+  const turnReader = useComposerTurnReader();
   // Pending Turn-footer marks come from the submission owner that sets them.
   const deriveTurnPresentation = useAppShellTurnPresentation({
-    allowBranch: !submission.sharedSessionActive,
-    activeId: submission.activeId,
-    pendingTurnActions: submission.pendingTurnActions,
+    allowBranch: !turnReader.sharedSessionActive,
+    activeId: turnReader.activeId,
+    pendingTurnActions: turnReader.pendingTurnActions,
     uiLocale: useUiLocale(),
   });
-  const turn = useDisplayedTurn(workspace.ui.reads, submission.activeId);
+  const turn = useDisplayedTurn(workspace.ui.reads, turnReader.activeId);
   const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
   const load = useSessionUiRead(workspace.ui.reads, 'load', view.sessionId);
-  const healthGate = presentation as TranscriptHealthGate;
   const retryPending = useSessionUiRead(workspace.ui.reads, 'retry', view.sessionId);
   const sessionId = view.sessionId;
-  const owned: TranscriptProps & TranscriptHealthGate = {
+  const owned: TranscriptProps = {
     activeSessionId: sessionId,
     activeTurn: chatTurnActivity(turn.execution),
     onStreamingSettled: sessionId ? (messageId) => commands.settleAssistantStreaming(sessionId, messageId) : undefined,
@@ -92,11 +98,10 @@ export function ConversationTranscriptRegion<P extends object>(
     restoreTargetTurn: transcriptRestoreTarget(sessionId ? workspace.ui.transcriptReadingAnchorBySessionRef.current[sessionId] : undefined, load.unavailableTranscriptRestore),
     onReadingAnchorChange: sessionId ? (turnId) => readingCommands.current?.captureAnchor(turnId) : undefined,
     deriveTurnPresentation,
-    safeResumeAction: submission.safeResumeAction,
-    // The notice's picker is held while a Turn runs, as the Composer's is.
-    ...(healthGate.sessionHealthModelPickerAvailable !== undefined
-      ? { sessionHealthModelPickerAvailable: healthGate.sessionHealthModelPickerAvailable && !turn.turnActive }
-      : {}),
+    safeResumeAction: turnReader.safeResumeAction,
+    // The notice's picker is held while a Turn runs, as the Composer's is;
+    // `useShellChatModel` holds it for the Session's status.
+    sessionHealthModelPickerAvailable: localInteractionAvailable && !turn.turnActive,
   };
   return createElement(surface, { ...presentation, ...owned } as unknown as P);
 }
@@ -147,13 +152,14 @@ export function ConversationComposerRegion<P extends object>(
   const { surface, usageModel, usageRoute, sessionState, executorComposer, ...presentation } = props;
   const { workspace } = useConversationOwner();
   const submission = useComposerSubmissionReader();
+  const { ownerSessionId } = useComposerTurnReader();
   const composerRef = useConversationQueueCommands().composer;
   const uiLocale = useUiLocale();
   const actionCopy = getDesktopConversationCopy(uiLocale).actions;
   const shellCopy = getShellCopy(uiLocale).app;
   const activeId = useSyncExternalStore(workspace.target.subscribe, workspace.target.getSnapshot);
   const turn = useDisplayedTurn(workspace.ui.reads, activeId);
-  const interaction = useSessionUiRead(workspace.ui.reads, 'interaction', submission.ownerSessionId);
+  const interaction = useSessionUiRead(workspace.ui.reads, 'interaction', ownerSessionId);
   const queue = useSessionUiRead(workspace.ui.reads, 'queue', activeId);
   const slashCommands = useMemo(
     () => desktopComposerSlashCommands(Boolean(activeId), turn.turnActive, shellCopy.slashCommands),
@@ -232,9 +238,9 @@ export function ConversationActivityConsumer<P extends { activity: ConversationA
 ) {
   const { surface, ...presentation } = props;
   const { workspace } = useConversationOwner();
-  const submission = useComposerSubmissionReader();
-  const turn = useDisplayedTurn(workspace.ui.reads, submission.activeId);
-  const interaction = useSessionUiRead(workspace.ui.reads, 'interaction', submission.ownerSessionId);
+  const { activeId, ownerSessionId } = useComposerTurnReader();
+  const turn = useDisplayedTurn(workspace.ui.reads, activeId);
+  const interaction = useSessionUiRead(workspace.ui.reads, 'interaction', ownerSessionId);
   const turnRunning = turn.executionAvailable && turn.turnActive;
   const awaitingInteraction = interaction !== undefined;
   const activity = useMemo(() => ({ turnRunning, awaitingInteraction }), [turnRunning, awaitingInteraction]);

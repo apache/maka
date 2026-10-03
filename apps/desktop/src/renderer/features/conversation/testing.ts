@@ -48,6 +48,7 @@ export {
 } from './controller/use-active-execution-boundary.js';
 export { useSessionMessageQueue } from './controller/use-session-message-queue.js';
 export { useSessionUiRead } from './controller/use-session-ui-read.js';
+export { useTurnActionRegistry } from './controller/use-turn-action-registry.js';
 
 /** The shell inputs `ConversationComposerRegion` combines with the Turn: a loaded, idle Session without an executor. */
 export function stubComposerGateInputs(overrides: {

@@ -38,8 +38,8 @@ export interface ComposerSurfaceOwner {
 export interface ComposerSubmissionCommands {
   beginEditUserMessage(turnId: string): void;
   handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']): Promise<void>;
-  /** Drops pending Turn-footer marks for one retired Session, or all of them on a Host change. */
-  clearPendingTurnActions(sessionId?: string): void;
+  /** Drops the pending Turn-footer marks of one retired Session. */
+  clearPendingTurnActions(sessionId: string): void;
 }
 
 /**

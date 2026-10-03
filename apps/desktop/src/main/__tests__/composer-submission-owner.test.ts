@@ -57,6 +57,7 @@ import { getSessionLocalCopy } from '../../renderer/locales/session-local-copy.j
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import {
   stubComposerGateInputs, stubConversationServices, useComposerStaging, useConversationOwner, useConversationQueue,
+  useTurnActionRegistry,
 } from '../../renderer/features/conversation/testing.js';
 import {
   createDesktopComposerSubmissionServices,
@@ -107,7 +108,7 @@ interface TranscriptProps {
   deriveTurnPresentation(turns: readonly TurnViewModel[]): TurnPresentation;
   safeResumeAction?: { pending: boolean; detail: string | undefined; onResume(): void };
   activeTurn: { turnId: string; awaitingInput: boolean; compacting: boolean } | undefined;
-  sessionHealthModelPickerAvailable?: boolean;
+  sessionHealthModelPickerAvailable: boolean;
 }
 
 const row = (id: string): DesktopSessionSummary => ({
@@ -139,6 +140,7 @@ function harness(options: {
   stagingDraftKey?: string;
   gateInputs?: ReturnType<typeof stubComposerGateInputs>;
   homeEligible?: boolean;
+  localInteractionAvailable?: boolean;
 } = {}) {
   const { root, container } = installReactRenderer();
   const catalog = createSessionCatalogController();
@@ -188,7 +190,8 @@ function harness(options: {
   let shellRenders = 0;
   function Probe() { staged = useComposerStaging(); queued = useConversationQueue(); return null; }
   function Composer(props: RegionProps) { region = props; return null; }
-  function Transcript(props: TranscriptProps) { transcript = props; return null; }
+  let transcriptRenders = 0;
+  function Transcript(props: TranscriptProps) { transcript = props; transcriptRenders += 1; return null; }
   function Activity(props: { activity: ConversationActivity }) { activity = props.activity; return null; }
   function Shell() {
     shellRenders += 1;
@@ -201,7 +204,7 @@ function harness(options: {
         searchTarget: null, clearSearchTarget() {},
       }),
       createElement(ConversationTranscriptRegion<TranscriptProps>, {
-        surface: Transcript, sessionHealthModelPickerAvailable: true,
+        surface: Transcript, localInteractionAvailable: options.localInteractionAvailable ?? true,
       }),
       createElement(ConversationComposerRegion<RegionProps>, {
         surface: Composer, contextPickEnabled: true, directoryPickerEnabled: true,
@@ -244,6 +247,7 @@ function harness(options: {
     get transcript() { assert.ok(transcript, 'the transcript region rendered'); return transcript; },
     get activity() { assert.ok(activity, 'the activity reader rendered'); return activity; },
     get shellRenders() { return shellRenders; },
+    get transcriptRenders() { return transcriptRenders; },
     get staged() { return staged; },
     get queued() { return queued; },
     homeSurface() {
@@ -490,12 +494,22 @@ describe('ComposerSubmissionProvider', () => {
     await act(async () => { settled.push(h.commands.handleTurnFooterAction('turn-1', 'branch')); });
     assert.equal(branches.length, 2, 'a dropped mark no longer swallows the next click');
     assert.equal(branchPending(), true);
-    await act(async () => h.commands.clearPendingTurnActions());
-    assert.equal(branchPending(), false, 'a Host change drops every mark');
     await act(async () => {
       for (const branch of branches) branch.resolve({ ...row('C'), name: 'Copy' });
       await Promise.all(settled);
     });
+  });
+
+  test('the Turn-action registry ends its marks when its owner unmounts', () => {
+    const { root } = installReactRenderer();
+    let registry!: ReturnType<typeof useTurnActionRegistry>;
+    function Owner() { registry = useTurnActionRegistry(); return null; }
+    act(() => root.render(createElement(Owner)));
+    act(() => { registry.addKey(registry.keyOf('A', 'turn-1', 'branch')); });
+    const marks = registry.keysRef.current;
+    assert.equal(marks.size, 1);
+    act(() => root.unmount());
+    assert.equal(marks.size, 0, 'no mark, and no timer that would clear it, outlives the owner');
   });
 
   test('a shared Session\'s transcript offers no Branch', async () => {
@@ -754,6 +768,25 @@ describe('Conversation Turn readers', () => {
     assert.equal(h.transcript.activeTurn, undefined);
     assert.equal(h.transcript.sessionHealthModelPickerAvailable, true);
     assert.equal(h.shellRenders, shellRenders, 'the shell reads no Turn');
+  });
+
+  test('a send-pending or edit-draft change does not repaint the transcript', async () => {
+    const h = harness();
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'source')]));
+    const renders = h.transcriptRenders;
+    await act(async () => h.commands.beginEditUserMessage('turn-1'));
+    assert.ok(h.notice(), 'the Composer slot shows the edit draft');
+    await act(async () => h.notice()!.onCancel());
+    assert.equal(h.notice(), undefined);
+    assert.equal(h.transcriptRenders, renders, 'the transcript reads only the narrow Turn reader');
+  });
+
+  test('the health notice\'s picker needs the shell\'s local-interaction gate', async () => {
+    const h = harness({ localInteractionAvailable: false });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'source')]));
+    assert.equal(h.transcript.sessionHealthModelPickerAvailable, false);
   });
 
   test('the mode gates combine the Turn with the shell\'s catalog row', async () => {

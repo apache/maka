@@ -30,7 +30,7 @@ import type {
   ComposerSubmissionShell,
   ComposerSurfaceOwner,
 } from '../model/composer-submission-contract.js';
-import { ComposerSubmissionContext } from './composer-submission-context.js';
+import { ComposerSubmissionContext, ComposerTurnContext } from './composer-submission-context.js';
 
 /**
  * Sole owner of the Composer's submission: the send-pending flag, the
@@ -65,10 +65,12 @@ export function ComposerSubmissionProvider<Owner extends ComposerSurfaceOwner>(p
   }, [props.commands, shellCommands]);
   return (
     <ComposerSubmissionContext.Provider value={submission.reader}>
-      <CatalogRowWatch catalog={catalog} sessionIds={submission.revisionWatch.sessionIds}
-        onRows={submission.revisionWatch.onRows} />
-      <SessionLocalMessages sessionId={submission.reader.activeId} {...submission.localMessages} />
-      {props.children}
+      <ComposerTurnContext.Provider value={submission.turnReader}>
+        <CatalogRowWatch catalog={catalog} sessionIds={submission.revisionWatch.sessionIds}
+          onRows={submission.revisionWatch.onRows} />
+        <SessionLocalMessages sessionId={submission.turnReader.activeId} {...submission.localMessages} />
+        {props.children}
+      </ComposerTurnContext.Provider>
     </ComposerSubmissionContext.Provider>
   );
 }

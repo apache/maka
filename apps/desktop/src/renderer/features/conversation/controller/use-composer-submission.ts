@@ -252,11 +252,8 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   const shellCommands = useMemo<ComposerSubmissionCommands>(() => ({
     beginEditUserMessage: (turnId) => revision.beginEditUserMessage(turnId),
     handleTurnFooterAction: (turnId, actionId) => turn.handleTurnFooterAction(turnId, actionId),
-    clearPendingTurnActions: (sessionId) => {
-      if (sessionId) turnActionRegistry.clearForSession(sessionId);
-      else turnActionRegistry.clearAll();
-    },
-  }), [revision, turn, turnActionRegistry.clearAll, turnActionRegistry.clearForSession]);
+    clearPendingTurnActions: (sessionId) => turnActionRegistry.clearForSession(sessionId),
+  }), [revision, turn, turnActionRegistry.clearForSession]);
   const reader = useMemo(() => ({
     onSend,
     newTaskSendPending,
@@ -266,19 +263,21 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     respondToUserQuestion: chat.respondToUserQuestion,
     respondToUserForm: chat.respondToUserForm,
     stop,
+    composerResumeAction: resume.composerResumeAction,
+  }), [chat, newTaskSendPending, onSend, resume.composerResumeAction, revision, revisionDraft, stop]);
+  // What the transcript and the chrome readers take, apart from the Composer's
+  // submission state, so a send or an edit draft does not repaint the transcript.
+  const turnReader = useMemo(() => ({
     activeId,
     ownerSessionId,
     sharedSessionActive,
     pendingTurnActions: turnActionRegistry.keys,
-    composerResumeAction: resume.composerResumeAction,
     safeResumeAction: resume.safeResumeAction,
-  }), [
-    activeId, chat, newTaskSendPending, onSend, ownerSessionId, resume.composerResumeAction, resume.safeResumeAction,
-    revision, revisionDraft, sharedSessionActive, stop, turnActionRegistry.keys,
-  ]);
+  }), [activeId, ownerSessionId, resume.safeResumeAction, sharedSessionActive, turnActionRegistry.keys]);
   return {
     shellCommands,
     reader,
+    turnReader,
     // Local delivery recovery publishes into, and restores drafts for, the
     // Session the Composer shows.
     localMessages: {
