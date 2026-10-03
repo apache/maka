@@ -89,7 +89,6 @@ import {
   type OnboardingShellProjection,
 } from './application/contracts/onboarding/onboarding-authority.js';
 import { ShellLifecycleSubscriptions } from './application/contracts/shell-lifecycle.js';
-import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
 import {
@@ -185,7 +184,7 @@ export function AppShell() {
                                     <Diagnostics.ManualDiagnosticReportConsumer>
                                       {(copyManualDiagnosticReport) => (
                                         <AppShellContent
-                                          {...{ taskEntry, overlays, sharedSessionDialog, workbar, onboarding, copyManualDiagnosticReport, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                                          {...{ taskEntry, overlays, sharedSessionDialog, workbar, onboarding, copyManualDiagnosticReport, uiLocale, setUiLocaleOverride, setUiLocalePreference }}
                                         />
                                       )}
                                     </Diagnostics.ManualDiagnosticReportConsumer>
@@ -227,7 +226,6 @@ function AppShellContent({
   onboarding,
   copyManualDiagnosticReport,
   uiLocale,
-  uiLocaleOverride,
   setUiLocaleOverride,
   setUiLocalePreference,
 }: {
@@ -238,7 +236,6 @@ function AppShellContent({
   onboarding: OnboardingShellProjection;
   copyManualDiagnosticReport: Diagnostics.CopyManualDiagnosticReport;
   uiLocale: UiLocale;
-  uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
@@ -516,10 +513,7 @@ function AppShellContent({
   });
   const {
     chatModelChoices,
-    activeConnection,
-    activeConnectionLabel,
     activeModel,
-    activeModelLabel,
     executor,
     composerModelProps,
     newChatModel,
@@ -904,7 +898,6 @@ function AppShellContent({
   const sessionNavigationPorts: SessionNavigationPorts = {
     sessionsRef,
     acquireAutomaticQueryBlock: sessionCatalogController.acquireAutomaticQueryBlock,
-    activateSession: setActiveId,
     clearSessionRendererState,
     refreshSessions,
     toastApi,
@@ -1428,7 +1421,7 @@ function AppShellContent({
                 onSelect={setNavSelection}
                 onOpenSettings={openSettings}
                 onNew={createSession}
-                workHubEntry={{ active: workHubActive, label: 'WorkHub', onSelect: openWorkHub }}
+                onOpenWorkHub={openWorkHub}
                 projectActions={projectRowActions}
                 onNewProject={
                   taskEntry.selectors.canAddProject
@@ -1603,14 +1596,6 @@ function AppShellContent({
                   <Conversation.ConversationTranscriptRegion surface={ChatMessageSurface}
                 activeTurn={Conversation.chatTurnActivity(activeExecution)}
                 activeSession={activeSessionForView}
-                activeConnectionLabel={activeConnectionLabel}
-                activeModelLabel={activeModelLabel}
-                activeProviderType={activeConnection?.providerType}
-                renderProviderMark={(type) => <ProviderLogo type={type} compact />}
-                modelChoices={chatModelChoices}
-                onModelChange={sharedSessionActive ? undefined : (input) => {
-                  if (activeId) void setSessionModel(activeId, input);
-                }}
                 userLabel={userLabel}
                 memoryActive={memoryActive}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}

@@ -74,7 +74,7 @@ export interface SessionNavigationChromeInput {
   moduleMemory?: NavModuleMemory;
   workHubActive: boolean;
   /** Shown, and selectable, only while the client WorkHub switch is on. */
-  workHubEntry?: { active: boolean; label: string; onSelect(): void };
+  onOpenWorkHub?(): void;
   projectActions?: ProjectRowActions;
   onSelect(selection: NavSelection): void;
   onOpenSettings(): void;
@@ -325,9 +325,10 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
-    workHubEntry: workHubEnabled && props.workHubEntry ? {
-      ...props.workHubEntry,
-      onSelect: () => { if (workHubEnablement.isEnabled()) props.workHubEntry?.onSelect(); },
+    workHubEntry: workHubEnabled && props.onOpenWorkHub ? {
+      active: props.workHubActive,
+      label: 'WorkHub',
+      onSelect: () => { if (workHubEnablement.isEnabled()) props.onOpenWorkHub?.(); },
     } : undefined,
   };
 
