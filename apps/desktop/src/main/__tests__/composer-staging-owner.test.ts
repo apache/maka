@@ -371,7 +371,7 @@ for (const context of ['attachment', 'directory'] as const) {
       services: windowSubmissionServices(),
       uiLocale: 'en', activeIdRef, captureSelection: () => () => true, composerRef: view.composer,
       readMessages: () => [{ type: 'user', id: 'message', turnId: `guard-${context}`, text: 'original', ts: 1 }],
-      hasPendingAttachments: () => view.commands.captureSubmission().hasPendingContext,
+      staging: view.commands,
       openSessionInChat() {}, refreshSessions: async () => [],
       commitRevisionDraft: (draft) => { revisionDraftRef.current = draft; }, revisionDraftRef,
       toastApi: { info() {}, error: () => assert.fail('unexpected revision error') },

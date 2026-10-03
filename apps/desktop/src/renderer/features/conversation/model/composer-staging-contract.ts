@@ -19,6 +19,7 @@
 
 import type { DirectoryReference, QuoteRef } from '@maka/core/events';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
+import type { RevisionStagedContext } from '@maka/ui';
 
 /** A submission owns the staging it captured, even after navigation or another edit. */
 export interface ComposerStagingSubmission {
@@ -27,14 +28,25 @@ export interface ComposerStagingSubmission {
   readonly hasStagedQuotes: boolean;
   readonly submittableAttachments: readonly PendingAttachment[] | undefined;
   readonly directoryOptions: { readonly directoryReferences?: readonly DirectoryReference[] };
-  quotesForSend(): QuoteRef[] | undefined;
+  /** Without an owner key this answers from the captured snapshot; the
+   *  revision send passes the branch child's key because the lifecycle
+   *  re-keys the plate mid-send and empties the source bucket, so the
+   *  resumed send must read the live plate through the new owner
+   *  (#5274 review). */
+  quotesForSend(ownerKey?: string): QuoteRef[] | undefined;
   clearSubmittedContext(submitted?: readonly PendingAttachment[]): void;
-  clearQuotes(): void;
+  /** Without an owner key this removes exactly the captured entries; an
+   *  explicit owner key clears that owner's whole live plate (the revision
+   *  path clears the branch child the lifecycle re-keyed the quotes onto). */
+  clearQuotes(ownerKey?: string): void;
 }
 
 /** Commands only: there is deliberately no subscription or controller getter. */
 export interface ComposerStagingCommands {
   captureSubmission(): ComposerStagingSubmission;
+  /** Live plate reads for the revision lifecycle, assembled beside the hooks
+   *  that own the buckets (see RevisionStagedContext). */
+  stagedContext(): RevisionStagedContext;
   addQuote(input: {
     text: string;
     turnId?: string;

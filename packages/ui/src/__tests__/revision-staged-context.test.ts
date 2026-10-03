@@ -1,0 +1,463 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { strict as assert } from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import type { AttachmentRef, QuoteRef } from '@maka/core/events';
+import type { StoredMessage } from '@maka/core/session';
+import {
+  clearRevisionStagedContext,
+  createRevisionActions,
+  revisionSendGate,
+  stageRevisionSourceContext,
+  type RevisionActionsEnv,
+  type RevisionEditCopy,
+  type RevisionStagedContext,
+  type RevisionStagedSource,
+  type TurnRevisionDraftBase,
+} from '../revision-staged-context.js';
+
+const copy: RevisionEditCopy = {
+  revisionUnavailableTitle: 'unavailable',
+  revisionAttachmentsUnsupported: 'source-attachments-unsupported',
+  revisionAlreadyActive: 'already-active',
+  revisionDraftAttachmentConflict: 'draft-attachment-conflict',
+  revisionDraftQuoteConflict: 'draft-quote-conflict',
+  revisionMixedContextUnsupported: 'mixed-context-unsupported',
+  revisionTransformedTextUnsupported: 'transformed-text-unsupported',
+  revisionStartedTitle: 'started',
+  revisionStartedDescription: 'started-description',
+  revisionReadyTitle: 'ready',
+  revisionReadyDescription: 'ready-description',
+  operationFailedTitle: 'failed',
+  operationFailedFallback: 'failed-fallback',
+};
+
+function userMessage(turnId: string, text: string, extra: Record<string, unknown> = {}): StoredMessage {
+  return { id: `msg-${turnId}`, type: 'user', turnId, ts: 1, text, ...extra } as StoredMessage;
+}
+
+type StagedLog = {
+  restored: Array<{ ownerKey: string; quotes: QuoteRef[] }>;
+  cleared: string[];
+  /** The initial active Session's bucket — the plate the hooks bind to. */
+  quotes: QuoteRef[];
+  /** Per-owner buckets, so a clear only ever empties the key it names. */
+  buckets: Map<string, QuoteRef[]>;
+};
+
+function emptyStagedLog(): StagedLog {
+  const buckets = new Map<string, QuoteRef[]>();
+  const quotes: QuoteRef[] = [];
+  buckets.set('session-1', quotes);
+  return { restored: [], cleared: [], quotes, buckets };
+}
+
+function fakeStaged(log: StagedLog): RevisionStagedContext {
+  const bucketOf = (ownerKey: string): QuoteRef[] => {
+    let bucket = log.buckets.get(ownerKey);
+    if (!bucket) {
+      bucket = [];
+      log.buckets.set(ownerKey, bucket);
+    }
+    return bucket;
+  };
+  return {
+    quotes: log.quotes,
+    attachments: [],
+    restoreQuotes: (ownerKey, quotes) => {
+      if (quotes.length === 0) return;
+      log.restored.push({ ownerKey, quotes: [...quotes] });
+      bucketOf(ownerKey).push(...quotes);
+    },
+    clearQuotes: (ownerKey) => {
+      log.cleared.push(ownerKey);
+      return bucketOf(ownerKey).splice(0);
+    },
+  };
+}
+
+function createEnv(input: { messages: StoredMessage[]; staged: StagedLog }) {
+  const activeIdRef = { current: 'session-1' };
+  const revisionDraftRef: { current: TurnRevisionDraftBase<string> | null } = { current: null };
+  const toasts: Array<{ kind: 'info' | 'error'; title: string; description?: string }> = [];
+  const composer = { text: '' };
+  let attempts = 0;
+  const env: RevisionActionsEnv<string, TurnRevisionDraftBase<string>> = {
+    uiLocale: 'en' as never,
+    activeIdRef,
+    captureSelection: () => () => true,
+    composerRef: {
+      current: {
+        getText: () => composer.text,
+        setText: (text: string) => {
+          composer.text = text;
+        },
+        focus: () => {},
+        clearDraft: () => {},
+        setDraft: (_sessionId: string, text: string) => {
+          composer.text = text;
+        },
+      } as never,
+    },
+    readMessages: () => input.messages,
+    hasPendingAttachments: () => false,
+    stagedContext: () => fakeStaged(input.staged),
+    openSessionInChat: (sessionId) => {
+      activeIdRef.current = sessionId;
+    },
+    refreshSessions: async () => [],
+    commitRevisionDraft: (draft) => {
+      revisionDraftRef.current = draft;
+    },
+    revisionDraftRef,
+    toastApi: {
+      info: (title, description) => toasts.push({ kind: 'info', title, description }),
+      error: (title, description) => toasts.push({ kind: 'error', title, description }),
+    },
+    copy,
+    reviseBeforeTurn: async () => ({ id: 'session-2' }),
+    abandonSessionCopy: async () => {},
+    localizedShellErrorMessage: (_error, fallback) => fallback,
+    reportSessionWorkspaceUnavailable: () => false,
+    acquireCopyAttempt: (_key, turnId) => ({
+      sourceTurnId: turnId,
+      copyId: `copy-${++attempts}`,
+      phase: 'reserved',
+    }),
+    startCopyAttempt: () => true,
+    abandonCopyAttempt: () => true,
+    completeCopyAttempt: () => {},
+  };
+  return { env, activeIdRef, revisionDraftRef, toasts };
+}
+
+const quotedQuote: QuoteRef = { text: 'a large pasted excerpt', sourceTurnId: 'turn-0' };
+
+describe('revision lifecycle (#5109)', () => {
+  it('re-keys the restored quotes onto the branch child across the commit', async () => {
+    const staged = emptyStagedLog();
+    // The branch child transcript a revision copy really produces: the
+    // revised turn is excluded, so turn-1's message is absent and nothing in
+    // the copy rewrites it. The re-key therefore reads the draft snapshot —
+    // nothing ever consults a transcript (#5109 review).
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.deepEqual(staged.restored, [{ ownerKey: 'session-1', quotes: [quotedQuote] }]);
+
+    assert.equal(await actions.prepareRevisionSend('edited text'), true);
+    assert.deepEqual(
+      staged.restored.at(-1),
+      { ownerKey: 'session-2', quotes: [quotedQuote] },
+      'the restored quotes re-key onto the branch child',
+    );
+    assert.ok(staged.cleared.includes('session-1'), 'the source-key plate empties');
+  });
+
+  it('re-keys the plate the user edited, not the edit-start snapshot', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [
+        userMessage('turn-1', 'explain this', {
+          quotes: [quotedQuote, { text: 'second excerpt', sourceTurnId: 'turn-0' }],
+        }),
+      ],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    // During the edit the user removes the second excerpt and re-annotates
+    // the first: the plate is the truth the replacement must carry, not the
+    // snapshot the edit started from (#5274 review).
+    staged.quotes.splice(1, 1);
+    staged.quotes[0] = { ...staged.quotes[0], comment: 'actually the other reason' };
+
+    assert.equal(await actions.prepareRevisionSend('edited text'), true);
+    assert.deepEqual(
+      staged.restored.at(-1)?.quotes,
+      [{ text: 'a large pasted excerpt', sourceTurnId: 'turn-0', comment: 'actually the other reason' }],
+      'user removals and re-annotations survive the re-key',
+    );
+  });
+
+  it('keeps the pre-gate quote snapshot equal to the child bucket the send reads', async () => {
+    // The Desktop send captures the staged payload BEFORE awaiting the
+    // revision lifecycle, because the re-key empties the source bucket the
+    // closure's array points at; the replacement send then delivers that
+    // snapshot. Whatever the gate does in between, the snapshot and the child
+    // bucket must agree — or the first replacement silently drops its quote
+    // (#5109 review, second round).
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    const preGateSnapshot = [...(staged.restored.at(-1)?.quotes ?? [])];
+
+    assert.equal(await actions.prepareRevisionSend('edited text'), true);
+
+    assert.deepEqual(
+      staged.restored.at(-1)?.quotes,
+      preGateSnapshot,
+      'the child bucket equals the snapshot',
+    );
+  });
+
+  it('refuses to edit a message that carries attachments (#5274 review)', () => {
+    // Attachment ownership does not follow a revision copy — the copied
+    // transcript stops before the selected turn, so no target-owned refs
+    // exist client-side to restage. The edit refuses rather than silently
+    // dropping the files.
+    const h = createEnv({
+      messages: [
+        userMessage('turn-1', 'with image', {
+          attachments: [
+            {
+              kind: 'image',
+              name: 'chart.png',
+              mimeType: 'image/png',
+              bytes: 10,
+              ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a.png' },
+            },
+          ],
+        }),
+      ],
+      staged: emptyStagedLog(),
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+
+    assert.equal(h.revisionDraftRef.current, null, 'no draft is committed');
+    assert.deepEqual(h.toasts.at(-1), {
+      kind: 'info',
+      title: 'unavailable',
+      description: 'source-attachments-unsupported',
+    });
+  });
+
+  it('lets an unchanged replacement through (#5815)', async () => {
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this')],
+      staged: emptyStagedLog(),
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('explain this'), true);
+    assert.deepEqual(h.toasts.at(-1), {
+      kind: 'info',
+      title: 'ready',
+      description: 'ready-description',
+    });
+  });
+
+  it('blocks a replacement that mixes newly staged quotes into the edit', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this')],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    staged.quotes.push({ text: 'my own excerpt' });
+    assert.equal(await actions.prepareRevisionSend('edited text'), false);
+    assert.deepEqual(h.toasts.at(-1), {
+      kind: 'info',
+      title: 'ready',
+      description: 'mixed-context-unsupported',
+    });
+  });
+
+  it('cancels a prepared edit and clears both draft keys', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    await actions.prepareRevisionSend('edited text');
+    await actions.cancelRevisionDraft();
+
+    assert.deepEqual([...new Set(staged.cleared)].sort(), ['session-1', 'session-2']);
+    assert.equal(staged.quotes.length, 0, 'nothing stays staged after the cancel');
+    assert.equal(h.revisionDraftRef.current, null);
+  });
+
+  it('keeps quotes the user added when an edit is cancelled (#5274 review)', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quotedQuote] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    // Adding quotes during an edit is supported, so cancelling the edit
+    // undoes the edit — not the user's own staging (#5274 review).
+    const added: QuoteRef = { text: 'my own excerpt' };
+    staged.quotes.push(added);
+    await actions.cancelRevisionDraft();
+
+    assert.equal(h.revisionDraftRef.current, null);
+    assert.equal(h.env.composerRef.current?.getText(), '', 'the composer text rolls back');
+    assert.deepEqual(
+      staged.restored.at(-1),
+      { ownerKey: 'session-1', quotes: [added] },
+      'the user-added quote survives the cancel on the source key',
+    );
+  });
+
+  it('keeps a quote added on the branch child when a prepared edit is cancelled', async () => {
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'explain this')],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('edited text'), true);
+    const added: QuoteRef = { text: 'added while ready to send' };
+    // The plate re-keyed onto the branch child, so the composer the user
+    // stages into now binds to the branch-child bucket.
+    let branchBucket = staged.buckets.get('session-2');
+    if (!branchBucket) {
+      branchBucket = [];
+      staged.buckets.set('session-2', branchBucket);
+    }
+    branchBucket.push(added);
+    await actions.cancelRevisionDraft();
+
+    assert.equal(h.revisionDraftRef.current, null);
+    assert.deepEqual(
+      staged.restored.at(-1),
+      { ownerKey: 'session-1', quotes: [added] },
+      'the branch-child addition is re-keyed onto the source session',
+    );
+  });
+});
+
+describe('revision send gate', () => {
+  const source: RevisionStagedSource = {
+    originalQuotes: [{ text: 'q' }],
+    originalAttachments: [],
+  };
+  const restored = { quotes: [{ text: 'q' }] as readonly QuoteRef[], attachments: [] };
+
+  it('passes a genuine replacement', () => {
+    assert.equal(revisionSendGate(source, restored, false), 'pass');
+  });
+
+  it('passes an unchanged retry through (#5815)', () => {
+    assert.equal(revisionSendGate(source, restored, false), 'pass');
+  });
+
+  it('blocks newly staged quotes as a conflict', () => {
+    assert.equal(
+      revisionSendGate(
+        source,
+        { quotes: [{ text: 'q' }, { text: 'own' }], attachments: [] },
+        false,
+      ),
+      'conflict',
+    );
+  });
+
+  it('blocks pending directories with an empty attachment plate as a conflict', () => {
+    assert.equal(revisionSendGate(source, restored, true), 'conflict');
+  });
+});
+
+describe('revision staged-context helpers', () => {
+  it('stages the source quotes under the owner key and records them', () => {
+    const restored: Array<{ ownerKey: string; quotes: readonly QuoteRef[] }> = [];
+    const snapshot = stageRevisionSourceContext(
+      { restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }) },
+      'session-1',
+      { quotes: [quotedQuote] },
+    );
+    assert.deepEqual(restored, [{ ownerKey: 'session-1', quotes: [quotedQuote] }]);
+    assert.deepEqual(snapshot.originalQuotes, [quotedQuote]);
+    assert.deepEqual(
+      snapshot.originalAttachments,
+      [],
+      'a message without attachments stages an empty attachment set',
+    );
+  });
+
+  it('clears every owner key once and keeps what the edit did not stage', () => {
+    const cleared: string[] = [];
+    const restored: Array<{ ownerKey: string; quotes: readonly QuoteRef[] }> = [];
+    const restoredByEdit = { text: 'restored by the edit' };
+    const addedByUser = { text: 'added during the edit' };
+    clearRevisionStagedContext(
+      {
+        restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }),
+        clearQuotes: (ownerKey) => {
+          cleared.push(ownerKey);
+          return ownerKey === 'session-1' ? [restoredByEdit] : [addedByUser];
+        },
+      },
+      ['session-1', 'session-2', 'session-1'],
+      [restoredByEdit],
+    );
+    assert.deepEqual(cleared, ['session-1', 'session-2']);
+    assert.deepEqual(
+      restored,
+      [{ ownerKey: 'session-1', quotes: [addedByUser] }],
+      'the user-added quote re-keys onto the source Session',
+    );
+  });
+
+  it('keeps every user copy of a quote the edit also staged (#5274 review)', () => {
+    // The edit stages the source excerpt once and the user adds the identical
+    // excerpt twice during the edit: per-key counting means entries past the
+    // edit's own count are the user's, so the counter running negative must
+    // not drop the second copy — `=== 0` missed it (#5274 review).
+    const restored: Array<{ ownerKey: string; quotes: readonly QuoteRef[] }> = [];
+    const identical: QuoteRef = { text: 'the same excerpt' };
+    clearRevisionStagedContext(
+      {
+        restoreQuotes: (ownerKey, quotes) => restored.push({ ownerKey, quotes }),
+        clearQuotes: (ownerKey) => (ownerKey === 'session-1' ? [identical, identical, identical] : []),
+      },
+      ['session-1'],
+      [identical],
+    );
+    assert.deepEqual(
+      restored,
+      [{ ownerKey: 'session-1', quotes: [identical, identical] }],
+      'only the edit-owned entry is dropped; both user copies survive',
+    );
+  });
+});

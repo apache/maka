@@ -126,7 +126,9 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     captureSelection: commands.captureSelection,
     composerRef,
     readMessages: commands.readMessages,
-    hasPendingAttachments: () => staging.captureSubmission().hasPendingContext,
+    // The lifecycle derives both its pending-context probe and its live plate
+    // reads from this one staging handle (#5109).
+    staging,
     openSessionInChat: shell.openSession,
     refreshSessions: shell.refreshSessions,
     commitRevisionDraft,
