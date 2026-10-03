@@ -26,7 +26,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
-import { renderConversationMarkdown, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
+import { renderConversationMarkdown, stubComposerGateInputs, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { withComposerSubmission } from './composer-submission-fixture.js';
 
@@ -114,7 +114,7 @@ function harness(options: {
         searchTarget: null, clearSearchTarget() {},
       })),
       visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript }) : null,
-      createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer }),
+      createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer, ...stubComposerGateInputs() }),
     );
   }
   act(() => root.render(createElement(LocaleProvider, { locale: options.locale ?? 'en', children:

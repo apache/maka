@@ -114,8 +114,21 @@ with viewport navigation passed separately. `LiveTurnReconciler` receives only
 the live-content reader and its existing semantic reconciliation command.
 Neither reader receives the complete controller.
 
-The shell's temporary `useAppShellSessionUiReads` projection uses the published
-Session for content/queue/pending and the owner Session for interactions.
+The shell takes no Session UI read. Each region reads what it renders, for the
+displayed Session and, for interactions, the owner Session:
+- `ConversationComposerRegion`: the Turn summary behind Stop and the controls a
+  running Turn holds (mode, permission, goal, model switch, executor and
+  `/compact`), the queue and the owner Session's interaction. The shell passes
+  only what the gates combine with: whether the catalog row has arrived, its
+  status, and the executor selection.
+- `ConversationTranscriptRegion`: the running Turn's activity, which also holds
+  the health notice's model picker.
+- `ConversationActivityConsumer`: whether an observable Turn runs and whether
+  the owner Session waits on an answer, for the custom pet.
+- `ConversationHomeSurface`: the main column, marked as the home surface while
+  the shell's empty-transcript condition holds and there is no live Turn
+  content and no failed load.
+
 The Conversation provider separately reads only its published queue.
 `LiveTurnReconciler` still follows all retained Turns within that Session,
 including predecessors; it must not subscribe only to the execution root.
@@ -125,11 +138,11 @@ State and reader construction modules are private under
 exports reader contracts and consumer hooks, not state constructors or arbitrary
 selectors. Whole-state inspection is available from `testing.ts` only.
 
-Remaining transitional capabilities have explicit consumers and removal work:
+Remaining transitional capabilities have explicit consumers and removal work.
+None remain; a new one needs a row here.
 
 | Capability | Current consumer | Removal module |
 | --- | --- | --- |
-| `useAppShellSessionUiReads` | AppShell chrome and Composer prop assembly | M3 regional readers; retain only required chrome |
 
 M2 owns presentation and observation; it does not add a Catalog, Host cache or
 execution state machine, or complete the remaining Composer migration.

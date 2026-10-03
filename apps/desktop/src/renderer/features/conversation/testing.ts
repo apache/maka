@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { SessionSummary } from '@maka/core/session';
 import type { ConversationServices } from './ports.js';
 import { createSessionUiState, type AppShellSessionUiState } from './model/session-ui-state.js';
 
@@ -46,6 +47,28 @@ export {
   startActiveExecutionBoundaryRead,
 } from './controller/use-active-execution-boundary.js';
 export { useSessionMessageQueue } from './controller/use-session-message-queue.js';
+export { useSessionUiRead } from './controller/use-session-ui-read.js';
+
+/** The shell inputs `ConversationComposerRegion` combines with the Turn: a loaded, idle Session without an executor. */
+export function stubComposerGateInputs(overrides: {
+  sessionState?: { loaded: boolean; status: SessionSummary['status'] | undefined };
+  connectionCount?: number;
+} = {}) {
+  return {
+    sessionState: overrides.sessionState ?? { loaded: true, status: 'active' as const },
+    executorComposer: {
+      selection: {
+        selection: undefined, catalog: [], entry: undefined,
+        select: async () => {}, restore: async () => {}, refresh: async () => {},
+        changing: false, loading: false, error: undefined,
+      },
+      taskSubmissionHardBlocked: false,
+      connectionCount: overrides.connectionCount ?? 1,
+      onSetup() {},
+      onNewTask() {},
+    },
+  };
+}
 
 /** Inert conversation services; a test overrides only the calls it observes. */
 export function stubConversationServices(

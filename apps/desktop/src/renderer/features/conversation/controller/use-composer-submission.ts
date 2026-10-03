@@ -257,12 +257,13 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     respondToUserForm: chat.respondToUserForm,
     stop,
     activeId,
+    ownerSessionId,
     sharedSessionActive,
     pendingTurnActions: turnActionRegistry.keys,
     composerResumeAction: resume.composerResumeAction,
     safeResumeAction: resume.safeResumeAction,
   }), [
-    activeId, chat, newTaskSendPending, onSend, resume.composerResumeAction, resume.safeResumeAction,
+    activeId, chat, newTaskSendPending, onSend, ownerSessionId, resume.composerResumeAction, resume.safeResumeAction,
     revision, revisionDraft, sharedSessionActive, stop, turnActionRegistry.keys,
   ]);
   return {

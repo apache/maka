@@ -26,7 +26,10 @@ import { act, createElement, Fragment } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { AstryxLocaleProvider, LocaleProvider, ToastProvider, type ComposerHandle, type TurnPresentation, type TurnViewModel } from '@maka/ui';
+import {
+  AstryxLocaleProvider, LocaleProvider, ToastProvider,
+  type ComposerHandle, type ComposerInteraction, type ComposerProps, type LiveTurnBuffer, type TurnPresentation, type TurnViewModel,
+} from '@maka/ui';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import {
   createSessionCatalogController,
@@ -37,7 +40,9 @@ import * as Conversation from '../../renderer/features/conversation/index.js';
 import {
   ComposerSubmissionProvider,
   ComposerSubmissionServicesProvider,
+  ConversationActivityConsumer,
   ConversationComposerRegion,
+  ConversationHomeSurface,
   ConversationLifecycle,
   ConversationProvider,
   ConversationServicesProvider,
@@ -46,8 +51,10 @@ import {
   createComposerSubmissionCommands,
   useAppShellSessionUiState,
   type ComposerSubmissionServices,
+  type ConversationActivity,
 } from '../../renderer/features/conversation/index.js';
-import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
+import { getShellCopy } from '../../renderer/locales/shell-copy.js';
+import { stubComposerGateInputs, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import {
   createDesktopComposerSubmissionServices,
   type DesktopComposerSubmissionBridge,
@@ -58,7 +65,7 @@ import {
   stubSubmissionShell,
 } from './composer-submission-fixture.js';
 import { ComposerStagingFixture } from './composer-staging-fixture.js';
-import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { cleanupFakeDom, installReactRenderer, type FakeElement } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
 
@@ -80,11 +87,24 @@ interface RegionProps {
   stopPending: boolean;
   pendingMessages: ReadonlyArray<{ id: string }>;
   resumeAction?: { pending: boolean; onResume(): void };
+  activeInteraction: ComposerInteraction | undefined;
+  queuedMessages: ComposerProps['queuedMessages'];
+  streaming: boolean;
+  slashCommands: NonNullable<ComposerProps['slashCommands']>;
+  modelSwitchAvailability: NonNullable<ComposerProps['modelSwitchAvailability']>;
+  planModeDisabledReason?: string;
+  orchestrationModeDisabledReason?: string;
+  permissionModeDisabledReason?: string;
+  goalDisabledReason?: string;
+  executorPicker: ComposerProps['executorPicker'];
+  sendBlocked: ComposerProps['sendBlocked'];
 }
 
 interface TranscriptProps {
   deriveTurnPresentation(turns: readonly TurnViewModel[]): TurnPresentation;
   safeResumeAction?: { pending: boolean; detail: string | undefined; onResume(): void };
+  activeTurn: { turnId: string; awaitingInput: boolean; compacting: boolean } | undefined;
+  sessionHealthModelPickerAvailable?: boolean;
 }
 
 const row = (id: string): DesktopSessionSummary => ({
@@ -110,8 +130,10 @@ function harness(options: {
   ownerSessionId?: string;
   listMessages?: ReturnType<typeof stubConversationServices>['listMessages'];
   resume?: ReturnType<typeof stubConversationServices>['resume'];
+  gateInputs?: ReturnType<typeof stubComposerGateInputs>;
+  homeEligible?: boolean;
 } = {}) {
-  const { root } = installReactRenderer();
+  const { root, container } = installReactRenderer();
   const catalog = createSessionCatalogController();
   catalog.commitSessions(['A', 'B'].map(row));
   const published: Array<(messages: StoredMessage[]) => void> = [];
@@ -150,9 +172,13 @@ function harness(options: {
   let conversation!: ReturnType<typeof useConversationOwner>;
   let region: RegionProps | undefined;
   let transcript: TranscriptProps | undefined;
+  let activity: ConversationActivity | undefined;
+  let shellRenders = 0;
   function Composer(props: RegionProps) { region = props; return null; }
   function Transcript(props: TranscriptProps) { transcript = props; return null; }
+  function Activity(props: { activity: ConversationActivity }) { activity = props.activity; return null; }
   function Shell() {
+    shellRenders += 1;
     target = useAppShellSessionUiState();
     conversation = useConversationOwner();
     return createElement(Fragment, null,
@@ -161,10 +187,15 @@ function harness(options: {
         showModelSetupToast() {}, onTurnCompleted() {},
         searchTarget: null, clearSearchTarget() {},
       }),
-      createElement(ConversationTranscriptRegion<TranscriptProps>, { surface: Transcript }),
+      createElement(ConversationTranscriptRegion<TranscriptProps>, {
+        surface: Transcript, sessionHealthModelPickerAvailable: true,
+      }),
       createElement(ConversationComposerRegion<RegionProps>, {
         surface: Composer, contextPickEnabled: true, directoryPickerEnabled: true,
+        ...(options.gateInputs ?? stubComposerGateInputs()),
       }),
+      createElement(ConversationActivityConsumer<{ activity: ConversationActivity }>, { surface: Activity }),
+      createElement(ConversationHomeSurface, { eligible: options.homeEligible ?? true, id: 'column' }),
     );
   }
   act(() => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -196,6 +227,13 @@ function harness(options: {
     get conversation() { return conversation; },
     get region() { assert.ok(region, 'the Composer slot rendered'); return region; },
     get transcript() { assert.ok(transcript, 'the transcript region rendered'); return transcript; },
+    get activity() { assert.ok(activity, 'the activity reader rendered'); return activity; },
+    get shellRenders() { return shellRenders; },
+    homeSurface() {
+      const column = container.childNodes.find((node): node is FakeElement => 'getAttribute' in node && node.getAttribute('id') === 'column');
+      assert.ok(column, 'the column rendered');
+      return column.getAttribute('data-home-surface');
+    },
     notice: () => region?.revisionNotice,
   };
 }
@@ -553,6 +591,163 @@ describe('ComposerSubmissionProvider', () => {
     const h = harness();
     await act(async () => h.root.unmount());
     assert.throws(() => h.commands.beginEditUserMessage('turn-1'), /ComposerSubmissionProvider is not mounted/);
+  });
+});
+
+const liveText = (text: string): LiveTurnBuffer => [{
+  turnId: 'turn-run',
+  steps: [{ stepId: 'message', tools: [], text: { text, complete: false, truncated: false } }],
+}];
+const running = (sessionId: string, available = true) => ({
+  type: 'host_execution' as const, available,
+  rootTurn: { sessionId, turnId: 'turn-run', runId: 'run', status: 'running' as const },
+});
+const settled = (sessionId: string) => ({
+  type: 'host_execution' as const, available: true,
+  rootTurn: { sessionId, turnId: 'turn-run', runId: 'run', status: 'completed' as const, terminalEventId: 'turn-end' },
+});
+const sandboxRequest = (requestId: string) => ({
+  type: 'sandbox_boundary_request' as const, id: requestId, turnId: 'turn-run', ts: 1,
+  requestId, toolUseId: requestId, justification: 'Read a file.',
+  expansion: { filesystem: { entries: [{ path: '/file', access: 'read' as const, scope: 'exact' as const }] } },
+});
+
+describe('Conversation Turn readers', () => {
+  const copy = getShellCopy('en').app;
+  const hasCompact = (region: RegionProps) => region.slashCommands.some((command) => command.id === 'compact');
+
+  test('a running Turn repaints the Composer\'s held controls and the transcript, not the shell', async () => {
+    const gateInputs = stubComposerGateInputs();
+    gateInputs.executorComposer.selection = {
+      ...gateInputs.executorComposer.selection,
+      selection: { executorId: 'codex' },
+      entry: { id: 'codex', readiness: 'ready' },
+    } as unknown as typeof gateInputs.executorComposer.selection;
+    const h = harness({ ownerSessionId: 'A', gateInputs });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
+    const ui = h.conversation.workspace.ui;
+    assert.equal(h.region.streaming, false);
+    assert.deepEqual(h.region.modelSwitchAvailability, { available: true, pending: false });
+    assert.equal(h.region.permissionModeDisabledReason, undefined);
+    assert.equal(h.region.goalDisabledReason, undefined);
+    assert.equal(h.region.sendBlocked, false);
+    assert.equal(h.region.executorPicker?.disabled, false);
+    assert.equal(hasCompact(h.region), true);
+    assert.equal(h.transcript.activeTurn, undefined);
+    assert.equal(h.transcript.sessionHealthModelPickerAvailable, true);
+    const shellRenders = h.shellRenders;
+
+    await act(async () => ui.setExecution('B', running('B')));
+    assert.equal(h.region.streaming, false, 'a background Session\'s Turn holds nothing here');
+
+    await act(async () => ui.setExecution('A', running('A')));
+    assert.equal(h.region.streaming, true, 'Stop is offered for the whole Turn');
+    assert.deepEqual(h.region.modelSwitchAvailability, { available: false, pending: false, reason: 'streaming' });
+    assert.equal(h.region.planModeDisabledReason, copy.modeChangeRunning);
+    assert.equal(h.region.orchestrationModeDisabledReason, copy.modeChangeRunning);
+    assert.equal(h.region.permissionModeDisabledReason, copy.permissionModeRunning);
+    assert.equal(h.region.goalDisabledReason, copy.goalTurnActive);
+    assert.equal(h.region.sendBlocked, true);
+    assert.equal(h.region.executorPicker?.disabled, true);
+    assert.equal(hasCompact(h.region), false, '/compact is withheld while the Turn reads its context');
+    assert.deepEqual(h.transcript.activeTurn, { turnId: 'turn-run', awaitingInput: false, compacting: false });
+    assert.equal(h.transcript.sessionHealthModelPickerAvailable, false, 'the health notice\'s picker is held too');
+
+    await act(async () => ui.setLiveTurnBySession((current) => ({ ...current, A: liveText('first') })));
+    assert.equal(h.region.planModeDisabledReason, copy.modeChangeStreaming);
+    assert.equal(h.region.permissionModeDisabledReason, copy.permissionModeStreaming);
+
+    await act(async () => ui.setExecution('A', settled('A')));
+    assert.equal(h.region.streaming, false);
+    assert.equal(h.region.permissionModeDisabledReason, undefined);
+    assert.equal(hasCompact(h.region), true);
+    assert.equal(h.transcript.activeTurn, undefined);
+    assert.equal(h.transcript.sessionHealthModelPickerAvailable, true);
+    assert.equal(h.shellRenders, shellRenders, 'the shell reads no Turn');
+  });
+
+  test('the mode gates combine the Turn with the shell\'s catalog row', async () => {
+    const loading = harness({ gateInputs: stubComposerGateInputs({ sessionState: { loaded: false, status: undefined } }) });
+    await act(async () => loading.target.setActiveId('A'));
+    assert.equal(loading.region.planModeDisabledReason, copy.modeChangeLoading);
+    assert.equal(loading.region.permissionModeDisabledReason, undefined);
+    await act(async () => loading.root.unmount());
+
+    const waiting = harness({ gateInputs: stubComposerGateInputs({ sessionState: { loaded: true, status: 'waiting_for_user' } }) });
+    await act(async () => waiting.target.setActiveId('A'));
+    assert.equal(waiting.region.planModeDisabledReason, copy.modeChangeWaiting);
+    assert.equal(waiting.region.permissionModeDisabledReason, copy.permissionModeWaiting);
+    assert.deepEqual(waiting.region.modelSwitchAvailability, { available: false, pending: false, reason: 'permission' });
+  });
+
+  test('the Composer answers the owner Session\'s interaction and lists the displayed Session\'s queue', async () => {
+    const h = harness({ ownerSessionId: 'A' });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
+    const ui = h.conversation.workspace.ui;
+    const shellRenders = h.shellRenders;
+    await act(async () => ui.setInteractionBySession((current) => ({ ...current, B: [sandboxRequest('background')] })));
+    assert.equal(h.region.activeInteraction, undefined);
+    await act(async () => ui.setInteractionBySession((current) => ({ ...current, A: [sandboxRequest('owner')] })));
+    assert.equal((h.region.activeInteraction as { requestId?: string } | undefined)?.requestId, 'owner');
+    const entries = [{ id: 'queued-1', text: 'next', createdAt: 1 }];
+    await act(async () => ui.setMessageQueueBySession((current) => ({ ...current, A: { ts: 1, entries, queueRevision: 3 } } as never)));
+    assert.deepEqual(h.region.queuedMessages, entries);
+    assert.equal(h.shellRenders, shellRenders, 'the shell reads no interaction or queue');
+    await act(async () => h.root.unmount());
+
+    // A shared Session has no owner Session here, so its Host's prompt is not ours to answer.
+    const guest = harness({ ownerSessionId: undefined });
+    await act(async () => guest.target.setActiveId('A'));
+    await act(async () => guest.conversation.workspace.ui.setInteractionBySession((current) => ({ ...current, A: [sandboxRequest('host')] })));
+    assert.equal(guest.region.activeInteraction, undefined);
+  });
+
+  test('the activity reader and the home surface follow the displayed Session without the shell', async () => {
+    const h = harness({ ownerSessionId: 'A' });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([]));
+    const ui = h.conversation.workspace.ui;
+    const shellRenders = h.shellRenders;
+    assert.deepEqual(h.activity, { turnRunning: false, awaitingInteraction: false });
+    assert.equal(h.homeSurface(), 'true');
+
+    await act(async () => ui.setExecution('A', running('A', false)));
+    assert.equal(h.activity.turnRunning, false, 'an unobservable Turn does not animate the companion');
+    await act(async () => ui.setExecution('A', running('A')));
+    assert.equal(h.activity.turnRunning, true);
+    assert.equal(h.homeSurface(), 'true', 'a Turn with nothing on screen keeps the home surface');
+    await act(async () => ui.setLiveTurnBySession((current) => ({ ...current, A: liveText('first') })));
+    assert.equal(h.homeSurface(), null, 'live content leaves the home surface');
+    await act(async () => ui.setInteractionBySession((current) => ({ ...current, A: [sandboxRequest('owner')] })));
+    assert.equal(h.activity.awaitingInteraction, true);
+
+    await act(async () => {
+      ui.setLiveTurnBySession((current) => ({ ...current, A: [] }));
+      ui.setExecution('A', settled('A'));
+    });
+    assert.equal(h.homeSurface(), 'true');
+    await act(async () => ui.setMessageLoadErrorBySession((current) => ({ ...current, A: 'failed' })));
+    assert.equal(h.homeSurface(), null, 'a failed load is not a home surface');
+    assert.equal(h.shellRenders, shellRenders, 'the shell reads no activity');
+  });
+
+  test('the home surface needs the shell\'s empty-transcript condition', async () => {
+    const h = harness({ homeEligible: false });
+    await act(async () => h.target.setActiveId('A'));
+    assert.equal(h.homeSurface(), null);
+  });
+
+  test('AppShell reads no displayed-Session Turn, interaction or queue', () => {
+    const shell = readFileSync(resolve(fileURLToPath(new URL('../../../src/renderer/app-shell.tsx', import.meta.url))), 'utf8');
+    assert.doesNotMatch(
+      shell,
+      /useAppShellSessionUiReads|useShellLiveTurn|turnActive|activeStreamingLive|hasLiveTurnContent|activeInteraction|activeMessageQueue|activeExecution\b|chatTurnActivity|executorComposerProps|desktopSlashCommand/,
+    );
+    for (const name of ['useAppShellSessionUiReads', 'chatTurnActivity', 'executorComposerProps', 'desktopSlashCommandPresentation']) {
+      assert.equal(name in Conversation, false, `${name} is not a public Conversation capability`);
+    }
   });
 });
 

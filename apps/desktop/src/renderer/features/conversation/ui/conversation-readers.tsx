@@ -18,8 +18,8 @@
  */
 
 import { createElement, useMemo, useSyncExternalStore, type ComponentType, type ComponentProps } from 'react';
-import { ChatView, useUiLocale } from '@maka/ui';
-import type { StoredMessage } from '@maka/core/session';
+import { ChatView, useUiLocale, type ComposerInteraction, type ComposerProps as UiComposerProps } from '@maka/ui';
+import type { SessionStatus, StoredMessage } from '@maka/core/session';
 import type { SessionUiReads } from '../model/session-ui-reads.js';
 import { useSessionUiRead } from '../controller/use-session-ui-read.js';
 import { transcriptRestoreTarget } from '../controller/transcript-reading-position.js';
@@ -27,7 +27,18 @@ import { useConversationOwner } from './conversation-context.js';
 import { useConversationQueueCommands } from './conversation-provider.js';
 import { useComposerSubmissionReader, type ComposerSubmissionReader } from './composer-submission-context.js';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
+import { chatTurnActivity } from '../../../application/contracts/session-execution.js';
 import { useAppShellTurnPresentation } from '../../../application/contracts/turn-presentation.js';
+import { getShellCopy } from '../../../locales/shell-copy.js';
+import { composerTurnGates, desktopComposerSlashCommands } from '../model/composer-turn-gates.js';
+import { executorComposerProps } from '../model/executor-composer.js';
+import { liveTurnFlags } from '../model/live-turn-flags.js';
+
+/** The displayed Session's Turn, read at chrome frequency. */
+function useDisplayedTurn(reads: SessionUiReads, sessionId: string | undefined) {
+  const summary = useSessionUiRead(reads, 'summary', sessionId);
+  return { execution: summary.activeExecution, ...liveTurnFlags(summary.activeLiveTurnSnapshot, summary.activeExecution) };
+}
 
 type ChatProps = ComponentProps<typeof ChatView>;
 type TranscriptProps = Pick<ChatProps,
@@ -35,7 +46,12 @@ type TranscriptProps = Pick<ChatProps,
   'onRetryMessages' | 'hasEarlierHistory' | 'onLoadEarlierHistory' | 'transcriptTurnIndex' |
   'onLoadTranscriptTurn' | 'restoreTargetTurn' | 'onReadingAnchorChange' | 'viewportNavigation' |
   'deriveTurnPresentation' | 'safeResumeAction'
-> & { activeSessionId: string | undefined; liveContentSeedGeneration: number; sessionUiReads: SessionUiReads };
+> & {
+  activeSessionId: string | undefined; liveContentSeedGeneration: number; sessionUiReads: SessionUiReads;
+  activeTurn: ReturnType<typeof chatTurnActivity>;
+};
+/** The shell's model-picker gate for the health notice; the running Turn narrows it here. */
+type TranscriptHealthGate = { sessionHealthModelPickerAvailable?: boolean };
 
 /** The actual transcript reader. Shell supplies presentation and navigation only. */
 export function ConversationTranscriptRegion<P extends object>(
@@ -51,12 +67,15 @@ export function ConversationTranscriptRegion<P extends object>(
     pendingTurnActions: submission.pendingTurnActions,
     uiLocale: useUiLocale(),
   });
+  const turn = useDisplayedTurn(workspace.ui.reads, submission.activeId);
   const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
   const load = useSessionUiRead(workspace.ui.reads, 'load', view.sessionId);
+  const healthGate = presentation as TranscriptHealthGate;
   const retryPending = useSessionUiRead(workspace.ui.reads, 'retry', view.sessionId);
   const sessionId = view.sessionId;
-  const owned: TranscriptProps = {
+  const owned: TranscriptProps & TranscriptHealthGate = {
     activeSessionId: sessionId,
+    activeTurn: chatTurnActivity(turn.execution),
     onStreamingSettled: sessionId ? (messageId) => commands.settleAssistantStreaming(sessionId, messageId) : undefined,
     sessionUiReads: workspace.ui.reads,
     messages: view.messages, transientMessages: view.transientMessages,
@@ -74,6 +93,10 @@ export function ConversationTranscriptRegion<P extends object>(
     onReadingAnchorChange: sessionId ? (turnId) => readingCommands.current?.captureAnchor(turnId) : undefined,
     deriveTurnPresentation,
     safeResumeAction: submission.safeResumeAction,
+    // The notice's picker is held while a Turn runs, as the Composer's is.
+    ...(healthGate.sessionHealthModelPickerAvailable !== undefined
+      ? { sessionHealthModelPickerAvailable: healthGate.sessionHealthModelPickerAvailable && !turn.turnActive }
+      : {}),
   };
   return createElement(surface, { ...presentation, ...owned } as unknown as P);
 }
@@ -87,10 +110,25 @@ type SubmissionProps = Pick<ComposerSubmissionReader,
   stopPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
 };
-type ComposerProps = SubmissionProps & {
+type TurnGatedProps = ReturnType<typeof composerTurnGates> & ReturnType<typeof executorComposerProps> & {
+  slashCommands: UiComposerProps['slashCommands'];
+};
+type ComposerProps = SubmissionProps & TurnGatedProps & {
   /** The owner's editor handle; regions outside Conversation get named edits instead. */
   composerRef: ReturnType<typeof useConversationQueueCommands>['composer'];
   processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsageTokens?: number;
+  /** The owner Session's open interaction; the Composer slot answers it. */
+  activeInteraction: ComposerInteraction | undefined;
+  queuedMessages: UiComposerProps['queuedMessages'];
+  queuedMessageRevision: UiComposerProps['queuedMessageRevision'];
+};
+/** What the shell knows that the Turn gates combine with; the region reads the Turn itself. */
+type ComposerGateInputs = {
+  /** The displayed Session's catalog row: whether it has arrived, and its status. */
+  sessionState: { loaded: boolean; status: SessionStatus | undefined };
+  executorComposer: Omit<Parameters<typeof executorComposerProps>[1], 'activeId' | 'turnActive'> & {
+    selection: Parameters<typeof executorComposerProps>[0];
+  };
 };
 /** The shell's picker gates; an edit-and-resend draft narrows them here. */
 type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean };
@@ -98,17 +136,30 @@ type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?
  * Lives in the persistent composer slot, outside the conditional transcript.
  * Submission state (send pending, Stop pending, the edit-and-resend draft) and
  * the submit, Stop and interaction-answer callbacks come from the Composer
- * submission owner.
+ * submission owner. The displayed Session's Turn, its queue and the owner
+ * Session's interaction are read here, so the controls a running Turn holds
+ * repaint without the shell.
  */
 export function ConversationComposerRegion<P extends object>(
-  props: { surface: ComponentType<P>; usageModel?: string; usageRoute?: { llmConnectionId?: string } } & Omit<P, keyof ComposerProps>,
+  props: { surface: ComponentType<P>; usageModel?: string; usageRoute?: { llmConnectionId?: string } }
+    & ComposerGateInputs & Omit<P, keyof ComposerProps>,
 ) {
-  const { surface, usageModel, usageRoute, ...presentation } = props;
+  const { surface, usageModel, usageRoute, sessionState, executorComposer, ...presentation } = props;
   const { workspace } = useConversationOwner();
   const submission = useComposerSubmissionReader();
   const composerRef = useConversationQueueCommands().composer;
-  const actionCopy = getDesktopConversationCopy(useUiLocale()).actions;
+  const uiLocale = useUiLocale();
+  const actionCopy = getDesktopConversationCopy(uiLocale).actions;
+  const shellCopy = getShellCopy(uiLocale).app;
   const activeId = useSyncExternalStore(workspace.target.subscribe, workspace.target.getSnapshot);
+  const turn = useDisplayedTurn(workspace.ui.reads, activeId);
+  const interaction = useSessionUiRead(workspace.ui.reads, 'interaction', submission.ownerSessionId);
+  const queue = useSessionUiRead(workspace.ui.reads, 'queue', activeId);
+  const slashCommands = useMemo(
+    () => desktopComposerSlashCommands(Boolean(activeId), turn.turnActive, shellCopy.slashCommands),
+    [activeId, turn.turnActive, shellCopy.slashCommands],
+  );
+  const { selection: executor, ...executorInput } = executorComposer;
   const view = useSyncExternalStore(workspace.composer.subscribe, workspace.composer.getSnapshot);
   const usage = useMemo(() => workspace.usage(usageModel, usageRoute?.llmConnectionId), [workspace, usageModel, usageRoute?.llmConnectionId]);
   const latestRequestUsageTokens = useSyncExternalStore(usage.subscribe, usage.getSnapshot);
@@ -118,6 +169,19 @@ export function ConversationComposerRegion<P extends object>(
   const gates = presentation as ComposerPickGates;
   const owned: ComposerProps & ComposerPickGates = {
     composerRef,
+    activeInteraction: interaction,
+    queuedMessages: queue?.entries,
+    queuedMessageRevision: queue?.queueRevision,
+    slashCommands,
+    ...composerTurnGates({
+      activeId,
+      sessionLoaded: sessionState.loaded,
+      sessionStatus: sessionState.status,
+      turnActive: turn.turnActive,
+      streamingLive: turn.streamingLive,
+      copy: shellCopy,
+    }),
+    ...executorComposerProps(executor, { ...executorInput, activeId, turnActive: turn.turnActive }),
     onSend: submission.onSend,
     newTaskSendPending: submission.newTaskSendPending,
     resumeAction: submission.composerResumeAction,
@@ -153,4 +217,41 @@ export function ConversationMessageConsumer<P extends { messages: readonly Store
   const { workspace } = useConversationOwner();
   const messages = useSyncExternalStore(workspace.messages.subscribe, workspace.messages.getSnapshot);
   return createElement(surface, { ...presentation, messages } as unknown as P);
+}
+
+/** What the displayed Session is doing, for chrome outside the transcript and Composer. */
+export interface ConversationActivity {
+  /** A Host Turn runs and its execution is observable. */
+  turnRunning: boolean;
+  /** The owner Session waits on an interaction answer. */
+  awaitingInteraction: boolean;
+}
+
+export function ConversationActivityConsumer<P extends { activity: ConversationActivity }>(
+  props: { surface: ComponentType<P> } & Omit<P, 'activity'>,
+) {
+  const { surface, ...presentation } = props;
+  const { workspace } = useConversationOwner();
+  const submission = useComposerSubmissionReader();
+  const turn = useDisplayedTurn(workspace.ui.reads, submission.activeId);
+  const interaction = useSessionUiRead(workspace.ui.reads, 'interaction', submission.ownerSessionId);
+  const turnRunning = turn.executionAvailable && turn.turnActive;
+  const awaitingInteraction = interaction !== undefined;
+  const activity = useMemo(() => ({ turnRunning, awaitingInteraction }), [turnRunning, awaitingInteraction]);
+  return createElement(surface, { ...presentation, activity } as unknown as P);
+}
+
+/**
+ * The column a Session's transcript and Composer share. It is the home surface
+ * while the shell's empty-transcript condition holds and the displayed Session
+ * has neither live Turn content nor a failed load.
+ */
+export function ConversationHomeSurface(props: { eligible: boolean } & ComponentProps<'div'>) {
+  const { eligible, ...column } = props;
+  const { workspace } = useConversationOwner();
+  const activeId = useSyncExternalStore(workspace.target.subscribe, workspace.target.getSnapshot);
+  const turn = useDisplayedTurn(workspace.ui.reads, activeId);
+  const { messageLoadError } = useSessionUiRead(workspace.ui.reads, 'load', activeId);
+  const home = eligible && !turn.hasLiveContent && !messageLoadError;
+  return createElement('div', { ...column, 'data-home-surface': home ? 'true' : undefined });
 }
