@@ -22,7 +22,6 @@ import { WorkHubEnablementWatch } from './application/contracts/workhub-workspac
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -85,6 +84,7 @@ import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { desktopSlashCommandAvailability } from './application/contracts/desktop-slash-command.js';
 import {
   getOnboardingActivationCandidate,
+  OnboardingConnectionSeed,
   OnboardingProjectionRoot,
   type OnboardingShellProjection,
 } from './application/contracts/onboarding/onboarding-authority.js';
@@ -720,21 +720,8 @@ function AppShellContent({
   // process (PR110a + PR110b contract) and reactively invalidates on
   // `sessions:changed` + `connections:event`. The hero renders only
   // when sessions.length === 0; any session (including archived /
-  // aborted) takes over with the existing chat surface.
-  useEffect(() => {
-    const snapshot = onboarding.snapshot;
-    if (snapshot) {
-      defaultHostConnections.seedSnapshot({
-        connections: snapshot.connections,
-        defaultConnection: snapshot.defaultSlug,
-        chatModelChoices: snapshot.chatModelChoices,
-      });
-    } else if (onboarding.failed) {
-      // Session bootstrap is independent above. If onboarding itself failed,
-      // retain the previous connection-specific recovery path as well.
-      void defaultHostConnections.refreshConnections();
-    }
-  }, [onboarding.failed, onboarding.snapshot]);
+  // aborted) takes over with the existing chat surface. The default Host's
+  // connections are seeded from the same snapshot by OnboardingConnectionSeed.
   // Nothing settled to show while the first snapshot pull is in flight. The
   // flag keeps the composer hidden and — through `data-maka-content-ready` on
   // .appFrame — holds the launch overlay until a real frame exists: sessions,
@@ -1339,6 +1326,7 @@ function AppShellContent({
     >
       <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
       <ShellLifecycleSubscriptions {...shellLifecycle} />
+      <OnboardingConnectionSeed seed={defaultHostConnections.seedSnapshot} refresh={() => void defaultHostConnections.refreshConnections()} />
       <WorkHubEnablementWatch onEnabled={() => { setWorkHubActive(true); setNavSelection({ section: 'sessions' }); }} onDisabled={exitWorkHub} />
       <Conversation.ConversationLifecycle
         refreshSessions={refreshSessions}
