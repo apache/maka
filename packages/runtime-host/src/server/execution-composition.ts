@@ -425,7 +425,7 @@ export async function createExecutionRuntimeHostComposition(
             ...(header.executorConfig ? { configuration: header.executorConfig } : {}),
           });
         }
-        const catalog = await pluginExecutors.catalog({ cwd: input.cwd });
+        const catalog = await pluginExecutors.catalog({ cwd: input.cwd, refresh: input.refresh });
         return withBuiltinExternalAgentCatalog(catalog);
       },
     );
@@ -1700,6 +1700,10 @@ export async function createExecutionRuntimeHostComposition(
         context.retainUntilProcessExit();
         context.requestDrain();
       },
+      onSucceeded: () => {
+        pluginExecutors.invalidateCatalog();
+        hostChanges.publishConfiguration();
+      },
       capabilities: clientCapabilities,
     });
     oauth = new HostOAuthCoordinator({
@@ -2205,6 +2209,7 @@ export async function createExecutionRuntimeHostComposition(
     });
     async function applyRuntimePolicyMutationEffects(): Promise<void> {
       try {
+        pluginExecutors.invalidateCatalog();
         await builtinExternalAgentPlugins.reconcile();
         await requireMemory(memory).refreshAfterPolicyMutation();
       } catch (error) {
@@ -2228,9 +2233,10 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
+      isTurnBusy: (sessionId) => rootCoordinator?.hasActiveOrPendingTurn(sessionId) ?? false,
       configureExecutor: async (header, configuration) => {
         if (!header.executorId) throw new Error('Session has no executor');
-        await pluginExecutors.configureConversation(header.id, header.executorId, {
+        return await pluginExecutors.configureConversation(header.id, header.executorId, {
           conversationKey: header.id,
           cwd: header.cwd,
           configuration,
@@ -2247,12 +2253,19 @@ export async function createExecutionRuntimeHostComposition(
         if (!entry || entry.readiness !== 'ready') throw new Error('Executor is not ready');
         // Catalog-managed executors pin their confirmed configuration on every create path.
         // Providers without model discovery retain main's executor-specific model contract.
-        if (entry.supportsModelChange || entry.models.length > 0) {
+        if (
+          entry.supportsModelChange ||
+          entry.models.length > 0 ||
+          entry.supportsModeChange ||
+          entry.modes?.length
+        ) {
           if (
             configuration?.model &&
             !entry.models.some((model) => model.id === configuration.model)
           )
             throw new Error('Executor model is unavailable');
+          if (configuration?.mode && !entry.modes?.some((mode) => mode.id === configuration.mode))
+            throw new Error('Executor mode is unavailable');
           return configuration ?? {};
         }
       },

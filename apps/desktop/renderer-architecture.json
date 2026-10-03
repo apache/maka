@@ -358,6 +358,7 @@
         "chatTurnActivity",
         "createComposerStagingCommands",
         "createComposerSubmissionCommands",
+        "createExecutorSessionActivator",
         "desktopSlashCommandPresentation",
         "executorComposerProps",
         "resolveTaskReadinessModelTarget",
@@ -761,7 +762,7 @@
           "react": 1
         },
         "importSpecifiers": 51,
-        "nonTriviaTokens": 8017
+        "nonTriviaTokens": 8009
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 3,

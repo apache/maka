@@ -26,7 +26,7 @@ import { act, createElement, Fragment } from 'react';
 import type { StoredMessage } from '@maka/core/session';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider, type ComposerProps } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import {
   createSessionCatalogController,
@@ -65,6 +65,8 @@ type Owner = { sessionId: string | undefined };
 type ProviderProps = Parameters<typeof ComposerSubmissionProvider<Owner>>[0];
 
 interface RegionProps {
+  executorPicker?: ComposerProps['executorPicker'];
+  sendBlocked?: boolean;
   onSend(text: string, metadata?: { followUpMode?: 'steer' | 'queue' }): Promise<boolean | void>;
   newTaskSendPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
@@ -100,6 +102,8 @@ function harness(options: {
   newTask?: Partial<ProviderProps['newTask']>;
   sharedSessionActive?: boolean;
   listMessages?: ReturnType<typeof stubConversationServices>['listMessages'];
+  executorPicker?: ComposerProps['executorPicker'];
+  sendBlocked?: boolean;
 } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
@@ -150,6 +154,7 @@ function harness(options: {
       }),
       createElement(ConversationComposerRegion<RegionProps>, {
         surface: Composer, contextPickEnabled: true, directoryPickerEnabled: true,
+        executorPicker: options.executorPicker, sendBlocked: options.sendBlocked,
       }),
     );
   }
@@ -189,6 +194,9 @@ describe('ComposerSubmissionProvider', () => {
     const submitted: unknown[] = [];
     const admission = deferred<Awaited<ReturnType<ComposerSubmissionServices['submitMessage']>>>();
     const h = harness({
+      executorPicker: {
+        catalog: [], onSelect() {}, onSetup() {}, onRetry() {}, onNewTask() {},
+      },
       services: {
         submitMessage: (sessionId, placement, command) => {
           submitted.push({ sessionId, placement, text: command.text });
@@ -199,10 +207,14 @@ describe('ComposerSubmissionProvider', () => {
     await act(async () => h.target.setActiveId('A'));
     await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
     assert.equal(h.region.newTaskSendPending, false);
+    assert.equal(h.region.executorPicker?.disabled, false);
+    assert.equal(h.region.sendBlocked, false);
 
     let sending!: Promise<boolean | void>;
     await act(async () => { sending = h.region.onSend('hello'); });
     assert.equal(h.region.newTaskSendPending, true, 'the flag is the owner\'s, read by the Composer slot');
+    assert.equal(h.region.executorPicker?.disabled, true, 'executor changes stay locked until Host admission settles');
+    assert.equal(h.region.sendBlocked, true);
     assert.deepEqual(submitted, [{ sessionId: 'A', placement: 'next_turn', text: 'hello' }]);
 
     await act(async () => {
@@ -213,6 +225,20 @@ describe('ComposerSubmissionProvider', () => {
       assert.equal(await sending, true);
     });
     assert.equal(h.region.newTaskSendPending, false);
+    assert.equal(h.region.executorPicker?.disabled, false);
+    assert.equal(h.region.sendBlocked, false);
+  });
+
+  test('retains existing executor and send gates while no submission is pending', () => {
+    const h = harness({
+      executorPicker: {
+        catalog: [], disabled: true, onSelect() {}, onSetup() {}, onRetry() {}, onNewTask() {},
+      },
+      sendBlocked: true,
+    });
+    assert.equal(h.region.newTaskSendPending, false);
+    assert.equal(h.region.executorPicker?.disabled, true);
+    assert.equal(h.region.sendBlocked, true);
   });
 
   test('steers into the running Host Turn: the pending row names that Turn before the Host answers', async () => {
