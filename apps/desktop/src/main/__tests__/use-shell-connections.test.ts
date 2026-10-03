@@ -24,6 +24,7 @@ import { act, createElement } from 'react';
 import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { useShellConnections } from '../../renderer/use-shell-connections.js';
+import { resolveComposerConnectionSnapshot } from '../../renderer/application/contracts/composer-connection-snapshot.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 const EMPTY: DesktopConnectionSnapshot = {
@@ -35,6 +36,24 @@ const EMPTY: DesktopConnectionSnapshot = {
 function snapshot(defaultConnection: string): DesktopConnectionSnapshot {
   return { ...EMPTY, defaultConnection };
 }
+
+test('composer catalog readiness follows its selected Host, including startup fallback', () => {
+  const options: Parameters<typeof resolveComposerConnectionSnapshot>[0] = {
+    usesSessionHost: false,
+    usesDefaultHost: false,
+    sessionHost: { snapshot: EMPTY, projection: { status: 'unrequested' } },
+    newTaskHost: { snapshot: snapshot('remote'), projection: { status: 'ready' } },
+    defaultHost: { snapshot: snapshot('default'), projection: { status: 'ready' } },
+    startupSnapshot: snapshot('startup'),
+  };
+  assert.deepEqual(resolveComposerConnectionSnapshot(options), { snapshot: options.newTaskHost.snapshot, ready: true });
+  assert.deepEqual(resolveComposerConnectionSnapshot({ ...options, usesSessionHost: true }), { snapshot: EMPTY, ready: false });
+  const refreshing = { snapshot: snapshot('stale-remote'), projection: { status: 'refreshing' as const } };
+  assert.deepEqual(resolveComposerConnectionSnapshot({ ...options, newTaskHost: refreshing }), { snapshot: refreshing.snapshot, ready: false });
+  assert.deepEqual(resolveComposerConnectionSnapshot({ ...options, usesDefaultHost: true, newTaskHost: refreshing }), { snapshot: options.defaultHost.snapshot, ready: true });
+  assert.deepEqual(resolveComposerConnectionSnapshot({ ...options, usesDefaultHost: true, newTaskHost: refreshing, defaultHost: { snapshot: EMPTY, projection: { status: 'unrequested' } } }), { snapshot: options.startupSnapshot, ready: true });
+  assert.deepEqual(resolveComposerConnectionSnapshot({ ...options, usesDefaultHost: true, newTaskHost: refreshing, defaultHost: refreshing }), { snapshot: refreshing.snapshot, ready: false });
+});
 test('keeps connection projections isolated and cached by owning Host', async () => {
   const { root } = installReactRenderer();
   const sessionA = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });

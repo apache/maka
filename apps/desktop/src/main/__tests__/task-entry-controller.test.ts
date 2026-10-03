@@ -97,10 +97,14 @@ function catalog(host: TaskEntryHost = readyHost()): TaskEntryCatalog {
 }
 let latestController: TaskEntryController | undefined;
 
-function ControllerProbe(props: { reportError(error: unknown): void }) {
+function ControllerProbe(props: {
+  reportError(error: unknown): void;
+  reportProjectAdded?(handoff: { fromKey: string; toKey: string }): void;
+}) {
   latestController = useTaskEntryController({
     reportError: props.reportError,
     manageProjects() {},
+    reportProjectAdded: props.reportProjectAdded,
   });
   return null;
 }
@@ -114,6 +118,7 @@ function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: TaskEntryServices,
   errors: unknown[] = [],
+  reportProjectAdded?: (handoff: { fromKey: string; toKey: string }) => void,
 ) {
   root.render(
     createElement(LocaleProvider, {
@@ -123,6 +128,7 @@ function renderController(
         { services },
         createElement(ControllerProbe, {
           reportError: (error: unknown) => errors.push(error),
+          reportProjectAdded,
         }),
       ),
     }),
@@ -327,6 +333,126 @@ describe('useTaskEntryController', () => {
     assert.equal(controller().selectors.workspacePicker.pending, false);
   });
 
+  it('refreshes a successfully added project without reclaiming a navigated draft', async () => {
+    const { root } = installReactRenderer();
+    const added = deferred<{ ok: true; project: ReturnType<typeof project> }>();
+    const handoffs: unknown[] = [];
+    let reads = 0;
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => catalog(readyHost({ projects: ++reads === 1
+        ? [project('project-a'), project('project-c')]
+        : [project('project-a'), project('project-b'), project('project-c')] })),
+      addProject: () => added.promise,
+    } });
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    await act(async () => { controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project'); });
+    await act(async () => controller().commands.selectProject(controller().selectors.projectScopes.find((scope) => scope.project.id === 'project-c')!.key));
+    await act(async () => added.resolve({ ok: true, project: project('project-b') }));
+    assert.equal(reads, 2);
+    assert.equal(controller().selectors.projectScopes.some((scope) => scope.project.id === 'project-b'), true);
+    assert.equal(controller().selectors.target?.projectId, 'project-c');
+    assert.deepEqual(handoffs, []);
+  });
+
+  it('explains successful creation when the refreshed catalog omits the project', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const handoffs: unknown[] = [];
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => catalog(),
+      addProject: async () => ({ ok: true, project: project('project-b') }),
+    } });
+    await act(async () => renderController(root, services, errors, (handoff) => handoffs.push(handoff)));
+    const originalTarget = controller().selectors.target;
+    await act(async () => controller().commands.addProject());
+    assert.deepEqual(controller().selectors.target, originalTarget);
+    assert.deepEqual(handoffs, []);
+    assert.deepEqual(errors, [{
+      title: 'Project added, but not ready to select',
+      description: 'The catalog has not confirmed that the new project is available. Refresh the list and select it; there is no need to add it again.',
+      profileId: 'local',
+    }]);
+  });
+
+  it('refreshes a cross-Host add without replacing a later project selection', async () => {
+    const { root } = installReactRenderer();
+    const added = deferred<{ ok: true; project: ReturnType<typeof project> }>();
+    let reads = 0;
+    const local = readyHost({ projects: [project('project-a'), project('project-c')] });
+    const remote = { ...readyRemoteHost('host-remote'), capabilities: local.capabilities };
+    const handoffs: unknown[] = [];
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => ({ defaultProfileId: 'local', hosts: [local, {
+        ...remote,
+        projects: ++reads === 1 ? remote.projects : [...remote.projects, project('project-b')],
+      }] }),
+      addProject: () => added.promise,
+    } });
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    await act(async () => { controller().selectors.workspacePicker.groups.find((group) => group.id === 'remote')?.onAdd?.('New project'); });
+    assert.equal(controller().selectors.workspacePicker.pending, true);
+    await act(async () => controller().commands.selectProject(controller().selectors.projectScopes.find((scope) => scope.project.id === 'project-c')!.key));
+    await act(async () => added.resolve({ ok: true, project: project('project-b') }));
+    assert.equal(reads, 2);
+    assert.equal(controller().selectors.target?.profileId, 'local');
+    assert.equal(controller().selectors.target?.projectId, 'project-c');
+    assert.ok(controller().selectors.projectScopes.some((scope) => scope.project.id === 'project-b'));
+    assert.deepEqual(handoffs, []);
+  });
+
+  it('explains successful creation when the post-add catalog refresh rejects', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const handoffs: unknown[] = [];
+    let reads = 0;
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => {
+        if (++reads === 1) return catalog();
+        throw new Error('Host disconnected');
+      },
+      addProject: async () => ({ ok: true, project: project('project-b') }),
+    } });
+    await act(async () => renderController(root, services, errors, (handoff) => handoffs.push(handoff)));
+    const originalTarget = controller().selectors.target;
+    await act(async () => controller().commands.addProject());
+    assert.deepEqual(controller().selectors.target, originalTarget);
+    assert.deepEqual(handoffs, []);
+    assert.deepEqual(errors, [{
+      title: 'Project added, but not ready to select',
+      description: 'The catalog has not confirmed that the new project is available. Refresh the list and select it; there is no need to add it again.',
+      profileId: 'local',
+    }]);
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+  });
+
+  it('reports a draft handoff after adding a Project on the selected Host', async () => {
+    const { root } = installReactRenderer();
+    const handoffs: Array<{ fromKey: string; toKey: string }> = [];
+    let reads = 0;
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => ++reads === 1
+          ? catalog()
+          : catalog(readyHost({ projects: [project('project-a'), project('project-b')] })),
+        addProject: async () => ({ ok: true, project: project('project-b') }),
+      },
+    });
+
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    const sourceKey = controller().selectors.draftKey;
+    await act(async () => controller().commands.addProject());
+
+    assert.equal(handoffs.length, 1);
+    assert.equal(handoffs[0]?.fromKey, sourceKey);
+    assert.match(handoffs[0]?.toKey ?? '', /project-b/);
+  });
+
+
   it('deduplicates relink requests and selects the returned Project before refreshing', async () => {
     const { root } = installReactRenderer();
     const relinked = deferred<{
@@ -411,6 +537,56 @@ describe('useTaskEntryController', () => {
     ));
     assert.equal(controller().host.directoryHost, undefined);
     assert.equal(reads, 2);
+  });
+
+  it('closes a successful registration after catalog recovery moves the source target', async () => {
+    const { root } = installReactRenderer();
+    const remote = readyRemoteHost('remote-generation');
+    let snapshot: TaskEntryCatalog = { defaultProfileId: 'remote', hosts: [remote] };
+    const renamed: string[] = [];
+    const handoffs: unknown[] = [];
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => snapshot,
+      renameProject: async (_host, _id, name) => { renamed.push(name); },
+    } });
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    await act(async () => controller().commands.addProject('Named project'));
+    snapshot = { defaultProfileId: 'remote', hosts: [{ ...remote, projects: [project('project-c')], selectedProjectId: 'project-c' }] };
+    await act(async () => controller().commands.refresh());
+    assert.equal(controller().selectors.target?.projectId, 'project-c');
+    snapshot = { defaultProfileId: 'remote', hosts: [{ ...remote, projects: [project('project-c'), project('project-b')], selectedProjectId: 'project-c' }] };
+    await act(async () => controller().host.acceptRegisteredProject(project('project-b'), { profileId: 'remote', hostId: 'remote-generation' }));
+    assert.equal(controller().host.directoryHost, undefined);
+    assert.deepEqual(renamed, ['Named project']);
+    assert.equal(controller().selectors.target?.projectId, 'project-c');
+    assert.equal(controller().selectors.projectScopes.some((scope) => scope.project.id === 'project-b'), true);
+    assert.deepEqual(handoffs, []);
+  });
+
+  it('does not reclaim the profile when navigation happens during registration rename', async () => {
+    const { root } = installReactRenderer();
+    const renamed = deferred<void>();
+    const remote = readyRemoteHost('remote-generation');
+    const local = readyHost();
+    let snapshot: TaskEntryCatalog = { defaultProfileId: 'remote', hosts: [remote, local] };
+    const handoffs: unknown[] = [];
+    const services = createFakeTaskEntryServices({ catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => snapshot,
+      renameProject: async () => renamed.promise,
+    } });
+    await act(async () => renderController(root, services, [], (handoff) => handoffs.push(handoff)));
+    await act(async () => controller().commands.addProject('Named project'));
+    let registration!: Promise<void>;
+    await act(async () => { registration = controller().host.acceptRegisteredProject(project('project-b'), { profileId: 'remote', hostId: 'remote-generation' }); });
+    assert.equal(controller().host.directoryHost, undefined);
+    await act(async () => { controller().commands.selectLocalProject('project-a'); });
+    snapshot = { defaultProfileId: 'remote', hosts: [{ ...remote, projects: [project('project-a'), project('project-b')] }, local] };
+    await act(async () => { renamed.resolve(); await registration; });
+    assert.equal(controller().selectors.target?.profileId, 'local');
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
+    assert.deepEqual(handoffs, []);
   });
 
   it('closes a remote directory handoff when the Host generation changes', async () => {
@@ -711,6 +887,7 @@ describe('useTaskEntryController', () => {
     const { root } = installReactRenderer();
     const refreshed = deferred<TaskEntryCatalog>();
     const errors: unknown[] = [];
+    const handoffs: Array<{ fromKey: string; toKey: string }> = [];
     let reads = 0;
     const services = createFakeTaskEntryServices({
       catalog: {
@@ -723,7 +900,7 @@ describe('useTaskEntryController', () => {
       },
     });
 
-    await act(async () => renderController(root, services, errors));
+    await act(async () => renderController(root, services, errors, (handoff) => handoffs.push(handoff)));
     await act(async () => {
       controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
       await Promise.resolve();
@@ -734,10 +911,11 @@ describe('useTaskEntryController', () => {
 
     assert.equal(controller().selectors.workspacePicker.pending, false);
     assert.deepEqual(errors, [{
-      title: 'Could not update project',
-      description: 'The project could not be updated. Try again later.',
+      title: 'Project added, but not ready to select',
+      description: 'The catalog has not confirmed that the new project is available. Refresh the list and select it; there is no need to add it again.',
       profileId: 'local',
     }]);
+    assert.deepEqual(handoffs, []);
   });
 
   it('explains that a running Session must settle before workspace recovery', async () => {

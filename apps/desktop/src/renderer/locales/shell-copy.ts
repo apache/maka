@@ -188,6 +188,8 @@ type ShellCopy = {
     selectDirectoryFailedTitle: string;
     selectedPathUnreadable: string;
     directorySwitchedTitle: string;
+    projectAddedRefreshFailedTitle: string;
+    projectAddedRefreshFailedDescription: string;
     projectUpdateFailedTitle: string;
     projectUpdateFailedFallback: string;
     catalogUnavailable: string;
@@ -786,6 +788,8 @@ const SHELL_COPY_BY_LOCALE = {
       selectDirectoryFailedTitle: '选择工作目录失败',
       selectedPathUnreadable: '所选路径不存在或不可读。',
       directorySwitchedTitle: '已切换工作目录',
+      projectAddedRefreshFailedTitle: '项目已添加，暂时无法切换',
+      projectAddedRefreshFailedDescription: '目录列表尚未确认新项目可用。请刷新列表后选择，无需重复添加。',
       projectUpdateFailedTitle: '项目操作失败',
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       catalogUnavailable: 'Runtime Host 暂时不可用',
@@ -1310,6 +1314,8 @@ const SHELL_COPY_BY_LOCALE = {
       selectDirectoryFailedTitle: '選擇工作目錄失敗',
       selectedPathUnreadable: '所選路徑不存在或不可讀。',
       directorySwitchedTitle: '已切換工作目錄',
+      projectAddedRefreshFailedTitle: '專案已新增，暫時無法切換',
+      projectAddedRefreshFailedDescription: '目錄清單尚未確認新專案可用。請重新整理清單後選擇，無需重複新增。',
       projectUpdateFailedTitle: '專案操作失敗',
       projectUpdateFailedFallback: '暫時無法更新專案，請稍後重試。',
       catalogUnavailable: 'Runtime Host 暫時不可用',
@@ -1836,6 +1842,8 @@ const SHELL_COPY_BY_LOCALE = {
       selectDirectoryFailedTitle: 'Could not select working directory',
       selectedPathUnreadable: 'The selected path does not exist or cannot be read.',
       directorySwitchedTitle: 'Working directory changed',
+      projectAddedRefreshFailedTitle: 'Project added, but not ready to select',
+      projectAddedRefreshFailedDescription: 'The catalog has not confirmed that the new project is available. Refresh the list and select it; there is no need to add it again.',
       projectUpdateFailedTitle: 'Could not update project',
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       catalogUnavailable: 'Runtime Hosts unavailable',

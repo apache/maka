@@ -159,6 +159,7 @@ import {
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
+import { resolveComposerConnectionSnapshot } from './application/contracts/composer-connection-snapshot';
 import { useShellLiveTurn } from './use-shell-live-turn';
 
 import { useSystemUiLocale } from './use-system-ui-locale';
@@ -418,21 +419,18 @@ function AppShellContent({
     target: { kind: 'session', sessionId: ownerActiveId },
   });
   const startupConnectionSnapshot = onboarding.snapshot;
-  let newTaskConnectionSnapshot = newTaskConnections.snapshot;
-  if (newTaskConnections.projection.status !== 'ready' && taskEntry.selectors.usesDefaultHost) {
-    newTaskConnectionSnapshot = defaultHostConnections.projection.status === 'ready'
-      ? defaultHostConnections.snapshot
-      : defaultHostConnections.projection.status === 'unrequested' && startupConnectionSnapshot
-        ? {
-            connections: startupConnectionSnapshot.connections,
-            defaultConnection: startupConnectionSnapshot.defaultSlug,
-            chatModelChoices: startupConnectionSnapshot.chatModelChoices,
-          }
-        : defaultHostConnections.snapshot;
-  }
-  const activeConnectionSnapshot = workHubActive || activeId
-    ? sessionHostConnections.snapshot
-    : newTaskConnectionSnapshot;
+  const { snapshot: activeConnectionSnapshot, ready: connectionSnapshotReady } = resolveComposerConnectionSnapshot({
+    usesSessionHost: Boolean(workHubActive || activeId),
+    usesDefaultHost: taskEntry.selectors.usesDefaultHost,
+    sessionHost: sessionHostConnections,
+    newTaskHost: newTaskConnections,
+    defaultHost: defaultHostConnections,
+    startupSnapshot: startupConnectionSnapshot ? {
+      connections: startupConnectionSnapshot.connections,
+      defaultConnection: startupConnectionSnapshot.defaultSlug,
+      chatModelChoices: startupConnectionSnapshot.chatModelChoices,
+    } : undefined,
+  });
   const connections = activeConnectionSnapshot.connections;
   const defaultConnection = activeConnectionSnapshot.defaultConnection;
   const connectionModelChoices = activeConnectionSnapshot.chatModelChoices;
@@ -627,13 +625,12 @@ function AppShellContent({
     activationCandidate: modelSettingsOwnsComposerHost
       ? onboardingActivationCandidate
       : undefined,
+    activeId,
     activeSession: activeSessionForModelControls,
     sessionHealthSession: activeSession,
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
-    connectionSnapshotReady: activeId
-      ? sessionHostConnections.projection.status === 'ready'
-      : true,
+    connectionSnapshotReady,
     modelPickerDisabled: !modelSwitchAvailability.available,
     openSettingsSection,
     openModelPicker: openComposerModelPicker,

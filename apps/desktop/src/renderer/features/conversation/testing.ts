@@ -45,6 +45,8 @@ export {
   activeExecutionBoundaryUnreadable,
   startActiveExecutionBoundaryRead,
 } from './controller/use-active-execution-boundary.js';
+
+export { useShellChatModel } from './controller/use-shell-chat-model.js';
 export { useSessionMessageQueue } from './controller/use-session-message-queue.js';
 
 /** Inert conversation services; a test overrides only the calls it observes. */

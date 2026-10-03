@@ -668,6 +668,7 @@
           "./app-shell-revision-actions": 1,
           "./app-shell-stop-action": 1,
           "./app-shell-turn-actions": 1,
+          "./application/contracts/composer-connection-snapshot": 1,
           "./application/contracts/conversation-copy": 1,
           "./application/contracts/session-catalog/catalog-row-watch.js": 1,
           "./application/contracts/turn-presentation": 1,
@@ -729,7 +730,7 @@
           "react": 1
         },
         "importSpecifiers": 74,
-        "nonTriviaTokens": 9080
+        "nonTriviaTokens": 9063
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,
