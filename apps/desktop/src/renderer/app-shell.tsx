@@ -110,7 +110,7 @@ import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-bound
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
 import { AppShellTitlebar } from './app-shell-chrome-actions';
-import { AppShellDetailPanel } from './app-shell-detail-panel';
+import { AppShellDetailPanel } from './shell/detail-panel';
 import { appShellFrameStyle } from './shell/frame-style';
 import { AppShellOverlays } from './app-shell-overlays';
 import type { ArchivedTasksBridge } from './settings/tasks-settings-page';

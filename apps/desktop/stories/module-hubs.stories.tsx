@@ -45,7 +45,7 @@ import {
   createFakeModuleHubServices,
   McpPage,
 } from '../src/renderer/features/module-hub/testing';
-import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
+import { AppShellDetailPanel } from '../src/renderer/shell/detail-panel';
 import { withSkillLocationCounts } from '../src/shared/skill-location-counts';
 
 // Fidelity convention (#1433): every story below names the real app path
