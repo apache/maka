@@ -238,6 +238,7 @@ import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js
 import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
 import { registerExternalAgentSetupIpc } from "./external-agent-setup-ipc-main.js";
+import { selectAntigravityExecutable } from './external-agent-executable-selection.js';
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -1624,10 +1625,9 @@ function registerHostClientIpc(
   });
   registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
     onCatalogChanged: () => sendToRenderer('external-agents:catalog-changed'),
-    selectExecutable: async () => {
-      const result = await mainWindowController.showOpenDialog({ properties: ['openFile'] });
-      return result.canceled ? undefined : result.filePaths[0];
-    },
+    selectExecutable: () => selectAntigravityExecutable(
+      (options) => mainWindowController.showOpenDialog(options),
+    ),
   });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,

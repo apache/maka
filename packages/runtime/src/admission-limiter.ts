@@ -31,12 +31,13 @@ interface AdmissionWaiter {
 /**
  * Abort-aware FIFO permits, bounded by capacity.
  *
- * Two boundaries use it, at different lifetimes. Child-agent runs take one
+ * Boundaries use it at different lifetimes. Child-agent runs take one
  * instance per turn: tool-call admission and child-run capacity are separate
  * boundaries, since one admitted tool may eventually spawn multiple children,
  * so the limiter belongs at the narrow spawn capability where every caller
  * shares the same real-run budget. Code Mode cells take one per backend, which
- * has to outlive a turn — see `executeCodeModeCell`.
+ * has to outlive a turn — see `executeCodeModeCell`. ACP catalog probes share
+ * one per runtime Entry and hold permits through process cleanup.
  *
  * A caller that must turn work away rather than queue it reads `waitingCount`
  * before calling `acquire`. Nothing awaits between that read and the enqueue

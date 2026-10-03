@@ -18,7 +18,7 @@
  */
 
 import { createElement, useMemo, useSyncExternalStore, type ComponentType, type ComponentProps } from 'react';
-import { ChatView, useUiLocale } from '@maka/ui';
+import { ChatView, useUiLocale, type ComposerProps as UiComposerProps } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import type { SessionUiReads } from '../model/session-ui-reads.js';
 import { useSessionUiRead } from '../controller/use-session-ui-read.js';
@@ -77,7 +77,8 @@ type ComposerProps = SubmissionProps & {
   processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsageTokens?: number;
 };
 /** The shell's picker gates; an edit-and-resend draft narrows them here. */
-type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean };
+type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean } &
+  Pick<UiComposerProps, 'executorPicker' | 'sendBlocked'>;
 /**
  * Lives in the persistent composer slot, outside the conditional transcript.
  * Submission state (send pending, Stop pending, the edit-and-resend draft) and
@@ -102,6 +103,10 @@ export function ConversationComposerRegion<P extends object>(
   const owned: ComposerProps & ComposerPickGates = {
     onSend: submission.onSend,
     newTaskSendPending: submission.newTaskSendPending,
+    sendBlocked: gates.sendBlocked || submission.newTaskSendPending,
+    ...(gates.executorPicker ? {
+      executorPicker: { ...gates.executorPicker, disabled: gates.executorPicker.disabled || submission.newTaskSendPending },
+    } : {}),
     onStop: submission.stop,
     stop: submission.stop,
     stopPending,

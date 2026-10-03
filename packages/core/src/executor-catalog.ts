@@ -24,6 +24,8 @@ import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 /** Provider-owned choices; no model Connection or external protocol identity crosses this seam. */
 export interface ExecutorConfiguration {
   readonly model?: string;
+  /** Opaque provider mode ID. Omission leaves the Agent's default unchanged. */
+  readonly mode?: string;
 }
 
 export interface ExecutorSelection {
@@ -47,6 +49,11 @@ export interface ExecutorModelChoice {
   readonly providerType?: ProviderType;
 }
 
+export interface ExecutorModeChoice {
+  readonly id: string;
+  readonly name: string;
+}
+
 /** Presentation capability only: every variant references a real catalog model ID. */
 export interface ExecutorModelGroup {
   readonly id: string;
@@ -61,20 +68,28 @@ export interface ExecutorCatalogEntry {
   readonly models: readonly ExecutorModelChoice[];
   readonly modelGroups?: readonly ExecutorModelGroup[];
   readonly currentModel?: string;
+  readonly modes?: readonly ExecutorModeChoice[];
+  readonly currentMode?: string;
   readonly supportsAttachments: boolean;
   readonly supportsModelChange: boolean;
+  readonly supportsModeChange?: boolean;
 }
 
 export function isExecutorConfiguration(value: unknown): value is ExecutorConfiguration {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return (
-    Object.keys(record).every((key) => key === 'model') &&
+    Object.keys(record).every((key) => key === 'model' || key === 'mode') &&
     (record.model === undefined ||
       (typeof record.model === 'string' &&
         record.model.length > 0 &&
         record.model.length <= 1024 &&
-        !/[\0\r\n]/u.test(record.model)))
+        !/[\0\r\n]/u.test(record.model))) &&
+    (record.mode === undefined ||
+      (typeof record.mode === 'string' &&
+        record.mode.length > 0 &&
+        record.mode.length <= 1024 &&
+        !/[\0\r\n]/u.test(record.mode)))
   );
 }
 
@@ -109,8 +124,21 @@ export function normalizeCatalogEntry(
     ) ||
     new Set(value.models.map((model) => model.id)).size !== value.models.length ||
     !isExecutorConfiguration({ model: value.currentModel }) ||
+    (value.modes !== undefined &&
+      (!Array.isArray(value.modes) ||
+        value.modes.length > 64 ||
+        !value.modes.every(
+          (mode) =>
+            mode &&
+            typeof mode.id === 'string' &&
+            isExecutorConfiguration({ mode: mode.id }) &&
+            isCatalogText(mode.name),
+        ) ||
+        new Set(value.modes.map((mode) => mode.id)).size !== value.modes.length)) ||
+    !isExecutorConfiguration({ mode: value.currentMode }) ||
     typeof value.supportsAttachments !== 'boolean' ||
-    typeof value.supportsModelChange !== 'boolean'
+    typeof value.supportsModelChange !== 'boolean' ||
+    (value.supportsModeChange !== undefined && typeof value.supportsModeChange !== 'boolean')
   )
     throw new TypeError('Executor catalog is invalid');
   const usedModels = new Set<string>();
@@ -180,8 +208,15 @@ export function normalizeCatalogEntry(
         }
       : {}),
     ...(value.currentModel !== undefined ? { currentModel: value.currentModel } : {}),
+    ...(value.modes !== undefined
+      ? { modes: Object.freeze(value.modes.map(({ id, name }) => Object.freeze({ id, name }))) }
+      : {}),
+    ...(value.currentMode !== undefined ? { currentMode: value.currentMode } : {}),
     supportsAttachments: value.supportsAttachments,
     supportsModelChange: value.supportsModelChange,
+    ...(value.supportsModeChange !== undefined
+      ? { supportsModeChange: value.supportsModeChange }
+      : {}),
   });
 }
 

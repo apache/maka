@@ -448,6 +448,20 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 79);
   });
 
+  test('decodes optional executor catalog refresh without weakening exact keys', () => {
+    const decode = HOST_OPERATION_SPECS['plugin.executor.query'].decodeInput;
+    const catalogQuery = { kind: 'catalog', cwd: '/workspace' } as const;
+
+    assert.deepEqual(decode(catalogQuery), catalogQuery);
+    assert.deepEqual(decode({ ...catalogQuery, refresh: false }), catalogQuery);
+    assert.deepEqual(decode({ ...catalogQuery, refresh: true }), {
+      ...catalogQuery,
+      refresh: true,
+    });
+    assert.throws(() => decode({ ...catalogQuery, refresh: 'true' }), isInvalidFrame);
+    assert.throws(() => decode({ ...catalogQuery, unknown: true }), isInvalidFrame);
+  });
+
   test('publishes a new compatibility epoch for the optional conversation-copy sourceTurnId', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 99);
   });
