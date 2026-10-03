@@ -491,15 +491,20 @@ function buildWritableRootsPolicy(roots: ResolvedRoots): string {
 
 function buildRuntimeRootsPolicy(roots: ResolvedRoots): string {
   const sections: string[] = [];
+  const denyRequirements = deniedRootRequirements(roots.deniedRoots);
   if (roots.runtimeReadableRoots.length > 0) {
     const clauses = roots.runtimeReadableRoots
-      .map((_, index) => `  (subpath (param "RUNTIME_READABLE_ROOT_${index}"))`)
+      .map((_, index) =>
+        accessRootClause(`(subpath (param "RUNTIME_READABLE_ROOT_${index}"))`, denyRequirements),
+      )
       .join('\n');
     sections.push(`(allow file-read* file-test-existence\n${clauses})`);
   }
   if (roots.executableRoots.length > 0) {
     const clauses = roots.executableRoots
-      .map((_, index) => `  (subpath (param "EXECUTABLE_ROOT_${index}"))`)
+      .map((_, index) =>
+        accessRootClause(`(subpath (param "EXECUTABLE_ROOT_${index}"))`, denyRequirements),
+      )
       .join('\n');
     sections.push(`(allow file-read* file-test-existence file-map-executable\n${clauses})`);
   }

@@ -172,6 +172,15 @@ export function buildLocalForegroundBashTool(
   });
 }
 
+interface SandboxedShellCommand {
+  argv?: readonly string[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  fdInputs?: readonly ChildFdInput[];
+  sandboxType?: SandboxType;
+  onCompletion?: (outcome: { successful: boolean }) => void;
+}
+
 export function buildManagedBashTool(
   shellRuns: ShellRunLauncher,
   options: {
@@ -211,16 +220,7 @@ export function buildManagedBashTool(
       pty: boolean;
       requiredBoundary?: SandboxBoundaryExpansion;
       ctx: MakaToolContext;
-    }) =>
-      | {
-          argv?: readonly string[];
-          cwd: string;
-          env?: NodeJS.ProcessEnv;
-          fdInputs?: readonly ChildFdInput[];
-          sandboxType?: SandboxType;
-          onCompletion?: (outcome: { successful: boolean }) => void;
-        }
-      | undefined;
+    }) => SandboxedShellCommand | undefined | Promise<SandboxedShellCommand | undefined>;
   } = {},
 ): MakaTool {
   const shell = options.shell ?? { plan: defaultShellPlan() };
@@ -290,7 +290,7 @@ export function buildManagedBashTool(
         selectedBashBoundaryExpansion(input),
         ctx,
       );
-      const transformed = options.transformCommand?.({
+      const transformed = await options.transformCommand?.({
         command,
         pty: pty === true,
         ...(normalizedRequiredBoundary ? { requiredBoundary: normalizedRequiredBoundary } : {}),
