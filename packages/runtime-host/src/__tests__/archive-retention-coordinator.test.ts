@@ -508,11 +508,17 @@ test('the document records a daily heartbeat and sweep results without duplicate
   const writes = r.writes.length;
   await r.retention.sweep();
   assert.equal(r.writes.length, writes + 1, 'an empty sweep records the heartbeat');
+  assert.equal(r.writes.at(-1)?.latest?.observedAt, r.now);
+  assert.equal((await r.query()).lastSweep, undefined);
+  assert.equal((await r.query()).lastDeletion, undefined);
+  await r.retention.sweep();
+  assert.equal(r.writes.length, writes + 1, 'an immediate repeat writes nothing');
 
   r.tasks.set('busy', { id: 'busy', outcome: { kind: 'busy' } });
   r.now += DAY;
   await r.retention.sweep();
   assert.equal(r.writes.length, writes + 2);
+  const lastSweep = (await r.query()).lastSweep;
   assert.deepEqual((await r.query()).lastSweep, {
     at: r.now,
     deleted: 0,
@@ -523,6 +529,12 @@ test('the document records a daily heartbeat and sweep results without duplicate
   r.now += DAY;
   await r.retention.sweep();
   assert.equal(r.writes.length, writes + 3, 'the next heartbeat is written once');
+  assert.equal(r.writes.at(-1)?.latest?.observedAt, r.now);
+  assert.deepEqual(
+    (await r.query()).lastSweep,
+    lastSweep,
+    'unchanged results keep their timestamp',
+  );
 
   r.tasks.set('legacy', { id: 'legacy', outcome: { kind: 'removed', bytes: 40 } });
   r.tasks.set('unmeasured', { id: 'unmeasured', outcome: { kind: 'removed' } });

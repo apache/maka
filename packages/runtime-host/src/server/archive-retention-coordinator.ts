@@ -387,7 +387,11 @@ export class HostArchiveRetentionCoordinator {
       pass.needsReview === (previous?.needsReview ?? 0) &&
       pass.failed === (previous?.failed ?? 0) &&
       previous?.paused !== true;
-    if (unchanged && !heartbeat) return;
+    if (unchanged) {
+      // A heartbeat alone does not change the latest cleanup result.
+      if (heartbeat) await this.#heartbeat(now);
+      return;
+    }
     if (pass.deleted + pass.skippedBusy + pass.needsReview + pass.failed > 0) {
       this.#log(
         `archive retention deleted ${pass.deleted} tasks; kept ${pass.skippedBusy} busy and ` +
