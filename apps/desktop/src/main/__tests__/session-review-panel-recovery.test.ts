@@ -192,6 +192,40 @@ test('an unavailable workspace keeps retry and names the recovery path', async (
   }
 });
 
+test('a runtime host without a local workspace states inapplicability instead of failure', async () => {
+  const { document, restore } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const services = createFakeWorkbarServices({ review: {
+    read: async () => ({ ok: false, reason: 'local_workspace_disabled' }),
+    subscribeSessionEvents: () => () => undefined,
+  } });
+  try {
+    await act(async () => {
+      root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(WorkbarServicesProvider, { services },
+          createElement(SessionReviewPanel, { sessionId: 'remote-target', active: true })),
+      }));
+    });
+    assert.match(container.textContent ?? '', /not available for this runtime host/);
+    assert.doesNotMatch(
+      container.textContent ?? '',
+      /may have been moved/,
+      'no directory was read, so the recovery guidance would mislead',
+    );
+    assert.doesNotMatch(container.textContent ?? '', /Task directory:/);
+    assert.doesNotMatch(container.textContent ?? '', /Could not read Git workspace changes/);
+    const retry = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Retry');
+    assert.equal(retry, undefined, 'the host never reads this directory, so no retry can succeed');
+  } finally {
+    await act(async () => { root.unmount(); });
+    restore();
+  }
+});
+
 for (const reason of ['git_failed', 'unborn_repository'] as const) {
   test(`a ${reason} read failure keeps the error banner and retry`, async () => {
     const { document, restore } = installDom();

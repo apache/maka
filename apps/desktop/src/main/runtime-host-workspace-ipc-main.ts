@@ -37,7 +37,12 @@ export function registerRuntimeHostWorkspaceIpc(
 ): void {
   handleReconnectableRead(input.ipcMain, 'git-review:read', async (_event, raw: unknown) => {
     if (input.allowLocalWorkspace === false) {
-      return { ok: false as const, reason: 'workspace_unavailable' as const };
+      // Runtime hosts without a local workspace never read a directory at
+      // all, so this is not the recoverable `workspace_unavailable`: that
+      // would show moved/deleted recovery guidance plus a Retry that can
+      // never succeed (the directory exists — the host just does not read
+      // it).
+      return { ok: false as const, reason: 'local_workspace_disabled' as const };
     }
     const request = readRequest(raw);
     const workspace = await sessionWorkspace(input.client, request.sessionId);

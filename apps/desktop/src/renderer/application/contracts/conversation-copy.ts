@@ -146,6 +146,10 @@ export interface DesktopConversationCopy {
     workspaceUnavailable: string;
     /** Recovery guidance under `workspaceUnavailable`, pointing at existing recovery paths. */
     workspaceUnavailableHelp: string;
+    /** Neutral note for runtime hosts that never expose a local task directory. */
+    runtimeHostWorkspaceUnavailable: string;
+    /** Why Changes shows nothing for such a runtime host, without recovery guidance. */
+    runtimeHostWorkspaceUnavailableHelp: string;
     /** Names the task directory a guidance state refers to. */
     taskDirectoryPath(path: string): string;
     unbornRepository: string;
@@ -417,6 +421,8 @@ const COPY = {
       notGitRepositoryHelp: '变更基于 Git 历史进行比较，因此该目录需要是 Git 仓库。可在此初始化仓库（git init），或将任务移到已有仓库。',
       workspaceUnavailable: '当前任务目录已不可用',
       workspaceUnavailableHelp: '该目录可能已被移动、删除或暂时无法访问。恢复该目录或切换项目的工作目录后重试。',
+      runtimeHostWorkspaceUnavailable: 'Changes 在当前运行时主机上不可用',
+      runtimeHostWorkspaceUnavailableHelp: '该运行时目标不提供本地任务目录，因此没有可查看的 Git 变化。',
       taskDirectoryPath: (path) => `任务目录：${path}`,
       unbornRepository: 'Git 仓库还没有可比较的提交',
       gitFailed: '无法读取 Git 工作区变化',
@@ -664,6 +670,8 @@ const COPY = {
       notGitRepositoryHelp: '變更基於 Git 歷史進行比較，因此該目錄需要是 Git 倉庫。可在此初始化倉庫（git init），或將任務移到已有倉庫。',
       workspaceUnavailable: '目前任務目錄已不可用',
       workspaceUnavailableHelp: '該目錄可能已被移動、刪除或暫時無法存取。還原該目錄或切換專案的工作目錄後重試。',
+      runtimeHostWorkspaceUnavailable: 'Changes 在目前執行階段主機上不可用',
+      runtimeHostWorkspaceUnavailableHelp: '該執行階段目標不提供本地任務目錄，因此沒有可查看的 Git 變化。',
       taskDirectoryPath: (path) => `任務目錄：${path}`,
       unbornRepository: 'Git 倉庫還沒有可比較的提交',
       gitFailed: '無法讀取 Git 工作區變化',
@@ -904,6 +912,9 @@ const COPY = {
       workspaceUnavailable: 'This task directory is unavailable',
       workspaceUnavailableHelp:
         "This directory may have been moved, deleted, or become inaccessible. Restore it or switch the project's working directory, then retry.",
+      runtimeHostWorkspaceUnavailable: 'Changes is not available for this runtime host',
+      runtimeHostWorkspaceUnavailableHelp:
+        'This runtime target does not provide a local task directory, so there are no Git changes to review.',
       taskDirectoryPath: (path) => `Task directory: ${path}`,
       unbornRepository: 'This Git repository has no commit to compare yet',
       gitFailed: 'Could not read Git workspace changes',

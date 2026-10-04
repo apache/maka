@@ -208,15 +208,20 @@ export function SessionReviewPanel(props: {
   // keeps its Retry and adds the recovery guidance to the Banner.
   const unavailable =
     sourceFailure?.reason === 'workspace_unavailable' ? sourceFailure : null;
+  // A runtime host that does not expose a local workspace never reads the
+  // directory, so Changes is not applicable rather than broken: no recovery
+  // applies and no Retry could succeed.
+  const hostUnsupported =
+    sourceFailure?.reason === 'local_workspace_disabled' ? sourceFailure : null;
   const sourceError =
-    sourceFailure === null || guidance || unavailable
+    sourceFailure === null || guidance || unavailable || hostUnsupported
       ? null
       : sourceFailure.reason === 'unborn_repository'
         ? copy.unbornRepository
         : copy.gitFailed;
   const empty =
     !loading && !error && !sourceError && !guidance && !unavailable &&
-    gitFiles.length === 0;
+    !hostUnsupported && gitFiles.length === 0;
 
   return (
     <Section
@@ -328,6 +333,19 @@ export function SessionReviewPanel(props: {
               label={copy.refresh}
               isLoading={loading}
               onClick={() => void load()}
+            />
+          </VStack>
+        ) : null}
+        {hostUnsupported ? (
+          /* Neutral, like the guidance above: nothing failed — this runtime
+             target simply does not expose a local task directory, so there is
+             no recovery to name, no directory to point at, and no Retry that
+             could succeed. */
+          <VStack gap={2} align="center" width="100%">
+            <EmptyState
+              icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
+              title={copy.runtimeHostWorkspaceUnavailable}
+              description={copy.runtimeHostWorkspaceUnavailableHelp}
             />
           </VStack>
         ) : null}

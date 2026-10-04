@@ -73,6 +73,8 @@ export type GitReviewReadResult =
       cwd?: string;
       reason:
         | 'workspace_unavailable'
+        /** The runtime host does not expose a local workspace to read at all. */
+        | 'local_workspace_disabled'
         | 'not_git_repository'
         | 'unborn_repository'
         | 'invalid_base_branch'
