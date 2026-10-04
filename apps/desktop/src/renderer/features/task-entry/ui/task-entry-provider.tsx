@@ -37,6 +37,7 @@ import {
   type TaskEntryControllerSelectors,
 } from '../controller/use-task-entry-controller.js';
 import { taskEntryDraftKey } from '../model/task-entry-selection.js';
+import { publishSessionWorkspaceRecovery } from '../../../application/contracts/session-workspace-recovery-authority.js';
 import type { TaskEntryError } from '../ports.js';
 import type { TaskEntryHostModel } from './task-entry-host.js';
 
@@ -330,6 +331,10 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   );
   const controller = useTaskEntryController({ reportError, manageProjects: ignoreManageProjects });
   useLayoutEffect(() => owner.publish(controller), [controller, owner]);
+  useLayoutEffect(
+    () => publishSessionWorkspaceRecovery(owner.commands.openSessionWorkspaceRecovery),
+    [owner],
+  );
   const taskEntry = useMemo<TaskEntryShellProjection>(
     () => ({ commands: ownership.commands, selectors: ownership.selectors }),
     [ownership.commands, ownership.selectors],

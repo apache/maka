@@ -947,6 +947,7 @@ function bridge(options: {
         return options.review ?? { ok: true, snapshot: gitReviewSnapshot };
       },
       subscribeSessionEvents: unsubscribe,
+      subscribeSessionChanges: unsubscribe,
     },
     terminal: {
       recover: async () => ({ resources: [], closes: [] }),
@@ -1157,6 +1158,7 @@ function Workbar(props: {
           hidden={false}
           onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
           onToggleRightPanel={() => setCollapsed((value) => !value)}
+          onOpenWorkspaceRecovery={noop}
           panelsState={panels}
           rightCollapsed={collapsed}
           focusedPreview={focused && (props.tab === 'files' || props.tab === 'browser') ? props.tab : null}
@@ -1407,16 +1409,84 @@ export const ChangesLoadFailed: Story = {
   },
 };
 
-// Real path: 任务工作栏 → 变更 when the session cwd is not a Git repository. A
-// source that cannot be read is a failure (error Banner + 重试), not an
-// absence — the other read reasons (workspace unavailable, unborn repo,
-// invalid base branch, git failed) share this branch.
+// Real path: 任务工作栏 → 变更 in a valid but non-Git task directory — the
+// projectless first-run case. A capability state, not a failure: neutral
+// guidance names this task's own directory and offers the current-task
+// recovery action; a 重试 here could only mislead.
 export const ChangesSourceNotGit: Story = {
-  decorators: [bridge({ review: { ok: false, reason: 'not_git_repository' } })],
+  decorators: [bridge({ review: {
+    ok: false, reason: 'not_git_repository', workspace: '/Users/example/tasks/plain-notes',
+  } })],
   render: () => <Workbar tab="review" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText('当前任务目录不是 Git 仓库');
+    await canvas.findByText('变更需要 Git 仓库');
+    await canvas.findByText('/Users/example/tasks/plain-notes');
+    await canvas.findByRole('button', { name: '更改任务目录' });
+    expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+    expect(canvasElement.querySelector('[role="alert"]')).toBeNull();
+  },
+};
+
+// Real path: 任务工作栏 → 变更 when the task's directory is gone — an
+// existing task whose workspace became unavailable. Recovery guidance keeps
+// this task's recorded directory, a legitimate 重试 (the folder can come
+// back), and the same current-task recovery action.
+export const ChangesWorkspaceUnavailable: Story = {
+  decorators: [bridge({ review: {
+    ok: false, reason: 'workspace_unavailable', workspace: '/Users/example/tasks/moved-away',
+  } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('当前任务目录不可用');
+    await canvas.findByText('/Users/example/tasks/moved-away');
+    await canvas.findByRole('button', { name: '更改任务目录' });
+    await canvas.findByRole('button', { name: '重试' });
+  },
+};
+
+// Real path: 任务工作栏 → 变更 in a repository with no commit yet — another
+// capability state, naming the task's directory with no action to offer.
+export const ChangesUnbornRepository: Story = {
+  decorators: [bridge({ review: {
+    ok: false, reason: 'unborn_repository', workspace: '/Users/example/tasks/fresh-repo',
+  } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('Git 仓库还没有可比较的提交');
+    await canvas.findByText('/Users/example/tasks/fresh-repo');
+    expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+  },
+};
+
+// Real path: 任务工作栏 → 变更 on a session whose Runtime Host owns the
+// workspace — the Desktop cannot read it locally. A capability state with
+// neither 重试 nor 更改任务目录: no local action can help.
+export const ChangesRemoteWorkspace: Story = {
+  decorators: [bridge({ review: { ok: false, reason: 'remote_workspace' } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('该任务工作区由远程 Runtime Host 管理');
+    expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+    expect(canvas.queryByRole('button', { name: '更改任务目录' })).toBeNull();
+  },
+};
+
+// Real path: 任务工作栏 → 变更 when the Git read itself fails. Unlike a
+// capability state it stays an error Banner: the underlying detail survives
+// and 重试 re-reads this task's workspace.
+export const ChangesGitReadFailed: Story = {
+  decorators: [bridge({ review: {
+    ok: false, reason: 'git_failed', detail: 'fatal: unable to read tree (abc1234)',
+  } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('无法读取 Git 工作区变化');
+    await canvas.findByText('fatal: unable to read tree (abc1234)');
     await canvas.findByRole('button', { name: '重试' });
   },
 };

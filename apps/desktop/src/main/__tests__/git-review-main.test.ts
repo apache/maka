@@ -204,6 +204,11 @@ describe('Git Review snapshot authority', () => {
       assert.equal(result.ok, false);
       if (result.ok) return;
       assert.equal(result.reason, 'git_failed');
+      assert.match(
+        result.detail ?? '',
+        /merge-base/,
+        'without stderr, a read failure keeps the failing command as detail',
+      );
       assert.deepEqual(result.branches, {
         currentBranch: 'main',
         baseBranchOptions: [
@@ -249,6 +254,18 @@ describe('Git Review snapshot authority', () => {
     if (!result.ok) return;
     assert.equal(result.snapshot.truncated, true);
     assert.deepEqual(result.snapshot.files.map((file) => file.path), ['feature.txt']);
+  });
+
+  it('reports the real stderr diagnostic rather than the wrapper command text', async () => {
+    const root = await repository();
+    await writeFile(join(root, '.git', 'index'), 'garbage', 'utf8');
+
+    const result = await readGitReview(root, 'unstaged');
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'git_failed');
+    assert.match(result.detail ?? '', /fatal:/);
+    assert.equal(result.detail?.includes('Command failed:'), false);
   });
 
   it('returns an explicit non-repository outcome', async () => {

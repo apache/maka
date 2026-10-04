@@ -141,9 +141,21 @@ export interface DesktopConversationCopy {
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
     notGitRepository: string;
+    /** Neutral guidance under `notGitRepository`; the workspace path renders separately. */
+    notGitRepositoryHelp: string;
     workspaceUnavailable: string;
+    /** Recovery guidance under `workspaceUnavailable`. */
+    workspaceUnavailableHelp: string;
+    /** Capability state: the Runtime Host owns the workspace; nothing to retry or relocate locally. */
+    remoteWorkspace: string;
+    /** Guidance under `remoteWorkspace`. */
+    remoteWorkspaceHelp: string;
     unbornRepository: string;
+    /** Guidance under `unbornRepository`. */
+    unbornRepositoryHelp: string;
     gitFailed: string;
+    /** Relocates this task's workspace through the session recovery picker. */
+    chooseTaskFolder: string;
     baseBranchLabel: string;
     truncated: string;
     showMore(remaining: number): string;
@@ -405,10 +417,16 @@ const COPY = {
       ariaLabel: 'Git 变更',
       empty: '当前 Git 工作区没有变化',
       emptyHelp: '提交、暂存或修改文件后，变化会显示在这里。',
-      notGitRepository: '当前任务目录不是 Git 仓库',
-      workspaceUnavailable: '当前任务目录已不可用',
+      notGitRepository: '变更需要 Git 仓库',
+      notGitRepositoryHelp: '当前任务目录不是 Git 仓库，因此没有可显示的 Git 变更。',
+      workspaceUnavailable: '当前任务目录不可用',
+      workspaceUnavailableHelp: '目录缺失或无法打开。可以重试，或将当前任务移动到其他目录。',
+      remoteWorkspace: '该任务工作区由远程 Runtime Host 管理',
+      remoteWorkspaceHelp: '本机无法读取其 Git 变更。',
       unbornRepository: 'Git 仓库还没有可比较的提交',
+      unbornRepositoryHelp: '在仓库中创建提交后，变更会显示在这里。',
       gitFailed: '无法读取 Git 工作区变化',
+      chooseTaskFolder: '更改任务目录',
       baseBranchLabel: '对比分支',
       truncated: '变化过多，仅显示前一部分文件',
       showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
@@ -648,10 +666,16 @@ const COPY = {
       ariaLabel: 'Git 變更',
       empty: '目前 Git 工作區沒有變化',
       emptyHelp: '提交、暫存或修改檔案後，變化會顯示在這裡。',
-      notGitRepository: '目前任務目錄不是 Git 倉庫',
-      workspaceUnavailable: '目前任務目錄已不可用',
+      notGitRepository: '變更需要 Git 倉庫',
+      notGitRepositoryHelp: '目前任務目錄不是 Git 倉庫，因此沒有可顯示的 Git 變更。',
+      workspaceUnavailable: '目前任務目錄不可用',
+      workspaceUnavailableHelp: '目錄缺失或無法開啟。可以重試，或將目前任務移動到其他目錄。',
+      remoteWorkspace: '該任務工作區由遠端 Runtime Host 管理',
+      remoteWorkspaceHelp: '本機無法讀取其 Git 變更。',
       unbornRepository: 'Git 倉庫還沒有可比較的提交',
+      unbornRepositoryHelp: '在倉庫中建立提交後，變更會顯示在這裡。',
       gitFailed: '無法讀取 Git 工作區變化',
+      chooseTaskFolder: '更改任務目錄',
       baseBranchLabel: '對比分支',
       truncated: '變化過多，僅顯示前一部分檔案',
       showMore: (remaining) => `再顯示 ${Math.min(20, remaining)} 個檔案`,
@@ -882,10 +906,16 @@ const COPY = {
       ariaLabel: 'Git changes',
       empty: 'No changes in the current Git workspace',
       emptyHelp: 'Committed, staged, and modified files appear here.',
-      notGitRepository: 'This task directory is not a Git repository',
-      workspaceUnavailable: 'This task directory is unavailable',
+      notGitRepository: 'Changes require a Git repository',
+      notGitRepositoryHelp: 'This task’s folder is not a Git repository, so there are no Git changes to show.',
+      workspaceUnavailable: 'This task’s folder is unavailable',
+      workspaceUnavailableHelp: 'The folder is missing or cannot be opened. Retry, or move this task to another folder.',
+      remoteWorkspace: 'This task’s workspace is managed by a remote Runtime Host',
+      remoteWorkspaceHelp: 'Git changes cannot be read locally for a host-managed workspace.',
       unbornRepository: 'This Git repository has no commit to compare yet',
+      unbornRepositoryHelp: 'Changes appear here once the repository has a commit.',
       gitFailed: 'Could not read Git workspace changes',
+      chooseTaskFolder: 'Change task folder',
       baseBranchLabel: 'Compare against',
       truncated: 'Too many changes; showing the first files only',
       showMore: (remaining) =>

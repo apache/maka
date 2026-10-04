@@ -144,7 +144,12 @@ export async function readGitReview(
     if (isUnbornRepositoryError(error)) {
       return { ok: false, reason: 'unborn_repository', ...(branches ? { branches } : {}) };
     }
-    return { ok: false, reason: 'git_failed', ...(branches ? { branches } : {}) };
+    return {
+      ok: false,
+      reason: 'git_failed',
+      detail: gitFailureDetail(error),
+      ...(branches ? { branches } : {}),
+    };
   }
 }
 
@@ -504,4 +509,17 @@ function isUnbornRepositoryError(error: unknown): boolean {
   return (error instanceof Error && /unknown revision|bad revision|ambiguous argument|does not have any commits/i.test(
     error.message,
   ));
+}
+
+// The first stderr line names what Git actually refused; cap it so a noisy
+// command cannot flood the panel. execFile wraps failures as "Command failed:
+// <cmd>\n<stderr>", so stderr carries the diagnostic and the message is the
+// fallback for failures that never reached the process.
+function gitFailureDetail(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const { stderr } = error as { stderr?: unknown };
+  const source =
+    typeof stderr === 'string' && stderr.trim() ? stderr : error.message;
+  const line = source.split('\n').map((part) => part.trim()).find(Boolean);
+  return line?.slice(0, 300);
 }

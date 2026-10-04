@@ -30,7 +30,7 @@ import { redactSecrets as displayRedactSecrets } from '@maka/core/display-redact
 import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { type GitReviewBranchContext, type GitReviewReadResult } from '@maka/core/git-review';
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
-import { ICON_SIZE, ArrowRight, GitBranch } from '@maka/ui/icons';
+import { ICON_SIZE, AlertCircle, ArrowRight, FolderGit2, GitBranch, Monitor } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 import { SessionReviewBaseBranchPicker } from './session-review-base-branch-picker.js';
@@ -72,6 +72,11 @@ const ReviewDiff = memo(function ReviewDiff(props: { path: string; diff: string 
 export function SessionReviewPanel(props: {
   sessionId: string;
   active: boolean;
+  /**
+   * Opens this Session's workspace recovery picker (#5551), the supported
+   * authority for pointing the current task at another directory.
+   */
+  onOpenWorkspaceRecovery?(sessionId: string): void;
 }) {
   const { review, reviewBaseBranchPreference } = useWorkbarServices();
   const locale = useUiLocale();
@@ -173,6 +178,14 @@ export function SessionReviewPanel(props: {
         scheduleRefresh();
       },
     );
+    // A workspace relocation lands as a catalog change, not a Session event:
+    // the next read resolves the task's actual (new) workspace.
+    const unsubscribeChanges = review.subscribeSessionChanges((change) => {
+      if (change.sessionId !== undefined && change.sessionId !== props.sessionId) {
+        return;
+      }
+      scheduleRefresh();
+    });
     const refreshAfterExternalChange = () => {
       if (document.visibilityState === 'hidden') return;
       scheduleRefresh();
@@ -186,6 +199,7 @@ export function SessionReviewPanel(props: {
       window.removeEventListener('focus', refreshAfterExternalChange);
       document.removeEventListener('visibilitychange', refreshAfterExternalChange);
       unsubscribe();
+      unsubscribeChanges();
     };
   }, [load, props.active, props.sessionId, review]);
 
@@ -198,17 +212,70 @@ export function SessionReviewPanel(props: {
     additions: gitSnapshot?.additions ?? 0,
     deletions: gitSnapshot?.deletions ?? 0,
   };
-  const sourceError =
-    gitResult?.ok !== false
-      ? null
-      : gitResult.reason === 'not_git_repository'
-        ? copy.notGitRepository
-        : gitResult.reason === 'workspace_unavailable'
-          ? copy.workspaceUnavailable
-          : gitResult.reason === 'unborn_repository'
-            ? copy.unbornRepository
-            : copy.gitFailed;
-  const empty = !loading && !error && !sourceError && gitFiles.length === 0;
+  // A valid non-Git directory, a missing workspace and an unborn repository
+  // are capability states with their own next action — not read failures, so
+  // they take neutral guidance instead of the error Banner.
+  const failure = gitResult?.ok === false ? gitResult : null;
+  const recoveryAction = props.onOpenWorkspaceRecovery ? (
+    <Button
+      variant="secondary"
+      size="sm"
+      label={copy.chooseTaskFolder}
+      onClick={() => props.onOpenWorkspaceRecovery?.(props.sessionId)}
+    />
+  ) : null;
+  const guidance = (() => {
+    switch (failure?.reason) {
+      case 'not_git_repository':
+        return {
+          icon: <FolderGit2 size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.notGitRepository,
+          help: copy.notGitRepositoryHelp,
+          // A Retry here could only mislead: re-reading cannot make a valid
+          // non-Git directory a repository.
+          actions: recoveryAction,
+        };
+      case 'workspace_unavailable':
+        return {
+          icon: <AlertCircle size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.workspaceUnavailable,
+          help: copy.workspaceUnavailableHelp,
+          // Retry is legitimate: the folder may be back, and after relocation
+          // the read resolves the task's actual current workspace.
+          actions: (
+            <HStack gap={2} align="center">
+              {recoveryAction}
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.retry}
+                isLoading={loading}
+                onClick={() => void load()}
+              />
+            </HStack>
+          ),
+        };
+      case 'unborn_repository':
+        return {
+          icon: <GitBranch size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.unbornRepository,
+          help: copy.unbornRepositoryHelp,
+          actions: null,
+        };
+      case 'remote_workspace':
+        return {
+          icon: <Monitor size={ICON_SIZE.empty} aria-hidden />,
+          title: copy.remoteWorkspace,
+          help: copy.remoteWorkspaceHelp,
+          // Nothing local can help: the folder is not gone, and neither a
+          // local-folder recovery nor a retry changes who owns it.
+          actions: null,
+        };
+      default:
+        return null;
+    }
+  })();
+  const empty = !loading && !error && !failure && gitFiles.length === 0;
 
   return (
     <Section
@@ -297,12 +364,39 @@ export function SessionReviewPanel(props: {
             }
           />
         ) : null}
+        {guidance ? (
+          /* Panel-level capability state (DESIGN.md §10 tier 2): the reason is
+             a directory the panel cannot use, not an absent diff, so it gets
+             the same icon + description treatment as the real empty state. */
+          (<EmptyState
+            icon={guidance.icon}
+            title={guidance.title}
+            description={guidance.help}
+            actions={
+              failure?.workspace || guidance.actions ? (
+                <VStack gap={2} align="center">
+                  {failure?.workspace ? (
+                    <Text
+                      type="code"
+                      maxLines={2}
+                      className="maka-session-review-workspace"
+                    >
+                      {failure.workspace}
+                    </Text>
+                  ) : null}
+                  {guidance.actions}
+                </VStack>
+              ) : undefined
+            }
+          />)
+        ) : null}
         {/* A source that cannot be read is a failure, not an absence — it takes
             the same Banner the load error above does, not an EmptyState. */}
-        {sourceError ? (
+        {failure && !guidance ? (
           <Banner
             status="error"
-            title={sourceError}
+            title={copy.gitFailed}
+            description={failure.detail ? displayRedactSecrets(failure.detail) : undefined}
             endContent={
               <Button
                 variant="ghost"
