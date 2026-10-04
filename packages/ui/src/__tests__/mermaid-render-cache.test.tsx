@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { act } from 'react';
+import { act, Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installDom, settleEffects } from './mermaid-test-dom.js';
 import { LocaleProvider } from '../locale-context.js';
@@ -138,8 +138,23 @@ test('renders repeated real Mermaid diagrams across remounts and themes', async 
     const remount = dom.document.createElement('div');
     dom.document.body.appendChild(remount);
     root = createRoot(remount);
-    await act(async () => root.render(view()));
+    const committedStates: string[][] = [];
+    await act(async () => root.render(
+      <Profiler id="cached-diagrams" onRender={() => {
+        committedStates.push(Array.from(
+          remount.querySelectorAll('[data-maka-mermaid-state]'),
+          (node) => node.getAttribute('data-maka-mermaid-state')!,
+        ));
+      }}>
+        {view()}
+      </Profiler>,
+    ));
     await settleEffects();
+    assert.ok(committedStates.length > 0);
+    for (const states of committedStates) {
+      assert.deepEqual(states, ['rendered', 'rendered', 'rendered', 'rendered'],
+        'every cached-remount commit must contain complete diagrams');
+    }
     assert.equal(renderCalls, 2, 'a real Mermaid remount should use both cached templates');
 
     dom.document.documentElement.classList.add('dark');
