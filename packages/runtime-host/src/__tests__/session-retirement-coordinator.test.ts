@@ -48,6 +48,7 @@ import { MemoryExtractionSessionLane } from '../server/memory-extraction-session
 import { HostSessionRetirementCoordinator } from '../server/session-retirement-coordinator.js';
 import { purgeSessionSidecars } from '../server/session-sidecar-purge.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { assignmentRequest, createCoordinationSession } from './fixtures/workhub-delegation.js';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'retirement-test',
@@ -344,6 +345,80 @@ describe('Host Session retirement coordinator', () => {
         removed,
       );
       assert.equal(harness.actions.disposed.length, disposeCount);
+    });
+  });
+
+  test('rejects manual archive while a WorkHub delegation targets the Session family', async () => {
+    await withHarness(async (harness) => {
+      await createCoordinationSession(harness.store, harness.workspaceRoot);
+      const request = assignmentRequest(
+        'delegation-archive-block',
+        harness.revisionId,
+        'Revision child',
+        'target-turn',
+      );
+      await harness.store.assignWorkHubMessage(request);
+      assert.deepEqual(
+        await harness.store.readActiveWorkHubAssignmentsByTarget([harness.revisionId]),
+        [request.assignment],
+      );
+
+      // Archiving any member of the family would hide the delegated target
+      // from the WorkHub candidate and result views.
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, false);
+      if (archived.ok) return;
+      assert.equal(archived.error.code, 'session_busy');
+      assert.ok(archived.error.message.includes(harness.revisionId));
+      assert.match(archived.error.message, /active WorkHub delegation/);
+      await assertFamilyLifecycle(harness, false);
+    });
+  });
+
+  test('rejects manual archive while a linked child Session is still live', async () => {
+    await withHarness(async (harness) => {
+      const childId = await createClosedSubagent(harness, harness.rootId, 1);
+      const blocked = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(blocked.ok, false);
+      if (blocked.ok) return;
+      assert.equal(blocked.error.code, 'session_busy');
+      assert.ok(blocked.error.message.includes(harness.rootId));
+      assert.match(blocked.error.message, /linked child/);
+      await assertFamilyLifecycle(harness, false);
+      assert.equal((await harness.store.readHeaderSnapshot(childId)).isArchived, false);
+
+      // The child carries no live relationship of its own, so it archives alone.
+      const childArchived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: childId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(childArchived.ok, true);
+
+      // With no live child left, the parent archives again.
+      const parentArchived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(parentArchived.ok, true);
+      await assertFamilyLifecycle(harness, true);
+    });
+  });
+
+  test('archives a family without WorkHub relationships beside a live coordination Session', async () => {
+    await withHarness(async (harness) => {
+      await createCoordinationSession(harness.store, harness.workspaceRoot);
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.revisionId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
+      await assertFamilyLifecycle(harness, true);
     });
   });
 
@@ -930,8 +1005,10 @@ describe('Host Session retirement coordinator', () => {
         others.push((await harness.store.create(sessionInput(`Archived ${index}`))).id);
       }
       const active = await harness.store.create(sessionInput('Still active'));
-      // An ordinary subtask is archived on its own, not with its parent.
-      for (const sessionId of [harness.rootId, worktreeChildId, ...others]) {
+      // An ordinary subtask is archived on its own, not with its parent — and
+      // the parent archive refuses while the subtask is still live, so the
+      // subtask retires first.
+      for (const sessionId of [worktreeChildId, harness.rootId, ...others]) {
         const archived = await harness.coordinator.handlers['session.lifecycle.set'](
           { sessionId, state: 'archived' },
           CONNECTION_CONTEXT,
@@ -1506,6 +1583,8 @@ async function withHarness(
         probeSessionRemoval: (sessionId) => store.probeSessionRemoval(sessionId),
         readCatalogRecord: (sessionId) => store.readCatalogRecord(sessionId),
         readHeaderRecordSnapshot: (sessionId) => store.readHeaderRecordSnapshot(sessionId),
+        readActiveWorkHubAssignmentsByTarget: (sessionIds) =>
+          store.readActiveWorkHubAssignmentsByTarget(sessionIds),
         reconcileOrphanedAgentGraphRetirements: () =>
           store.reconcileOrphanedAgentGraphRetirements(),
         listPendingSessionRetirementCleanupIds: (sessionId) =>

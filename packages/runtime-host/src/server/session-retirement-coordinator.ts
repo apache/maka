@@ -67,12 +67,16 @@ import type { MemoryExtractionSessionLane } from './memory-extraction-session-la
 
 const FAMILY_STABILIZATION_ATTEMPTS = 4;
 
+/** The store rejects a WorkHub target batch above its own bound; page below it. */
+const WORKHUB_ASSIGNMENT_TARGET_PAGE = 256;
+
 type RetirementStores = Pick<
   ExecutionSessionWriter,
   | 'listHeaders'
   | 'probeSessionRemoval'
   | 'readCatalogRecord'
   | 'readHeaderRecordSnapshot'
+  | 'readActiveWorkHubAssignmentsByTarget'
   | 'reconcileOrphanedAgentGraphRetirements'
   | 'listPendingSessionRetirementCleanupIds'
   | 'completeSessionRetirementCleanup'
@@ -289,6 +293,7 @@ export class HostSessionRetirementCoordinator {
         let handles: RetirementHandles | undefined;
         let committed = false;
         try {
+          await this.#assertNoLiveRelationships(family);
           handles = await this.#prepareRetirement(family, 'archive');
           await this.#finalizeWorkspacePatches(family.sessionIds);
           await this.#disposeBackends(family.sessionIds);
@@ -718,6 +723,39 @@ export class HostSessionRetirementCoordinator {
       })),
       true,
     );
+  }
+
+  /**
+   * A manual archive must not hide a Session that a WorkHub delegation or a
+   * linked child still points at: WorkHub candidate and result views exclude
+   * archived Sessions, so either relationship would lose its visible target.
+   * This guards the manual archive path only — a removal retires or archives
+   * the whole relationship set under its own confirm.
+   */
+  async #assertNoLiveRelationships(family: StableFamily): Promise<void> {
+    const familyIds = new Set(family.sessionIds);
+    for (
+      let offset = 0;
+      offset < family.sessionIds.length;
+      offset += WORKHUB_ASSIGNMENT_TARGET_PAGE
+    ) {
+      const page = family.sessionIds.slice(offset, offset + WORKHUB_ASSIGNMENT_TARGET_PAGE);
+      const [assignment] = await this.#stores.readActiveWorkHubAssignmentsByTarget(page);
+      if (assignment) {
+        throw new SessionRetirementBusyError(
+          `Session ${assignment.targetSessionId} has an active WorkHub delegation`,
+        );
+      }
+    }
+    for (const header of await this.#stores.listHeaders()) {
+      const parent = header.subagentParent;
+      if (parent === undefined || parent.graph !== undefined) continue;
+      if (!familyIds.has(parent.parentSessionId)) continue;
+      if (header.conversationCopy?.state === 'preparing' || header.isArchived) continue;
+      throw new SessionRetirementBusyError(
+        `Session ${parent.parentSessionId} has a live linked child Session`,
+      );
+    }
   }
 
   async #prepareRetirement(
