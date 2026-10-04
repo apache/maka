@@ -40,17 +40,32 @@ export function registerRuntimeHostWorkspaceIpc(
       return { ok: false as const, reason: 'workspace_unavailable' as const };
     }
     const request = readRequest(raw);
-    const cwd = await sessionWorkspace(input.client, request.sessionId);
-    if (!cwd) return { ok: false as const, reason: 'workspace_unavailable' as const };
-    return readGitReview(cwd, request.source, undefined, request.baseBranch);
+    const workspace = await sessionWorkspace(input.client, request.sessionId);
+    if (!workspace.readable) {
+      // The guidance states name the directory they refer to; report the
+      // path the Session declares even though it cannot be read.
+      return {
+        ok: false as const,
+        reason: 'workspace_unavailable' as const,
+        cwd: workspace.declared,
+      };
+    }
+    const result = await readGitReview(workspace.readable, request.source, undefined, request.baseBranch);
+    return result.ok ? result : { ...result, cwd: workspace.readable };
   });
 }
 
-async function sessionWorkspace(client: WorkspaceClient, sessionId: string): Promise<string | null> {
+async function sessionWorkspace(
+  client: WorkspaceClient,
+  sessionId: string,
+): Promise<{ declared: string; readable: string | null }> {
   const session = await client.getSession(sessionId);
   if (!session) throw new Error(`No such Session: ${sessionId}`);
   const workspace = await stat(session.workspace.hostCwd).catch(() => null);
-  return workspace?.isDirectory() ? session.workspace.hostCwd : null;
+  return {
+    declared: session.workspace.hostCwd,
+    readable: workspace?.isDirectory() ? session.workspace.hostCwd : null,
+  };
 }
 
 function readRequest(value: unknown): {

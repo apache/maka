@@ -65,6 +65,12 @@ export type GitReviewReadResult =
       ok: false;
       /** Available even when computing the selected branch diff fails. */
       branches?: GitReviewBranchContext;
+      /**
+       * The task directory the read ran against, when the caller knows it.
+       * Guidance states (a missing repository, an unavailable workspace)
+       * render it so the reader can act on the right directory.
+       */
+      cwd?: string;
       reason:
         | 'workspace_unavailable'
         | 'not_git_repository'

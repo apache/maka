@@ -124,6 +124,98 @@ for (const reason of ['not_git_repository', 'workspace_unavailable', 'git_failed
   });
 }
 
+test('a task directory outside any repository guides instead of failing', async () => {
+  const { document, restore } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const services = createFakeWorkbarServices({ review: {
+    read: async () => ({ ok: false, reason: 'not_git_repository', cwd: '/tmp/plain-task' }),
+    subscribeSessionEvents: () => () => undefined,
+  } });
+  try {
+    await act(async () => {
+      root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(WorkbarServicesProvider, { services },
+          createElement(SessionReviewPanel, { sessionId: 'plain-task', active: true })),
+      }));
+    });
+    assert.match(container.textContent ?? '', /not a Git repository/);
+    assert.match(container.textContent ?? '', /git init/);
+    assert.match(container.textContent ?? '', /Task directory: \/tmp\/plain-task/);
+    assert.equal(
+      container.querySelector('button'),
+      null,
+      'retrying cannot turn a directory into a repository',
+    );
+  } finally {
+    await act(async () => { root.unmount(); });
+    restore();
+  }
+});
+
+test('an unavailable workspace keeps retry and names the recovery path', async () => {
+  const { document, restore } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const services = createFakeWorkbarServices({ review: {
+    read: async () => ({ ok: false, reason: 'workspace_unavailable', cwd: '/tmp/vanished-task' }),
+    subscribeSessionEvents: () => () => undefined,
+  } });
+  try {
+    await act(async () => {
+      root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(WorkbarServicesProvider, { services },
+          createElement(SessionReviewPanel, { sessionId: 'vanished-task', active: true })),
+      }));
+    });
+    assert.match(container.textContent ?? '', /unavailable/);
+    assert.match(container.textContent ?? '', /may have been moved/);
+    assert.match(container.textContent ?? '', /Task directory: \/tmp\/vanished-task/);
+    const retry = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Retry');
+    assert.ok(retry, 'restoring the directory makes a retry meaningful');
+  } finally {
+    await act(async () => { root.unmount(); });
+    restore();
+  }
+});
+
+for (const reason of ['git_failed', 'unborn_repository'] as const) {
+  test(`a ${reason} read failure keeps the error banner and retry`, async () => {
+    const { document, restore } = installDom();
+    const container = document.querySelector('#root');
+    assert.ok(container);
+    const root = createRoot(container);
+    const services = createFakeWorkbarServices({ review: {
+      read: async () => ({ ok: false, reason, cwd: '/tmp/live-task' }),
+      subscribeSessionEvents: () => () => undefined,
+    } });
+    try {
+      await act(async () => {
+        root.render(createElement(LocaleProvider, {
+          locale: 'en',
+          children: createElement(WorkbarServicesProvider, { services },
+            createElement(SessionReviewPanel, { sessionId: 'failed-read', active: true })),
+        }));
+      });
+      assert.match(container.textContent ?? '', /Could not read|no commit to compare/);
+      const retry = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Retry');
+      assert.ok(retry, 'a retriable read failure keeps its retry');
+      if (reason === 'git_failed') {
+        assert.doesNotMatch(container.textContent ?? '', /Task directory:/);
+      }
+    } finally {
+      await act(async () => { root.unmount(); });
+      restore();
+    }
+  });
+}
+
 test('a disappeared saved branch clears the pin and retries with the dynamic default', async () => {
   const { document, restore } = installDom();
   const container = document.querySelector('#root');

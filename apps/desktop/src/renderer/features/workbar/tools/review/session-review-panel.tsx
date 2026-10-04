@@ -198,17 +198,25 @@ export function SessionReviewPanel(props: {
     additions: gitSnapshot?.additions ?? 0,
     deletions: gitSnapshot?.deletions ?? 0,
   };
+  // A directory without a repository is a neutral starting point, not a
+  // failure: retrying cannot create one, so it takes guidance instead of the
+  // error Banner.
+  const sourceFailure = gitResult?.ok === false ? gitResult : null;
+  const guidance =
+    sourceFailure?.reason === 'not_git_repository' ? sourceFailure : null;
+  // A missing workspace can recover (restore or relocate the directory), so it
+  // keeps its Retry and adds the recovery guidance to the Banner.
+  const unavailable =
+    sourceFailure?.reason === 'workspace_unavailable' ? sourceFailure : null;
   const sourceError =
-    gitResult?.ok !== false
+    sourceFailure === null || guidance || unavailable
       ? null
-      : gitResult.reason === 'not_git_repository'
-        ? copy.notGitRepository
-        : gitResult.reason === 'workspace_unavailable'
-          ? copy.workspaceUnavailable
-          : gitResult.reason === 'unborn_repository'
-            ? copy.unbornRepository
-            : copy.gitFailed;
-  const empty = !loading && !error && !sourceError && gitFiles.length === 0;
+      : sourceFailure.reason === 'unborn_repository'
+        ? copy.unbornRepository
+        : copy.gitFailed;
+  const empty =
+    !loading && !error && !sourceError && !guidance && !unavailable &&
+    gitFiles.length === 0;
 
   return (
     <Section
@@ -297,8 +305,50 @@ export function SessionReviewPanel(props: {
             }
           />
         ) : null}
-        {/* A source that cannot be read is a failure, not an absence — it takes
-            the same Banner the load error above does, not an EmptyState. */}
+        {guidance ? (
+          /* Neutral guidance (issue #5940): what Changes needs, the directory
+             it looked at, and the next step — no Retry, since retrying cannot
+             create a repository. */
+          <VStack gap={2} align="center" width="100%">
+            <EmptyState
+              icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
+              title={copy.notGitRepository}
+              description={copy.notGitRepositoryHelp}
+            />
+            {guidance.cwd ? (
+              <Text type="code" color="secondary" display="block">
+                {copy.taskDirectoryPath(guidance.cwd)}
+              </Text>
+            ) : null}
+          </VStack>
+        ) : null}
+        {unavailable ? (
+          <Banner
+            status="error"
+            title={copy.workspaceUnavailable}
+            description={
+              <>
+                {copy.workspaceUnavailableHelp}
+                {unavailable.cwd ? (
+                  <Text type="code" color="secondary" display="block">
+                    {copy.taskDirectoryPath(unavailable.cwd)}
+                  </Text>
+                ) : null}
+              </>
+            }
+            endContent={
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.retry}
+                isLoading={loading}
+                onClick={() => void load()}
+              />
+            }
+          />
+        ) : null}
+        {/* Git-side failures stay errors: an unborn repository gains commits
+            and a failed read can succeed, so both keep their Retry. */}
         {sourceError ? (
           <Banner
             status="error"

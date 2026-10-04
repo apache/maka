@@ -141,7 +141,13 @@ export interface DesktopConversationCopy {
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
     notGitRepository: string;
+    /** Neutral guidance under `notGitRepository`: what Changes needs and the next step. */
+    notGitRepositoryHelp: string;
     workspaceUnavailable: string;
+    /** Recovery guidance under `workspaceUnavailable`, pointing at existing recovery paths. */
+    workspaceUnavailableHelp: string;
+    /** Names the task directory a guidance state refers to. */
+    taskDirectoryPath(path: string): string;
     unbornRepository: string;
     gitFailed: string;
     baseBranchLabel: string;
@@ -406,7 +412,10 @@ const COPY = {
       empty: '当前 Git 工作区没有变化',
       emptyHelp: '提交、暂存或修改文件后，变化会显示在这里。',
       notGitRepository: '当前任务目录不是 Git 仓库',
+      notGitRepositoryHelp: '变更基于 Git 历史进行比较，因此该目录需要是 Git 仓库。可在此初始化仓库（git init），或将任务移到已有仓库。',
       workspaceUnavailable: '当前任务目录已不可用',
+      workspaceUnavailableHelp: '该目录可能已被移动、删除或暂时无法访问。恢复该目录或切换项目的工作目录后重试。',
+      taskDirectoryPath: (path) => `任务目录：${path}`,
       unbornRepository: 'Git 仓库还没有可比较的提交',
       gitFailed: '无法读取 Git 工作区变化',
       baseBranchLabel: '对比分支',
@@ -649,7 +658,10 @@ const COPY = {
       empty: '目前 Git 工作區沒有變化',
       emptyHelp: '提交、暫存或修改檔案後，變化會顯示在這裡。',
       notGitRepository: '目前任務目錄不是 Git 倉庫',
+      notGitRepositoryHelp: '變更基於 Git 歷史進行比較，因此該目錄需要是 Git 倉庫。可在此初始化倉庫（git init），或將任務移到已有倉庫。',
       workspaceUnavailable: '目前任務目錄已不可用',
+      workspaceUnavailableHelp: '該目錄可能已被移動、刪除或暫時無法存取。還原該目錄或切換專案的工作目錄後重試。',
+      taskDirectoryPath: (path) => `任務目錄：${path}`,
       unbornRepository: 'Git 倉庫還沒有可比較的提交',
       gitFailed: '無法讀取 Git 工作區變化',
       baseBranchLabel: '對比分支',
@@ -883,7 +895,12 @@ const COPY = {
       empty: 'No changes in the current Git workspace',
       emptyHelp: 'Committed, staged, and modified files appear here.',
       notGitRepository: 'This task directory is not a Git repository',
+      notGitRepositoryHelp:
+        'Changes reviews Git history, so this directory must be a Git repository. Initialize one here (git init), or move the task to an existing repository.',
       workspaceUnavailable: 'This task directory is unavailable',
+      workspaceUnavailableHelp:
+        "This directory may have been moved, deleted, or become inaccessible. Restore it or switch the project's working directory, then retry.",
+      taskDirectoryPath: (path) => `Task directory: ${path}`,
       unbornRepository: 'This Git repository has no commit to compare yet',
       gitFailed: 'Could not read Git workspace changes',
       baseBranchLabel: 'Compare against',

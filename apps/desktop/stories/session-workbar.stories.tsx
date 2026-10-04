@@ -1407,16 +1407,37 @@ export const ChangesLoadFailed: Story = {
   },
 };
 
-// Real path: 任务工作栏 → 变更 when the session cwd is not a Git repository. A
-// source that cannot be read is a failure (error Banner + 重试), not an
-// absence — the other read reasons (workspace unavailable, unborn repo,
-// invalid base branch, git failed) share this branch.
+// Real path: 任务工作栏 → 变更 when the session cwd is not a Git repository.
+// A missing repository is a neutral starting point, not a failure: the panel
+// guides (what Changes needs + the directory it looked at) and offers no
+// 重试 — retrying cannot create a repository (#5940).
 export const ChangesSourceNotGit: Story = {
-  decorators: [bridge({ review: { ok: false, reason: 'not_git_repository' } })],
+  decorators: [bridge({
+    review: { ok: false, reason: 'not_git_repository', cwd: '/tmp/plain-task' },
+  })],
   render: () => <Workbar tab="review" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText('当前任务目录不是 Git 仓库');
+    await canvas.findByText(/git init/);
+    await canvas.findByText(/\/tmp\/plain-task/);
+    expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+  },
+};
+
+// Real path: 任务工作栏 → 变更 when the session cwd is missing or unreadable.
+// Still a failure with 重试 (restoring the directory makes a retry succeed),
+// but the Banner names the recovery path instead of only reporting (#5940).
+export const ChangesWorkspaceUnavailable: Story = {
+  decorators: [bridge({
+    review: { ok: false, reason: 'workspace_unavailable', cwd: '/tmp/vanished-task' },
+  })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('当前任务目录已不可用');
+    await canvas.findByText(/恢复该目录或切换项目的工作目录后重试/);
+    await canvas.findByText(/\/tmp\/vanished-task/);
     await canvas.findByRole('button', { name: '重试' });
   },
 };
