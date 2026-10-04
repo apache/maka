@@ -436,6 +436,87 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('rejects manual archive while an older WorkHub delegation of the same target is still live', async () => {
+    await withHarness(async (harness) => {
+      await createCoordinationSession(harness.store, harness.workspaceRoot);
+      // Two delegations to the same target coexist in the Coordination ledger
+      // until one supersedes or stops the other; finishing the newest does not
+      // retire the older one.
+      const older = assignmentRequest(
+        'delegation-archive-older-live',
+        harness.revisionId,
+        'Revision child',
+        'target-turn-older',
+      );
+      await harness.store.assignWorkHubMessage(older);
+      const newer = assignmentRequest(
+        'delegation-archive-newer-retired',
+        harness.revisionId,
+        'Revision child',
+        'target-turn-newer',
+      );
+      await harness.store.assignWorkHubMessage(newer);
+      assert.deepEqual(
+        await harness.store.readActiveWorkHubAssignmentsByTarget([harness.revisionId]),
+        [newer.assignment, older.assignment],
+      );
+      harness.workHubRetirement.set(newer.assignment.delegationId, 'retired');
+
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, false);
+      if (archived.ok) return;
+      assert.equal(archived.error.code, 'session_busy');
+      assert.match(archived.error.message, /active WorkHub delegation/);
+      await assertFamilyLifecycle(harness, false);
+    });
+  });
+
+  test('rejects manual archive while an older retired delegation still owes WorkHub its result', async () => {
+    await withHarness(async (harness) => {
+      await createCoordinationSession(harness.store, harness.workspaceRoot);
+      const older = assignmentRequest(
+        'delegation-archive-older-result',
+        harness.revisionId,
+        'Revision child',
+        'target-turn-older',
+      );
+      await harness.store.assignWorkHubMessage(older);
+      const newer = assignmentRequest(
+        'delegation-archive-newer-result',
+        harness.revisionId,
+        'Revision child',
+        'target-turn-newer',
+      );
+      await harness.store.assignWorkHubMessage(newer);
+      harness.workHubRetirement.set(newer.assignment.delegationId, 'retired');
+      harness.workHubRetirement.set(older.assignment.delegationId, 'retired');
+      harness.workHubUndeliveredResults.add(older.assignment.delegationId);
+
+      const blocked = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(blocked.ok, false);
+      if (blocked.ok) return;
+      assert.equal(blocked.error.code, 'session_busy');
+      assert.match(blocked.error.message, /undelivered WorkHub result/);
+      await assertFamilyLifecycle(harness, false);
+
+      // With every delegation retired and no result owed, two assignments no
+      // more block the archive than one did.
+      harness.workHubUndeliveredResults.delete(older.assignment.delegationId);
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
+      await assertFamilyLifecycle(harness, true);
+    });
+  });
+
   test('rejects manual archive while a linked child Session is still live', async () => {
     await withHarness(async (harness) => {
       const childId = await createClosedSubagent(harness, harness.rootId, 1);

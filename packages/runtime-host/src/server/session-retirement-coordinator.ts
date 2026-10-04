@@ -762,21 +762,28 @@ export class HostSessionRetirementCoordinator {
       offset += WORKHUB_ASSIGNMENT_TARGET_PAGE
     ) {
       const page = family.sessionIds.slice(offset, offset + WORKHUB_ASSIGNMENT_TARGET_PAGE);
-      const [assignment] = await this.#stores.readActiveWorkHubAssignmentsByTarget(page);
-      if (!assignment) continue;
-      // The Coordination ledger keeps a delegation row until it is superseded
-      // or stopped, so the row alone says nothing about the work: read the
-      // delegation's execution state the same way WorkHub actions do.
-      const retirement = await this.#workHub.readDelegationRetirement(assignment, family.admission);
-      if (retirement !== 'retired') {
-        throw new SessionRetirementBusyError(
-          `Session ${assignment.targetSessionId} has an active WorkHub delegation`,
+      // The ledger keeps every live delegation of a target, newest first, so a
+      // finished newest delegation must not hide an older one that is still in
+      // flight or still owes WorkHub its result.
+      const assignments = await this.#stores.readActiveWorkHubAssignmentsByTarget(page);
+      for (const assignment of assignments) {
+        // The Coordination ledger keeps a delegation row until it is superseded
+        // or stopped, so the row alone says nothing about the work: read the
+        // delegation's execution state the same way WorkHub actions do.
+        const retirement = await this.#workHub.readDelegationRetirement(
+          assignment,
+          family.admission,
         );
-      }
-      if (await this.#workHub.hasUndeliveredResult(assignment, family.admission)) {
-        throw new SessionRetirementBusyError(
-          `Session ${assignment.targetSessionId} has an undelivered WorkHub result`,
-        );
+        if (retirement !== 'retired') {
+          throw new SessionRetirementBusyError(
+            `Session ${assignment.targetSessionId} has an active WorkHub delegation`,
+          );
+        }
+        if (await this.#workHub.hasUndeliveredResult(assignment, family.admission)) {
+          throw new SessionRetirementBusyError(
+            `Session ${assignment.targetSessionId} has an undelivered WorkHub result`,
+          );
+        }
       }
     }
     for (const header of await this.#stores.listHeaders()) {
