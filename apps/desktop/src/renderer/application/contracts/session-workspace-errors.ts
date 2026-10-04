@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ToastDiagnosticTarget } from '@maka/ui';
+
 // Main raises this code (main/project-context-root.ts). An IPC rejection keeps
 // only the message, so the code is matched as its prefix as well.
 const SESSION_WORKSPACE_UNAVAILABLE_CODE = 'SESSION_WORKSPACE_UNAVAILABLE';
@@ -26,4 +28,18 @@ export function isSessionWorkspaceUnavailableError(error: unknown): boolean {
   const event = error as { code?: unknown; message?: unknown };
   return event.code === SESSION_WORKSPACE_UNAVAILABLE_CODE
     || (typeof event.message === 'string' && event.message.includes(`${SESSION_WORKSPACE_UNAVAILABLE_CODE}:`));
+}
+
+/**
+ * The missing-working-directory toast. Contracts cannot import copy catalogs,
+ * so the caller passes its locale's copy.
+ */
+export function showSessionWorkspaceUnavailableToast(
+  toastApi: {
+    error(title: string, description?: string, diagnosticDetails?: string, diagnosticTarget?: ToastDiagnosticTarget): void;
+  },
+  copy: { readonly workspaceUnavailableTitle: string; readonly workspaceUnavailableDescription: string },
+  diagnosticTarget?: ToastDiagnosticTarget,
+): void {
+  toastApi.error(copy.workspaceUnavailableTitle, copy.workspaceUnavailableDescription, undefined, diagnosticTarget);
 }

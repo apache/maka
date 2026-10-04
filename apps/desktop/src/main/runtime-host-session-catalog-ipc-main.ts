@@ -117,9 +117,10 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
-  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string) => {
+  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string, refresh?: boolean) => {
     if (typeof cwd !== 'string' || !cwd) throw new Error('Executor discovery requires a workspace');
-    return (await deps.queryExecutors?.({ kind: 'catalog', cwd }))?.items ?? [];
+    if (refresh !== undefined && typeof refresh !== 'boolean') throw new Error('Invalid executor refresh flag');
+    return (await deps.queryExecutors?.({ kind: 'catalog', cwd, ...(refresh ? { refresh: true } : {}) }))?.items ?? [];
   });
   handleReconnectableRead(ipcMain, 'sessions:executorState', async (_event, sessionId: string) =>
     (await deps.queryExecutors?.({ kind: 'conversation', sessionId }))?.items ?? [],

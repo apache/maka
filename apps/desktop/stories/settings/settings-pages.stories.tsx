@@ -55,6 +55,10 @@ import {
   AppUpdateServicesProvider,
   type AppUpdateServices,
 } from '../../src/renderer/features/app-update/index.js';
+import {
+  DiagnosticsServicesProvider,
+  createFakeDiagnosticsServices,
+} from '../../src/renderer/features/diagnostics/testing.js';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -1098,6 +1102,9 @@ const settingsAppUpdateServices: AppUpdateServices = {
   },
 };
 
+/** About's 复制诊断信息 resolves without a Desktop bridge to copy from. */
+const settingsDiagnosticsServices = createFakeDiagnosticsServices();
+
 /**
  * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
  * and `buildMode` short-circuits the About lead before `updateChannel` is ever
@@ -1989,11 +1996,13 @@ function fieldChrome(element: HTMLElement) {
 function SettingsStory(props: SettingsStoryProps) {
   return (
     <ToastProvider>
-      <AppUpdateServicesProvider services={settingsAppUpdateServices}>
-        <AppUpdateProvider>
-          <SettingsStoryFrame {...props} />
-        </AppUpdateProvider>
-      </AppUpdateServicesProvider>
+      <DiagnosticsServicesProvider services={settingsDiagnosticsServices}>
+        <AppUpdateServicesProvider services={settingsAppUpdateServices}>
+          <AppUpdateProvider>
+            <SettingsStoryFrame {...props} />
+          </AppUpdateProvider>
+        </AppUpdateServicesProvider>
+      </DiagnosticsServicesProvider>
     </ToastProvider>
   );
 }

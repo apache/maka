@@ -18,7 +18,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { createDesktopTaskEntryServices } from '../../renderer/platform/desktop/create-task-entry-services.js';
 
@@ -66,7 +66,7 @@ describe('createDesktopTaskEntryServices', () => {
           return { ok: true, session: {} };
         },
       },
-    } as unknown as Pick<MakaBridge, 'newTasks' | 'projects' | 'sessions'>;
+    } as unknown as Pick<MakaBridge, 'app' | 'newTasks' | 'projects' | 'sessions'>;
     const services = createDesktopTaskEntryServices(bridge);
     const host = { profileId: 'remote', hostId: 'host-1' };
 
@@ -101,5 +101,80 @@ describe('createDesktopTaskEntryServices', () => {
     ]);
     assert.equal(changes, 1);
     assert.equal(disposed, 1);
+  });
+
+  describe('folders', () => {
+    const defaultHost = { profileId: 'default-profile', hostId: 'default-host' };
+    const previousWindow = globalThis.window;
+
+    afterEach(() => {
+      globalThis.window = previousWindow;
+    });
+
+    function folderServices(openPath: (...args: unknown[]) => Promise<unknown>) {
+      // The default Host is resolved through the shared default-Host helper,
+      // which reads the global bridge rather than the injected one.
+      globalThis.window = {
+        maka: { runtimeHostProfiles: { getDefaultHost: async () => defaultHost } },
+      } as unknown as Window & typeof globalThis;
+      return createDesktopTaskEntryServices({
+        app: { openPath },
+      } as unknown as Pick<MakaBridge, 'app' | 'newTasks' | 'projects' | 'sessions'>).folders;
+    }
+
+    it('opens a task folder through the task, and other folders on the default Host', async () => {
+      const calls: unknown[][] = [];
+      const folders = folderServices(async (...args) => {
+        calls.push(args);
+        return { ok: true, opened: '/tmp' };
+      });
+
+      assert.deepEqual(await folders.openProjectFolder('session-1'), { kind: 'opened' });
+      assert.deepEqual(await folders.openProjectFolder(), { kind: 'opened' });
+      assert.deepEqual(await folders.openWorkspaceFolder(), { kind: 'opened' });
+      assert.deepEqual(calls, [
+        ['project', 'session-1'],
+        ['project', undefined, defaultHost],
+        ['workspace', undefined, defaultHost],
+      ]);
+    });
+
+    it('reports a refusal against the task or the default Host profile', async () => {
+      const folders = folderServices(async () => ({ ok: false, reason: 'missing' }));
+
+      assert.deepEqual(await folders.openProjectFolder('session-1'), {
+        kind: 'refused',
+        reason: 'missing',
+        diagnosticTarget: { sessionId: 'session-1' },
+      });
+      assert.deepEqual(await folders.openWorkspaceFolder(), {
+        kind: 'refused',
+        reason: 'missing',
+        diagnosticTarget: { profileId: 'default-profile' },
+      });
+    });
+
+    it('keeps the Host authority of a failed request', async () => {
+      const failure = new Error('unavailable');
+      const folders = folderServices(async () => {
+        throw failure;
+      });
+
+      const workspace = await folders.openWorkspaceFolder();
+      const task = await folders.openProjectFolder('session-key');
+      const project = await folders.openProjectFolder();
+
+      assert.equal(workspace.kind, 'failed');
+      assert.deepEqual(
+        [workspace, task, project].map((result) =>
+          result.kind === 'failed' ? result.diagnosticTarget : result.kind,
+        ),
+        [
+          { profileId: 'default-profile' },
+          { sessionId: 'session-key' },
+          { profileId: 'default-profile' },
+        ],
+      );
+    });
   });
 });

@@ -38,7 +38,9 @@ import { fileURLToPath } from 'node:url';
 import {
   analyzeRendererSource,
   checkRendererArchitecture,
+  collectFeatureEntrySurfaces,
   generateArchitectureConfig,
+  rendererArchitectureReport,
 } from './check-renderer-architecture.mjs';
 import {
   assertRendererEntryHtml,
@@ -77,6 +79,7 @@ function architectureConfig({
   rootDebtClosure = {},
   legacyRendererFiles = Object.keys(rootDebt),
   ownership = [],
+  rootSymbolUses,
 } = {}) {
   return {
     version: 1,
@@ -90,6 +93,7 @@ function architectureConfig({
       ),
     ),
     featurePrivateModules: [...featurePrivateModules].sort(),
+    ...(rootSymbolUses === undefined ? {} : { rootSymbolUses }),
     legacyAppShell: {
       files: legacyFiles,
       closure: legacyAppShellClosureDebt ?? {},
@@ -393,7 +397,8 @@ describe('renderer architecture checker fixtures', () => {
         `,
       },
       (desktopRoot) => {
-        assert.deepEqual(violationsFor(desktopRoot), []);
+        const rootSymbolUses = { 'src/renderer/features/alpha/index.ts': { composition: ['AlphaHost'] } };
+        assert.deepEqual(violationsFor(desktopRoot, architectureConfig({ rootSymbolUses })), []);
       },
     );
   });
@@ -2308,15 +2313,18 @@ describe('renderer architecture checker fixtures', () => {
         legacyPaths: [appShellPath],
       },
     ];
+    const rootSymbolUses = { 'src/renderer/features/alpha/index.ts': { appShell: ['AlphaHost'] } };
     const currentConfig = architectureConfig({
       legacyFiles: { [appShellPath]: currentDebt },
       legacyRendererFiles: [appShellPath],
       ownership,
+      rootSymbolUses,
     });
     const baseConfig = architectureConfig({
       legacyFiles: { [appShellPath]: baseDebt },
       legacyRendererFiles: [appShellPath],
       ownership,
+      rootSymbolUses,
     });
 
     await withDesktopFixture(
@@ -3441,6 +3449,97 @@ describe('renderer architecture base-tree derivation (git fixtures)', () => {
     });
   });
 
+  it('admits root symbol growth only for an export the head change adds', async () => {
+    await withGitFixture(async (fixture) => {
+      const entry = 'src/renderer/features/alpha/index.ts';
+      const composition = 'src/renderer/composition/desktop-application.tsx';
+      await fixture.writeFiles({
+        [entry]: "export { AlphaPanel, AlphaProvider } from './ui/alpha.js';\n",
+        'src/renderer/features/alpha/ui/alpha.tsx': `
+          export function AlphaProvider(_props: { readonly children?: unknown }) { return null; }
+          export function AlphaPanel() { return null; }
+          export function AlphaInspector() { return null; }
+        `,
+        [composition]: "import { AlphaProvider } from '../features/alpha';\nexport const DesktopApplication = () => <AlphaProvider />;\n",
+      });
+      await fixture.writeLedger();
+      const base = fixture.commit('base');
+
+      await fixture.writeFiles({
+        [composition]: "import { AlphaPanel, AlphaProvider } from '../features/alpha';\nexport const DesktopApplication = () => <AlphaProvider><AlphaPanel /></AlphaProvider>;\n",
+      });
+      await fixture.writeLedger();
+      fixture.commit('take an export the base entry already had');
+      const existing = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(existing.status, 0);
+      assert.match(
+        existing.stderr,
+        /^- src\/renderer\/features\/alpha\/index\.ts: composition root newly uses existing public export AlphaPanel;/mu,
+      );
+
+      await fixture.writeFiles({
+        [entry]: "export { AlphaPanel, AlphaProvider } from './ui/alpha.js';\nexport { AlphaPanel as AlphaPanelAlias } from './ui/alpha.js';\n",
+        [composition]: "import { AlphaPanelAlias, AlphaProvider } from '../features/alpha';\nexport const DesktopApplication = () => <AlphaProvider><AlphaPanelAlias /></AlphaProvider>;\n",
+      });
+      await fixture.writeLedger();
+      fixture.commit('take an existing export through a new alias');
+      const aliased = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(aliased.status, 0);
+      assert.match(
+        aliased.stderr,
+        /^- src\/renderer\/features\/alpha\/index\.ts: composition root newly uses AlphaPanelAlias, an alias of existing public export AlphaPanel;/mu,
+      );
+
+      await fixture.writeFiles({
+        [entry]: "export { AlphaInspector, AlphaPanel, AlphaProvider } from './ui/alpha.js';\n",
+        [composition]: "import { AlphaInspector, AlphaProvider } from '../features/alpha';\nexport const DesktopApplication = () => <AlphaProvider><AlphaInspector /></AlphaProvider>;\n",
+      });
+      const headLedger = await fixture.writeLedger();
+      assert.deepEqual(headLedger.rootSymbolUses, { [entry]: { composition: ['AlphaInspector', 'AlphaProvider'] } });
+      fixture.commit('take an export the same change adds');
+      const added = fixture.runChecker(['--base', base, '--strict-base', '--report']);
+      assertPassed(added, base, 'new public export');
+      assert.match(added.stdout, /Renderer architecture report:\n[^]*Root symbol uses: appShell 0, bootstrap 0, composition 2\n/u);
+      assert.match(
+        added.stdout,
+        /root symbol use admitted: src\/renderer\/features\/alpha\/index\.ts: composition AlphaInspector \(new public export\)/u,
+      );
+    });
+  });
+
+  it('reports, without ratcheting, a feature symbol newly taken in the AppShell closure', async () => {
+    await withGitFixture(async (fixture) => {
+      const appShell = 'src/renderer/app-shell.ts';
+      const helper = 'src/renderer/legacy-session-helper.ts';
+      const seed = architectureConfig({
+        rootDebt: { [RENDERER_ENTRY_PATH]: emptyDebt() },
+        ownership: [
+          { capability: 'fixture-root', targetZone: 'bootstrap', legacyPaths: [RENDERER_ENTRY_PATH] },
+          { capability: 'fixture-app-shell', targetZone: 'shell', legacyPaths: [appShell] },
+        ],
+      });
+      await fixture.writeFiles({
+        'src/renderer/features/alpha/index.ts': "export function alphaLabel() { return 'alpha'; }\n",
+        [appShell]: "import { legacySessionHelper } from './legacy-session-helper.js';\nexport const AppShell = legacySessionHelper;\n",
+        [helper]: 'export const legacySessionHelper = 1;\n',
+      });
+      await fixture.writeLedger(seed);
+      const base = fixture.commit('base');
+      await fixture.writeFiles({
+        [helper]: "import { alphaLabel } from './features/alpha/index.js';\nexport const legacySessionHelper = alphaLabel();\n",
+      });
+      await fixture.writeLedger(seed);
+      fixture.commit('the closure takes a feature symbol');
+
+      const result = fixture.runChecker(['--base', base, '--strict-base']);
+      assertPassed(result, base, 'closure growth is only reported');
+      assert.match(
+        result.stdout,
+        /AppShell closure newly uses alphaLabel from src\/renderer\/features\/alpha\/index\.ts in src\/renderer\/legacy-session-helper\.ts \(reported, not ratcheted\)/u,
+      );
+    });
+  });
+
   it('rejects a new unclassified legacy renderer file relative to the derived base tree', async () => {
     await withGitFixture(async (fixture) => {
       await fixture.writeLedger();
@@ -3734,6 +3833,479 @@ describe('private feature construction boundaries', () => {
   it('validates private module policy paths', async () => {
     await withDesktopFixture({}, (desktopRoot) => {
       assertHasViolation(violationsFor(desktopRoot, architectureConfig({ featurePrivateModules: ['../state.ts'] })), /featurePrivateModules must contain normalized feature source paths/u);
+    });
+  });
+});
+
+describe('root public symbol uses', () => {
+  const ENTRY = 'src/renderer/features/alpha/index.ts';
+  const APP_SHELL = 'src/renderer/app-shell.tsx';
+  const COMPOSITION = 'src/renderer/composition/desktop-application.tsx';
+  const ROOT_SYMBOL_VIOLATION = /\b(?:appShell|bootstrap|composition) root\b|rootSymbolUses/u;
+  const alphaFeature = {
+    [ENTRY]: `
+      export { AlphaPanel, AlphaProvider } from './ui/alpha-provider.js';
+      export * from './controller/alpha-reads.js';
+      export type { AlphaSnapshot } from './controller/alpha-reads.js';
+    `,
+    'src/renderer/features/alpha/ui/alpha-provider.tsx': `
+      export function AlphaProvider(_props: { readonly children?: unknown }) { return null; }
+      export function AlphaPanel() { return null; }
+    `,
+    'src/renderer/features/alpha/controller/alpha-reads.ts': `
+      export interface AlphaSnapshot { readonly value: number }
+      export function useAlphaReads(): AlphaSnapshot { return { value: 0 }; }
+      export function useAlphaState() { return { value: 0, setValue(_value: number) {} }; }
+    `,
+  };
+
+  function generatedUses(desktopRoot, seed = architectureConfig()) {
+    return generateArchitectureConfig(desktopRoot, seed).rootSymbolUses;
+  }
+
+  function rootViolations(desktopRoot, config, { baseConfig, baseEntrySurfaces } = {}) {
+    return checkRendererArchitecture({
+      baseConfig,
+      baseEntrySurfaces,
+      config,
+      desktopRoot,
+      enforceRendererEntryContract: false,
+    }).filter((violation) => ROOT_SYMBOL_VIOLATION.test(violation));
+  }
+
+  it('records named, namespace member and JSX member uses per root zone', async () => {
+    await withDesktopFixture({
+      ...alphaFeature,
+      [APP_SHELL]: `
+        import * as Alpha from './features/alpha';
+        import type { AlphaSnapshot } from './features/alpha';
+        type WholeAlpha = typeof Alpha;
+        export function AppShell(_whole?: WholeAlpha) {
+          const reads: AlphaSnapshot = Alpha.useAlphaReads();
+          const typed: Alpha.AlphaSnapshot = reads;
+          return <Alpha.AlphaProvider>{typed.value}</Alpha.AlphaProvider>;
+        }
+      `,
+      [COMPOSITION]: `
+        import { AlphaPanel } from '@maka/desktop/src/renderer/features/alpha';
+        export function DesktopApplication() { return <AlphaPanel />; }
+      `,
+      'src/renderer/composition/__tests__/desktop-application.test.tsx': `
+        import { AlphaProvider } from '../../features/alpha/index.js';
+        export const fixture = AlphaProvider;
+      `,
+      [RENDERER_ENTRY_PATH]: `
+        import { useAlphaState } from './features/alpha/index.js';
+        export const main = useAlphaState;
+      `,
+    }, (desktopRoot) => {
+      const seed = rendererEntrySeedConfig();
+      const rootSymbolUses = {
+        [ENTRY]: {
+          appShell: ['AlphaProvider', 'useAlphaReads'],
+          bootstrap: ['useAlphaState'],
+          composition: ['AlphaPanel'],
+        },
+      };
+      assert.deepEqual(generatedUses(desktopRoot, seed), rootSymbolUses);
+      assert.deepEqual(rootViolations(desktopRoot, { ...seed, rootSymbolUses }), []);
+
+      const unrecorded = rootViolations(desktopRoot, { ...seed, rootSymbolUses: {} });
+      assertHasViolation(unrecorded, /app-shell\.tsx: appShell root uses useAlphaReads from src\/renderer\/features\/alpha\/index\.ts, which rootSymbolUses does not record/u);
+      assertHasViolation(unrecorded, /desktop-application\.tsx: composition root uses AlphaPanel from/u);
+      assertHasViolation(unrecorded, /main\.tsx: bootstrap root uses useAlphaState from/u);
+      assert.equal(unrecorded.length, 4);
+
+      const stale = { [ENTRY]: { ...rootSymbolUses[ENTRY], appShell: ['AlphaProvider', 'useAlphaReads', 'useAlphaState'] } };
+      assert.deepEqual(rootViolations(desktopRoot, { ...seed, rootSymbolUses: stale }), [
+        `${ENTRY}: stale rootSymbolUses entry; appShell root no longer uses useAlphaState`,
+      ]);
+    });
+  });
+
+  it('follows named, aliased and wildcard re-exports through intermediate modules', async () => {
+    await withDesktopFixture({
+      ...alphaFeature,
+      'src/renderer/alpha-shim.ts': "export { useAlphaState as useShimState } from './features/alpha/index.js';",
+      'src/renderer/alpha-barrel.ts': "export * from './alpha-shim.js';\nexport const legacyOnly = 1;",
+      'src/renderer/alpha-alias.ts': "import { AlphaProvider } from './features/alpha';\nexport { AlphaProvider as ShellProvider };",
+      [APP_SHELL]: `
+        import { legacyOnly, useShimState } from './alpha-barrel';
+        import * as Aliases from './alpha-alias';
+        export function AppShell() {
+          return <Aliases.ShellProvider>{useShimState().value + legacyOnly}</Aliases.ShellProvider>;
+        }
+      `,
+    }, (desktopRoot) => {
+      assert.deepEqual(generatedUses(desktopRoot), { [ENTRY]: { appShell: ['AlphaProvider', 'useAlphaState'] } });
+      assertHasViolation(rootViolations(desktopRoot, architectureConfig({ rootSymbolUses: {} })), /app-shell\.tsx: appShell root uses useAlphaState from/u);
+    });
+  });
+
+  it('leaves deep feature imports to the zone rule instead of recording them', async () => {
+    await withDesktopFixture({
+      ...alphaFeature,
+      [COMPOSITION]: `
+        import { AlphaPanel } from '../features/alpha/ui/alpha-provider.js';
+        export function DesktopApplication() { return <AlphaPanel />; }
+      `,
+    }, (desktopRoot) => {
+      assert.deepEqual(generatedUses(desktopRoot), {});
+      const config = architectureConfig({ rootSymbolUses: {} });
+      assertHasViolation(violationsFor(desktopRoot, config), /desktop-application\.tsx: feature imports must use index/u);
+      assert.deepEqual(rootViolations(desktopRoot, config), []);
+    });
+  });
+
+  for (const [name, files, pattern] of [
+    ['passes the namespace object on', {
+      [COMPOSITION]: "import * as Alpha from '../features/alpha';\nfunction register(value: unknown) { return value; }\nexport const registered = register(Alpha);",
+    }, /composition root lets namespace Alpha from \.\.\/features\/alpha escape/u],
+    ['destructures the namespace', {
+      [COMPOSITION]: "import * as Alpha from '../features/alpha';\nexport const { AlphaPanel } = Alpha;",
+    }, /lets namespace Alpha .* escape/u],
+    ['reads a computed namespace member', {
+      [COMPOSITION]: "import * as Alpha from '../features/alpha';\nconst key = 'AlphaPanel';\nexport const panel = Alpha[key];",
+    }, /lets namespace Alpha .* escape/u],
+    ['spreads the namespace', {
+      [COMPOSITION]: "import * as Alpha from '../features/alpha';\nexport const all = { ...Alpha };",
+    }, /lets namespace Alpha .* escape/u],
+    ['re-exports the namespace binding', {
+      [COMPOSITION]: "import * as Alpha from '../features/alpha';\nexport { Alpha };",
+    }, /lets namespace Alpha .* escape/u],
+    ['renders the namespace object', {
+      [COMPOSITION]: "import * as Alpha from '../features/alpha';\nexport const view = <Alpha />;",
+    }, /lets namespace Alpha .* escape/u],
+    ['aliases a member through import-equals', {
+      'src/renderer/composition/desktop-application.ts': "import * as Alpha from '../features/alpha';\nimport panel = Alpha.AlphaPanel;\nexport { panel };",
+    }, /lets namespace Alpha .* escape/u],
+    ['wildcard re-exports the entry', {
+      [COMPOSITION]: "export * from '../features/alpha';",
+    }, /composition root re-exports \.\.\/features\/alpha wholesale/u],
+    ['namespace re-exports the entry', {
+      [COMPOSITION]: "export * as Alpha from '../features/alpha/index.js';",
+    }, /re-exports .* wholesale/u],
+    ['wildcard re-exports a legacy barrel over the entry', {
+      'src/renderer/alpha-barrel.ts': "export * from './features/alpha';",
+      [COMPOSITION]: "export * from '../alpha-barrel';",
+    }, /re-exports \.\.\/alpha-barrel wholesale/u],
+    ['receives a namespace object from a legacy module', {
+      'src/renderer/alpha-namespace.ts': "export * as Alpha from './features/alpha';",
+      [COMPOSITION]: "import { Alpha } from '../alpha-namespace';\nexport const panel = Alpha.AlphaPanel;",
+    }, /receives a whole feature namespace object through \.\.\/alpha-namespace/u],
+    ['loads the entry dynamically', {
+      [COMPOSITION]: "export const load = () => import('../features/alpha');",
+    }, /loads \.\.\/features\/alpha through dynamic-import/u],
+    ['requires the entry', {
+      [COMPOSITION]: "const alpha = require('../features/alpha');\nexport default alpha;",
+    }, /loads \.\.\/features\/alpha through require/u],
+  ]) {
+    it(`rejects a root that ${name}`, async () => {
+      await withDesktopFixture({ ...alphaFeature, ...files }, (desktopRoot) => {
+        assertHasViolation(rootViolations(desktopRoot, architectureConfig({ rootSymbolUses: generatedUses(desktopRoot) })), pattern);
+      });
+    });
+  }
+
+  it('resolves each public entry surface through wildcard and aliased re-exports', async () => {
+    await withDesktopFixture(alphaFeature, (desktopRoot) => {
+      const surfaces = collectFeatureEntrySurfaces(desktopRoot);
+      assert.deepEqual([...surfaces.keys()], ['src/renderer/features/alpha']);
+      assert.deepEqual(Object.fromEntries(surfaces.get('src/renderer/features/alpha')), {
+        AlphaPanel: 'src/renderer/features/alpha/ui/alpha-provider.tsx#AlphaPanel',
+        AlphaProvider: 'src/renderer/features/alpha/ui/alpha-provider.tsx#AlphaProvider',
+        useAlphaReads: 'src/renderer/features/alpha/controller/alpha-reads.ts#useAlphaReads',
+        useAlphaState: 'src/renderer/features/alpha/controller/alpha-reads.ts#useAlphaState',
+      });
+    });
+  });
+
+  it('only admits root growth that takes an export the same change adds', async () => {
+    await withDesktopFixture({
+      ...alphaFeature,
+      [COMPOSITION]: `
+        import { AlphaPanel, AlphaProvider } from '../features/alpha';
+        export function DesktopApplication() { return <AlphaProvider><AlphaPanel /></AlphaProvider>; }
+      `,
+    }, (desktopRoot) => {
+      const config = architectureConfig({ rootSymbolUses: { [ENTRY]: { composition: ['AlphaPanel', 'AlphaProvider'] } } });
+      const baseConfig = architectureConfig({ rootSymbolUses: { [ENTRY]: { composition: ['AlphaProvider'] } } });
+      const surfacesWith = (...names) => new Map([[
+        'src/renderer/features/alpha',
+        new Map([...collectFeatureEntrySurfaces(desktopRoot).get('src/renderer/features/alpha')].filter(([name]) => names.includes(name))),
+      ]]);
+
+      assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig, baseEntrySurfaces: surfacesWith('AlphaProvider') }), []);
+      assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig, baseEntrySurfaces: new Map() }), []);
+      assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig, baseEntrySurfaces: surfacesWith('AlphaPanel', 'AlphaProvider') }), [
+        `${ENTRY}: composition root newly uses existing public export AlphaPanel; only an export the same change adds may join rootSymbolUses`,
+      ]);
+      assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig }), [
+        `${ENTRY}: composition root newly uses AlphaPanel, and without the base tree's public surface the use cannot be admitted`,
+      ]);
+      // The base that introduces the record has nothing to ratchet against.
+      assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig: architectureConfig() }), []);
+      // Dropping the record would disable the rule, so it is rejected outright.
+      assertHasViolation(
+        rootViolations(desktopRoot, architectureConfig(), { baseConfig }),
+        /^rootSymbolUses: the root public symbol record cannot be removed$/u,
+      );
+    });
+  });
+
+  for (const [name, aliasExport] of [
+    ['a re-exported alias', "export { AlphaPanel as AlphaPanelAlias } from './ui/alpha-provider.js';"],
+    ['an imported and re-exported alias', "import { AlphaPanel as panel } from './ui/alpha-provider.js';\nexport { panel as AlphaPanelAlias };"],
+  ]) {
+    it(`does not admit ${name} of an existing export as a new export`, async () => {
+      await withDesktopFixture({
+        ...alphaFeature,
+        [ENTRY]: `${alphaFeature[ENTRY]}\n${aliasExport}\nexport { AlphaInspector } from './ui/alpha-inspector.js';\n`,
+        'src/renderer/features/alpha/ui/alpha-inspector.tsx': 'export function AlphaInspector() { return null; }\n',
+        [COMPOSITION]: `
+          import { AlphaInspector, AlphaPanelAlias } from '../features/alpha';
+          export function DesktopApplication() { return <><AlphaPanelAlias /><AlphaInspector /></>; }
+        `,
+      }, (desktopRoot) => {
+        const current = collectFeatureEntrySurfaces(desktopRoot).get('src/renderer/features/alpha');
+        assert.equal(current.get('AlphaPanelAlias'), current.get('AlphaPanel'));
+        const baseEntrySurfaces = new Map([[
+          'src/renderer/features/alpha',
+          new Map([...current].filter(([exported]) => !['AlphaInspector', 'AlphaPanelAlias'].includes(exported))),
+        ]]);
+        const config = architectureConfig({ rootSymbolUses: { [ENTRY]: { composition: ['AlphaInspector', 'AlphaPanelAlias'] } } });
+        assert.deepEqual(rootViolations(desktopRoot, config, { baseConfig: architectureConfig({ rootSymbolUses: {} }), baseEntrySurfaces }), [
+          `${ENTRY}: composition root newly uses AlphaPanelAlias, an alias of existing public export AlphaPanel; only a binding the same change adds may join rootSymbolUses`,
+        ]);
+      });
+    });
+  }
+
+  it('admits a use moving out of appShell, but not a copy or the reverse move', async () => {
+    await withDesktopFixture({
+      ...alphaFeature,
+      [COMPOSITION]: `
+        import { AlphaPanel } from '../features/alpha';
+        export function DesktopApplication() { return <AlphaPanel />; }
+      `,
+    }, (desktopRoot) => {
+      const baseEntrySurfaces = collectFeatureEntrySurfaces(desktopRoot);
+      const ratchet = (current, base) =>
+        rootViolations(desktopRoot, architectureConfig({ rootSymbolUses: current }), {
+          baseConfig: architectureConfig({ rootSymbolUses: base }),
+          baseEntrySurfaces,
+        }).filter((violation) => /newly uses/u.test(violation));
+
+      assert.deepEqual(ratchet({ [ENTRY]: { composition: ['AlphaPanel'] } }, { [ENTRY]: { appShell: ['AlphaPanel'] } }), []);
+      assert.deepEqual(
+        ratchet({ [ENTRY]: { appShell: ['AlphaPanel'], composition: ['AlphaPanel'] } }, { [ENTRY]: { appShell: ['AlphaPanel'] } }),
+        [`${ENTRY}: composition root newly uses existing public export AlphaPanel; only an export the same change adds may join rootSymbolUses`],
+      );
+      assert.deepEqual(
+        ratchet({ [ENTRY]: { appShell: ['AlphaPanel'] } }, { [ENTRY]: { composition: ['AlphaPanel'] } }),
+        [`${ENTRY}: appShell root newly uses existing public export AlphaPanel; only an export the same change adds may join rootSymbolUses`],
+      );
+    });
+  });
+
+  it('validates the root symbol record shape', async () => {
+    await withDesktopFixture({}, (desktopRoot) => {
+      for (const [rootSymbolUses, pattern] of [
+        [{ 'src/renderer/features/alpha/ui/alpha-provider.tsx': { composition: ['AlphaPanel'] } }, /keys must be normalized feature public entry paths/u],
+        [{ [ENTRY]: { shell: ['AlphaPanel'] } }, /zones must be sorted and among appShell, bootstrap, composition/u],
+        [{ [ENTRY]: { composition: ['AlphaProvider', 'AlphaPanel'] } }, /composition must list sorted unique export names/u],
+        [{ [ENTRY]: {} }, /must map root zones to the symbols they use/u],
+      ]) {
+        assertHasViolation(violationsFor(desktopRoot, architectureConfig({ rootSymbolUses })), pattern);
+      }
+    });
+  });
+});
+
+describe('retained root hook table', () => {
+  const GATE = 'gate/check-app-shell-hooks.mjs';
+  const README = 'src/renderer/README.md';
+  const RETAINED_ROOT_VIOLATION = /retained-root|AppShell hook gate/u;
+  const HEADER = '| Component | Hook | Call site | Consumer | Owner | Allowed capability | Root reason | Removal |';
+  const gateSource = (inventory = `{
+    AppShell: { useState: 2 },
+    AppShellContent: {
+      // The gate's own commentary sits between entries.
+      useToast: 1,
+    },
+  }`) => `#!/usr/bin/env node\nexport const ALLOWED = ${inventory};\nif (process.argv[1] === undefined) main();\n`;
+  const row = (component, hook, callSite, reason, removal = '—') =>
+    `| \`${component}\` | \`${hook}\` | \`${callSite}\` | consumer | owner | capability | ${reason} | ${removal} |`;
+  const readme = (rows, header = HEADER) => [
+    '# Renderer',
+    '<!-- retained-root-hooks:start -->',
+    header,
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...rows,
+    '<!-- retained-root-hooks:end -->',
+    '',
+  ].join('\n');
+  const complete = [
+    row('AppShell', 'useState', 'uiLocalePreference', 'locale'),
+    row('AppShell', 'useState', 'uiLocaleOverride', 'locale'),
+    row('AppShellContent', 'useToast', 'toastApi', '—', 'M5'),
+  ];
+
+  async function withTable(files, run) {
+    await withDesktopFixture({ [GATE]: gateSource(), ...files }, (desktopRoot) =>
+      run(
+        checkRendererArchitecture({
+          appShellHookGatePath: join(desktopRoot, GATE),
+          config: architectureConfig(),
+          desktopRoot,
+          enforceRendererEntryContract: false,
+        }).filter((violation) => RETAINED_ROOT_VIOLATION.test(violation)),
+        desktopRoot,
+      ),
+    );
+  }
+
+  it('accepts one row per gate call site', async () => {
+    await withTable({ [README]: readme(complete) }, (violations) => assert.deepEqual(violations, []));
+  });
+
+  it('stays inactive without a hook gate', async () => {
+    await withDesktopFixture({ [README]: '# Renderer\n' }, (desktopRoot) => {
+      const violations = checkRendererArchitecture({
+        appShellHookGatePath: join(desktopRoot, GATE),
+        config: architectureConfig(),
+        desktopRoot,
+        enforceRendererEntryContract: false,
+      });
+      assert.deepEqual(violations.filter((violation) => RETAINED_ROOT_VIOLATION.test(violation)), []);
+    });
+  });
+
+  for (const [name, files, pattern] of [
+    ['a missing table', { [README]: '# Renderer\n' }, /src\/renderer\/README\.md: the retained-root hook table is missing/u],
+    ['a gate entry without a row', { [README]: readme(complete.slice(0, 2)) }, /^AppShellContent\.useToast: AppShell hook gate entry has no retained-root row/u],
+    ['a row count below the gate count', { [README]: readme(complete.slice(1)) }, /^AppShell\.useState: the AppShell hook gate counts 2 call sites, the retained-root table has 1 rows$/u],
+    ['a row for a hook the gate no longer lists', {
+      [README]: readme([...complete, row('AppShellContent', 'useOnboardingSnapshot', 'onboarding', '—', 'M5')]),
+    }, /README\.md:\d+: retained-root row names AppShellContent\.useOnboardingSnapshot, which the AppShell hook gate does not list/u],
+    ['a row with both a reason and a removal module', {
+      [README]: readme([...complete.slice(0, 2), row('AppShellContent', 'useToast', 'toastApi', 'layout', 'M5')]),
+    }, /retained-root row for AppShellContent\.useToast needs exactly one root reason/u],
+    ['a row with neither a reason nor a removal module', {
+      [README]: readme([...complete.slice(0, 2), row('AppShellContent', 'useToast', 'toastApi', '—', '—')]),
+    }, /needs exactly one root reason/u],
+    ['an unknown root reason', {
+      [README]: readme([...complete.slice(0, 2), row('AppShellContent', 'useToast', 'toastApi', 'convenience')]),
+    }, /needs exactly one root reason/u],
+    ['an unknown removal module', {
+      [README]: readme([...complete.slice(0, 2), row('AppShellContent', 'useToast', 'toastApi', '—', 'M9')]),
+    }, /needs exactly one root reason/u],
+    ['a duplicate call site', {
+      [README]: readme([complete[0], complete[0], complete[2]]),
+    }, /duplicate retained-root call site uiLocalePreference for AppShell\.useState/u],
+    ['a row with an empty owner', {
+      [README]: readme([...complete.slice(0, 2), '| `AppShellContent` | `useToast` | `toastApi` | consumer | — | capability | — | M5 |']),
+    }, /must name its call site, consumer, owner and allowed capability/u],
+    ['a row with too few cells', {
+      [README]: readme([...complete, '| `AppShell` | `useState` | `extra` | consumer | owner | locale | — |']),
+    }, /README\.md:\d+: retained-root row must have 8 cells/u],
+    ['different columns', {
+      [README]: readme(complete, '| Component | Hook | Call site | Consumer | Owner | Capability | Root reason | Removal |'),
+    }, /the retained-root hook table must have the columns Component \| Hook/u],
+  ]) {
+    it(`rejects ${name}`, async () => {
+      await withTable(files, (violations) => assertHasViolation(violations, pattern));
+    });
+  }
+
+  describe('rows of a hook with several call sites', () => {
+    const appShell = {
+      'src/renderer/app-shell.tsx': `
+        import { useState } from 'react';
+        import { useToast } from '@astryxdesign/core/Toast';
+        export function AppShell() {
+          const [uiLocalePreference] = useState('auto');
+          const [uiLocaleOverride] = useState(null);
+          return <AppShellContent preference={uiLocalePreference} override={uiLocaleOverride} />;
+        }
+        function AppShellContent(_props: unknown) {
+          const toastApi = useToast();
+          return toastApi ? null : null;
+        }
+      `,
+    };
+    const stateRow = (callSite) => `| \`AppShell\` | \`useState\` | ${callSite} | consumer | owner | capability | locale | — |`;
+
+    it('binds each row to one call in app-shell.tsx', async () => {
+      await withTable({ ...appShell, [README]: readme(complete) }, (violations) => assert.deepEqual(violations, []));
+    });
+
+    for (const [name, rows, pattern] of [
+      ['a call site that names no call', [stateRow('`uiLocalePreference`'), stateRow('`uiLocaleBogus`')], /retained-root call site uiLocaleBogus must name an identifier of exactly one AppShell\.useState call in src\/renderer\/app-shell\.tsx; it matches 0/u],
+      ['a call site that names two calls', [stateRow('`uiLocalePreference`'), stateRow('`uiLocalePreference` or `uiLocaleOverride`')], /must name an identifier of exactly one AppShell\.useState call .*; it matches 2/u],
+      ['two rows on one call', [stateRow('`uiLocalePreference`'), stateRow('`uiLocalePreference`, again')], /^AppShell\.useState: retained-root rows src\/renderer\/README\.md:\d+, src\/renderer\/README\.md:\d+ name the same call site$/u],
+    ]) {
+      it(`rejects ${name}`, async () => {
+        await withTable({ ...appShell, [README]: readme([...rows, complete[2]]) }, (violations) => assertHasViolation(violations, pattern));
+      });
+    }
+  });
+
+  it('reads the gate inventory only as a static literal', async () => {
+    await withDesktopFixture({ [GATE]: gateSource('buildInventory()'), [README]: readme(complete) }, (desktopRoot) => {
+      assertHasViolation(
+        checkRendererArchitecture({
+          appShellHookGatePath: join(desktopRoot, GATE),
+          config: architectureConfig(),
+          desktopRoot,
+          enforceRendererEntryContract: false,
+        }),
+        /^AppShell hook gate inventory could not be read: no exported ALLOWED object literal$/u,
+      );
+    });
+  });
+
+  it('reports the M3 and M5 completion measures', async () => {
+    await withDesktopFixture({
+      [GATE]: gateSource(),
+      [README]: readme(complete),
+      'src/renderer/features/conversation/README.md': [
+        'Remaining transitional capabilities have explicit consumers and removal work:',
+        '',
+        '| Capability | Current consumer | Removal module |',
+        '| --- | --- | --- |',
+        '| one | AppShell | M3 |',
+        '| two | AppShell | M3 |',
+        '',
+      ].join('\n'),
+      'src/renderer/app-shell.tsx': "import { LegacyPanel } from './legacy-panel';\nexport const AppShell = LegacyPanel;\n",
+      'src/renderer/legacy-panel.tsx': "import { AlphaPanel } from './features/alpha';\nexport const LegacyPanel = AlphaPanel;\n",
+      'src/renderer/features/alpha/index.ts': 'export function AlphaPanel() { return null; }\n',
+    }, (desktopRoot) => {
+      const config = architectureConfig({
+        legacyFiles: {
+          'src/renderer/app-shell.tsx': emptyDebt({
+            actionFactories: ['createAppShellChatActions'],
+            bridgePaths: { 'window.maka.attachments.readBytes': 2 },
+          }),
+          'src/renderer/app-shell-effects.ts': emptyDebt({ bridgePaths: { 'window.maka.app.info': 3 } }),
+          'src/renderer/app-shell-e2e-fixture.ts': emptyDebt({ actionFactories: ['createAppShellE2eFixtureActions'] }),
+        },
+        rootSymbolUses: { 'src/renderer/features/alpha/index.ts': { appShell: ['AlphaHost', 'useAlpha'], composition: ['AlphaServicesProvider'] } },
+      });
+      assert.deepEqual(rendererArchitectureReport({ appShellHookGatePath: join(desktopRoot, GATE), config, desktopRoot }), [
+        'AppShell-family bridge references: 5 (app-shell.tsx 2)',
+        '  src/renderer/app-shell-effects.ts: 3',
+        '  src/renderer/app-shell.tsx: 2',
+        'AppShell-family action factories: 2 (createAppShellChatActions, createAppShellE2eFixtureActions)',
+        'Transitional Conversation capabilities: 2',
+        'AppShell hook gate: 2 entries / 3 call sites; entries without a retained-root row: 0',
+        '  retained at the root: locale 2',
+        '  scheduled for removal: M5 1',
+        'AppShell closure feature-entry uses (reported, not ratcheted): 1 in 1 files',
+        '  src/renderer/legacy-panel.tsx: alpha.AlphaPanel',
+        'Root symbol uses: appShell 2, bootstrap 0, composition 1',
+      ]);
     });
   });
 });

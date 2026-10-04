@@ -1029,6 +1029,18 @@ async function collectHits(
     }
   }
 
+  // A narrowed scan needs the corpus count to rank the same way as a full
+  // scan. Resolve it before reading transcripts so a declined count cannot
+  // discard work and reread every candidate during fallback.
+  const storedCorpusSize = deps.countSearchableMessages
+    ? await deps.countSearchableMessages({ sessionIds: input.sessionIds })
+    : null;
+  if (input.abortSignal?.aborted) return null;
+  if (storedCorpusSize === null && !scannedFully) {
+    sessionIds = input.sessionIds;
+    scannedFully = true;
+  }
+
   const hits: VerifiedHit[] = [];
   let counted = 0;
   for (const sessionId of sessionIds) {
@@ -1053,18 +1065,7 @@ async function collectHits(
     }
   }
 
-  // The narrowed path never sees the Sessions it skipped, so its corpus size
-  // has to come from the store. The full scan takes the same number when the
-  // store offers one, which is what keeps a score independent of the path.
-  let corpusSize: number | null = counted;
-  if (deps.countSearchableMessages) {
-    corpusSize = await deps.countSearchableMessages({ sessionIds: input.sessionIds });
-    if (input.abortSignal?.aborted) return null;
-    if (corpusSize === null) {
-      if (!scannedFully) return collectHits(deps, { ...input, forceFullScan: true });
-      corpusSize = counted;
-    }
-  }
+  const corpusSize = storedCorpusSize ?? counted;
   return { hits, corpusSize, scannedFully, transcripts };
 }
 

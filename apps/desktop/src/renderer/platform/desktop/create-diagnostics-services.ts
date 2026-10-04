@@ -34,6 +34,15 @@ export function createDesktopDiagnosticsServices(
       ...(report.diagnosticDetails ? { details: report.diagnosticDetails } : {}),
       ...(report.diagnosticTarget ? { target: report.diagnosticTarget } : {}),
     }),
+    copyManualReport: (target) => bridge.diagnostics.copyReport({
+      surface: 'manual',
+      ...(target ? { target } : {}),
+    }),
+    copyRendererCrashReport: (report) => bridge.diagnostics.copyReport({
+      surface: 'renderer_crash',
+      title: report.title,
+      details: report.details,
+    }),
     takePreviousMainProcessInterruption: () => bridge.diagnostics.takePreviousMainProcessInterruption(),
     copyPreviousMainProcessInterruption: () => bridge.diagnostics.copyPreviousMainProcessInterruption(),
   };

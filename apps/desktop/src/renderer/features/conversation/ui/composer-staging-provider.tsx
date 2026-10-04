@@ -64,6 +64,11 @@ export function ComposerStagingProvider(props: {
       addQuote: staging.addQuote,
       resetImageNotice: (key) => staging.imageNoticeLifecycle.reset(key),
       transferImageNotice: (from, to) => staging.imageNoticeLifecycle.transfer(from, to),
+      restoreContext: (draftKey, context) => {
+        if (context.attachments?.length) staging.restoreAttachments(draftKey, context.attachments);
+        if (context.directoryReferences?.length) staging.restoreDirectories(draftKey, context.directoryReferences);
+        if (context.quotes?.length) staging.restoreQuotes(draftKey, context.quotes);
+      },
     };
     binding.current = commands;
     return () => { if (binding.current === commands) binding.current = undefined; };

@@ -33,7 +33,7 @@ import {
   useAppShellSessionUiState,
   type ConversationObservationServices,
 } from '../../renderer/features/conversation/index.js';
-import { createContextCompactionCommands, stubConversationServices } from '../../renderer/features/conversation/testing.js';
+import { createContextCompactionCommands, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 type CompactionToast = Pick<ToastApi, 'toast' | 'dismiss' | 'success' | 'info' | 'error'>;
@@ -160,12 +160,14 @@ describe('Conversation owner context compaction', () => {
       return () => {};
     };
     let target!: ReturnType<typeof useAppShellSessionUiState>;
+    let commands!: ReturnType<typeof useConversationOwner>['commands'];
     function Shell() {
       target = useAppShellSessionUiState();
+      commands = useConversationOwner().commands;
       return createElement(Fragment, null, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
         showModelSetupToast() {}, onTurnCompleted() {},
-        searchTarget: null, clearSearchTarget() {}, listTurnLandmarks: async () => ({ landmarks: [] }),
+        searchTarget: null, clearSearchTarget() {},
       }));
     }
     act(() => root.render(createElement(LocaleProvider, { locale: 'en', children:
@@ -181,7 +183,7 @@ describe('Conversation owner context compaction', () => {
 
     const text = () => container.textContent ?? '';
     let accepted: boolean | undefined;
-    await act(async () => { accepted = await target.compactSession('A'); });
+    await act(async () => { accepted = await commands.compactSession('A'); });
     assert.equal(accepted, true);
     assert.deepEqual(requested, ['A']);
     assert.match(text(), /Compacting context/);
@@ -199,7 +201,7 @@ describe('Conversation owner context compaction', () => {
       contextCompactionOutcome: { kind: 'unchanged', reason: 'already_compacted' },
     }));
     reply = { kind: 'finished', turn: { ...turn, turnId: 'compact-2' }, outcome: { kind: 'failed', reason: 'write_failed' } };
-    await act(async () => { await target.compactSession('A'); });
+    await act(async () => { await commands.compactSession('A'); });
     assert.match(text(), /Nothing to compact/);
     assert.doesNotMatch(text(), /Compaction failed/);
   });

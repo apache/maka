@@ -23,13 +23,20 @@ export { DiagnosticsServicesProvider } from './services-context.js';
 export { DiagnosticReportToastProvider } from './ui/diagnostic-report-toast-provider.js';
 export { PreviousMainProcessInterruptionNotice } from './ui/previous-main-process-interruption-notice.js';
 export { getDiagnosticsCopy } from './locales/diagnostics-copy.js';
-export type { DiagnosticsServices, ToastDiagnosticReport } from './ports.js';
+export type {
+  DiagnosticsServices,
+  ManualDiagnosticTarget,
+  RendererCrashDiagnosticReport,
+  ToastDiagnosticReport,
+} from './ports.js';
 
 export function createFakeDiagnosticsServices(
   overrides: Partial<DiagnosticsServices> = {},
 ): DiagnosticsServices {
   return {
     copyToastReport: async () => undefined,
+    copyManualReport: async () => undefined,
+    copyRendererCrashReport: async () => undefined,
     takePreviousMainProcessInterruption: async () => false,
     copyPreviousMainProcessInterruption: async () => undefined,
     ...overrides,

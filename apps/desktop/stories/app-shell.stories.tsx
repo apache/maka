@@ -61,7 +61,7 @@ import {
   SESSION_WORKBAR_DEFAULT_WIDTH,
   type WorkbarLayoutState,
 } from '../src/renderer/features/workbar/testing';
-import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
+import { AppShellDetailPanel } from '../src/renderer/shell/detail-panel';
 import { deriveChatTurnPresentation } from '../src/renderer/application/contracts/turn-presentation';
 import {
   deriveSessionRail,
@@ -219,10 +219,6 @@ const baseChatProps: ChatViewProps = {
   messages: conversation,
   scrollBehavior: 'smooth',
   activeSession,
-  activeConnectionLabel: 'Anthropic',
-  activeModel: 'claude-sonnet-4-5',
-  activeModelLabel: 'Claude Sonnet 4.5',
-  modelChoices,
   userLabel: '你',
   onNew: noop,
   onPromptSuggestion: noop,
@@ -581,6 +577,49 @@ export const DefaultLayout: Story = {
 // anything about an update at all.
 export const UpdateDownloaded: Story = {
   render: () => <ComposedShell updateReminder={{ state: 'downloaded', latestVersion: '0.1.7' }} />,
+};
+
+const onLineageNavigation = fn();
+
+// Real path: open a session retaining an original reply and its regenerated
+// reply. Stored turn_state lineage is projected by ChatView and the production
+// deriveChatTurnPresentation, including the forward and reverse navigation.
+export const RegeneratedConversation: Story = {
+  render: () => <ComposedShell chat={{
+    scrollBehavior: 'auto',
+    onLineageBadgeClick: onLineageNavigation,
+    messages: [
+      user('lineage-original-user', 'lineage-original', 5, '解释一下这个方案。'),
+      assistant('lineage-original-answer', 'lineage-original', 4, '旧回答保留在原来的轮次中。'),
+      { type: 'turn_state', id: 'lineage-original-state', turnId: 'lineage-original', ts: NOW - 4 * 60_000, status: 'completed' },
+      user('lineage-new-user', 'lineage-new', 3, '解释一下这个方案。'),
+      assistant('lineage-new-answer', 'lineage-new', 2, '重新生成的回答与旧回答通过来源标记相连。'),
+      { type: 'turn_state', id: 'lineage-new-state', turnId: 'lineage-new', ts: NOW - 2 * 60_000, status: 'completed', regeneratedFromTurnId: 'lineage-original' },
+    ],
+  }} />,
+  play: async ({ canvasElement }) => {
+    onLineageNavigation.mockClear();
+    const canvas = within(canvasElement);
+    const forward = await canvas.findByRole('button', { name: '重新生成自旧回答' });
+    const reverse = await canvas.findByRole('button', { name: '已重新生成 → 新回答' });
+    const original = canvasElement.querySelector<HTMLElement>('[data-turn-id="lineage-original"]')!;
+    const regenerated = canvasElement.querySelector<HTMLElement>('[data-turn-id="lineage-new"]')!;
+    const sourceRow = forward.closest('.maka-turn-lineage-row')!;
+    const derivativeRow = reverse.closest('.maka-turn-lineage-row')!;
+    await document.fonts.ready;
+    expect(sourceRow.getBoundingClientRect().bottom).toBeLessThanOrEqual(regenerated.querySelector('.maka-user-message')!.getBoundingClientRect().top);
+    expect(derivativeRow.getBoundingClientRect().bottom).toBeLessThanOrEqual(original.querySelector('.maka-turn-footer')!.getBoundingClientRect().top);
+    for (const [button, row] of [[forward, sourceRow], [reverse, derivativeRow]] as const) {
+      expect(button.getBoundingClientRect().left).toBeCloseTo(row.getBoundingClientRect().left, 1);
+      expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(row.getBoundingClientRect().right + 1);
+    }
+    forward.focus();
+    await expect(forward).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    await expect(onLineageNavigation).toHaveBeenLastCalledWith('lineage-original');
+    await userEvent.click(reverse);
+    await expect(onLineageNavigation).toHaveBeenLastCalledWith('lineage-new');
+  },
 };
 
 // Real path: the same download fails → same slot, muted variant, retry.
@@ -1678,7 +1717,7 @@ export const NewChatComposerEmptyLocalHost: Story = {
 };
 
 // Real path: 新任务 → 切换项目 → 项目 picker 处于 pending（切换中）。
-// Production passes `pending: projectPickerPending` while a project switch is
+// Task Entry marks the Workspace Picker `pending` while a project mutation is
 // in flight; the trigger locks with a spinner and every menu row disables,
 // matching the model switcher's mid-switch treatment.
 export const NewChatComposerProjectPending: Story = {

@@ -62,6 +62,7 @@ const queueStubs = {
   retractQueueEntry: async () => undefined,
   reorderQueueEntries: async () => undefined,
   compact: async () => { throw new Error('Context compaction is not used in reference tests'); },
+  listTurnLandmarks: async () => ({ landmarks: [] }),
 };
 
 afterEach(async () => {

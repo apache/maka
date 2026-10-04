@@ -54,7 +54,7 @@ import {
   SessionCatalogContext,
 } from '../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../src/shared/desktop-session-projection.js';
-import { desktopSlashCommandAvailability } from '../src/renderer/desktop-slash-command';
+import { desktopSlashCommandAvailability } from '../src/renderer/application/contracts/desktop-slash-command';
 import { getShellCopy } from '../src/renderer/locales/shell-copy';
 import { withScopedMakaBridge } from './maka-bridge';
 
@@ -171,6 +171,7 @@ const conversationServices: ConversationServices = {
     compact: async () => {
       throw new Error('Context compaction is not used in slash menu stories');
     },
+    listTurnLandmarks: async () => ({ landmarks: [] }),
   },
   runtimeHosts: { subscribeChanges: () => () => undefined },
   skills: { listInvocable: loadProjection },
@@ -214,6 +215,7 @@ function SlashMenuComposer({
 const stagingServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
   previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
 };
 
 // Match AppShell's persistent staging scope around the real mention reader.

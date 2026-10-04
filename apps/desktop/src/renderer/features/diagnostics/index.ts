@@ -20,4 +20,10 @@
 export { DiagnosticsServicesProvider } from './services-context.js';
 export { DiagnosticReportToastProvider } from './ui/diagnostic-report-toast-provider.js';
 export { PreviousMainProcessInterruptionNotice } from './ui/previous-main-process-interruption-notice.js';
+export {
+  ManualDiagnosticReportConsumer,
+  RendererCrashReportConsumer,
+  type CopyManualDiagnosticReport,
+  type CopyRendererCrashReport,
+} from './ui/report-consumers.js';
 export type { DiagnosticsServices } from './ports.js';

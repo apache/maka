@@ -45,9 +45,12 @@ import {
   type ReadyTaskEntryHost,
 } from '../model/task-entry-selection.js';
 import { resolveWorkBoardStartTarget, type WorkBoardStartTargetResult } from '../model/work-board-target.js';
+import { folderOpenFailure } from '../model/folder-open-failure.js';
 import type {
   TaskEntryCatalog,
   TaskEntryError,
+  TaskEntryFolder,
+  TaskEntryFolderOpenResult,
   TaskEntryHostRef,
   TaskEntryProjectMutationResult,
   TaskEntryTarget,
@@ -110,6 +113,10 @@ export interface TaskEntryControllerCommands {
   }): Promise<boolean>;
   resolveWorkBoardTarget(item: WorkBoardItem): WorkBoardStartTargetResult;
   prepareWorkBoardDraft(target: TaskEntryTarget, draft: string): string | undefined;
+  /** Reveals the project folder of the task `sessionId`, or the default Host's without one. */
+  openProjectFolder(sessionId?: string): Promise<void>;
+  /** Reveals the default Host's workspace folder. */
+  openWorkspaceFolder(): Promise<void>;
 }
 
 export interface TaskEntryController {
@@ -168,7 +175,7 @@ export function useTaskEntryController(
   const conversationCopy = getConversationCopy(locale).workspace;
   const reportError = input.reportError;
   const manageProjects = input.manageProjects;
-  const { catalog: service, sessions: sessionService } = useTaskEntryServices();
+  const { catalog: service, sessions: sessionService, folders } = useTaskEntryServices();
   const [catalog, setCatalog] = useState<TaskEntryCatalog>(EMPTY_CATALOG);
   const [selectedProfileId, setSelectedProfileId] = useState<string>();
   const [projectSelections, setProjectSelections] = useState(
@@ -731,6 +738,15 @@ export function useTaskEntryController(
     close: () => setNewProjectOpen(false),
     submit: (name: string) => addSelectedProject(name),
   } : undefined, [newProjectOpen, addSelectedProject]);
+  const openFolder = useCallback(async (
+    folder: TaskEntryFolder,
+    open: () => Promise<TaskEntryFolderOpenResult>,
+    sessionId?: string,
+  ): Promise<void> => {
+    const failure = folderOpenFailure(folder, await open(), locale, sessionId);
+    if (failure) reportError(failure);
+  }, [locale, reportError]);
+
   return useMemo(() => ({
     host: {
       ...(directoryHost
@@ -789,6 +805,10 @@ export function useTaskEntryController(
       addSessionWorkspace,
       resolveWorkBoardTarget,
       prepareWorkBoardDraft,
+      openProjectFolder: (sessionId) =>
+        openFolder('project', () => folders.openProjectFolder(sessionId), sessionId),
+      openWorkspaceFolder: () =>
+        openFolder('workspace', () => folders.openWorkspaceFolder()),
     },
     selectors: {
       ...(target ? { target } : {}),
@@ -822,6 +842,8 @@ export function useTaskEntryController(
     closeDirectoryPicker,
     closeSessionWorkspaceRecovery,
     directoryHost,
+    folders,
+    openFolder,
     projectPath,
     projectScopes,
     openSessionWorkspaceRecovery,

@@ -21,10 +21,13 @@ import { createContext, useContext, useLayoutEffect, useRef, useState, useSyncEx
 import { useConversationController } from '../controller/use-conversation-controller.js';
 import { useSessionMessageQueue } from '../controller/use-session-message-queue.js';
 import { useSessionUiRead } from '../controller/use-session-ui-read.js';
+import { createComposerEditing, type ComposerEditingCommands } from '../model/composer-editing.js';
 import { ConversationContext } from './conversation-context.js';
 
 const QueueContext = createContext<ReturnType<typeof useSessionMessageQueue> | null>(null);
-const QueueCommandsContext = createContext<Omit<ReturnType<typeof useSessionMessageQueue>, 'transientMessages'> | null>(null);
+const QueueCommandsContext = createContext<
+  (Omit<ReturnType<typeof useSessionMessageQueue>, 'transientMessages'> & { readonly editing: ComposerEditingCommands }) | null
+>(null);
 export function useConversationQueue() {
   const value = useContext(QueueContext);
   if (!value) throw new Error('ConversationProvider is required');
@@ -46,6 +49,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   useLayoutEffect(() => { current.current = surface; });
   const [commands] = useState(() => ({
     composer: surface.composer,
+    editing: createComposerEditing(surface.composer),
     draftContextRestorer: surface.draftContextRestorer,
     restoreDraft: surface.restoreDraft,
     promoteQueuedEntry: (...args: Parameters<typeof surface.promoteQueuedEntry>) => current.current.promoteQueuedEntry(...args),
