@@ -76,9 +76,11 @@ export function selectLatestRequestUsage(
 }
 
 /**
- * Prefer the newest timed measurement. A known compaction suppresses snapshots
- * that cannot be shown to postdate its transcript note. The note may be
- * recorded later than the actual fold, so it is not a causal checkpoint identifier.
+ * Resolve the context-usage reading the UI can display from the live Turn's
+ * latest request snapshot and the durable transcript's token-usage anchors
+ * and compaction notes. Choose the newest reading whose relative order can
+ * be established; after a compaction, only a measurement proven to have
+ * completed later may be shown, otherwise report the usage as stale.
  */
 export function resolveContextUsage(input: {
   readonly latestRequestUsage: LatestRequestUsage;
