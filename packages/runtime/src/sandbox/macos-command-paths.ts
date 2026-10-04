@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
@@ -38,6 +38,8 @@ export type MacosDeveloperCommandRunner = (
   options: {
     encoding?: 'utf8';
     timeout: number;
+    killSignal: 'SIGKILL';
+    signal?: AbortSignal;
     stdio: ['ignore', 'pipe', 'ignore'] | 'ignore';
   },
 ) => MacosDeveloperCommandResult | Promise<MacosDeveloperCommandResult>;
@@ -52,13 +54,17 @@ export interface MacosDeveloperPathOptions {
   selectDeveloperDir?: () => string | undefined | Promise<string | undefined>;
   validateAppleBinary?: (path: string) => boolean | Promise<boolean>;
   runCommand?: MacosDeveloperCommandRunner;
+  signal?: AbortSignal;
 }
 
 /** Resolve only the dynamic-library directories used by the selected Apple toolchain. */
 export async function resolveMacosDeveloperExecutableRoots(
   options: MacosDeveloperPathOptions = {},
 ): Promise<readonly string[]> {
-  const runCommand = options.runCommand ?? runDeveloperCommand;
+  if (options.signal?.aborted) return [];
+  const commandRunner = options.runCommand ?? runDeveloperCommand;
+  const runCommand: MacosDeveloperCommandRunner = (executable, args, commandOptions) =>
+    commandRunner(executable, args, { ...commandOptions, signal: options.signal });
   const selected =
     options.developerDir?.trim() ||
     (await (options.selectDeveloperDir ?? (() => readSelectedDeveloperDirectory(runCommand)))());
@@ -67,6 +73,11 @@ export async function resolveMacosDeveloperExecutableRoots(
   let developerRoot: string;
   try {
     developerRoot = realpathSync(selected);
+    if (basename(developerRoot).endsWith('.app')) {
+      const bundleRoot = developerRoot;
+      developerRoot = realpathSync(join(bundleRoot, 'Contents', 'Developer'));
+      if (!isPathWithin(developerRoot, bundleRoot)) return [];
+    }
   } catch {
     return [];
   }
@@ -123,6 +134,7 @@ async function readSelectedDeveloperDirectory(
   const result = await runCommand('/usr/bin/xcode-select', ['-p'], {
     encoding: 'utf8',
     timeout: XCODE_SELECT_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
     stdio: ['ignore', 'pipe', 'ignore'],
   });
   return result.status === 0 ? result.stdout?.trim() || undefined : undefined;
@@ -137,6 +149,7 @@ async function validateAppleBinary(
     ['--verify', '--strict', '-R=anchor apple', path],
     {
       timeout: CODESIGN_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
       stdio: 'ignore',
     },
   );
@@ -145,17 +158,25 @@ async function validateAppleBinary(
 
 const runDeveloperCommand: MacosDeveloperCommandRunner = (executable, args, options) =>
   new Promise((resolve) => {
-    execFile(
-      executable,
-      [...args],
-      { encoding: 'utf8', timeout: options.timeout, maxBuffer: 64 * 1024 },
-      (error, stdout) => {
-        resolve({
-          status: error ? (typeof error.code === 'number' ? error.code : null) : 0,
-          ...(options.encoding === 'utf8' ? { stdout } : {}),
-        });
-      },
-    );
+    const child = spawn(executable, [...args], options);
+    let stdout = '';
+    let exceededBuffer = false;
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      if (exceededBuffer) return;
+      stdout += chunk;
+      if (Buffer.byteLength(stdout) > 64 * 1024) {
+        exceededBuffer = true;
+        child.kill('SIGKILL');
+      }
+    });
+    child.on('error', () => resolve({ status: null }));
+    child.on('close', (status) => {
+      resolve({
+        status: exceededBuffer ? null : status,
+        ...(options.encoding === 'utf8' ? { stdout } : {}),
+      });
+    });
   });
 
 function canonicalDirectory(path: string): string | undefined {

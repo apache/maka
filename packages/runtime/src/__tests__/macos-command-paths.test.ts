@@ -30,7 +30,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   createReadOnlyPermissionProfile,
@@ -82,13 +82,15 @@ describe('resolveMacosDeveloperExecutableRoots', () => {
     mkdirSync(frameworks);
     writeFileSync(join(library, 'libxcrun.dylib'), 'fixture');
     try {
-      assert.deepEqual(
-        await resolveMacosDeveloperExecutableRoots({
-          developerDir: developer,
-          validateAppleBinary: () => true,
-        }),
-        [realpathSync(library), realpathSync(frameworks)],
-      );
+      for (const developerDir of [developer, dirname(contents)]) {
+        assert.deepEqual(
+          await resolveMacosDeveloperExecutableRoots({
+            developerDir,
+            validateAppleBinary: () => true,
+          }),
+          [realpathSync(library), realpathSync(frameworks)],
+        );
+      }
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
@@ -173,18 +175,37 @@ describe('resolveMacosDeveloperExecutableRoots', () => {
     const library = join(developer, 'usr', 'lib');
     mkdirSync(library, { recursive: true });
     writeFileSync(join(library, 'libxcrun.dylib'), 'fixture');
-    const calls: Array<{ executable: string; args: readonly string[]; timeout: number }> = [];
+    const signal = new AbortController().signal;
+    const calls: Array<{
+      executable: string;
+      args: readonly string[];
+      timeout: number;
+      killSignal: string;
+      signal?: AbortSignal;
+    }> = [];
     const runCommand: MacosDeveloperCommandRunner = async (executable, args, options) => {
-      calls.push({ executable, args, timeout: options.timeout });
+      calls.push({
+        executable,
+        args,
+        timeout: options.timeout,
+        killSignal: options.killSignal,
+        signal: options.signal,
+      });
       if (executable === '/usr/bin/xcode-select') {
         return { status: 0, stdout: `${developer}\n` };
       }
       return { status: null };
     };
     try {
-      assert.deepEqual(await resolveMacosDeveloperExecutableRoots({ runCommand }), []);
+      assert.deepEqual(await resolveMacosDeveloperExecutableRoots({ runCommand, signal }), []);
       assert.deepEqual(calls, [
-        { executable: '/usr/bin/xcode-select', args: ['-p'], timeout: 1_000 },
+        {
+          executable: '/usr/bin/xcode-select',
+          args: ['-p'],
+          timeout: 1_000,
+          killSignal: 'SIGKILL',
+          signal,
+        },
         {
           executable: '/usr/bin/codesign',
           args: [
@@ -194,6 +215,8 @@ describe('resolveMacosDeveloperExecutableRoots', () => {
             realpathSync(join(library, 'libxcrun.dylib')),
           ],
           timeout: 1_000,
+          killSignal: 'SIGKILL',
+          signal,
         },
       ]);
     } finally {

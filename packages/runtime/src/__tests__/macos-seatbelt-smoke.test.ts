@@ -39,7 +39,8 @@ import { SandboxManager } from '../sandbox/sandbox-manager.js';
 const canRunSeatbelt = process.platform === 'darwin' && existsSync(MACOS_SEATBELT_EXECUTABLE);
 const selectedDeveloperDirectory =
   process.platform === 'darwin'
-    ? spawnSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8' }).stdout.trim()
+    ? process.env.DEVELOPER_DIR?.trim() ||
+      spawnSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8' }).stdout.trim()
     : '';
 const canRunAppleToolchain = selectedDeveloperDirectory.length > 0;
 

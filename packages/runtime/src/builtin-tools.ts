@@ -841,7 +841,7 @@ async function sandboxCommand(
   const macosPaths =
     platform === 'darwin'
       ? manager.shouldSandbox(effective.profile)
-        ? await resolveMacosCommandPaths(effective.profile, env)
+        ? await resolveMacosCommandPaths(effective.profile, env, { signal: ctx.abortSignal })
         : { executableRoots: [] }
       : undefined;
 
