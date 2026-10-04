@@ -55,6 +55,7 @@ export interface MacosDeveloperPathOptions {
   validateAppleBinary?: (path: string) => boolean | Promise<boolean>;
   runCommand?: MacosDeveloperCommandRunner;
   signal?: AbortSignal;
+  onDiscoveryFailure?: (reason: string) => void;
 }
 
 /** Resolve only the dynamic-library directories used by the selected Apple toolchain. */
@@ -62,13 +63,29 @@ export async function resolveMacosDeveloperExecutableRoots(
   options: MacosDeveloperPathOptions = {},
 ): Promise<readonly string[]> {
   if (options.signal?.aborted) return [];
+  const fail = (reason: string): readonly string[] => {
+    if (!options.signal?.aborted) {
+      (options.onDiscoveryFailure ?? ((message) => console.warn(`[sandbox:macos] ${message}`)))(
+        `Apple toolchain discovery failed closed: ${reason}. No additional executable roots granted.`,
+      );
+    }
+    return [];
+  };
   const commandRunner = options.runCommand ?? runDeveloperCommand;
   const runCommand: MacosDeveloperCommandRunner = (executable, args, commandOptions) =>
     commandRunner(executable, args, { ...commandOptions, signal: options.signal });
+  let probeFailure: string | undefined;
   const selected =
     options.developerDir?.trim() ||
-    (await (options.selectDeveloperDir ?? (() => readSelectedDeveloperDirectory(runCommand)))());
-  if (!selected || !isAbsolute(selected)) return [];
+    (await (
+      options.selectDeveloperDir ??
+      (() =>
+        readSelectedDeveloperDirectory(runCommand, (reason) => {
+          probeFailure = reason;
+        }))
+    )());
+  if (!selected) return fail(probeFailure ?? 'no developer directory selected');
+  if (!isAbsolute(selected)) return fail('developer directory is not absolute');
 
   let developerRoot: string;
   try {
@@ -76,36 +93,45 @@ export async function resolveMacosDeveloperExecutableRoots(
     if (basename(developerRoot).endsWith('.app')) {
       const bundleRoot = developerRoot;
       developerRoot = realpathSync(join(bundleRoot, 'Contents', 'Developer'));
-      if (!isPathWithin(developerRoot, bundleRoot)) return [];
+      if (!isPathWithin(developerRoot, bundleRoot))
+        return fail('developer directory escapes bundle');
     }
   } catch {
-    return [];
+    return fail('developer directory cannot be resolved');
   }
 
   const homeRoot = canonicalDirectory(options.homeDir ?? homedir());
-  if (developerRoot === '/' || (homeRoot && isPathWithin(developerRoot, homeRoot))) return [];
+  if (developerRoot === '/' || (homeRoot && isPathWithin(developerRoot, homeRoot))) {
+    return fail('developer directory is root or inside home');
+  }
 
   const libraryRoot = canonicalDirectory(join(developerRoot, 'usr', 'lib'));
-  if (!libraryRoot || !isPathWithin(libraryRoot, developerRoot)) return [];
+  if (!libraryRoot || !isPathWithin(libraryRoot, developerRoot)) {
+    return fail('toolchain library directory is missing or escapes developer directory');
+  }
   const xcrunLibrary = canonicalRegularFile(join(libraryRoot, 'libxcrun.dylib'));
-  if (!xcrunLibrary || !isPathWithin(xcrunLibrary, libraryRoot)) return [];
+  if (!xcrunLibrary || !isPathWithin(xcrunLibrary, libraryRoot)) {
+    return fail('libxcrun is missing or escapes library directory');
+  }
   if (
     !(await (options.validateAppleBinary ?? ((path) => validateAppleBinary(path, runCommand)))(
       xcrunLibrary,
     ))
   ) {
-    return [];
+    return fail('Apple signature verification failed or timed out');
   }
 
   if (basename(developerRoot) === 'CommandLineTools') return [libraryRoot];
 
   if (basename(developerRoot) !== 'Developer' || basename(dirname(developerRoot)) !== 'Contents') {
-    return [];
+    return fail('unsupported developer directory layout');
   }
 
   const contentsRoot = dirname(developerRoot);
   const sharedFrameworks = canonicalDirectory(join(contentsRoot, 'SharedFrameworks'));
-  if (!sharedFrameworks || !isPathWithin(sharedFrameworks, contentsRoot)) return [];
+  if (!sharedFrameworks || !isPathWithin(sharedFrameworks, contentsRoot)) {
+    return fail('SharedFrameworks is missing or escapes Xcode contents');
+  }
   return [libraryRoot, sharedFrameworks];
 }
 
@@ -130,6 +156,7 @@ export async function resolveMacosCommandPaths(
 
 async function readSelectedDeveloperDirectory(
   runCommand: MacosDeveloperCommandRunner,
+  onFailure: (reason: string) => void,
 ): Promise<string | undefined> {
   const result = await runCommand('/usr/bin/xcode-select', ['-p'], {
     encoding: 'utf8',
@@ -137,7 +164,15 @@ async function readSelectedDeveloperDirectory(
     killSignal: 'SIGKILL',
     stdio: ['ignore', 'pipe', 'ignore'],
   });
-  return result.status === 0 ? result.stdout?.trim() || undefined : undefined;
+  if (result.status !== 0) {
+    onFailure(
+      result.status === null
+        ? 'xcode-select probe interrupted or timed out'
+        : 'xcode-select probe failed',
+    );
+    return undefined;
+  }
+  return result.stdout?.trim() || undefined;
 }
 
 async function validateAppleBinary(

@@ -231,8 +231,37 @@ describe('resolveMacosDeveloperExecutableRoots', () => {
       return { status: null };
     };
 
-    assert.deepEqual(await resolveMacosDeveloperExecutableRoots({ runCommand }), []);
+    const diagnostics: string[] = [];
+    assert.deepEqual(
+      await resolveMacosDeveloperExecutableRoots({
+        runCommand,
+        onDiscoveryFailure: (reason) => diagnostics.push(reason),
+      }),
+      [],
+    );
     assert.deepEqual(calls, ['/usr/bin/xcode-select']);
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0]!, /xcode-select probe interrupted or timed out/);
+    diagnostics.length = 0;
+    assert.deepEqual(
+      await resolveMacosDeveloperExecutableRoots({
+        selectDeveloperDir: () => undefined,
+        onDiscoveryFailure: (reason) => diagnostics.push(reason),
+      }),
+      [],
+    );
+    assert.match(diagnostics[0]!, /no developer directory selected/);
+    diagnostics.length = 0;
+    const controller = new AbortController();
+    controller.abort();
+    assert.deepEqual(
+      await resolveMacosDeveloperExecutableRoots({
+        signal: controller.signal,
+        onDiscoveryFailure: (reason) => diagnostics.push(reason),
+      }),
+      [],
+    );
+    assert.deepEqual(diagnostics, []);
   });
 
   it('returns a canonical root that is unaffected by later selector alias replacement', async () => {
