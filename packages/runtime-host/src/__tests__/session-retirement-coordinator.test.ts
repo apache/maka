@@ -378,9 +378,70 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('archives a family whose WorkHub delegation has finished', async () => {
+    await withHarness(async (harness) => {
+      await createCoordinationSession(harness.store, harness.workspaceRoot);
+      const request = assignmentRequest(
+        'delegation-archive-finished',
+        harness.revisionId,
+        'Revision child',
+        'target-turn',
+      );
+      await harness.store.assignWorkHubMessage(request);
+      // The Coordination ledger keeps the assignment row until the delegation
+      // is superseded or stopped; finishing its Turn retires the delegation
+      // without touching that row.
+      harness.workHubRetirement.set(request.assignment.delegationId, 'retired');
+
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
+      await assertFamilyLifecycle(harness, true);
+    });
+  });
+
+  test('rejects manual archive while a retired delegation still owes WorkHub its result', async () => {
+    await withHarness(async (harness) => {
+      await createCoordinationSession(harness.store, harness.workspaceRoot);
+      const request = assignmentRequest(
+        'delegation-result-owed',
+        harness.revisionId,
+        'Revision child',
+        'target-turn',
+      );
+      await harness.store.assignWorkHubMessage(request);
+      harness.workHubRetirement.set(request.assignment.delegationId, 'retired');
+      harness.workHubUndeliveredResults.add(request.assignment.delegationId);
+
+      const blocked = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(blocked.ok, false);
+      if (blocked.ok) return;
+      assert.equal(blocked.error.code, 'session_busy');
+      assert.match(blocked.error.message, /undelivered WorkHub result/);
+      await assertFamilyLifecycle(harness, false);
+
+      // Once the Host delivers the result, the archive goes through.
+      harness.workHubUndeliveredResults.delete(request.assignment.delegationId);
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
+      await assertFamilyLifecycle(harness, true);
+    });
+  });
+
   test('rejects manual archive while a linked child Session is still live', async () => {
     await withHarness(async (harness) => {
       const childId = await createClosedSubagent(harness, harness.rootId, 1);
+      // In-flight work is what keeps the relationship live: a reserved root
+      // Turn on the child, not the mere existence of the link.
+      harness.blockers.root.add(childId);
       const blocked = await harness.coordinator.handlers['session.lifecycle.set'](
         { sessionId: harness.rootId, state: 'archived' },
         CONNECTION_CONTEXT,
@@ -393,7 +454,9 @@ describe('Host Session retirement coordinator', () => {
       await assertFamilyLifecycle(harness, false);
       assert.equal((await harness.store.readHeaderSnapshot(childId)).isArchived, false);
 
-      // The child carries no live relationship of its own, so it archives alone.
+      // The child carries no live relationship of its own, so once its work
+      // ends it archives alone.
+      harness.blockers.root.delete(childId);
       const childArchived = await harness.coordinator.handlers['session.lifecycle.set'](
         { sessionId: childId, state: 'archived' },
         CONNECTION_CONTEXT,
@@ -406,6 +469,20 @@ describe('Host Session retirement coordinator', () => {
         CONNECTION_CONTEXT,
       );
       assert.equal(parentArchived.ok, true);
+      await assertFamilyLifecycle(harness, true);
+    });
+  });
+
+  test('archives a family beside a finished linked subtask', async () => {
+    await withHarness(async (harness) => {
+      await createClosedSubagent(harness, harness.rootId, 1);
+      // A subtask whose work has ended does not keep its parent out of the
+      // archive; unlike a removal, the parent's archive leaves it in place.
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
       await assertFamilyLifecycle(harness, true);
     });
   });
@@ -1545,6 +1622,8 @@ async function withHarness(
     const quiescentGraphs = new Set<string>();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     const admission = new SessionAdmissionGate();
+    const workHubRetirement = new Map<string, 'retired' | 'not_retired' | 'recovering'>();
+    const workHubUndeliveredResults = new Set<string>();
     const harness: RetirementHarness = {
       workspaceRoot: root,
       store,
@@ -1557,6 +1636,8 @@ async function withHarness(
       quiescentGraphs,
       admission,
       memoryExtractionLane,
+      workHubRetirement,
+      workHubUndeliveredResults,
       failRemoveCommit: false,
       failRemovalPublication: false,
       failArtifactCleanup: false,
@@ -1615,6 +1696,12 @@ async function withHarness(
       messages: {
         hasLiveSessionState: (sessionId) => blockers.message.has(sessionId),
         retireSessions: (sessionIds) => actions.retiredMessages.push(...sessionIds),
+      },
+      workHub: {
+        readDelegationRetirement: async (assignment) =>
+          workHubRetirement.get(assignment.delegationId) ?? 'not_retired',
+        hasUndeliveredResult: async (assignment) =>
+          workHubUndeliveredResults.has(assignment.delegationId),
       },
       interactions: {
         hasPendingSession: async (sessionId) => blockers.interaction.has(sessionId),
@@ -1766,6 +1853,10 @@ interface RetirementHarness {
   readonly quiescentGraphs: Set<string>;
   readonly admission: SessionAdmissionGate;
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
+  /** Delegation-retirement verdict per delegationId; absent reads as live. */
+  readonly workHubRetirement: Map<string, 'retired' | 'not_retired' | 'recovering'>;
+  /** Delegations whose returnResults payload has not reached WorkHub. */
+  readonly workHubUndeliveredResults: Set<string>;
   coordinator: HostSessionRetirementCoordinator;
   failRemoveCommit: boolean;
   failMeasurement: boolean;

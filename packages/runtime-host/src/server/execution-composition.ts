@@ -40,6 +40,7 @@ import {
 } from '@maka/core/runtime-invocation';
 import {
   type SessionHeader,
+  type WorkHubDelegationAssignedMessage,
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
 } from '@maka/core/session';
@@ -237,7 +238,8 @@ import { resolveSandboxBoundaryRootSession } from './sandbox-boundary-graph-wake
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
-import { SessionAdmissionGate } from './session-admission-gate.js';
+import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
+import { workHubResultOrigin } from './workhub-result-coordinator.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
@@ -2299,6 +2301,43 @@ export async function createExecutionRuntimeHostComposition(
         return outcome.result.kind === 'committed' ? 'committed' : 'revision_conflict';
       },
     });
+    /**
+     * One delegation-retirement read for both consumers: the coordination
+     * coordinator's own actions and the archive guard's relationship check.
+     * A finished Turn retires the delegation long before anything removes its
+     * ledger row, so "live" must come from the execution, not the ledger.
+     */
+    const readWorkHubDelegationRetirement = async (
+      assignment: WorkHubDelegationAssignedMessage,
+      admission?: SessionAdmissionLease,
+    ): Promise<'retired' | 'not_retired' | 'recovering'> => {
+      const disposition = admission
+        ? await messages.readMessageExecutionDispositionAdmitted(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+            admission,
+          )
+        : await messages.readMessageExecutionDisposition(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+          );
+      if (disposition.kind === 'recovering') return 'recovering';
+      if (disposition.kind === 'pending') return 'not_retired';
+      if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
+        return 'retired';
+      }
+      const identity = {
+        sessionId: assignment.targetSessionId,
+        turnId: disposition.turnId,
+        runId: disposition.runId,
+      };
+      const latest = await coordinator.readLatestRootTurnLineage(identity);
+      if (isActiveWorkHubRoot(coordinator, latest)) return 'not_retired';
+      // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
+      // root is not evidence that its work ended.
+      const snapshot = await coordinator.read(latest);
+      return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
+    };
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
       routingModel:
         dependencies.workHubRoutingModel ?? createJevRoutingModel({ stores: runtimePolicyStores }),
@@ -2316,34 +2355,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
-        readDelegationRetirement: async (assignment, admission) => {
-          const disposition = admission
-            ? await messages.readMessageExecutionDispositionAdmitted(
-                assignment.targetSessionId,
-                assignment.targetMessageId,
-                admission,
-              )
-            : await messages.readMessageExecutionDisposition(
-                assignment.targetSessionId,
-                assignment.targetMessageId,
-              );
-          if (disposition.kind === 'recovering') return 'recovering';
-          if (disposition.kind === 'pending') return 'not_retired';
-          if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
-            return 'retired';
-          }
-          const identity = {
-            sessionId: assignment.targetSessionId,
-            turnId: disposition.turnId,
-            runId: disposition.runId,
-          };
-          const latest = await coordinator.readLatestRootTurnLineage(identity);
-          if (isActiveWorkHubRoot(coordinator, latest)) return 'not_retired';
-          // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
-          // root is not evidence that its work ended.
-          const snapshot = await coordinator.read(latest);
-          return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
-        },
+        readDelegationRetirement: readWorkHubDelegationRetirement,
         // Resolve and resume only the execution lineage owned by this
         // delegation. A Session-wide latest-failure query could otherwise
         // continue unrelated work started directly in the same Session.
@@ -2785,6 +2797,23 @@ export async function createExecutionRuntimeHostComposition(
       root: coordinator,
       messages,
       interactions,
+      workHub: {
+        readDelegationRetirement: (assignment, admission) =>
+          readWorkHubDelegationRetirement(assignment, admission),
+        hasUndeliveredResult: async (assignment, admission) => {
+          if (!workHubResults || !assignment.returnResults) return false;
+          // Same observation delivery is keyed on; the transcript content is
+          // not needed to identify the result event.
+          const observed = await workHubResults.inspect(assignment, admission, false);
+          if (!observed) return false;
+          // Root admission is the delivery receipt (see startWorkHubResult).
+          const receipt = await stores.agentRunStore.readRootTurnAdmission(
+            WORKHUB_COORDINATION_SESSION_ID,
+            workHubResultOrigin(assignment, observed).eventId,
+          );
+          return !receipt;
+        },
+      },
       goals: requireGoal(goal),
       scheduledTasks,
       resources: runtimeResources,

@@ -21,6 +21,7 @@ import {
   isWorkHubCoordinationSessionTarget,
   sessionRevisionFamilyId,
   type SessionHeader,
+  type WorkHubDelegationAssignedMessage,
 } from '@maka/core/session';
 import type {
   SubagentWorkspaceBinding,
@@ -119,6 +120,21 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly root: RetirementRoot;
   readonly messages: RetirementMessages;
   readonly interactions: RetirementInteractions;
+  /**
+   * WorkHub relationship reads shared with the coordination coordinator. The
+   * archive guard needs the delegation's execution state, not just its ledger
+   * row, and both must agree on what "still live" means.
+   */
+  readonly workHub: {
+    readDelegationRetirement(
+      assignment: WorkHubDelegationAssignedMessage,
+      admission: SessionAdmissionLease,
+    ): Promise<'retired' | 'not_retired' | 'recovering'>;
+    hasUndeliveredResult(
+      assignment: WorkHubDelegationAssignedMessage,
+      admission: SessionAdmissionLease,
+    ): Promise<boolean>;
+  };
   readonly goals: RetirementGoals;
   readonly scheduledTasks: {
     beginSessionRetirement(
@@ -199,6 +215,7 @@ export class HostSessionRetirementCoordinator {
   readonly #root: RetirementRoot;
   readonly #messages: RetirementMessages;
   readonly #interactions: RetirementInteractions;
+  readonly #workHub: HostSessionRetirementCoordinatorOptions['workHub'];
   readonly #goals: RetirementGoals;
   readonly #scheduledTasks: HostSessionRetirementCoordinatorOptions['scheduledTasks'];
   readonly #resources: RetirementResources;
@@ -229,6 +246,7 @@ export class HostSessionRetirementCoordinator {
     this.#root = options.root;
     this.#messages = options.messages;
     this.#interactions = options.interactions;
+    this.#workHub = options.workHub;
     this.#goals = options.goals;
     this.#scheduledTasks = options.scheduledTasks;
     this.#resources = options.resources;
@@ -729,6 +747,10 @@ export class HostSessionRetirementCoordinator {
    * A manual archive must not hide a Session that a WorkHub delegation or a
    * linked child still points at: WorkHub candidate and result views exclude
    * archived Sessions, so either relationship would lose its visible target.
+   * "Live" means the relationship is still in flight — the delegation's
+   * execution has not retired (or its result has not been delivered), or the
+   * child still carries active work. A finished delegation and a finished
+   * subtask hold nothing visible hostage, so they no longer block the archive.
    * This guards the manual archive path only — a removal retires or archives
    * the whole relationship set under its own confirm.
    */
@@ -741,9 +763,19 @@ export class HostSessionRetirementCoordinator {
     ) {
       const page = family.sessionIds.slice(offset, offset + WORKHUB_ASSIGNMENT_TARGET_PAGE);
       const [assignment] = await this.#stores.readActiveWorkHubAssignmentsByTarget(page);
-      if (assignment) {
+      if (!assignment) continue;
+      // The Coordination ledger keeps a delegation row until it is superseded
+      // or stopped, so the row alone says nothing about the work: read the
+      // delegation's execution state the same way WorkHub actions do.
+      const retirement = await this.#workHub.readDelegationRetirement(assignment, family.admission);
+      if (retirement !== 'retired') {
         throw new SessionRetirementBusyError(
           `Session ${assignment.targetSessionId} has an active WorkHub delegation`,
+        );
+      }
+      if (await this.#workHub.hasUndeliveredResult(assignment, family.admission)) {
+        throw new SessionRetirementBusyError(
+          `Session ${assignment.targetSessionId} has an undelivered WorkHub result`,
         );
       }
     }
@@ -752,10 +784,21 @@ export class HostSessionRetirementCoordinator {
       if (parent === undefined || parent.graph !== undefined) continue;
       if (!familyIds.has(parent.parentSessionId)) continue;
       if (header.conversationCopy?.state === 'preparing' || header.isArchived) continue;
-      throw new SessionRetirementBusyError(
-        `Session ${parent.parentSessionId} has a live linked child Session`,
-      );
+      if (await this.#hasLiveChildWork(header.id)) {
+        throw new SessionRetirementBusyError(
+          `Session ${parent.parentSessionId} has a live linked child Session`,
+        );
+      }
     }
+  }
+
+  /** The in-flight signals that make a linked child worth keeping visible. */
+  async #hasLiveChildWork(sessionId: string): Promise<boolean> {
+    return (
+      this.#root.readRootState(sessionId).kind !== 'idle' ||
+      this.#messages.hasLiveSessionState(sessionId) ||
+      (await this.#interactions.hasPendingSession(sessionId))
+    );
   }
 
   async #prepareRetirement(
