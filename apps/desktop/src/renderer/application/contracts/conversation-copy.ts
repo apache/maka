@@ -161,6 +161,8 @@ export interface DesktopConversationCopy {
     deleted(count: number): string;
     loadFailed: string;
     retry: string;
+    /** Re-reads the source after an out-of-band change, e.g. `git init` in a side terminal. */
+    refresh: string;
   };
   terminalPanel: {
     ariaLabel: string;
@@ -429,6 +431,7 @@ const COPY = {
       deleted: (count) => `删除 ${count}`,
       loadFailed: '无法读取 Git 变化',
       retry: '重试',
+      refresh: '刷新',
     },
     terminalPanel: {
       ariaLabel: '任务终端',
@@ -675,6 +678,7 @@ const COPY = {
       deleted: (count) => `刪除 ${count}`,
       loadFailed: '無法讀取 Git 變化',
       retry: '重試',
+      refresh: '重新整理',
     },
     terminalPanel: {
       ariaLabel: '任務終端',
@@ -916,6 +920,7 @@ const COPY = {
       deleted: (count) => `${count} deleted`,
       loadFailed: 'Could not read Git changes',
       retry: 'Retry',
+      refresh: 'Refresh',
     },
     terminalPanel: {
       ariaLabel: 'Task terminal',

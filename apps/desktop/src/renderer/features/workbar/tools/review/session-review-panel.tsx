@@ -307,8 +307,10 @@ export function SessionReviewPanel(props: {
         ) : null}
         {guidance ? (
           /* Neutral guidance (issue #5940): what Changes needs, the directory
-             it looked at, and the next step — no Retry, since retrying cannot
-             create a repository. */
+             it looked at, and the next step. No Retry — retrying cannot create
+             a repository — but a low-emphasis Refresh stays: `git init` runs in
+             a side terminal, and none of the automatic reload triggers fire
+             while the panel keeps focus. */
           <VStack gap={2} align="center" width="100%">
             <EmptyState
               icon={<GitBranch size={ICON_SIZE.empty} aria-hidden />}
@@ -320,6 +322,13 @@ export function SessionReviewPanel(props: {
                 {copy.taskDirectoryPath(guidance.cwd)}
               </Text>
             ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              label={copy.refresh}
+              isLoading={loading}
+              onClick={() => void load()}
+            />
           </VStack>
         ) : null}
         {unavailable ? (

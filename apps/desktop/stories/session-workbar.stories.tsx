@@ -1410,7 +1410,9 @@ export const ChangesLoadFailed: Story = {
 // Real path: 任务工作栏 → 变更 when the session cwd is not a Git repository.
 // A missing repository is a neutral starting point, not a failure: the panel
 // guides (what Changes needs + the directory it looked at) and offers no
-// 重试 — retrying cannot create a repository (#5940).
+// 重试 — retrying cannot create a repository (#5940). It keeps a low-key
+// 刷新: `git init` happens in a side terminal, which no automatic reload
+// trigger observes.
 export const ChangesSourceNotGit: Story = {
   decorators: [bridge({
     review: { ok: false, reason: 'not_git_repository', cwd: '/tmp/plain-task' },
@@ -1422,6 +1424,7 @@ export const ChangesSourceNotGit: Story = {
     await canvas.findByText(/git init/);
     await canvas.findByText(/\/tmp\/plain-task/);
     expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+    await canvas.findByRole('button', { name: '刷新' });
   },
 };
 

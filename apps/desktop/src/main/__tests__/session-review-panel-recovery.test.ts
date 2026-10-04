@@ -129,8 +129,12 @@ test('a task directory outside any repository guides instead of failing', async 
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
+  let reads = 0;
   const services = createFakeWorkbarServices({ review: {
-    read: async () => ({ ok: false, reason: 'not_git_repository', cwd: '/tmp/plain-task' }),
+    read: async () => {
+      reads += 1;
+      return { ok: false, reason: 'not_git_repository', cwd: '/tmp/plain-task' };
+    },
     subscribeSessionEvents: () => () => undefined,
   } });
   try {
@@ -144,11 +148,15 @@ test('a task directory outside any repository guides instead of failing', async 
     assert.match(container.textContent ?? '', /not a Git repository/);
     assert.match(container.textContent ?? '', /git init/);
     assert.match(container.textContent ?? '', /Task directory: \/tmp\/plain-task/);
-    assert.equal(
-      container.querySelector('button'),
-      null,
-      'retrying cannot turn a directory into a repository',
-    );
+    const retry = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Retry');
+    assert.equal(retry, undefined, 'retrying cannot turn a directory into a repository');
+    const refresh = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Refresh');
+    assert.ok(refresh, 'git init in a side terminal needs a manual refresh affordance');
+    assert.equal(reads, 1);
+    await act(async () => { refresh.click(); });
+    assert.equal(reads, 2, 'refresh re-reads the source after an out-of-band git init');
   } finally {
     await act(async () => { root.unmount(); });
     restore();
