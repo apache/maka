@@ -19,14 +19,44 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { StorageUsageServices } from '../../features/storage-usage';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage.js';
 
-export type DesktopStorageUsageBridge = Pick<MakaBridge, 'storage'>;
+export type DesktopStorageUsageBridge = Pick<MakaBridge, 'storage' | 'runtimeHostProfiles'>;
 
 /** Binds the storage usage feature to the Desktop bridge. */
 export function createDesktopStorageUsageServices(
   bridge: DesktopStorageUsageBridge = window.maka,
 ): StorageUsageServices {
   return {
+    notices: {
+      async loadHosts() {
+        const snapshot = await bridge.runtimeHostProfiles.getSnapshot();
+        return snapshot.entries.flatMap((entry) => entry.enabled && entry.readiness === 'ready' && entry.hostId
+          ? [{ profileId: entry.profile.id, hostId: entry.hostId, name: entry.profile.name }]
+          : []);
+      },
+      subscribeChanges(handler) {
+        const unsubscribe = bridge.runtimeHostProfiles.subscribeChanges(handler);
+        document.addEventListener('visibilitychange', handler);
+        window.addEventListener('focus', handler);
+        window.addEventListener('blur', handler);
+        return () => {
+          unsubscribe();
+          document.removeEventListener('visibilitychange', handler);
+          window.removeEventListener('focus', handler);
+          window.removeEventListener('blur', handler);
+        };
+      },
+      isVisible: () => document.visibilityState !== 'hidden' && document.hasFocus(),
+      readSeen(hostId) {
+        try {
+          return JSON.parse(safeLocalStorageGet(`maka-retention-notices-v1:${encodeURIComponent(hostId)}`) ?? 'null');
+        } catch {
+          return undefined;
+        }
+      },
+      writeSeen: (hostId, state) => safeLocalStorageSet(`maka-retention-notices-v1:${encodeURIComponent(hostId)}`, JSON.stringify(state)),
+    },
     loadUsage: (host) => bridge.storage.usage(host),
     // No host argument: each task is measured by the Host that holds it, and
     // the bridge routes by the projected id for exactly that reason.

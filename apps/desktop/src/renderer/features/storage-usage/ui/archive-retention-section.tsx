@@ -42,6 +42,7 @@ import {
   applyArchiveRetentionChange,
   archiveRetentionConfirm,
 } from '../model/archive-retention.js';
+import { acknowledgeRetentionResults } from '../model/retention-notices.js';
 import { useOptionalStorageUsageServices } from '../services-context.js';
 
 type RetentionState =
@@ -79,7 +80,10 @@ export function ArchiveRetentionSection() {
     let current = true;
     services.loadRetention(host).then(
       (retention) => {
-        if (current) setScoped({ hostKey, state: { status: 'ready', retention } });
+        if (current) {
+          setScoped({ hostKey, state: { status: 'ready', retention } });
+          acknowledgeRetentionResults(services, host, retention);
+        }
       },
       () => {
         if (current) setScoped({ hostKey, state: { status: 'failed' } });

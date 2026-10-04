@@ -463,6 +463,9 @@
       ]
     },
     "src/renderer/features/storage-usage/index.ts": {
+      "appShell": [
+        "ArchiveRetentionNotices"
+      ],
       "composition": [
         "StorageUsageServicesProvider"
       ]
@@ -696,6 +699,7 @@
           "./features/session-collaboration": 1,
           "./features/session-navigation": 1,
           "./features/session-settings": 1,
+          "./features/storage-usage/index.js": 1,
           "./features/task-entry": 1,
           "./features/workbar": 1,
           "./features/workhub": 1,
@@ -727,7 +731,7 @@
           "react": 1
         },
         "importSpecifiers": 52,
-        "nonTriviaTokens": 7333
+        "nonTriviaTokens": 7330
       },
       "src/renderer/use-app-shell-session-list.ts": {
         "importDeclarations": 4,

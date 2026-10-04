@@ -21,7 +21,8 @@
 // from this barrel and render these surfaces; they hold no storage state.
 
 export { ArchiveRetentionSection } from './ui/archive-retention-section.js';
+export { ArchiveRetentionNotices } from './ui/archive-retention-notices.js';
 export { StorageUsageSection } from './ui/storage-usage-section.js';
 export { TaskStorageSize } from './ui/task-storage-size.js';
 export { StorageUsageServicesProvider } from './services-context.js';
-export type { StorageUsageHostTarget, StorageUsageServices } from './ports.js';
+export type { RetentionNoticeHost, RetentionNoticeState, StorageUsageHostTarget, StorageUsageServices } from './ports.js';

@@ -20,6 +20,8 @@
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface ArchiveRetentionCopy {
+  noticeTitle(hostName: string): string;
+  readonly viewArchivedTasks: string;
   readonly title: string;
   /** What the setting covers, when its clock starts, what it keeps, and that it is final. */
   readonly help: string;
@@ -55,6 +57,8 @@ export interface ArchiveRetentionCopy {
 
 const COPY_BY_LOCALE = {
   'zh-CN': {
+    noticeTitle: (hostName: string) => `「${hostName}」的自动清理`,
+    viewArchivedTasks: '查看已归档任务',
     title: '自动清理',
     help: '开启后，此运行时主机会删除归档超过所选天数的任务。适用于所有已归档任务，无论是手动还是自动归档的。计时从开启或修改天数时开始，因此不会立即删除积压的任务。已置顶的任务会保留。删除后无法恢复。',
     enable: '自动删除已归档任务',
@@ -91,6 +95,8 @@ const COPY_BY_LOCALE = {
     cancel: '取消',
   },
   'zh-TW': {
+    noticeTitle: (hostName: string) => `「${hostName}」的自動清理`,
+    viewArchivedTasks: '檢視已歸檔任務',
     title: '自動清理',
     help: '開啟後，此執行階段主機會刪除歸檔超過所選天數的任務。適用於所有已歸檔任務，無論是手動或自動歸檔的。計時從開啟或修改天數時開始，因此不會立即刪除積壓的任務。已置頂的任務會保留。刪除後無法復原。',
     enable: '自動刪除已歸檔任務',
@@ -127,6 +133,8 @@ const COPY_BY_LOCALE = {
     cancel: '取消',
   },
   en: {
+    noticeTitle: (hostName: string) => `Automatic cleanup on “${hostName}”`,
+    viewArchivedTasks: 'View archived tasks',
     title: 'Automatic cleanup',
     help: 'When on, this Runtime Host deletes tasks that have been archived for longer than the period you choose. It applies to every archived task, whether you archived it or it was archived automatically. The clock starts when you turn it on or change the period, so no backlog is deleted at once. Pinned tasks are kept. Deletion is permanent.',
     enable: 'Delete archived tasks automatically',

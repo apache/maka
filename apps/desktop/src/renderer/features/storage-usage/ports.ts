@@ -37,6 +37,8 @@ export interface StorageUsageHostTarget {
  * deletes data itself; a Host with retention enabled does that on its own.
  */
 export interface StorageUsageServices {
+  /** Available in the application shell; isolated Settings fixtures need no observer. */
+  readonly notices?: RetentionNoticeServices;
   /** One Runtime Host's State Root footprint. */
   loadUsage(host: StorageUsageHostTarget): Promise<StorageUsageQueryResult>;
   /**
@@ -53,4 +55,24 @@ export interface StorageUsageServices {
     host: StorageUsageHostTarget,
     input: StorageRetentionSetInput,
   ): Promise<StorageRetentionSetResult>;
+}
+
+export interface RetentionNoticeHost extends StorageUsageHostTarget {
+  readonly name: string;
+}
+
+export interface RetentionNoticeState {
+  readonly deletionAt?: number;
+  readonly warning?: string;
+  /** Client time, used only to limit reminders during a long cleanup backlog. */
+  readonly notifiedAt?: number;
+}
+
+export interface RetentionNoticeServices {
+  /** Already-connected Hosts only; observing never starts or enables a Host. */
+  loadHosts(): Promise<readonly RetentionNoticeHost[]>;
+  subscribeChanges(handler: () => void): () => void;
+  isVisible(): boolean;
+  readSeen(hostId: string): unknown;
+  writeSeen(hostId: string, state: RetentionNoticeState): void;
 }
