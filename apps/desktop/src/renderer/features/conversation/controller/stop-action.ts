@@ -32,6 +32,12 @@ type ToastApi = {
   ): void;
 };
 
+/**
+ * What one stop request did. `failed` has already been toasted; `busy` means a
+ * stop for the Session is in flight that this action cannot await.
+ */
+export type StopOutcome = 'interrupted' | 'not_running' | 'failed' | 'busy';
+
 export function createStopAction(deps: {
   services: Pick<ComposerSubmissionServices, 'stop'>;
   uiLocale: UiLocale;
@@ -39,7 +45,9 @@ export function createStopAction(deps: {
   stopPending: SessionPendingClaim;
   removeTransientMessage: (sessionId: string, messageId: string) => void;
   toastApi: ToastApi;
-}): () => Promise<void> {
+  /** Stops in flight by Session. Must outlive one render so a second caller can await the first. */
+  inFlight?: Map<string, Promise<StopOutcome>>;
+}): (sessionId?: string, expectedTurnId?: string) => Promise<StopOutcome> {
   const {
     services,
     uiLocale,
@@ -47,25 +55,21 @@ export function createStopAction(deps: {
     stopPending,
     removeTransientMessage,
     toastApi,
+    inFlight = new Map<string, Promise<StopOutcome>>(),
   } = deps;
 
-  async function stop() {
-    const sessionId = activeIdRef.current;
-    if (!sessionId || !stopPending.claim(sessionId)) return;
+  async function stopSession(sessionId: string, expectedTurnId: string | undefined): Promise<StopOutcome> {
     try {
-      const result = await services.stop(sessionId, { source: 'stop_button' });
-      if (result?.kind === 'interrupted') {
-        for (const messageId of result.retractedMessageIds) {
-          removeTransientMessage(sessionId, messageId);
-        }
-      }
+      const result = await services.stop(sessionId, {
+        source: 'stop_button',
+        ...(expectedTurnId ? { expectedTurnId } : {}),
+      });
+      if (result?.kind !== 'interrupted') return 'not_running';
+      for (const id of result.retractedMessageIds) removeTransientMessage(sessionId, id);
+      return 'interrupted';
     } catch (error) {
-      // The Composer wires this through both the Stop button onClick
-      // and the Escape key. Both invoke `onStop` without awaiting, so
-      // a rejected IPC would otherwise surface as an
-      // UnhandledPromiseRejection and the user would see nothing.
-      // Surface it as a toast so the user knows the model wasn't
-      // actually interrupted and can retry.
+      // Composer Stop / Escape call onStop without awaiting; toast so a failed
+      // interrupt is visible instead of an UnhandledPromiseRejection.
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
         toastApi.error(
@@ -75,10 +79,22 @@ export function createStopAction(deps: {
           { sessionId },
         );
       }
+      return 'failed';
     } finally {
       stopPending.release(sessionId);
     }
   }
 
-  return stop;
+  return async (sessionId = activeIdRef.current, expectedTurnId?: string) => {
+    if (!sessionId) return 'not_running';
+    const pending = inFlight.get(sessionId);
+    if (pending) return pending;
+    if (!stopPending.claim(sessionId)) return 'busy';
+    const stopping = stopSession(sessionId, expectedTurnId);
+    inFlight.set(sessionId, stopping);
+    void stopping.finally(() => {
+      if (inFlight.get(sessionId) === stopping) inFlight.delete(sessionId);
+    });
+    return stopping;
+  };
 }

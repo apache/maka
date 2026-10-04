@@ -57,8 +57,9 @@ export type CompleteStopReason = CompleteEvent['stopReason'];
  * `end_turn` / `max_tokens` / `*_handoff` all represent the streaming phase
  * ending normally (control may be handed off, but the run is not a failure),
  * so they map to `completed`. `user_stop` maps to `aborted`; `error` to
- * `failed`. An explicit `step_limit` is also failed because the requested work
- * may be incomplete. Phase 5+ may introduce a richer `waiting`/`handoff` status.
+ * `failed`. An explicit `step_limit` or `empty_step_loop` is also failed
+ * because the requested work may be incomplete. Phase 5+ may introduce a
+ * richer `waiting`/`handoff` status.
  */
 export function mapCompleteStopReason(reason: CompleteStopReason): RuntimeEventStatus {
   if (reason === 'user_stop') return 'aborted';

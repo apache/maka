@@ -149,6 +149,12 @@ export { useComposerQuotes } from './controller/use-composer-quotes.js';
 export { useComposerStaging } from './ui/composer-staging-context.js';
 export { deriveTaskReadinessNotice, isTaskSubmissionHardBlocked } from './model/task-readiness-notice.js';
 export { mergeWorkspaceReferences, rebaseWorkspaceFileReferences } from './model/follow-up-submit-routing.js';
+export {
+  hasActiveTurnAtSubmit,
+  interruptBeforeRootSend,
+  resolveExpectedTurnIdForInterrupt,
+  shouldContinueRootSendAfterInterrupt,
+} from './controller/interrupt-before-root-send.js';
 export { createChatActions } from './controller/chat-actions.js';
 export {
   completeTurnRevisionCopyAttempt,

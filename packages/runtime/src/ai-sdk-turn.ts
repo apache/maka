@@ -23,6 +23,7 @@
  * construction and cross-turn routing remain in AiSdkBackend.
  */
 
+import { createHash, type Hash } from 'node:crypto';
 import type {
   AbortEvent,
   CompleteEvent,
@@ -583,6 +584,83 @@ const MAX_WAITING_CODE_MODE_CELLS = 1;
 
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const CONTEXT_RECOVERY_MAX_OUTPUT_TOKENS = 8_000;
+/**
+ * Desktop interactive turns often omit `maxSteps`, so a model that keeps
+ * emitting textless tool-only steps can loop forever and flood the transcript
+ * with empty AI replies (#4083). Ordinary multi-step tool workflows and an
+ * explicit `maxSteps` remain authoritative.
+ *
+ * Progress evidence is result-aware: a step is empty only when it has no
+ * visible text/thinking and the (toolName, input, result) signature repeats.
+ * Identical consecutive signatures still trip after three repeats. Short
+ * alternating cycles (A B A B …) bypass a consecutive-only counter, so the
+ * recent window also stops when it fills and at most half the signatures are
+ * distinct — i.e. the window is cycling rather than merely containing one
+ * benign repeat among otherwise new work.
+ */
+const MAX_CONSECUTIVE_IDENTICAL_EMPTY_STEPS = 3;
+const EMPTY_STEP_SIGNATURE_WINDOW = 6;
+/**
+ * Digest of a textless step's tool batch. Values are fed to the hash piece by
+ * piece, so a large result (a screenshot, a big file read) is never copied into
+ * one serialized string, and no size cap lets a loop on it escape the bound.
+ * Follows JSON's view of the value: `toJSON` applies and undefined properties
+ * are absent.
+ */
+function hashEmptyStepSignature(payload: unknown): string {
+  const hash = createHash('sha256');
+  updateEmptyStepDigest(hash, payload, new WeakSet());
+  return hash.digest('hex');
+}
+
+function updateEmptyStepDigest(hash: Hash, value: unknown, ancestors: WeakSet<object>): void {
+  if (value === null || value === undefined) {
+    hash.update('n;');
+    return;
+  }
+  if (typeof value === 'string') {
+    hash.update(`s${value.length}:`);
+    hash.update(value);
+    return;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    hash.update(`${typeof value}:${String(value)};`);
+    return;
+  }
+  if (typeof value !== 'object') {
+    hash.update('n;');
+    return;
+  }
+  if (ArrayBuffer.isView(value)) {
+    hash.update(`b${value.byteLength}:`);
+    hash.update(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+    return;
+  }
+  const toJSON = (value as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === 'function') {
+    updateEmptyStepDigest(hash, toJSON.call(value), ancestors);
+    return;
+  }
+  if (ancestors.has(value)) {
+    hash.update('c;');
+    return;
+  }
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    hash.update(`a${value.length}[`);
+    for (const item of value) updateEmptyStepDigest(hash, item, ancestors);
+    hash.update(']');
+  } else {
+    const entries = Object.entries(value).filter(([, entry]) => entry !== undefined);
+    hash.update(`o${entries.length}{`);
+    for (const [key, entry] of entries) {
+      updateEmptyStepDigest(hash, key, ancestors);
+      updateEmptyStepDigest(hash, entry, ancestors);
+    }
+    hash.update('}');
+  }
+  ancestors.delete(value);
+}
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -1461,7 +1539,17 @@ export class AiSdkTurn {
         let providerOutcome: ModelStepOutcome;
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
+        let consecutiveIdenticalEmptySteps = 0;
+        let previousEmptyStepSignature: string | undefined;
+        const recentEmptyStepSignatures: string[] = [];
+        const clearEmptyStepProgress = (): void => {
+          consecutiveIdenticalEmptySteps = 0;
+          previousEmptyStepSignature = undefined;
+          recentEmptyStepSignatures.length = 0;
+        };
         agentLoop: for (;;) {
+          let stepSawVisibleText = false;
+          let stepSawThinking = false;
           ({ plan, providerTools, modelTools, nestedTools } = snapshotStepTools());
           resolvedSystemPrompt = await this.resolveSystemPrompt();
           systemPrompt = joinPromptFragments([
@@ -1470,7 +1558,15 @@ export class AiSdkTurn {
             this.orchestration.mode === 'graph' ? renderGraphModePrompt() : undefined,
           ]);
           capacityProviderTools.splice(0, capacityProviderTools.length, ...providerTools);
+          // A mid-loop steer is user progress even when the next model step
+          // repeats the same textless tool result. Reset before the signature
+          // check so a mid-loop steer cannot be charged as the third identical
+          // empty step (#4083 review).
+          const injectedBeforeDrain = this.injectedSteeringMessages.length;
           await this.drainSteeringInto(input, queue);
+          if (this.injectedSteeringMessages.length > injectedBeforeDrain) {
+            clearEmptyStepProgress();
+          }
           if (this.deps.backend.loadTurnRuntimeEvents) {
             requestMessages = await loadDurableTurnProjection();
           } else {
@@ -1672,7 +1768,10 @@ export class AiSdkTurn {
                 stepTextPartStartOffset = stepText.length;
               } else if (event.kind === 'text') {
                 stepText += event.text;
-                if (event.text.length > 0) attemptSawVisibleContent = true;
+                if (event.text.length > 0) {
+                  attemptSawVisibleContent = true;
+                  stepSawVisibleText = true;
+                }
                 queue.push({
                   type: 'text_delta',
                   id: this.deps.newId(),
@@ -1711,7 +1810,15 @@ export class AiSdkTurn {
                   stepThinkingPartsById.set(event.reasoningPartId, part);
                 }
               } else if (event.kind === 'thinking') {
-                if (event.text.length > 0) attemptSawVisibleContent = true;
+                // OpenAI Responses emits an empty thinking carrier at
+                // `reasoning-end` whenever provider metadata is present. That
+                // is not user-visible progress, so it must not reset the
+                // empty-step loop cap (#4083). Persistence still appends to
+                // `stepThinkingParts` below so the encrypted carrier round-trips.
+                if (event.text.length > 0) {
+                  attemptSawVisibleContent = true;
+                  stepSawThinking = true;
+                }
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
                     attemptSawReplayBarrier = true;
@@ -2135,6 +2242,7 @@ export class AiSdkTurn {
           finishReason = providerOutcome.finishReason;
           await queue.waitUntilConsumedThroughCurrent();
 
+          let settledToolResults: unknown[] | undefined;
           if (returnedToolCalls.length > 0) {
             const continuationBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
             if (continuationBudgetRemains && !this.deps.backend.loadTurnRuntimeEvents) {
@@ -2205,11 +2313,13 @@ export class AiSdkTurn {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
+            const toolResults: unknown[] = [];
             settlementOutcomes.forEach((outcome, index) => {
               // All settlements completed and rejection was checked above;
               // preserve provider order for Plan and Yield result handling.
               if (outcome.status === 'rejected') throw outcome.reason;
               const settlement = outcome.value;
+              toolResults.push(settlement.result);
               const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, queue);
@@ -2222,6 +2332,9 @@ export class AiSdkTurn {
                 this.handleAgentGraphYieldToolResult(settlement.result);
               }
             });
+            // Only the results are kept, and only until this step's empty-step
+            // signature is taken below (#4083).
+            settledToolResults = toolResults;
             // Continuation reads durable events, not raw results. Do not retain
             // an entire completed batch across the next provider request.
             settlementOutcomes.length = 0;
@@ -2251,6 +2364,53 @@ export class AiSdkTurn {
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
           lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
+          const emptyStepSignature =
+            !stepSawVisibleText &&
+            !stepSawThinking &&
+            returnedToolCalls.length > 0 &&
+            settledToolResults !== undefined
+              ? hashEmptyStepSignature(
+                  returnedToolCalls.map(({ toolName, input }, index) => ({
+                    toolName,
+                    input,
+                    result: settledToolResults![index] ?? null,
+                  })),
+                )
+              : undefined;
+          if (
+            maxSteps === undefined &&
+            emptyStepSignature !== undefined &&
+            !this.loopStopRequested
+          ) {
+            consecutiveIdenticalEmptySteps =
+              emptyStepSignature === previousEmptyStepSignature
+                ? consecutiveIdenticalEmptySteps + 1
+                : 1;
+            previousEmptyStepSignature = emptyStepSignature;
+            recentEmptyStepSignatures.push(emptyStepSignature);
+            if (recentEmptyStepSignatures.length > EMPTY_STEP_SIGNATURE_WINDOW) {
+              recentEmptyStepSignatures.shift();
+            }
+            const distinctEmptySignatures = new Set(recentEmptyStepSignatures).size;
+            // Require a short cycle (≤ half distinct), not merely one duplicate
+            // among otherwise progressing textless steps.
+            const windowHasNoDistinctProgress =
+              recentEmptyStepSignatures.length >= EMPTY_STEP_SIGNATURE_WINDOW &&
+              distinctEmptySignatures * 2 <= recentEmptyStepSignatures.length;
+            if (
+              consecutiveIdenticalEmptySteps >= MAX_CONSECUTIVE_IDENTICAL_EMPTY_STEPS ||
+              windowHasNoDistinctProgress
+            ) {
+              // The model is repeating textless tool-only steps with no request
+              // or result progress — either the same signature consecutively,
+              // or a short alternating cycle. Stop as empty_step_loop rather
+              // than a configured step_limit or a successful end_turn (#4083).
+              this.loopStopReason = 'empty_step_loop';
+              this.loopStopRequested = true;
+            }
+          } else {
+            clearEmptyStepProgress();
+          }
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
           if (
             sandboxBoundaryFinalizationStep ||

@@ -25,6 +25,7 @@ import { activeHostTurn } from '../../../application/contracts/session-execution
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { parseDesktopSlashCommand } from '../../../application/contracts/desktop-slash-command.js';
 import { catalogWatchedRowsUsable } from '../../../application/contracts/session-catalog/catalog-row-watch.js';
+import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { useStableActions } from '../../../application/contracts/use-stable-actions.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import type {
@@ -40,7 +41,7 @@ import { useConversationOwner } from '../ui/conversation-context.js';
 import { useConversationQueueCommands } from '../ui/conversation-provider.js';
 import { createChatActions } from './chat-actions.js';
 import { createRevisionAwareOnSend, createStagedFollowUp } from './composer-submit.js';
-import { createStopAction } from './stop-action.js';
+import { createStopAction, type StopOutcome } from './stop-action.js';
 import { createTurnActions } from './turn-actions.js';
 import { useTurnActionRegistry } from './use-turn-action-registry.js';
 import { useShellResume } from './use-shell-resume.js';
@@ -68,6 +69,7 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
   const { staging, shell, newTask, sharedSessionActive, ownerSessionId } = input;
   const services = useComposerSubmissionServices();
   const { workspace, commands } = useConversationOwner();
+  const sessionCatalog = useSessionCatalogController();
   const queue = useConversationQueueCommands();
   const composerRef = queue.composer;
   const uiLocale = useUiLocale();
@@ -161,6 +163,25 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     toastApi,
   });
 
+  // The Composer's Stop button, Escape and a question prompt's Stop all land
+  // here; the send slot may then offer Resume for the stopped Turn (#5923).
+  // Built before onSend so plain-Enter interrupt can pin the same stop path.
+  const [inFlightStops] = useState(() => new Map<string, Promise<StopOutcome>>());
+  const { stopSession } = useStableActions((deps: Parameters<typeof createStopAction>[0]) => ({
+    stopSession: createStopAction(deps),
+  }), {
+    services,
+    uiLocale,
+    activeIdRef,
+    stopPending: workspace.ui.stopPending,
+    removeTransientMessage: commands.removeTransientMessage,
+    toastApi,
+    inFlight: inFlightStops,
+  });
+  const stop = useCallback(() => {
+    void stopSession();
+  }, [stopSession]);
+
   // The Composer's submit callback, built by the shared factory its tests drive.
   const { onSend } = useStableActions((ports: Parameters<typeof createRevisionAwareOnSend<TurnRevisionDraft>>[0]) => ({
     onSend: createRevisionAwareOnSend(ports),
@@ -206,6 +227,16 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     getActiveOrchestrationMode: shell.orchestrationMode,
     setOrchestrationModeActive: shell.setOrchestrationModeActive,
     setNewTaskSendPending,
+    // #4083: plain Enter interrupts the live turn before a new root send.
+    interrupt: {
+      stop: stopSession,
+      liveTurns: (id) => workspace.ui.reads.liveTurns(id).getSnapshot(),
+      runningTurnIds: (id) =>
+        sessionCatalog.getState().sessions.find((session) => session.id === id)?.runningTurnIds,
+      activeSessionId: () => activeIdRef.current,
+      toastApi,
+      uiLocale,
+    },
   });
 
   const turn = useStableActions(createTurnActions, {
@@ -216,19 +247,6 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     turnActionRegistry,
     openSessionInChat: shell.openSession,
     refreshSessions: shell.refreshSessions,
-    toastApi,
-  });
-  // The Composer's Stop button, Escape and a question prompt's Stop all land
-  // here; the send slot may then offer Resume for the stopped Turn (#5923).
-  const { stop } = useStableActions((deps: Parameters<typeof createStopAction>[0]) => {
-    const stopSession = createStopAction(deps);
-    return { stop: () => { void stopSession(); } };
-  }, {
-    services,
-    uiLocale,
-    activeIdRef,
-    stopPending: workspace.ui.stopPending,
-    removeTransientMessage: commands.removeTransientMessage,
     toastApi,
   });
 

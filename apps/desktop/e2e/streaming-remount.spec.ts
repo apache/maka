@@ -56,7 +56,7 @@ async function submitSteeringDraft(
   await composer.press("ControlOrMeta+Enter");
 }
 
-test("ordinary Enter queues on an already-running Session before observation recovers", async ({
+test("ordinary Enter interrupts an already-running Session before observation recovers", async ({
   window: page,
 }) => {
   const nextPrompt = "do this only after the current answer";
@@ -107,7 +107,8 @@ test("ordinary Enter queues on an already-running Session before observation rec
   const sidebar = page.getByRole("navigation", { name: "任务列表" });
   await ensureSidebarExpanded(page);
   await sessionRow(sidebar, sessionId).click();
-  // No execution snapshot has reached this surface. Sending must still express next-turn intent.
+  // No execution snapshot has reached this surface. Sending must still interrupt
+  // via Host-known running turns rather than queue a follow-up (#4083).
   await expect(
     page.getByRole("button", { name: "停止", exact: true }),
   ).toHaveCount(0);
@@ -115,31 +116,25 @@ test("ordinary Enter queues on an already-running Session before observation rec
   await composer.fill(nextPrompt);
   await awaitSendReady(page);
   await composer.press("Enter");
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (
-            window as typeof window & {
-              admissionEvidence?: { queued: boolean; steered: boolean };
-            }
-          ).admissionEvidence,
-      ),
-    )
-    .toEqual({ queued: true, steered: false });
+  // After interrupt, the typed draft is admitted as a new root turn — not queued.
+  await expect(page.getByRole("log")).toContainText(nextPrompt, {
+    timeout: 20_000,
+  });
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            admissionEvidence?: { queued: boolean; steered: boolean };
+          }
+        ).admissionEvidence,
+    ),
+  ).toEqual({ queued: false, steered: false });
   await page.evaluate(() =>
     (window as SessionObservationLatchWindow).makaE2eLatch!.release(
       "sessions.observe",
     ),
   );
-  await expect(page.locator(".maka-bubble-streaming")).toContainText(
-    "Fake backend waiting",
-    { timeout: 20_000 },
-  );
-  await page.getByRole("button", { name: "停止", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "停止", exact: true }),
-  ).toHaveCount(0, { timeout: 20_000 });
 });
 
 test("a failed transcript open recovers when its Session observation becomes ready", async ({

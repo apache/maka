@@ -104,7 +104,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 204 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 206 as const;
+// 206: Session transcripts gain the `empty_step_loop` `system_note` kind when the
+// Runtime empty-assistant-loop bound fires (#4083 / #4138). Older Clients reject
+// the unknown note kind at decode, so the pair must fail admission. 205 is
+// reserved by #5709 (UsageQuery.callKinds).
 // 204: Executor catalogs and Session configuration carry opaque mode IDs;
 // catalog queries may request a provider refresh. Older peers reject these fields.
 // 202: `session.remove.preview` takes a bounded list of Sessions and reports the

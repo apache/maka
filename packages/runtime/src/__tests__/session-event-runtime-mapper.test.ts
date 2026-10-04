@@ -168,6 +168,7 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.equal(mapCompleteStopReason('user_stop'), 'aborted');
     assert.equal(mapCompleteStopReason('error'), 'failed');
     assert.equal(mapCompleteStopReason('step_limit'), 'failed');
+    assert.equal(mapCompleteStopReason('empty_step_loop'), 'failed');
   });
 
   test('step_limit uses the established tool-step-cap failure class', () => {
@@ -180,6 +181,19 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.deepEqual(mapped.actions?.stateDelta, {
       stopReason: 'step_limit',
       failureClass: 'tool_step_cap_reached',
+    });
+  });
+
+  test('empty_step_loop uses a distinct empty-assistant-loop failure class', () => {
+    const mapped = mapSessionEventToRuntimeEvent(
+      ev({ type: 'complete', stopReason: 'empty_step_loop' }),
+      ctx,
+      createSessionEventMapMemory(),
+    );
+
+    assert.deepEqual(mapped.actions?.stateDelta, {
+      stopReason: 'empty_step_loop',
+      failureClass: 'empty_assistant_loop',
     });
   });
 

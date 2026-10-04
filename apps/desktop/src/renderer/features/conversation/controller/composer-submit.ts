@@ -29,6 +29,8 @@ import type {
 } from '@maka/ui';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
 import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
+import { interruptBeforeRootSend } from './interrupt-before-root-send.js';
+import type { StopOutcome } from './stop-action.js';
 
 type RefBox<T> = { current: T };
 type WorkspaceFileReference = NonNullable<ComposerSendMetadata['workspaceFileReferences']>[number];
@@ -123,6 +125,28 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
     mode: Exclude<OrchestrationMode, 'default'>,
     active: boolean,
   ) => Promise<boolean>;
+  /**
+   * Plain-Enter interrupt before a new root send (#4083). Optional so unit
+   * doubles that only exercise revision/slash routing can omit it.
+   */
+  interrupt?: {
+    stop: (sessionId?: string, expectedTurnId?: string) => Promise<StopOutcome>;
+    liveTurns: (sessionId: string) => readonly { turnId: string; terminal?: boolean }[] | undefined;
+    runningTurnIds: (sessionId: string) => readonly string[] | undefined;
+    activeSessionId: () => string | undefined;
+    toastApi?: { error(title: string, description?: string): void };
+    uiLocale?: import('@maka/core/ui-locale').UiLocale;
+  };
+}
+
+function interruptActiveTurnSnapshot(
+  interrupt: NonNullable<RevisionSendPorts<RevisionDraftIdentity>['interrupt']>,
+  sessionId: string | undefined,
+) {
+  return {
+    liveTurns: sessionId ? interrupt.liveTurns(sessionId) : undefined,
+    runningTurnIds: sessionId ? interrupt.runningTurnIds(sessionId) : undefined,
+  };
 }
 
 export interface RevisionAwareOnSendPorts<TDraft extends RevisionDraftIdentity> extends RevisionSendPorts<TDraft> {
@@ -364,6 +388,22 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     ? ports.revisionDraftRef.current
     : undefined;
   const quotes = staging.quotesForSend();
+  // #4083: plain Enter interrupts the live turn before a new root send.
+  if (ports.interrupt) {
+    const interrupt = ports.interrupt;
+    const atSubmit = interruptActiveTurnSnapshot(interrupt, sessionId);
+    const allowed = await interruptBeforeRootSend({
+      sessionId,
+      slashCommand,
+      ...atSubmit,
+      refreshActiveTurn: () => interruptActiveTurnSnapshot(interrupt, sessionId),
+      activeSessionId: interrupt.activeSessionId,
+      stop: interrupt.stop,
+      toastApi: interrupt.toastApi,
+      uiLocale: interrupt.uiLocale,
+    });
+    if (!allowed) return false;
+  }
   const ok = await ports.send(text, pending, {
     waitForHostAdmission: revisionSend,
     targetSessionId: expectedRevisionDraft?.draftSessionId,

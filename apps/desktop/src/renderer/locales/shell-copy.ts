@@ -1142,7 +1142,7 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 输入',
           rows: [
-            { keys: ['Enter'], description: '发送消息（运行中加入下一轮队列）' },
+            { keys: ['Enter'], description: '发送消息（主对话运行中先中断当前轮；侧聊 / WorkHub 仍入队）' },
             { keys: ['⌘', 'Enter'], description: '模型运行中调整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入换行' },
             { keys: ['Alt', 'Enter'], description: '插入换行（备用）' },
@@ -1666,7 +1666,7 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer 輸入',
           rows: [
-            { keys: ['Enter'], description: '傳送訊息（執行中加入下一輪佇列）' },
+            { keys: ['Enter'], description: '傳送訊息（主對話執行中先中斷目前輪；側聊 / WorkHub 仍入佇列）' },
             { keys: ['⌘', 'Enter'], description: '模型執行中調整方向（Steer）' },
             { keys: ['Shift', 'Enter'], description: '插入換行' },
             { keys: ['Alt', 'Enter'], description: '插入換行（備用）' },
@@ -2202,7 +2202,11 @@ const SHELL_COPY_BY_LOCALE = {
         {
           heading: 'Composer',
           rows: [
-            { keys: ['Enter'], description: 'Send the message (queue next turn while running)' },
+            {
+              keys: ['Enter'],
+              description:
+                'Send the message (main chat interrupts a running turn; Side chat / WorkHub still queue)',
+            },
             { keys: ['⌘', 'Enter'], description: 'Steer the running turn' },
             { keys: ['Shift', 'Enter'], description: 'Insert a line break' },
             {

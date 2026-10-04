@@ -83,7 +83,10 @@ export interface ComposerSubmissionServices {
     input: { readonly sourceTurnId: string; readonly copyId: string },
   ): Promise<DesktopSessionSummary>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
-  stop(sessionId: string, input: { readonly source: 'stop_button' }): Promise<ConversationStopResult>;
+  stop(
+    sessionId: string,
+    input: { readonly source: 'stop_button'; readonly expectedTurnId?: string },
+  ): Promise<ConversationStopResult>;
   branchFromTurn(
     sessionId: string,
     input: { readonly sourceTurnId: string; readonly copyId: string },

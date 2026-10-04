@@ -1534,6 +1534,15 @@ function projectTerminalTurnState(
       kind: 'step_limit',
     });
   }
+  if (failureClass === 'empty_assistant_loop') {
+    messages.push({
+      type: 'system_note',
+      id: `${event.id}:empty-step-loop-notice`,
+      turnId: event.turnId,
+      ts: event.ts,
+      kind: 'empty_step_loop',
+    });
+  }
   // An omitted failure class or abort source is `classifyRuntimeEventTerminalFact`'s
   // observation to make. Repeating it here would only turn a transcript row that
   // already reads `unknown` into an unreadable Session.

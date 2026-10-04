@@ -247,6 +247,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 192);
   });
 
+  test('publishes a new compatibility epoch for empty_step_loop system notes', () => {
+    // Epoch 204 peers reject the unknown `empty_step_loop` system_note kind when
+    // decoding Session transcripts after the Runtime empty-assistant-loop bound.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 205);
+  });
+
   test('publishes a new compatibility epoch for the project registration preference', () => {
     // Epoch 46 Hosts reject the optional preference field on the closed register
     // input, so mixed-version peers must fail during the handshake instead.
