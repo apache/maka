@@ -264,6 +264,44 @@ describe('resolveMacosDeveloperExecutableRoots', () => {
     assert.deepEqual(diagnostics, []);
   });
 
+  it('reports signature, layout, and libxcrun containment failures precisely', async () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'maka-toolchain-reasons-'));
+    const developer = join(scratch, 'unsupported');
+    const library = join(developer, 'usr', 'lib');
+    const binary = join(library, 'libxcrun.dylib');
+    mkdirSync(library, { recursive: true });
+    writeFileSync(binary, 'fixture');
+    const diagnostics: string[] = [];
+    const resolve = (validateAppleBinary: () => boolean) =>
+      resolveMacosDeveloperExecutableRoots({
+        developerDir: developer,
+        validateAppleBinary,
+        onDiscoveryFailure: (reason) => diagnostics.push(reason),
+      });
+    try {
+      assert.deepEqual(await resolve(() => false), []);
+      assert.match(diagnostics.pop()!, /Apple signature verification failed or timed out/);
+      assert.deepEqual(await resolve(() => true), []);
+      assert.match(diagnostics.pop()!, /unsupported developer directory layout/);
+      unlinkSync(binary);
+      const external = join(scratch, 'external.dylib');
+      writeFileSync(external, 'fixture');
+      symlinkSync(external, binary);
+      let validated = false;
+      assert.deepEqual(
+        await resolve(() => {
+          validated = true;
+          return true;
+        }),
+        [],
+      );
+      assert.equal(validated, false);
+      assert.match(diagnostics.pop()!, /libxcrun is missing or escapes library directory/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('returns a canonical root that is unaffected by later selector alias replacement', async () => {
     const scratch = mkdtempSync(join(tmpdir(), 'maka-replaced-selection-'));
     const first = join(scratch, 'first', 'CommandLineTools');
@@ -332,6 +370,57 @@ describe('Apple signer validation', { skip: process.platform !== 'darwin' }, () 
 });
 
 describe('resolveMacosCommandPaths', () => {
+  it('deduplicates default warnings while retrying discovery and reporting different failures', async () => {
+    const warnings: string[] = [];
+    const previousWarn = console.warn;
+    console.warn = (message: string) => warnings.push(message);
+    let probes = 0;
+    const profile = createWorkspaceWritePermissionProfile();
+    try {
+      for (let index = 0; index < 2; index++) {
+        assert.deepEqual(
+          await resolveMacosCommandPaths(
+            profile,
+            {},
+            {
+              runCommand: async () => {
+                probes++;
+                return { status: 1 };
+              },
+            },
+          ),
+          { executableRoots: [] },
+        );
+      }
+      assert.equal(probes, 2);
+      assert.equal(
+        warnings.filter((message) => message.includes('xcode-select probe failed')).length,
+        1,
+      );
+      assert.deepEqual(await resolveMacosCommandPaths(profile, { DEVELOPER_DIR: 'relative' }), {
+        executableRoots: [],
+      });
+      assert.equal(
+        warnings.filter((message) => message.includes('developer directory is not absolute'))
+          .length,
+        1,
+      );
+      const diagnostics: string[] = [];
+      for (let index = 0; index < 2; index++) {
+        await resolveMacosCommandPaths(
+          profile,
+          { DEVELOPER_DIR: 'relative' },
+          {
+            onDiscoveryFailure: (reason) => diagnostics.push(reason),
+          },
+        );
+      }
+      assert.equal(diagnostics.length, 2);
+    } finally {
+      console.warn = previousWarn;
+    }
+  });
+
   it('does not add selected developer roots to restricted read-only profiles', async () => {
     let validated = false;
     const scratch = mkdtempSync(join(tmpdir(), 'maka-read-only-toolchain-'));

@@ -27,6 +27,20 @@ import { isReadOnlyPermissionProfile, type PermissionProfile } from '@maka/core/
 const XCODE_SELECT_TIMEOUT_MS = 1_000;
 const CODESIGN_TIMEOUT_MS = 1_000;
 
+// Deduplicate diagnostics only: rediscover paths for every command so toolchain
+// changes and failed verification never reuse an earlier execution grant.
+const reportedDiscoveryFailures = new Set<string>();
+const MAX_REPORTED_DISCOVERY_FAILURES = 16;
+
+function reportDiscoveryFailure(message: string): void {
+  if (reportedDiscoveryFailures.has(message)) return;
+  if (reportedDiscoveryFailures.size >= MAX_REPORTED_DISCOVERY_FAILURES) {
+    reportedDiscoveryFailures.delete(reportedDiscoveryFailures.values().next().value!);
+  }
+  reportedDiscoveryFailures.add(message);
+  console.warn(`[sandbox:macos] ${message}`);
+}
+
 interface MacosDeveloperCommandResult {
   status: number | null;
   stdout?: string;
@@ -65,7 +79,7 @@ export async function resolveMacosDeveloperExecutableRoots(
   if (options.signal?.aborted) return [];
   const fail = (reason: string): readonly string[] => {
     if (!options.signal?.aborted) {
-      (options.onDiscoveryFailure ?? ((message) => console.warn(`[sandbox:macos] ${message}`)))(
+      (options.onDiscoveryFailure ?? reportDiscoveryFailure)(
         `Apple toolchain discovery failed closed: ${reason}. No additional executable roots granted.`,
       );
     }
