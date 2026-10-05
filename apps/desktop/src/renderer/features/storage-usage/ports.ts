@@ -64,6 +64,8 @@ export interface RetentionNoticeHost extends StorageUsageHostTarget {
 export interface RetentionNoticeState {
   readonly deletionAt?: number;
   readonly warning?: string;
+  /** Unlike announcement, viewing the warning in Settings retires its toast. */
+  readonly acknowledgedWarning?: string;
   /** Client time, used only to limit reminders during a long cleanup backlog. */
   readonly notifiedAt?: number;
 }

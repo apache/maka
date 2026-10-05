@@ -18,15 +18,26 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { StorageUsageServices } from '../../features/storage-usage';
+import { decodeRetentionNoticeState, type StorageUsageServices } from '../../features/storage-usage/index.js';
 import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage.js';
 
-export type DesktopStorageUsageBridge = Pick<MakaBridge, 'storage' | 'runtimeHostProfiles'>;
+export type DesktopStorageUsageBridge = Pick<MakaBridge, 'storage'> & {
+  readonly runtimeHostProfiles: Pick<MakaBridge['runtimeHostProfiles'], 'getSnapshot' | 'subscribeChanges'>;
+};
 
 /** Binds the storage usage feature to the Desktop bridge. */
 export function createDesktopStorageUsageServices(
   bridge: DesktopStorageUsageBridge = window.maka,
 ): StorageUsageServices {
+  const changeListeners = new Set<() => void>();
+  const seenKey = (hostId: string) => `maka-retention-notices-v1:${encodeURIComponent(hostId)}`;
+  const readSeen = (hostId: string): unknown => {
+    try {
+      return JSON.parse(safeLocalStorageGet(seenKey(hostId)) ?? 'null');
+    } catch {
+      return undefined;
+    }
+  };
   return {
     notices: {
       async loadHosts() {
@@ -36,26 +47,26 @@ export function createDesktopStorageUsageServices(
           : []);
       },
       subscribeChanges(handler) {
+        changeListeners.add(handler);
         const unsubscribe = bridge.runtimeHostProfiles.subscribeChanges(handler);
         document.addEventListener('visibilitychange', handler);
         window.addEventListener('focus', handler);
-        window.addEventListener('blur', handler);
         return () => {
+          changeListeners.delete(handler);
           unsubscribe();
           document.removeEventListener('visibilitychange', handler);
           window.removeEventListener('focus', handler);
-          window.removeEventListener('blur', handler);
         };
       },
       isVisible: () => document.visibilityState !== 'hidden' && document.hasFocus(),
-      readSeen(hostId) {
-        try {
-          return JSON.parse(safeLocalStorageGet(`maka-retention-notices-v1:${encodeURIComponent(hostId)}`) ?? 'null');
-        } catch {
-          return undefined;
+      readSeen,
+      writeSeen(hostId, state) {
+        const previous = decodeRetentionNoticeState(readSeen(hostId));
+        safeLocalStorageSet(seenKey(hostId), JSON.stringify(state));
+        if (state.acknowledgedWarning && state.acknowledgedWarning !== previous.acknowledgedWarning) {
+          for (const listener of changeListeners) listener();
         }
       },
-      writeSeen: (hostId, state) => safeLocalStorageSet(`maka-retention-notices-v1:${encodeURIComponent(hostId)}`, JSON.stringify(state)),
     },
     loadUsage: (host) => bridge.storage.usage(host),
     // No host argument: each task is measured by the Host that holds it, and

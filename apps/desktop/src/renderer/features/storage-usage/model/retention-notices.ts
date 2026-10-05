@@ -22,6 +22,7 @@ import type { RetentionNoticeHost, RetentionNoticeState, StorageUsageHostTarget,
 
 export const RETENTION_NOTICE_POLL_MS = 60_000;
 export const RETENTION_NOTICE_COOLDOWN_MS = 15 * 60_000;
+const DISABLED_POLL_MS = 15 * 60_000;
 
 export type RetentionNotice =
   | { readonly kind: 'deletion'; readonly deletion: NonNullable<StorageRetentionQueryResult['lastDeletion']> }
@@ -36,6 +37,9 @@ export function decodeRetentionNoticeState(value: unknown): RetentionNoticeState
     ...(time(record.deletionAt) ? { deletionAt: record.deletionAt } : {}),
     ...(time(record.notifiedAt) ? { notifiedAt: record.notifiedAt } : {}),
     ...(typeof record.warning === 'string' ? { warning: record.warning } : {}),
+    ...(typeof record.acknowledgedWarning === 'string'
+      ? { acknowledgedWarning: record.acknowledgedWarning }
+      : {}),
   };
 }
 
@@ -59,9 +63,10 @@ export function acknowledgeRetentionResults(
   const next = {
     ...previous,
     ...(deletionAt >= 0 ? { deletionAt } : {}),
-    ...(warning ? { warning } : {}),
+    ...(warning ? { warning, acknowledgedWarning: warning } : {}),
   };
-  if (next.deletionAt !== previous.deletionAt || next.warning !== previous.warning) notices.writeSeen(host.hostId, next);
+  if (next.deletionAt !== previous.deletionAt || next.warning !== previous.warning ||
+    next.acknowledgedWarning !== previous.acknowledgedWarning) notices.writeSeen(host.hostId, next);
 }
 
 /**
@@ -84,6 +89,7 @@ export function observeRetentionNotices(input: {
     return () => clearTimeout(timer);
   });
   const seen = new Map<string, RetentionNoticeState>();
+  const disabledReadAt = new Map<string, number>();
   const warnings = new Map<string, { readonly key: string; readonly dismiss: () => void }>();
   let closed = false;
   let version = 0;
@@ -106,6 +112,9 @@ export function observeRetentionNotices(input: {
       const hosts = await services.notices.loadHosts();
       if (closed || started !== version) return;
       const present = new Set(hosts.map((host) => host.hostId));
+      for (const hostId of disabledReadAt.keys()) {
+        if (!present.has(hostId)) disabledReadAt.delete(hostId);
+      }
       for (const [hostId, active] of warnings) {
         if (!present.has(hostId)) {
           active.dismiss();
@@ -117,6 +126,17 @@ export function observeRetentionNotices(input: {
         if (closed || started !== version || !services.notices.isVisible()) return;
         if (visited.has(host.hostId)) continue;
         visited.add(host.hostId);
+        const acknowledged = decodeRetentionNoticeState(services.notices.readSeen(host.hostId));
+        const previousWarning = warnings.get(host.hostId);
+        if (previousWarning && previousWarning.key === acknowledged.acknowledgedWarning) {
+          previousWarning.dismiss();
+          warnings.delete(host.hostId);
+        }
+        const disabledAt = disabledReadAt.get(host.hostId);
+        const elapsed = disabledAt === undefined ? undefined : now() - disabledAt;
+        // Focus changes do not turn the default-disabled policy into a full
+        // candidate scan every minute. A Client clock rollback forces a read.
+        if (elapsed !== undefined && elapsed >= 0 && elapsed < DISABLED_POLL_MS) continue;
         let retention: StorageRetentionQueryResult;
         try {
           retention = await services.loadRetention(host);
@@ -125,10 +145,17 @@ export function observeRetentionNotices(input: {
           continue;
         }
         if (closed || started !== version || !services.notices.isVisible()) return;
+        if (retention.enabled) disabledReadAt.delete(host.hostId);
+        else disabledReadAt.set(host.hostId, now());
         const persisted = decodeRetentionNoticeState(services.notices.readSeen(host.hostId));
         const cached = seen.get(host.hostId);
         const deletionAt = Math.max(cached?.deletionAt ?? -1, persisted.deletionAt ?? -1);
-        let state: RetentionNoticeState = { ...persisted, ...cached, ...(deletionAt >= 0 ? { deletionAt } : {}) };
+        let state: RetentionNoticeState = {
+          ...persisted,
+          ...cached,
+          ...(deletionAt >= 0 ? { deletionAt } : {}),
+          ...(persisted.acknowledgedWarning ? { acknowledgedWarning: persisted.acknowledgedWarning } : {}),
+        };
         const publish = (notice: RetentionNotice, next: RetentionNoticeState) => {
           const dismiss = input.notify(host, notice);
           if (notice.kind !== 'deletion' && next.warning && dismiss) warnings.set(host.hostId, { key: next.warning, dismiss });
@@ -138,7 +165,7 @@ export function observeRetentionNotices(input: {
         };
         const warning = warningKey(retention);
         const active = warnings.get(host.hostId);
-        if (active && active.key !== warning) {
+        if (active && (active.key !== warning || active.key === persisted.acknowledgedWarning)) {
           active.dismiss();
           warnings.delete(host.hostId);
         }

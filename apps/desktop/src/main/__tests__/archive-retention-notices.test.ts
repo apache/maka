@@ -27,6 +27,7 @@ import { ArchiveRetentionNotices, StorageUsageServicesProvider } from '../../ren
 import type { StorageRetentionQueryResult } from '@maka/runtime-host/protocol';
 import type { StorageUsageServices } from '../../renderer/features/storage-usage/index.js';
 import type { RetentionNoticeHost, RetentionNoticeState } from '../../renderer/features/storage-usage/index.js';
+import { createDesktopStorageUsageServices } from '../../renderer/platform/desktop/create-storage-usage-services.js';
 import {
   acknowledgeRetentionResults,
   decodeRetentionNoticeState,
@@ -166,6 +167,42 @@ test('Settings acknowledges displayed results even when the observer has cached 
   assert.equal(r.shown.length, 1);
 });
 
+test('Settings acknowledgement withdraws an already-visible warning without treating its first announcement as acknowledgement', async () => {
+  const r = rig();
+  const held = { ...RESULT, hold: { since: 100, detectedAt: 200, until: 300 } };
+  r.setResult(held);
+  await settle();
+  await r.poll();
+  assert.equal(r.shown.length, 1);
+  assert.equal(r.shown[0]!.dismissed, false);
+  acknowledgeRetentionResults(r.services, HOST, held);
+  await r.poll();
+  assert.equal(r.shown[0]!.dismissed, true);
+  assert.equal(r.shown.length, 1);
+});
+
+test('disabled Hosts back off across focus changes and are checked again after fifteen minutes', async () => {
+  const r = rig();
+  r.setResult({ ...RESULT, enabled: false });
+  await settle();
+  for (let minute = 1; minute < 15; minute += 1) {
+    r.advance(RETENTION_NOTICE_POLL_MS);
+    await r.poll();
+    r.setVisible(false);
+    await settle();
+    r.setVisible(true);
+    await settle();
+  }
+  assert.equal(r.reads, 1);
+  r.setResult({ ...RESULT, hold: { since: 100, detectedAt: 200, until: 300 } });
+  r.advance(RETENTION_NOTICE_POLL_MS);
+  await r.poll();
+  assert.equal(r.reads, 2);
+  assert.equal(r.shown[0]!.kind, 'hold');
+  await r.poll();
+  assert.equal(r.reads, 3);
+});
+
 test('does not read or acknowledge results while hidden and catches up on visibility change', async () => {
   const r = rig();
   r.setVisible(false);
@@ -225,6 +262,63 @@ test('corrupt persisted state cannot suppress cleanup indefinitely', () => {
     assert.deepEqual(decodeRetentionNoticeState(value), {});
   }
   assert.deepEqual(decodeRetentionNoticeState({ deletionAt: 0, notifiedAt: 3, warning: 'hold:1' }), { deletionAt: 0, notifiedAt: 3, warning: 'hold:1' });
+});
+
+test('Desktop events ignore blur, refresh on acknowledgement, and unsubscribe cleanly', () => {
+  const keys = ['document', 'window', 'localStorage'] as const;
+  const descriptors = keys.map((key) => Object.getOwnPropertyDescriptor(globalThis, key));
+  const document = Object.assign(new EventTarget(), { visibilityState: 'visible', hasFocus: () => true });
+  const window = new EventTarget();
+  const stored = new Map<string, string>();
+  const localStorage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); } };
+  let changes = 0;
+  let unsubscribed = false;
+  let stop = () => {};
+  try {
+    for (const [key, value] of Object.entries({ document, window, localStorage })) {
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    }
+    const notices = createDesktopStorageUsageServices({
+      storage: {
+        usage: async () => assert.fail('no storage query expected'),
+        sessionUsage: async () => assert.fail('no storage query expected'),
+        retention: async () => assert.fail('no storage query expected'),
+        setRetention: async () => assert.fail('no policy change expected'),
+      },
+      runtimeHostProfiles: {
+        getSnapshot: async () => assert.fail('no discovery expected'),
+        subscribeChanges: () => () => { unsubscribed = true; },
+      },
+    }).notices!;
+    stop = notices.subscribeChanges(() => { changes += 1; });
+    window.dispatchEvent(new Event('blur'));
+    assert.equal(changes, 0);
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    assert.equal(changes, 2);
+    const announced = { warning: 'hold:1' };
+    notices.writeSeen('h1', announced);
+    assert.equal(changes, 2);
+    const acknowledged = { ...announced, acknowledgedWarning: announced.warning };
+    notices.writeSeen('h1', acknowledged);
+    assert.equal(changes, 3);
+    assert.deepEqual(notices.readSeen('h1'), acknowledged);
+    notices.writeSeen('h1', acknowledged);
+    assert.equal(changes, 3);
+    stop();
+    assert.equal(unsubscribed, true);
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    notices.writeSeen('h1', { warning: 'hold:2', acknowledgedWarning: 'hold:2' });
+    assert.equal(changes, 3);
+  } finally {
+    stop();
+    keys.forEach((key, index) => {
+      const descriptor = descriptors[index];
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    });
+  }
 });
 
 

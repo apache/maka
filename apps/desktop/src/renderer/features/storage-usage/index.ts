@@ -22,6 +22,7 @@
 
 export { ArchiveRetentionSection } from './ui/archive-retention-section.js';
 export { ArchiveRetentionNotices } from './ui/archive-retention-notices.js';
+export { decodeRetentionNoticeState } from './model/retention-notices.js';
 export { StorageUsageSection } from './ui/storage-usage-section.js';
 export { TaskStorageSize } from './ui/task-storage-size.js';
 export { StorageUsageServicesProvider } from './services-context.js';
