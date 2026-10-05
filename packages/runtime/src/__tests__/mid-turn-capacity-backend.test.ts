@@ -1814,6 +1814,139 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     assert.equal(fold?.phase, 'pre_turn');
   });
 
+  test('a compaction boundary supersedes an anchor whose request predates the compaction (#5547)', async () => {
+    // The failed-send ledger shape: the settlement usage row lands after the
+    // apply row, but its anchor still describes the pre-compaction request — the
+    // retry never completed. Such an anchor must not seed the next send's
+    // baseline: it measures context the compaction already replaced.
+    for (const [boundaryTs, anchorCompletedAt, folds] of [
+      [1_800_000_001_000, 1_800_000_000_500, false],
+      [1_800_000_000_100, 1_800_000_000_500, true],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [
+          {
+            ...runtimeTextEvent(`prior-applied-${boundaryTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: boundaryTs,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compaction_applied',
+            },
+          },
+          priorUsageEvent({
+            inputTokens: 30_000,
+            outputTokens: 10,
+            completedAt: anchorCompletedAt,
+          }),
+        ],
+        priorInvocations: [priorRunInvocation()],
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, folds ? 1 : 0);
+    }
+  });
+
+  test('a settlement compaction note delegates its boundary to the apply row', async () => {
+    // The display note is written when the turn settles — after every
+    // request of its turn — so ordering an anchor against the note's own
+    // row time discards every post-compaction measurement. The apply row carries
+    // the real boundary: an anchor completed after the compaction still seeds
+    // the next send's baseline, and one completed before it does not.
+    for (const [appliedTs, anchorCompletedAt, folds] of [
+      // Post-compaction anchor: applied at T2, anchor completed at T4, note
+      // settled at T5 — the anchor survives and the over-window seed
+      // compacts step 0.
+      [1_800_000_001_000, 1_800_000_004_000, true],
+      // Stale anchor: applied at T2 but the anchor completed at T1 — the
+      // retry never finished, so nothing post-compaction is measured.
+      [1_800_000_001_000, 1_800_000_000_500, false],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [
+          {
+            ...runtimeTextEvent(`prior-applied-${appliedTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: appliedTs,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compaction_applied',
+            },
+          },
+          {
+            ...runtimeTextEvent(`prior-note-${appliedTs}`, 'turn-0', 'model', ''),
+            runId: 'run-0',
+            invocationId: 'run-0',
+            role: 'system' as const,
+            author: 'system' as const,
+            ts: 1_800_000_005_000,
+            content: {
+              kind: 'system_note' as const,
+              note: 'context_compacted',
+            },
+          },
+          priorUsageEvent({
+            inputTokens: 30_000,
+            outputTokens: 10,
+            completedAt: anchorCompletedAt,
+          }),
+        ],
+        priorInvocations: [priorRunInvocation()],
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, folds ? 1 : 0);
+    }
+  });
+
+  test('a settlement note without an apply row is itself the boundary', async () => {
+    // Ledgers written before `context_compaction_applied` existed — or a
+    // failed apply-row write — leave the settlement note as the only
+    // boundary. Its time postdates every request of its turn, so no anchor
+    // can be shown to postdate the compaction and the conservative seed is none.
+    const fixture = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 20_000,
+      finalAtSecondCall: true,
+      extraPriorEvents: [
+        {
+          ...runtimeTextEvent('prior-note-legacy', 'turn-0', 'model', ''),
+          runId: 'run-0',
+          invocationId: 'run-0',
+          role: 'system' as const,
+          author: 'system' as const,
+          ts: 1_800_000_005_000,
+          content: {
+            kind: 'system_note' as const,
+            note: 'context_compacted',
+          },
+        },
+        priorUsageEvent({
+          inputTokens: 30_000,
+          outputTokens: 10,
+          completedAt: 1_800_000_004_000,
+        }),
+      ],
+      priorInvocations: [priorRunInvocation()],
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 0);
+  });
+
   test('the reserve is twice the last real reply, bounded, not the model output limit', async () => {
     // With the window declared at the provider's real size, an accepted
     // request can never exceed it on its own; the reply the next request must
@@ -1890,6 +2023,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
 function priorUsageEvent(lastRequestAnchor: {
   inputTokens: number;
   outputTokens?: number;
+  completedAt?: number;
 }): RuntimeEvent {
   return {
     ...runtimeTextEvent('prior-usage', 'turn-0', 'model', ''),

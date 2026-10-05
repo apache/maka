@@ -48,7 +48,7 @@ export interface LiveContextUsage {
    * When that request settled, on the Host's clock — the same clock the
    * session's own transcript rows carry, so a reader can tell whether this
    * snapshot predates a compaction boundary it already knows about. Without
-   * it, a snapshot that a fold has replaced is indistinguishable from one
+   * it, a snapshot that a compaction has replaced is indistinguishable from one
    * taken after it.
    */
   readonly completedAt?: number;

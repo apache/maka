@@ -845,6 +845,13 @@ export class AiSdkCompaction {
     queue: AsyncEventQueue<SessionEvent>,
     providerTools: readonly MakaTool[],
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void,
+    /**
+     * Fired once a compaction is durable and applied — checkpoint persisted and the
+     * projection takes over — before the replacement request goes out. The
+     * runtime records its apply-time boundary row here; like every system
+     * note it must never disturb the compaction, so the call is fail-open.
+     */
+    onCompactionApplied: (() => void | Promise<void>) | undefined,
     origin: ProviderRequestOrigin,
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision,
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void,
@@ -932,6 +939,7 @@ export class AiSdkCompaction {
         activeToolsForStep,
         memoryCompactionDecision,
         onMemoryCompaction,
+        onCompactionApplied,
         abortSignal,
       });
       if (outcome.decision === 'fail') {
@@ -978,6 +986,8 @@ export class AiSdkCompaction {
     activeToolsForStep: readonly string[];
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
+    /** See {@link buildMidTurnCapacityCompactProjection}'s parameter. */
+    onCompactionApplied?: () => void | Promise<void>;
     phase?: 'pre_turn' | 'mid_turn';
     abortSignal?: AbortSignal;
   }): Promise<ActiveRequestCompactionOutcome> {
@@ -1193,6 +1203,14 @@ export class AiSdkCompaction {
       }
     }
     state.projectionCheckpoint = plan.checkpoint;
+    // The boundary is durable the moment the projection takes over: record it
+    // now, not at turn settlement, so usage readers ordering measurements
+    // against the compaction get the apply time.
+    try {
+      await input.onCompactionApplied?.();
+    } catch {
+      // The boundary row explains the compaction; losing it must not undo one.
+    }
     return {
       decision: 'compacted',
       checkpoint: plan.checkpoint,
@@ -1227,6 +1245,8 @@ export class AiSdkCompaction {
     origin: ProviderRequestOrigin;
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
+    /** See {@link buildMidTurnCapacityCompactProjection}'s parameter. */
+    onCompactionApplied?: () => void | Promise<void>;
     abortSignal?: AbortSignal;
   }): Promise<{ messages: ModelMessage[] } | undefined> {
     const state = input.midTurnState;
@@ -1262,6 +1282,7 @@ export class AiSdkCompaction {
       activeToolsForStep: input.activeTools,
       memoryCompactionDecision: input.memoryCompactionDecision,
       onMemoryCompaction: input.onMemoryCompaction,
+      onCompactionApplied: input.onCompactionApplied,
       abortSignal: input.abortSignal,
     });
     if (outcome.decision !== 'compacted') {
@@ -1479,20 +1500,78 @@ function persistedRequestAnchor(
   modelId: string,
   connectionId: string | undefined,
 ): LastRequestAnchor | undefined {
+  // The newest anchored usage row is the candidate — but a send that compacted
+  // mid-turn and never completed another request settles its usage row AFTER
+  // the compaction notes while the anchor still describes the pre-compaction
+  // request (#5547). Position alone cannot order that pair, so the scan holds
+  // the candidate and lets a boundary row behind it supersede by event time.
+  let pending: { anchor: LastRequestAnchor; completedAt?: number } | undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     const anchor = event?.actions?.tokenUsage?.lastRequestAnchor;
-    if (!anchor) continue;
-    const route = invocations.find((candidate) => candidate.runId === event?.runId)?.opening.route;
-    if (
-      route?.provenance !== 'runtime' ||
-      route.backendKind === 'plugin-executor' ||
-      route.modelId !== modelId ||
-      route.llmConnectionId !== connectionId
-    ) {
-      return undefined;
+    if (anchor) {
+      // A second anchored row settles the candidate: under ordered writes every
+      // boundary behind it is strictly older than the candidate's completion.
+      if (pending) return pending.anchor;
+      const route = invocations.find((candidate) => candidate.runId === event?.runId)?.opening
+        .route;
+      if (
+        route?.provenance !== 'runtime' ||
+        route.backendKind === 'plugin-executor' ||
+        route.modelId !== modelId ||
+        route.llmConnectionId !== connectionId
+      ) {
+        return undefined;
+      }
+      pending = { anchor, completedAt: anchor.completedAt };
+      continue;
     }
-    return anchor;
+    const note = event?.content?.kind === 'system_note' ? event.content.note : undefined;
+    if (note === 'context_compaction_applied' || note === 'context_compacted') {
+      // A boundary behind the candidate is strictly older under ordered
+      // writes — unless the candidate's completion itself predates the compaction.
+      if (!pending) return undefined;
+      const boundaryAt =
+        note === 'context_compacted'
+          ? // The display row lands at settlement — after every request of
+            // its turn — so its own row time would supersede even an anchor
+            // that completed after the compaction. The compaction recorded its real
+            // boundary at apply time earlier in the same turn; only when no
+            // such row exists is the note's own time all there is.
+            (compactionAppliedAtBefore(events, index, event.turnId) ?? event.ts)
+          : event.ts;
+      return pending.completedAt !== undefined &&
+        boundaryAt !== undefined &&
+        boundaryAt >= pending.completedAt
+        ? undefined
+        : pending.anchor;
+    }
+  }
+  return pending?.anchor;
+}
+
+/**
+ * The apply-time boundary a settlement `context_compacted` row describes:
+ * the same turn's `context_compaction_applied` note. Between the compaction's
+ * apply row and its display row sit only that turn's post-compaction output —
+ * the turn's own usage row lands after the note — so the first relevant
+ * row behind the note is the matching apply row when one was recorded. A
+ * usage row, another display note, a different turn's apply row, or the
+ * head of the log all mean the note's own write time is all there is.
+ */
+function compactionAppliedAtBefore(
+  events: readonly RuntimeEvent[],
+  noteIndex: number,
+  turnId: string | undefined,
+): number | undefined {
+  for (let index = noteIndex - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.actions?.tokenUsage !== undefined) return undefined;
+    const note = event?.content?.kind === 'system_note' ? event.content.note : undefined;
+    if (note === 'context_compaction_applied') {
+      return event?.turnId === turnId ? event.ts : undefined;
+    }
+    if (note === 'context_compacted') return undefined;
   }
   return undefined;
 }

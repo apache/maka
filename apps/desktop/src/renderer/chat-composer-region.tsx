@@ -267,7 +267,7 @@ export function ChatComposerRegion({
   const renderComposer = (
     liveContextUsage: LiveContextUsage | undefined,
   ) => {
-    // One question, two answers, and a fold can make the finer one stale: the
+    // One question, two answers, and a compaction can make the finer one stale: the
     // snapshot wins when it landed after the boundary, and the boundary wins
     // when it did not.
     const reading = resolveContextUsage({ latestRequestUsage, live: liveContextUsage });

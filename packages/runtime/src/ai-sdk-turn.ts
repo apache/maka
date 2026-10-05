@@ -1007,6 +1007,10 @@ export class AiSdkTurn {
     // Output tokens of the same step: with the input they are the baseline the
     // next request is judged from (everything the model produced is re-sent).
     let lastStepOutputTokens: number | undefined;
+    // When that step's request finished: the settlement anchor carries it as
+    // `completedAt` so readers can order the measurement against a compaction's
+    // apply-time boundary (#5547) even where no provider tracker is wired.
+    let lastStepRequestCompletedAt: number | undefined;
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
     let runtimeSteps = 0;
@@ -1050,6 +1054,12 @@ export class AiSdkTurn {
       if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
         contextCompactedNoteWritten = await this.recordSystemNote('context_compacted', turnId);
       }
+    };
+    // The apply-time boundary the usage reader orders measurements against:
+    // recorded when each compaction lands, so it exists mid-turn and a stop or
+    // stream error cannot erase it — unlike the settlement-time display note.
+    const recordCompactionApplied = async (): Promise<void> => {
+      await this.recordSystemNote('context_compaction_applied', turnId);
     };
     const trace = new RunTrace({
       sessionId: this.deps.backend.sessionId,
@@ -1445,6 +1455,7 @@ export class AiSdkTurn {
           queue,
           capacityProviderTools,
           onMidTurnDiagnosticPatch,
+          recordCompactionApplied,
           this,
           this.automaticMemoryCompactionSupported()
             ? () => this.automaticMemoryCompactionDecision()
@@ -1931,6 +1942,7 @@ export class AiSdkTurn {
               }
               lastStepInputTokens = stepUsage?.inputTokens;
               lastStepOutputTokens = stepUsage?.outputTokens;
+              lastStepRequestCompletedAt = this.deps.now();
               // A `finishReason: length` is deliberately not a trigger. The
               // reply may have been cut because the provider ran out of
               // window room, or because the provider's own output cap is
@@ -2002,6 +2014,7 @@ export class AiSdkTurn {
                       activeTools: activeToolsForRequest,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
+                      onCompactionApplied: recordCompactionApplied,
                       origin: this,
                       ...(this.automaticMemoryCompactionSupported()
                         ? {
@@ -2369,6 +2382,14 @@ export class AiSdkTurn {
             // are what the next request re-sends. No usable input count, no
             // anchor: the next turn then has no proactive fold until its first
             // accepted request.
+            const lastCompletedMainRequestAt =
+              providerRequestTracker?.latestCompletedMainRequestAt ?? lastStepRequestCompletedAt;
+            // This row lands after the compaction notes even when the
+            // anchored request completed BEFORE the compaction — the post-compaction
+            // retry never finished (#5547). The anchor is persisted whole as
+            // the durable fact it is; readers order it against the compaction's
+            // apply-time boundary via `completedAt` rather than trusting
+            // ledger position.
             const anchorInputTokens = finitePositive(lastStepInputTokens);
             const anchorOutputTokens =
               lastStepOutputTokens !== undefined && Number.isFinite(lastStepOutputTokens)
@@ -2406,8 +2427,8 @@ export class AiSdkTurn {
                 ? {
                     lastRequestAnchor: {
                       inputTokens: anchorInputTokens,
-                      ...(providerRequestTracker?.latestCompletedMainRequestAt !== undefined
-                        ? { completedAt: providerRequestTracker.latestCompletedMainRequestAt }
+                      ...(lastCompletedMainRequestAt !== undefined
+                        ? { completedAt: lastCompletedMainRequestAt }
                         : {}),
                       ...(anchorOutputTokens !== undefined
                         ? { outputTokens: anchorOutputTokens }
