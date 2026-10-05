@@ -104,6 +104,7 @@ test('the context usage share resolves declared, then metered, then metadata win
       declaredContextWindow?: number;
       metadataContextWindow?: number;
     },
+    expectedTooltip?: string,
   ) => {
     await act(() => root.render(
       <LocaleProvider locale="en">
@@ -118,6 +119,13 @@ test('the context usage share resolves declared, then metered, then metadata win
       'button[aria-label="Open usage trace"]',
     );
     assert.ok(action);
+    if (expectedTooltip !== undefined) {
+      const describedBy = action.getAttribute('aria-describedby');
+      assert.ok(describedBy, 'context usage must reference its tooltip');
+      const tooltip = document.getElementById(describedBy);
+      assert.ok(tooltip, 'context usage tooltip must exist');
+      assert.equal(tooltip.textContent?.trim(), expectedTooltip);
+    }
     return action.textContent?.trim();
   };
 
@@ -142,10 +150,19 @@ test('the context usage share resolves declared, then metered, then metadata win
     // …and with no window at all the usage stands alone, no invented share.
     assert.equal(await render({ reading: { kind: 'measured', tokens: 40_000 } }), 'Usage');
     // A superseded reading keeps the usage entry label even when a window is known.
-    assert.equal(await render({ reading: { kind: 'stale', reason: 'compaction' }, declaredContextWindow: 100_000 }), 'Usage');
+    assert.equal(await render(
+      { reading: { kind: 'stale', reason: 'compaction' }, declaredContextWindow: 100_000 },
+      'Context has been compacted. Usage will update when the next request completes.',
+    ), 'Usage');
     // A later successful measurement restores the share in the same mounted control.
-    assert.equal(await render({ reading: { kind: 'measured', tokens: 10_000, meteredWindow: 100_000 } }), '10%');
-    assert.equal(await render({ reading: { kind: 'unavailable' }, declaredContextWindow: 100_000 }), 'Usage');
+    assert.equal(await render(
+      { reading: { kind: 'measured', tokens: 10_000, meteredWindow: 100_000 } },
+      'Context window: 10% used (10K / 100K tokens).',
+    ), '10%');
+    assert.equal(await render(
+      { reading: { kind: 'unavailable' }, declaredContextWindow: 100_000 },
+      'No usage data is available for this request.',
+    ), 'Usage');
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);
