@@ -3025,7 +3025,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       if (sessionListPromise.limit === options.limit && sessionListPromise.cwd === options.cwd) {
         return sessionListPromise.promise;
       }
-      return sessionListPromise.promise.then(() => listSessions(options));
+      return sessionListPromise.promise.then(
+        () => listSessions(options),
+        () => listSessions(options),
+      );
     }
     {
       const promise = input.driver.listSessions(options).finally(() => {

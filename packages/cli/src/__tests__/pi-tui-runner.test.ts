@@ -6530,6 +6530,36 @@ Slug openai-work<cursor>
     }
   });
 
+  test('/session continues after a concurrent startup catalog scan fails', async () => {
+    const terminal = new FakeTerminal();
+    const session = fakeSessionSummary('session-after-startup-scan', '/repo', 'Current session');
+    const driver = new RejectFirstListSessionsDriver([session]);
+    driver.setAttachedSessionId(null);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitFor(() => driver.listCalls === 1);
+    terminal.input('/session');
+    terminal.input('\r');
+    await delay(0);
+    driver.rejectFirstListCall();
+
+    await waitFor(() => driver.listCalls === 2);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Current session'));
+    assert.deepEqual(driver.listOptions[0], { limit: 256, cwd: '/repo' });
+    assert.deepEqual(driver.listOptions[1], {});
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('surfaces a notice when the foreign-session scan fails', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
@@ -12596,6 +12626,28 @@ class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
     const session = (await super.listSessions()).find((candidate) => candidate.id === sessionId);
     this.completedSummaryLookups.push(sessionId);
     return session;
+  }
+}
+
+class RejectFirstListSessionsDriver extends BoundedResumeAvailabilityDriver {
+  listCalls = 0;
+  readonly listOptions: Array<MakaSessionListOptions | undefined> = [];
+  private rejectFirstList: (() => void) | null = null;
+
+  override listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]> {
+    this.listCalls += 1;
+    this.listOptions.push(options);
+    if (this.listCalls === 1) {
+      return new Promise<SessionSummary[]>((_resolve, reject) => {
+        this.rejectFirstList = () => reject(new Error('startup catalog read failed'));
+      });
+    }
+    return super.listSessions(options);
+  }
+
+  rejectFirstListCall(): void {
+    this.rejectFirstList?.();
+    this.rejectFirstList = null;
   }
 }
 
