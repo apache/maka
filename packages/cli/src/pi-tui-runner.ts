@@ -3103,7 +3103,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!input.externalSessions) return;
     const copy = TUI_SESSION_ACTIONS_COPY[locale];
     if (source.importState.isImporting) {
-      state.entries.push({ kind: 'notice', level: 'error', text: copy.externalUnavailable });
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: copy.externalUnavailable,
+      });
       requestRender();
       return;
     }
@@ -3119,7 +3123,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           level: 'error',
           text: formatUiMessage(
             copy.externalImportLimit,
-            { kind: externalImportLimitLabel(copy, result.limit.kind), max: result.limit.max },
+            {
+              kind: externalImportLimitLabel(copy, result.limit.kind),
+              max: result.limit.max,
+            },
             locale,
           ),
         });
@@ -3128,15 +3135,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       importedSessionId = result.session.id;
     } catch (error) {
       const code = externalImportErrorCode(error);
-      const text =
-        code === 'model_unavailable'
-          ? copy.externalImportModelUnavailable
-          : code === 'source_unreadable'
-            ? copy.externalImportSourceUnreadable
-            : code === 'commit_outcome_unknown'
-              ? copy.externalImportUncertain
-              : copy.externalImportFailed;
-      state.entries.push({ kind: 'notice', level: 'error', text });
+      if (code === 'model_unavailable') {
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: copy.externalImportModelUnavailable,
+        });
+        return;
+      }
+      if (code === 'source_unreadable') {
+        state.entries.push({
+          kind: 'notice',
+          level: 'error',
+          text: copy.externalImportSourceUnreadable,
+        });
+        return;
+      }
+      if (code !== 'commit_outcome_unknown') {
+        state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportFailed });
+        return;
+      }
+      state.entries.push({ kind: 'notice', level: 'error', text: copy.externalImportUncertain });
       return;
     }
     await openImportedExternalSession(
@@ -3193,6 +3212,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       void load(false);
     };
     const render = (): void => {
+      // SelectList has no disabled-row contract. A Host-owned in-flight import
+      // disables another import, but it does not disable opening an already
+      // published task.
       const selectable = sessions.filter(
         (session) =>
           !session.importState.isImporting || session.importState.importedSessionIds.length > 0,
@@ -3219,11 +3241,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         },
         searchText: '',
       }));
-      if (nextCursor)
+      if (nextCursor) {
         choices.push({
           item: { value: 'external:load-more', label: copy.externalLoadMore },
           searchText: '',
         });
+      }
       const alternateScope = input.externalSessions
         ?.listScopes()
         .find((candidate) => candidate !== scope);
@@ -3301,16 +3324,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             void runControl(() => importExternalSession(adapterId, source));
             return;
           }
+          const actionTitle = formatUiMessage(
+            copy.externalImportedActionsTitle,
+            { source: source.name },
+            locale,
+          );
+          const actions: SelectItem[] = [
+            { value: 'open-latest', label: copy.externalOpenLatestImported },
+            ...(!source.importState.isImporting
+              ? [{ value: 'import-again', label: copy.externalImportAgain }]
+              : []),
+          ];
           showSelectPicker(
-            formatUiMessage(copy.externalImportedActionsTitle, { source: source.name }, locale),
+            actionTitle,
             source.name,
-            [
-              { value: 'open-latest', label: copy.externalOpenLatestImported },
-              ...(!source.importState.isImporting
-                ? [{ value: 'import-again', label: copy.externalImportAgain }]
-                : []),
-            ],
+            actions,
             (action) => {
+              if (busy || turnRunning) {
+                state.entries.push({
+                  kind: 'notice',
+                  level: 'error',
+                  text: copy.externalImportBusy,
+                });
+                requestRender();
+                return;
+              }
               if (action.value === 'import-again') {
                 void runControl(() => importExternalSession(adapterId, source));
                 return;
@@ -3334,6 +3372,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       });
       overlay = showBottomPicker(search);
     };
+
     const load = async (
       append: boolean,
       cursor?: string,
@@ -3357,6 +3396,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       }
     };
+
     await load(false);
   };
 
@@ -3371,7 +3411,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     showSelectPicker(
       copy.externalSourceTitle,
       copy.externalSourceTitle,
-      adapterIds.map((adapterId) => ({ value: adapterId, label: externalSourceLabel(adapterId) })),
+      adapterIds.map((adapterId) => ({
+        value: adapterId,
+        label: externalSourceLabel(adapterId),
+      })),
       (item) => void showExternalSessionPage(item.value, initialScope),
       { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 40 },
     );
