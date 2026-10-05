@@ -3312,15 +3312,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             ],
             (action) => {
               if (action.value === 'import-again') {
-                if (busy || turnRunning) {
-                  state.entries.push({
-                    kind: 'notice',
-                    level: 'error',
-                    text: copy.externalImportBusy,
-                  });
-                  requestRender();
-                  return;
-                }
                 void runControl(() => importExternalSession(adapterId, source));
                 return;
               }
