@@ -213,6 +213,11 @@ export function registerRuntimeHostConnectionsIpc(
       enabled: true,
       enabledModelIds: connectionEnabledModelIds({
         defaultModel: input.defaultModel,
+        // A picker that chose models before the connection existed has
+        // nowhere else to put them: the create is the only write.
+        ...(input.enabledModelIds === undefined
+          ? {}
+          : { enabledModelIds: input.enabledModelIds }),
       }),
       ...(modelOverrides === undefined ? {} : { modelOverrides }),
       ...(input.requestBodyOverlay === undefined

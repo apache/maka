@@ -29,6 +29,7 @@ import {
 import type {
   CreateConnectionInput,
   IdentifiedLlmConnection,
+  RequestHeaderUpdate,
   SlugValidationIssue,
 } from '@maka/core/llm-connections';
 export type ApiKeyOnboardingRoute =
@@ -39,9 +40,21 @@ export type ApiKeyOnboardingRoute =
         | 'provider_auth'
         | 'custom_endpoint'
         | 'cloudflare'
-        | 'request_headers'
-        | 'request_body';
+        | 'request_body'
+        | 'request_headers';
     };
+
+/**
+ * The custom relay is the one provider whose save is still the legacy
+ * create-then-discover writer rather than the Host's managed save. Two
+ * decisions follow from that, and they are the same fact twice: this writer
+ * persists the endpoint headers a managed save would drop, and it treats a
+ * failed catalog read as something to report rather than a reason to refuse
+ * the create.
+ */
+export function usesLegacyConnectionWriter(providerType: ProviderType): boolean {
+  return providerType === 'custom';
+}
 
 export function shouldShowManagedOnboardingOutcomeUnknown(
   hasSaveUncertainty: boolean,
@@ -50,11 +63,34 @@ export function shouldShowManagedOnboardingOutcomeUnknown(
   return hasSaveUncertainty && !busy;
 }
 
-/** Decide the only writer before either writer performs a side effect. */
+/**
+ * Decide the only writer before either writer performs a side effect.
+ *
+ * A relay with no registry endpoint probes the one the form carries, so
+ * `hasEndpoint` — not the provider type alone — is what decides whether the
+ * Host has an endpoint to verify against.
+ *
+ * Request headers are not the *probe*'s problem: the verify operation carries
+ * the caller's own headers into a create target, which is the whole reason a
+ * relay whose catalog needs a header can be probed before it is saved. They
+ * are the *save*'s problem. The managed save commits the key and the catalog
+ * and nothing writes the headers afterwards, so a draft that has them would be
+ * stored without them — and `#saveOnboarding` re-runs discovery without them,
+ * so a provider that needs the header would fail at save having passed verify.
+ * A draft that carries headers therefore keeps the writer that persists them,
+ * unless its save is already that writer, which is where the custom relay ends
+ * up either way.
+ *
+ * A request body overlay is the one input neither writer can carry into the
+ * probe, so it still diverts.
+ */
 export function apiKeyOnboardingRoute(input: {
   readonly providerType: ProviderType;
-  readonly requestHeaderCount: number;
   readonly hasRequestBodyOverlay: boolean;
+  /** The advanced editor holds at least one header to save. */
+  readonly hasRequestHeaders: boolean;
+  /** The form carries an endpoint of its own (a custom relay's base URL). */
+  readonly hasEndpoint: boolean;
 }): ApiKeyOnboardingRoute {
   const definition = PROVIDER_REGISTRY[input.providerType];
   if (!providerAuthSupportsApiKey(input.providerType) || definition.authKind !== 'api_key') {
@@ -63,10 +99,25 @@ export function apiKeyOnboardingRoute(input: {
   if (input.providerType === 'cloudflare-workers-ai') {
     return { kind: 'legacy', reason: 'cloudflare' };
   }
-  if (!definition.baseUrl) return { kind: 'legacy', reason: 'custom_endpoint' };
-  if (input.requestHeaderCount > 0) return { kind: 'legacy', reason: 'request_headers' };
+  if (!definition.baseUrl && !input.hasEndpoint) {
+    return { kind: 'legacy', reason: 'custom_endpoint' };
+  }
   if (input.hasRequestBodyOverlay) return { kind: 'legacy', reason: 'request_body' };
+  if (input.hasRequestHeaders && !usesLegacyConnectionWriter(input.providerType)) {
+    return { kind: 'legacy', reason: 'request_headers' };
+  }
   return { kind: 'host' };
+}
+
+/**
+ * The advanced request editor hands over name→value pairs; the wire carries
+ * header updates. They describe the same headers, so a probe and the save that
+ * follows it must not disagree about which shape they send.
+ */
+export function probeRequestHeaderUpdates(
+  headers: Readonly<Record<string, string>>,
+): RequestHeaderUpdate[] {
+  return Object.entries(headers).map(([name, value]) => ({ name, value }));
 }
 
 export function stableOnboardingModels(models: readonly ModelInfo[]): ModelInfo[] {

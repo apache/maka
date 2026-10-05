@@ -236,6 +236,7 @@ export class HostConnectionEffectCoordinator {
     const begun = await this.#stores.operations.beginConnectionOnboarding({
       target: input.target,
       baseUrl: input.baseUrl,
+      ...(input.requestHeaders === undefined ? {} : { requestHeaders: input.requestHeaders }),
     });
     if (begun.kind === 'target_missing') {
       // Identity supplied by the client names a connection that is gone or

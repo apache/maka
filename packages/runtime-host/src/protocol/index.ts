@@ -104,7 +104,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 204 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 207 as const;
+// 207: `connection.onboarding.verify` takes caller-supplied `requestHeaders`,
+// but only on a create target, so a relay whose catalog needs a header can be
+// probed before it is saved. Epoch-206 peers reject the unknown key at decode,
+// ahead of admission, so a newer Desktop against an older Host would lose
+// custom-relay onboarding rather than degrade it.
 // 204: Executor catalogs and Session configuration carry opaque mode IDs;
 // catalog queries may request a provider refresh. Older peers reject these fields.
 // 202: `session.remove.preview` takes a bounded list of Sessions and reports the

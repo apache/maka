@@ -190,6 +190,60 @@ describe('Runtime Host connection effects protocol', () => {
     });
   });
 
+  test('carries caller request headers into a create onboarding probe, and nowhere else', () => {
+    const headers = [
+      { name: 'X-Relay-Tenant', value: 'team-a' },
+      { name: 'X-Relay-Key', value: 'probe-only' },
+    ];
+    const verify = request('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+      apiKey: 'transient-secret',
+      baseUrl: 'https://relay.example/v1',
+      requestHeaders: headers,
+    });
+    assert.deepEqual(decodeClientFrame(verify), verify);
+    // Omitting them stays valid, so a caller that has none keeps talking to
+    // a Host that predates the field.
+    const headerless = request('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+      apiKey: 'transient-secret',
+      baseUrl: 'https://relay.example/v1',
+    });
+    assert.deepEqual(decodeClientFrame(headerless), headerless);
+    // An existing connection probes with the headers it has stored, so a
+    // caller-supplied set is not something this target can say.
+    assertInvalidRequest('connection.onboarding.verify', {
+      target: { kind: 'existing', connectionId: EXPECTED.connectionId },
+      apiKey: null,
+      baseUrl: null,
+      requestHeaders: headers,
+    });
+    // A create target has no stored header set for a value-less update to
+    // delete, so a bare name is not a header the probe could send.
+    assertInvalidRequest('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+      apiKey: 'transient-secret',
+      baseUrl: 'https://relay.example/v1',
+      requestHeaders: [{ name: 'X-Relay-Tenant' }],
+    });
+    // Maka owns the headers that decide credential identity and framing.
+    assertInvalidRequest('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+      apiKey: 'transient-secret',
+      baseUrl: 'https://relay.example/v1',
+      requestHeaders: [{ name: 'x-api-key', value: 'probe-only' }],
+    });
+    // Headers are a probe input, not a save one: save spells out its own
+    // fields and must not inherit a verify-only field by accident.
+    assertInvalidRequest('connection.onboarding.save', {
+      target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+      apiKey: 'transient-secret',
+      baseUrl: 'https://relay.example/v1',
+      enabledModelIds: ['relay/model'],
+      requestHeaders: headers,
+    });
+  });
+
   test('requires a stable connection identity and an explicit nullable test model', () => {
     const fetch = request('connection.models.fetch', { connectionId: EXPECTED.connectionId });
     const connectionTest = request('connection.test.run', {

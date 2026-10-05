@@ -73,11 +73,19 @@ import {
   createProviderWithDiscovery,
   apiKeyOnboardingRoute,
   initialOnboardingModelIds,
+  probeRequestHeaderUpdates,
   shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
+  usesLegacyConnectionWriter,
   validateAddProviderDraft,
   type AddProviderIssue,
 } from './provider-add-submission';
+
+/** The advanced editor's material, normalized once and shared by both writers. */
+interface FormRequestCustomization {
+  readonly headers: Readonly<Record<string, string>>;
+  readonly bodyOverlay: ReturnType<typeof parseRequestBodyOverlay>;
+}
 
 /* No `defaultModel`: the creation gate has no rule that can fail on the model
    id, so an error could never be reported against that field. The union is
@@ -153,10 +161,19 @@ export function AddProviderForm(props: {
   const isCloudflareWorkersAi = props.providerType === 'cloudflare-workers-ai';
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   const showsDefaultModel = recommendedDefaultModel.trim() === '';
+  // The form asks for a model id exactly when the registry recommends none,
+  // and the probe's catalog is the only place that answer can be honored.
+  // Falling back to the recommendation keeps providers that ship one seeded
+  // as they were.
+  const preferredDefaultModel = defaultModel.trim() || recommendedDefaultModel;
   const isExperimental = defaults.status === 'phase3-experimental';
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
+  // The managed verify→choose route used to belong to the key-only dialog
+  // alone. A custom relay walks the same two steps through the ordinary form,
+  // which is the one that owns the endpoint the probe needs.
+  const usesManagedOnboarding = usesApiKeyDialog || isCustom;
   function setManagedPhase(next: ManagedOnboardingPhase) {
     setFormState((current) => ({ ...current, managedPhase: next }));
   }
@@ -220,19 +237,57 @@ export function AddProviderForm(props: {
     return copy.onboardingUnavailable;
   }
 
-  async function verifyManagedApiKey(normalizedApiKey: string) {
+  /**
+   * What the probe must carry beyond the key: a custom relay's endpoint and
+   * whatever headers the advanced editor holds. Both describe the connection
+   * the form is about to create, so probing without them would answer for a
+   * relay nobody asked to add.
+   */
+  function probeMaterial(customization: FormRequestCustomization) {
+    const headerUpdates = probeRequestHeaderUpdates(customization.headers);
+    return {
+      baseUrl: isCustom ? baseUrl.trim() || null : null,
+      ...(headerUpdates.length === 0 ? {} : { requestHeaders: headerUpdates }),
+    };
+  }
+
+  /**
+   * A custom target has to name the protocol it speaks — the Host resolves the
+   * catalog endpoint from it, and the wire closes the field to every other
+   * provider. Only the probe asks for one: a custom save still goes through
+   * create-then-discover, which carries the protocol on its own input.
+   */
+  function probeTarget() {
+    return {
+      kind: 'create' as const,
+      providerType: props.providerType,
+      ...(isCustom ? { defaultApiProtocol } : {}),
+    };
+  }
+
+  /**
+   * Returns false when the caller should create the connection instead: a
+   * probe that cannot answer is not a refusal for a relay whose save is the
+   * create-then-discover writer, which reports a failed discovery rather than
+   * refusing to create. Every other provider keeps the managed route's answer.
+   */
+  async function verifyManagedApiKey(
+    normalizedApiKey: string,
+    customization: FormRequestCustomization,
+  ): Promise<boolean> {
     const onboarding = props.apiKeyOnboardingBridge;
-    if (!onboarding) return;
+    if (!onboarding) return false;
     submitGuard.begin('submit');
     setBusy(true);
     try {
       const result = await onboarding.verify({
-        target: { kind: 'create', providerType: props.providerType },
+        target: probeTarget(),
         apiKey: normalizedApiKey || null,
-        baseUrl: null,
+        ...probeMaterial(customization),
       });
-      if (!addProviderMountedRef.current) return;
+      if (!addProviderMountedRef.current) return true;
       if (result.kind !== 'verified') {
+        if (usesLegacyConnectionWriter(props.providerType)) return false;
         setError({
           field:
             result.kind === 'failed' && result.errorClass === 'auth'
@@ -240,27 +295,30 @@ export function AddProviderForm(props: {
               : 'form',
           message: onboardingFailureMessage(result),
         });
-        return;
+        return true;
       }
       const models = stableOnboardingModels(result.models);
-      const selectedIds = initialOnboardingModelIds(models, recommendedDefaultModel);
+      const selectedIds = initialOnboardingModelIds(models, preferredDefaultModel);
       if (selectedIds.length === 0) {
+        if (usesLegacyConnectionWriter(props.providerType)) return false;
         setError({ field: 'form', message: copy.onboardingNoModels });
-        return;
+        return true;
       }
       setManagedPhase({
         kind: 'models',
         models,
         selectedIds,
-        defaultId: selectedIds.includes(recommendedDefaultModel)
-          ? recommendedDefaultModel
+        defaultId: selectedIds.includes(preferredDefaultModel)
+          ? preferredDefaultModel
           : selectedIds[0]!,
         filter: '',
       });
+      return true;
     } catch (err) {
       if (addProviderMountedRef.current) {
         setError({ field: 'form', message: providerPanelActionErrorMessage(err, locale) });
       }
+      return true;
     } finally {
       submitGuard.finish();
       if (addProviderMountedRef.current) setBusy(false);
@@ -270,6 +328,7 @@ export function AddProviderForm(props: {
   async function saveManagedApiKey(
     normalizedApiKey: string,
     phase: Extract<ManagedOnboardingPhase, { kind: 'models' }>,
+    customization: FormRequestCustomization,
   ) {
     const onboarding = props.apiKeyOnboardingBridge;
     if (!onboarding || phase.selectedIds.length === 0) {
@@ -277,12 +336,27 @@ export function AddProviderForm(props: {
       return;
     }
     // Catalog order, with the chosen default first: the Host reads the head of
-    // this list as the connection's default model.
+    // this list as the connection's default model, and the create writer
+    // derives its enabled set from the same ordering.
     const selected = new Set(phase.selectedIds);
     const stableIds = phase.models
       .map((model) => model.id)
       .filter((modelId) => selected.has(modelId) && modelId !== phase.defaultId);
     if (selected.has(phase.defaultId)) stableIds.unshift(phase.defaultId);
+    // A custom relay still saves through create-then-discover. The managed
+    // save commits the catalog and the key, but not the endpoint headers this
+    // form just probed with — a connection saved without them would fetch
+    // nothing. The picker's selection rides along, so the connection enables
+    // what the user ticked rather than the default alone.
+    if (isCustom) {
+      await createConnectionFromForm({
+        normalizedApiKey,
+        createdDefaultModel: phase.defaultId,
+        enabledModelIds: stableIds,
+        customization,
+      });
+      return;
+    }
     submitGuard.begin('submit');
     setBusy(true);
     try {
@@ -328,37 +402,19 @@ export function AddProviderForm(props: {
     }
   }
 
-  async function submit() {
-    if (submitGuard.current !== null) return;
-    setError(null);
-    const normalizedApiKey = apiKey.trim();
-    const normalizedCloudflareAccountId = cloudflareAccountId.trim();
-    const normalizedDefaultModel = defaultModel.trim();
-    let normalizedRequestHeaders: Readonly<Record<string, string>>;
-    let requestBodyOverlay: ReturnType<typeof parseRequestBodyOverlay>;
-    try {
-      normalizedRequestHeaders = newRequestHeaders(requestHeaders);
-      requestBodyOverlay = parseRequestBodyOverlay(requestBodyText);
-    } catch {
-      setAdvancedOpen(true);
-      return setError({ field: 'advancedRequest', message: copy.requestCustomizationInvalid });
-    }
-    const onboardingRoute = apiKeyOnboardingRoute({
-      providerType: props.providerType,
-      requestHeaderCount: Object.keys(normalizedRequestHeaders).length,
-      hasRequestBodyOverlay: requestBodyOverlay !== undefined,
-    });
-    if (onboardingRoute.kind === 'host' && props.apiKeyOnboardingBridge) {
-      if (requiresApiKey && !normalizedApiKey) {
-        return setError({ field: 'apiKey', message: copy.keyRequired(display.name) });
-      }
-      if (managedPhase.kind === 'models') {
-        await saveManagedApiKey(normalizedApiKey, managedPhase);
-      } else if (managedPhase.kind === 'input') {
-        await verifyManagedApiKey(normalizedApiKey);
-      }
-      return;
-    }
+  /**
+   * Create the connection through the legacy writer, then let its catalog
+   * answer for itself. Both the plain form and a verified custom relay's
+   * picker land here — this is the writer that persists the endpoint headers
+   * a managed save would leave behind.
+   */
+  async function createConnectionFromForm(input: {
+    normalizedApiKey: string;
+    createdDefaultModel: string;
+    /** The picker's selection, default first; omitted when the form showed none. */
+    enabledModelIds?: readonly string[];
+    customization: FormRequestCustomization;
+  }) {
     const issue = validateAddProviderDraft({
       providerType: props.providerType,
       slug,
@@ -374,22 +430,26 @@ export function AddProviderForm(props: {
       const resolvedBaseUrl = isCloudflareWorkersAi
         ? defaults.baseUrlTemplate?.replace(
             '${CLOUDFLARE_ACCOUNT_ID}',
-            encodeURIComponent(normalizedCloudflareAccountId),
+            encodeURIComponent(cloudflareAccountId.trim()),
           )
         : baseUrl || undefined;
-      const createdDefaultModel = normalizedDefaultModel || recommendedDefaultModel;
       const created = await createProviderWithDiscovery(props.bridge, {
         slug,
         name: name || display.name,
         providerType: props.providerType,
         baseUrl: resolvedBaseUrl,
         ...(isCustom ? { defaultApiProtocol } : {}),
-        defaultModel: createdDefaultModel,
-        ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
-        ...(Object.keys(normalizedRequestHeaders).length > 0
-          ? { requestHeaders: normalizedRequestHeaders }
+        defaultModel: input.createdDefaultModel,
+        ...(input.enabledModelIds === undefined
+          ? {}
+          : { enabledModelIds: [...input.enabledModelIds] }),
+        ...(input.normalizedApiKey ? { apiKey: input.normalizedApiKey } : {}),
+        ...(Object.keys(input.customization.headers).length > 0
+          ? { requestHeaders: input.customization.headers }
           : {}),
-        ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
+        ...(input.customization.bodyOverlay === undefined
+          ? {}
+          : { requestBodyOverlay: input.customization.bodyOverlay }),
       });
       if (!addProviderMountedRef.current) return;
       await props.onCreated(created.connection.slug, created.modelDiscoveryError);
@@ -404,6 +464,50 @@ export function AddProviderForm(props: {
       submitGuard.finish();
       if (addProviderMountedRef.current) setBusy(false);
     }
+  }
+
+  async function submit() {
+    if (submitGuard.current !== null) return;
+    setError(null);
+    let customization: FormRequestCustomization;
+    try {
+      customization = {
+        headers: newRequestHeaders(requestHeaders),
+        bodyOverlay: parseRequestBodyOverlay(requestBodyText),
+      };
+    } catch {
+      setAdvancedOpen(true);
+      return setError({ field: 'advancedRequest', message: copy.requestCustomizationInvalid });
+    }
+    const normalizedApiKey = apiKey.trim();
+    const onboardingRoute = apiKeyOnboardingRoute({
+      providerType: props.providerType,
+      hasRequestBodyOverlay: customization.bodyOverlay !== undefined,
+      hasRequestHeaders: Object.keys(customization.headers).length > 0,
+      hasEndpoint: baseUrl.trim().length > 0,
+    });
+    if (onboardingRoute.kind === 'host' && props.apiKeyOnboardingBridge) {
+      if (requiresApiKey && !normalizedApiKey) {
+        return setError({ field: 'apiKey', message: copy.keyRequired(display.name) });
+      }
+      if (managedPhase.kind === 'models') {
+        await saveManagedApiKey(normalizedApiKey, managedPhase, customization);
+        return;
+      }
+      if (
+        managedPhase.kind === 'input' &&
+        (await verifyManagedApiKey(normalizedApiKey, customization))
+      ) {
+        return;
+      }
+    }
+    // Either the draft never belonged to the managed route, or the probe could
+    // not answer a relay that the create writer is willing to save anyway.
+    await createConnectionFromForm({
+      normalizedApiKey,
+      createdDefaultModel: preferredDefaultModel,
+      customization,
+    });
   }
 
   function submitApiKey(event: FormEvent<HTMLElement>) {
@@ -450,17 +554,23 @@ export function AddProviderForm(props: {
       </VStack>
     </Collapsible>
   );
-  const quickUsesManagedOnboarding = Boolean(
-    props.apiKeyOnboardingBridge &&
+  // Whether the first press proves the key and opens the catalog rather than
+  // saving. Both step-one layouts — the key-only dialog and the ordinary form
+  // a custom relay walks — press the same button for the same thing, so they
+  // read the same answer and say the same words.
+  const startsManagedOnboarding = Boolean(
+    usesManagedOnboarding &&
+      props.apiKeyOnboardingBridge &&
       apiKeyOnboardingRoute({
         providerType: props.providerType,
-        requestHeaderCount: requestHeaders.length,
         hasRequestBodyOverlay: requestBodyText.trim().length > 0,
+        hasRequestHeaders: requestHeaders.length > 0,
+        hasEndpoint: baseUrl.trim().length > 0,
       }).kind === 'host',
   );
 
   if (
-    usesApiKeyDialog &&
+    usesManagedOnboarding &&
     shouldShowManagedOnboardingOutcomeUnknown(props.hasSaveUncertainty === true, busy)
   ) {
     return (
@@ -486,7 +596,7 @@ export function AddProviderForm(props: {
   // and the page says so up front rather than springing a second form on a
   // user who thought they were done. A single-step route shows no stepper:
   // one step is not progress.
-  const managedStepper = quickUsesManagedOnboarding ? (
+  const managedStepper = startsManagedOnboarding ? (
     <Stepper
       activeStep={managedPhase.kind === 'models' ? 1 : 0}
       label={copy.stepsAria}
@@ -497,7 +607,7 @@ export function AddProviderForm(props: {
     </Stepper>
   ) : null;
 
-  if (usesApiKeyDialog && managedPhase.kind === 'models') {
+  if (usesManagedOnboarding && managedPhase.kind === 'models') {
     const normalizedFilter = managedPhase.filter.trim().toLocaleLowerCase();
     const setFilter = (filter: string) => setManagedPhase({ ...managedPhase, filter });
     const showsFilter = managedPhase.models.length > MODEL_FILTER_THRESHOLD;
@@ -608,7 +718,10 @@ export function AddProviderForm(props: {
         <div role="status" aria-live="polite">
           {busy ? <Text type="supporting">{copy.saving}</Text> : null}
         </div>
-        {error?.field === 'form' && <Banner status="error" title={error.message} />}
+        {/* Any error, not just `form`: this step has no slug/key/endpoint input
+            for a create failure to attach to, so reporting only `form` would
+            drop the reason the connection was refused. */}
+        {error && <Banner status="error" title={error.message} />}
         <HStack gap={2} justify="end">
           <Button
             variant="ghost"
@@ -659,20 +772,25 @@ export function AddProviderForm(props: {
         <div role="status" aria-live="polite">
           {busy ? (
             <Text type="supporting">
-              {quickUsesManagedOnboarding ? copy.onboardingVerifying : copy.saving}
+              {startsManagedOnboarding ? copy.onboardingVerifying : copy.saving}
             </Text>
           ) : null}
         </div>
-        {error?.field === 'form' && (
-          <Banner status="error" title={error.message} />
-        )}
+        {/* The key and the advanced editor render their own errors; the slug
+            and endpoint this dialog never shows a field for have nowhere else
+            to land, and a create that falls back still reports them. */}
+        {error &&
+          error.field !== 'apiKey' &&
+          error.field !== 'advancedRequest' && (
+            <Banner status="error" title={error.message} />
+          )}
         <HStack gap={2} justify="end">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
           <Button
             variant="primary"
             type="submit"
             isDisabled={busy}
-            label={quickUsesManagedOnboarding
+            label={startsManagedOnboarding
               ? busy
                 ? copy.onboardingVerifying
                 : copy.onboardingVerifyAndChoose
@@ -821,7 +939,22 @@ export function AddProviderForm(props: {
       )}
       <HStack gap={2} justify="end">
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
-        <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
+        <Button
+          variant="primary"
+          isDisabled={busy || isExperimental}
+          onClick={submit}
+          // A relay that will be probed is not saved by this press, and the
+          // button should not promise a save that only a second press makes.
+          label={
+            startsManagedOnboarding
+              ? busy
+                ? copy.onboardingVerifying
+                : copy.onboardingVerifyAndChoose
+              : busy
+                ? copy.saving
+                : copy.save
+          }
+        />
       </HStack>
     </VStack>
   );

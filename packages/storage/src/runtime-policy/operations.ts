@@ -285,6 +285,12 @@ export interface ConnectionOnboardingTicket {
 export interface BeginConnectionOnboardingInput {
   readonly target: ConnectionOnboardingTarget;
   readonly baseUrl: string | null;
+  /**
+   * Caller-supplied headers a create target's discovery probe should send.
+   * An existing connection probes with the headers it has stored, so this is
+   * only accepted — and only meaningful — when onboarding creates one.
+   */
+  readonly requestHeaders?: readonly RequestHeaderUpdate[];
 }
 
 /**
