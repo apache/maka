@@ -105,8 +105,10 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 216 as const;
-// 216: token_usage.lastRequestAnchor can carry the provider request settlement
-// time. Older peers reject that field in the closed transcript shape.
+// 216: token_usage.lastRequestAnchor may carry completedAt, the provider
+// request settlement time, and transcripts may carry
+// context_compaction_applied system notes. Older peers reject both in the
+// closed transcript shape.
 // 215: WorkHub coordination uses canonical configuration and scoped delegated permissions.
 // 212: Session catalogs carry `backgroundActivity` and `backgroundActivityVersion`
 // for Host-owned activity and generation-scoped ordering independent of Session
