@@ -1336,7 +1336,34 @@ export class RuntimePolicyCoordinator {
       const headersLocator = connectionRequestHeadersLocator(target.candidate.connectionId);
       requestHeadersCredential = credentialStatus(vault, headersLocator);
       if (existing) {
+        if (input.requestHeaders !== undefined) {
+          // An existing connection probes with the headers it has stored. A
+          // caller-supplied set would discover a catalog the connection itself
+          // could not fetch, so the two are mutually exclusive.
+          throw codecError(
+            'invalid_connection_input',
+            'Request headers belong to a create onboarding target',
+          );
+        }
         requestHeadersSecret = findCredential(vault, headersLocator)?.secret ?? null;
+      } else if (input.requestHeaders !== undefined) {
+        // A create target has no stored header set, so the caller's own
+        // headers are the only material discovery can send. They are pinned
+        // for this probe; the connection's stored headers are still written
+        // through the dedicated header operation once it exists.
+        const updates = decodeRequestHeaderUpdates(input.requestHeaders);
+        if (updates.some((update) => update.value === undefined)) {
+          throw codecError(
+            'invalid_connection_input',
+            'Request headers for a create onboarding target must carry values',
+          );
+        }
+        // Object.fromEntries rather than an indexed assignment: the latter
+        // routes `__proto__` through the prototype setter and drops the
+        // header instead of defining it.
+        requestHeadersSecret = serializeRequestHeaders(
+          Object.fromEntries(updates.map(({ name, value }) => [name, value as string])),
+        );
       }
       // The proxy discovery will run through is pinned HERE, like
       // beginModelFetch pins it — re-resolving it later would let an A→B→A

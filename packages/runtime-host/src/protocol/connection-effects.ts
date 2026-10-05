@@ -27,10 +27,13 @@ import {
   decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  normalizeRequestHeaderUpdates,
   RuntimePolicyDomainDecodeError,
+  RequestCustomizationValidationError,
   type ConnectionVersionBasis,
   type ConnectionOnboardingTarget,
   type ModelDiscoverySource,
+  type RequestHeaderUpdate,
 } from '@maka/core/runtime-policy';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import {
@@ -103,9 +106,33 @@ export interface ConnectionOnboardingVerifyInput {
    * "use the registry default or the existing connection's persisted URL".
    */
   readonly baseUrl: string | null;
+  /**
+   * Custom request headers the caller wants this discovery to send, for a
+   * relay whose catalog endpoint needs them. Only a `create` target accepts
+   * them: an `existing` connection already has stored headers, and the probe
+   * must not be able to stand in for a header set the connection would not
+   * send. Omitted means "no caller-supplied headers", so a caller that never
+   * had them keeps talking to any Host vintage.
+   *
+   * The probe only *uses* these; the connection's stored headers are still
+   * written by `connection.setRequestHeaders`, the same way the create path
+   * already applies them.
+   */
+  readonly requestHeaders?: readonly RequestHeaderUpdate[];
 }
 
-export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
+/**
+ * Deliberately not `extends ConnectionOnboardingVerifyInput`: the two inputs
+ * share `target`/`apiKey`/`baseUrl` today, but save must not inherit whatever
+ * a probe-only field adds later. `requestHeaders` is the first of those — save
+ * has no probe of its own to carry them into — and spelling the shared fields
+ * out is what keeps a future verify-only input from reaching an in-process
+ * save caller by accident (#3299 review).
+ */
+export interface ConnectionOnboardingSaveInput {
+  readonly target: ConnectionOnboardingTarget;
+  readonly apiKey: string | null;
+  readonly baseUrl: string | null;
   /** Empty enables the complete non-empty model set discovered by this Host operation. */
   readonly enabledModelIds: readonly string[];
 }
@@ -258,17 +285,16 @@ export const CONNECTION_EFFECT_OPERATION_SPECS = {
 } as const;
 
 export function decodeConnectionOnboardingSaveInput(value: unknown): ConnectionOnboardingSaveInput {
+  // Exact, not shaped: `enabledModelIds` is the only field save adds, and
+  // `requestHeaders` in particular must stay a verify-only input rather than
+  // ride into save on a caller that happens to have probed with them.
   const input = requireExactRecord(value, 'connection onboarding save input', [
     'target',
     'apiKey',
     'baseUrl',
     'enabledModelIds',
   ]);
-  const verified = decodeConnectionOnboardingVerifyInput({
-    target: input.target,
-    apiKey: input.apiKey,
-    baseUrl: input.baseUrl,
-  });
+  const target = decodeConnectionOnboardingTarget(input.target);
   if (
     !Array.isArray(input.enabledModelIds) ||
     input.enabledModelIds.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
@@ -281,7 +307,18 @@ export function decodeConnectionOnboardingSaveInput(value: unknown): ConnectionO
   if (new Set(enabledModelIds).size !== enabledModelIds.length) {
     throw invalidProtocolFrame('Connection onboarding enabled models must be unique');
   }
-  return { ...verified, enabledModelIds };
+  return {
+    target,
+    apiKey:
+      input.apiKey === null
+        ? null
+        : requireString(input.apiKey, 'connection onboarding API key', 64 * 1024),
+    baseUrl:
+      input.baseUrl === null
+        ? null
+        : requireString(input.baseUrl, 'connection onboarding base URL', 2048),
+    enabledModelIds,
+  };
 }
 
 export function decodeConnectionOnboardingSaveResult(
@@ -343,13 +380,20 @@ export function decodeConnectionOnboardingSaveResult(
 export function decodeConnectionOnboardingVerifyInput(
   value: unknown,
 ): ConnectionOnboardingVerifyInput {
-  const input = requireExactRecord(value, 'connection onboarding verification input', [
-    'target',
-    'apiKey',
-    'baseUrl',
-  ]);
+  // `requestHeaders` is optional rather than always-present on the wire: a
+  // caller that never sends one keeps working against a Host that predates
+  // the field, and an older Host rejects a caller that does send one up front,
+  // while it is decoding this frame instead of mid-operation.
+  const input = requireShapedRecord(
+    value,
+    'connection onboarding verification input',
+    ['target', 'apiKey', 'baseUrl'],
+    ['requestHeaders'],
+  );
+  const target = decodeConnectionOnboardingTarget(input.target);
+  const requestHeaders = decodeOnboardingRequestHeaders(input.requestHeaders, target);
   return {
-    target: decodeConnectionOnboardingTarget(input.target),
+    target,
     apiKey:
       input.apiKey === null
         ? null
@@ -358,7 +402,41 @@ export function decodeConnectionOnboardingVerifyInput(
       input.baseUrl === null
         ? null
         : requireString(input.baseUrl, 'connection onboarding base URL', 2048),
+    ...(requestHeaders === undefined ? {} : { requestHeaders }),
   };
+}
+
+function decodeOnboardingRequestHeaders(
+  value: unknown,
+  target: ConnectionOnboardingTarget,
+): readonly RequestHeaderUpdate[] | undefined {
+  if (value === undefined) return undefined;
+  // Only a create target may carry caller-supplied headers. An existing
+  // connection probes with the headers it has stored, so accepting them here
+  // would let a caller discover a catalog the connection itself could not
+  // fetch.
+  if (target.kind !== 'create') {
+    throw invalidProtocolFrame(
+      'Connection onboarding request headers require a create target',
+    );
+  }
+  try {
+    return normalizeRequestHeaderUpdates(value).map((update) => {
+      // A create target has no stored header set for a value-less update to
+      // delete; discovery would silently drop it, so reject instead.
+      if (update.value === undefined) {
+        throw new RequestCustomizationValidationError(
+          `Request header ${update.name} must carry a value`,
+        );
+      }
+      return { name: update.name, value: update.value };
+    });
+  } catch (error) {
+    if (error instanceof RequestCustomizationValidationError) {
+      throw invalidProtocolFrame(error.message);
+    }
+    throw error;
+  }
 }
 
 function decodeConnectionOnboardingTarget(value: unknown): ConnectionOnboardingTarget {
