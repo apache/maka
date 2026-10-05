@@ -104,9 +104,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 205 as const;
-// 205: Usage queries filter by model call kind. Epoch-204 peers reject the
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 208 as const;
+// 208: Usage queries filter by model call kind. Epoch-207 peers reject the
 // filter or ignore it.
+// 205: Default-model selection can enable atomically; discovery can preserve the model selection.
 // 204: Executor catalogs and Session configuration carry opaque mode IDs;
 // catalog queries may request a provider refresh. Older peers reject these fields.
 // 202: `session.remove.preview` takes a bounded list of Sessions and reports the

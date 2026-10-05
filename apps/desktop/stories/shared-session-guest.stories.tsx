@@ -158,7 +158,7 @@ function GuestComposer(props: { sessionId: string }) {
   return (
     <ComposerStagingServicesProvider services={stagingServices}>
     <ComposerStagingProvider commands={stagingCommands} draftKey={props.sessionId}>
-    <GuestTurnRequests sessionId={props.sessionId} composerRef={composerRef}>
+    <GuestTurnRequests sessionId={props.sessionId} discardDraft={(draftKey) => composerRef.current?.clearDraft(draftKey)}>
       {(guest) => (
         <ChatComposerRegion
           composerRef={composerRef}

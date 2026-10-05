@@ -68,6 +68,7 @@ import type {
   ProviderType,
 } from '@maka/core/llm-connections';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import { connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
@@ -164,7 +165,8 @@ function makeConnection(input: {
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60_000,
   };
-  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
+  const projected = { ...stored, enabledModelIds: connectionEnabledModelIds(stored) };
+  return { ...projected, catalogEntries: resolveConnectionModelCatalog(projected) };
 }
 
 const connections: ProjectedLlmConnection[] = [
@@ -2121,7 +2123,7 @@ export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
 };
-// Real path: 设置 → 模型 → 连接详情, comparing the action before selection
+// Real path: 设置 → 模型 → 连接详情 with one enabled chat model, comparing the action before selection
 // with the settled state after a connection is the default. Both occupy the
 // same header slot, so changing state must not shrink the label typography.
 export const ModelsDefaultBadgeTypography: Story = {
@@ -2139,7 +2141,7 @@ export const ModelsDefaultBadgeTypography: Story = {
 
     await userEvent.click(setDefaultButton);
     const detailHeader = await canvas.findByRole('toolbar', { name: 'OpenAI Review' });
-    const defaultLabel = within(detailHeader).getByText('默认');
+    const defaultLabel = await within(detailHeader).findByText('默认');
     const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
     if (!defaultBadge) throw new Error('Connection default-state badge did not render');
 

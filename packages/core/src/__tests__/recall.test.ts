@@ -363,10 +363,18 @@ test('a candidate source without a corpus count is not used', async () => {
   assert.equal(missing.scannedFully, true);
   assert.equal(asked, 0, 'the candidate source must not even be asked');
 
+  const reads: string[] = [];
   const declining = await runRecall(
     { terms: ['上下文'] },
-    candidateDeps(data, { countSearchableMessages: async () => null }),
+    candidateDeps(data, {
+      countSearchableMessages: async () => null,
+      readMessages: async (sessionId) => {
+        reads.push(sessionId);
+        return data.messages.get(sessionId) ?? null;
+      },
+    }),
   );
+  assert.equal(reads.length, new Set(reads).size, 'count fallback must not reread a Session');
   assert.ok(declining.ok);
   assert.equal(declining.scannedFully, true);
   const scanned = await runRecall({ terms: ['上下文'] }, scanDeps(data));

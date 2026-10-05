@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 328 files — blocker 0, reimplementation 0, polish 4, aligned 324.
+**Totals:** 329 files — blocker 0, reimplementation 0, polish 4, aligned 325.
 
 ## Exclusions (explicit)
 
@@ -30,7 +30,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 |------|------|-------------|------------|----------|
 | `apps/desktop/src/renderer/agent-graph-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, IconButton, Selector, Spinner | aligned — uses Astryx (Banner, Button, EmptyState, IconButton, Selector, Spinner) | aligned |
 | `apps/desktop/src/renderer/app-shell-chrome-actions.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/app-shell-detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/app-shell-overlays.tsx` | shell-chrome-or-panel | Spinner | aligned — uses Astryx (Spinner) | aligned |
 | `apps/desktop/src/renderer/app-shell.tsx` | shell-chrome-or-panel | AppShell | aligned — uses Astryx (AppShell) | aligned |
 | `apps/desktop/src/renderer/app.tsx` | other | Theme | aligned — uses Astryx (Theme) | aligned |
@@ -56,6 +55,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/client-plugins/client-plugin-root.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/client-plugins/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/connection-settings/connection-default-action.tsx` | other | Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, Selector, Text, VStack | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx` | dialog-overlay | VStack | aligned — uses Astryx (VStack) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput) | aligned |
@@ -212,6 +212,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/tasks-settings-page.tsx` | settings-page | EmptyState, IconButton, List, ListItem | aligned — uses Astryx (EmptyState, IconButton, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/usage-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/web-search-settings-page.tsx` | settings-page | Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Link, Selector, StatusDot, Switch, TextInput) | aligned |
+| `apps/desktop/src/renderer/shell/detail-panel.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/shell/window-titlebar.tsx` | shell-chrome-or-panel | Icon, IconButton, Tooltip | aligned — uses Astryx (Icon, IconButton, Tooltip) | aligned |
 | `apps/desktop/src/renderer/styles.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/agent-graph.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |

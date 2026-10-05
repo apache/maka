@@ -42,7 +42,7 @@ export function appShellCommandOptions(
     clientPathsAccessible: false,
     connections: [],
     defaultConnection: null,
-    readMessages: () => [],
+    renderPublishedConversation: () => '',
     newTaskProfileId: 'new-task-profile',
     settingsOpen: false,
     settingsProfileId: undefined,

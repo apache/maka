@@ -22,9 +22,19 @@ import type { useComposerSubmission } from '../controller/use-composer-submissio
 
 export type ComposerSubmissionReader = ReturnType<typeof useComposerSubmission>['reader'];
 
+export type ComposerTurnReader = ReturnType<typeof useComposerSubmission>['turnReader'];
+
 export const ComposerSubmissionContext = createContext<ComposerSubmissionReader | undefined>(undefined);
 export function useComposerSubmissionReader() {
   const reader = useContext(ComposerSubmissionContext);
+  if (!reader) throw new Error('ComposerSubmissionProvider is required');
+  return reader;
+}
+
+/** The displayed and owner Session, pending Turn marks and the banner's resume action. */
+export const ComposerTurnContext = createContext<ComposerTurnReader | undefined>(undefined);
+export function useComposerTurnReader() {
+  const reader = useContext(ComposerTurnContext);
   if (!reader) throw new Error('ComposerSubmissionProvider is required');
   return reader;
 }

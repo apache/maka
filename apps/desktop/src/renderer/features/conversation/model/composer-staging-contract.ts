@@ -19,6 +19,7 @@
 
 import type { DirectoryReference, QuoteRef } from '@maka/core/events';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
 
 /** A submission owns the staging it captured, even after navigation or another edit. */
 export interface ComposerStagingSubmission {
@@ -43,4 +44,6 @@ export interface ComposerStagingCommands {
   }): void;
   resetImageNotice(draftKey: string): void;
   transferImageNotice(from: string, to: string): void;
+  /** Hands a withdrawn send's attachments, directories and quotes back to the draft it left. */
+  restoreContext(draftKey: string, context: Omit<RestoredDraftContent, 'text'>): void;
 }
