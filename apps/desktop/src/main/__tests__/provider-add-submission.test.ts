@@ -268,31 +268,41 @@ test('a duplicate slug outranks a missing key, so one fix is asked for at a time
   );
 });
 
-test('routes only fixed-endpoint API-key drafts without request customization to Host onboarding', () => {
+test('routes an API-key draft to Host onboarding unless a probe input cannot ride along', () => {
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'openai',
-    requestHeaderCount: 0,
     hasRequestBodyOverlay: false,
+    hasEndpoint: false,
   }), { kind: 'host' });
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'openai',
-    requestHeaderCount: 1,
-    hasRequestBodyOverlay: false,
-  }), { kind: 'legacy', reason: 'request_headers' });
-  assert.deepEqual(apiKeyOnboardingRoute({
-    providerType: 'openai',
-    requestHeaderCount: 0,
     hasRequestBodyOverlay: true,
+    hasEndpoint: false,
   }), { kind: 'legacy', reason: 'request_body' });
+  // A relay with no registry endpoint has nothing to verify against until the
+  // form supplies one.
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'custom',
-    requestHeaderCount: 0,
     hasRequestBodyOverlay: false,
+    hasEndpoint: false,
   }), { kind: 'legacy', reason: 'custom_endpoint' });
+  // …and once it does, the probe carries the form's endpoint and headers, so
+  // the relay joins the managed route rather than the legacy create-then-fetch.
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'custom',
+    hasRequestBodyOverlay: false,
+    hasEndpoint: true,
+  }), { kind: 'host' });
+  // The overlay is still the one probe input the Host cannot carry.
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'custom',
+    hasRequestBodyOverlay: true,
+    hasEndpoint: true,
+  }), { kind: 'legacy', reason: 'request_body' });
   assert.deepEqual(apiKeyOnboardingRoute({
     providerType: 'cloudflare-workers-ai',
-    requestHeaderCount: 0,
     hasRequestBodyOverlay: false,
+    hasEndpoint: false,
   }), { kind: 'legacy', reason: 'cloudflare' });
 });
 

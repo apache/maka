@@ -29,18 +29,14 @@ import {
 import type {
   CreateConnectionInput,
   IdentifiedLlmConnection,
+  RequestHeaderUpdate,
   SlugValidationIssue,
 } from '@maka/core/llm-connections';
 export type ApiKeyOnboardingRoute =
   | { readonly kind: 'host' }
   | {
       readonly kind: 'legacy';
-      readonly reason:
-        | 'provider_auth'
-        | 'custom_endpoint'
-        | 'cloudflare'
-        | 'request_headers'
-        | 'request_body';
+      readonly reason: 'provider_auth' | 'custom_endpoint' | 'cloudflare' | 'request_body';
     };
 
 export function shouldShowManagedOnboardingOutcomeUnknown(
@@ -50,11 +46,22 @@ export function shouldShowManagedOnboardingOutcomeUnknown(
   return hasSaveUncertainty && !busy;
 }
 
-/** Decide the only writer before either writer performs a side effect. */
+/**
+ * Decide the only writer before either writer performs a side effect.
+ *
+ * A relay with no registry endpoint probes the one the form carries, so
+ * `hasEndpoint` — not the provider type alone — is what decides whether the
+ * Host has an endpoint to verify against. Request headers no longer divert a
+ * draft to the legacy path: the verify operation carries the caller's own
+ * headers into a create target, which is the whole reason a relay whose
+ * catalog needs a header can be probed before it is saved. A request body
+ * overlay still cannot ride the probe, so it still does.
+ */
 export function apiKeyOnboardingRoute(input: {
   readonly providerType: ProviderType;
-  readonly requestHeaderCount: number;
   readonly hasRequestBodyOverlay: boolean;
+  /** The form carries an endpoint of its own (a custom relay's base URL). */
+  readonly hasEndpoint: boolean;
 }): ApiKeyOnboardingRoute {
   const definition = PROVIDER_REGISTRY[input.providerType];
   if (!providerAuthSupportsApiKey(input.providerType) || definition.authKind !== 'api_key') {
@@ -63,10 +70,22 @@ export function apiKeyOnboardingRoute(input: {
   if (input.providerType === 'cloudflare-workers-ai') {
     return { kind: 'legacy', reason: 'cloudflare' };
   }
-  if (!definition.baseUrl) return { kind: 'legacy', reason: 'custom_endpoint' };
-  if (input.requestHeaderCount > 0) return { kind: 'legacy', reason: 'request_headers' };
+  if (!definition.baseUrl && !input.hasEndpoint) {
+    return { kind: 'legacy', reason: 'custom_endpoint' };
+  }
   if (input.hasRequestBodyOverlay) return { kind: 'legacy', reason: 'request_body' };
   return { kind: 'host' };
+}
+
+/**
+ * The advanced request editor hands over name→value pairs; the wire carries
+ * header updates. They describe the same headers, so a probe and the save that
+ * follows it must not disagree about which shape they send.
+ */
+export function probeRequestHeaderUpdates(
+  headers: Readonly<Record<string, string>>,
+): RequestHeaderUpdate[] {
+  return Object.entries(headers).map(([name, value]) => ({ name, value }));
 }
 
 export function stableOnboardingModels(models: readonly ModelInfo[]): ModelInfo[] {
