@@ -680,6 +680,14 @@ const SESSION_LINK_COLUMNS = [
  */
 const TRIGGER_MAINTAINED_TABLES = new Set(['session_catalog_projection']);
 
+// These are database-local ordering keys, not portable identities or references.
+// Keep this semantic policy explicit: other sequence columns belong to Sessions,
+// invocations or streams and must retain their values.
+const LOCAL_SEQUENCE_COLUMNS = new Map([
+  ['tool_journal_events', 'journal_seq'],
+  ['message_admissions', 'sequence'],
+]);
+
 const PORTABLE_GLOBAL_TABLES = new Set([
   'operational_schema_migrations',
   'session_metadata_schema',
@@ -1299,7 +1307,21 @@ function mergeAttachedBundle(target: DatabaseSync): string[] {
         // workspace singleton into somebody else's workspace.
         if (!describesASession(target, name)) continue;
         const quoted = quoteIdentifier(name);
-        target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
+        const localSequence = LOCAL_SEQUENCE_COLUMNS.get(name);
+        if (localSequence) {
+          const columns = (
+            target.prepare(`PRAGMA bundle.table_info(${quoted})`).all() as Array<{ name: string }>
+          )
+            .filter((column) => column.name !== localSequence)
+            .map((column) => quoteIdentifier(column.name))
+            .join(', ');
+          // Let SQLite allocate target-local values while retaining source order.
+          target.exec(
+            `INSERT INTO main.${quoted} (${columns}) SELECT ${columns} FROM bundle.${quoted} ORDER BY ${quoteIdentifier(localSequence)}`,
+          );
+        } else {
+          target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
+        }
       }
       const violation = target.prepare('PRAGMA foreign_key_check').get();
       if (violation) {
