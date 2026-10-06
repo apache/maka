@@ -6560,7 +6560,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('surfaces a notice when the foreign-session scan fails', async () => {
+  test('opens the latest imported task without importing another copy', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
     let imports = 0;
