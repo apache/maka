@@ -157,11 +157,11 @@ test('the context usage share resolves declared, then metered, then metadata win
     // A later successful measurement restores the share in the same mounted control.
     assert.equal(await render(
       { reading: { kind: 'measured', tokens: 10_000, contextWindow: 100_000 } },
-      'Context window: 10% used (10K / 100K tokens).',
+      'Context: 10% (10K / 100K tokens)',
     ), '10%');
     assert.equal(await render(
       { reading: { kind: 'unavailable' }, declaredContextWindow: 100_000 },
-      'No usage data is available for this request.',
+      'No context usage data',
     ), 'Usage');
   } finally {
     await act(() => root.unmount());
