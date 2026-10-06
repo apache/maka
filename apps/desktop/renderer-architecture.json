@@ -1535,6 +1535,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./application/contracts/operation-diagnostics.js": 1,
+          "./features/task-entry/index.js": 1,
           "./locales/shell-copy.js": 1,
           "@astryxdesign/core/Button": 1,
           "@astryxdesign/core/Dialog": 1,
@@ -2263,6 +2264,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/task-entry/index.js": 1,
           "../locales/settings-projects-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "../project-path-display.js": 1,

@@ -66,6 +66,44 @@ workspace-unavailable notice instead.
 - Draft identity is target-scoped. An unresolved catalog always uses the stable
   unresolved new-task key, preserving reload and target-switch handoff behavior.
 
+## Registration recovery boundary
+
+`ProjectRegistrationBoundary` provides a render-prop transaction for legacy
+registration callers. It owns single-flight pending state, archived-project
+confirmation, and recovery through the injected catalog. Cancellation is silent;
+failures return to the caller's existing error surface. Host changes, lost Host
+verification, locale changes, unmount, and caller request fences prevent stale
+confirmation or recovery results from continuing.
+
+Project Settings keeps its original folder-picker add operation, row-action
+errors, and refresh. The shared remote-directory browser keeps directory I/O,
+navigation, request sequencing, and accepted-project handoff. This boundary does
+not take ownership of either surface's broader lifecycle.
+
+## Existing Session workspace recovery
+
+`useSessionWorkspaceRecovery` owns the repair request, not the new-task target.
+Its Add action shares `resolveProjectRegistration` with other registration
+callers: confirm restoring the original Project **and using it for this Session**,
+restore it, check availability, then call the existing Session relocation port.
+Even a same-Project move must pass Runtime Host eligibility checks.
+
+- Restoration and relocation are separate commits. A rejected move leaves the
+  Project restored and the repair picker available, with a partial-success error.
+  Recovery never archives the Project to roll back, renames it, creates a Session,
+  or sends a message.
+- Cancellation does not restore, relocate, or refresh. An unavailable restored
+  directory cannot be used; the user can relocate it or choose another Project.
+- Opaque restore/move rejections are unconfirmed outcomes, not proof that the
+  write failed. The UI asks the user to check state before retrying; it never
+  resubmits automatically. Catalog refresh failure cannot undo a committed move.
+- Each request has an identity even when reopening the same Session. Leaving
+  that Session/Host, closing recovery, changing service/locale, or unmounting
+  fences pending work. Already-submitted writes cannot be undone, but their
+  results cannot close a newer repair request. Single-flight remains held until
+  the physical attempt settles. Closing the dropdown for the naming dialog is
+  only a UI handoff and keeps the request alive.
+
 ## Non-ownership
 
 Session creation, first-send/task submission, Composer state, attachments,

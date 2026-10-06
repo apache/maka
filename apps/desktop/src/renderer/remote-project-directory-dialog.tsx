@@ -25,7 +25,8 @@ import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu'
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
-import { useToast, useUiLocale } from '@maka/ui';
+import { useUiLocale } from '@maka/ui';
+import { ProjectRegistrationBoundary, type ProjectRegistration } from './features/task-entry/index.js';
 import { reportUnexpectedError } from './application/contracts/operation-diagnostics.js';
 import { Check, Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
 import type {
@@ -53,7 +54,6 @@ export function RemoteProjectDirectoryDialog(props: {
   onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
 }) {
   const locale = useUiLocale();
-  const toast = useToast();
   const copy = getShellCopy(locale).projectActions;
   const [roots, setRoots] = useState<readonly DesktopProjectDirectoryRoot[]>([]);
   const [root, setRoot] = useState<DesktopProjectDirectoryRoot>();
@@ -157,30 +157,25 @@ export function RemoteProjectDirectoryDialog(props: {
     void load({ kind: 'directory', host, root: nextRoot, segments: [] });
   }
 
-  async function register(): Promise<void> {
+  async function register(registration: ProjectRegistration): Promise<void> {
     const host = props.host;
-    if (!host || !root || loading || registering) return;
-    const sequence = ++request.current;
-    setRegistering(true);
-    setError(undefined);
+    if (!host || !root || loading || registering || registration.pending) return;
+    let sequence: number | undefined;
     try {
-      let project = await window.maka.projects.registerDirectory({
-        rootId: root.id,
-        segments,
-      }, host);
-      if (request.current !== sequence) return;
-      if (project.archivedAt !== undefined) {
-        const confirmed = await toast.confirm({
-          title: copy.archivedProjectTitle,
-          description: copy.archivedProjectDescription,
-          confirmLabel: copy.archivedProjectRestore,
-          cancelLabel: copy.archivedProjectCancel,
-        });
-        if (!confirmed || request.current !== sequence) return;
-        project = await window.maka.projects.restore(project.id, host);
-        if (request.current !== sequence) return;
-      }
-      props.onRegistered(project, host);
+      const result = await registration.register(async () => {
+        sequence = ++request.current;
+        setRegistering(true);
+        setError(undefined);
+        const project = await window.maka.projects.registerDirectory({
+          rootId: root.id,
+          segments,
+        }, host);
+        return project.archivedAt === undefined
+          ? { ok: true, project }
+          : { ok: false, reason: 'archived', projectId: project.id };
+      }, () => sequence === undefined || request.current === sequence);
+      if (request.current !== sequence || !result?.ok) return;
+      props.onRegistered(result.project, host);
     } catch (cause) {
       if (request.current !== sequence) return;
       reportUnexpectedError('project-directory:register', cause);
@@ -209,6 +204,8 @@ export function RemoteProjectDirectoryDialog(props: {
     ? entries
     : entries.filter((entry) => !entry.name.startsWith('.'));
   return (
+    <ProjectRegistrationBoundary host={host}>
+      {(registration) => (
     <Dialog
       isOpen={host !== undefined}
       onOpenChange={(open) => {
@@ -338,7 +335,7 @@ export function RemoteProjectDirectoryDialog(props: {
                   label={copy.remoteDirectorySelect}
                   isDisabled={!root || loading || registering}
                   isLoading={registering}
-                  onClick={() => void register()}
+                  onClick={() => void register(registration)}
                 />
               </HStack>
             </HStack>
@@ -346,6 +343,8 @@ export function RemoteProjectDirectoryDialog(props: {
         }
       />
     </Dialog>
+      )}
+    </ProjectRegistrationBoundary>
   );
 }
 

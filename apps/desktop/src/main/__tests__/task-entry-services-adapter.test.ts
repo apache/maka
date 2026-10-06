@@ -65,9 +65,6 @@ describe('createDesktopTaskEntryServices', () => {
           calls.push({ name: 'renameProject', args }),
         archive: async (...args: unknown[]) =>
           calls.push({ name: 'archiveProject', args }),
-        restore: async () => {
-          throw new Error('Task Entry must use the result-bearing newTasks restore bridge');
-        },
       },
       sessions: {
         moveToProject: async (...args: unknown[]) => {

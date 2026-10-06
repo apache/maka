@@ -26,9 +26,10 @@ import { build } from 'esbuild';
 import { parseHTML } from 'linkedom';
 import { act, createElement, type ComponentType, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
+import { AstryxLocaleProvider, LocaleProvider, ToastProvider, useToast } from '@maka/ui';
 import type { ProjectRecord } from '@maka/core/project';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
+import type { TaskEntryServices } from '../../renderer/features/task-entry/testing.js';
 
 interface RenderModules {
   RemoteProjectDirectoryDialog: ComponentType<{
@@ -36,7 +37,10 @@ interface RenderModules {
     onClose(): void;
     onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
   }>;
-  SettingsFixture: ComponentType;
+  SettingsFixture: ComponentType<{ host?: DesktopRuntimeHostRef; verified?: boolean }>;
+  SessionRecoveryFixture: ComponentType<{ sessionId?: string }>;
+  TaskEntryServicesProvider: ComponentType<{ services: TaskEntryServices; children: ReactNode }>;
+  createFakeTaskEntryServices(): TaskEntryServices;
 }
 let components: RenderModules;
 let bundleDirectory: string;
@@ -65,15 +69,29 @@ before(async () => {
   await build({
     stdin: {
       contents: `
-        import { createElement } from 'react';
+        import { createElement, Fragment } from 'react';
+        import { WorkspacePicker } from '@maka/ui';
+        import { TaskEntryRoot, TaskEntryWorkspacePickerConsumer } from './features/task-entry';
         import { ProjectsSettingsPage } from './settings/projects-settings-page';
         import { RuntimeHostSettingsTarget } from './settings/runtime-host-settings-target';
         export { RemoteProjectDirectoryDialog } from './remote-project-directory-dialog';
-        export function SettingsFixture() {
+        export { TaskEntryServicesProvider } from './features/task-entry';
+        export { createFakeTaskEntryServices } from './features/task-entry/testing';
+        export function SessionRecoveryFixture({ sessionId }) {
+          return createElement(TaskEntryRoot, { children: ({ commands }) => createElement(Fragment, null,
+            createElement('button', { onClick: () => commands.openSessionWorkspaceRecovery(sessionId) }, 'Repair workspace'),
+            createElement(TaskEntryWorkspacePickerConsumer, {
+              manageProjects() {},
+              activeSession: sessionId ? { id: sessionId, profileId: 'local', runtimeHostId: 'host-local', projectId: null, profileKind: 'local' } : undefined,
+              children: (workspacePicker) => createElement(WorkspacePicker, { workspacePicker }),
+            }),
+          ) });
+        }
+        export function SettingsFixture({ host = { profileId: 'remote', hostId: 'host-remote' }, verified = true }) {
           return createElement(RuntimeHostSettingsTarget, {
-            host: { profileId: 'remote', hostId: 'host-remote' },
+            host,
             children: createElement(ProjectsSettingsPage, {
-              settings: { projects: {} }, runtimeHostStatus: 'ready', runtimeHostTargetVerified: true,
+              settings: { projects: {} }, runtimeHostStatus: 'ready', runtimeHostTargetVerified: verified,
               onUpdate: async () => {}, onRetryRuntimeHost: async () => {}, onRemoteHostAdded() {},
             }),
           });
@@ -104,7 +122,6 @@ function bridge(overrides: Record<string, unknown> = {}) {
     projects: {
       getDirectoryRoots: async () => [{ id: 'root', name: 'Root' }],
       listDirectory: async () => [], registerDirectory: async () => archived,
-      restore: async () => restored,
       getSnapshot: async () => ({ projects: [], capabilities: { chooseClientDirectory: true } }),
       subscribeChanges: () => () => {},
       ...overrides,
@@ -120,7 +137,7 @@ async function flushFrames() {
   }
 }
 async function click(label: string) {
-  const button = [...document.querySelectorAll('button')].filter(
+  const button = [...document.querySelectorAll('button, [role="menuitem"]')].filter(
     (candidate) => candidate.textContent === label || candidate.getAttribute('aria-label') === label,
   ).at(-1);
   assert.ok(button, `missing button ${label}: ${document.body.textContent}`);
@@ -128,8 +145,12 @@ async function click(label: string) {
   await flushFrames();
 }
 
-async function submitNamedProject() {
+async function submitNamedProject(repetitions = 1) {
   await click('New project');
+  await submitProjectName(repetitions);
+}
+
+async function submitProjectName(repetitions = 1) {
   const input = document.querySelector('input');
   assert.ok(input);
   await act(async () => {
@@ -143,23 +164,69 @@ async function submitNamedProject() {
   });
   const form = document.querySelector('#maka-new-project-form');
   assert.ok(form);
-  await act(async () => form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+  await act(async () => {
+    for (let index = 0; index < repetitions; index++) {
+      form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+    }
+  });
   await flushFrames();
 }
 
-for (const outcome of ['restore', 'cancel', 'failure', 'normal', 'stale'] as const) {
+// Request routing belongs here; native modal input blocking is checked in Chromium,
+// not by rerendering the fixture or dispatching clicks behind an open dialog.
+for (const action of ['submit', 'cancel'] as const) {
+  test(`Session naming dialog ${action} routes only the accepted recovery`, async () => {
+    const harness = installRenderer();
+    const calls: string[] = [];
+    harness.services.catalog.getCatalog = async () => ({
+      defaultProfileId: 'local',
+      hosts: [{
+        profile: { id: 'local', name: 'Local', kind: 'local' },
+        hostId: 'host-local', readiness: 'ready', state: 'available',
+        projects: [], selectedProjectId: null,
+        capabilities: { chooseClientDirectory: true, chooseHostDirectory: false, selectNoProject: true },
+        chatDefaults: { permissionMode: 'ask', thinkingLevel: 'high' },
+      }],
+    });
+    harness.services.catalog.addProject = async () => {
+      calls.push('add'); return { ok: false, reason: 'archived', projectId: 'p' };
+    };
+    harness.services.catalog.restoreProject = async () => {
+      calls.push('restore'); return { ok: true, project: restored };
+    };
+    harness.services.sessions.relocateWorkspace = async (sessionId, projectId) => {
+      calls.push(`relocate:${sessionId}:${projectId}`); return { ok: true };
+    };
+    await harness.render(createElement(components.SessionRecoveryFixture, { sessionId: 'session-1' }));
+    await click('Repair workspace');
+    await click('New project');
+    assert.ok(document.querySelector('#maka-new-project-form'));
+    if (action === 'cancel') {
+      await click('Close');
+      assert.equal(document.querySelector('#maka-new-project-form'), null);
+      assert.deepEqual(calls, []);
+    } else {
+      await submitProjectName();
+      assert.deepEqual(calls, ['add']);
+      await click('Restore and use for this session');
+      assert.deepEqual(calls, ['add', 'restore', 'relocate:session-1:p']);
+    }
+  });
+}
+
+for (const outcome of ['restore', 'cancel', 'failure', 'normal'] as const) {
   test(`remote directory registration: ${outcome}`, async () => {
     const harness = installRenderer();
     const accepted: ProjectRecord[] = [];
     const restores: unknown[][] = [];
     bridge({
       registerDirectory: async () => outcome === 'normal' ? restored : archived,
-      restore: async (...args: unknown[]) => {
-        restores.push(args);
-        if (outcome === 'failure') throw new Error('restore failed');
-        return restored;
-      },
     });
+    harness.services.catalog.restoreProject = async (...args) => {
+      restores.push(args);
+      if (outcome === 'failure') throw new Error('restore failed');
+      return { ok: true, project: restored };
+    };
     const render = (target: DesktopRuntimeHostRef | undefined = host) => harness.render(
       createElement(components.RemoteProjectDirectoryDialog, {
         host: target, onClose() {}, onRegistered(project) { accepted.push(project); },
@@ -174,7 +241,6 @@ for (const outcome of ['restore', 'cancel', 'failure', 'normal', 'stale'] as con
     }
     assert.equal(accepted.length, 0, 'must not accept an archived project before confirmation');
     assert.match(document.body.textContent, /Project archived/);
-    if (outcome === 'stale') await render({ profileId: 'another', hostId: 'another-host' });
     if (outcome === 'cancel') {
       const dialog = [...document.querySelectorAll('dialog')].find(el => el.textContent.includes('Project archived'));
       assert.ok(dialog);
@@ -184,7 +250,7 @@ for (const outcome of ['restore', 'cancel', 'failure', 'normal', 'stale'] as con
       await flushFrames();
     } else await click('Restore');
     if (outcome === 'restore') {
-      assert.deepEqual(restores, [['p', host]]);
+      assert.deepEqual(restores, [[host, 'p']]);
       assert.deepEqual(accepted, [restored]);
     } else {
       assert.equal(accepted.length, 0);
@@ -205,8 +271,8 @@ for (const failure of ['add', 'restore'] as const) {
         if (failure === 'add') throw new Error('add failed');
         return { ok: false, reason: 'archived', projectId: 'p' };
       },
-      restore: async () => { throw new Error('restore failed'); },
     });
+    harness.services.catalog.restoreProject = async () => { throw new Error('restore failed'); };
     await harness.render(createElement(components.SettingsFixture));
     await submitNamedProject();
     if (failure === 'restore') await click('Restore');
@@ -217,27 +283,274 @@ for (const failure of ['add', 'restore'] as const) {
     assert.equal(add.hasAttribute('disabled'), false);
   });
 }
-for (const outcome of ['restore', 'cancel', 'refresh-failure'] as const) {
-  test(`Settings archived Add: ${outcome}`, async () => {
+for (const outcome of ['restore', 'normal', 'refresh-failure'] as const) {
+  test(`Settings successful Add: ${outcome}`, async () => {
     const harness = installRenderer();
     let restores = 0;
     let snapshots = 0;
     bridge({
-      add: async () => ({ ok: false, reason: 'archived', projectId: 'p' }),
-      restore: async () => { restores++; return restored; },
+      add: async () => outcome === 'normal'
+        ? { ok: true, project: restored }
+        : { ok: false, reason: 'archived', projectId: 'p' },
       getSnapshot: async () => {
         snapshots++;
         if (snapshots > 1 && outcome === 'refresh-failure') throw new Error('refresh failed');
         return { projects: [], capabilities: { chooseClientDirectory: true } };
       },
     });
+    harness.services.catalog.restoreProject = async () => { restores++; return { ok: true, project: restored }; };
     await harness.render(createElement(components.SettingsFixture));
     await submitNamedProject();
     assert.equal(restores, 0);
-    await click(outcome === 'cancel' ? 'Cancel' : 'Restore');
-    assert.equal(restores, outcome === 'cancel' ? 0 : 1);
-    assert.ok(snapshots > 1);
+    if (outcome !== 'normal') await click('Restore');
+    assert.equal(restores, outcome === 'normal' ? 0 : 1);
+    assert.equal(snapshots, 2);
     if (outcome === 'refresh-failure') assert.match(document.body.textContent, /Action failed/);
+    else assert.doesNotMatch(document.body.textContent, /Action failed/);
+  });
+}
+
+for (const stage of ['picker', 'confirmation', 'restore'] as const) {
+  test(`Settings ${stage} cancellation skips refresh and errors${stage === 'confirmation' ? ' and allows retry' : ''}`, async () => {
+    const harness = installRenderer();
+    let adds = 0;
+    let restores = 0;
+    let snapshots = 0;
+    bridge({
+      add: async () => {
+        adds++;
+        return stage === 'picker'
+          ? { ok: false, reason: 'cancelled' }
+          : { ok: false, reason: 'archived', projectId: 'p' };
+      },
+      getSnapshot: async () => {
+        snapshots++;
+        if (snapshots > 1) throw new Error('unexpected refresh after cancellation');
+        return { projects: [], capabilities: { chooseClientDirectory: true } };
+      },
+    });
+    harness.services.catalog.restoreProject = async () => {
+      restores++;
+      return { ok: false, reason: 'cancelled' };
+    };
+    await harness.render(createElement(components.SettingsFixture));
+    assert.equal(snapshots, 1);
+    const attempts = stage === 'confirmation' ? 2 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      await submitNamedProject();
+      if (stage !== 'picker') {
+        assert.match(document.body.textContent, /Project archived/);
+        assert.equal(snapshots, 1, 'waiting for confirmation must not refresh');
+        await click(stage === 'confirmation' ? 'Cancel' : 'Restore');
+      }
+      assert.deepEqual({
+        adds,
+        restores,
+        snapshots,
+        actionFailed: document.body.textContent.includes('Action failed'),
+      }, {
+        adds: attempt,
+        restores: stage === 'restore' ? attempt : 0,
+        snapshots: 1,
+        actionFailed: false,
+      });
+      const add = [...document.querySelectorAll('button')].find(el => el.textContent === 'New project');
+      assert.ok(add);
+      assert.notEqual(add.getAttribute('aria-busy'), 'true');
+      assert.equal(add.hasAttribute('disabled'), false);
+    }
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('async confirmation preserves the queue and ordinary confirmations after rejection', async () => {
+  const harness = installRenderer();
+  const completion = deferred<void>();
+  const outcomes: unknown[] = [];
+  const cause = new Error('unconfirmed write');
+  function Fixture() {
+    const toast = useToast();
+    return createElement('button', { onClick: () => {
+      void toast.confirm({ title: 'Async first', onConfirm: async () => {
+        await completion.promise;
+        throw cause;
+      } }).then(value => outcomes.push(value), error => outcomes.push(error));
+      void toast.confirm({ title: 'Ordinary second' }).then(value => outcomes.push(value));
+    } }, 'Queue confirmations');
+  }
+  await harness.render(createElement(Fixture));
+  await click('Queue confirmations');
+  await click('Confirm');
+  assert.match(document.body.textContent, /Async first/);
+  assert.doesNotMatch(document.body.textContent, /Ordinary second/);
+  await act(async () => completion.resolve());
+  await flushFrames();
+  assert.deepEqual(outcomes, [cause]);
+  assert.match(document.body.textContent, /Ordinary second/);
+  await click('Confirm');
+  assert.deepEqual(outcomes, [cause, true]);
+  assert.equal(document.querySelector('.maka-confirm-modal'), null);
+});
+
+test('restore confirmation stays busy and cannot dismiss until completion', async () => {
+  const harness = installRenderer();
+  const completion = deferred<void>();
+  let restores = 0;
+  let accepted = 0;
+  bridge();
+  harness.services.catalog.restoreProject = async () => {
+    restores++;
+    await completion.promise;
+    return { ok: true, project: restored };
+  };
+  await harness.render(createElement(components.RemoteProjectDirectoryDialog, {
+    host, onClose() {}, onRegistered() { accepted++; },
+  }));
+  await click('Add this folder');
+  const dialog = document.querySelector<HTMLDialogElement>('.maka-confirm-modal');
+  assert.ok(dialog);
+  const action = [...dialog.querySelectorAll('button')].find(el => el.textContent === 'Restore');
+  const cancel = [...dialog.querySelectorAll('button')].find(el => el.textContent === 'Cancel');
+  assert.ok(action);
+  assert.ok(cancel);
+  // Same-tick double click must start only one write, before React rerenders.
+  await act(async () => {
+    action.dispatchEvent(new window.Event('click', { bubbles: true }));
+    action.dispatchEvent(new window.Event('click', { bubbles: true }));
+  });
+  await flushFrames();
+  assert.equal(restores, 1);
+  assert.equal(dialog.hasAttribute('open'), true);
+  assert.equal(dialog.getAttribute('aria-busy'), 'true');
+  assert.ok(dialog.querySelector('[role="status"]'), 'restore button shows its loading indicator');
+  await act(async () => {
+    cancel.dispatchEvent(new window.Event('click', { bubbles: true }));
+    dialog.dispatchEvent(new window.Event('cancel', { bubbles: false, cancelable: true }));
+  });
+  await flushFrames();
+  assert.equal(dialog.hasAttribute('open'), true);
+  assert.equal(accepted, 0);
+  await act(async () => completion.resolve());
+  await flushFrames();
+  assert.equal(document.querySelector('.maka-confirm-modal'), null);
+  assert.equal(accepted, 1);
+});
+
+for (const stage of ['registration', 'confirmation', 'restoration'] as const) {
+  for (const invalidation of ['host', 'unmount'] as const) {
+    test(`remote ${stage} ignores ${invalidation} invalidation`, async () => {
+      const harness = installRenderer();
+      const registration = deferred<ProjectRecord>();
+      const restoration = deferred<{ ok: true; project: ProjectRecord }>();
+      let restores = 0;
+      let accepted = 0;
+      bridge({ registerDirectory: () => registration.promise });
+      harness.services.catalog.restoreProject = async () => { restores++; return restoration.promise; };
+      const render = (target = host) => harness.render(createElement(components.RemoteProjectDirectoryDialog, {
+        host: target, onClose() {}, onRegistered() { accepted++; },
+      }));
+      await render();
+      await click('Add this folder');
+      if (stage !== 'registration') {
+        await act(async () => registration.resolve(archived));
+        await flushFrames();
+      }
+      if (stage === 'restoration') {
+        await click('Restore');
+        assert.equal(restores, 1, 'restore starts before invalidation');
+      }
+      if (invalidation === 'host') await render({ profileId: 'other', hostId: 'other-host' });
+      else await harness.render(null);
+      if (stage === 'registration') await act(async () => registration.resolve(archived));
+      if (stage === 'confirmation') await click('Restore');
+      if (stage === 'restoration') await act(async () => restoration.resolve({ ok: true, project: restored }));
+      assert.equal(restores, stage === 'restoration' ? 1 : 0);
+      assert.equal(accepted, 0);
+      if (stage === 'registration') assert.doesNotMatch(document.body.textContent, /Project archived/);
+    });
+  }
+}
+
+for (const invalidation of ['host', 'verification', 'unmount'] as const) {
+  test(`Settings confirmation ignores ${invalidation} invalidation without refreshing old Host`, async () => {
+    const harness = installRenderer();
+    let restores = 0;
+    let snapshots = 0;
+    bridge({
+      add: async (target: DesktopRuntimeHostRef, options: { name: string }) => {
+        assert.deepEqual(target, host);
+        assert.deepEqual(options, { name: 'Project' });
+        return { ok: false, reason: 'archived', projectId: 'p' };
+      },
+      getSnapshot: async () => { snapshots++; return { projects: [], capabilities: { chooseClientDirectory: true } }; },
+    });
+    harness.services.catalog.restoreProject = async () => { restores++; return { ok: true, project: restored }; };
+    await harness.render(createElement(components.SettingsFixture));
+    await submitNamedProject();
+    await harness.render(invalidation === 'unmount' ? null : createElement(components.SettingsFixture, {
+      ...(invalidation === 'host' ? { host: { profileId: 'other', hostId: 'other-host' } } : { verified: false }),
+    }));
+    const reads = snapshots;
+    await click('Restore');
+    assert.equal(restores, 0);
+    assert.equal(snapshots, reads);
+  });
+}
+
+test('remote registration rejects same-tick duplicate submissions without invalidating the first request', async () => {
+  const harness = installRenderer();
+  const registration = deferred<ProjectRecord>();
+  let registrations = 0;
+  const accepted: ProjectRecord[] = [];
+  bridge({ registerDirectory: async () => { registrations++; return registration.promise; } });
+  await harness.render(createElement(components.RemoteProjectDirectoryDialog, {
+    host, onClose() {}, onRegistered(project) { accepted.push(project); },
+  }));
+  const button = [...document.querySelectorAll('button')].find(el => el.textContent === 'Add this folder');
+  assert.ok(button);
+  await act(async () => {
+    button.dispatchEvent(new window.Event('click', { bubbles: true }));
+    button.dispatchEvent(new window.Event('click', { bubbles: true }));
+  });
+  assert.equal(registrations, 1);
+  await act(async () => registration.resolve(restored));
+  assert.deepEqual(accepted, [restored]);
+});
+
+test('Settings Add stays single-flight while the folder picker is pending', async () => {
+  const harness = installRenderer();
+  const addition = deferred<{ ok: true; project: ProjectRecord }>();
+  let adds = 0;
+  bridge({ add: async () => { adds++; return addition.promise; } });
+  await harness.render(createElement(components.SettingsFixture));
+  await submitNamedProject(2);
+  assert.equal(adds, 1);
+  const add = document.querySelector('button[aria-busy="true"]');
+  assert.ok(add);
+  await act(async () => addition.resolve({ ok: true, project: restored }));
+  assert.notEqual(add.getAttribute('aria-busy'), 'true');
+});
+
+for (const outcome of ['cancelled', 'archived'] as const) {
+  test(`remote handles restore result ${outcome} without accepting an archived project`, async () => {
+    const harness = installRenderer();
+    let accepted = 0;
+    bridge();
+    harness.services.catalog.restoreProject = async () => outcome === 'cancelled'
+      ? { ok: false, reason: 'cancelled' }
+      : { ok: false, reason: 'archived', projectId: 'p' };
+    await harness.render(createElement(components.RemoteProjectDirectoryDialog, {
+      host, onClose() {}, onRegistered() { accepted++; },
+    }));
+    await click('Add this folder');
+    await click('Restore');
+    assert.equal(accepted, 0);
+    assert.equal(Boolean(document.querySelector('.remoteProjectDirectoryError')), outcome === 'archived');
   });
 }
 
@@ -265,18 +578,20 @@ function installRenderer() {
     requestAnimationFrame: (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; }, cancelAnimationFrame: () => {},
     IS_REACT_ACT_ENVIRONMENT: true,
   });
+  const services = components.createFakeTaskEntryServices();
   const container = document.getElementById('root');
   assert.ok(container);
   const root = createRoot(container);
   mountedRoot = root;
   return {
     document,
+    services,
     async render(children: ReactNode) {
       await act(async () => root.render(createElement(LocaleProvider, {
         locale: 'en',
         children: createElement(AstryxLocaleProvider, {
           children: createElement(ToastProvider, {
-            children,
+            children: createElement(components.TaskEntryServicesProvider, { services, children }),
           }),
         }),
       })));

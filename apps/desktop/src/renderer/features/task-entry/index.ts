@@ -17,6 +17,8 @@
  * under the License.
  */
 
+export { ProjectRegistrationBoundary } from './ui/project-registration-boundary.js';
+export type { ProjectRegistration } from './ui/project-registration-boundary.js';
 export { TaskEntryHost } from './ui/task-entry-host.js';
 export {
   TaskEntryRoot,

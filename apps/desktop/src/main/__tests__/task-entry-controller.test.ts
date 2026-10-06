@@ -105,7 +105,7 @@ let latestController: TaskEntryController | undefined;
 
 function ControllerProbe(props: {
   reportError(error: unknown): void;
-  confirm?(input: { title: string }): Promise<boolean>;
+  confirm?(input: { title: string; onConfirm?(): Promise<void> }): Promise<boolean>;
 }) {
   latestController = useTaskEntryController({
     reportError: props.reportError,
@@ -125,10 +125,11 @@ function renderController(
   services: TaskEntryServices,
   errors: unknown[] = [],
   confirm?: (input: { title: string }) => Promise<boolean>,
+  locale: 'en' | 'zh-CN' | 'zh-TW' = 'en',
 ) {
   root.render(
     createElement(LocaleProvider, {
-      locale: 'en',
+      locale,
       children: createElement(
         ToastProvider,
         null,
@@ -137,7 +138,11 @@ function renderController(
         { services },
         createElement(ControllerProbe, {
           reportError: (error: unknown) => errors.push(error),
-          confirm,
+          confirm: confirm ? async (input) => {
+            const accepted = await confirm(input);
+            if (accepted) await input.onConfirm?.();
+            return accepted;
+          } : undefined,
         }),
       ),
       ),
@@ -145,9 +150,263 @@ function renderController(
   );
 }
 
+async function sessionRecoveryHarness(options: {
+  add?: TaskEntryServices['catalog']['addProject'];
+  restore?: TaskEntryServices['catalog']['restoreProject'];
+  relocate?: TaskEntryServices['sessions']['relocateWorkspace'];
+  getCatalog?: TaskEntryServices['catalog']['getCatalog'];
+  confirm?: (input: { title: string; description?: string; confirmLabel?: string }) => Promise<boolean>;
+} = {}) {
+  const { root } = installReactRenderer();
+  const calls: string[] = [];
+  const errors: unknown[] = [];
+  let restoredProject: ReturnType<typeof project> | undefined;
+  const services = createFakeTaskEntryServices({
+    catalog: {
+      ...createFakeTaskEntryServices().catalog,
+      getCatalog: async () => {
+        calls.push('catalog');
+        return options.getCatalog ? options.getCatalog() : catalog(readyHost({
+          projects: [project('project-a'), ...(restoredProject ? [restoredProject] : [])],
+        }));
+      },
+      addProject: async (host, name) => {
+        calls.push(`add:${host.profileId}:${host.hostId}:${name}`);
+        return options.add ? options.add(host, name) : { ok: false, reason: 'archived', projectId: 'project-b' };
+      },
+      restoreProject: async (host, id) => {
+        calls.push(`restore:${host.profileId}:${host.hostId}:${id}`);
+        const result = options.restore ? await options.restore(host, id) : { ok: true as const, project: project(id) };
+        if (result.ok) restoredProject = { ...project(result.project.id), ...result.project };
+        return result;
+      },
+      archiveProject: async () => { assert.fail('Recovery must never roll back by archiving'); },
+      renameProject: async () => { assert.fail('Restoring must preserve the original name'); },
+    },
+    sessions: {
+      relocateWorkspace: async (sessionId, projectId) => {
+        calls.push(`relocate:${sessionId}:${projectId}`);
+        return options.relocate ? options.relocate(sessionId, projectId) : { ok: true };
+      },
+    },
+  });
+  const confirm = async (input: { title: string; description?: string; confirmLabel?: string }) => {
+    calls.push('confirm');
+    return options.confirm ? options.confirm(input) : true;
+  };
+  await act(async () => renderController(root, services, errors, confirm));
+  await act(async () => controller().commands.openSessionWorkspaceRecovery('session-1'));
+  const request = controller().selectors.sessionWorkspaceRecovery!;
+  const add = () => controller().commands.addSessionWorkspace({
+    sessionId: 'session-1',
+    profileId: 'local',
+    host: { profileId: 'local', hostId: 'host-local' },
+    name: 'Do not rename restored project',
+    request,
+  });
+  return { root, calls, errors, services, request, add, confirm };
+}
+
 afterEach(() => {
   latestController = undefined;
   cleanupFakeDom();
+});
+
+describe('Session workspace archived-project recovery', () => {
+  it('confirms use for this Session, restores original identity, then relocates without selecting a new-task Project', async () => {
+    const harness = await sessionRecoveryHarness({
+      confirm: async (input) => {
+        assert.equal(input.confirmLabel, 'Restore and use for this session');
+        assert.match(input.description ?? '', /this session’s workspace/);
+        return true;
+      },
+    });
+    const initialTarget = controller().selectors.target;
+    await act(async () => assert.equal(await harness.add(), true));
+    assert.deepEqual(harness.calls, [
+      'catalog', 'add:local:host-local:Do not rename restored project', 'confirm',
+      'restore:local:host-local:project-b', 'relocate:session-1:project-b', 'catalog',
+    ]);
+    assert.deepEqual(controller().selectors.target, initialTarget);
+    assert.ok(controller().selectors.workspacePicker.groups[0]?.projects.some((project) => project.id === 'project-b'));
+    assert.equal(controller().selectors.sessionWorkspaceRecovery, undefined);
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+    assert.deepEqual(harness.errors, []);
+  });
+
+  for (const stage of ['directory', 'confirmation', 'restoration'] as const) {
+    it(`cancels at ${stage} without relocation, refresh, or an error`, async () => {
+      const harness = await sessionRecoveryHarness({
+        ...(stage === 'directory' ? { add: async () => ({ ok: false as const, reason: 'cancelled' as const }) } : {}),
+        ...(stage === 'confirmation' ? { confirm: async () => false } : {}),
+        ...(stage === 'restoration' ? { restore: async () => ({ ok: false as const, reason: 'cancelled' as const }) } : {}),
+      });
+      await act(async () => assert.equal(await harness.add(), false));
+      assert.equal(harness.calls.some((call) => call.startsWith('relocate')), false);
+      assert.equal(harness.calls.filter((call) => call === 'catalog').length, 1);
+      assert.equal(harness.calls.filter((call) => call.startsWith('restore')).length, stage === 'restoration' ? 1 : 0);
+      assert.equal(controller().selectors.sessionWorkspaceRecovery, harness.request);
+      assert.equal(controller().selectors.workspacePicker.pending, false);
+      assert.deepEqual(harness.errors, []);
+    });
+  }
+
+  it('retains the restored Project and recovery intent when relocation fails', async () => {
+    const harness = await sessionRecoveryHarness({ relocate: async () => ({ ok: false, reason: 'session_busy' }) });
+    await act(async () => assert.equal(await harness.add(), false));
+    assert.equal(controller().selectors.sessionWorkspaceRecovery, harness.request);
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+    assert.equal(harness.errors.length, 1);
+    assert.match(JSON.stringify(harness.errors), /project was restored and has not been archived again/);
+    assert.equal(harness.calls.at(-1), 'catalog');
+    // Retry uses the normal existing-Project path; it does not restore again.
+    await act(async () => controller().commands.relocateSessionWorkspace({
+      sessionId: 'session-1', profileId: 'local', projectId: 'project-b', request: harness.request,
+    }));
+    assert.equal(harness.calls.filter((call) => call.startsWith('restore')).length, 1);
+    assert.equal(harness.calls.filter((call) => call.startsWith('relocate')).length, 2);
+  });
+
+  it('rejects an unavailable restored directory without losing the partial success', async () => {
+    const harness = await sessionRecoveryHarness({
+      restore: async () => ({ ok: true, project: { ...project('project-b'), available: false } }),
+    });
+    await act(async () => assert.equal(await harness.add(), false));
+    assert.equal(harness.calls.some((call) => call.startsWith('relocate')), false);
+    assert.match(JSON.stringify(harness.errors), /project was restored.*directory is unavailable/);
+    assert.equal(controller().selectors.sessionWorkspaceRecovery, harness.request);
+  });
+
+  it('does not claim an IPC restore rejection is a definite failure or retry it automatically', async () => {
+    const fail = async (): Promise<never> => { throw new Error('commit_outcome_unknown'); };
+    const harness = await sessionRecoveryHarness({ restore: fail });
+    await act(async () => assert.equal(await harness.add(), false));
+    assert.match(JSON.stringify(harness.errors), /Could not confirm/);
+    assert.match(JSON.stringify(harness.errors), /before deciding to retry/);
+    assert.equal(harness.calls.filter((call) => call.startsWith('restore')).length, 1);
+    assert.equal(harness.calls.some((call) => call.startsWith('relocate')), false);
+    assert.equal(controller().selectors.sessionWorkspaceRecovery, harness.request);
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+  });
+
+  it('reports a restore that still returns archived instead of silently stopping', async () => {
+    const harness = await sessionRecoveryHarness({ restore: async () => ({ ok: false, reason: 'archived', projectId: 'project-b' }) });
+    await act(async () => assert.equal(await harness.add(), false));
+    assert.equal(harness.calls.some((call) => call.startsWith('relocate')), false);
+    assert.equal(harness.errors.length, 1);
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+  });
+
+  it('keeps relocation successful when the subsequent catalog refresh fails', async () => {
+    let reads = 0;
+    const harness = await sessionRecoveryHarness({
+      getCatalog: async () => {
+        if (++reads > 1) throw new Error('offline');
+        return catalog();
+      },
+    });
+    await act(async () => assert.equal(await harness.add(), true));
+    assert.equal(controller().selectors.sessionWorkspaceRecovery, undefined);
+    assert.equal(controller().selectors.workspacePicker.pending, false);
+    assert.equal(harness.errors.length, 1);
+    assert.match(JSON.stringify(harness.errors), /Could not refresh projects/);
+    assert.doesNotMatch(JSON.stringify(harness.errors), /Could not move|Could not confirm/);
+  });
+
+  it('keeps one physical mutation in flight through confirmation, restore, and relocation', async () => {
+    const confirmed = deferred<boolean>();
+    const restored = deferred<Awaited<ReturnType<TaskEntryServices['catalog']['restoreProject']>>>();
+    const relocated = deferred<Awaited<ReturnType<TaskEntryServices['sessions']['relocateWorkspace']>>>();
+    const harness = await sessionRecoveryHarness({
+      confirm: () => confirmed.promise,
+      restore: () => restored.promise,
+      relocate: () => relocated.promise,
+    });
+    let running: Promise<boolean> | undefined;
+    await act(async () => {
+      running = harness.add();
+      assert.equal(await harness.add(), false);
+    });
+    for (const advance of [
+      () => confirmed.resolve(true),
+      () => restored.resolve({ ok: true, project: project('project-b') }),
+    ]) {
+      assert.equal(controller().selectors.workspacePicker.pending, true);
+      await act(async () => {
+        assert.equal(await harness.add(), false);
+        assert.equal(await controller().commands.relocateSessionWorkspace({
+          sessionId: 'session-1', profileId: 'local', projectId: 'project-a',
+        }), false);
+        advance();
+      });
+    }
+    await act(async () => {
+      assert.equal(await harness.add(), false);
+      relocated.resolve({ ok: true });
+      assert.equal(await running, true);
+    });
+    assert.equal(harness.calls.filter((call) => call.startsWith('add')).length, 1);
+    assert.equal(harness.calls.filter((call) => call.startsWith('restore')).length, 1);
+    assert.equal(harness.calls.filter((call) => call.startsWith('relocate')).length, 1);
+  });
+
+  for (const stage of ['confirm', 'relocate'] as const) {
+    it(`does not continue an obsolete ${stage} or close a newer request for the same Session`, async () => {
+      const gate = deferred<void>();
+      const harness = await sessionRecoveryHarness({
+        add: async () => {
+          return { ok: false, reason: 'archived', projectId: 'project-b' };
+        },
+        confirm: async () => { if (stage === 'confirm') await gate.promise; return true; },
+        restore: async () => {
+          return { ok: true, project: project('project-b') };
+        },
+        relocate: async () => { if (stage === 'relocate') await gate.promise; return { ok: true }; },
+      });
+      let running: Promise<boolean> | undefined;
+      await act(async () => { running = harness.add(); });
+      await act(async () => controller().commands.openSessionWorkspaceRecovery('session-1'));
+      const newerRequest = controller().selectors.sessionWorkspaceRecovery;
+      assert.notEqual(newerRequest, harness.request);
+      await act(async () => {
+        assert.equal(await harness.add(), false);
+        gate.resolve();
+        assert.equal(await running, false);
+      });
+      assert.equal(controller().selectors.sessionWorkspaceRecovery, newerRequest);
+      assert.equal(harness.calls.filter((call) => call.startsWith('relocate')).length, stage === 'relocate' ? 1 : 0);
+      if (stage === 'confirm') assert.equal(harness.calls.some((call) => call.startsWith('restore')), false);
+      assert.deepEqual(harness.errors, []);
+    });
+  }
+
+  for (const invalidation of ['close', 'unmount', 'service', 'host'] as const) {
+    it(`does not restore after ${invalidation} invalidates the confirmation`, async () => {
+      const confirmation = deferred<boolean>();
+      let nextCatalog = catalog();
+      const harness = await sessionRecoveryHarness({ confirm: () => confirmation.promise, getCatalog: async () => nextCatalog });
+      let running: Promise<boolean> | undefined;
+      await act(async () => { running = harness.add(); });
+      await act(async () => {
+        if (invalidation === 'close') controller().commands.closeSessionWorkspaceRecovery();
+        if (invalidation === 'unmount') harness.root.unmount();
+        if (invalidation === 'service') renderController(harness.root, {
+          ...harness.services, catalog: { ...harness.services.catalog },
+        }, harness.errors, harness.confirm);
+        if (invalidation === 'host') {
+          nextCatalog = catalog(readyHost({ hostId: 'replacement' }));
+          await controller().commands.refresh();
+        }
+      });
+      if (invalidation === 'host') {
+        nextCatalog = catalog();
+        await act(async () => controller().commands.refresh());
+      }
+      await act(async () => { confirmation.resolve(true); assert.equal(await running, false); });
+      assert.equal(harness.calls.some((call) => call.startsWith('restore') || call.startsWith('relocate')), false);
+      assert.deepEqual(harness.errors, []);
+    });
+  }
 });
 
 describe('useTaskEntryController', () => {
@@ -372,11 +631,7 @@ describe('useTaskEntryController', () => {
     const errors: unknown[] = [];
     const desktopServices = createDesktopTaskEntryServices({
       newTasks: services.catalog,
-      projects: {
-        restore: async () => {
-          throw new Error('Unexpected legacy restore call');
-        },
-      },
+      projects: {},
     } as unknown as DesktopTaskEntryBridge);
     await act(async () => renderController(root, desktopServices, errors, async () => true));
     assert.equal(controller().selectors.target?.projectId, 'project-a');

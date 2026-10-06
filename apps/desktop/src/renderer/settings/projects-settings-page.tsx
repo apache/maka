@@ -43,6 +43,7 @@ import { RuntimeHostProfilesSection } from './runtime-host-profiles-section.js';
 import { useKeyedActionGuard } from './use-action-guard';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import { ProjectRegistrationBoundary, type ProjectRegistration } from '../features/task-entry/index.js';
 import { RemoteProjectDirectoryDialog } from '../remote-project-directory-dialog.js';
 import { RuntimeHostInteractionBoundary } from './runtime-host-interaction-boundary.js';
 
@@ -92,7 +93,6 @@ export function ProjectsSettingsPage(props: {
   const [homePath, setHomePath] = useState<string | undefined>(undefined);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
-  const [adding, setAdding] = useState(false);
   const [projectDialog, setProjectDialog] = useState<'directory' | 'new' | null>(null);
   const directoryPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const reloadGeneration = useRef(0);
@@ -112,26 +112,15 @@ export function ProjectsSettingsPage(props: {
    * call still owns the folder picker, so a cancelled picker simply leaves the
    * list unchanged; the name rides along and the project is registered under it.
    */
-  async function addNamedProject(name: string) {
+  async function addNamedProject(name: string, registration: ProjectRegistration) {
     if (!host || !props.runtimeHostTargetVerified) return;
     await runRowAction('add', async () => {
-      setAdding(true);
-      try {
-        const result = await window.maka.projects.add(host, { name });
-        if (!mountedRef.current) return;
-        if (!result.ok && result.reason === 'archived') {
-          const ok = await toast.confirm({
-            title: copy.archivedProjectTitle,
-            description: copy.archivedProjectDescription,
-            confirmLabel: copy.archivedProjectRestore,
-            cancelLabel: copy.archivedProjectCancel,
-          });
-          if (!ok || !mountedRef.current) return;
-          await window.maka.projects.restore(result.projectId, host);
-        }
-      } finally {
-        if (mountedRef.current) setAdding(false);
-      }
+      const result = await registration.register(
+        () => window.maka.projects.add(host, { name }),
+        () => mountedRef.current,
+      );
+      // Cancelled or invalidated registrations must not trigger a refresh.
+      if (!result?.ok) return false;
     }, copy.actionFailed);
   }
 
@@ -182,7 +171,7 @@ export function ProjectsSettingsPage(props: {
 
   async function runRowAction(
     key: string,
-    action: () => Promise<void>,
+    action: () => Promise<void | false>,
     failure: string,
   ) {
     if (!props.runtimeHostTargetVerified) return;
@@ -190,7 +179,7 @@ export function ProjectsSettingsPage(props: {
     if (!release) return;
     try {
       try {
-        await action();
+        if (await action() === false) return;
       } catch (error) {
         if (mountedRef.current) {
           toast.error(
@@ -259,6 +248,8 @@ export function ProjectsSettingsPage(props: {
     );
   }
   return (
+    <ProjectRegistrationBoundary host={props.runtimeHostTargetVerified ? host : undefined}>
+      {(registration) => (
     <SettingsPage as="section" aria-label={copy.section}>
       <RuntimeHostProfilesSection
         onRemoteHostAdded={props.onRemoteHostAdded}
@@ -295,7 +286,7 @@ export function ProjectsSettingsPage(props: {
               ref={directoryPickerTriggerRef}
               variant="secondary"
               label={copy.addProject}
-              isLoading={adding}
+              isLoading={registration.pending}
               onClick={capabilities.chooseHostDirectory
                 ? () => {
                     if (props.runtimeHostTargetVerified) setProjectDialog('directory');
@@ -538,11 +529,13 @@ export function ProjectsSettingsPage(props: {
               if (!open) setProjectDialog(null);
             }}
             onSubmit={(name) => {
-              void addNamedProject(name);
+              void addNamedProject(name, registration);
             }}
           />
         ) : null}
       </RuntimeHostInteractionBoundary>
     </SettingsPage>
+      )}
+    </ProjectRegistrationBoundary>
   );
 }
