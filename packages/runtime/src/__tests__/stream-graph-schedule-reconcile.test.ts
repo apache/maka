@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred, nextId } from '@maka/core/test-only/async-primitives';
+import { deferred, nextId, waitFor, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type {
@@ -38,6 +38,7 @@ import type { AgentGraphInputHandoff } from '../stream-graph-handoff.js';
 import {
   reconcileAgentGraphSchedule,
   type RenderAgentGraphScheduledWorkPromptInput,
+  type AgentGraphScheduleStopController,
 } from '../stream-graph-schedule-reconcile.js';
 import {
   compileAgentGraphScheduleUpdate,
@@ -561,7 +562,12 @@ describe('stream graph schedule reconciliation', () => {
 
       assert.equal(stopped.status, 'reconciled');
       assert.deepEqual(stopController.calls, [
-        { sessionId: 'session-writer', source: 'graph_supervisor' },
+        {
+          sessionId: 'session-writer',
+          runId: first.dispatches[0]!.claim.targetRunId,
+          turnId: first.dispatches[0]!.claim.targetTurnId,
+          source: 'graph_supervisor',
+        },
       ]);
       assert.deepEqual(
         stopped.stops.map((result) => [result.targetId, result.status, result.activationId]),
@@ -843,6 +849,211 @@ describe('stream graph schedule reconciliation', () => {
       store.close();
     }
   });
+
+  test('retains a schedule commit that arrives before the next wave wait is installed', async () => {
+    const wave = await gatedScheduleWave(2);
+    const enteredStop = deferred();
+    const releaseStop = deferred();
+    let first = true;
+    wave.beforeStop = async () => {
+      if (!first) return;
+      first = false;
+      enteredStop.resolve();
+      await releaseStop.promise;
+    };
+    try {
+      await wave.commit('stop-first', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'First target.' }],
+      });
+      await withTimeout(enteredStop.promise, 1000, 'first stop must start');
+      // The reconciler is still awaiting the first stop, not waiting for a wake.
+      await wave.commit('stop-second', {
+        stop: [{ target_id: wave.workIds[1]!, reason: 'Second target.' }],
+      });
+      releaseStop.resolve();
+      const result = await withTimeout(
+        wave.reconciliation,
+        1000,
+        'the retained wake must stop the second child',
+      );
+      assert.equal(result.dispatches.length, 2);
+      assert.equal(wave.executor.backendInvocations, 2);
+      assert.deepEqual(
+        result.dispatches.map((dispatch) => dispatch.result.status),
+        ['cancelled', 'cancelled'],
+      );
+      assert.equal((await wave.store.listAgentGraphIntentClaims(GRAPH_ID)).length, 2);
+      assert.equal(wave.subscriptions, 0);
+    } finally {
+      releaseStop.resolve();
+      await wave.close();
+    }
+  });
+
+  test('more than eight schedule wakes preserve the running wave and its single dispatch', async () => {
+    const wave = await gatedScheduleWave(1);
+    try {
+      for (let index = 0; index < 12; index += 1) {
+        const observed = wave.observations;
+        await wave.commit(`wake-${index}`, {
+          stop: [{ target_id: `unknown-target-${index}`, reason: 'An unrelated obsolete target.' }],
+        });
+        await waitFor(() => wave.observations > observed, { timeoutMs: 1000 });
+        assert.equal(wave.settled, false, 'a normal wake cannot exhaust reconciliation retries');
+        assert.equal(wave.executor.backendInvocations, 1);
+      }
+      await wave.commit('stop-running-work', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Now stop the running work.' }],
+      });
+      const result = await withTimeout(
+        wave.reconciliation,
+        1000,
+        'the original wave must remain stoppable',
+      );
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.newActivationCount, 1);
+      assert.equal(result.dispatches.length, 1);
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+      assert.equal((await wave.store.listAgentGraphIntentClaims(GRAPH_ID)).length, 1);
+      assert.equal(wave.executor.backendInvocations, 1);
+      assert.equal(wave.subscriptions, 0);
+    } finally {
+      await wave.close();
+    }
+  });
+
+  test('reports a stop failure while the wave is live and retries after a later revision', async () => {
+    const wave = await gatedScheduleWave(1);
+    const failureObserved = deferred();
+    wave.beforeStop = async () => {
+      throw new Error('temporary exact-stop failure');
+    };
+    wave.onFailure = () => failureObserved.resolve();
+    try {
+      await wave.commit('failing-stop', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'First stop attempt.' }],
+      });
+      await withTimeout(
+        failureObserved.promise,
+        1000,
+        'stop failure must be visible before child completion',
+      );
+      assert.equal(wave.settled, false);
+      assert.equal(wave.failures[0]?.phase, 'stop');
+      assert.equal(wave.executor.backendInvocations, 1);
+      wave.beforeStop = undefined;
+      await wave.commit('retry-stop', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Retry after the stop service recovered.' }],
+      });
+      const result = await withTimeout(
+        wave.reconciliation,
+        1000,
+        'later revision must retry the exact stop',
+      );
+      assert.equal(result.dispatches.length, 1);
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+      assert.equal(wave.failures.length, 1, 'the observer must retain the failure notification');
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.failures.length, 0, 'successful stop retry clears the obsolete failure');
+      const recovered = await wave.reconcileAgain();
+      assert.equal(recovered.status, 'reconciled');
+      assert.equal(recovered.failures.length, 0);
+      assert.equal(recovered.dispatches.length, 0);
+      assert.equal(wave.executor.backendInvocations, 1);
+    } finally {
+      await wave.close();
+    }
+  });
+
+  test('retries exact stop cleanup after the activation already has a terminal observation', async () => {
+    const wave = await gatedScheduleWave(1);
+    const failureObserved = deferred();
+    let stopAttempts = 0;
+    wave.beforeStop = async () => {
+      stopAttempts += 1;
+      if (stopAttempts === 1) {
+        wave.markTerminalWithoutCompleting();
+        throw new Error('terminal committed but exact-stop cleanup failed');
+      }
+    };
+    wave.onFailure = () => failureObserved.resolve();
+    try {
+      await wave.commit('terminal-cleanup-failure', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Stop and settle this activation.' }],
+      });
+      await withTimeout(
+        failureObserved.promise,
+        1000,
+        'cleanup failure must be reported while the terminal activation still owns its wave',
+      );
+      assert.equal(wave.settled, false);
+      assert.equal(stopAttempts, 1);
+      assert.equal(wave.failures[0]?.phase, 'stop');
+      await wave.commit('retry-terminal-cleanup', {
+        stop: [
+          {
+            target_id: wave.workIds[0]!,
+            reason: 'Retry cleanup for the same terminal activation.',
+          },
+        ],
+      });
+      const result = await withTimeout(
+        wave.reconciliation,
+        1000,
+        'terminal observation must not bypass the exact-stop cleanup retry',
+      );
+      assert.ok(stopAttempts >= 2);
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.failures.length, 0);
+      assert.equal(result.dispatches.length, 1);
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+      assert.equal(result.newActivationCount, 1);
+      assert.equal((await wave.store.listAgentGraphIntentClaims(GRAPH_ID)).length, 1);
+      assert.equal(wave.executor.backendInvocations, 1);
+      assert.equal(wave.subscriptions, 0);
+    } finally {
+      await wave.close();
+    }
+  });
+
+  test('a transient control read failure leaves the wave stoppable on a later schedule wake', async () => {
+    const wave = await gatedScheduleWave(1);
+    const failureObserved = deferred();
+    wave.onFailure = () => failureObserved.resolve();
+    try {
+      wave.failNextControlRead(new Error('temporary schedule read failure'));
+      await wave.commit('read-failure-stop', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Stop during a transient read failure.' }],
+      });
+      await withTimeout(
+        failureObserved.promise,
+        1000,
+        'control read failure must be reported while the child remains gated',
+      );
+      assert.equal(wave.settled, false);
+      assert.equal(wave.failures.length, 1);
+      assert.match(String(wave.failures[0]!.error), /temporary schedule read failure/);
+      assert.equal(wave.executor.backendInvocations, 1);
+      await wave.commit('read-recovered-stop', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Retry after schedule reads recover.' }],
+      });
+      const result = await withTimeout(
+        wave.reconciliation,
+        1000,
+        'a recovered control read must cancel the original live wave',
+      );
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.failures.length, 0);
+      assert.equal(result.dispatches.length, 1);
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+      assert.equal(result.newActivationCount, 1);
+      assert.equal((await wave.store.listAgentGraphIntentClaims(GRAPH_ID)).length, 1);
+      assert.equal(wave.executor.backendInvocations, 1);
+      assert.equal(wave.subscriptions, 0);
+    } finally {
+      await wave.close();
+    }
+  });
 });
 
 const GRAPH_ID = 'graph-schedule';
@@ -929,11 +1140,166 @@ function controlStoreWithProvisions(
   };
 }
 
+async function gatedScheduleWave(count: number) {
+  const store = createSqliteSessionMetadataStore(':memory:');
+  const observation = new MemoryGraphObservation();
+  const executor = new MemoryScheduleExecutor(store, observation, 'running');
+  type Identity = Parameters<AgentGraphScheduleStopController['stopAgentGraphActivation']>[0];
+  const active = new Map<
+    string,
+    { identity: Identity; gate: ReturnType<typeof deferred<void>>; cancelled: boolean }
+  >();
+  const listeners = new Set<() => void>();
+  const state = {
+    beforeStop: undefined as (() => Promise<void>) | undefined,
+    onFailure: undefined as (() => void) | undefined,
+    failures: [] as Array<{ phase: string; error: unknown }>,
+    observations: 0,
+    settled: false,
+    readFailure: undefined as Error | undefined,
+  };
+  const added = await commitSchedule(store, 'initial-wave', {
+    add_work: Array.from({ length: count }, (_, index) => ({
+      operator_id: 'writer',
+      instruction: `Gated work ${index}.`,
+      input_ids: [],
+    })),
+  });
+  const controlStore = new Proxy(store, {
+    get(target, property) {
+      if (property === 'listAgentGraphScheduleUpdates') {
+        return async (graphId: string) => {
+          if (state.readFailure) {
+            const error = state.readFailure;
+            state.readFailure = undefined;
+            throw error;
+          }
+          return target.listAgentGraphScheduleUpdates(graphId);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const input = {
+    topology: topology(),
+    controlStore,
+    executor: {
+      async runClaimedAgentGraphIntent(
+        request: Parameters<AgentGraphIntentExecutor['runClaimedAgentGraphIntent']>[0],
+      ) {
+        const result = await executor.runClaimedAgentGraphIntent(request);
+        const current = {
+          identity: {
+            sessionId: result.childSessionId,
+            runId: result.runId,
+            turnId: result.turnId,
+          },
+          gate: deferred<void>(),
+          cancelled: false,
+        };
+        active.set(result.runId, current);
+        await current.gate.promise;
+        const status = current.cancelled ? ('cancelled' as const) : ('completed' as const);
+        observation.setActivation(result.childSessionId, result.runId, status, result.turnId);
+        return { ...result, status };
+      },
+    },
+    stopController: {
+      async stopAgentGraphActivation(identity: Identity) {
+        await state.beforeStop?.();
+        const current = active.get(identity.runId);
+        assert.ok(current, 'stop must address an existing exact activation');
+        assert.deepEqual(identity, current.identity);
+        observation.stopActivation(identity);
+        current.cancelled = true;
+        current.gate.resolve();
+      },
+    },
+    newId: nextId(),
+    maxNewActivations: count,
+    observeGraph: async () => {
+      state.observations += 1;
+      return observation.read();
+    },
+    renderPrompt: ({ work }: RenderAgentGraphScheduledWorkPromptInput) => work.instruction,
+    subscribeToScheduleChanges(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    supervisor: {
+      onReconciliationFailure(failure: { phase: string; error: unknown }) {
+        state.failures.push(failure);
+        state.onFailure?.();
+      },
+    },
+  };
+  const reconciliation = reconcileAgentGraphSchedule(input).finally(() => {
+    state.settled = true;
+  });
+  await waitFor(() => active.size === count, { timeoutMs: 1000 });
+  return {
+    store,
+    executor,
+    reconciliation,
+    workIds: added.addWork.map((work) => work.workId),
+    get beforeStop() {
+      return state.beforeStop;
+    },
+    set beforeStop(value) {
+      state.beforeStop = value;
+    },
+    get onFailure() {
+      return state.onFailure;
+    },
+    set onFailure(value) {
+      state.onFailure = value;
+    },
+    get failures() {
+      return state.failures;
+    },
+    get observations() {
+      return state.observations;
+    },
+    get settled() {
+      return state.settled;
+    },
+    get subscriptions() {
+      return listeners.size;
+    },
+    async commit(toolCallId: string, update: UpdateAgentGraphToolInput) {
+      await commitSchedule(store, toolCallId, update);
+      for (const listener of listeners) listener();
+    },
+    markTerminalWithoutCompleting() {
+      assert.equal(active.size, 1, 'this cleanup control owns one exact activation');
+      for (const current of active.values()) {
+        observation.stopActivation(current.identity);
+        current.cancelled = true;
+      }
+      // Keep the completion gate closed until a later exact-stop attempt succeeds.
+    },
+    failNextControlRead(error: Error) {
+      state.readFailure = error;
+    },
+    reconcileAgain: () => reconcileAgentGraphSchedule(input),
+    async close() {
+      state.beforeStop = undefined;
+      for (const current of active.values()) current.gate.resolve();
+      await reconciliation;
+      store.close();
+    },
+  };
+}
+
 class MemoryGraphObservation {
   private readonly activations = new Map<
     string,
     {
       sessionId: string;
+      turnId: string;
       status: 'running' | 'completed' | 'cancelled';
     }
   >();
@@ -942,15 +1308,20 @@ class MemoryGraphObservation {
     sessionId: string,
     activationId: string,
     status: 'running' | 'completed' | 'cancelled',
+    turnId: string,
   ): void {
-    this.activations.set(activationId, { sessionId, status });
+    this.activations.set(activationId, { sessionId, turnId, status });
   }
 
-  stopSession(sessionId: string): void {
-    for (const [activationId, activation] of this.activations) {
-      if (activation.sessionId === sessionId && activation.status === 'running') {
-        this.activations.set(activationId, { ...activation, status: 'cancelled' });
-      }
+  stopActivation(
+    identity: Parameters<AgentGraphScheduleStopController['stopAgentGraphActivation']>[0],
+  ): void {
+    const activation = this.activations.get(identity.runId);
+    if (!activation) return;
+    assert.equal(activation.sessionId, identity.sessionId);
+    assert.equal(activation.turnId, identity.turnId);
+    if (activation.status === 'running') {
+      this.activations.set(identity.runId, { ...activation, status: 'cancelled' });
     }
   }
 
@@ -999,6 +1370,39 @@ class MemoryGraphObservation {
         operators: currentTopology.operators.map((operator) => ({ ...operator })),
         ignoredPartialEvents: 0,
         records: [
+          ...[...this.activations].map(([activationId, activation]): AgentGraphRecord => {
+            const binding = currentTopology.operators.find(
+              (operator) => operator.sessionId === activation.sessionId,
+            )!;
+            return {
+              schemaVersion: 1,
+              recordId: `record-${activationId}`,
+              graphId: GRAPH_ID,
+              operatorId: binding.operatorId,
+              activationId,
+              sessionId: activation.sessionId,
+              agentRunId: activationId,
+              eventTime: 2,
+              orderKey: {
+                runCreatedAt: 1,
+                operatorId: binding.operatorId,
+                runId: activationId,
+                committedEventOrdinal: 0,
+                runtimeEventId: `event-${activationId}`,
+              },
+              type: 'agent_runtime_event',
+              facets: ['message'],
+              supervisorSignals: [],
+              source: {
+                kind: 'runtime_event',
+                runtimeEventId: `event-${activationId}`,
+                sessionId: activation.sessionId,
+                runId: activationId,
+                turnId: activation.turnId,
+                ts: 2,
+              },
+            };
+          }),
           {
             schemaVersion: 1,
             recordId: 'record-input',
@@ -1099,7 +1503,12 @@ class MemoryScheduleExecutor implements AgentGraphIntentExecutor {
     }
     this.lastPrompt = input.prompt;
     this.backendInvocations += 1;
-    this.observation.setActivation(claim.targetSessionId, claim.targetRunId, this.status);
+    this.observation.setActivation(
+      claim.targetSessionId,
+      claim.targetRunId,
+      this.status,
+      claim.targetTurnId,
+    );
     await input.onReady?.({
       claimId: claim.claimId,
       graphId: claim.graphId,
@@ -1137,13 +1546,21 @@ class MemoryScheduleExecutor implements AgentGraphIntentExecutor {
 }
 
 class MemoryStopController {
-  readonly calls: Array<{ sessionId: string; source: 'graph_supervisor' }> = [];
+  readonly calls: Array<{
+    sessionId: string;
+    runId: string;
+    turnId: string;
+    source: 'graph_supervisor';
+  }> = [];
 
   constructor(private readonly observation: MemoryGraphObservation) {}
 
-  async stopSession(sessionId: string, input: { source: 'graph_supervisor' }): Promise<void> {
-    this.calls.push({ sessionId, source: input.source });
-    this.observation.stopSession(sessionId);
+  async stopAgentGraphActivation(
+    identity: Parameters<AgentGraphScheduleStopController['stopAgentGraphActivation']>[0],
+    input: { source: 'graph_supervisor' },
+  ): Promise<void> {
+    this.calls.push({ ...identity, source: input.source });
+    this.observation.stopActivation(identity);
   }
 }
 function nextNumber(start: number): () => number {

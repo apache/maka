@@ -104,6 +104,7 @@ export interface AgentGraphCoordinatorRuntime {
   provisionAgentGraphOperator: SessionManager['provisionAgentGraphOperator'];
   runClaimedAgentGraphIntent: SessionManager['runClaimedAgentGraphIntent'];
   stopSession: SessionManager['stopSession'];
+  stopAgentGraphActivation: SessionManager['stopAgentGraphActivation'];
 }
 
 export interface AgentGraphCoordinatorInput {
@@ -175,6 +176,7 @@ interface GraphDriver {
   lastResult?: AgentGraphScheduleReconciliationResult;
   lastError?: unknown;
   yieldWaiters: Set<GraphYieldWaiter>;
+  scheduleChangeListeners: Set<() => void>;
 }
 
 interface GraphYieldWaiter {
@@ -545,6 +547,7 @@ export class AgentGraphCoordinator {
     try {
       driver.lastError = undefined;
       driver.paused = false;
+      for (const listener of driver.scheduleChangeListeners) listener();
       this.#requestDrive(driver);
       // An epoch handover must not redirect this caller to the next driver.
       while (driver.task) await driver.task;
@@ -832,6 +835,10 @@ export class AgentGraphCoordinator {
         }),
       renderPrompt: this.#input.renderPrompt ?? renderAgentGraphScheduledWorkPrompt,
       abortSignal,
+      subscribeToScheduleChanges: (listener) => {
+        driver.scheduleChangeListeners.add(listener);
+        return () => driver.scheduleChangeListeners.delete(listener);
+      },
       supervisor: {
         onObservation: (observation) => {
           this.#queueClientProjectionUpdate(
@@ -889,6 +896,9 @@ export class AgentGraphCoordinator {
           void notify(this.#input.supervisor?.onRuntimeEvent, event);
         },
         onReconciliationFailure: (failure) => {
+          if (!failure.work && !failure.targetId) {
+            void notify(this.#input.onError, driver.rootSessionId, failure.error);
+          }
           this.#queueClientProjectionUpdate(driver, async () => {
             await this.#mergeReconciliationFailure(driver, failure);
             await notify(this.#input.onCheckpoint, driver.rootSessionId);
@@ -1045,17 +1055,19 @@ export class AgentGraphCoordinator {
     const successfulWorkIds = new Set(
       result.dispatches.map((dispatch) => dispatch.intent.readinessId),
     );
+    const stoppedTargetIds = new Set(result.stops.map((stop) => stop.targetId));
     const failuresByWorkId = new Map(
       existingFailures
-        .filter(
-          (failure) =>
-            requestedWorkIds.has(failure.workId) && !successfulWorkIds.has(failure.workId),
+        .filter((failure) =>
+          failure.phase === 'stop'
+            ? !stoppedTargetIds.has(failure.workId)
+            : requestedWorkIds.has(failure.workId) && !successfulWorkIds.has(failure.workId),
         )
         .map((failure) => [failure.workId, failure]),
     );
     for (const failure of result.failures) {
       const projected = durableReconciliationFailure(failure);
-      if (projected && requestedWorkIds.has(projected.workId)) {
+      if (projected && (projected.phase === 'stop' || requestedWorkIds.has(projected.workId))) {
         failuresByWorkId.set(projected.workId, projected);
       }
     }
@@ -1672,6 +1684,7 @@ export class AgentGraphCoordinator {
       pendingOutputDeltas: new Map(),
       runtimeFailureRunIds: new Set(),
       yieldWaiters: new Set(),
+      scheduleChangeListeners: new Set(),
     };
     this.#drivers.set(graphId, created);
     return created;
@@ -1682,6 +1695,7 @@ export class AgentGraphCoordinator {
       const driver = await this.#driver(rootSessionId);
       if (driver.stopping) return;
       driver.paused = false;
+      for (const listener of driver.scheduleChangeListeners) listener();
       this.#requestDrive(driver);
     } catch (error) {
       await notify(this.#input.onError, rootSessionId, error);
@@ -1699,6 +1713,7 @@ export class AgentGraphCoordinator {
       return;
     }
     driver.paused = false;
+    for (const listener of driver.scheduleChangeListeners) listener();
     this.#requestDrive(driver);
   }
 
