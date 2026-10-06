@@ -1756,6 +1756,131 @@ test('cancelling a live handoff does not authorize any replacement', async () =>
   await owner.close();
 });
 
+test('close waits for an installed candidate to finish cleanup', { timeout: 5_000 }, async () => {
+  const host = candidateHarness();
+  const cleanup = deferred<void>();
+  const closeCandidate = host.candidate.close.bind(host.candidate);
+  let cleanupStarted = false;
+  host.candidate.close = async () => {
+    cleanupStarted = true;
+    await cleanup.promise;
+    await closeCandidate();
+  };
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: async () => ready(host.candidate),
+  });
+  let closing: Promise<void> | undefined;
+  try {
+    await manager.start();
+    let closeSettled = false;
+    closing = manager.close().then(() => { closeSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cleanupStarted, true);
+    assert.equal(closeSettled, false);
+    assert.equal(host.closeCalls, 0);
+
+    cleanup.resolve();
+    await closing;
+    assert.equal(host.closeCalls, 1);
+    assert.deepEqual(manager.entries(), []);
+  } finally {
+    cleanup.resolve();
+    await Promise.allSettled([closing ?? manager.close()]);
+  }
+});
+
+test('close waits for a late initial candidate and its cleanup without publishing a failure', { timeout: 5_000 }, async () => {
+  const host = candidateHarness();
+  const connected = deferred<DesktopRuntimeHostCandidateStartResult>();
+  const cleanup = deferred<void>();
+  const closeCandidate = host.candidate.close.bind(host.candidate);
+  let cleanupStarted = false;
+  host.candidate.close = async () => {
+    cleanupStarted = true;
+    await cleanup.promise;
+    await closeCandidate();
+  };
+  const readiness: string[] = [];
+  const failures: Error[] = [];
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: () => connected.promise,
+    onTargetStateChanged: (state) => readiness.push(state.readiness),
+    onFatalError: (error) => failures.push(error),
+  });
+  const starting = manager.start();
+  let closeSettled = false;
+  const closing = manager.close().then(() => { closeSettled = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(closeSettled, false);
+
+    connected.resolve(ready(host.candidate));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cleanupStarted, true);
+    assert.equal(closeSettled, false);
+    assert.equal(host.closeCalls, 0);
+
+    cleanup.resolve();
+    await Promise.all([starting, closing]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(host.closeCalls, 1);
+    assert.deepEqual(manager.entries(), []);
+    assert.deepEqual(failures, []);
+    assert.deepEqual(readiness, ['connecting']);
+  } finally {
+    connected.resolve(ready(host.candidate));
+    cleanup.resolve();
+    await Promise.allSettled([starting, closing]);
+    // A regression may drop the late candidate before any owner can close it.
+    if (host.closeCalls === 0) await closeCandidate();
+  }
+});
+
+test('close waits for an aborted initial factory to finish cleanup without publishing a failure', { timeout: 5_000 }, async () => {
+  const host = candidateHarness();
+  const cleanup = deferred<void>();
+  let cleanupStarted = false;
+  const readiness: string[] = [];
+  const failures: Error[] = [];
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: async (input) => {
+      const signal = input.signal!;
+      if (!signal.aborted) {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
+      cleanupStarted = true;
+      await cleanup.promise;
+      await host.candidate.close();
+      throw signal.reason;
+    },
+    onTargetStateChanged: (state) => readiness.push(state.readiness),
+    onFatalError: (error) => failures.push(error),
+  });
+  const starting = manager.start();
+  let closeSettled = false;
+  const closing = manager.close().then(() => { closeSettled = true; });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cleanupStarted, true);
+    assert.equal(closeSettled, false);
+    assert.equal(host.closeCalls, 0);
+
+    cleanup.resolve();
+    await Promise.all([starting, closing]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(host.closeCalls, 1);
+    assert.deepEqual(manager.entries(), []);
+    assert.deepEqual(failures, []);
+    assert.deepEqual(readiness, ['connecting']);
+  } finally {
+    cleanup.resolve();
+    await Promise.allSettled([starting, closing]);
+    if (host.closeCalls === 0) await host.candidate.close();
+  }
+});
+
 test('a scope published before the first connection waits for that connection', async () => {
   const host = candidateHarness();
   const connected = deferred<DesktopRuntimeHostCandidateStartResult>();
