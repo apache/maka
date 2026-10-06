@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Collapsible, CollapsibleGroup } from '@astryxdesign/core/Collapsible';
@@ -32,6 +32,7 @@ import { type GitReviewBranchContext, type GitReviewReadResult } from '@maka/cor
 import { DiffCodePreview, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, AlertCircle, ArrowRight, FolderGit2, GitBranch, Monitor } from '@maka/ui/icons';
 import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
+import { SessionWorkspaceRecoveryContext } from '../../../../application/contracts/session-workspace-recovery-authority.js';
 import { useWorkbarServices } from '../../services-context.js';
 import { SessionReviewBaseBranchPicker } from './session-review-base-branch-picker.js';
 
@@ -72,13 +73,9 @@ const ReviewDiff = memo(function ReviewDiff(props: { path: string; diff: string 
 export function SessionReviewPanel(props: {
   sessionId: string;
   active: boolean;
-  /**
-   * Opens this Session's workspace recovery picker (#5551), the supported
-   * authority for pointing the current task at another directory.
-   */
-  onOpenWorkspaceRecovery?(sessionId: string): void;
 }) {
   const { review, reviewBaseBranchPreference } = useWorkbarServices();
+  const openWorkspaceRecovery = useContext(SessionWorkspaceRecoveryContext);
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
@@ -216,12 +213,12 @@ export function SessionReviewPanel(props: {
   // are capability states with their own next action — not read failures, so
   // they take neutral guidance instead of the error Banner.
   const failure = gitResult?.ok === false ? gitResult : null;
-  const recoveryAction = props.onOpenWorkspaceRecovery ? (
+  const recoveryAction = openWorkspaceRecovery ? (
     <Button
       variant="secondary"
       size="sm"
       label={copy.chooseTaskFolder}
-      onClick={() => props.onOpenWorkspaceRecovery?.(props.sessionId)}
+      onClick={() => openWorkspaceRecovery(props.sessionId)}
     />
   ) : null;
   const refreshAction = (

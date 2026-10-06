@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { useSessionWorkspaceRecoveryCommand } from '../../../application/contracts/session-workspace-recovery-authority.js';
 import { useWorkbarServices } from '../services-context.js';
 import { lazy, Suspense, useState, useEffect, useRef, type ReactNode } from 'react';
 import { Composer, useUiLocale, type ChatModelChoice } from '@maka/ui';
@@ -425,7 +424,6 @@ export function WorkbarSurface(props: {
   confirmBypass: () => Promise<boolean>;
 }) {
   const { inspector } = useWorkbarServices();
-  const taskEntryWorkspaceRecovery = useSessionWorkspaceRecoveryCommand();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
   const tools = workbarToolsForWorkspace(props.workspace);
@@ -534,7 +532,6 @@ export function WorkbarSurface(props: {
                 key={props.sessionId}
                 sessionId={props.sessionId!}
                 active={!props.hidden && active}
-                onOpenWorkspaceRecovery={taskEntryWorkspaceRecovery}
               />
             </Suspense>
           );

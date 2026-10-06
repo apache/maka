@@ -17,43 +17,14 @@
  * under the License.
  */
 
-import { useSyncExternalStore } from 'react';
+import { createContext } from 'react';
 
 /**
  * The Session workspace recovery command's shared seam (#5551). Features may
- * not import each other, so Task Entry publishes its picker command here and
- * readers consume it without a shell-drilled prop.
+ * not import each other, so Task Entry provides its stable picker command to
+ * its descendants through this contract.
  */
-export type SessionWorkspaceRecoveryCommand = (sessionId: string) => void;
+type SessionWorkspaceRecoveryCommand = (sessionId: string) => void;
 
-let current: SessionWorkspaceRecoveryCommand | undefined;
-const listeners = new Set<() => void>();
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-/** Publishes the command while its owner is mounted; returns the unpublish. */
-export function publishSessionWorkspaceRecovery(
-  command: SessionWorkspaceRecoveryCommand,
-): () => void {
-  current = command;
-  for (const listener of listeners) listener();
-  return () => {
-    if (current !== command) return;
-    current = undefined;
-    for (const listener of listeners) listener();
-  };
-}
-
-/** The current recovery command, or `undefined` before the owner publishes. */
-export function useSessionWorkspaceRecoveryCommand(): SessionWorkspaceRecoveryCommand | undefined {
-  return useSyncExternalStore(
-    subscribe,
-    () => current,
-    () => current,
-  );
-}
+export const SessionWorkspaceRecoveryContext =
+  createContext<SessionWorkspaceRecoveryCommand | undefined>(undefined);
