@@ -467,7 +467,10 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
             const claim = await this.#store.claimNow(input.taskId, this.#now());
             await this.#refreshResidency();
             const task = await this.#fulfill(claim, false);
-            if (!task) throw new ScheduledTaskNativeUnavailableError();
+            if (!task) {
+              await this.#refreshSchedule();
+              throw new ScheduledTaskNativeUnavailableError();
+            }
             return task;
           }),
         );
@@ -865,10 +868,16 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     await this.#refreshResidency();
     if (!this.#started || this.#draining || this.#handoffHeld) return;
     const [tasks, claims] = await Promise.all([this.#store.list(), this.#store.listPendingFires()]);
+    const claimedTaskIds = new Set(claims.map((claim) => claim.task.id));
     const next = tasks
-      .filter((task) => task.status === 'active' && task.nextFireAt !== null)
+      .filter((task) => task.status === 'active')
       .reduce<number | null>((earliest, task) => {
-        const deadline = Math.min(task.nextFireAt!, task.expiresAt ?? task.nextFireAt!);
+        // A claimed fire waits on delivery, not on its original due time. Its
+        // expiry still needs a scan even while the provider is unavailable.
+        const nextFireAt = claimedTaskIds.has(task.id) ? null : task.nextFireAt;
+        const deadline =
+          nextFireAt === null ? task.expiresAt : Math.min(nextFireAt, task.expiresAt ?? nextFireAt);
+        if (deadline === null) return earliest;
         return earliest === null || deadline < earliest ? deadline : earliest;
       }, null);
     const waitingForProvider = claims.some((claim) => claim.nativeState === 'waiting_for_provider');
