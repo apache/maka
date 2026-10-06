@@ -465,6 +465,82 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('checks the Client cwd before offering a Session as a resume candidate', async () => {
+    const tempCwd = await mkdtemp(join(tmpdir(), 'maka-resume-cwd-'));
+    try {
+      const connection = new FakeConnection([]);
+      const driver = createRuntimeHostMakaSessionDriver({
+        connection: connection.value,
+        cwd: tempCwd,
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        executionLocation: { kind: 'client_path' },
+      });
+      const missingCwd = join(tempCwd, 'deleted');
+      const missingSession = projectSessionCatalogSummary(
+        sessionProjection({
+          workspace: {
+            target: { kind: 'host_path', path: missingCwd },
+            hostCwd: missingCwd,
+          },
+        }),
+      );
+
+      assert.deepEqual(await driver.getSessionResumeCandidateAvailability!(missingSession), {
+        available: false,
+        reason: 'Working directory no longer exists',
+      });
+      assert.equal(
+        connection.requests.filter(({ operation }) => operation === 'turn.resume.query').length,
+        0,
+      );
+
+      const currentSession = projectSessionCatalogSummary(
+        sessionProjection({
+          workspace: {
+            target: { kind: 'host_path', path: tempCwd },
+            hostCwd: tempCwd,
+          },
+        }),
+      );
+      assert.deepEqual(await driver.getSessionResumeCandidateAvailability!(currentSession), {
+        available: true,
+      });
+      assert.equal(
+        connection.requests.filter(({ operation }) => operation === 'turn.resume.query').length,
+        1,
+      );
+
+      const remoteConnection = new FakeConnection([]);
+      const remoteDriver = createRuntimeHostMakaSessionDriver({
+        connection: remoteConnection.value,
+        cwd: tempCwd,
+        llmConnectionSlug: 'openai-main',
+        model: 'gpt-5',
+        executionLocation: { kind: 'host' },
+      });
+      const remoteSession = projectSessionCatalogSummary(
+        sessionProjection({
+          workspace: {
+            target: { kind: 'host_path', path: '/srv/remote-only' },
+            hostCwd: '/srv/remote-only',
+          },
+        }),
+      );
+
+      assert.deepEqual(await remoteDriver.getSessionResumeCandidateAvailability!(remoteSession), {
+        available: true,
+      });
+      assert.equal(
+        remoteConnection.requests.filter(({ operation }) => operation === 'turn.resume.query')
+          .length,
+        1,
+      );
+    } finally {
+      await rm(tempCwd, { recursive: true, force: true });
+    }
+  });
+
   test('exposes the session goal from the pushed continuity snapshot', async () => {
     const armedGoal = goalProjection({ status: 'active' });
     const subscription = new FakeSubscription(
