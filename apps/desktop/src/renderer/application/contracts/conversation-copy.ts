@@ -156,6 +156,7 @@ export interface DesktopConversationCopy {
     gitFailed: string;
     /** Relocates this task's workspace through the session recovery picker. */
     chooseTaskFolder: string;
+    refresh: string;
     baseBranchLabel: string;
     truncated: string;
     showMore(remaining: number): string;
@@ -427,6 +428,7 @@ const COPY = {
       unbornRepositoryHelp: '在仓库中创建提交后，变更会显示在这里。',
       gitFailed: '无法读取 Git 工作区变化',
       chooseTaskFolder: '更改任务目录',
+      refresh: '刷新',
       baseBranchLabel: '对比分支',
       truncated: '变化过多，仅显示前一部分文件',
       showMore: (remaining) => `再显示 ${Math.min(20, remaining)} 个文件`,
@@ -676,6 +678,7 @@ const COPY = {
       unbornRepositoryHelp: '在倉庫中建立提交後，變更會顯示在這裡。',
       gitFailed: '無法讀取 Git 工作區變化',
       chooseTaskFolder: '更改任務目錄',
+      refresh: '重新整理',
       baseBranchLabel: '對比分支',
       truncated: '變化過多，僅顯示前一部分檔案',
       showMore: (remaining) => `再顯示 ${Math.min(20, remaining)} 個檔案`,
@@ -916,6 +919,7 @@ const COPY = {
       unbornRepositoryHelp: 'Changes appear here once the repository has a commit.',
       gitFailed: 'Could not read Git workspace changes',
       chooseTaskFolder: 'Change task folder',
+      refresh: 'Refresh',
       baseBranchLabel: 'Compare against',
       truncated: 'Too many changes; showing the first files only',
       showMore: (remaining) =>

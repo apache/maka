@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, spyOn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
@@ -29,6 +29,7 @@ import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ChatSurfaceLayout, Composer, ToastProvider } from '@maka/ui';
 import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { publishSessionWorkspaceRecovery } from '../src/renderer/application/contracts/session-workspace-recovery-authority';
 import { WorkbarHostView, WorkbarSurface, useWorkbarLayoutState, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
@@ -1084,6 +1085,8 @@ function Workbar(props: {
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [focused, setFocused] = useState(false);
+  // Task Entry publishes this command in the app; use the same seam here.
+  useEffect(() => publishSessionWorkspaceRecovery(noop), []);
   const emptyTabsState = createSessionWorkbarTabsState();
   let tab: SessionWorkbarTab | undefined;
   let quotes: QuoteCompanionPanelState[] | undefined;
@@ -1158,7 +1161,6 @@ function Workbar(props: {
           hidden={false}
           onDismissPanel={props.collapsible ? () => setCollapsed(true) : noop}
           onToggleRightPanel={() => setCollapsed((value) => !value)}
-          onOpenWorkspaceRecovery={noop}
           panelsState={panels}
           rightCollapsed={collapsed}
           focusedPreview={focused && (props.tab === 'files' || props.tab === 'browser') ? props.tab : null}
@@ -1447,7 +1449,7 @@ export const ChangesWorkspaceUnavailable: Story = {
 };
 
 // Real path: 任务工作栏 → 变更 in a repository with no commit yet — another
-// capability state, naming the task's directory with no action to offer.
+// capability state, naming the task's directory with Refresh after a commit.
 export const ChangesUnbornRepository: Story = {
   decorators: [bridge({ review: {
     ok: false, reason: 'unborn_repository', workspace: '/Users/example/tasks/fresh-repo',

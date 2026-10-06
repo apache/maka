@@ -393,8 +393,6 @@ export function WorkbarSurface(props: {
   hidden: boolean;
   onDismissPanel: (placement: SessionWorkbarPlacement) => void;
   onToggleRightPanel(): void;
-  /** Opens this Session's workspace recovery picker, owned by Task Entry. */
-  onOpenWorkspaceRecovery?(sessionId: string): void;
   panelsState: SessionWorkbarPanelsState;
   rightCollapsed: boolean;
   focusedPreview?: 'files' | 'browser' | null;
@@ -536,7 +534,7 @@ export function WorkbarSurface(props: {
                 key={props.sessionId}
                 sessionId={props.sessionId!}
                 active={!props.hidden && active}
-                onOpenWorkspaceRecovery={props.onOpenWorkspaceRecovery ?? taskEntryWorkspaceRecovery}
+                onOpenWorkspaceRecovery={taskEntryWorkspaceRecovery}
               />
             </Suspense>
           );

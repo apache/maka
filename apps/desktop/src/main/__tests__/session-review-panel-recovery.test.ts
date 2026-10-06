@@ -262,8 +262,15 @@ test('a non-Git task directory shows neutral guidance, its directory and the rec
   assert.ok(container);
   const root = createRoot(container);
   let recovered: string | undefined;
+  let initialized = false;
   const services = createFakeWorkbarServices({ review: {
-    read: async () => ({ ok: false, reason: 'not_git_repository', workspace: '/tasks/plain' }),
+    read: async () => initialized
+      ? { ok: true, snapshot: {
+        source: 'branch', repositoryRoot: '/tasks/plain', currentBranch: 'main',
+        baseBranch: null, baseBranchOptions: [], revision: 'initialized',
+        files: [], additions: 0, deletions: 0, truncated: false,
+      } }
+      : { ok: false, reason: 'not_git_repository', workspace: '/tasks/plain' },
     subscribeSessionEvents: () => () => undefined,
     subscribeSessionChanges: () => () => undefined,
   } });
@@ -288,6 +295,11 @@ test('a non-Git task directory shows neutral guidance, its directory and the rec
     assert.ok(action, 'the current-task recovery action is offered');
     await act(async () => { action.click(); });
     assert.equal(recovered, 'plain-task', 'recovery targets the current task');
+    const refresh = buttons.find((button) => button.textContent === 'Refresh');
+    assert.ok(refresh, 'external Git initialization can be refreshed without Retry');
+    initialized = true;
+    await act(async () => { refresh.click(); });
+    assert.match(container.textContent ?? '', /No changes in the current Git workspace/);
   } finally {
     await act(async () => { root.unmount(); });
     restore();
@@ -343,13 +355,20 @@ test('an unavailable workspace keeps its directory, a real Retry and the recover
   }
 });
 
-test('an unborn repository shows guidance without actions', async () => {
+test('an unborn repository shows neutral guidance and can refresh after its first commit', async () => {
   const { document, restore } = installDom();
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
+  let committed = false;
   const services = createFakeWorkbarServices({ review: {
-    read: async () => ({ ok: false, reason: 'unborn_repository', workspace: '/tasks/new-repo' }),
+    read: async () => committed
+      ? { ok: true, snapshot: {
+        source: 'branch', repositoryRoot: '/tasks/new-repo', currentBranch: 'main',
+        baseBranch: null, baseBranchOptions: [], revision: 'committed',
+        files: [], additions: 0, deletions: 0, truncated: false,
+      } }
+      : { ok: false, reason: 'unborn_repository', workspace: '/tasks/new-repo' },
     subscribeSessionEvents: () => () => undefined,
     subscribeSessionChanges: () => () => undefined,
   } });
@@ -365,6 +384,11 @@ test('an unborn repository shows guidance without actions', async () => {
     assert.equal(container.querySelector('[role="alert"]'), null, 'a capability state is not an error banner');
     const buttons = Array.from(container.querySelectorAll('button'));
     assert.equal(buttons.find((button) => button.textContent === 'Retry'), undefined);
+    const refresh = buttons.find((button) => button.textContent === 'Refresh');
+    assert.ok(refresh, 'the first commit can be refreshed without Retry');
+    committed = true;
+    await act(async () => { refresh.click(); });
+    assert.match(container.textContent ?? '', /No changes in the current Git workspace/);
   } finally {
     await act(async () => { root.unmount(); });
     restore();
@@ -458,16 +482,20 @@ test('a workspace catalog change re-reads the task’s actual workspace', async 
   assert.ok(container);
   const root = createRoot(container);
   let relocated = false;
+  let reads = 0;
   let onSessionChange: ((event: SessionChangedEvent) => void) | undefined;
   const services = createFakeWorkbarServices({ review: {
-    read: async () => relocated
-      ? { ok: true, snapshot: {
-        source: 'branch', repositoryRoot: '/repo', currentBranch: 'feature',
-        baseBranch: 'refs/heads/main',
-        baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
-        revision: 'relocated', files: [], additions: 0, deletions: 0, truncated: false,
-      } }
-      : { ok: false, reason: 'workspace_unavailable', workspace: '/tasks/missing' },
+    read: async () => {
+      reads += 1;
+      return relocated
+        ? { ok: true, snapshot: {
+          source: 'branch', repositoryRoot: '/repo', currentBranch: 'feature',
+          baseBranch: 'refs/heads/main',
+          baseBranchOptions: [{ label: 'main', value: 'refs/heads/main' }],
+          revision: 'relocated', files: [], additions: 0, deletions: 0, truncated: false,
+        } }
+        : { ok: false, reason: 'workspace_unavailable', workspace: '/tasks/missing' };
+    },
     subscribeSessionEvents: () => () => undefined,
     subscribeSessionChanges: (handler) => {
       onSessionChange = handler;
@@ -486,16 +514,23 @@ test('a workspace catalog change re-reads the task’s actual workspace', async 
     relocated = true;
     // A change about another Session is not this task's recovery.
     await act(async () => {
-      onSessionChange?.({ reason: 'rebound', sessionId: 'other-task', ts: 0 });
+      onSessionChange?.({ reason: 'updated', sessionId: 'other-task', ts: 0 });
+      for (const reason of ['message-appended', 'status-change', 'turn-status-change', 'goal-change'] as const) {
+        onSessionChange?.({ reason, sessionId: 'moving-task', ts: 0 });
+      }
+      onSessionChange?.({ reason: 'created', ts: 0 });
+      onSessionChange?.({ reason: 'updated', ts: 0 });
       await new Promise((resolve) => setTimeout(resolve, 300));
     });
+    assert.equal(reads, 1, 'unrelated catalog activity must not re-read Git');
     assert.match(container.textContent ?? '', /This task’s folder is unavailable/);
     await act(async () => {
-      onSessionChange?.({ reason: 'rebound', sessionId: 'moving-task', ts: 0 });
+      onSessionChange?.({ reason: 'updated', sessionId: 'moving-task', ts: 0 });
       await new Promise((resolve) => setTimeout(resolve, 300));
     });
     assert.match(container.textContent ?? '', /No changes in the current Git workspace/,
       'recovery refreshes the correct task');
+    assert.equal(reads, 2);
   } finally {
     await act(async () => { root.unmount(); });
     restore();

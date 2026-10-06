@@ -204,11 +204,8 @@ describe('Git Review snapshot authority', () => {
       assert.equal(result.ok, false);
       if (result.ok) return;
       assert.equal(result.reason, 'git_failed');
-      assert.match(
-        result.detail ?? '',
-        /merge-base/,
-        'without stderr, a read failure keeps the failing command as detail',
-      );
+      assert.equal(result.detail, undefined,
+        'without a diagnostic, a read failure omits the command wrapper');
       assert.deepEqual(result.branches, {
         currentBranch: 'main',
         baseBranchOptions: [

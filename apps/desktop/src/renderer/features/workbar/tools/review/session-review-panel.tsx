@@ -181,7 +181,7 @@ export function SessionReviewPanel(props: {
     // A workspace relocation lands as a catalog change, not a Session event:
     // the next read resolves the task's actual (new) workspace.
     const unsubscribeChanges = review.subscribeSessionChanges((change) => {
-      if (change.sessionId !== undefined && change.sessionId !== props.sessionId) {
+      if (change.sessionId !== props.sessionId || change.reason !== 'updated') {
         return;
       }
       scheduleRefresh();
@@ -224,6 +224,15 @@ export function SessionReviewPanel(props: {
       onClick={() => props.onOpenWorkspaceRecovery?.(props.sessionId)}
     />
   ) : null;
+  const refreshAction = (
+    <Button
+      variant="ghost"
+      size="sm"
+      label={copy.refresh}
+      isLoading={loading}
+      onClick={() => void load()}
+    />
+  );
   const guidance = (() => {
     switch (failure?.reason) {
       case 'not_git_repository':
@@ -231,9 +240,12 @@ export function SessionReviewPanel(props: {
           icon: <FolderGit2 size={ICON_SIZE.empty} aria-hidden />,
           title: copy.notGitRepository,
           help: copy.notGitRepositoryHelp,
-          // A Retry here could only mislead: re-reading cannot make a valid
-          // non-Git directory a repository.
-          actions: recoveryAction,
+          actions: (
+            <HStack gap={2} align="center">
+              {recoveryAction}
+              {refreshAction}
+            </HStack>
+          ),
         };
       case 'workspace_unavailable':
         return {
@@ -260,7 +272,7 @@ export function SessionReviewPanel(props: {
           icon: <GitBranch size={ICON_SIZE.empty} aria-hidden />,
           title: copy.unbornRepository,
           help: copy.unbornRepositoryHelp,
-          actions: null,
+          actions: refreshAction,
         };
       case 'remote_workspace':
         return {
@@ -379,7 +391,6 @@ export function SessionReviewPanel(props: {
                     <Text
                       type="code"
                       maxLines={2}
-                      className="maka-session-review-workspace"
                     >
                       {failure.workspace}
                     </Text>
