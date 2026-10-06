@@ -1944,6 +1944,144 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('Candidate releases ownership when composition preparation fails before Kernel startup', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const failure = new Error('composition preparation failed');
+      await assert.rejects(
+        startInteractiveRuntimeHostCandidate(
+          { rootPath: paths.root, expectedRootId: capability.rootId },
+          async () => {
+            assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+            throw failure;
+          },
+          { managedDeploymentAuthority: { authorityRoot: join(paths.base, 'managed') } },
+        ),
+        (error: unknown) => error === failure,
+      );
+
+      const successor = paths.resources.trackCloseable(
+        await tryAcquireInteractiveRootOwner(capability),
+      );
+      assert.ok(successor);
+      assert.equal(successor.capability.rootId, capability.rootId);
+      assert.equal(successor.closed, false);
+    });
+  });
+
+  test('Candidate permits a ready successor after recovery failure is cleanly closed', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const failure = new Error('composition recovery failed');
+      let closed = false;
+      await assert.rejects(
+        startInteractiveRuntimeHostCandidate(
+          { rootPath: paths.root, expectedRootId: capability.rootId },
+          () =>
+            defineInteractiveRuntimeHostComposition(async () =>
+              testComposition({
+                recover: async () => {
+                  throw failure;
+                },
+                close: async () => {
+                  closed = true;
+                },
+              }),
+            ),
+          { managedDeploymentAuthority: { authorityRoot: join(paths.base, 'managed') } },
+        ),
+        (error: unknown) => error === failure,
+      );
+      assert.equal(closed, true);
+
+      const successor = await startTestRuntimeHostCandidate(paths, {
+        rootPath: paths.root,
+        idleGraceMs: 10_000,
+      });
+      assert.equal(successor.kind, 'winner');
+      if (successor.kind !== 'winner') return;
+      assert.equal(successor.host.state, 'ready');
+      await successor.host.close();
+    });
+  });
+
+  test('Candidate preserves Kernel ownership when startup cleanup requires process termination', {
+    timeout: 10_000,
+  }, async (t) => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const failure = new Error('composition recovery failed');
+      const closeEntered = deferred<void>();
+      const releaseClose = deferred<void>();
+      const closeFinished = deferred<void>();
+      let owner: InteractiveRootOwner | undefined;
+      let closed = false;
+      const startupFailure = startInteractiveRuntimeHostCandidate(
+        { rootPath: paths.root, expectedRootId: capability.rootId },
+        () => {
+          // Ownership acquisition uses real I/O. Only mock the Kernel's timers
+          // after the Candidate has acquired its owner.
+          t.mock.timers.enable({ apis: ['setTimeout'] });
+          return defineInteractiveRuntimeHostComposition(async (context) => {
+            owner = context.owner;
+            return testComposition({
+              recover: async () => {
+                throw failure;
+              },
+              close: async () => {
+                closeEntered.resolve();
+                await releaseClose.promise;
+                closed = true;
+                closeFinished.resolve();
+              },
+            });
+          });
+        },
+        { managedDeploymentAuthority: { authorityRoot: join(paths.base, 'managed') } },
+      ).then(
+        () => assert.fail('Candidate startup unexpectedly succeeded'),
+        (error: unknown) => error,
+      );
+
+      try {
+        await closeEntered.promise;
+        // The Candidate uses the Kernel's default shutdown deadline.
+        t.mock.timers.tick(10_000);
+        const error = await startupFailure;
+        assert.ok(error instanceof AggregateError);
+        assert.equal(error.cause, failure);
+        assert.ok(
+          error.errors.some(
+            (cause: unknown) => cause instanceof RuntimeHostProcessTerminationRequiredError,
+          ),
+        );
+        assert.equal(closed, false);
+        assert.ok(owner);
+        assert.equal(owner.closed, false);
+        const competingOwner = paths.resources.trackCloseable(
+          await tryAcquireInteractiveRootOwner(capability),
+        );
+        assert.equal(competingOwner, undefined);
+
+        releaseClose.resolve();
+        await closeFinished.promise;
+        assert.equal(closed, true);
+        assert.equal(owner.closed, false);
+        const lateOwner = paths.resources.trackCloseable(
+          await tryAcquireInteractiveRootOwner(capability),
+        );
+        assert.equal(lateOwner, undefined);
+      } finally {
+        releaseClose.resolve();
+        if (owner) await closeFinished.promise;
+        // The test owns this in-process Kernel; production releases this lock
+        // only when the required process termination actually happens.
+        await owner?.close();
+        t.mock.timers.reset();
+      }
+    });
+  });
+
   test('blocks incompatible replacement while resident and permits it only after true idle', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
