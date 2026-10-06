@@ -29,6 +29,7 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import {
@@ -102,6 +103,8 @@ interface MidTurnFixture {
 }
 
 interface MidTurnFixtureOptions {
+  /** Hold a provider request open to inspect live events before settlement. */
+  beforeRequest?: (call: number) => Promise<void>;
   contextWindow?: number;
   /** Omit the model's context window entirely (unknown model metadata). */
   withoutContextWindow?: boolean;
@@ -308,6 +311,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         throw Object.assign(new Error('aborted'), { name: 'AbortError' });
       }
       const call = model.doStreamCalls.length;
+      await options.beforeRequest?.(call);
       if (options.firstRequestContextOverflow && call === 1) {
         throw Object.assign(new Error('prompt is too long: 213462 tokens > 200000 maximum'), {
           name: 'AI_APICallError',
@@ -765,6 +769,47 @@ function compactionDecisions(
 }
 
 function defineMidTurnSuite(consumer: ConsumerMode): void {
+  test('publishes the applied boundary while the post-compaction request is still running', {
+    timeout: 5_000,
+  }, async () => {
+    const requestStarted = deferred();
+    const requestHeld = deferred();
+    const fixture = buildFixture({
+      beforeRequest: async (call) => {
+        if (call !== 3) return;
+        requestStarted.resolve();
+        await requestHeld.promise;
+      },
+    });
+    const turn = runFixtureTurn(fixture, consumer);
+    try {
+      await requestStarted.promise;
+      assert.equal(fixture.recorded.length, 1, 'the checkpoint has been persisted');
+      assert.equal(
+        fixture.events.some((event) => event.type === 'complete'),
+        false,
+      );
+      assert.equal(
+        fixture.events.filter((event) => event.type === 'context_compaction_applied').length,
+        1,
+        'the live boundary must arrive before the next request settles',
+      );
+      const boundaries = fixture.ledger.filter(
+        (event) =>
+          event.content?.kind === 'system_note' &&
+          event.content.note === 'context_compaction_applied',
+      );
+      assert.equal(boundaries.length, 1, 'the stream persists exactly one canonical boundary');
+      const applied = fixture.events.find((event) => event.type === 'context_compaction_applied');
+      assert.equal(boundaries[0]?.id, applied?.id);
+      assert.equal(boundaries[0]?.ts, applied?.ts);
+      assert.equal(boundaries[0]?.modelVisibility, 'hidden');
+    } finally {
+      requestHeld.resolve();
+      await turn;
+    }
+  });
+
   test('keeps user_stop when stopping while a usage-triggered fold is summarizing', async () => {
     // The fold now starts from the provider's real usage instead of a local
     // estimate, but a user stop during its summarizer call must still end the
@@ -1035,6 +1080,10 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
     );
     assert.equal(failedOpen?.failOpenReason, 'write_failed');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'context_compaction_applied'),
+      false,
+    );
   });
 
   test('a malformed summarizer completion fails open end-to-end with its granular reason', async () => {
@@ -1216,6 +1265,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     assert.equal(fixture.summarizerCalls, 2);
     assert.equal(fixture.recorded.length, 2);
+    const applied = fixture.events.filter((event) => event.type === 'context_compaction_applied');
+    assert.equal(applied.length, 2, 'each applied fold publishes its own boundary');
+    assert.notEqual(applied[0]?.id, applied[1]?.id);
     // The second fold covers the step the first one left out.
     assert.equal(
       fixture.recorded[1]!.coverage.eventCount > fixture.recorded[0]!.coverage.eventCount,

@@ -133,7 +133,7 @@ test('the context usage share resolves declared, then metered, then metadata win
     // The user's declaration wins over every reported window.
     assert.equal(
       await render({
-        reading: { kind: 'measured', tokens: 40_000, meteredWindow: 80_000 },
+        reading: { kind: 'measured', tokens: 40_000, contextWindow: 80_000 },
         declaredContextWindow: 100_000,
         metadataContextWindow: 64_000,
       }),
@@ -142,7 +142,7 @@ test('the context usage share resolves declared, then metered, then metadata win
     // The metered window was frozen against the same request as the tokens,
     // so it outranks the catalog's metadata window.
     assert.equal(
-      await render({ reading: { kind: 'measured', tokens: 40_000, meteredWindow: 80_000 }, metadataContextWindow: 64_000 }),
+      await render({ reading: { kind: 'measured', tokens: 40_000, contextWindow: 80_000 }, metadataContextWindow: 64_000 }),
       '50%',
     );
     // Metadata is the fallback…
@@ -156,7 +156,7 @@ test('the context usage share resolves declared, then metered, then metadata win
     ), 'Usage');
     // A later successful measurement restores the share in the same mounted control.
     assert.equal(await render(
-      { reading: { kind: 'measured', tokens: 10_000, meteredWindow: 100_000 } },
+      { reading: { kind: 'measured', tokens: 10_000, contextWindow: 100_000 } },
       'Context window: 10% used (10K / 100K tokens).',
     ), '10%');
     assert.equal(await render(

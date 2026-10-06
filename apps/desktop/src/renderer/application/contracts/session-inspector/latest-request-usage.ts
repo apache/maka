@@ -18,7 +18,11 @@
  */
 
 import type { ContextUsageReading } from '@maka/ui';
-import type { LiveContextUsage } from './live-context-usage.js';
+import type {
+  ContextUsageSnapshot,
+  ContextUsageTokens,
+} from './context-usage-snapshot.js';
+import type { LiveContextReading } from './live-context-usage.js';
 
 export interface LatestRequestUsageAnchor {
   inputTokens: number;
@@ -36,10 +40,12 @@ export interface LatestRequestUsageRow {
   readonly lastRequestAnchor?: LatestRequestUsageAnchor;
 }
 
-export type LatestRequestUsage =
-  | { readonly kind: 'tokens'; readonly tokens: number; readonly at?: number }
-  | { readonly kind: 'compacted'; readonly at?: number }
-  | undefined;
+/**
+ * The durable half of the gauge's answer — what the transcript's own rows
+ * select — in the same shape the live tracker reports, so
+ * `resolveContextUsage` can arbitrate the two on one union.
+ */
+export type LatestRequestUsage = ContextUsageSnapshot | undefined;
 
 /**
  * Read the newest route-matching measurement or compaction from the session tail.
@@ -61,16 +67,7 @@ export function selectLatestRequestUsage(
   // The newest anchored usage row, held while the scan behind it looks for a
   // boundary that postdates its completion. A second anchored row settles it:
   // under ordered writes every boundary behind that row is strictly older.
-  let pendingTokens:
-    | {
-        readonly reading: {
-          readonly kind: 'tokens';
-          readonly tokens: number;
-          readonly at?: number;
-        };
-        readonly completedAt?: number;
-      }
-    | undefined;
+  let pendingTokens: ContextUsageTokens | undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.type === 'system_note' && message.kind === 'context_compaction_applied') {
@@ -94,23 +91,20 @@ export function selectLatestRequestUsage(
     if (message?.type !== 'token_usage') continue;
     const anchor = message.lastRequestAnchor;
     if (!anchor) continue;
-    if (pendingTokens) return pendingTokens.reading;
+    if (pendingTokens) return pendingTokens;
     if (model === undefined || connectionId === undefined) return undefined;
     if (anchor.modelId !== model || anchor.connectionId !== connectionId) return undefined;
     if (!Number.isFinite(anchor.inputTokens) || anchor.inputTokens <= 0) return undefined;
     const output = Number.isFinite(anchor.outputTokens ?? 0) ? Math.max(0, anchor.outputTokens ?? 0) : 0;
     pendingTokens = {
-      completedAt: anchor.completedAt,
-      reading: {
-        kind: 'tokens',
-        tokens: anchor.inputTokens + output,
-        // The row is persisted after request settlement (and sometimes after a
-        // compaction note). Its write time cannot order its own snapshot.
-        ...(anchor.completedAt !== undefined ? { at: anchor.completedAt } : {}),
-      },
+      kind: 'tokens',
+      tokens: anchor.inputTokens + output,
+      // The row is persisted after request settlement (and sometimes after a
+      // compaction note). Its write time cannot order its own snapshot.
+      ...(anchor.completedAt !== undefined ? { at: anchor.completedAt } : {}),
     };
   }
-  return pendingTokens?.reading;
+  return pendingTokens;
 }
 
 /**
@@ -121,20 +115,17 @@ export function selectLatestRequestUsage(
  * stands.
  */
 function orderTokensAgainstBoundary(
-  pendingTokens: {
-    readonly reading: { readonly kind: 'tokens'; readonly tokens: number; readonly at?: number };
-    readonly completedAt?: number;
-  },
+  reading: ContextUsageTokens,
   boundaryAt: number | undefined,
 ): LatestRequestUsage {
   if (
-    pendingTokens.completedAt !== undefined &&
+    reading.at !== undefined &&
     boundaryAt !== undefined &&
-    boundaryAt >= pendingTokens.completedAt
+    boundaryAt >= reading.at
   ) {
     return { kind: 'compacted', at: boundaryAt };
   }
-  return pendingTokens.reading;
+  return reading;
 }
 
 /**
@@ -173,29 +164,45 @@ function latestCompactionAppliedAt(
  */
 export function resolveContextUsage(input: {
   readonly latestRequestUsage: LatestRequestUsage;
-  readonly live?: LiveContextUsage;
+  readonly live?: LiveContextReading;
 }): ContextUsageReading {
   const { latestRequestUsage, live } = input;
+  // A live boundary holds the gauge on "compacted" until a durable
+  // measurement provably settled after it lands.
+  if (live?.kind === 'compacted') {
+    if (
+      latestRequestUsage?.kind === 'tokens' &&
+      latestRequestUsage.at !== undefined &&
+      live.at !== undefined &&
+      latestRequestUsage.at > live.at
+    ) {
+      return { kind: 'measured', tokens: latestRequestUsage.tokens };
+    }
+    return { kind: 'stale', reason: 'compaction' };
+  }
+  // A durable boundary does the same to any live measurement that cannot
+  // prove it settled after the boundary — an untimed one included.
   if (
     latestRequestUsage?.kind === 'compacted' &&
-    (live?.completedAt === undefined ||
+    (live?.kind !== 'tokens' ||
+      live.at === undefined ||
       latestRequestUsage.at === undefined ||
-      latestRequestUsage.at >= live.completedAt)
+      latestRequestUsage.at >= live.at)
   ) {
     return { kind: 'stale', reason: 'compaction' };
   }
   if (
     latestRequestUsage?.kind === 'tokens' &&
     latestRequestUsage.at !== undefined &&
-    (live?.completedAt === undefined || latestRequestUsage.at > live.completedAt)
+    (live?.kind !== 'tokens' || live.at === undefined || latestRequestUsage.at > live.at)
   ) {
     return { kind: 'measured', tokens: latestRequestUsage.tokens };
   }
-  if (live) {
+  if (live?.kind === 'tokens') {
     return {
       kind: 'measured',
-      tokens: live.usageTokens,
-      ...(live.contextWindow !== undefined ? { meteredWindow: live.contextWindow } : {}),
+      tokens: live.tokens,
+      ...(live.contextWindow !== undefined ? { contextWindow: live.contextWindow } : {}),
     };
   }
   if (latestRequestUsage?.kind === 'tokens')

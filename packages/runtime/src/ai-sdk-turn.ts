@@ -1059,7 +1059,15 @@ export class AiSdkTurn {
     // recorded when each compaction lands, so it exists mid-turn and a stop or
     // stream error cannot erase it — unlike the settlement-time display note.
     const recordCompactionApplied = async (): Promise<void> => {
-      await this.recordSystemNote('context_compaction_applied', turnId);
+      // The consumer persists the hidden note and forwards the same boundary
+      // to live subscribers. Await its ack before dispatching the replacement
+      // prompt, so even a slow consumer observes the boundary before new usage.
+      await queue.pushAndWaitUntilConsumed({
+        type: 'context_compaction_applied',
+        id: this.deps.newId(),
+        turnId,
+        ts: this.deps.now(),
+      });
     };
     const trace = new RunTrace({
       sessionId: this.deps.backend.sessionId,

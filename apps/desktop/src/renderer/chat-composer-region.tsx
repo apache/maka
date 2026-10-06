@@ -35,7 +35,7 @@ import {
   resolveContextUsage,
   type LatestRequestUsage,
 } from './application/contracts/session-inspector/latest-request-usage.js';
-import type { LiveContextUsage } from './application/contracts/session-inspector/live-context-usage.js';
+import type { LiveContextReading } from './application/contracts/session-inspector/live-context-usage.js';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import type { GuestComposerProjection } from './features/session-collaboration/index.js';
 import {
@@ -154,9 +154,7 @@ interface ChatComposerRegionProps
      * catalog currently reports — one row's tokens against another row's
      * ceiling.
      */
-    children: (
-      usage: LiveContextUsage | undefined,
-    ) => ReactNode;
+    children: (usage: LiveContextReading) => ReactNode;
   }>;
   canStageContext: boolean;
   contextPickEnabled: boolean;
@@ -264,9 +262,7 @@ export function ChatComposerRegion({
   // The composer body as a function of the gauge's live reading, so the probe
   // — when mounted — can feed it the per-settled-request snapshot (#4717), and
   // the anchor prop remains the reading it falls back to.
-  const renderComposer = (
-    liveContextUsage: LiveContextUsage | undefined,
-  ) => {
+  const renderComposer = (liveContextUsage: LiveContextReading) => {
     // One question, two answers, and a compaction can make the finer one stale: the
     // snapshot wins when it landed after the boundary, and the boundary wins
     // when it did not.

@@ -20,6 +20,10 @@
 import type { SessionEvent } from '@maka/core/events';
 import { createRefreshReadCoordinator } from '@maka/core/refresh-read-coordinator';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextUsageSnapshot,
+  ContextUsageTokens,
+} from './context-usage-snapshot.js';
 import { isTraceRelevantEvent } from './session-trace-refresh.js';
 
 /**
@@ -39,20 +43,14 @@ export interface LiveContextRoute {
   readonly providerType?: string;
 }
 
-/** The gauge's reading: the last settled request's prompt, and its ceiling. */
-export interface LiveContextUsage {
-  readonly usageTokens: number;
-  /** The window the request was metered against, frozen at call time. */
-  readonly contextWindow?: number;
-  /**
-   * When that request settled, on the Host's clock — the same clock the
-   * session's own transcript rows carry, so a reader can tell whether this
-   * snapshot predates a compaction boundary it already knows about. Without
-   * it, a snapshot that a compaction has replaced is indistinguishable from one
-   * taken after it.
-   */
-  readonly completedAt?: number;
-}
+/**
+ * The live half of the gauge's answer, in the same shape the transcript
+ * selector uses: a measured prompt until a live compaction boundary retires
+ * it, then that boundary until a measurement provably settled after it
+ * lands. `resolveContextUsage` arbitrates the two sources by their `at`
+ * clocks; giving them one union is what makes that arbitration symmetric.
+ */
+export type LiveContextReading = ContextUsageSnapshot | undefined;
 
 /**
  * Maps a context diagnostics snapshot onto the gauge, or refuses.
@@ -72,7 +70,7 @@ export interface LiveContextUsage {
 export function liveContextUsageFromDiagnostics(
   diagnostics: ContextDiagnosticsResult | undefined,
   route: LiveContextRoute,
-): LiveContextUsage | undefined {
+): ContextUsageTokens | undefined {
   if (!diagnostics || diagnostics.status !== 'available') return undefined;
   if (route.model === undefined || route.providerType === undefined) return undefined;
   if (diagnostics.modelId !== route.model || diagnostics.providerId !== route.providerType) {
@@ -83,11 +81,12 @@ export function liveContextUsageFromDiagnostics(
     return undefined;
   }
   return {
-    usageTokens: inputTokens,
+    kind: 'tokens',
+    tokens: inputTokens,
     ...(diagnostics.contextWindow !== undefined
       ? { contextWindow: diagnostics.contextWindow }
       : {}),
-    completedAt: diagnostics.completedAt,
+    ...(diagnostics.completedAt !== undefined ? { at: diagnostics.completedAt } : {}),
   };
 }
 
@@ -148,15 +147,24 @@ export function createLiveContextUsageTracker(input: {
   delayMs: number;
   schedule: (callback: () => void, delayMs: number) => unknown;
   cancel: (handle: unknown) => void;
-  onChange: (usage: LiveContextUsage | undefined) => void;
+  onChange: (usage: LiveContextReading) => void;
 }): LiveContextUsageTracker {
   let target: LiveContextUsageTarget | undefined;
+  let appliedAt: number | undefined;
   const coordinator = createRefreshReadCoordinator({
     read: () => target ? input.query(target.sessionId) : Promise.resolve(undefined),
     apply: (diagnostics) => {
       // Every target change invalidates in-flight reads before they can apply.
       if (!diagnostics || !target) return;
-      input.onChange(liveContextUsageFromDiagnostics(diagnostics, target.route));
+      const usage = liveContextUsageFromDiagnostics(diagnostics, target.route);
+      // A live boundary holds the gauge on "compacted" until a read lands
+      // that provably settled after it; reads at or before the boundary — or
+      // carrying no settlement time — cannot re-earn the number.
+      input.onChange(
+        appliedAt !== undefined && !(usage !== undefined && usage.at !== undefined && usage.at > appliedAt)
+          ? { kind: 'compacted', at: appliedAt }
+          : usage,
+      );
     },
     delayMs: input.delayMs,
     schedule: (callback, delayMs) => {
@@ -178,6 +186,7 @@ export function createLiveContextUsageTracker(input: {
       const changed = !sameLiveContextUsageTarget(target, next);
       target = next;
       coordinator.cancel();
+      if (changed) appliedAt = undefined;
       if (!next) {
         input.onChange(undefined);
         return;
@@ -186,6 +195,15 @@ export function createLiveContextUsageTracker(input: {
       coordinator.refresh();
     },
     observe(event) {
+      if (!target) return;
+      if (event.type === 'context_compaction_applied') {
+        if (appliedAt !== undefined && event.ts <= appliedAt) return;
+        appliedAt = event.ts;
+        // Retire pre-boundary reads immediately, before the debounced refresh.
+        coordinator.observe();
+        input.onChange({ kind: 'compacted', at: appliedAt });
+        return;
+      }
       if (isTraceRelevantEvent(event)) coordinator.observe();
     },
     dispose() {

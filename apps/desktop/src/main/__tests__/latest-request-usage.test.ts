@@ -137,7 +137,7 @@ test('a post-compaction anchor supersedes a pre-compaction snapshot while diagno
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage,
-      live: { usageTokens: 90_000, contextWindow: 100_000, completedAt: 1_000 },
+      live: { kind: 'tokens', tokens: 90_000, contextWindow: 100_000, at: 1_000 },
     }),
     { kind: 'measured', tokens: 35_000 },
   );
@@ -152,9 +152,9 @@ test('the token row written after its own request keeps the settled snapshot and
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage,
-      live: { usageTokens: 100, contextWindow: 1_000, completedAt: 1_000 },
+      live: { kind: 'tokens', tokens: 100, contextWindow: 1_000, at: 1_000 },
     }),
-    { kind: 'measured', tokens: 100, meteredWindow: 1_000 },
+    { kind: 'measured', tokens: 100, contextWindow: 1_000 },
   );
 });
 
@@ -169,9 +169,9 @@ test('a legacy anchor without settlement time cannot displace a live snapshot', 
         MODEL,
         ROUTE,
       ),
-      live: { usageTokens: 100, contextWindow: 1_000, completedAt: 1_000 },
+      live: { kind: 'tokens', tokens: 100, contextWindow: 1_000, at: 1_000 },
     }),
-    { kind: 'measured', tokens: 100, meteredWindow: 1_000 },
+    { kind: 'measured', tokens: 100, contextWindow: 1_000 },
   );
 });
 
@@ -179,7 +179,7 @@ test('a timed anchor wins when the retained snapshot has no settlement time', ()
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'tokens', tokens: 35_000, at: 3_000 },
-      live: { usageTokens: 90_000 },
+      live: { kind: 'tokens', tokens: 90_000 },
     }),
     { kind: 'measured', tokens: 35_000 },
   );
@@ -370,7 +370,7 @@ test('the failed-retry ledger reads stale, not the pre-compaction measurement (#
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage,
-      live: { usageTokens: 190_000, contextWindow: 200_000, completedAt: 1_000 },
+      live: { kind: 'tokens', tokens: 190_000, contextWindow: 200_000, at: 1_000 },
     }),
     { kind: 'stale', reason: 'compaction' },
   );
@@ -391,9 +391,9 @@ test('a post-compaction snapshot is measured against the apply time, not settlem
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage,
-      live: { usageTokens: 30_000, contextWindow: 100_000, completedAt: 2_000 },
+      live: { kind: 'tokens', tokens: 30_000, contextWindow: 100_000, at: 2_000 },
     }),
-    { kind: 'measured', tokens: 30_000, meteredWindow: 100_000 },
+    { kind: 'measured', tokens: 30_000, contextWindow: 100_000 },
   );
 });
 
@@ -446,7 +446,7 @@ test('the snapshot is the reading when it is the newer answer', () => {
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'tokens', tokens: 120, at: 1_000 },
-      live: { usageTokens: 130, completedAt: 1_500 },
+      live: { kind: 'tokens', tokens: 130, at: 1_500 },
     }),
     { kind: 'measured', tokens: 130 },
   );
@@ -458,13 +458,13 @@ test('the snapshot is the reading when it is the newer answer', () => {
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'tokens', tokens: 120, at: 1_500 },
-      live: { usageTokens: 130, completedAt: 1_500 },
+      live: { kind: 'tokens', tokens: 130, at: 1_500 },
     }),
     { kind: 'measured', tokens: 130 },
   );
   // The snapshot can still vouch when the transcript established nothing.
   assert.deepEqual(
-    resolveContextUsage({ latestRequestUsage: undefined, live: { usageTokens: 130 } }),
+    resolveContextUsage({ latestRequestUsage: undefined, live: { kind: 'tokens', tokens: 130 } }),
     { kind: 'measured', tokens: 130 },
   );
   assert.deepEqual(resolveContextUsage({ latestRequestUsage: undefined }), {
@@ -478,7 +478,7 @@ test('a boundary supersedes the snapshot it landed after', () => {
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'compacted', at: 2_000 },
-      live: { usageTokens: 90_000, completedAt: 1_000 },
+      live: { kind: 'tokens', tokens: 90_000, at: 1_000 },
     }),
     { kind: 'stale', reason: 'compaction' },
   );
@@ -492,7 +492,7 @@ test('a boundary supersedes the snapshot it landed after', () => {
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'compacted', at: 2_000 },
-      live: { usageTokens: 90_000 },
+      live: { kind: 'tokens', tokens: 90_000 },
     }),
     { kind: 'stale', reason: 'compaction' },
   );
@@ -504,9 +504,37 @@ test('a snapshot newer than the boundary is the post-compaction reading', () => 
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'compacted', at: 2_000 },
-      live: { usageTokens: 30_000, completedAt: 2_500 },
+      live: { kind: 'tokens', tokens: 30_000, at: 2_500 },
     }),
     { kind: 'measured', tokens: 30_000 },
+  );
+});
+
+test('a live boundary rejects old, equal-time, and untimed durable anchors', () => {
+  for (const completedAt of [undefined, 1_000, 2_000]) {
+    const latestRequestUsage = selectLatestRequestUsage([
+      usage({ inputTokens: 90_000, modelId: MODEL, connectionId: 'conn-a', completedAt }, 9_100),
+    ], MODEL, ROUTE);
+    assert.deepEqual(
+      resolveContextUsage({ latestRequestUsage, live: { kind: 'compacted', at: 2_000 } }),
+      { kind: 'stale', reason: 'compaction' },
+    );
+  }
+  for (const latestRequestUsage of [undefined, { kind: 'compacted', at: 3_000 } as const]) {
+    assert.deepEqual(
+      resolveContextUsage({ latestRequestUsage, live: { kind: 'compacted', at: 2_000 } }),
+      { kind: 'stale', reason: 'compaction' },
+    );
+  }
+});
+
+test('a proven newer durable anchor restores usage while the live boundary remains', () => {
+  const latestRequestUsage = selectLatestRequestUsage([
+    usage({ inputTokens: 30_000, outputTokens: 100, modelId: MODEL, connectionId: 'conn-a', completedAt: 2_500 }, 9_100),
+  ], MODEL, ROUTE);
+  assert.deepEqual(
+    resolveContextUsage({ latestRequestUsage, live: { kind: 'compacted', at: 2_000 } }),
+    { kind: 'measured', tokens: 30_100 },
   );
 });
 
@@ -515,14 +543,14 @@ test('a selected live measurement carries only its own metered window', () => {
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'tokens', tokens: 120 },
-      live: { usageTokens: 130, contextWindow: 1_000, completedAt: 1_500 },
+      live: { kind: 'tokens', tokens: 130, contextWindow: 1_000, at: 1_500 },
     }),
-    { kind: 'measured', tokens: 130, meteredWindow: 1_000 },
+    { kind: 'measured', tokens: 130, contextWindow: 1_000 },
   );
   assert.deepEqual(
     resolveContextUsage({
       latestRequestUsage: { kind: 'compacted', at: 2_000 },
-      live: { usageTokens: 130, contextWindow: 1_000, completedAt: 1_500 },
+      live: { kind: 'tokens', tokens: 130, contextWindow: 1_000, at: 1_500 },
     }),
     { kind: 'stale', reason: 'compaction' },
   );
@@ -533,7 +561,7 @@ test('equal or missing boundary times cannot establish a post-compaction measure
     assert.deepEqual(
       resolveContextUsage({
         latestRequestUsage: { kind: 'compacted', at },
-        live: { usageTokens: 130, completedAt: 2_000 },
+        live: { kind: 'tokens', tokens: 130, at: 2_000 },
       }),
       { kind: 'stale', reason: 'compaction' },
     );

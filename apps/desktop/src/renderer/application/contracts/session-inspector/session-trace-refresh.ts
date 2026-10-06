@@ -36,6 +36,8 @@ const TRACE_RELEVANT_EVENT_TYPES: ReadonlySet<SessionEvent['type']> = new Set([
   'tool_result',
   'token_usage',
   'provider_retry',
+  // Its whole ledger effect is a persisted boundary note; easy to miss that it counts.
+  'context_compaction_applied',
   'error',
   'complete',
   'abort',

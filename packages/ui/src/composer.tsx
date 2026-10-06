@@ -2666,7 +2666,7 @@ function ContextUsageAction(props: {
   const copy = getConversationCopy(useUiLocale()).messages;
   const { reading } = props;
   const usageTokens = reading.kind === 'measured' ? reading.tokens : undefined;
-  const meteredWindow = reading.kind === 'measured' ? reading.meteredWindow : undefined;
+  const meteredWindow = reading.kind === 'measured' ? reading.contextWindow : undefined;
   // A window from any source is enough to show a share, and the order is a
   // claim about which window the number was earned against: the user's
   // declaration first — it is the user's intent, and the only one that arms

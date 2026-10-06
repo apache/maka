@@ -24,6 +24,6 @@ export type ContextUsageReading =
       readonly kind: 'measured';
       readonly tokens: number;
       /** Frozen alongside this measurement; never borrowed from another reading. */
-      readonly meteredWindow?: number;
+      readonly contextWindow?: number;
     }
   | { readonly kind: 'stale'; readonly reason: 'compaction' };

@@ -21,7 +21,7 @@ import { useEffect, useState } from 'react';
 import type { SessionInspectorService } from './service.js';
 import {
   createLiveContextUsageTracker,
-  type LiveContextUsage,
+  type LiveContextReading,
 } from './live-context-usage.js';
 import { TRACE_REFRESH_DEBOUNCE_MS } from './session-trace-refresh.js';
 
@@ -42,9 +42,9 @@ export function useLiveContextUsage(input: {
   readonly sessionId: string | undefined;
   readonly model: string | undefined;
   readonly providerType: string | undefined;
-}): LiveContextUsage | undefined {
+}): LiveContextReading {
   const { inspector } = input;
-  const [usage, setUsage] = useState<LiveContextUsage | undefined>(undefined);
+  const [usage, setUsage] = useState<LiveContextReading>(undefined);
   const { sessionId, model, providerType } = input;
   useEffect(() => {
     const tracker = createLiveContextUsageTracker({
