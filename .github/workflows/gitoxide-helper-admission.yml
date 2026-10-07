@@ -78,7 +78,7 @@ jobs:
             echo "RUSTC_WRAPPER=kache"
           } >> "$GITHUB_ENV"
       - name: Install Kache
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
+        uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2
         with:
           tool: kache@0.16.0
       - id: kache-cache
