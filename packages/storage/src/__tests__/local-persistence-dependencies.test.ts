@@ -71,7 +71,8 @@ test('production Runtime and Host use persistence contracts, with writer constru
         /\b(?:createSqlite\w+|openSqlite\w+|createSessionStore)\b/u,
         `${file.pathname}: concrete adapter construction belongs to storage composition`,
       );
-      if (file.pathname.endsWith('/runtime-host/src/server/execution-composition.ts')) continue;
+      if (file.pathname.endsWith('/runtime-host/src/server/execution-domain-composition.ts'))
+        continue;
       assert.doesNotMatch(
         source,
         /\b(?:openStorageWriterComposition|openInteractiveExecutionStoresForWrite)\b/u,

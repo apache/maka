@@ -130,7 +130,7 @@ Module 契约包括 `handlers`、`recover(phase)`、`beginDrain()`、`close()`�
 
 关闭按 Module 构造逆序执行。某个 drain/close 失败不跳过其余 owner，最终聚合错误；Store 必须在 writer lease 释放前关闭。Module 不能把外部 I/O 或执行 Promise 隐藏在生命周期之外，否则 Kernel 无法证明可以退出或 handoff。 Drain/close 的取消信号也必须覆盖正在启动、排队或等待 I/O 的工作，并在异步等待后重新检查，避免关闭开始后出现新的 activation。
 
-实现：[Module contract](../../packages/runtime-host/src/server/host-composition.ts)、[interactive assembly](../../packages/runtime-host/src/server/execution-composition.ts)。
+实现：[Module contract](../../packages/runtime-host/src/server/host-composition.ts)、[interactive 入口](../../packages/runtime-host/src/server/execution-composition.ts)、[domain 装配](../../packages/runtime-host/src/server/execution-domain-composition.ts)。
 
 ### 本地持久化边界
 

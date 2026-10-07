@@ -130,7 +130,7 @@ The Module contract contains `handlers`, `recover(phase)`, `beginDrain()`, `clos
 
 Close runs in reverse Module construction order. A drain/close failure does not skip other owners; failures are aggregated. Stores close before the writer lease is released. Modules cannot hide external I/O or execution Promises outside lifecycle accounting, because that would prevent the Kernel from proving exit or handoff safety. Drain/close cancellation must also reach starting, queued, or I/O-waiting work and be rechecked after async waits, preventing activation after shutdown begins.
 
-Implementation: [Module contract](../../packages/runtime-host/src/server/host-composition.ts), [interactive assembly](../../packages/runtime-host/src/server/execution-composition.ts).
+Implementation: [Module contract](../../packages/runtime-host/src/server/host-composition.ts), [interactive entrypoint](../../packages/runtime-host/src/server/execution-composition.ts), [domain assembly](../../packages/runtime-host/src/server/execution-domain-composition.ts).
 
 ### Local persistence boundary
 

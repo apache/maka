@@ -95,7 +95,6 @@ import {
 } from '../server/host-residency-registry.js';
 import {
   createExecutionRuntimeHostComposition,
-  runtimeHostFilesystemWorkerRuntime,
   stopOwnedWorkHubRoot,
   stopReplacedWorkHubRoot,
   type ExecutionRuntimeHostCompositionDependencies,
@@ -110,6 +109,9 @@ import {
 } from '../protocol/index.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { HostWorkHubResultCoordinator } from '../server/workhub-result-coordinator.js';
+import { RuntimeHostAgentGraphComposition } from '../server/agent-graph-composition.js';
+import { HostMemoryExtractionCoordinator } from '../server/memory-extraction-coordinator.js';
+import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
@@ -701,11 +703,6 @@ test('production recovery leaves upgrade residue for explicitly started maintena
   });
 });
 
-test('filesystem worker follows the candidate executable runtime', () => {
-  assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
-  assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
-});
-
 test('WorkHub recovers a delivered root Stop from its durable cancelled Turn', async () => {
   let stopCalls = 0;
   const outcome = await stopOwnedWorkHubRoot(
@@ -1014,6 +1011,152 @@ test('production composition closes long-term memory after a later startup failu
     }
   });
 });
+
+for (const failGraphClose of [false, true]) {
+  test(`late startup failure releases graph resources and history subscriptions (close failure: ${failGraphClose})`, async (t) => {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+      const session = await stores.sessionStore.create({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const notifications: string[] = [];
+      t.mock.method(SessionContinuityCoordinator.prototype, 'enqueueCanonicalRefresh', () => {
+        notifications.push('transcript');
+      });
+      t.mock.method(SessionContinuityCoordinator.prototype, 'enqueueTranscriptAdvanced', () => {
+        notifications.push('runtime');
+      });
+      t.mock.method(SessionContinuityCoordinator.prototype, 'enqueueSessionDomainChanged', () => {
+        notifications.push('usage');
+      });
+      const publishChanges = async (phase: string) => {
+        await stores.sessionStore.appendMessage(session.id, {
+          type: 'user',
+          id: `message-${phase}`,
+          turnId: `turn-${phase}`,
+          ts: 10,
+          text: phase,
+        });
+        const run = {
+          sessionId: session.id,
+          invocationId: `invocation-${phase}`,
+          runId: `run-${phase}`,
+          turnId: `turn-${phase}`,
+        };
+        await stores.runtimeEventStore.appendRuntimeEvent(
+          session.id,
+          run.runId,
+          buildInvocationOpenedEvent({
+            id: `open-${phase}`,
+            run,
+            openedAt: 10,
+            opening: testInvocationOpening(),
+          }),
+        );
+        await usage.telemetry.recordToolInvocation({
+          id: `tool-${phase}`,
+          sessionId: session.id,
+          toolName: 'Read',
+          durationMs: 1,
+          status: 'success',
+          bytesIn: 1,
+          bytesOut: 1,
+          date: '2026-01-01',
+          ts: Date.UTC(2026, 0, 1),
+          startedAt: Date.UTC(2026, 0, 1),
+        });
+      };
+      const startupFailure = new Error('failure after all graph bindings');
+      const wakeFailure = new Error('wake cleanup failed');
+      const coordinatorFailure = new Error('coordinator cleanup failed');
+      const closeStarted = deferred();
+      const finishClose = deferred();
+      const closes: string[] = [];
+      const bindWake = RuntimeHostAgentGraphComposition.prototype.bindSupervisorWake;
+      t.mock.method(
+        RuntimeHostAgentGraphComposition.prototype,
+        'bindSupervisorWake',
+        function (this: RuntimeHostAgentGraphComposition, wake: Parameters<typeof bindWake>[0]) {
+          bindWake.call(this, wake);
+          const closeWake = wake.close.bind(wake);
+          const closeClient = this.client.close.bind(this.client);
+          const closeCoordinator = this.coordinator.close.bind(this.coordinator);
+          t.mock.method(wake, 'close', async () => {
+            await publishChanges('subscribed');
+            closeStarted.resolve();
+            await finishClose.promise;
+            await closeWake();
+            closes.push('wake');
+            if (failGraphClose) throw wakeFailure;
+          });
+          t.mock.method(this.client, 'close', () => {
+            closeClient();
+            closes.push('client');
+          });
+          t.mock.method(this.coordinator, 'close', async () => {
+            await closeCoordinator();
+            closes.push('coordinator');
+            if (failGraphClose) throw coordinatorFailure;
+          });
+          throw startupFailure;
+        },
+      );
+      const closeMemory = HostMemoryExtractionCoordinator.prototype.close;
+      t.mock.method(
+        HostMemoryExtractionCoordinator.prototype,
+        'close',
+        async function (this: HostMemoryExtractionCoordinator) {
+          assert.deepEqual(closes, ['wake', 'client', 'coordinator']);
+          const before = [...notifications];
+          // These writes still succeed before storage.close(), so silence here
+          // proves history detached its listeners rather than relying on storage teardown.
+          await publishChanges('unsubscribed');
+          assert.deepEqual(notifications, before);
+          closes.push('history-released');
+          await closeMemory.call(this);
+        },
+      );
+      let settled = false;
+      const starting = createExecutionRuntimeHostComposition(compositionContext(owner));
+      const outcome = starting.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await Promise.race([
+          closeStarted.promise,
+          starting.then(() => assert.fail('Expected startup failure')),
+        ]);
+        assert.deepEqual(new Set(notifications), new Set(['transcript', 'runtime', 'usage']));
+        assert.equal(settled, false, 'startup must await graph cleanup');
+      } finally {
+        finishClose.resolve();
+      }
+      await assert.rejects(starting, (error: unknown) => {
+        if (failGraphClose) {
+          assert.ok(error instanceof AggregateError);
+          assert.deepEqual(error.errors, [startupFailure, wakeFailure, coordinatorFailure]);
+        } else {
+          assert.equal(error, startupFailure);
+        }
+        return true;
+      });
+      await outcome;
+      assert.deepEqual(closes, ['wake', 'client', 'coordinator', 'history-released']);
+      await assert.rejects(stores.sessionStore.readHeaderSnapshot(session.id));
+      await assert.rejects(stores.graphControlStore.listAgentGraphEpochs(session.id));
+    });
+  });
+}
 
 test('production recovery preserves legacy Automation history and closes an orphaned admission', async () => {
   await withCompositionRoot(async ({ root, owner }) => {

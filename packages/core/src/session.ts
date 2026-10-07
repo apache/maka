@@ -359,7 +359,7 @@ export type BackendKind = 'ai-sdk' | 'plugin-executor';
  * stay readable — rewriting them to `'ai-sdk'` would only make an unrunnable
  * task look runnable, since their `llmConnectionSlug` still points at nothing.
  * Activation refuses them with the product's `fake_backend` reason (see the
- * refusal registered in `execution-composition.ts`).
+ * refusal registered in `execution-domain-composition.ts`).
  *
  * Never write this type: writers take {@link BackendKind}.
  */
