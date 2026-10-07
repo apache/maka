@@ -668,6 +668,7 @@ export const TUI_COPY_RESOURCES = {
       sessionSearchHint:
         'Search name / id / path / model / connection · Tab scope · ↑↓ select · Enter open · Esc close',
       noMatchingSessions: 'No matching sessions',
+      resumeCandidateCheckFailed: 'Could not check whether any sessions can be resumed.',
       resumeAvailabilityNotice:
         'An interrupted run is available — use /resume to continue from a safe boundary.',
       resumeStartingNotice: 'Resuming from the latest safe boundary…',
@@ -805,6 +806,7 @@ export const TUI_COPY_RESOURCES = {
       sessionSearchHint:
         '搜索名称 / ID / 路径 / 模型 / 连接 · Tab 切换范围 · ↑↓ 选择 · Enter 打开 · Esc 关闭',
       noMatchingSessions: '没有匹配的会话',
+      resumeCandidateCheckFailed: '无法检查是否有可恢复的会话。',
       resumeAvailabilityNotice: '有可恢复的中断会话，可使用 /resume 从安全边界继续。',
       resumeStartingNotice: '正在从最新的安全边界恢复……',
       resumeUnavailableNotice: '当前运行环境不支持安全边界恢复。',
@@ -930,6 +932,7 @@ export const TUI_COPY_RESOURCES = {
       sessionSearchHint:
         '搜尋名稱 / ID / 路徑 / 模型 / 連線 · Tab 切換範圍 · ↑↓ 選取 · Enter 開啟 · Esc 關閉',
       noMatchingSessions: '沒有符合的會話',
+      resumeCandidateCheckFailed: '無法檢查是否有可恢復的會話。',
       resumeAvailabilityNotice: '有可恢復的中斷會話，可使用 /resume 從安全邊界繼續。',
       resumeStartingNotice: '正在從最新的安全邊界恢復……',
       resumeUnavailableNotice: '目前執行環境不支援安全邊界恢復。',

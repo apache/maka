@@ -6248,11 +6248,74 @@ Slug openai-work<cursor>
     terminal.input('/resume');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
-    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /Attachable only/);
+    const output = plainTerminalOutput(terminal.output());
+    assert.doesNotMatch(output, /Attachable only/);
+    assert.match(output, /Could not check whether any sessions can be resumed/);
+    assert.doesNotMatch(output, /No matching sessions/);
 
     terminal.input('\x1b');
     exitMaka(terminal);
     await run;
+  });
+
+  test('/resume distinguishes failed candidate checks from an empty candidate list', async () => {
+    const failedTerminal = new FakeTerminal();
+    const failedSession = fakeSessionSummary('failed-check', '/repo');
+    const failingDriver = new BoundedResumeAvailabilityDriver([failedSession]);
+    failingDriver.setAttachedSessionId(null);
+    failingDriver.getSessionResumeCandidateAvailability = async () => {
+      throw new Error('temporary Runtime Host failure');
+    };
+    const failedRun = runMakaPiTui({
+      title: 'Maka',
+      driver: failingDriver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal: failedTerminal,
+    });
+
+    failedTerminal.input('/resume');
+    failedTerminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(failedTerminal.output()).includes(
+        'Could not check whether any sessions can be resumed',
+      ),
+    );
+    assert.doesNotMatch(plainTerminalOutput(failedTerminal.output()), /No matching sessions/);
+    failedTerminal.input('\x1b');
+    exitMaka(failedTerminal);
+    await failedRun;
+
+    const emptyTerminal = new FakeTerminal();
+    const unavailableSession = fakeSessionSummary('no-candidate', '/repo');
+    const unavailableDriver = new BoundedResumeAvailabilityDriver([unavailableSession]);
+    unavailableDriver.setAttachedSessionId(null);
+    unavailableDriver.availabilityDelayMs = 0;
+    unavailableDriver.unavailableSessionIds.add(unavailableSession.id);
+    const emptyRun = runMakaPiTui({
+      title: 'Maka',
+      driver: unavailableDriver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal: emptyTerminal,
+    });
+
+    emptyTerminal.input('/resume');
+    emptyTerminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(emptyTerminal.output()).includes('No matching sessions'),
+    );
+    assert.doesNotMatch(
+      plainTerminalOutput(emptyTerminal.output()),
+      /Could not check whether any sessions can be resumed/,
+    );
+    emptyTerminal.input('\x1b');
+    exitMaka(emptyTerminal);
+    await emptyRun;
   });
 
   test('/resume does not resume after a stale selection fails to switch', async () => {
@@ -6380,6 +6443,49 @@ Slug openai-work<cursor>
     );
     assert.doesNotMatch(plainTerminalOutput(terminal.output()), /other-session/);
     assert.doesNotMatch(plainTerminalOutput(terminal.output()), /unavailable-current-session/);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume scope toggles do not change the next /session default scope', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new BoundedResumeAvailabilityDriver([
+      fakeSessionSummary('current-session', '/repo', 'Current chat'),
+      fakeSessionSummary('other-session', '/other/repo', 'Other chat'),
+    ]);
+    driver.setAttachedSessionId(null);
+    driver.availabilityDelayMs = 0;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    terminal.input('\t');
+    await waitFor(
+      () =>
+        plainTerminalOutput(terminal.output()).includes('Resume Session All') &&
+        plainTerminalOutput(terminal.output()).includes('Other chat'),
+    );
+
+    terminal.input('\x1b');
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(
+      () =>
+        plainTerminalOutput(terminal.screenOutput()).includes('Resume Session Current') &&
+        plainTerminalOutput(terminal.screenOutput()).includes('Current chat'),
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Other chat/);
 
     terminal.input('\x1b');
     exitMaka(terminal);

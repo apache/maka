@@ -79,6 +79,7 @@ interface TuiPickerCopy {
   readonly sessionScopeAll: string;
   readonly sessionSearchHint: string;
   readonly noMatchingSessions: string;
+  readonly resumeCandidateCheckFailed: string;
   readonly resumeAvailabilityNotice: string;
   readonly resumeStartingNotice: string;
   readonly resumeUnavailableNotice: string;
@@ -851,6 +852,7 @@ export class SessionSearchOverlay implements Component {
   private list: SelectList;
   private selectedValue: string | undefined;
   private scopeLabel: string;
+  private emptyText: string | undefined;
   private notice: string | undefined;
 
   constructor(
@@ -861,6 +863,7 @@ export class SessionSearchOverlay implements Component {
     this.choices = input.choices;
     this.filtered = input.choices;
     this.scopeLabel = input.scopeLabel;
+    this.emptyText = input.emptyText;
     this.notice = input.notice;
     this.list = this.buildList();
     this.searchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
@@ -871,10 +874,12 @@ export class SessionSearchOverlay implements Component {
     choices: readonly SessionSearchChoice[],
     scopeLabel: string,
     notice?: string,
+    emptyText?: string,
   ): void {
     this.choices = choices;
     this.scopeLabel = scopeLabel;
     this.notice = notice;
+    this.emptyText = emptyText;
     if (this.input.onQuery) {
       this.filtered = choices;
       this.list = this.buildList();
@@ -958,7 +963,7 @@ export class SessionSearchOverlay implements Component {
       padLine('', safeWidth),
       ...(this.notice ? [padLine(ansi.dim(this.notice), safeWidth)] : []),
       ...(this.filtered.length === 0
-        ? [padLine(ansi.dim(this.input.emptyText ?? this.copy.noMatchingSessions), safeWidth)]
+        ? [padLine(ansi.dim(this.emptyText ?? this.copy.noMatchingSessions), safeWidth)]
         : this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth))),
       padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
     ];

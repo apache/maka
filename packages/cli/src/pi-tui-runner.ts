@@ -3459,16 +3459,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       sessionTree.roots,
       sessionTree.childrenByParentId,
     );
+    const resumeCandidateCheckFailures = new Set<string>();
     const checkSessionAvailability = async (
       session: SessionSummary,
     ): Promise<readonly [string, SessionResumeAvailability]> => {
       try {
-        return await runResumeAvailabilityCheck(async () => {
+        const result = await runResumeAvailabilityCheck(async () => {
           if (!session.cwd) {
             return [session.id, { available: false, reason: 'Missing working directory' }] as const;
           }
           if (options.onlyResumable) {
             if (!input.driver.getSessionResumeCandidateAvailability) {
+              resumeCandidateCheckFailures.add(session.id);
               return [
                 session.id,
                 {
@@ -3487,7 +3489,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             (await inspectSessionResumeAvailability(session));
           return [session.id, availability] as const;
         });
+        if (options.onlyResumable && input.driver.getSessionResumeCandidateAvailability) {
+          resumeCandidateCheckFailures.delete(session.id);
+        }
+        return result;
       } catch (error) {
+        if (options.onlyResumable) resumeCandidateCheckFailures.add(session.id);
         const detail = error instanceof Error ? error.message : String(error);
         return [session.id, { available: false, reason: detail }] as const;
       }
@@ -3541,6 +3548,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       const selectableSessions = options.onlyResumable
         ? visibleSessions.filter(({ session }) => availability.get(session.id)?.available === true)
         : visibleSessions;
+      const emptyText =
+        options.onlyResumable &&
+        visibleSessions.length > 0 &&
+        visibleSessions.every(({ session }) => resumeCandidateCheckFailures.has(session.id))
+          ? pickerCopy.resumeCandidateCheckFailed
+          : undefined;
       const choices: SessionSearchChoice[] = selectableSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
@@ -3608,7 +3621,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       const scopeLabel =
         pickerScope === 'current' ? pickerCopy.sessionScopeCurrent : pickerCopy.sessionScopeAll;
       if (sessionSearch) {
-        sessionSearch.updateChoices(choices, scopeLabel);
+        sessionSearch.updateChoices(choices, scopeLabel, undefined, emptyText);
         sessionSearch.invalidate();
         return;
       }
@@ -3616,6 +3629,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         locale,
         choices,
         scopeLabel,
+        emptyText,
         onSelect,
         onCancel: closeOverlay,
         onToggleScope: () => {
@@ -3640,7 +3654,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           })()
             .then(() => {
               pickerScope = nextScope;
-              sessionListScope = nextScope;
+              if (!options.onlyResumable) sessionListScope = nextScope;
               renderScope();
             })
             .catch(reportError);
