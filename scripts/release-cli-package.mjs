@@ -750,6 +750,7 @@ function validateStaging(publishable) {
     'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
     'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime/dist/owned-process-main.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/harbor-external-subject.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
@@ -863,6 +864,7 @@ function validatePackedFiles(files, expectedDependencyManifests, publishable) {
     'dist/cli.js',
     'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime/dist/owned-process-main.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
     ...(publishable || privateRuntimeHostTarget !== 'none'

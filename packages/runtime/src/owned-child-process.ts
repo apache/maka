@@ -1,0 +1,160 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { spawn, type ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { buildSpawnStdio, type ChildFdInput } from './child-fd-input.js';
+import { terminateProcessTree } from './process-tree-terminator.js';
+
+export interface OwnedProcessInput {
+  program: string;
+  args: readonly string[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  shell: boolean;
+  stdin: 'ignore' | 'pipe';
+  fdInputs?: readonly ChildFdInput[];
+}
+
+export interface OwnedProcessLaunch {
+  kind: 'launch';
+  program: string;
+  args: readonly string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  shell: boolean;
+  inheritedFds: number[];
+}
+
+type SupervisorMessage =
+  | { kind: 'started'; pid?: number }
+  | { kind: 'completed' }
+  | { kind: 'failed'; message: string; code?: string };
+
+/** The returned PID owns the command group. Its private IPC channel is a
+ * lifetime lease: only the supervisor can spawn the command, and losing the
+ * owner tears down the group even when no Host cleanup callback can run.
+ * Output and descriptor payloads flow directly through inherited OS handles.
+ * `ready` resolves with the command's own PID once the supervisor admits it.
+ */
+export function spawnOwnedProcess(input: OwnedProcessInput): {
+  child: ChildProcess;
+  ready: Promise<number | undefined>;
+} {
+  const stdio = buildSpawnStdio(input.fdInputs, input.stdin);
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL('./owned-process-main.js', import.meta.url))],
+    {
+      cwd: input.cwd,
+      // Caller-supplied environment belongs to the command, not this trusted supervisor.
+      env: {
+        ...process.env,
+        NODE_OPTIONS: '',
+        ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+      },
+      stdio: [...stdio, 'ipc'],
+      // POSIX: the supervisor leads a new process group that the command joins.
+      // Termination signals the group and removes descendants visible outside
+      // it at each process-table snapshot. Windows has no process groups;
+      // taskkill /T owns the equivalent cleanup.
+      detached: process.platform !== 'win32',
+      windowsHide: true,
+    },
+  );
+  let started = false;
+  let completed = false;
+  let failureReported = false;
+  let resolveReady!: (commandPid: number | undefined) => void;
+  let rejectReady!: (error: Error) => void;
+  const ready = new Promise<number | undefined>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  // Some callers observe ChildProcess errors instead of awaiting admission.
+  void ready.catch(() => {});
+  const timer = setTimeout(() => fail(new Error('Command supervisor startup timed out')), 10_000);
+  timer.unref();
+  const terminate = () => {
+    if (child.pid) void terminateProcessTree({ pid: child.pid, signal: 'SIGKILL' }).catch(() => {});
+  };
+  function fail(error: Error): void {
+    if (failureReported) return;
+    failureReported = true;
+    clearTimeout(timer);
+    rejectReady(error);
+    terminate();
+    child.emit('error', error);
+  }
+  child.once('error', (error) => {
+    clearTimeout(timer);
+    rejectReady(error);
+  });
+  child.once('spawn', () => {
+    const request: OwnedProcessLaunch = {
+      kind: 'launch',
+      program: input.program,
+      args: input.args,
+      cwd: input.cwd,
+      env: input.env ?? process.env,
+      shell: input.shell,
+      inheritedFds: (input.fdInputs ?? []).map(({ fd }) => fd),
+    };
+    child.send(request, (error) => {
+      if (error && child.exitCode === null && child.signalCode === null) fail(error);
+    });
+  });
+  child.on('message', (value) => {
+    const message = value as SupervisorMessage;
+    if (message.kind === 'started') {
+      started = true;
+      clearTimeout(timer);
+      resolveReady(message.pid);
+    } else if (message.kind === 'completed') {
+      completed = true;
+    } else if (message.kind === 'failed') {
+      completed = true;
+      const error = Object.assign(new Error(message.message), { code: message.code });
+      fail(error);
+    }
+  });
+  child.once('exit', (code) => {
+    clearTimeout(timer);
+    if (!started) rejectReady(new Error('Command supervisor exited before admission'));
+    if (!completed) {
+      // The group can outlive its leader. An unexpected supervisor exit must
+      // not leave an admitted command running while the Host is still alive.
+      terminate();
+      if (code === 0) child.emit('error', new Error('Command supervisor lost its result'));
+    }
+  });
+  return { child, ready };
+}
+
+/** A supervisor PID denotes the whole command group, including during startup. */
+export function signalOwnedProcess(child: ChildProcess, signal: 'SIGTERM' | 'SIGKILL'): boolean {
+  if (process.platform === 'win32' || !child.pid) return child.kill(signal);
+  try {
+    process.kill(-child.pid, signal);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}

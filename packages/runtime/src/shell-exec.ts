@@ -27,7 +27,8 @@
 // the process cannot be spawned at all. Each caller maps those facts to its own
 // contract.
 
-import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { spawnOwnedProcess } from './owned-child-process.js';
 import { buildShellSpawnPlan, defaultShellPlan, type ShellPlan } from './shell-detect.js';
 import { BashTailBuffer } from './bash-tail-buffer.js';
 import { DEFAULT_PROCESS_TERMINATION_GRACE_MS } from './process-tree-terminator.js';
@@ -36,12 +37,7 @@ import {
   manageChildProcessLifecycle,
   type ChildProcessLifecycleResult,
 } from './child-process-lifecycle.js';
-import {
-  buildSpawnStdio,
-  closeChildFdSources,
-  writeChildFdInputs,
-  type ChildFdInput,
-} from './child-fd-input.js';
+import { closeChildFdSources, writeChildFdInputs, type ChildFdInput } from './child-fd-input.js';
 
 // Per-stream cap on the output RETAINED for the result (~1MB). This only bounds
 // what is kept to return. The tool layer preserves this result for durable
@@ -165,19 +161,17 @@ function runSpawnedProcessWithBoundedTail(
     });
   }
   return new Promise<BoundedShellResult>((resolvePromise, reject) => {
-    let child: ReturnType<typeof spawn>;
+    let child: ChildProcess;
     try {
-      child = spawn(program, [...args], {
+      ({ child } = spawnOwnedProcess({
+        program,
+        args,
         cwd: options.cwd,
         env: options.env,
         shell: useShellOption,
-        stdio: buildSpawnStdio(options.fdInputs, stdin === undefined ? 'ignore' : 'pipe'),
-        // POSIX: make the shell its own process-group leader (setsid). Termination
-        // signals the group and removes descendants visible outside it at each
-        // process-table snapshot.
-        // Windows has no process groups; taskkill /T owns the equivalent cleanup.
-        detached: process.platform !== 'win32',
-      });
+        stdin: stdin === undefined ? 'ignore' : 'pipe',
+        fdInputs: options.fdInputs,
+      }));
     } finally {
       closeChildFdSources(options.fdInputs);
     }
