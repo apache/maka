@@ -195,7 +195,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
               icon={<Icon icon={Pencil} size="sm" />}
               variant="ghost"
               size="sm"
-              className={markerVariants({ variant: 'footer-action' })}
               isDisabled={props.editDisabled === true}
               data-action="edit"
               data-message-id={props.messageId}
@@ -368,7 +367,6 @@ function CopyButton(props: {
       icon={<Icon icon={copyPhase === 'copied' ? 'check' : 'copy'} size="sm" />}
       variant="ghost"
       size="sm"
-      className={markerVariants({ variant: 'footer-action' })}
       isDisabled={props.disabled}
       isLoading={copyPhase === 'pending'}
       data-action={props.dataAction}
@@ -566,7 +564,6 @@ export const TurnView = memo(function TurnView(props: {
               key={badge.id}
               variant="ghost"
               size="sm"
-              className={markerVariants({ variant: 'lineage-badge' })}
               data-direction="forward"
               tooltip={badge.tooltip ?? badge.label}
               onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
@@ -853,7 +850,6 @@ export const TurnView = memo(function TurnView(props: {
                     key={badge.id}
                     variant="ghost"
                     size="sm"
-                    className={markerVariants({ variant: 'lineage-badge' })}
                     data-direction="reverse"
                     tooltip={badge.tooltip ?? badge.label}
                     onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
@@ -867,11 +863,6 @@ export const TurnView = memo(function TurnView(props: {
               <TurnFooter
                 turnId={turn.turnId}
                 actions={footerActions}
-                safeResumeAction={
-                  statusBarStatus === 'aborted' && turn.abortSource === 'renderer.stop_button'
-                    ? props.safeResumeAction
-                    : undefined
-                }
                 finishedAt={finishedAt}
                 live={!!props.liveStreaming}
                 context={answerContext}
@@ -1091,7 +1082,6 @@ function TurnStatusBar(props: TurnStatusRowProps) {
 function TurnFooter(props: {
   turnId?: string;
   actions: ReadonlyArray<TurnFooterActionMeta>;
-  safeResumeAction?: { pending: boolean; onResume(): void };
   finishedAt?: number;
   live?: boolean;
   context: string;
@@ -1101,7 +1091,7 @@ function TurnFooter(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const hasSlotContent = useMakaClientSlotOccupied('conversation.turn.footer');
-  const hasActions = props.actions.length > 0 || hasSlotContent || !!props.safeResumeAction;
+  const hasActions = props.actions.length > 0 || hasSlotContent;
   const isToolbar = !props.live && hasActions;
   return (
     <ChatMessageMetadata
@@ -1131,24 +1121,12 @@ function TurnFooter(props: {
                 icon={STATUS_FOOTER_ICON[action.id]}
                 variant="ghost"
                 size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
                 data-action={action.id}
                 isDisabled={!action.enabled}
                 isLoading={action.pending === true}
                 onClick={() => props.onAction?.(action.id)}
               />
             ),
-          )}
-          {props.safeResumeAction && (
-            <UiButton
-              variant="ghost"
-              size="sm"
-              isDisabled={props.safeResumeAction.pending}
-              onClick={props.safeResumeAction.onResume}
-              label={
-                props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
-              }
-            />
           )}
           {hasSlotContent ? (
             <MakaClientSlotOutlet

@@ -188,20 +188,6 @@ export function ChatView(props: {
    */
   activeTurn?: { readonly turnId: string; readonly awaitingInput?: boolean; readonly compacting?: boolean };
   activeSession?: SessionSummary;
-  activeConnectionLabel?: string;
-  activeModel?: string;
-  activeModelLabel?: string;
-  /** Renders a provider brand mark next to the model name in the chat tab. */
-  activeProviderType?: ProviderType;
-  /** Optional renderer for the provider mark; supplied by the desktop app to
-   *  avoid bringing the full provider SVG library into @maka/ui. */
-  renderProviderMark?(type: ProviderType): ReactNode;
-  modelChoices?: ChatModelChoice[];
-  onModelChange?(input: {
-    llmConnectionId: string;
-    llmConnectionSlug: string;
-    model: string;
-  }): void | Promise<void>;
   /** Personalized user label shown on user messages. Falls back to "你". */
   userLabel?: string;
   /**

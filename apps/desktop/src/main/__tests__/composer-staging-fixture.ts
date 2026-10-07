@@ -29,6 +29,7 @@ import { stubConversationServices } from '../../renderer/features/conversation/t
 const emptyServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
   previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
 };
 
 /** Real owner with inert I/O, shared by renderer integration tests. */

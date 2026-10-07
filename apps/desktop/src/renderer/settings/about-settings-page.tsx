@@ -32,6 +32,10 @@ import {
   AppUpdateAboutProjectionConsumer,
   type AppUpdateAboutProjection,
 } from '../features/app-update/index.js';
+import {
+  ManualDiagnosticReportConsumer,
+  type CopyManualDiagnosticReport,
+} from '../features/diagnostics/index.js';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
@@ -162,11 +166,11 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     };
   }, [copy.loadFailed, locale, toast]);
 
-  async function copyDiagnostics() {
+  async function copyDiagnostics(copyManualReport: CopyManualDiagnosticReport) {
     if (!diagnosticCopyGuard.begin('copy')) return;
     setCopyingDiagnostics(true);
     try {
-      await window.maka.diagnostics.copyReport({ surface: 'manual' });
+      await copyManualReport();
       if (aboutPageMountedRef.current) toast.success(copy.copied, copy.pasteHint);
     } catch {
       if (aboutPageMountedRef.current) {
@@ -255,13 +259,17 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           label={copy.copyDiagnostics}
           description={copy.copyHelp}
           end={(
-            <Button
-              variant="secondary"
-              isLoading={copyingDiagnostics}
-              onClick={() => void copyDiagnostics()}
-              aria-label={copy.copyDiagnostics}
-              label={copy.copyAction}
-            />
+            <ManualDiagnosticReportConsumer>
+              {(copyManualReport) => (
+                <Button
+                  variant="secondary"
+                  isLoading={copyingDiagnostics}
+                  onClick={() => void copyDiagnostics(copyManualReport)}
+                  aria-label={copy.copyDiagnostics}
+                  label={copy.copyAction}
+                />
+              )}
+            </ManualDiagnosticReportConsumer>
           )}
         />
         <SettingsRow

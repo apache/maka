@@ -114,6 +114,7 @@ async function recoveryFixture(options: { restoreThrows?: boolean } = {}) {
       services: {
         pickFiles: async () => ({ ok: true as const, files: [{ approvalId: 'new', name: 'new.txt', size: 1 }] }),
         previewApproval: async () => ({ ok: false as const, reason: 'unused' }),
+        readBytes: async () => ({ ok: false as const, reason: 'not_found' as const }),
         pickDirectory: async () => ({ ok: true as const, reference: { hostId: 'host', path: '/new' } }),
       },
       children: createElement(ComposerMentionsProvider, {

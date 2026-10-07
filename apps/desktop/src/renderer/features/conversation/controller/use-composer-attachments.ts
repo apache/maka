@@ -38,7 +38,7 @@ export function useComposerAttachments(options: Omit<Parameters<typeof useShared
     formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
   });
   const quotes = useComposerQuotes({ draftKey: options.draftKey });
-  const restoreQueuedDraftContext = (ownerKey: string, draft: RestoredDraftContent) => {
+  const restoreQueuedDraftContext = (ownerKey: string, draft: Omit<RestoredDraftContent, 'text'>) => {
     attachments.restoreMessageContext(ownerKey, undefined, {
       attachments: draft.attachments ?? [], stagedAttachments: draft.stagedAttachments ?? [],
       directoryReferences: draft.directoryReferences ?? [],

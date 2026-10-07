@@ -185,30 +185,32 @@
    `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
    the next time a leading moves. This is the collapsed state only; the
    expanded twin above wraps to many lines and must keep growing. The chip's
-   type lives on `.maka-quote-chip-text`, which is why the derived scan needed
-   two arms rather than three to see it at all. */
+   type lives on the Button under `.maka-quote-chip`, which is why the
+   derived scan needed two arms rather than three to see it at all. */
 .maka-quote-chip-collapsed { height: var(--h-control-sm); border-radius: var(--radius-pill); }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
-.maka-quote-chip-text {
+/* The chip's text is a ghost Button kept only for clickability. `ghost`
+   already owns the transparent rest, borderless edge and shadow-less paint,
+   so what remains is the product delta: supporting type, muted ink, no
+   padding or size pin, and `min-width:0`/`flex:1` so the label can shrink
+   and clip inside the pill. The target is the published `.astryx-button`
+   theme class scoped by the chip, not a parallel product hook (#5793 P3.1). */
+.maka-quote-chip .astryx-button {
   font: var(--maka-text-supporting);
   min-width: 0;
-  min-height: 0;
   flex: 1;
   height: auto;
-  border: 0;
   padding: 0;
   color: var(--muted-foreground);
-  background: transparent;
   text-align: left;
-  box-shadow: none;
 }
 .maka-quote-chip-text-body {
   display: block;
   min-width: 0;
   max-width: 100%;
 }
-.maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
+.maka-quote-chip .astryx-button[aria-expanded="true"] { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
 
@@ -958,28 +960,35 @@
   margin-top: var(--space-0-5);
   margin-bottom: var(--space-1);
   opacity: 0.82;
+  /* Pill shape reaches the badge Buttons through the component's own derived
+     variable — Astryx's Thumbnail and Carousel retune `--_button-radius` the
+     same way — so the product rule paints tint and ink only (#5793 P3.1). */
+  --_button-radius: var(--radius-pill);
 }
 
 .maka-turn-lineage-row-reverse { margin-top: var(--space-1); }
 
-.maka-turn-lineage-badge {
-  /* local: lineage navigation keeps its pill silhouette; Button has no radius prop. */
-  border-radius: var(--radius-pill);
-}
-
-.maka-turn-lineage-badge[data-direction="forward"] {
+.maka-turn-lineage-row .astryx-button[data-direction="forward"] {
   background: var(--color-accent-muted);
   color: var(--foreground);
 }
 
-.maka-turn-lineage-badge[data-direction="reverse"] {
+.maka-turn-lineage-row .astryx-button[data-direction="reverse"] {
   background: oklch(from var(--brand-deep) l c h / 0.06);
   color: oklch(from var(--brand-deep) calc(l - 0.04) c h);
 }
 
+/* The footer is a `ChatMessageMetadata`: flex, centering, the 4px gap and the
+   4px top margin are the primitive's own. What stays is the denser rhythm —
+   a 2px gap and 2px margin — plus wrap for narrow columns, the reserved row
+   height, and a focus-ring retune: the chat layout's scrollport clips an
+   outward ring on the first visible row's actions, so the published
+   `--focus-outline-offset` token pulls the component's own outline inside
+   the border box instead of a replacement shadow (#5793 P3.1, T5 probe). */
 .maka-turn-footer {
   /* local: ChatMessageMetadata owns flex/centering, but has no width, wrap or gap props. */
   width: 100%;
+  --focus-outline-offset: calc(-1 * var(--focus-outline-width));
   flex-wrap: wrap;
   gap: var(--space-0-5);
   min-height: var(--size-element-sm, 28px);
@@ -1147,15 +1156,12 @@
   overflow-wrap: anywhere;
 }
 
-/* Turn-footer action rings go inset (T5 geometry probe): the Astryx chat
-   layout's scrollport clips an outward ring on the first visible row's
-   actions. Same idiom as the titlebar strip and workbar launcher. The
-   layout's own scroll-to-bottom control has the same clip inside vendor
-   DOM — upstream item, not fixable from product CSS. */
-.maka-turn-footer-action:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
-}
+/* Footer action rings used to be repainted as an inset shadow here (T5
+   geometry probe); `--focus-outline-offset` on `.maka-turn-footer` and
+   `.maka-message-meta` now draws the component's own outline inside the
+   border box instead. The chat layout's scroll-to-bottom control still has
+   the same clip inside vendor DOM — upstream item, not fixable from product
+   CSS. */
 
 
 .maka-choice-panel { outline: none; }

@@ -77,6 +77,11 @@ export interface ConversationServices extends Pick<
       expectedQueueRevision: number,
     ): Promise<void>;
     compact(sessionId: string): Promise<ContextCompactResult>;
+    /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
+    listTurnLandmarks(
+      sessionId: string,
+      turnId: string | null,
+    ): Promise<{ readonly landmarks: readonly import('./controller/transcript-reading-position-controller.js').TranscriptTurnLandmark[] }>;
   };
   readonly runtimeHosts: {
     subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;
@@ -104,7 +109,7 @@ export interface ConversationServices extends Pick<
     ): Promise<ConversationFileSearchResult>;
   };
   readonly newTasks: {
-    getExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors?(target: ConversationNewTaskTarget, cwd: string, refresh?: boolean): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     subscribeChanges(handler: () => void): () => void;
     listInvocableSkills(
       target: ConversationNewTaskTarget,

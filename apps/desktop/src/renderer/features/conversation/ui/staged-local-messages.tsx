@@ -20,6 +20,8 @@
 import { useLayoutEffect, type ComponentProps } from 'react';
 import { composerMessageRecovery } from '../controller/composer-message-recovery.js';
 import { SessionLocalMessages } from '../controller/session-local-messages.js';
+import { useSessionUiRead } from '../controller/use-session-ui-read.js';
+import type { ComposerStagingCommands } from '../model/composer-staging-contract.js';
 import { useComposerStaging } from './composer-staging-context.js';
 import { useConversationQueueCommands } from './conversation-provider.js';
 import { useConversationOwner } from './conversation-context.js';
@@ -29,20 +31,21 @@ export function StagedLocalMessages(props: Omit<ComponentProps<typeof SessionLoc
   'canRestoreDraft' | 'restoreDraft' | 'restoreUnsentDraft' | 'publish' | 'update' | 'retire'> & {
   readonly directoryHostId?: string;
   readonly enabled: boolean;
+  readonly restoreContext: ComposerStagingCommands['restoreContext'];
 }) {
-  const { directoryHostId, enabled, ...localMessages } = props;
+  const { directoryHostId, enabled, restoreContext, ...localMessages } = props;
   const { composer: composerRef, draftContextRestorer, restoreDraft } = useConversationQueueCommands();
-  const { commands } = useConversationOwner().workspace;
+  const { commands, ui } = useConversationOwner().workspace;
+  const queue = useSessionUiRead(ui.reads, 'queue', props.sessionId);
   const staging = useComposerStaging();
-  const restoreQueuedDraftContext = staging.restoreQueuedDraftContext;
   useLayoutEffect(() => {
-    draftContextRestorer.current = restoreQueuedDraftContext;
+    draftContextRestorer.current = restoreContext;
     return () => {
-      if (draftContextRestorer.current === restoreQueuedDraftContext)
+      if (draftContextRestorer.current === restoreContext)
         draftContextRestorer.current = undefined;
     };
-  }, [draftContextRestorer, restoreQueuedDraftContext]);
-  return <SessionLocalMessages {...localMessages} restoreUnsentDraft={restoreDraft}
+  }, [draftContextRestorer, restoreContext]);
+  return <SessionLocalMessages {...localMessages} queue={props.queue ?? queue?.entries} restoreUnsentDraft={restoreDraft}
     publish={commands.addTransientMessage} update={commands.updateTransientMessage}
     retire={commands.removeTransientMessage} {...composerMessageRecovery({
     sessionId: props.sessionId,

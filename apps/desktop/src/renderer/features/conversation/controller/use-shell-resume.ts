@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { resumeParkToastCopy } from '@maka/ui';
 import { localizedShellErrorMessage, type getShellCopy } from '../../../locales/shell-copy.js';
@@ -50,10 +50,9 @@ type ToastApi = {
  * `composerResumeAction` for the composer's send-slot offer. Building them
  * here is also what keeps one hook instance behind both — the pending guard
  * is shared, so the banner and the composer button can never race a second
- * resume IPC past the first. `noteUserStoppedTurn` lets the composer's stop
- * path tell the tracker when the user stopped a Turn from the send slot, so
- * the slot never offers to restart the very Turn Stop just interrupted
- * (#5904).
+ * resume IPC past the first. The slot also offers Resume for a Turn the user
+ * just stopped (#5923): it only renders after a fresh `ready` answer, which
+ * requires the stop's terminal transition to have completed.
  *
  * `activeId` is the displayed session (what the pending/detail/gating reads
  * key on); `ownerActiveId` is what the handler snapshots and what
@@ -72,7 +71,6 @@ export function useShellResume(options: {
 }): {
   safeResumeAction: { pending: boolean; detail: string | undefined; onResume(): void } | undefined;
   composerResumeAction: { pending: boolean; onResume(): void } | undefined;
-  noteUserStoppedTurn(sessionId: string | undefined): void;
 } {
   const { activeId, ownerActiveId, sharedSessionActive, toastApi, shellCopy, uiLocale } = options;
   const services = useConversationServices();
@@ -162,25 +160,19 @@ export function useShellResume(options: {
     }
   }
 
-  const safeResumeAction = !sharedSessionActive && activeId
-    ? {
-        pending: resumePendingSessionId === activeId,
-        detail: resumeParkDescriptionBySession[activeId],
-        onResume: () => { void resumeInterruptedSession(); },
-      }
-    : undefined;
-  const composerResumeAction = activeId && resumeAvailableBySession[activeId]
-    ? {
-        pending: resumePendingSessionId === activeId,
-        onResume: () => { void resumeInterruptedSession(); },
-      }
-    : undefined;
+  // The click reaches the latest handler, so the actions keep their identity
+  // until something they render changes.
+  const resumeRef = useRef(resumeInterruptedSession);
+  resumeRef.current = resumeInterruptedSession;
+  const pending = activeId !== undefined && resumePendingSessionId === activeId;
+  const detail = activeId ? resumeParkDescriptionBySession[activeId] : undefined;
+  const available = activeId ? resumeAvailableBySession[activeId] === true : false;
+  const safeResumeAction = useMemo(() => !sharedSessionActive && activeId
+    ? { pending, detail, onResume: () => { void resumeRef.current(); } }
+    : undefined, [activeId, detail, pending, sharedSessionActive]);
+  const composerResumeAction = useMemo(() => available
+    ? { pending, onResume: () => { void resumeRef.current(); } }
+    : undefined, [available, pending]);
 
-  return {
-    safeResumeAction,
-    composerResumeAction,
-    noteUserStoppedTurn: (sessionId: string | undefined) => {
-      if (sessionId !== undefined) tracker.noteUserStopped(sessionId);
-    },
-  };
+  return { safeResumeAction, composerResumeAction };
 }

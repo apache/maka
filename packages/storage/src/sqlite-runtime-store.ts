@@ -80,6 +80,7 @@ import {
   type RuntimeInvocationRecoveryInventoryEntry,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
+  type RuntimeSessionEventSnapshot,
   type RuntimeWorkspaceVersionAuthorityStore,
 } from '@maka/core/runtime-event-store';
 import {
@@ -663,6 +664,85 @@ export class SqliteRuntimeStore
     return this.readRuntimeEventsSync(sessionId, runId);
   }
 
+  async readSessionRuntimeSnapshot(sessionId: string): Promise<RuntimeSessionEventSnapshot> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => {
+      const decodedEvents = new Map<string, RuntimeEvent>();
+      const openings = this.readInvocationOpeningsSync(
+        sessionId,
+        { direction: 'asc' },
+        decodedEvents,
+      );
+      const eventsByRun = new Map<string, RuntimeEvent[]>();
+      const durableEventOrdinalById = new Map<string, number>();
+      if (openings.length === 0) {
+        return { invocations: [], eventsByRun, durableEventOrdinalById };
+      }
+
+      // Read each payload once. The opening query already decoded its events;
+      // reuse those same objects. Global event_seq order also gives each run
+      // its immutable order and each invocation its first terminal fact.
+      const rows = this.db
+        .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id,
+          CASE WHEN event_kind = 'invocation_opened' THEN '' ELSE payload_json END AS payload_json
+        FROM runtime_events
+        WHERE session_id = ?
+        ORDER BY event_seq ASC, event_id ASC
+      `)
+        .all(sessionId) as unknown as RuntimeEventStorageRow[];
+      const terminalByInvocation = new Map<string, RuntimeEvent>();
+      for (const row of rows) {
+        const event = decodedEvents.get(row.event_id) ?? decodeRuntimeEventStorageRow(row);
+        const events = eventsByRun.get(event.runId) ?? [];
+        events.push(event);
+        eventsByRun.set(event.runId, events);
+        if (isTerminalRuntimeEvent(event) && !terminalByInvocation.has(event.invocationId)) {
+          terminalByInvocation.set(event.invocationId, event);
+        }
+      }
+
+      // Only identities and ordinals are needed here, not a second copy of
+      // every payload. Keep the same join and identity checks as the entry reader.
+      const ordinals = this.db
+        .prepare(`
+        SELECT o.ordinal, e.event_id, e.session_id
+        FROM runtime_session_event_ordinals o
+        JOIN runtime_events e ON e.event_id = o.event_id
+        WHERE o.session_id = ?
+        ORDER BY o.ordinal ASC
+      `)
+        .all(sessionId) as Array<{ ordinal: number; event_id: string; session_id: string }>;
+      for (const row of ordinals) {
+        if (!Number.isSafeInteger(row.ordinal) || row.ordinal < 1) {
+          throw new Error(`Invalid RuntimeEvent Session ordinal for ${sessionId}`);
+        }
+        if (row.session_id !== sessionId) {
+          throw new Error(`RuntimeEvent Session ordinal identity mismatch for ${row.event_id}`);
+        }
+        durableEventOrdinalById.set(row.event_id, row.ordinal);
+      }
+
+      const partialsByRun = new Map<string, RuntimePartialSnapshot[]>();
+      for (const partial of this.readRuntimePartialSnapshotsSync(sessionId)) {
+        const partials = partialsByRun.get(partial.event.runId) ?? [];
+        partials.push(partial);
+        partialsByRun.set(partial.event.runId, partials);
+      }
+      for (const [runId, partials] of partialsByRun) {
+        eventsByRun.set(
+          runId,
+          mergeRuntimePartialSnapshots(eventsByRun.get(runId) ?? [], partials),
+        );
+      }
+      const invocations = openings.map((opening) => {
+        const terminalEvent = terminalByInvocation.get(opening.invocationId);
+        return { ...opening, ...(terminalEvent ? { terminalEvent } : {}) };
+      });
+      return { invocations, eventsByRun, durableEventOrdinalById };
+    });
+  }
+
   private transcriptQuery(): RuntimeTranscriptQuery {
     return new RuntimeTranscriptQuery(this.db, (sessionId, invocationId) => {
       // By invocation rather than by run: both shelves key their opening on it,
@@ -1045,6 +1125,7 @@ export class SqliteRuntimeStore
       invocationId?: string;
       runId?: string;
     },
+    decodedEvents?: Map<string, RuntimeEvent>,
   ): Omit<RuntimeInvocationRecord, 'terminalEvent'>[] {
     const order = options.direction === 'desc' ? 'DESC' : 'ASC';
     const rows = this.db
@@ -1128,6 +1209,7 @@ export class SqliteRuntimeStore
       if (!opening) {
         throw new Error(`RuntimeEvent ${event.id} is indexed as an opening fact but is not one`);
       }
+      decodedEvents?.set(event.id, event);
       return {
         sessionId: event.sessionId,
         invocationId: event.invocationId,
@@ -1354,17 +1436,19 @@ export class SqliteRuntimeStore
 
   private readRuntimePartialSnapshotsSync(
     sessionId: string,
-    runId: string,
+    runId?: string,
   ): RuntimePartialSnapshot[] {
     const partials = this.db
       .prepare(`
       SELECT stream_key, session_id, invocation_id, run_id, turn_id,
         payload_json, text_content, after_event_id
       FROM runtime_partial_snapshots
-      WHERE session_id = ? AND run_id = ?
+      WHERE session_id = ? ${runId === undefined ? '' : 'AND run_id = ?'}
       ORDER BY updated_at ASC, stream_key ASC
       `)
-      .all(sessionId, runId) as unknown as RuntimePartialStorageRow[];
+      .all(
+        ...(runId === undefined ? [sessionId] : [sessionId, runId]),
+      ) as unknown as RuntimePartialStorageRow[];
     const segmentText = new Map<string, string[]>();
     const segments = this.db
       .prepare(`
@@ -1372,10 +1456,13 @@ export class SqliteRuntimeStore
       FROM runtime_partial_segments AS segment
       INNER JOIN runtime_partial_snapshots AS snapshot
         ON snapshot.stream_key = segment.stream_key
-      WHERE snapshot.session_id = ? AND snapshot.run_id = ?
+      WHERE snapshot.session_id = ? ${runId === undefined ? '' : 'AND snapshot.run_id = ?'}
       ORDER BY segment.stream_key ASC, segment.segment_seq ASC
     `)
-      .iterate(sessionId, runId) as Iterable<{ stream_key: string; text_content: string }>;
+      .iterate(...(runId === undefined ? [sessionId] : [sessionId, runId])) as Iterable<{
+      stream_key: string;
+      text_content: string;
+    }>;
     let streamKey: string | undefined;
     let chunks: string[] = [];
     let tail: string[] = [];

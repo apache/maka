@@ -1964,8 +1964,8 @@ const makaBridge = {
     },
   },
   newTasks: {
-    async getExecutors(target, cwd) {
-      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd);
+    async getExecutors(target, cwd, refresh) {
+      return ipcRenderer.invoke('sessions:executorCatalog', await runtimeHostScope(target), cwd, refresh);
     },
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();
@@ -3219,11 +3219,12 @@ const makaBridge = {
         ? invokeRuntimeHostForSession('connections:getSnapshot', sessionId)
         : invokeSelectedRuntimeHost(host, 'connections:getSnapshot');
     },
-    setDefault(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void> {
+    setDefault(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef, modelId?: string): Promise<void> {
       return invokeSelectedRuntimeHost(
         host,
         typeof connection === 'string' ? 'connections:setDefaultBySlug' : 'connections:setDefault',
         connection,
+        modelId,
       );
     },
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void> {
@@ -3252,8 +3253,8 @@ const makaBridge = {
         opts,
       );
     },
-    fetchModels(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>> {
-      return invokeSelectedRuntimeHost(host, 'connections:fetchModels', connection);
+    fetchModels(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef, options?: { preserveSelection?: boolean }): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>> {
+      return invokeSelectedRuntimeHost(host, 'connections:fetchModels', connection, options);
     },
     hasSecret(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'connections:hasSecret', connection);

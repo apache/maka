@@ -19,7 +19,8 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAppShellStopAction } from '../../renderer/app-shell-stop-action.js';
+import { createStopAction } from '../../renderer/features/conversation/testing.js';
+import { windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 
 test('removes exactly the transient messages the Host retracts while stopping', async () => {
   const removed: Array<{ sessionId: string; messageId: string }> = [];
@@ -36,7 +37,8 @@ test('removes exactly the transient messages the Host retracts while stopping', 
     },
   };
   try {
-    const stop = createAppShellStopAction({
+    const stop = createStopAction({
+      services: windowSubmissionServices(),
       uiLocale: 'en',
       activeIdRef: { current: 'session-1' },
       stopPending: { claim: () => true, release: () => undefined },

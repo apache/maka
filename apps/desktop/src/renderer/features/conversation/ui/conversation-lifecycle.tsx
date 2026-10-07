@@ -43,7 +43,6 @@ export function ConversationLifecycle(props: {
   onTurnCompleted(sessionId: string): void;
   searchTarget: { sessionId: string; turnId: string; nonce?: number } | null;
   clearSearchTarget(): void;
-  listTurnLandmarks: React.ComponentProps<typeof TranscriptReadingPositionController>['listTurnLandmarks'];
 }) {
   const { workspace, commands, readingCommands, events, interactionHydration } = useConversationOwner();
   const { ui, activeIdRef, transcriptRangeRef } = workspace;
@@ -146,7 +145,7 @@ export function ConversationLifecycle(props: {
       currentSessionId={activeIdRef} rangeController={transcriptRangeRef} messages={view.messages}
       searchTarget={props.searchTarget} clearSearchTarget={props.clearSearchTarget} sessionUi={ui}
       landmarkSessionId={displayed?.shared || displayed?.localState === 'pending' ? null : displayed?.id ?? null}
-      listTurnLandmarks={props.listTurnLandmarks} setTurnIndex={workspace.setTurnIndex}
+      listTurnLandmarks={services.sessions.listTurnLandmarks} setTurnIndex={workspace.setTurnIndex}
       onRestoreError={(error, sessionId) => ui.setMessageLoadErrorBySession((current) => ({ ...current, [sessionId]: transcriptErrorMessage(error, uiLocale, 'restore') }))}
     />
     <LiveTurnReconciler readLiveTurns={ui.reads.liveTurns} activeId={view.sessionId} messages={view.messages} reconcile={handlers.reconcilePersistedMessages} />

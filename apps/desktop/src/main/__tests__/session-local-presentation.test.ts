@@ -24,7 +24,7 @@ import type { DesktopLocalMessage, DesktopLocalMessageDraft } from '../../shared
 import type { QuoteRef } from '@maka/core/events';
 import type { ComposerHandle } from '@maka/ui';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
 import { createActionsDeps, installWindow, EMPTY_SKILL_INVOCATION } from './app-shell-chat-actions-fixture.js';
 
 const message: DesktopLocalMessage = {
@@ -50,7 +50,7 @@ test('normal and follow-up sends carry local replacement identity to durable adm
   try {
     const deps = createActionsDeps();
     deps.activeIdRef.current = 'session';
-    const actions = createAppShellChatActions(deps);
+    const actions = createChatActions(deps);
     assert.equal(await actions.send('edited', undefined, { replacesLocalMessageId: 'original' }), true);
     assert.equal(await actions.enqueueMessage('session', 'edited', 'next_turn', undefined, { replacesLocalMessageId: 'original' }), true);
     assert.deepEqual(received, [

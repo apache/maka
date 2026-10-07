@@ -36,8 +36,10 @@ export {
   taskEntryDraftKey,
 } from './model/task-entry-selection.js';
 export { resolveWorkBoardStartTarget } from './model/work-board-target.js';
+export { folderOpenFailure } from './model/folder-open-failure.js';
 export type {
   TaskEntryCatalog,
+  TaskEntryFolderOpenResult,
   TaskEntryHost,
   TaskEntryServices,
 } from './ports.js';
@@ -59,6 +61,10 @@ export function createFakeTaskEntryServices(
     },
     sessions: {
       relocateWorkspace: async () => ({ ok: false, reason: 'operation_unavailable' }),
+    },
+    folders: {
+      openProjectFolder: async () => ({ kind: 'opened' }),
+      openWorkspaceFolder: async () => ({ kind: 'opened' }),
     },
     ...overrides,
   };

@@ -33,8 +33,8 @@ import {
   stubConversationServices,
   useConversationOwner,
   useConversationQueue,
+  useSessionUiRead,
 } from '../../renderer/features/conversation/testing.js';
-import { useAppShellSessionUiReads } from '../../renderer/use-app-shell-session-ui-reads.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
@@ -204,17 +204,29 @@ describe('Session UI public read capabilities', () => {
   });
 });
 
+/** The fixed-purpose reads the Conversation regions take for the displayed and owner Session. */
+function useDisplayedSessionReads(reads: AppShellSessionUiStateController['reads'], activeId?: string, ownerId?: string) {
+  return {
+    ...useSessionUiRead(reads, 'load', activeId),
+    ...useSessionUiRead(reads, 'summary', activeId),
+    messageRetryPending: useSessionUiRead(reads, 'retry', activeId),
+    stopPending: useSessionUiRead(reads, 'stop', activeId),
+    activeInteraction: useSessionUiRead(reads, 'interaction', ownerId),
+    activeMessageQueue: useSessionUiRead(reads, 'queue', activeId),
+  };
+}
+
 describe('production Session UI consumers', () => {
-  it('keeps background state and pulse out of the shell, while respecting owner Session identity', async () => {
+  it('keeps background state and pulse out of a displayed-Session reader, while respecting owner Session identity', async () => {
     const { root } = installReactRenderer();
     const c = createController();
     let renders = 0;
     let pulseRenders = 0;
-    let value!: ReturnType<typeof useAppShellSessionUiReads>;
+    let value!: ReturnType<typeof useDisplayedSessionReads>;
     let pulse!: ReadonlySet<string>;
     function Shell(props: { activeId?: string; ownerId?: string }) {
       renders += 1;
-      value = useAppShellSessionUiReads(c.reads, props.activeId, props.ownerId);
+      value = useDisplayedSessionReads(c.reads, props.activeId, props.ownerId);
       return null;
     }
     function Rail() {
