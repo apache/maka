@@ -26,6 +26,8 @@ import {
 } from '@maka/core/model-thinking';
 import type { ContextBudgetPolicy } from './context-budget.js';
 
+export const DEFAULT_COMPACTION_THRESHOLD_RATIO = 0.65;
+
 export interface BuildDefaultContextBudgetPolicyOptions {
   name?: string;
   modelId?: string;
@@ -58,9 +60,9 @@ export function buildDefaultContextBudgetPolicy(
 }
 
 /**
- * The Maka window for the selected model: the context window the user declared,
- * resolved by core's single owner of that rule (`declaredContextWindow`), or
- * undefined when nothing is declared — and then no proactive compaction runs.
+ * The proactive compaction target for the selected model. An explicit positive
+ * declaration wins, zero disables the default, and an absent declaration uses
+ * a bounded fraction of the effective model input window.
  */
 export function resolveDeclaredContextWindow(
   connection: RuntimeExecutionConnection,
@@ -68,7 +70,13 @@ export function resolveDeclaredContextWindow(
 ): number | undefined {
   const selectedModelId = modelId ?? connection.defaultModel;
   if (selectedModelId === undefined) return undefined;
-  return declaredContextWindow(connection, selectedModelId);
+  const declared = declaredContextWindow(connection, selectedModelId);
+  if (declared === 0) return undefined;
+  if (declared !== undefined) return declared;
+  const capacity = resolveSelectedModelContextWindow(connection, selectedModelId);
+  return capacity === undefined
+    ? undefined
+    : Math.max(1, Math.floor(capacity * DEFAULT_COMPACTION_THRESHOLD_RATIO));
 }
 
 export function resolveSelectedModelContextWindow(

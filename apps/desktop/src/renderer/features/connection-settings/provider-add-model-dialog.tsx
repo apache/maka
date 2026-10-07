@@ -25,7 +25,7 @@ import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Button, HStack, TextInput, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from './settings-provider-copy.js';
-import { parseContextWindowInput } from './context-window-input.js';
+import { parseCompactionThresholdInput, parseContextWindowInput } from './context-window-input.js';
 
 export function AddModelDialog(props: {
   isOpen: boolean;
@@ -46,11 +46,18 @@ export function AddModelDialog(props: {
   const [numericInputs, setNumericInputs] = useState<
     Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>>
   >({});
-  const numericInvalid = Object.values(numericInputs).some(
-    (input) => input.trim() !== '' && parseContextWindowInput(input) === null,
-  );
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const limitsConflict = modelLimitsConflict({ contextWindow: contextWindow ?? undefined, inputLimit: profile.inputLimit });
+  const compactionContextWindow =
+    contextWindow !== null && profile.inputLimit !== undefined
+      ? Math.min(contextWindow, profile.inputLimit)
+      : contextWindow ?? profile.inputLimit;
+  const numericInvalid = Object.entries(numericInputs).some(([field, input]) => {
+    if (input.trim() === '') return false;
+    return field === 'compactionThreshold'
+      ? parseCompactionThresholdInput(input, compactionContextWindow) === null
+      : parseContextWindowInput(input) === null;
+  });
   const [isSaving, setSaving] = useState(false);
 
   const trimmedId = id.trim();
@@ -91,10 +98,16 @@ export function AddModelDialog(props: {
     setSaving(true);
     try {
       const { serviceTier, ...parameters } = profile;
+      const compactionInput = numericInputs.compactionThreshold;
+      const compactionThreshold =
+        compactionInput === undefined || compactionInput.trim() === ''
+          ? undefined
+          : (parseCompactionThresholdInput(compactionInput, compactionContextWindow) ?? undefined);
       if (
         await props.onSubmit(trimmedId, {
           ...parameters,
           ...(contextWindow === null ? {} : { contextWindow }),
+          ...(compactionThreshold !== undefined ? { compactionThreshold } : {}),
           ...(showsFastMode && serviceTier ? { serviceTier } : {}),
         })
       )
@@ -128,10 +141,14 @@ export function AddModelDialog(props: {
         numericInputs={numericInputs}
         onNumericInput={(field, input) => {
           setNumericInputs((current) => ({ ...current, [field]: input }));
-          const value = parseContextWindowInput(input);
+          const value =
+            field === 'compactionThreshold'
+              ? parseCompactionThresholdInput(input, compactionContextWindow)
+              : parseContextWindowInput(input);
           if (value !== null || input.trim() === '')
             setProfile((current) => ({ ...current, [field]: value ?? undefined }));
         }}
+        effectiveContextWindow={compactionContextWindow}
         disabled={isSaving}
         showsFastMode={showsFastMode}
         defaultVision={undefined}

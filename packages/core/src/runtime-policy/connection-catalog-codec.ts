@@ -337,7 +337,12 @@ export function decodeModelOverridesTable(value: unknown): Readonly<Record<strin
       'maxOutputTokens',
     ] as const) {
       if (entry[field] !== undefined)
-        declared[field] = integerValue(entry[field], `model ${field}`, 1, Number.MAX_SAFE_INTEGER);
+        declared[field] = integerValue(
+          entry[field],
+          `model ${field}`,
+          field === 'compactionThreshold' ? 0 : 1,
+          Number.MAX_SAFE_INTEGER,
+        );
     }
     for (const field of ['displayName', 'description'] as const) {
       if (entry[field] !== undefined)

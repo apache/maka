@@ -18,7 +18,7 @@
  */
 
 import { useId, type ReactNode } from 'react';
-import { parseContextWindowInput } from './context-window-input.js';
+import { parseCompactionThresholdInput, parseContextWindowInput } from './context-window-input.js';
 import { DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout } from '@astryxdesign/core';
 import {
   MODEL_API_PROTOCOL_LABELS,
@@ -52,6 +52,7 @@ export function CapabilityEditor(props: {
   onNumericInput(field: 'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', input: string): void;
   defaultContextWindow?: number;
   defaultInputLimit?: number;
+  effectiveContextWindow?: number;
   thinkingLevels: readonly ThinkingLevel[];
   limitsConflict?: boolean;
   contextWindowError?: string;
@@ -185,7 +186,11 @@ export function CapabilityEditor(props: {
       />
       {(['inputLimit', 'compactionThreshold', 'maxOutputTokens'] as const).map((field) => {
         const input = props.numericInputs?.[field] ?? String(declared?.[field] ?? '');
-        const invalid = input.trim() !== '' && parseContextWindowInput(input) === null;
+        const parsed =
+          field === 'compactionThreshold'
+            ? parseCompactionThresholdInput(input, props.effectiveContextWindow)
+            : parseContextWindowInput(input);
+        const invalid = input.trim() !== '' && parsed === null;
         const unsupported =
           field === 'maxOutputTokens' && !providerAcceptsOutputTokenLimit(props.providerType);
         return (
@@ -200,7 +205,15 @@ export function CapabilityEditor(props: {
             isDisabled={props.disabled || unsupported}
             {...(unsupported ? { disabledMessage: copy.maxOutputTokensUnsupported } : {})}
             hasClear
-            placeholder={field === 'inputLimit' && props.defaultInputLimit !== undefined ? String(props.defaultInputLimit) : field === 'maxOutputTokens' ? '8192 / 8K' : '128000 / 128K / 1M'}
+            placeholder={
+              field === 'inputLimit' && props.defaultInputLimit !== undefined
+                ? String(props.defaultInputLimit)
+                : field === 'maxOutputTokens'
+                  ? '8192 / 8K'
+                  : field === 'compactionThreshold'
+                    ? '65% / 650K / off'
+                    : '128000 / 128K / 1M'
+            }
             status={
               unsupported && input.trim() !== ''
                 ? { type: 'warning', message: copy.maxOutputTokensUnsupported }

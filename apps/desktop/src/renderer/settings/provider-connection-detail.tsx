@@ -58,6 +58,7 @@ import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
   ProviderEndpointField,
   getProviderSettingsCopy,
+  parseCompactionThresholdInput,
   parseContextWindowInput,
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
@@ -258,9 +259,22 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   }, [connection.slug, props.bridge, toast]);
 
   const numericInputs = typeof editingRow === 'object' && editingRow?.model === editingModelId ? editingRow.numericInputs : undefined;
-  const numericInvalid = Object.values(numericInputs ?? {}).some((input) => input.trim() !== '' && parseContextWindowInput(input) === null);
   const declared: ModelOverride | undefined = editingModelId === null ? undefined : modelParameters[editingModelId];
   const modelEntry = connection.catalogEntries.find((model) => model.id === editingModelId);
+  const effectiveContextWindow =
+    declared?.contextWindow ?? modelEntry?.defaultContextWindow;
+  const effectiveInputLimit = declared?.inputLimit ?? modelEntry?.defaultInputLimit;
+  const compactionContextWindow =
+    effectiveContextWindow !== undefined && effectiveInputLimit !== undefined
+      ? Math.min(effectiveContextWindow, effectiveInputLimit)
+      : effectiveContextWindow ?? effectiveInputLimit;
+  const numericInvalid = Object.entries(numericInputs ?? {}).some(([field, input]) => {
+    const value =
+      field === 'compactionThreshold'
+        ? parseCompactionThresholdInput(input, compactionContextWindow)
+        : parseContextWindowInput(input);
+    return input.trim() !== '' && value === null;
+  });
   const limitsConflict = modelLimitsConflict({
     contextWindow: declared?.contextWindow ?? modelEntry?.defaultContextWindow,
     inputLimit: declared?.inputLimit ?? modelEntry?.defaultInputLimit,
@@ -718,13 +732,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           numericInputs={numericInputs}
           onNumericInput={(field, input) => {
             setEditingRow((current) => ({ ...(typeof current === 'object' && current ? current : {}), model: editingModelId, numericInputs: { ...numericInputs, [field]: input } }));
-            const value = parseContextWindowInput(input);
+            const value =
+              field === 'compactionThreshold'
+                ? parseCompactionThresholdInput(input, compactionContextWindow)
+                : parseContextWindowInput(input);
             if (value !== null || input.trim() === '') setDraftParameters(editingModelId, { [field]: value ?? undefined });
           }}
           declared={declared}
           limitsConflict={limitsConflict}
           defaultContextWindow={modelEntry?.defaultContextWindow}
           defaultInputLimit={modelEntry?.defaultInputLimit}
+          effectiveContextWindow={compactionContextWindow}
           thinkingLevels={modelEntry?.thinkingLevels ?? []}
           onChange={(patch) => setDraftParameters(editingModelId, patch)}
           contextWindowInput={contextWindowInput ?? String(declared?.contextWindow ?? '')}
