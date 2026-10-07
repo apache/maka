@@ -1,0 +1,10 @@
+[
+  {
+    "type": "insert",
+    "rootId": "profile",
+    "entry": {
+      "id": "index-initiative-host",
+      "packageId": "dev.maka.index-initiative"
+    }
+  }
+]

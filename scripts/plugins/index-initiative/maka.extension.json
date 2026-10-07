@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.maka.index-initiative",
+  "displayName": "主动观察",
+  "description": "跨多个记忆 index 核对原文并自主判断下一步。",
+  "runtime": {
+    "entry": "dist/host.mjs"
+  },
+  "configuration": {
+    "properties": {
+      "dataDirectory": {
+        "type": "string"
+      },
+      "tickMs": {
+        "type": "number",
+        "default": 5000
+      },
+      "runTimeoutMs": {
+        "type": "number",
+        "default": 600000
+      }
+    }
+  },
+  "composition": {
+    "patch": "maka.composition.json"
+  }
+}
