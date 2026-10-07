@@ -53,7 +53,7 @@ export const en: Copy = {
     lede: 'An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.',
     releases: 'Release status',
     contribute: 'Contribute',
-    fine: 'The first Apache release is in preparation',
+    fine: 'Apache Maka 0.2.0 (incubating) is released',
     architecture: 'Read the architecture',
   },
   scene: {
@@ -125,7 +125,7 @@ export const en: Copy = {
     },
     releases: {
       title: 'Apache Releases',
-      body: 'Maka has not made an Apache release yet. When one exists, the signed source archive is the release; installers are convenience artifacts.',
+      body: 'The signed source archive is the Apache release; installers are convenience artifacts.',
       note: 'KEYS · SHA-512 · .asc',
     },
   },
@@ -173,27 +173,26 @@ export const en: Copy = {
   },
   downloads: {
     title: 'Downloads',
-    lede: 'Apache Maka has not made its first Apache release yet. Approved releases and verification instructions will be listed here.',
+    lede: 'Download the Apache Maka source release and verify it before use.',
     onThisPage: 'On this page',
     copy: 'Copy',
     copied: 'Copied',
     status: {
       h3: 'Current status',
       release: {
-        label: 'Apache release',
-        value: 'None yet. The first one appears here after its vote.',
-        note: 'NOT YET',
+        label: 'Latest release',
       },
     },
     releases: {
       h2: 'Apache releases',
-      note: 'NO APACHE RELEASE YET',
-      p: 'Apache Maka (Incubating) has not made an Apache release. When the first one passes its vote, this section will list it: the source archive, its SHA-512 checksum and detached GPG signature from the ASF distribution directory, and the KEYS file the signature verifies against.',
-      distNote: 'Approved releases will be available from:',
+      p: 'The signed source archive is the Apache release. The archive link uses the ASF download service; download the checksum and signature from the ASF distribution directory.',
+      checksum: 'SHA-512',
+      signature: 'signature',
+      archiveNote: 'Older releases are archived at',
     },
     verify: {
       h2: 'Verify a release',
-      p: 'After a release is available, replace <version> with its version in the commands below.',
+      p: 'The commands below verify the latest release. For an older release, change the version in the paths.',
       keys: 'Step 1: Import the release managers’ keys',
       signature: 'Step 2: Check the signature',
       checksum: 'Step 3: Check the checksum',
