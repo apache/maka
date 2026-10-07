@@ -79,7 +79,126 @@ export class NetworkStore {
           "DELETE FROM batches WHERE receipt IS NULL; INSERT INTO memory_meta VALUES('coverage-v2','1')",
         );
       }
+      this.db.exec(`CREATE TABLE IF NOT EXISTS memory_references(ref TEXT PRIMARY KEY,source TEXT NOT NULL,object_id TEXT NOT NULL,revision TEXT NOT NULL,record_key TEXT NOT NULL,payload TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS memory_reference_object ON memory_references(source,object_id);
+        CREATE TABLE IF NOT EXISTS memory_evidence(ref TEXT PRIMARY KEY REFERENCES memory_references(ref),body TEXT NOT NULL,observed_at INTEGER NOT NULL);`);
+      if (!this.db.prepare("SELECT 1 FROM memory_meta WHERE key='references-v1'").get()) {
+        for (const row of this.db
+          .prepare(
+            'SELECT f.ref,f.part,d.id,d.session,d.message,d.hash FROM fragments f JOIN documents d ON d.id=f.document',
+          )
+          .all()) {
+          const source = sourceOf(String(row.session));
+          const recordId =
+            source === 'maka' ? String(row.session) : JSON.parse(String(row.session))[1];
+          this.rememberReference(
+            source,
+            {
+              id: JSON.stringify([recordId, row.message]),
+              locator: { recordId, messageId: row.message },
+              revision: String(row.hash),
+              kind: 'message',
+            },
+            recordId,
+            { ref: String(row.ref), document: String(row.id), part: Number(row.part) },
+          );
+        }
+        // Transactional table replacement preserves every existing edge and its public ref.
+        this.db.exec(`DROP INDEX backlinks;
+          ALTER TABLE links RENAME TO memory_legacy_links;
+          CREATE TABLE links(index_id TEXT NOT NULL,entry_id TEXT NOT NULL,ref TEXT NOT NULL REFERENCES memory_references(ref),PRIMARY KEY(index_id,entry_id,ref),FOREIGN KEY(index_id,entry_id) REFERENCES entries(index_id,id) ON DELETE CASCADE);
+          INSERT INTO links SELECT index_id,entry_id,ref FROM memory_legacy_links;
+          DROP TABLE memory_legacy_links;
+          CREATE INDEX backlinks ON links(ref);
+          INSERT INTO memory_meta VALUES('references-v1','1');`);
+      }
     });
+  }
+  /** References and edges are independent of where original content lives. */
+  reference(ref: string): any | undefined {
+    const row = this.db.prepare('SELECT payload FROM memory_references WHERE ref=?').get(ref);
+    return row ? JSON.parse(String(row.payload)) : undefined;
+  }
+  references(source?: string): any[] {
+    return this.db
+      .prepare('SELECT payload FROM memory_references WHERE (? IS NULL OR source=?)')
+      .all(source ?? null, source ?? null)
+      .map((r) => JSON.parse(String(r.payload)));
+  }
+  rememberReference(
+    source: string,
+    object: any,
+    recordId = object.id,
+    local?: { ref: string; document: string; part: number },
+  ) {
+    const ref = local?.ref ?? `r_${hash(JSON.stringify([source, object.id, object.revision]))}`;
+    const payload = {
+      ref,
+      source,
+      object,
+      recordId,
+      recordKey: sourceKey(source, recordId),
+      ...(local ? { local } : {}),
+    };
+    const existing = this.reference(ref);
+    if (existing) return existing;
+    this.db
+      .prepare(
+        'INSERT INTO memory_references(ref,source,object_id,revision,record_key,payload) VALUES(?,?,?,?,?,?)',
+      )
+      .run(ref, source, object.id, object.revision, payload.recordKey, JSON.stringify(payload));
+    return payload;
+  }
+  cacheEvidence(ref: string, content: unknown) {
+    if (!this.reference(ref)) throw Error('Unknown reference');
+    const body = JSON.stringify(content);
+    const existing = this.db.prepare('SELECT body FROM memory_evidence WHERE ref=?').get(ref);
+    if (existing && existing.body !== body)
+      throw Error('Source reused a revision for different content');
+    this.db
+      .prepare('INSERT OR IGNORE INTO memory_evidence(ref,body,observed_at) VALUES(?,?,?)')
+      .run(ref, body, Date.now());
+  }
+  evidence(ref: string): { content: unknown; observedAt: number } | undefined {
+    const row = this.db
+      .prepare('SELECT body,observed_at FROM memory_evidence WHERE ref=?')
+      .get(ref);
+    return row
+      ? { content: JSON.parse(String(row.body)), observedAt: Number(row.observed_at) }
+      : undefined;
+  }
+  linkedEntries(ref: string, visible: string[], objectWide = false) {
+    const target = this.reference(ref);
+    if (!target) throw Error('Unknown reference');
+    const refs = objectWide
+      ? this.db
+          .prepare('SELECT ref FROM memory_references WHERE source=? AND object_id=?')
+          .all(target.source, target.object.id)
+          .map((r) => String(r.ref))
+      : [ref];
+    const seen = new Set<string>();
+    return refs
+      .flatMap((r) =>
+        this.db
+          .prepare(
+            'SELECT l.index_id,l.entry_id,l.ref,e.body FROM links l JOIN entries e ON e.index_id=l.index_id AND e.id=l.entry_id WHERE l.ref=?',
+          )
+          .all(r),
+      )
+      .filter((row) => {
+        const key = JSON.stringify([row.index_id, row.entry_id]);
+        if (seen.has(key)) return false;
+        try {
+          this.db
+            .prepare('SELECT ref FROM links WHERE index_id=? AND entry_id=?')
+            .all(row.index_id!, row.entry_id!)
+            .forEach((r) => this.fragment(String(r.ref), visible));
+          seen.add(key);
+          return true;
+        } catch {
+          return false;
+        }
+      });
   }
   lease(owner: string, release = false) {
     return this.transaction(() => {
@@ -133,6 +252,19 @@ export class NetworkStore {
           this.db
             .prepare('INSERT INTO fragments(ref,document,part,text) VALUES(?,?,?,?)')
             .run(`${id}:${part}`, id, part, body.slice(start, end));
+          const source = sourceOf(session),
+            recordId = source === 'maka' ? session : JSON.parse(session)[1];
+          this.rememberReference(
+            source,
+            {
+              id: JSON.stringify([recordId, message.id]),
+              locator: { recordId, messageId: message.id },
+              revision: digest,
+              kind: 'message',
+            },
+            recordId,
+            { ref: `${id}:${part}`, document: id, part },
+          );
           added++;
           start = end;
         }
@@ -187,15 +319,17 @@ export class NetworkStore {
     }
     return index;
   }
-  fragment(ref: string, visible: string[]) {
+  fragment(ref: string, visible: string[]): Record<string, any> {
     const row = this.db
       .prepare(
         'SELECT f.*,d.session,d.message,d.position,d.observed,LENGTH(d.body) AS totalChars FROM fragments f JOIN documents d ON d.id=f.document WHERE ref=?',
       )
       .get(ref);
-    if (!row || !visible.includes(String(row.session)))
+    if (row && visible.includes(String(row.session))) return row;
+    const reference = this.reference(ref);
+    if (!reference || !visible.includes(reference.recordKey))
       throw Error('Original is missing or outside current history visibility');
-    return row;
+    return { ref, session: reference.recordKey, message: reference.object.id, external: true };
   }
   entries(id: string, visible: string[], after = '', limit = 30) {
     const rows = this.db

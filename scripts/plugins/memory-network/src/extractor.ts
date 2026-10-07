@@ -30,20 +30,23 @@ export async function extractHistory(
   visible: () => Promise<string[]>,
   input: any,
   call: any,
+  readHistory?: (input: any) => Promise<any>,
 ) {
   call.abortSignal?.throwIfAborted();
   const select = (messages: any[], request: any) =>
     ctx.sessionQuery.selectMessages(messages, request);
-  const page = store.history(
-    input.from,
-    input.to,
-    await visible(),
-    {
-      ...input,
-      mode: 'messages',
-    },
-    select,
-  );
+  const page = readHistory
+    ? await readHistory({ ...input, mode: 'messages' })
+    : store.history(
+        input.from,
+        input.to,
+        await visible(),
+        {
+          ...input,
+          mode: 'messages',
+        },
+        select,
+      );
   const selection = {
     from: input.from,
     to: input.to,

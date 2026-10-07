@@ -51,6 +51,7 @@ export async function fixture(bundle = true, config: any = {}) {
   let workerRunner: ((id: string, prompt: string) => Promise<void>) | undefined;
   let beforeWorker: (() => Promise<void>) | undefined;
   const query = new Main.PluginSessionQueryService(ctx, agents);
+  const sources = new Main.PluginSourceService(ctx, agents);
   const allowed = () => {
     if (incognito) throw Error('Incognito blocks history');
     return [...sessions.keys()].map((id) => ({
@@ -145,6 +146,7 @@ export async function fixture(bundle = true, config: any = {}) {
   const storage = new Main.PluginStorageService(ctx);
   const dataRuntime = new Main.HostPluginDataRuntime(join(root, 'control'));
   storage.bindRuntime(dataRuntime);
+  new Main.PluginCredentialService(ctx).bindRuntime(dataRuntime);
   await dataRuntime.mutate({ extensionId: ID, scopeId: 'profile' }, 'storage', [
     { key: 'data-directory', value: join(root, 'data') },
   ]);
@@ -190,6 +192,7 @@ export async function fixture(bundle = true, config: any = {}) {
   };
   return {
     root,
+    platform,
     ctx,
     tools,
     systemPrompt,
@@ -200,6 +203,7 @@ export async function fixture(bundle = true, config: any = {}) {
       extractRunner = fn;
     },
     query,
+    sources,
     invokeAs,
     workers,
     cancellations: () => cancellations,

@@ -114,6 +114,7 @@ import {
 } from '@maka/runtime/plugin-data-services';
 import { PluginGoalService } from '@maka/runtime/plugin-goal-service';
 import { PluginLspService } from '@maka/runtime/plugin-lsp-service';
+import { PluginSourceService } from '@maka/runtime/plugin-source-service';
 import { PluginSessionQueryService } from '@maka/runtime/plugin-session-query-service';
 import { PluginShellEnvService } from '@maka/runtime/plugin-shell-env-service';
 import { PluginSkillService } from '@maka/runtime/plugin-skill-service';
@@ -374,6 +375,7 @@ export async function createExecutionRuntimeHostComposition(
     const pluginShell = new PluginShellService(pluginRoot, pluginAgents, pluginShellEnv);
     const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
     const pluginSessionQuery = new PluginSessionQueryService(pluginRoot, pluginAgents);
+    new PluginSourceService(pluginRoot, pluginAgents);
     const pluginGoals = new PluginGoalService(pluginRoot, pluginAgents);
     const pluginSkills = new PluginSkillService(pluginRoot);
     const pluginCommands = new PluginCommandService(pluginRoot);

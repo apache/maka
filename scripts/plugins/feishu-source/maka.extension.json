@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.maka.feishu-source",
+  "displayName": "飞书只读 Source",
+  "description": "通过开放平台按需读取飞书消息；原文引用与索引分离。",
+  "runtime": {
+    "entry": "dist/host.mjs"
+  },
+  "configuration": {
+    "properties": {
+      "instanceId": {
+        "type": "string",
+        "description": "固定账号/租户标识，更换账号必须更换此值"
+      },
+      "tokenFile": {
+        "type": "string",
+        "description": "本机受保护的 access token 文件路径"
+      },
+      "domain": {
+        "type": "string",
+        "default": "feishu"
+      },
+      "containers": {
+        "type": "string",
+        "description": "JSON 数组：[{\"type\":\"chat\",\"id\":\"oc_...\"}]"
+      },
+      "startTime": {
+        "type": "number",
+        "description": "枚举起始 Unix 秒，必填"
+      },
+      "endTime": {
+        "type": "number",
+        "description": "可选结束 Unix 秒；否则固定为本次扫描开始时间"
+      }
+    }
+  },
+  "composition": {
+    "patch": "maka.composition.json"
+  }
+}

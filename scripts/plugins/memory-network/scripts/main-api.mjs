@@ -44,6 +44,7 @@ export const alias = {
 const exports = [
   ['runtime', 'tool-availability', 'ToolAvailabilityRuntime'],
   ['runtime', 'plugin-session-query-service', 'PluginSessionQueryService'],
+  ['runtime', 'plugin-source-service', 'PluginSourceService'],
   ['core', 'recall', 'listRecallHistorySessions'],
   ['runtime', 'plan-mode', 'selectCollaborationTools'],
   ['runtime', 'plugin-kernel', 'Context'],
@@ -53,6 +54,7 @@ const exports = [
   ['runtime', 'plugin-system-prompt-service', 'PluginSystemPromptService'],
   ['runtime', 'plugin-turn-finish-service', 'PluginTurnFinishService'],
   ['runtime', 'plugin-data-services', 'PluginStorageService'],
+  ['runtime', 'plugin-data-services', 'PluginCredentialService'],
   ['runtime', 'plugin-client-bridge-service', 'PluginClientBridgeService'],
   ['runtime', 'plugin-composition-loader', 'MakaCompositionLoader'],
   ['runtime-host', 'server/plugin-data-runtime', 'HostPluginDataRuntime'],

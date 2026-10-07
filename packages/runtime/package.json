@@ -88,6 +88,7 @@
     "./plugin-executor-service": "./dist/plugin-executor-service.js",
     "./plugin-goal-service": "./dist/plugin-goal-service.js",
     "./plugin-lsp-service": "./dist/plugin-lsp-service.js",
+    "./plugin-source-service": "./dist/plugin-source-service.js",
     "./plugin-session-query-service": "./dist/plugin-session-query-service.js",
     "./plugin-shell-env-service": "./dist/plugin-shell-env-service.js",
     "./plugin-skill-service": "./dist/plugin-skill-service.js",

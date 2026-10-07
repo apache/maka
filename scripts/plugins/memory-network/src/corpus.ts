@@ -28,6 +28,7 @@ type RecordHead = {
   title?: string;
   updatedAt?: string | number;
   documents: string[];
+  external?: boolean;
 };
 export type Cursor = { id: string; createdAt: number; sources: string[]; records: RecordHead[] };
 export type WorkRange = {
@@ -45,6 +46,7 @@ export class CorpusStore extends NetworkStore {
   constructor(directory: string) {
     super(directory);
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_source_sets(source TEXT PRIMARY KEY,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_worker_sessions(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS memory_source_records(key TEXT PRIMARY KEY,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_cursors(id TEXT PRIMARY KEY,fingerprint TEXT UNIQUE NOT NULL,payload TEXT NOT NULL);
@@ -77,12 +79,44 @@ export class CorpusStore extends NetworkStore {
         .run(head.key, JSON.stringify({ ...head, documents: ids }));
     });
   }
+  rememberExternal(source: string, objects: readonly any[]) {
+    // Only metadata is retained here; no call to read() and no original body.
+    const heads = objects.map((object) => {
+      const r = this.rememberReference(source, object);
+      return {
+        key: r.recordKey,
+        source,
+        id: object.id,
+        revision: object.revision,
+        title: object.title,
+        updatedAt: object.updatedAt,
+        documents: [r.ref],
+        external: true,
+      };
+    });
+    this.transaction(() => {
+      for (const head of heads)
+        this.db
+          .prepare(
+            'INSERT INTO memory_source_records VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload',
+          )
+          .run(head.key, JSON.stringify(head));
+    });
+    return heads;
+  }
   record(key: string): RecordHead | undefined {
     const row = this.db.prepare('SELECT payload FROM memory_source_records WHERE key=?').get(key);
     return row ? JSON.parse(String(row.payload)) : undefined;
   }
   capture(sources: string[], visible: string[], sessions: string[] = []): Cursor {
+    const sourceSets = new Map(
+      this.db
+        .prepare('SELECT source,payload FROM memory_source_sets')
+        .all()
+        .map((r) => [String(r.source), new Set<string>(JSON.parse(String(r.payload)))]),
+    );
     const records = visible
+      .filter((key) => !sourceSets.has(sourceOf(key)) || sourceSets.get(sourceOf(key))!.has(key))
       .filter(
         (key) =>
           sources.includes(sourceOf(key)) &&
@@ -163,7 +197,7 @@ export class CorpusStore extends NetworkStore {
         };
       }),
       meaning:
-        'Opaque immutable source snapshots. from=null is existing history; otherwise the difference is incremental. Reading and writing index text never advance this boundary. A checkpoint is the Agent declaration of organization, not proof that every log line was read.',
+        'Opaque immutable source identity/revision boundaries; remote bodies are fetched on demand and may become unavailable. from=null is existing history; otherwise the difference is incremental. Reading and writing index text never advance this boundary. A checkpoint is the Agent declaration of organization, not proof that every log line was read.',
     };
   }
   pending(indexId: string, to: string, visible: string[]) {
@@ -286,6 +320,22 @@ export class CorpusStore extends NetworkStore {
     );
     const results: any[] = [];
     for (const record of records) {
+      if (record.external) {
+        if (input.excludeExternal) continue;
+        if (input.mode !== 'records')
+          throw Error('External originals require the source adapter read path');
+        if (from && !record.delta.length && !record.removed.length) continue;
+        results.push({
+          source: record.source,
+          recordId: record.id,
+          title: record.title ?? record.id,
+          revision: record.revision,
+          external: true,
+          refs: from ? record.delta : record.documents,
+          removedMessages: record.removed.length,
+        });
+        continue;
+      }
       const ids = from ? record.delta : record.documents;
       const messages = ids.map((id) =>
         JSON.parse(String(this.db.prepare('SELECT body FROM documents WHERE id=?').get(id)!.body)),
