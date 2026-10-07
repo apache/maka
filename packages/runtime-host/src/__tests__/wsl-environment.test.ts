@@ -120,3 +120,42 @@ test('contains oversized WSL bridge diagnostics inside the connection failure', 
     /handshake_failed/u,
   );
 });
+
+for (const stream of ['stdin', 'stdout'] as const) {
+  test(`contains WSL bridge ${stream} errors inside the handshake failure`, async () => {
+    let child: ChildProcessWithoutNullStreams | undefined;
+    try {
+      await assert.rejects(
+        connectRuntimeHostWslEnvironment(
+          {
+            distribution: 'Ubuntu',
+            operator: operator('/opt/maka/operator.mjs'),
+            rootId: 'a'.repeat(64),
+            clientInstanceId: 'desktop-test',
+            handshakeTimeoutMs: 200,
+          },
+          {
+            processFactory: () => {
+              child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+              });
+              const pipe = child[stream];
+              // A stream error event is separate from the pending write callback
+              // and ChildProcess error event. Own it even if no write is pending.
+              queueMicrotask(() =>
+                pipe.destroy(Object.assign(new Error('bridge pipe closed'), { code: 'EPIPE' })),
+              );
+              return child;
+            },
+            wslExecutable: 'wsl-test',
+          },
+        ),
+        /handshake_failed/u,
+      );
+      assert.ok(child);
+      assert.ok(child.exitCode !== null || child.signalCode !== null);
+    } finally {
+      child?.kill('SIGKILL');
+    }
+  });
+}
