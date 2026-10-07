@@ -674,6 +674,13 @@ async function runHostAuxiliaryModelCall(
           : generateToolFreeModelCall({
               model,
               ...request,
+              stream: target.connection.providerType === 'openai-codex',
+              // Codex OAuth rejects max_output_tokens; its endpoint owns the
+              // output limit. Other providers keep the requested token budget.
+              maxOutputTokens:
+                target.connection.providerType === 'openai-codex'
+                  ? undefined
+                  : request.maxOutputTokens,
               abortSignal: input.abortSignal,
               providerOptions: request.providerOptions ?? providerOptions,
             });

@@ -1338,6 +1338,9 @@ export function lowerModelTools(tools: ModelToolSet): Record<string, unknown> {
               ? { description: definition.description }
               : {}),
             inputSchema: definition.inputSchema,
+            // Responses otherwise promotes optional properties to required filters.
+            // Maka validates the original tool schema at dispatch.
+            strict: false,
           },
     ]),
   );

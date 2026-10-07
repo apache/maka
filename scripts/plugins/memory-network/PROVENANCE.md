@@ -19,6 +19,6 @@
 
 # Provenance
 
-This plugin is developed in the Maka repository. Runtime tools, storage and prompt contributions use Maka's plugin APIs. The only host additions are generic read-only history methods on PluginSessionQueryService, backed by the existing Recall privacy/revision selection rules. No task scheduler or memory index logic is embedded in the Host.
+This plugin is developed in the Maka repository. Runtime tools, storage and prompt contributions use Maka's plugin APIs. Host additions are generic history-source registration/read APIs, a cheap durable Session history revision, and persistent background Agent Session creation. Maka history retains Recall privacy and revision-selection rules. No task scheduler or memory index logic is embedded in the Host.
 
 The Host bundle is built with esbuild and includes Zod; the extension archive includes Maka's LICENSE/NOTICE and Zod's license. Test adapters bundle the repository source into ignored `.artifacts` files and are not part of the shipped Host plugin.

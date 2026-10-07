@@ -1609,6 +1609,16 @@ export class SqliteRuntimeStore
     return ordered.map((item) => item.event);
   }
 
+  /** Cheap durable content head; never loads transcript bodies or mutable streams. */
+  async readSessionHistoryRevision(sessionId: string): Promise<string> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    const row = this.db
+      .prepare(`SELECT ordinal,event_id FROM runtime_session_event_ordinals
+      WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`)
+      .get(sessionId);
+    return row ? `${row.ordinal}:${row.event_id}` : 'empty';
+  }
+
   async readSessionRuntimeEventEntries(sessionId: string): Promise<SessionRuntimeEventEntry[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
     const rows = this.db

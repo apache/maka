@@ -11,6 +11,26 @@
       "dataDirectory": {
         "type": "string",
         "description": "独立 SQLite 数据目录，留空自动创建。"
+      },
+      "tickMs": {
+        "type": "number",
+        "default": 30000
+      },
+      "intervalMs": {
+        "type": "number",
+        "default": 1800000
+      },
+      "threshold": {
+        "type": "number",
+        "default": 100
+      },
+      "retryMs": {
+        "type": "number",
+        "default": 60000
+      },
+      "runTimeoutMs": {
+        "type": "number",
+        "default": 600000
       }
     }
   },

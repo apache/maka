@@ -531,6 +531,11 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       ),
     readImmutableRuntimeEvents: async (sessionId, runId) =>
       a.read((s) => immutable(s, sessionId, runId)),
+    readSessionHistoryRevision: async (sessionId) =>
+      a.read((s) => {
+        const last = ordinals(s).get(sessionId)?.at(-1);
+        return last ? `${last.ordinal}:${last.event.id}` : 'empty';
+      }),
     readSessionRuntimeEventEntries: async (sessionId) =>
       a.read((s) => {
         check(sessionId);

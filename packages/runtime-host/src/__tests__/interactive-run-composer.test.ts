@@ -44,6 +44,34 @@ test('the interactive tool surface does not expose retired tools', () => {
   );
 });
 
+test('disabling subagents removes child, Graph and Swarm tools including dynamic contributions', () => {
+  const policy = createDefaultRuntimePolicy();
+  const names = [
+    'agent_spawn',
+    'agent_list',
+    'agent_output',
+    'agent_swarm_status',
+    'view_agent_graph',
+    'update_agent_graph',
+    'yield_agent_graph',
+  ];
+  let additions: MakaTool[] = [];
+  const composer = createFixtureComposer({
+    runtimePolicy: {
+      revision: 1,
+      policy: { ...policy, subagents: { enabled: false, presets: [] } },
+    },
+    parentAgentTools: names.map((name) => tool(name)),
+    resolveAdditionalTools: () => additions,
+  });
+  assert.ok(composer.tools.some((t) => t.name === 'Read'));
+  assert.ok(composer.tools.every((t) => !names.includes(t.name)));
+  additions = [{ ...tool('plugin_delegate'), categoryHint: 'subagent' }, tool('MemoryExtract')];
+  const next = composer.resolveTools!();
+  assert.ok(next.some((t) => t.name === 'MemoryExtract'));
+  assert.ok(next.every((t) => !names.includes(t.name) && t.name !== 'plugin_delegate'));
+});
+
 test('the composer resolves scoped Tool additions without rebuilding the backend', () => {
   let additions: readonly MakaTool[] = [];
   const dynamic = tool('dynamic_tool');

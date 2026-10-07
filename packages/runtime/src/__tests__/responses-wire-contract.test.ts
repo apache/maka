@@ -53,6 +53,50 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
+  test('keeps optional function parameters optional on the Responses wire', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({
+        id: 'optional-filters',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as typeof globalThis.fetch;
+    const connection = conn('openai-codex');
+    const adapter = new ModelAdapter({
+      connection,
+      apiKey: 'test-token',
+      modelId: 'gpt-6.1-sol',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      newId: () => 'id',
+      now: () => 0,
+    });
+    const stream = await adapter.startStream({
+      model: adapter.resolveModel(),
+      messages: [{ role: 'user', content: 'Read all records' }],
+      tools: {
+        History: {
+          inputSchema: z.object({
+            cursor: z.string(),
+            recordId: z.string().min(1).optional(),
+            until: z.number().nonnegative().optional(),
+          }),
+        },
+      },
+      activeTools: ['History'],
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+    for await (const event of stream.events) void event;
+    const tool = (body?.tools as Array<Record<string, unknown>>)[0]!;
+    assert.equal(tool.strict, false);
+    assert.deepEqual((tool.parameters as { required: string[] }).required, ['cursor']);
+  });
+
   test('does not route Maka tool_search history through OpenAI native tool_search validation', async () => {
     const connection = conn('openai-codex', 'codex-subscription');
     connection.defaultModel = 'gpt-5.6-sol';

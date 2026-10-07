@@ -33,6 +33,8 @@ export interface PluginSessionSummary {
   readonly status?: string;
   readonly parentSessionId?: string;
   readonly updatedAt?: string | number;
+  /** Opaque durable content revision, independent of the event timestamp. */
+  readonly historyRevision?: string;
 }
 
 export interface PluginSessionSnapshot {
@@ -75,9 +77,18 @@ export interface PluginSessionQueryRuntime {
   ): Promise<PluginSessionSearchPage>;
 }
 
+export interface PluginHistorySource {
+  readonly id: string;
+  readonly description: string;
+  /** Must enforce source permissions and return stable IDs with opaque revisions. */
+  list(caller: PluginSessionQueryCaller): Promise<readonly PluginSessionSummary[]>;
+  read(id: string, caller: PluginSessionQueryCaller): Promise<PluginSessionSnapshot | undefined>;
+}
+
 /** Read-only, paged Session projection. It never exposes the mutable Session Store. */
 export class PluginSessionQueryService extends Service {
   private queryRuntime?: PluginSessionQueryRuntime;
+  private readonly historySourcesById = new Map<string, PluginHistorySource>();
 
   constructor(
     ctx: Context,
@@ -134,6 +145,58 @@ export class PluginSessionQueryService extends Service {
     return runtime.historyRead(assertSessionId(sessionId), this.caller());
   }
 
+  registerHistorySource(source: PluginHistorySource): Disposable<Promise<void>> {
+    if (this.ctx.maka && this.ctx.maka.rootId !== 'profile')
+      throw new Error('History sources require profile scope');
+    if (!/^[a-z][a-z0-9._-]{0,79}$/.test(source.id) || source.id === 'maka')
+      throw new TypeError('Invalid or reserved history source ID');
+    const sources = this.historySourcesById;
+    return this.ctx.effect(() => {
+      if (sources.has(source.id)) throw new Error('History source already registered');
+      sources.set(source.id, source);
+      return () => {
+        if (sources.get(source.id) === source) sources.delete(source.id);
+      };
+    }, `historySource:${source.id}`);
+  }
+
+  historySources(): readonly { id: string; description: string }[] {
+    this.agents.requireInvocation();
+    return [
+      { id: 'maka', description: 'Recall-visible Maka Session history' },
+      ...[...this.historySourcesById.values()].map(({ id, description }) => ({ id, description })),
+    ];
+  }
+
+  sourceList(sourceId: string): Promise<readonly PluginSessionSummary[]> {
+    this.agents.requireInvocation();
+    if (sourceId === 'maka') return this.historyList();
+    const source = this.historySourcesById.get(sourceId);
+    if (!source) throw new Error('History source is unavailable');
+    return source.list(this.caller());
+  }
+
+  sourceRead(sourceId: string, id: string): Promise<PluginSessionSnapshot | undefined> {
+    this.agents.requireInvocation();
+    if (sourceId === 'maka') return this.historyRead(id);
+    const source = this.historySourcesById.get(sourceId);
+    if (!source) throw new Error('History source is unavailable');
+    return source.read(assertSessionId(id), this.caller());
+  }
+
+  /** Query a permitted source using the same typed message projection as cached history. */
+  async sourceQuery(sourceId: string, id: string, request: PluginHistoryMessageQuery = {}) {
+    const snapshot = await this.sourceRead(sourceId, id);
+    return snapshot
+      ? { session: snapshot.session, ...selectSessionMessages(snapshot.messages, request) }
+      : undefined;
+  }
+
+  /** Pure projection for a plugin's immutable cached source snapshot; does not fetch history. */
+  selectMessages(messages: readonly unknown[], request: PluginHistoryMessageQuery = {}) {
+    return selectSessionMessages(messages, request);
+  }
+
   private runtime(): PluginSessionQueryRuntime {
     if (!this.queryRuntime) throw new Error('Plugin Session Query Runtime is unavailable');
     return this.queryRuntime;
@@ -152,4 +215,91 @@ export class PluginSessionQueryService extends Service {
 function assertSessionId(value: string): string {
   if (!value || /[\0\r\n]/u.test(value)) throw new TypeError('Session id is invalid');
   return value;
+}
+
+export interface PluginHistoryMessageQuery {
+  readonly view?: 'conversation' | 'all';
+  readonly types?: readonly string[];
+  readonly messageId?: string;
+  readonly query?: string;
+  readonly since?: number;
+  readonly until?: number;
+  readonly after?: number;
+  readonly limit?: number;
+}
+
+/** Filter before paging; the cursor is a source position, never a processed/coverage claim. */
+export function selectSessionMessages(
+  messages: readonly unknown[],
+  request: PluginHistoryMessageQuery = {},
+) {
+  const limit = request.limit ?? 50;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
+    throw new TypeError('Invalid history query limit');
+  if (request.after !== undefined && (!Number.isSafeInteger(request.after) || request.after < -1))
+    throw new TypeError('Invalid history query position');
+  if (request.view !== undefined && !['conversation', 'all'].includes(request.view))
+    throw new TypeError('Invalid history view');
+  for (const time of [request.since, request.until])
+    if (time !== undefined && (!Number.isFinite(time) || time < 0))
+      throw new TypeError('Invalid history time');
+  if (
+    request.types &&
+    (!Array.isArray(request.types) || request.types.some((t) => typeof t !== 'string'))
+  )
+    throw new TypeError('Invalid message types');
+  const types = request.types;
+  const matches: { position: number; message: Record<string, unknown> }[] = [];
+  const typeCounts: Record<string, number> = {};
+  for (let position = 0; position < messages.length; position++) {
+    const value = messages[position];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const message = value as Record<string, unknown>;
+    const type = String(message.type ?? 'unknown');
+    typeCounts[type] = (typeCounts[type] ?? 0) + 1;
+    if (types && !types.includes(type)) continue;
+    if (request.view === 'conversation' && !['user', 'assistant'].includes(type)) continue;
+    const options = message.providerOptions as { openai?: { phase?: string } } | undefined;
+    const phase = options?.openai?.phase;
+    if (
+      request.view === 'conversation' &&
+      type === 'assistant' &&
+      (phase === 'commentary' || typeof message.text !== 'string' || !message.text.trim())
+    )
+      continue;
+    if (request.messageId && message.id !== request.messageId) continue;
+    if (request.since !== undefined && !(Number(message.ts) >= request.since)) continue;
+    if (request.until !== undefined && !(Number(message.ts) <= request.until)) continue;
+    const projected: Record<string, unknown> =
+      request.view !== 'conversation'
+        ? message
+        : Object.fromEntries(
+            Object.entries({
+              id: message.id,
+              type: message.type,
+              turnId: message.turnId,
+              ts: message.ts,
+              text: message.displayText ?? message.text,
+              phase: type === 'assistant' ? (phase ?? 'unspecified') : undefined,
+            }).filter(([, v]) => v !== undefined),
+          );
+    if (
+      request.query &&
+      !JSON.stringify(projected).toLowerCase().includes(request.query.toLowerCase())
+    )
+      continue;
+    matches.push({ position, message: projected });
+  }
+  const remaining = matches.filter((m) => m.position > (request.after ?? -1));
+  const items = remaining.slice(0, limit);
+  return {
+    items,
+    next: remaining.length > limit ? items.at(-1)!.position : null,
+    total: matches.length,
+    sourceMessages: messages.length,
+    typeCounts,
+    view: request.view ?? 'all',
+    notice:
+      'Conversation view omits explicit commentary, thinking-only messages and process types. Legacy assistant messages without phase metadata remain visible; unspecified does not mean verified final answer. Use view=all and types to inspect process evidence.',
+  };
 }

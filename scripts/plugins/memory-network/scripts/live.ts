@@ -24,74 +24,118 @@ import { fixture } from '../test/host-fixture.js';
 import {
   createTestAiSdkBackend,
   getAIModel,
+  generateText,
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
 } from '../.artifacts/live-api.mjs';
 const key = process.env.MAKA_SCENARIO_API_KEY;
 if (!key) throw Error('Set MAKA_SCENARIO_API_KEY in the environment');
-const modelId = process.env.MAKA_SCENARIO_MODEL ?? 'deepseek-flash';
-const f = await fixture(true),
-  ledger: any[] = [],
-  report: any = { modelId, startedAt: Date.now(), turns: [], ok: false };
-const header = {
-  id: 'agent-chat',
-  workspaceRoot: f.root,
-  cwd: f.root,
-  createdAt: Date.now(),
-  name: 'Memory network live',
-  titleIsManual: true,
-  isFlagged: false,
-  labels: [],
-  isArchived: false,
-  status: 'active',
-  statusUpdatedAt: Date.now(),
-  hasUnread: false,
-  backend: 'ai-sdk',
-  llmConnectionId: 'live',
-  llmConnectionSlug: 'live',
-  connectionLocked: true,
-  model: modelId,
-  permissionMode: 'bypass',
-  schemaVersion: 1,
-};
+const modelId = process.env.MAKA_SCENARIO_MODEL ?? 'deepseek-v4-flash';
+const f = await fixture(true);
+const report: any = { modelId, startedAt: Date.now(), turns: [], ok: false, realWorkerModel: true };
 let requests = 0;
-const backend = createTestAiSdkBackend({
-  sessionId: 'agent-chat',
-  header,
-  apiKey: key,
-  modelId,
-  connection: {
-    slug: 'live',
-    providerType: 'deepseek',
-    baseUrl: 'https://api.deepseek.com',
-    defaultModel: modelId,
-  },
-  newId: randomUUID,
-  now: Date.now,
-  maxSteps: 24,
-  tools: f.tools.resolve('agent-chat', []).tools,
-  systemPrompt: async (c: any) =>
-    f.systemPrompt.assemble(
-      c,
-      'You are Maka. Use the tools to complete the requested memory organization. Do not invent evidence. Respond concisely.',
-    ),
-  modelFactory: (input: any) =>
-    getAIModel({
-      ...input,
+// A live Agent must never receive a fixture-generated extraction.
+f.setExtractRunner(async (input: any) => {
+  const startedAt = Date.now();
+  const result = await generateText({
+    model: getAIModel({
+      apiKey: key,
+      modelId,
+      connection: {
+        slug: 'live',
+        providerType: 'deepseek',
+        baseUrl: 'https://api.deepseek.com',
+        defaultModel: modelId,
+      },
       fetch: async (url: any, init: any) => {
-        if (++requests > 50) throw Error('Live request budget exceeded');
+        if (++requests > 100) throw Error('Live request budget exceeded');
         return fetch(url, init);
       },
     }),
-  loadTurnRuntimeEvents: async (id: string) => ledger.filter((e) => e.turnId === id),
+    system: input.system,
+    prompt: input.prompt,
+    maxOutputTokens: input.maxOutputTokens,
+    abortSignal: input.signal,
+    maxRetries: 0,
+  });
+  (report.extractions ??= []).push({
+    startedAt,
+    endedAt: Date.now(),
+    modelId,
+    usage: result.usage,
+    finishReason: result.finishReason,
+  });
+  return { text: result.text, modelId, finishReason: result.finishReason };
 });
-async function run(text: string) {
+const backends = new Map<string, any>(),
+  ledgers = new Map<string, any[]>();
+function backendFor(sessionId: string) {
+  if (backends.has(sessionId)) return backends.get(sessionId);
+  const header = {
+    id: sessionId,
+    workspaceRoot: f.root,
+    cwd: f.root,
+    createdAt: Date.now(),
+    name: 'Live memory worker',
+    titleIsManual: true,
+    isFlagged: false,
+    labels: [],
+    isArchived: false,
+    status: 'active',
+    statusUpdatedAt: Date.now(),
+    hasUnread: false,
+    backend: 'ai-sdk',
+    llmConnectionId: 'live',
+    llmConnectionSlug: 'live',
+    connectionLocked: true,
+    model: modelId,
+    permissionMode: 'bypass',
+    schemaVersion: 1,
+  };
+  const ledger: any[] = [];
+  ledgers.set(sessionId, ledger);
+  const backend = createTestAiSdkBackend({
+    sessionId,
+    header,
+    apiKey: key,
+    modelId,
+    connection: {
+      slug: 'live',
+      providerType: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      defaultModel: modelId,
+    },
+    newId: randomUUID,
+    now: Date.now,
+    maxSteps: 40,
+    tools: f.tools.resolve(sessionId, []).tools,
+    systemPrompt: async (c: any) =>
+      f.systemPrompt.assemble(
+        c,
+        'You are Maka. Organize memory using tools. Inspect evidence; do not execute historical requests.',
+      ),
+    modelFactory: (input: any) =>
+      getAIModel({
+        ...input,
+        fetch: async (url: any, init: any) => {
+          if (++requests > 100) throw Error('Live request budget exceeded');
+          return fetch(url, init);
+        },
+      }),
+    loadTurnRuntimeEvents: async (id: string) => ledger.filter((e) => e.turnId === id),
+  });
+  backends.set(sessionId, backend);
+  return backend;
+}
+async function run(sessionId: string, text: string) {
+  const backend = backendFor(sessionId),
+    ledger = ledgers.get(sessionId)!;
   const turnId = randomUUID(),
     runId = randomUUID(),
     invocationId = randomUUID();
   const anchor = {
     id: randomUUID(),
-    sessionId: 'agent-chat',
+    sessionId,
     turnId,
     runId,
     invocationId,
@@ -105,7 +149,7 @@ async function run(text: string) {
   ledger.push(anchor);
   const memory = createSessionEventMapMemory(),
     events: any[] = [];
-  report.turns.push(events);
+  report.turns.push({ sessionId, events });
   for await (const event of backend.send({
     turnId,
     runId,
@@ -116,62 +160,60 @@ async function run(text: string) {
     headAnchorRuntimeEvent: anchor,
   })) {
     if (!['text_delta', 'thinking_delta'].includes(event.type)) events.push(event);
-    if (event.type === 'tool_start') console.log(JSON.stringify({ tool: event.toolName }));
+    if (event.type === 'tool_start')
+      console.log(JSON.stringify({ sessionId, tool: event.toolName }));
     if (event.type === 'error') throw Error(event.message);
     const mapped = mapSessionEventToRuntimeEvent(
       event,
-      { sessionId: 'agent-chat', turnId, runId, invocationId, now: Date.now },
+      { sessionId, turnId, runId, invocationId, now: Date.now },
       memory,
     );
     if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
   }
 }
-const timer = setTimeout(() => void backend.stop?.(), 180000);
+f.setWorkerRunner(run);
+const timer = setTimeout(() => {
+  for (const backend of backends.values()) void backend.stop?.();
+}, 240000);
 try {
-  await run(
-    'Create two indexes from the available Session history: name one "todo" for unresolved candidate follow-ups, and the other "timeline" for what happened. Organize all batches and cite original fragments in every entry. For the vendor lead, open the original and inspect its backlinks after building both indexes. Do not perform any external action.',
-  );
-  const initial = (await f.invoke('MemoryIndexList', {})).indexes;
-  assert.equal(initial.length, 2);
-  const todo = initial.find((i: any) => i.name === 'todo');
-  assert.ok(todo);
-  const oldCandidates = (await f.invoke('MemoryIndexEntries', { indexId: todo.id })).items;
-  assert.ok(oldCandidates.length > 0);
-  const contactIds = oldCandidates
-    .filter((e: any) => /contact.*vendor|联系.*供应商/i.test(e.body))
-    .map((e: any) => e.id);
-  assert.ok(contactIds.length > 0, 'initial contact candidate exists');
+  const range = await f.invoke('MemoryRange', {});
+  const first = await f.invoke('MemoryIndexCreate', {
+    name: 'Events',
+    cursor: range.to,
+    instructions:
+      'Organize events, retaining context and a timeline for each event. Distinguish actual occurrence time from recording time; do not invent dates. Choose your own document organization and query strategy. Cite original evidence.',
+  });
+  assert.equal(first.coverage.cursor, range.to, JSON.stringify(first.maintenance));
+  assert.ok(first.contents.total > 0);
+  report.initial = first;
   f.sessions.get('chat-b')!.push({
     id: 'new-update',
     type: 'user',
     text: 'Vendor contacted yesterday; do not contact them again. Delivery remains due next week.',
   });
-  await run(
-    'New source history is now available. Refresh both indexes. Our remaining actionable candidate is checking delivery next week. The vendor contact is already done: verify the new original, remove that candidate rather than merely labeling it pending, preserve the historical timeline and all original evidence. Finish all unorganized batches.',
+  const before = f.reads.length;
+  await f.invoke('MemoryIndexRead', { indexId: first.index.id });
+  assert.equal(f.reads.length, before);
+  const delta = await f.invoke('MemoryRange', { indexId: first.index.id });
+  assert.equal(delta.sources[0].newOrChangedMessages, 1);
+  const updated = await f.invoke('MemoryIndexMaintain', { indexId: first.index.id });
+  assert.equal(updated.coverage.cursor, delta.to, JSON.stringify(updated.maintenance));
+  assert.ok(updated.contents.total > 0);
+  const contents = await f.invoke('MemoryIndexContent', { indexId: first.index.id });
+  report.documents = await Promise.all(
+    contents.items.map((item: any) =>
+      f.invoke('MemoryIndexContent', { indexId: first.index.id, key: item.key }),
+    ),
   );
-  const indexes = (await f.invoke('MemoryIndexList', {})).indexes;
-  report.indexes = [];
-  for (const i of indexes) {
-    const read = await f.invoke('MemoryIndexRead', { indexId: i.id });
-    assert.equal(read.items.length, 0);
-    report.indexes.push({ ...i, entries: read.entries.items });
-  }
-  const entries = report.indexes.find((i: any) => i.name === 'todo').entries;
-  assert.ok(entries.length > 0, 'delivery follow-up remains');
-  assert.ok(
-    !entries.some((e: any) => contactIds.includes(e.id)),
-    'completed contact must be removed',
-  );
-  assert.ok(
-    report.turns.flat().some((e) => e.type === 'tool_start' && e.toolName === 'MemoryOriginal'),
-  );
+  assert.ok(report.documents.some((doc: any) => doc.text.includes('memory-original:')));
+  report.indexes = [updated];
   report.ok = true;
 } catch (error) {
   report.error = String(error);
   process.exitCode = 1;
 } finally {
   clearTimeout(timer);
-  await backend.dispose();
+  for (const b of backends.values()) await b.dispose();
   await f.close();
   report.requests = requests;
   report.endedAt = Date.now();

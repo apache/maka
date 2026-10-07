@@ -27,11 +27,22 @@ export type Index = {
   name: string;
   instructions: string;
   sessions: string[];
+  sources?: string[];
   revision: number;
   covered: number;
   view: string;
 };
 export type Entry = { id: string; body: string; refs: string[] };
+export const sourceKey = (source: string, record: string) =>
+  source === 'maka' ? record : JSON.stringify([source, record]);
+export const sourceOf = (key: string): string => {
+  try {
+    const v = JSON.parse(key);
+    return Array.isArray(v) ? v[0] : 'maka';
+  } catch {
+    return 'maka';
+  }
+};
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 export class NetworkStore {
   readonly db: DatabaseSync;
@@ -48,6 +59,40 @@ export class NetworkStore {
       CREATE INDEX IF NOT EXISTS backlinks ON links(ref);
       CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY,index_id TEXT NOT NULL,revision INTEGER NOT NULL,through_seq INTEGER NOT NULL,refs TEXT NOT NULL,view TEXT NOT NULL,receipt TEXT);
       CREATE TABLE IF NOT EXISTS commits(id INTEGER PRIMARY KEY AUTOINCREMENT,index_id TEXT NOT NULL,at INTEGER NOT NULL,body TEXT NOT NULL);`);
+    // Coverage v2 records exact immutable fragments. Legacy progress is translated once,
+    // retaining old evidence/links; legacy issued batches are retired, not reused.
+    this.transaction(() => {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS memory_meta(key TEXT PRIMARY KEY,value TEXT);
+        CREATE TABLE IF NOT EXISTS coverage(index_id TEXT NOT NULL,ref TEXT NOT NULL REFERENCES fragments(ref),PRIMARY KEY(index_id,ref));
+        CREATE TABLE IF NOT EXISTS source_heads(key TEXT PRIMARY KEY,revision TEXT NOT NULL,checked_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS workers(index_id TEXT PRIMARY KEY,payload TEXT NOT NULL);`);
+      if (!this.db.prepare("SELECT 1 FROM memory_meta WHERE key='coverage-v2'").get()) {
+        for (const index of this.list()) {
+          const scope: string[] = index.view ? JSON.parse(index.view) : [];
+          for (const session of scope)
+            this.db
+              .prepare(`INSERT OR IGNORE INTO coverage
+            SELECT ?,f.ref FROM fragments f JOIN documents d ON d.id=f.document WHERE d.session=? AND f.seq<=?`)
+              .run(index.id, session, index.covered);
+        }
+        this.db.exec(
+          "DELETE FROM batches WHERE receipt IS NULL; INSERT INTO memory_meta VALUES('coverage-v2','1')",
+        );
+      }
+    });
+  }
+  lease(owner: string, release = false) {
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT value FROM memory_meta WHERE key='owner'").get();
+      const prior = row ? JSON.parse(String(row.value)) : null;
+      if (prior && prior.owner !== owner && prior.until > Date.now()) return false;
+      this.db
+        .prepare(
+          "INSERT INTO memory_meta VALUES('owner',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(JSON.stringify({ owner, until: release ? 0 : Date.now() + 60000 }));
+      return true;
+    });
   }
   close() {
     this.db.close();
@@ -95,11 +140,12 @@ export class NetworkStore {
       return added;
     });
   }
-  create(name: string, instructions: string, sessions: string[]): Index {
+  create(name: string, instructions: string, sessions: string[], sources = ['maka']): Index {
     const index = {
       id: randomUUID(),
       name,
       instructions,
+      sources: [...new Set(sources)].sort(),
       sessions: [...new Set(sessions)].sort(),
       revision: 0,
       covered: 0,
@@ -123,25 +169,18 @@ export class NetworkStore {
     this.db.prepare('UPDATE indexes SET payload=? WHERE id=?').run(JSON.stringify(index), index.id);
   }
   scope(index: Index, visible: string[]) {
-    return visible.filter((s) => !index.sessions.length || index.sessions.includes(s)).sort();
+    return visible
+      .filter(
+        (s) =>
+          (index.sources ?? ['maka']).includes(sourceOf(s)) &&
+          (sourceOf(s) !== 'maka' || !index.sessions.length || index.sessions.includes(s)),
+      )
+      .sort();
   }
   align(id: string, visible: string[]) {
     const index = this.index(id),
       view = JSON.stringify(this.scope(index, visible));
     if (index.view !== view) {
-      const before: string[] = index.view ? JSON.parse(index.view) : [];
-      const added = this.scope(index, visible).filter((session) => !before.includes(session));
-      if (added.length) {
-        const first = this.db
-          .prepare(
-            `SELECT MIN(f.seq) AS n FROM fragments f JOIN documents d ON d.id=f.document WHERE d.session IN (${added.map(() => '?').join(',')})`,
-          )
-          .get(...added)?.n;
-        // A brand-new Session appends after coverage; do not rescan old history.
-        // Restoring visibility to older cached originals requires reconsideration.
-        if (first !== null && first !== undefined)
-          index.covered = Math.min(index.covered, Number(first) - 1);
-      }
       index.view = view;
       index.revision++;
       this.save(index);
@@ -176,45 +215,164 @@ export class NetworkStore {
     });
     return { items, next: rows.length > limit ? String(rows[limit - 1].id) : null };
   }
-  batch(id: string, visible: string[], limit = 5) {
-    return this.transaction(() => {
-      const index = this.align(id, visible),
-        scope = this.scope(index, visible);
-      const high = Number(
-        this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM fragments').get()!.n,
+  allEntries(id: string, visible: string[]) {
+    const items: ReturnType<NetworkStore['entries']>['items'] = [];
+    let after = '';
+    do {
+      const page = this.entries(id, visible, after, 1000);
+      items.push(...page.items);
+      if (!page.next) break;
+      after = page.next;
+    } while (true);
+    return items;
+  }
+  overview(id: string, visible: string[]) {
+    const items = this.allEntries(id, visible);
+    return {
+      total: items.length,
+      chars: items.reduce((n, e) => n + e.body.length, 0),
+      items: items.map((entry) => ({
+        id: entry.id,
+        title:
+          entry.body
+            .split('\n')
+            .find((line) => line.trim())
+            ?.replace(/^#+\s*/, '')
+            .slice(0, 200) ?? entry.id,
+        chars: entry.body.length,
+        citations: entry.refs.length,
+      })),
+      next: null,
+      readFull: 'MemoryIndexEntries',
+    };
+  }
+  coverage(id: string, visible: string[]) {
+    const index = this.index(id),
+      scope = this.scope(index, visible);
+    const sources = (index.sources ?? ['maka']).map((source) => {
+      let total = 0,
+        processed = 0;
+      for (const key of scope.filter((k) => sourceOf(k) === source)) {
+        const row = this.db
+          .prepare(`SELECT COUNT(*) total,COUNT(c.ref) processed FROM fragments f
+          JOIN documents d ON d.id=f.document LEFT JOIN coverage c ON c.ref=f.ref AND c.index_id=? WHERE d.session=?`)
+          .get(id, key)!;
+        total += Number(row.total);
+        processed += Number(row.processed);
+      }
+      return {
+        source,
+        observedFragments: total,
+        processedFragments: processed,
+        unprocessedFragments: total - processed,
+      };
+    });
+    return {
+      indexId: id,
+      sources,
+      unprocessed: sources.reduce((n, s) => n + s.unprocessedFragments, 0),
+      meaning:
+        'Processed under this index criterion, even if no entry was needed. Coverage is per original version, not event time. Source synchronization may lag.',
+    };
+  }
+  uncovered(
+    id: string,
+    visible: string[],
+    options: {
+      source?: string;
+      query?: string;
+      after?: number;
+      limit?: number;
+      state?: 'unprocessed' | 'processed' | 'all';
+      before?: number;
+    } = {},
+  ) {
+    const index = this.index(id),
+      scope = this.scope(index, visible).filter(
+        (k) => !options.source || sourceOf(k) === options.source,
       );
-      const rows = scope.length
-        ? this.db
-            .prepare(
-              `SELECT f.*,d.session,d.message,d.position,d.observed,LENGTH(d.body) AS totalChars FROM fragments f JOIN documents d ON d.id=f.document WHERE f.seq>? AND f.seq<=? AND d.session IN (${scope.map(() => '?').join(',')}) ORDER BY f.seq LIMIT ?`,
-            )
-            .all(index.covered, high, ...scope, limit + 1)
-        : [];
-      const items = rows.slice(0, limit),
-        more = rows.length > limit,
-        through = more ? Number(items.at(-1)!.seq) : high,
-        idBatch = randomUUID();
+    const limit = options.limit ?? 10;
+    if (!scope.length) return { items: [], next: null };
+    const state = options.state ?? 'unprocessed';
+    const rows = this.db
+      .prepare(`SELECT f.*,d.session,d.message,d.position,d.observed,LENGTH(d.body) totalChars,
+      c.ref IS NOT NULL processed FROM fragments f JOIN documents d ON d.id=f.document
+      LEFT JOIN coverage c ON c.ref=f.ref AND c.index_id=?
+      WHERE d.session IN (${scope.map(() => '?')}) AND f.seq>? AND f.seq<=?
+      ${state === 'unprocessed' ? 'AND c.ref IS NULL' : state === 'processed' ? 'AND c.ref IS NOT NULL' : ''}
+      AND instr(lower(f.text),lower(?))>0 ORDER BY f.seq LIMIT ?`)
+      .all(
+        id,
+        ...scope,
+        options.after ?? 0,
+        options.before ?? Number.MAX_SAFE_INTEGER,
+        options.query ?? '',
+        limit + 1,
+      );
+    return {
+      items: rows
+        .slice(0, limit)
+        .map((row): any => ({ ...row, source: sourceOf(String(row.session)) })),
+      next: rows.length > limit ? Number(rows[limit - 1].seq) : null,
+    };
+  }
+  batch(
+    id: string,
+    visible: string[],
+    limit = 5,
+    before = Number.MAX_SAFE_INTEGER,
+    maxChars = 64000,
+  ) {
+    return this.transaction(() => {
+      const index = this.align(id, visible);
+      const page = this.uncovered(id, visible, { limit, before });
+      // Keep complete immutable fragments. A single fragment must always fit so
+      // character limits cannot strand coverage at an oversized first item.
+      const items: typeof page.items = [];
+      let chars = 0;
+      for (const item of page.items) {
+        const size = String(item.text).length;
+        if (items.length && chars + size > maxChars) break;
+        items.push(item);
+        chars += size;
+      }
+      const idBatch = randomUUID();
       this.db
         .prepare('INSERT INTO batches VALUES(?,?,?,?,?,?,NULL)')
-        .run(
-          idBatch,
-          id,
-          index.revision,
-          through,
-          JSON.stringify(items.map((r) => r.ref)),
-          index.view,
-        );
+        .run(idBatch, id, index.revision, 0, JSON.stringify(items.map((r) => r.ref)), index.view);
       return {
         index,
         batchId: idBatch,
-        through,
-        observedHighWater: high,
         items,
-        hasMore: more,
+        hasMore: items.length < page.items.length || page.next !== null,
         coverageNotice:
-          'Coverage means organized under this index criterion, not merely read. Commit only this supplied batch; later arrivals remain pending.',
+          'Commit marks only these exact original versions as processed; later arrivals and other sources remain pending.',
       };
     });
+  }
+  head(key: string) {
+    return this.db.prepare('SELECT revision,checked_at FROM source_heads WHERE key=?').get(key);
+  }
+  setHead(key: string, revision: string) {
+    this.db
+      .prepare(
+        'INSERT INTO source_heads VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,checked_at=excluded.checked_at',
+      )
+      .run(key, revision, Date.now());
+  }
+  worker(id: string): any {
+    const row = this.db.prepare('SELECT payload FROM workers WHERE index_id=?').get(id);
+    return row ? JSON.parse(String(row.payload)) : undefined;
+  }
+  saveWorker(id: string, value: any) {
+    this.db
+      .prepare(
+        'INSERT INTO workers VALUES(?,?) ON CONFLICT(index_id) DO UPDATE SET payload=excluded.payload',
+      )
+      .run(id, JSON.stringify(value));
+  }
+  highWater() {
+    return Number(this.db.prepare('SELECT COALESCE(MAX(seq),0) n FROM fragments').get()!.n);
   }
   commit(batchId: string, changes: Entry[], remove: string[], visible: string[]) {
     return this.transaction(() => {
@@ -233,13 +391,24 @@ export class NetworkStore {
         JSON.stringify(this.scope(index, visible)) !== batch.view
       )
         throw Error('Index or source scope changed; read a fresh batch');
+      const invalidRefs: { entryId: string; ref: string }[] = [];
+      const scope = this.scope(index, visible);
       for (const entry of changes) {
         if (!entry.refs.length) throw Error('Every index entry must cite originals');
         for (const ref of entry.refs) {
-          const original = this.fragment(ref, visible);
-          if (index.sessions.length && !index.sessions.includes(String(original.session)))
-            throw Error('Reference outside index scope');
+          try {
+            const original = this.fragment(ref, visible);
+            if (!scope.includes(String(original.session))) throw Error('Outside index scope');
+          } catch {
+            invalidRefs.push({ entryId: entry.id, ref });
+          }
         }
+      }
+      if (invalidRefs.length)
+        throw Error(
+          `Original is missing or outside current history visibility/index scope. Invalid submitted references: ${JSON.stringify(invalidRefs)}. Copy exact refs from the supplied originals; fetching a new batch does not repair a mistyped ref. No entries or coverage were committed. Re-submit all intended changes after correcting references.`,
+        );
+      for (const entry of changes) {
         this.db
           .prepare(
             'INSERT INTO entries VALUES(?,?,?) ON CONFLICT(index_id,id) DO UPDATE SET body=excluded.body',
@@ -253,7 +422,14 @@ export class NetworkStore {
       }
       for (const id of remove)
         this.db.prepare('DELETE FROM entries WHERE index_id=? AND id=?').run(index.id, id);
-      index.covered = Number(batch.through_seq);
+      for (const ref of JSON.parse(String(batch.refs))) {
+        this.fragment(ref, visible);
+        this.db.prepare('INSERT OR IGNORE INTO coverage VALUES(?,?)').run(index.id, ref);
+      }
+      // Kept only for legacy audit compatibility; public coverage is a query, not a scalar.
+      index.covered = Number(
+        this.db.prepare('SELECT COUNT(*) n FROM coverage WHERE index_id=?').get(index.id)!.n,
+      );
       index.revision++;
       this.save(index);
       const receipt = { signature, index };

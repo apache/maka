@@ -121,6 +121,22 @@ test('keeps user-approved subagent presets canonical in Runtime Policy', () => {
   );
 });
 
+test('preserves disabled agent collaboration across policy mutation and canonical decode', () => {
+  const subagents = { enabled: false, presets: [] };
+  const policy = { ...createDefaultRuntimePolicy(), subagents };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(policy).subagents, subagents);
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 2,
+      operation: { kind: 'set_subagents', value: subagents },
+    }).operation,
+    { kind: 'set_subagents', value: subagents },
+  );
+  assert.deepEqual(decodeCanonicalRuntimePolicy(createDefaultRuntimePolicy()).subagents, {
+    presets: [],
+  });
+});
+
 test('normalizes the explicit Git Bash preference and rejects arbitrary shell kinds', () => {
   assert.deepEqual(
     normalizeRuntimePolicyMutation({

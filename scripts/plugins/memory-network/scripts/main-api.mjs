@@ -42,6 +42,7 @@ export const alias = {
   },
 };
 const exports = [
+  ['runtime', 'tool-availability', 'ToolAvailabilityRuntime'],
   ['runtime', 'plugin-session-query-service', 'PluginSessionQueryService'],
   ['core', 'recall', 'listRecallHistorySessions'],
   ['runtime', 'plan-mode', 'selectCollaborationTools'],

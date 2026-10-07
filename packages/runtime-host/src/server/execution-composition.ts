@@ -1709,8 +1709,15 @@ export async function createExecutionRuntimeHostComposition(
     pluginSessionQuery.bindRuntime({
       historyList: async (caller) => {
         if (!caller.invocation) throw new Error('History requires an Agent invocation');
-        return (await listRecallHistorySessions(recallDeps, caller.invocation.sessionId)).map(
-          pluginSessionSummary,
+        return Promise.all(
+          (await listRecallHistorySessions(recallDeps, caller.invocation.sessionId)).map(
+            async (session) => ({
+              ...pluginSessionSummary(session),
+              historyRevision: await stores.runtimeEventStore.readSessionHistoryRevision(
+                session.id,
+              ),
+            }),
+          ),
         );
       },
       historyRead: async (sessionId, caller) => {
@@ -1788,6 +1795,13 @@ export async function createExecutionRuntimeHostComposition(
       placement: 'current_turn' | 'next_turn',
       initiator: import('@maka/runtime/plugin-agent-service').PluginAgentInvocation,
     ) => {
+      // Plugin activation precedes Root Turn recovery. A background timer must
+      // not admit a new root against the still-empty in-memory admission chain.
+      if (!rootRecoveryCompleted || draining) {
+        throw new Error(
+          'Runtime Host is not ready for Plugin Agent messages; retry after recovery',
+        );
+      }
       if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id)) {
         throw new Error('Agent is outside the current ownership tree');
       }
@@ -1814,6 +1828,31 @@ export async function createExecutionRuntimeHostComposition(
     };
     pluginAgents.bindRuntime({
       create: async (options, initiator) => {
+        if (options.background) {
+          const parent = await stores.sessionStore.readHeaderSnapshot(initiator.sessionId);
+          const session = await requireSessionManager(manager).createSession(
+            {
+              cwd: parent.cwd,
+              name: options.name ?? 'Plugin background worker',
+              parentSessionId: parent.id,
+              llmConnectionSlug: parent.llmConnectionSlug,
+              ...(parent.llmConnectionId ? { llmConnectionId: parent.llmConnectionId } : {}),
+              ...(parent.model ? { model: parent.model } : {}),
+              permissionMode: parent.permissionMode,
+              ...(parent.executorId ? { executorId: parent.executorId } : {}),
+              ...(parent.toolMode ? { toolMode: parent.toolMode } : {}),
+            },
+            {
+              ...(initiator.executionBoundary
+                ? { initialBoundary: initiator.executionBoundary }
+                : {}),
+            },
+          );
+          hostChanges.publishSessionCatalog(session.id);
+          if (options.prompt)
+            await submitAgentMessage(session.id, options.prompt, 'next_turn', initiator);
+          return describeAgent(session);
+        }
         const spawn = initiator.toolContext?.spawnChildSession;
         if (!spawn) throw new Error('Agent creation requires an active Tool invocation');
         if (!options.prompt?.trim()) throw new Error('Agent creation requires a prompt');

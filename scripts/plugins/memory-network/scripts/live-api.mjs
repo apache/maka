@@ -24,7 +24,8 @@ const kind = process.argv[2] ?? 'live';
 const content =
   kind === 'ui'
     ? `export {ClientPluginRuntime,MakaClientRoot,MakaClientRootOutlet} from ${JSON.stringify(join(source, 'packages/ui/src/client-plugin-runtime.tsx'))}; export {MakaClientSlotOutlet,MakaClientPluginSdkModule} from ${JSON.stringify(join(source, 'packages/ui/src/client-plugin-slots.tsx'))};`
-    : `export {createTestAiSdkBackend} from ${JSON.stringify(join(source, 'packages/runtime/src/__tests__/execution-boundary-test-helpers.ts'))};
+    : `export {generateText} from "ai";
+export {createTestAiSdkBackend} from ${JSON.stringify(join(source, 'packages/runtime/src/__tests__/execution-boundary-test-helpers.ts'))};
 export {getAIModel} from ${JSON.stringify(join(source, 'packages/runtime/src/model-factory.ts'))};
 export {createSessionEventMapMemory,mapSessionEventToRuntimeEvent} from ${JSON.stringify(join(source, 'packages/runtime/src/session-event-runtime-mapper.ts'))};`;
 await build({
@@ -50,6 +51,7 @@ await build({
   nodePaths: [
     resolve('node_modules'),
     join(source, 'node_modules'),
+    join(source, 'packages/runtime/node_modules'),
     ...(process.env.MAKA_NODE_MODULES ? [resolve(process.env.MAKA_NODE_MODULES)] : []),
   ],
   banner: {

@@ -131,8 +131,7 @@ test('scope visibility change invalidates issued batches and never exposes inacc
   assert.equal(safe.items.length, 1);
   store.commit(safe.batchId, [], [], ['public']);
   const restored = store.batch(i.id, ['public', 'private']);
-  assert.equal(restored.index.covered, 0);
-  assert.equal(restored.items.length, 2);
+  assert.equal(restored.items.length, 1, 'only previously unprocessed private evidence returns');
 });
 
 test('a new Session is incremental and does not trigger a full historical rescan', (t) => {
@@ -146,4 +145,131 @@ test('a new Session is incremental and does not trigger a full historical rescan
   assert.equal(next.index.covered, 1);
   assert.equal(next.items.length, 1);
   assert.equal(next.items[0].session, 'new');
+});
+
+test('legacy database migration retains originals, links and coverage without trusting old outstanding batches', (t) => {
+  const { store, root } = setup(t);
+  store.ingest('s', [msg('a', 'A'), msg('b', 'B')]);
+  const i = store.create('Events', 'Events', []),
+    first = store.batch(i.id, ['s'], 1);
+  store.commit(
+    first.batchId,
+    [{ id: 'a', body: 'A', refs: [String(first.items[0].ref)] }],
+    [],
+    ['s'],
+  );
+  const stale = store.batch(i.id, ['s']);
+  store.db.exec("DROP TABLE coverage; DELETE FROM memory_meta WHERE key='coverage-v2'");
+  const migrated = new NetworkStore(root);
+  try {
+    assert.equal(migrated.coverage(i.id, ['s']).unprocessed, 1);
+    assert.equal(migrated.entries(i.id, ['s']).items.length, 1);
+    assert.throws(() => migrated.commit(stale.batchId, [], [], ['s']), /Unknown batch/);
+    assert.equal(migrated.original(String(first.items[0].ref), ['s']).backlinks.length, 1);
+  } finally {
+    migrated.close();
+  }
+});
+
+test('coverage is a set: processing one source never acknowledges another, and old edits remain pending', (t) => {
+  const { store } = setup(t);
+  store.ingest('a', [msg('1', 'old')]);
+  store.ingest('["feishu","a"]', [msg('1', 'external')]);
+  const i = store.create('Events', 'Events', [], ['maka', 'feishu']);
+  const b = store.batch(i.id, ['a', '["feishu","a"]'], 1);
+  store.commit(b.batchId, [], [], ['a', '["feishu","a"]']);
+  assert.equal(store.coverage(i.id, ['a', '["feishu","a"]']).unprocessed, 1);
+  store.ingest('a', [msg('1', 'corrected')]);
+  assert.equal(store.coverage(i.id, ['a', '["feishu","a"]']).unprocessed, 2);
+  assert.equal(store.uncovered(i.id, ['a', '["feishu","a"]'], { source: 'maka' }).items.length, 1);
+});
+
+test('maintenance batches pack short originals while bounding text without dropping the remainder', (t) => {
+  const { store } = setup(t);
+  store.ingest(
+    's',
+    Array.from({ length: 250 }, (_, n) => msg(String(n), 'x'.repeat(100))),
+  );
+  const index = store.create('Events', 'Keep timelines', []);
+  const through = store.highWater();
+  store.ingest('s', [msg('late', 'Later arrival')]);
+  const seen = new Set<string>();
+  let rounds = 0;
+  for (;;) {
+    const batch = store.batch(index.id, ['s'], 200, through, 8000);
+    if (!batch.items.length) break;
+    assert.ok(batch.items.reduce((n, x) => n + String(x.text).length, 0) <= 8000);
+    if (rounds === 0) assert.ok(batch.items.length > 20, 'short records are not capped at twenty');
+    for (const item of batch.items) {
+      assert.ok(!seen.has(String(item.ref)));
+      seen.add(String(item.ref));
+    }
+    store.commit(batch.batchId, [], [], ['s']);
+    rounds++;
+  }
+  assert.equal(seen.size, 250);
+  assert.ok(rounds < 10);
+  assert.equal(store.coverage(index.id, ['s']).unprocessed, 1);
+});
+
+test('invalid citations identify every submitted bad reference without committing partial coverage', (t) => {
+  const { store } = setup(t);
+  store.ingest('s', [msg('a', 'Actual evidence')]);
+  const index = store.create('Events', 'Timelines', ['s']);
+  const batch = store.batch(index.id, ['s']);
+  assert.throws(
+    () =>
+      store.commit(
+        batch.batchId,
+        [
+          { id: 'good', body: 'Good', refs: [String(batch.items[0].ref)] },
+          { id: 'bad', body: 'Bad', refs: ['typo-one:0', 'typo-two:0'] },
+        ],
+        [],
+        ['s'],
+      ),
+    (error: any) => {
+      assert.match(error.message, /typo-one:0/);
+      assert.match(error.message, /typo-two:0/);
+      assert.match(error.message, /Re-submit all intended changes/);
+      return true;
+    },
+  );
+  assert.equal(store.entries(index.id, ['s']).items.length, 0);
+  assert.equal(store.coverage(index.id, ['s']).unprocessed, 1);
+  store.commit(
+    batch.batchId,
+    [{ id: 'good', body: 'Good', refs: [String(batch.items[0].ref)] }],
+    [],
+    ['s'],
+  );
+  assert.equal(store.coverage(index.id, ['s']).unprocessed, 0);
+});
+
+test('index overview exposes the full lightweight directory and only visible entries', (t) => {
+  const { store } = setup(t);
+  store.ingest('s', [msg('a', 'Evidence')]);
+  const index = store.create('Events', 'Event history', []);
+  const batch = store.batch(index.id, ['s']);
+  const body = 'Full timeline '.repeat(1000);
+  store.commit(
+    batch.batchId,
+    Array.from({ length: 8 }, (_, n) => ({
+      id: String(n),
+      body,
+      refs: [String(batch.items[0].ref)],
+    })),
+    [],
+    ['s'],
+  );
+  const summary = store.overview(index.id, ['s']);
+  assert.equal(summary.total, 8);
+  assert.equal(summary.items.length, 8);
+  assert.equal(summary.next, null);
+  assert.ok(JSON.stringify(summary).length < 2500);
+  assert.ok(summary.items.every((e) => e.chars === body.length && !('body' in e)));
+  assert.equal(store.entries(index.id, ['s']).items[0].body, body);
+  assert.equal(store.overview(index.id, []).total, 0);
+  assert.deepEqual(store.overview(index.id, []).items, []);
+  assert.equal(store.overview(index.id, ['other']).total, 0);
 });

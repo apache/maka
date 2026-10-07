@@ -31,6 +31,7 @@ import { runtimeHandoffPause } from '@maka/core/runtime-handoff';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
+import { PluginAgentService, type PluginAgentRuntime } from '@maka/runtime/plugin-agent-service';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -115,6 +116,49 @@ const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   baseProviderOptionsHash: `sha256:${'0'.repeat(64)}`,
   toolNames: [],
   contextWindow: null,
+});
+
+test('Plugin Agent background messages cannot race Root Turn startup recovery', async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let runtime!: PluginAgentRuntime;
+    let earlyAttempt!: Promise<void>;
+    const bind = PluginAgentService.prototype.bindRuntime;
+    const initiator = {
+      sessionId: randomUUID(),
+      turnId: randomUUID(),
+      cwd: root,
+      abortSignal: new AbortController().signal,
+    };
+    t.mock.method(
+      PluginAgentService.prototype,
+      'bindRuntime',
+      function (this: PluginAgentService, bound: PluginAgentRuntime) {
+        runtime = bound;
+        // Activation callbacks run while the persisted admission tip is not yet loaded.
+        earlyAttempt = assert.rejects(
+          bound.followup(initiator.sessionId, 'continue unfinished index', initiator),
+          /not ready for Plugin Agent messages/,
+        );
+        return bind.call(this, bound);
+      },
+    );
+    const { composition } = await createCapturedExecutionComposition(owner);
+    try {
+      await earlyAttempt;
+      // After recovery, normal ownership validation is reachable again.
+      await assert.rejects(
+        runtime.followup(initiator.sessionId, 'continue unfinished index', initiator),
+        /outside the current ownership tree/,
+      );
+      composition.beginDrain();
+      await assert.rejects(
+        runtime.followup(initiator.sessionId, 'continue unfinished index', initiator),
+        /not ready for Plugin Agent messages/,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
 });
 
 test('idle schedules and armed or paused Goals allow production handoff and recover in the successor', {

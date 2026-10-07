@@ -180,6 +180,8 @@ export interface MakaTool<P = any, R = unknown> {
   parameters: unknown;
   /** Optional UI display name. */
   displayName?: string;
+  /** Schema discovery only; direct tools need no tool_search. Does not grant permission. */
+  discovery?: 'direct' | 'search';
   /** Stable semantic category used by UI presentation; never carries styling. */
   activityKind?: ToolActivityKind;
   /** Optional trusted category override for custom tools. */

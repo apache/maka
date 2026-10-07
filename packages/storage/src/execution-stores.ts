@@ -172,6 +172,7 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
       runId: string,
       events: readonly RuntimeEvent[],
     ): Promise<void>;
+    readSessionHistoryRevision(sessionId: string): Promise<string>;
     readSessionRuntimeEventEntries(sessionId: string): Promise<SessionRuntimeEventEntry[]>;
     /** Called once per Session after each write that committed RuntimeEvents to it. */
     subscribeRuntimeEventCommits(listener: (sessionId: string) => void): () => void;
@@ -264,6 +265,7 @@ export interface ExecutionRuntimeEventReader {
   ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+  readSessionHistoryRevision(sessionId: string): Promise<string>;
   /** Session-wide events with the ordinal that fixes their transcript order. */
   readSessionRuntimeEventEntries(
     sessionId: string,
@@ -737,6 +739,8 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      readSessionHistoryRevision: (sessionId: string) =>
+        run(() => runtimeEventStore.readSessionHistoryRevision(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
       listSessionsWithRuntimeEventText: (sessionIds, terms) =>
@@ -882,6 +886,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
+      readSessionHistoryRevision: (sessionId: string) =>
+        run(() => runtimeEventStore.readSessionHistoryRevision(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEventEntries(sessionId)),
       listSessionsWithRuntimeEventText: (sessionIds, terms) =>

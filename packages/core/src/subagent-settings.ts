@@ -45,6 +45,8 @@ export interface SubagentPreset {
 }
 
 export interface SubagentSettings {
+  /** When false, Agent turns do not receive child, Graph or Swarm tools. Defaults to enabled. */
+  enabled?: boolean;
   presets: SubagentPreset[];
 }
 
@@ -109,5 +111,6 @@ export function normalizeSubagentSettings(input: unknown): SubagentSettings {
       enabled: value.enabled,
     });
   }
-  return { presets };
+  const enabled = (input as { enabled?: unknown }).enabled;
+  return { ...(typeof enabled === 'boolean' ? { enabled } : {}), presets };
 }

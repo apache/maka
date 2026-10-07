@@ -199,7 +199,11 @@ export class ToolAvailabilityRuntime {
     const searchable =
       config === undefined
         ? new Set<string>()
-        : new Set([...known].filter((name) => !DIRECT_TOOL_NAMES.has(name)));
+        : new Set(
+            tools
+              .filter((tool) => !DIRECT_TOOL_NAMES.has(tool.name) && tool.discovery !== 'direct')
+              .map((tool) => tool.name),
+          );
     const claimed = new Set<string>();
     const groups: SearchGroup[] = [];
     for (const group of config?.groups ?? []) {
