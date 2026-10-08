@@ -237,6 +237,7 @@ test('a supervisor fault is reported as a failure before its tree is stopped', {
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-owned-fault-'));
   const late = join(directory, 'late');
+  const escapedLate = join(directory, 'escaped-late');
   // Throw inside the real supervisor once it has admitted the command; the
   // test plays the Host on the other end of its lease channel.
   const preload = join(directory, 'fault.cjs');
@@ -263,7 +264,11 @@ process.send = (message, ...rest) => {
       program: process.execPath,
       args: [
         '-e',
-        `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 1000);
+        // The command also starts a descendant in its own session, outside the
+        // supervisor's process group: only the supervisor's tree walk reaches it.
+        `const { spawn } = require('node:child_process');
+        spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escapedLate)}, 'late'), 1000); setInterval(() => {}, 1000);`)}], { detached: true, stdio: 'ignore' }).unref();
+        setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 1000);
         setInterval(() => {}, 1000);`,
       ],
       cwd: directory,
@@ -279,6 +284,7 @@ process.send = (message, ...rest) => {
     assert.equal(messages[1]?.message, 'Command supervisor failed: injected fault');
     await delay(1200);
     await assert.rejects(readFile(late), { code: 'ENOENT' });
+    await assert.rejects(readFile(escapedLate), { code: 'ENOENT' });
   } finally {
     if (supervisor.pid && process.platform !== 'win32') {
       try {
@@ -288,6 +294,55 @@ process.send = (message, ...rest) => {
       }
     }
     supervisor.kill('SIGKILL');
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a fault reported after admission leaves the stop to the supervisor, with a group kill as backstop', {
+  timeout: 10_000,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-owned-fault-host-'));
+  const late = join(directory, 'late');
+  const { child, ready } = spawnOwnedProcess({
+    program: process.execPath,
+    args: [
+      '-e',
+      `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 1000);
+      setInterval(() => {}, 1000);`,
+    ],
+    cwd: directory,
+    shell: false,
+    stdin: 'ignore',
+  });
+  const errors: Error[] = [];
+  child.on('error', (error) => errors.push(error));
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  try {
+    await ready;
+    // What a faulting supervisor reports before walking its own tree.
+    child.emit('message', { kind: 'failed', message: 'Command supervisor failed: injected' });
+    await delay(150);
+    assert.deepEqual(
+      errors.map((error) => error.message),
+      ['Command supervisor failed: injected'],
+    );
+    assert.equal(child.exitCode, null, 'the Host does not kill a supervisor mid-walk');
+    assert.equal(child.signalCode, null, 'the Host does not kill a supervisor mid-walk');
+    // If the supervisor then dies without stopping its command, the Host's
+    // exit backstop still does.
+    child.kill('SIGKILL');
+    await exited;
+    await delay(1200);
+    await assert.rejects(readFile(late), { code: 'ENOENT' });
+    assert.equal(errors.length, 1, 'the fault is reported once');
+  } finally {
+    if (child.pid && process.platform !== 'win32') {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* already exited */
+      }
+    }
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -25,6 +25,7 @@ let command: ChildProcess | undefined;
 let stopping = false;
 let completed = false;
 let ownerLost = false;
+let finishing = false;
 
 function loseOwner(): void {
   if (completed || ownerLost) return;
@@ -48,6 +49,12 @@ function loseOwner(): void {
  * report the fault first while the lease is still up. */
 function fault(error: unknown): void {
   if (completed || ownerLost) return;
+  // The command has exited and its result is already on the way; a fault
+  // now must not turn it into a failure. Only make sure this process ends.
+  if (finishing) {
+    setTimeout(() => process.exit(1), 1_000);
+    return;
+  }
   if (!process.connected) {
     loseOwner();
     return;
@@ -97,6 +104,7 @@ function send(message: object, then?: () => void): void {
 }
 
 function finish(code: number | null, signal: NodeJS.Signals | null): void {
+  finishing = true;
   send({ kind: 'completed' }, () => {
     completed = true;
     if (signal) exitWithSignal(signal);

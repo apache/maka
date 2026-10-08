@@ -121,16 +121,20 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
     outputReleased = true;
     for (const stream of outputs) stream.resume();
   };
-  /** `supervisorExiting`: the supervisor reported and is exiting on its own,
-   * so its PID may be reaped before a tree walk could start. */
-  function fail(error: Error, supervisorExiting = false): void {
+  /**
+   * `stop` says who stops the tree: `tree` walks it from the live supervisor;
+   * `group` signals only its process group, because the supervisor is exiting
+   * on its own and its PID may be reaped before a walk could start; `none`
+   * leaves the stop to the supervisor, which walks its own tree.
+   */
+  function fail(error: Error, stop: 'tree' | 'group' | 'none' = 'tree'): void {
     if (failureReported) return;
     failureReported = true;
     clearTimeout(timer);
     rejectReady(error);
     releaseOutput();
-    if (supervisorExiting) terminateOrphanedGroup();
-    else terminate();
+    if (stop === 'tree') terminate();
+    else if (stop === 'group') terminateOrphanedGroup();
     child.emit('error', error);
   }
   child.once('error', (error) => {
@@ -164,9 +168,20 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
     } else if (message.kind === 'completed') {
       completed = true;
     } else if (message.kind === 'failed') {
-      completed = true;
+      // A result already arrived; a later report cannot replace it.
+      if (completed) return;
       const error = Object.assign(new Error(message.message), { code: message.code });
-      fail(error, true);
+      if (!started) {
+        // The command never spawned; the supervisor is exiting on its own.
+        completed = true;
+        fail(error, 'group');
+      } else {
+        // A supervisor fault after admission: it stops its own tree, including
+        // descendants that left its group, before exiting. Signalling the group
+        // now would kill it mid-walk. The group kill on its exit stays the
+        // backstop, so `completed` remains unset.
+        fail(error, 'none');
+      }
     }
   });
   child.once('exit', (code) => {
