@@ -54,7 +54,7 @@ Agent harness 的本职就是把任务做完。衡量它的标准只有一条：
 
 ## 获取 Maka
 
-**Apache Releases**：Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选版本的准入标准、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
+**Apache Releases**：最新的 Apache release 是 0.2.0（孵化中）。带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选版本的准入标准、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
 **开发测试**：如果希望贡献代码或协助测试尚未发布的改动，请阅读[贡献指南](./CONTRIBUTING.zh-CN.md)并关注[开发邮件列表](https://lists.apache.org/list.html?dev@maka.apache.org)。开发构建不是获批的 Apache 正式版本。
 

@@ -46,3 +46,25 @@ repository root, run `npm --workspace @maka/desktop run typecheck:stories` and
 `npm --workspace @maka/desktop run smoke:storybook`. Smoke does not rebuild the
 catalog. For focused runs, verify that the relevant `play` functions finish;
 an image of the final screen alone does not prove their assertions passed.
+
+## Pixel evidence for layout refactors
+
+Smoke proves a story renders; it never compares pixels. Refactors that promise
+no visual change (the A1 work under #5793) attach before/after evidence with
+`scripts/storybook-visual-diff.mjs`, which shoots the chat-surface story set
+with a frozen clock and disabled animations:
+
+```sh
+npm --workspace @maka/desktop run build-storybook
+npm run shots:storybook -- capture --out /tmp/maka-shots/before
+# apply the refactor, rebuild storybook
+npm run shots:storybook -- capture --out /tmp/maka-shots/after
+npm run shots:storybook -- compare /tmp/maka-shots/before /tmp/maka-shots/after
+```
+
+`compare` lists identical stories and writes a magenta-on-dim diff image per
+changed shot under `<after>-diff/`. Attach the diff image (or the zero-diff
+output) to the PR. Keep both captures on the same machine — the font stack
+starts with `-apple-system`, so a cross-OS comparison diffs every glyph. Use
+`--stories <substring>` to focus on the stories a change touches. Captures are
+local artifacts: never commit them, and nothing here runs in CI.

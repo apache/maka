@@ -117,7 +117,7 @@ export function MemorySettingsPage(props: {
 
   return (
     <SettingsPage>
-      <SettingsSection description={sharedCopy.groups.memorySourcesHelp}>
+      <SettingsSection title={sharedCopy.groups.memorySources} description={sharedCopy.groups.memorySourcesHelp}>
         <SettingsRow
           label={hasLocalMemoryPaths ? copy.text.localFile : 'MEMORY.md'}
           description={hasLocalMemoryPaths ? copy.text.localFileHelp : copy.text.fileContent}
@@ -159,7 +159,6 @@ export function MemorySettingsPage(props: {
         action={(
           <Button
             variant="secondary"
-            size="sm"
             isDisabled={entryActionsBlocked}
             aria-expanded={addFormOpen}
             onClick={() => setAddFormOpen((open) => !open)}
@@ -340,7 +339,6 @@ export function MemorySettingsPage(props: {
         action={(
           <Button
             variant="secondary"
-            size="sm"
             aria-expanded={advancedOpen}
             onClick={() => setAdvancedOpen((open) => !open)}
             label={advancedOpen ? sharedCopy.hideDetails : sharedCopy.showDetails}
@@ -355,7 +353,7 @@ export function MemorySettingsPage(props: {
             <>
               {effective.latestBackup ? (
                 <span>
-                  {localMemoryBackupKindLabel(effective.latestBackup.kind, copy)} · {localMemoryBackupSummary(effective.latestBackup, copy)} · <RelativeTime ts={effective.latestBackup.updatedAt} />
+                  {localMemoryBackupKindLabel(effective.latestBackup.kind, copy)} · {localMemoryBackupSummary(effective.latestBackup, copy)} · <RelativeTime ts={effective.latestBackup.updatedAt} className="settingsInlineTime" />
                 </span>
               ) : (
                 <span>{copy.text.waitingBackup}</span>
@@ -377,7 +375,7 @@ export function MemorySettingsPage(props: {
                   const backupCandidateLabel = `${localMemoryBackupKindLabel(backup.kind, copy)} · ${localMemoryBackupSummary(backup, copy)}`;
                   return (
                     <li key={`${backup.kind}:${backup.path}`} className="settingsMemoryBackupCandidate">
-                      <span>{backupCandidateLabel} · <RelativeTime ts={backup.updatedAt} /></span>
+                      <span>{backupCandidateLabel} · <RelativeTime ts={backup.updatedAt} className="settingsInlineTime" /></span>
                       {backup.path && (
                         <Button
                           variant="ghost"
@@ -419,7 +417,7 @@ export function MemorySettingsPage(props: {
             <div className="settingsMemorySaveSummary" role="status">
               <strong>{lastSaveSummary.title}</strong>
               <small className="settingsMemorySaveSummaryTime">
-                {copy.text.savedAt}<RelativeTime ts={lastSaveSummary.savedAt} />
+                {copy.text.savedAt}<RelativeTime ts={lastSaveSummary.savedAt} className="settingsInlineTime" />
               </small>
               <small>{lastSaveSummary.detail}</small>
             </div>

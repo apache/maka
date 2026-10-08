@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
@@ -150,6 +150,8 @@ test('Nightly publication verifies the exact draft before one Prerelease/non-Lat
   assert.match(edit[1].at(-1), /not an Apache Release/u);
   assert.match(edit[1].at(-1), /DISCLAIMER-WIP/u);
   assert.match(edit[1].at(-1), /Apache License 2\.0/u);
+  const disclaimer = await readFile(new URL('../DISCLAIMER-WIP', import.meta.url), 'utf8');
+  assert.ok(edit[1].at(-1).endsWith(disclaimer.trimEnd()));
 });
 
 test('a missing Nightly release is created only as a draft prerelease with Latest disabled', async (t) => {

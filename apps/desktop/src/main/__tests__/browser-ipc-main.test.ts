@@ -94,7 +94,12 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     isDestroyed(): boolean { return false; }
   }
   const windows = new Map<unknown, FakeWindow>();
-  const BrowserWindow = { fromWebContents: (contents: unknown) => windows.get(contents) ?? null };
+  const BrowserWindow = {
+    fromWebContents: (contents: FakeRenderer) => {
+      if (contents.isDestroyed()) throw new TypeError('Object has been destroyed');
+      return windows.get(contents) ?? null;
+    },
+  };
   const testGlobal = globalThis as typeof globalThis & {
     __makaBrowserIpcMain?: typeof ipcMain;
     __makaBrowserWindow?: typeof BrowserWindow;
@@ -350,6 +355,16 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.equal(coordinationController.disposed, true, 'destroying the owner releases its page even while Main presents it');
     assert.equal(controllers.get(mainKey), mainController, 'destroying WorkHub preserves the main browser session');
     assert.equal(mainController.disposed, false);
+
+    // Closing Main destroys its WebContents before selection cleanup runs.
+    // Electron rejects fromWebContents on that destroyed native object.
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 5);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 5);
+    assert.doesNotThrow(() => main.destroy());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(mainController.disposed, true, 'closing Main still releases its owned browser page');
+    assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
+    assert.equal(mainWindow.listenerCount('close'), 0, 'renderer teardown removes window listeners');
   } finally {
     hooks.deregister();
     setBridgeFactoryForTest(null);

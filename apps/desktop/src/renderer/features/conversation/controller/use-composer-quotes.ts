@@ -83,6 +83,13 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [bucket, publish]);
 
+  const clearSubmittedQuotes = useCallback((submitted: readonly QuoteRef[]): void => {
+    for (let index = bucket.length - 1; index >= 0; index -= 1) {
+      if (submitted.includes(bucket[index]!)) bucket.splice(index, 1);
+    }
+    publish();
+  }, [bucket, publish]);
+
   const restoreQuotes = useCallback((ownerKey: string, quotes: readonly QuoteRef[]): void => {
     if (quotes.length === 0) return;
     const ownerBucket = pendingByKeyRef.current[ownerKey] ??
@@ -107,6 +114,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     updateQuoteComment,
     removeQuote,
     clearQuotes,
+    clearSubmittedQuotes,
     restoreQuotes,
     quotesForSend,
     composerQuoteProps: (canStage: boolean) => ({

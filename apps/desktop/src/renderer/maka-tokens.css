@@ -978,9 +978,13 @@
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value
      and the control cluster share it, so the two kinds of row end stop at
-     the same edge — and one column width for the trailing selects. */
+     the same edge — and one minimum column width for the trailing selects.
+     180px holds the common Chinese and English labels; a longer label or a
+     validation message grows its own select (settings/select.css). At 260
+     the column pushed helper lines onto a second line to make room for
+     short labels. */
   --settings-row-end-cap: min(320px, 62cqi);
-  --settings-control-width: 260px;
+  --settings-control-width: 180px;
   /* One QR frame spec for the paired dialogs (bot onboarding + WeChat QR
      login, T5-E): both frames read this so the pair cannot drift. */
   --qr-frame-size: 256px;

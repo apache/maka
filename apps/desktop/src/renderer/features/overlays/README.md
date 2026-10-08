@@ -39,6 +39,14 @@ here too.
   through `OverlaysConsumer` and mounts it.
 - The palette's command list stays a shell concern: the shell builds the rows
   from its own actions and passes them to `CommandPalette`.
+- The Desktop operations behind the rows' own actions are this slice's
+  `palette` port: testing a connection or making it the default (by slug, the
+  bridge's slug form rather than Connection Settings' identity form), testing
+  the network proxy, opening the local memory file and saving the conversation
+  to a file. The projection hands them to the shell's row builder as
+  `paletteActions`; the rows keep their default-Host resolution and toasts.
+  The Desktop adapter is the only code that calls those bridge methods for the
+  palette.
 
 ## Destination
 

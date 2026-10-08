@@ -215,6 +215,6 @@ test('shared turn presentation only exposes lineage when the surface supports na
       }),
       onLineageBadgeClick: canNavigate ? () => {} : undefined,
     }));
-    assert.equal(document.querySelectorAll('.maka-turn-lineage-badge').length, canNavigate ? 1 : 0);
+    assert.equal(document.querySelectorAll('.maka-turn-lineage-row .astryx-button').length, canNavigate ? 1 : 0);
   }
 });

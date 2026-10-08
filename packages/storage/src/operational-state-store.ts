@@ -167,12 +167,6 @@ export class OperationalStateMigrationBlockedError extends Error {
 export interface OperationalStateDatabaseLease {
   readonly database: DatabaseSync;
   readonly databasePath: string;
-  /**
-   * Process-local settled write-view generation, including sibling leases.
-   * Rollback advances it too because a cache may have observed the transient
-   * transaction view before the outermost writer settled.
-   */
-  writeViewRevision(): number;
   transaction<T>(mode: 'read' | 'write', operation: () => T): T;
   /**
    * Called once the outermost open transaction commits or rolls back, which
@@ -208,8 +202,6 @@ class OperationalStateDatabaseOwner {
   private references = 0;
   private closed = false;
   private transactionDepth = 0;
-  private transactionWrote = false;
-  private writeViewRevisionValue = 0;
   private readonly settledCallbacks: Array<(committed: boolean) => void> = [];
 
   constructor(
@@ -251,7 +243,6 @@ class OperationalStateDatabaseOwner {
     return {
       database: this.database,
       databasePath: this.databasePath,
-      writeViewRevision: () => this.writeViewRevisionValue,
       transaction: (mode, operation) => this.transaction(mode, operation),
       onTransactionSettled: (callback) => {
         if (this.transactionDepth === 0)
@@ -299,28 +290,21 @@ class OperationalStateDatabaseOwner {
   private transaction<T>(mode: 'read' | 'write', operation: () => T): T {
     if (this.closed) throw new Error('Operational state database is closed');
     if (this.transactionDepth > 0) {
-      if (mode === 'write') this.transactionWrote = true;
       return operation();
     }
     this.database.exec(mode === 'write' ? 'BEGIN IMMEDIATE' : 'BEGIN');
     this.transactionDepth += 1;
-    this.transactionWrote = mode === 'write';
     let result: T;
     try {
       result = operation();
       this.database.exec('COMMIT');
     } catch (error) {
-      const transactionWrote = this.transactionWrote;
       rollback(this.database);
       this.transactionDepth -= 1;
-      this.transactionWrote = false;
-      if (transactionWrote) this.writeViewRevisionValue += 1;
       this.settle(false);
       throw error;
     }
     this.transactionDepth -= 1;
-    if (this.transactionWrote) this.writeViewRevisionValue += 1;
-    this.transactionWrote = false;
     this.settle(true);
     return result;
   }
