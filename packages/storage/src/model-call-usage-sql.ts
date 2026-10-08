@@ -82,7 +82,6 @@ export const COVERAGE_SUMS = `
  * "what did this run leave unsettled".
  */
 export const RUN_SETTLEMENT_COVERAGE_SUMS = `
-  COUNT(*) AS attempts,
   SUM(usage_basis = 'partial') AS usagePartialAttempts,
   SUM(usage_basis = 'missing') AS usageMissingAttempts`;
 

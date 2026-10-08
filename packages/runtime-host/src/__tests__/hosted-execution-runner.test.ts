@@ -379,14 +379,9 @@ function usageSummary() {
  * usage-unknown rows unless the test says otherwise.
  */
 function settlementCoverage(
-  overrides: {
-    attempts?: number;
-    usageMissingAttempts?: number;
-    usagePartialAttempts?: number;
-  } = {},
+  overrides: { usageMissingAttempts?: number; usagePartialAttempts?: number } = {},
 ) {
-  return async () => ({
-    attempts: 1,
+  return async (_from: number, _to: number) => ({
     usageMissingAttempts: 0,
     usagePartialAttempts: 0,
     ...overrides,

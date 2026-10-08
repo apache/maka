@@ -123,22 +123,23 @@ export interface ModelCallLedgerReader {
     limit: number,
   ): ModelCallLedgerResult<ModelCallUsageLogs>;
   /**
-   * The rows one Session's own run left unsettled (#5691): its attempts whose
-   * usage the provider never reported or only partly reported. Rows recorded
-   * outside any run — by the usage-unknown seam, which the ledger marks
-   * `no_run` — belong to no run's settlement and are excluded, the reverse of
-   * the ledger-wide coverage above, which must see them.
+   * What the settlement window itself left unsettled (#5890): the attempts
+   * between `from` and `to` inclusive whose usage the provider never reported
+   * or only partly reported, across every Session — the same scope as the
+   * window-wide totals this check guards. Rows recorded outside any run — by
+   * the usage-unknown seam, which the ledger marks `no_run` — belong to no
+   * run's settlement and are excluded, the reverse of the ledger-wide
+   * coverage above, which must see them.
    */
-  runSettlementCoverage(sessionId: string): RunSettlementCoverage;
+  runSettlementCoverage(from: number, to: number): RunSettlementCoverage;
 }
 
 /**
  * What a hosted execution's settlement checks instead of the ledger-wide
- * coverage: whether the run's own attempts all settled (#5691).
+ * coverage: whether everything in the window settled (#5890, widening #5691's
+ * run-owned scope so delegated Sessions cannot settle underneath it).
  */
 export interface RunSettlementCoverage {
-  /** Countable rows the run owns — its Session's rows outside the `no_run` mark. */
-  readonly attempts: number;
   readonly usageMissingAttempts: number;
   readonly usagePartialAttempts: number;
 }
@@ -390,17 +391,17 @@ class SqliteModelCallLedger implements ModelCallLedger {
     };
   }
 
-  runSettlementCoverage(sessionId: string): RunSettlementCoverage {
+  runSettlementCoverage(from: number, to: number): RunSettlementCoverage {
     const db = this.#open();
     const row = db
       .prepare(
         `SELECT ${RUN_SETTLEMENT_COVERAGE_SUMS}
          FROM usage_model_call_attempts
-         WHERE cost_basis IS NOT NULL AND session_id = ? AND no_run = 0`,
+         WHERE cost_basis IS NOT NULL AND no_run = 0
+           AND completed_at >= ? AND completed_at <= ?`,
       )
-      .get(sessionId) as Record<string, unknown> | undefined;
+      .get(from, to) as Record<string, unknown> | undefined;
     return {
-      attempts: count(row?.attempts),
       usageMissingAttempts: count(row?.usageMissingAttempts),
       usagePartialAttempts: count(row?.usagePartialAttempts),
     };

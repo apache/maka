@@ -226,10 +226,10 @@ describe('InteractiveUsageStores', () => {
         assert.equal(summary.projection.coverage.usageMissingAttempts, 1);
         assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
         assert.equal(summary.unreadableRecords, 0);
-        // The run-scoped settlement coverage excludes the no-run sentinel row,
-        // so an auxiliary failure cannot flip a hosted run to indeterminate.
-        assert.deepEqual(await stores.modelCalls.modelCallRunSettlementCoverage('session-aux'), {
-          attempts: 0,
+        // The settlement coverage excludes the no-run sentinel row — its
+        // usage_basis never enters any run's window scope — so an auxiliary
+        // failure cannot flip a hosted run to indeterminate.
+        assert.deepEqual(await stores.modelCalls.modelCallRunSettlementCoverage(0, Date.now()), {
           usageMissingAttempts: 0,
           usagePartialAttempts: 0,
         });

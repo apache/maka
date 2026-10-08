@@ -82,13 +82,14 @@ export class HostUsagePricingCoordinator {
   };
 
   /**
-   * What one Session's own run left unsettled (#5691) — hosted execution
-   * settlement's incompleteness check. Deliberately off the operation handler
-   * map: the ledger-wide `usage.query` coverage must keep counting rows no run
-   * owns, so settlement scopes itself through this in-process seam instead.
+   * What the settlement window itself left unsettled (#5890) — hosted
+   * execution settlement's incompleteness check reads the same window as the
+   * totals it guards, minus the `no_run` sentinel rows. Deliberately off the
+   * operation handler map: the ledger-wide `usage.query` coverage keeps a
+   * different shape, so settlement scopes itself through this in-process seam.
    */
-  async runSettlementCoverage(sessionId: string): Promise<RunSettlementCoverage> {
-    return this.#stores.modelCalls.modelCallRunSettlementCoverage(sessionId);
+  async runSettlementCoverage(from: number, to: number): Promise<RunSettlementCoverage> {
+    return this.#stores.modelCalls.modelCallRunSettlementCoverage(from, to);
   }
 
   readonly #stores: InteractiveUsageStoresWriter;

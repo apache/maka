@@ -35,13 +35,13 @@ export interface HostHostedExecutionRunnerInput {
     'session.create' | 'turn.start' | 'turn.query' | 'turn.stop' | 'usage.query'
   >;
   /**
-   * What this execution's own run left unsettled (#5691). Settlement's
-   * incompleteness check reads this run-scoped answer instead of the
+   * What the settlement window left unsettled (#5890). Settlement's
+   * incompleteness check reads this window-scoped answer instead of the
    * `usage.query` coverage: that field is the ledger's public provenance and
    * must keep counting usage-unknown rows no run owns — a failed auxiliary
    * Host call is real accounting, not this run's unsettled obligation.
    */
-  readonly runSettlementCoverage: (sessionId: string) => Promise<RunSettlementCoverage>;
+  readonly runSettlementCoverage: (from: number, to: number) => Promise<RunSettlementCoverage>;
   readonly context: ConnectionContext;
   readonly requestDrain: () => void;
   readonly waitForExecutionResidencies: () => Promise<void>;
@@ -91,8 +91,9 @@ export class HostHostedExecutionRunner {
       await (signal.aborted
         ? this.input.waitForAllResidencies()
         : this.input.waitForExecutionResidencies());
-      const usage = await this.#readUsage(startedAt, (this.input.now ?? Date.now)());
-      const runCoverage = await this.input.runSettlementCoverage(input.executionId);
+      const settledAt = (this.input.now ?? Date.now)();
+      const usage = await this.#readUsage(startedAt, settledAt);
+      const runCoverage = await this.input.runSettlementCoverage(startedAt, settledAt);
       const incompleteUsage = incompleteUsageReason(usage, runCoverage);
       if (incompleteUsage) {
         return indeterminate(
@@ -173,9 +174,10 @@ function incompleteUsageReason(
   runCoverage: RunSettlementCoverage,
 ): string | undefined {
   // Unreadable and pending-repair rows stay ledger-wide: damage in the window
-  // is nobody's settled fact. Partial and missing usage, the things a run can
-  // leave unsettled, are judged against the run's own rows only (#5691) — the
-  // shared coverage field still reports them for every client to see.
+  // is nobody's settled fact. Partial and missing usage are judged against the
+  // same window as the totals this check guards (#5890), so a delegated child
+  // Session cannot settle underneath them — the `no_run` sentinel rows stay
+  // excluded, and the shared coverage field still reports everything.
   const { unreadableRecords, pendingRepairs } = result.provenance;
   if (unreadableRecords > 0) return 'unreadable_usage_record';
   if (pendingRepairs > 0) return 'pending_usage_repair';

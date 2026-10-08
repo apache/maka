@@ -176,12 +176,12 @@ describe('Usage answers over the canonical ledger', () => {
     );
   });
 
-  test('run settlement coverage holds a run to its own rows, not auxiliary ones', async () => {
-    // Hosted execution settlement asks what its own run left unsettled (#5691).
-    // Rows the usage-unknown seam recorded — a failed auxiliary call sharing
-    // the Session's id included — belong to no run and are excluded even at
-    // the same Session, and another Session's rows never count. The run's own
-    // usage-missing dispatch still shows up.
+  test('run settlement coverage guards every session in the window, not the auxiliary sentinel', async () => {
+    // Settlement guards the window-wide totals, so it must count every
+    // Session's unsettled dispatch in that window (#5890): the pre-window
+    // session filter here would have let a delegated child's missing usage
+    // settle as complete. The `no_run` sentinel — the failed auxiliary call
+    // the usage-unknown seam recorded — belongs to no run and stays out.
     await withRecordedAttempts(
       [
         attempt({
@@ -217,23 +217,24 @@ describe('Usage answers over the canonical ledger', () => {
       ],
       [usageUnknownAttempt()],
       async (ledger) => {
-        assert.deepEqual(ledger.runSettlementCoverage('session-1'), {
-          attempts: 3,
-          usageMissingAttempts: 1,
+        // The run's own missing dispatch and the other session's (a delegated
+        // child's) both count; the `no_run` sentinel does not.
+        assert.deepEqual(ledger.runSettlementCoverage(NOW - 1_000, NOW), {
+          usageMissingAttempts: 2,
           usagePartialAttempts: 1,
         });
       },
     );
   });
 
-  test('run settlement coverage holds a hosted execution named like the sentinel to its own rows', async () => {
-    // The execution id is a client-chosen entity id and the runner reuses it as
-    // the root Turn id, so a hosted execution named `auxiliary` owns rows under
-    // `turn_id = 'auxiliary'` — on (session_id, turn_id) indistinguishable from
-    // no-run sentinel rows (#5890 review). Settlement must read ownership from
-    // how a row was recorded, not from the turn value, or this execution's
-    // missing-usage dispatch disappears from its own settlement and
-    // `incompleteUsageReason` releases the environment with unknown usage.
+  test('run settlement coverage excludes the no-run sentinel, not an execution named like it', async () => {
+    // The exclusion must key on how a row was recorded (`no_run`), never on
+    // the turn value: a hosted execution whose id is the client-chosen
+    // `auxiliary` owns rows under `turn_id = 'auxiliary'`, and with window
+    // scoping (#5890) those must keep counting while the genuine sentinel row
+    // next to them stays out — or this execution's missing-usage dispatch
+    // disappears and `incompleteUsageReason` releases the environment with
+    // unknown usage.
     await withRecordedAttempts(
       [
         attempt({
@@ -260,10 +261,10 @@ describe('Usage answers over the canonical ledger', () => {
       [usageUnknownAttempt({ sessionId: 'auxiliary' })],
       async (ledger) => {
         // The run-owned missing dispatch is this execution's unsettled
-        // obligation; the failed auxiliary call is nobody's. Public coverage
-        // keeps counting both.
-        assert.deepEqual(ledger.runSettlementCoverage('auxiliary'), {
-          attempts: 2,
+        // obligation and counts inside the window; the failed auxiliary call
+        // is nobody's (`no_run`) and stays excluded. Public coverage keeps
+        // counting both.
+        assert.deepEqual(ledger.runSettlementCoverage(NOW - 1_000, NOW), {
           usageMissingAttempts: 1,
           usagePartialAttempts: 0,
         });
@@ -271,6 +272,45 @@ describe('Usage answers over the canonical ledger', () => {
           ledger.summary({ range: 'all' }, NOW).projection.coverage.usageMissingAttempts,
           2,
         );
+      },
+    );
+  });
+
+  test('run settlement coverage reads the window, not one session (#5890 review)', async () => {
+    // Settlement guards the window-wide totals that #readUsage reads, so its
+    // coverage must read the same window: a child Session's missing dispatch
+    // inside the window is exactly the undercount that would otherwise settle
+    // as complete, and a window-external row is nobody's obligation here.
+    await withRecordedAttempts(
+      [
+        attempt({
+          attemptId: 'outside-window-missing',
+          completedAt: NOW - 5_000,
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+        attempt({ attemptId: 'root-ok' }),
+        attempt({
+          attemptId: 'child-missing',
+          sessionId: 'session-1-child',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      [],
+      async (ledger) => {
+        assert.deepEqual(ledger.runSettlementCoverage(NOW - 1_000, NOW), {
+          usageMissingAttempts: 1,
+          usagePartialAttempts: 0,
+        });
       },
     );
   });
