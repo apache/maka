@@ -682,7 +682,9 @@ const TRIGGER_MAINTAINED_TABLES = new Set(['session_catalog_projection']);
 
 // These are database-local ordering keys, not portable identities or references.
 // Keep this semantic policy explicit: other sequence columns belong to Sessions,
-// invocations or streams and must retain their values.
+// invocations or streams and must retain their values. A schema-derived test in
+// session-bundle-policy.test.ts fails when a copied table keyed by a single
+// INTEGER column is neither listed here nor allow-listed there.
 const LOCAL_SEQUENCE_COLUMNS = new Map([
   ['tool_journal_events', 'journal_seq'],
   ['message_admissions', 'sequence'],
@@ -1282,32 +1284,57 @@ function mergeBundleDatabase(
   }
 }
 
+/**
+ * A table the import copies, and the column SQLite allocates afresh in the
+ * target instead of copying, when the table has one.
+ */
+export interface SessionBundleMergeTable {
+  readonly name: string;
+  readonly localSequenceColumn?: string;
+}
+
+/**
+ * The tables an import copies from the database attached as `bundle`, in the
+ * order it copies them.
+ *
+ * The merge writes exactly these, and a schema-derived test reads the same
+ * list, so the two cannot disagree about which tables are copied.
+ */
+export function listSessionBundleMergeTables(target: DatabaseSync): SessionBundleMergeTable[] {
+  const tables = target
+    .prepare(
+      "SELECT name FROM bundle.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )
+    .all() as Array<{ name?: unknown }>;
+  const merged: SessionBundleMergeTable[] = [];
+  for (const row of tables) {
+    const name = row.name;
+    if (
+      typeof name !== 'string' ||
+      PORTABLE_GLOBAL_TABLES.has(name) ||
+      TRIGGER_MAINTAINED_TABLES.has(name)
+    ) {
+      continue;
+    }
+    // Mirror the export's own classification instead of trusting that it
+    // ran: a table with no Session column and no referential rule describes
+    // the WORKSPACE, and the target has its own. The export empties those,
+    // so in practice this inserts nothing -- but an import that depends on
+    // the other side having tidied up is one bundle away from writing a
+    // workspace singleton into somebody else's workspace.
+    if (!describesASession(target, name)) continue;
+    const localSequenceColumn = LOCAL_SEQUENCE_COLUMNS.get(name);
+    merged.push(localSequenceColumn === undefined ? { name } : { name, localSequenceColumn });
+  }
+  return merged;
+}
+
 function mergeAttachedBundle(target: DatabaseSync): string[] {
   {
     {
-      const tables = target
-        .prepare(
-          "SELECT name FROM bundle.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-        )
-        .all() as Array<{ name?: unknown }>;
-      for (const row of tables) {
-        const name = row.name;
-        if (
-          typeof name !== 'string' ||
-          PORTABLE_GLOBAL_TABLES.has(name) ||
-          TRIGGER_MAINTAINED_TABLES.has(name)
-        ) {
-          continue;
-        }
-        // Mirror the export's own classification instead of trusting that it
-        // ran: a table with no Session column and no referential rule describes
-        // the WORKSPACE, and the target has its own. The export empties those,
-        // so in practice this inserts nothing -- but an import that depends on
-        // the other side having tidied up is one bundle away from writing a
-        // workspace singleton into somebody else's workspace.
-        if (!describesASession(target, name)) continue;
-        const quoted = quoteIdentifier(name);
-        const localSequence = LOCAL_SEQUENCE_COLUMNS.get(name);
+      for (const table of listSessionBundleMergeTables(target)) {
+        const quoted = quoteIdentifier(table.name);
+        const localSequence = table.localSequenceColumn;
         if (localSequence) {
           const columns = (
             target.prepare(`PRAGMA bundle.table_info(${quoted})`).all() as Array<{ name: string }>
