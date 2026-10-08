@@ -2166,12 +2166,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // then either that tail or the startPendingAttachedTurn below starts the
   // freshly attached Turn, whichever observes an idle runner first.
   const runMidTurnSwitch = async (sessionId: string) => {
-    // Same serialization as the idle switch: the in-flight retraction lands
-    // its payload in the session it was asked for first (#5109 review).
-    await settleRetractions();
-    resolvedInteractionIds.clear();
+    // Reserve the detach before the retraction drain: every other navigation
+    // path (`/session`, the side toggle, a mid-turn side open) checks
+    // `detaching`, so the latch must be set before this await — two
+    // navigations could otherwise both pass their guard while the same drain
+    // is pending and then re-key the driver concurrently (#5265 review).
     detaching = true;
     try {
+      // Same serialization as the idle switch: the in-flight retraction lands
+      // its payload in the session it was asked for first (#5109 review).
+      await settleRetractions();
+      resolvedInteractionIds.clear();
       // Fence only after the driver confirms the switch: a failed switch must
       // leave the in-flight drain fully live. Events the abandoned queue
       // yields between the channel closing inside switchSession and
@@ -2308,6 +2313,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
   const goToSession = async (sessionId: string): Promise<void> => {
+    // One detach at a time (#3380, #5265 review): a second switch while the
+    // first is still handing the view over — including the retraction drain
+    // it waits in before re-keying — would clear `detaching` early, reopen
+    // the interrupt window, and double-apply the adoption. The idle branch
+    // is reachable mid-drain too (the running Turn can end while the detach
+    // waits), so the guard covers the whole command.
+    if (detaching) return;
     const pair = sideConversation;
     if (
       pair &&
@@ -2326,10 +2338,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       });
       return;
     }
-    // One detach at a time (#3380): a second mid-turn switch while the first
-    // is still handing the view over would clear `detaching` early, reopen
-    // the interrupt window, and double-apply the adoption.
-    if (detaching) return;
     await switchAwayMidTurn(sessionId)
       .then(() => (leavesPair ? discardCurrentSidePair() : undefined))
       .catch(reportError);

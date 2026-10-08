@@ -8390,6 +8390,125 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('refuses a second mid-turn /session while the first waits for the retraction drain', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // Hold the retraction in flight, then issue two mid-turn `/session`
+    // commands. The first parks inside the retraction drain before it sets
+    // `detaching`, so the second must not pass the same guard and re-key the
+    // driver concurrently with the first (#5265 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b[1;3A'); // Alt+Up
+    await waitFor(() => driver.retractCalls === 1);
+    terminal.input('/session session-a');
+    terminal.input('\r');
+    await delay(50); // the first switch is parked inside the retraction drain
+    terminal.input('/session session-b');
+    terminal.input('\r');
+    await delay(50);
+    driver.retractGate.resolve();
+    await delay(50);
+    const switchStarts = driver.eventLog.filter((entry) => entry.startsWith('switch-start:'));
+    assert.equal(
+      switchStarts.length,
+      1,
+      'the second mid-turn switch must be refused while the first holds the detach: ' +
+        driver.eventLog.join(','),
+    );
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('refuses an idle /session while a mid-turn detach is still draining its retraction', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // The mid-turn detach parks inside the retraction drain; the turn ends
+    // while it waits, so an idle `/session` is no longer busy-gated. It must
+    // still wait for the in-flight detach instead of re-keying the driver
+    // concurrently (#5265 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b[1;3A'); // Alt+Up
+    await waitFor(() => driver.retractCalls === 1);
+    terminal.input('/session session-a');
+    terminal.input('\r');
+    await delay(50); // the detach is parked inside the retraction drain
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('/session session-b');
+    terminal.input('\r');
+    await delay(50);
+    driver.retractGate.resolve();
+    await delay(50);
+    const switchStarts = driver.eventLog.filter((entry) => entry.startsWith('switch-start:'));
+    assert.equal(
+      switchStarts.length,
+      1,
+      'the idle switch must be refused while the detach still holds the driver: ' +
+        driver.eventLog.join(','),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('serializes an idle /session switch behind a retraction started during its activity wait', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
