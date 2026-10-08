@@ -389,6 +389,62 @@ test('recovery blocks a waiting notification whose task expired while the Host w
   }
 });
 
+for (const edit of [
+  { change: 'shortened', from: 60_000, to: 25_000 },
+  { change: 'added', from: null, to: 25_000 },
+  { change: 'extended', from: 14_000, to: 60_000 },
+] as const) {
+  test(`expiry ${edit.change} during a provider wait replaces the waiting fire and its snapshot`, async () => {
+    const fixture = await schedulerFixture();
+    try {
+      const task = await fixture.create({
+        schedule: { kind: 'interval', everySeconds: 10, startAt: 11_000 },
+        expiresAt: edit.from,
+      });
+      await fixture.start();
+      await fixture.tick(11_000);
+      assert.equal((await fixture.store.listPendingFires())[0]?.task.expiresAt, edit.from);
+      fixture.setNow(13_000);
+      const outcome = await fixture.mutate({
+        kind: 'update',
+        taskId: task.id,
+        patch: { expiresAt: edit.to },
+      });
+      assert.equal(outcome.ok, true);
+      // The Store rejects task edits while a claim exists, so the edit first
+      // cancels the waiting fire. No claim is left holding the old expiry.
+      assert.deepEqual(await fixture.store.listPendingFires(), []);
+      assert.equal((await fixture.store.get(task.id))?.nextFireAt, 21_000);
+      await fixture.tick(21_000);
+      assert.equal((await fixture.store.listPendingFires())[0]?.task.expiresAt, edit.to);
+      if (edit.change === 'extended') {
+        fixture.connectProvider();
+        await fixture.tick(26_000);
+        assert.deepEqual(fixture.deliveries, [{ taskId: task.id, title: 'Reminder' }]);
+        const delivered = await fixture.store.get(task.id);
+        assert.equal(delivered?.status, 'active');
+        assert.equal(delivered?.runs[0]?.outcome, 'ok');
+        assert.equal(delivered?.nextFireAt, 31_000);
+      } else {
+        assert.equal(fixture.timerDelay(), 4_000);
+        await fixture.tick(25_000);
+        const blocked = await fixture.store.get(task.id);
+        assert.equal(blocked?.status, 'expired');
+        assert.deepEqual(
+          blocked?.runs.map(({ at, outcome }) => ({ at, outcome })),
+          [{ at: 25_000, outcome: 'blocked' }],
+        );
+        assert.deepEqual(await fixture.store.listPendingFires(), []);
+        fixture.connectProvider();
+        await fixture.restart();
+        assert.deepEqual(fixture.deliveries, []);
+      }
+    } finally {
+      await fixture.close();
+    }
+  });
+}
+
 test('a recurring notification delivered late resumes at its next slot without catching up', async () => {
   const fixture = await schedulerFixture();
   try {
