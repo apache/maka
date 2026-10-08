@@ -20,6 +20,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { ProxyAgent } from 'undici';
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
 import { testProxyConnection } from '../proxy-test.js';
 
@@ -92,6 +94,68 @@ describe('testProxyConnection', () => {
       assert.strictEqual(ambientFetchCalled, false);
     } finally {
       globalThis.fetch = originalFetch;
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  test('settles after a successful probe even when the dispatcher close stalls', async (t) => {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('error', () => sockets.delete(socket));
+
+      let buffer = '';
+      let tunnelEstablished = false;
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('latin1');
+        const headerEnd = buffer.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return;
+
+        const requestHead = buffer.slice(0, headerEnd);
+        buffer = buffer.slice(headerEnd + 4);
+        if (!tunnelEstablished && requestHead.startsWith('CONNECT ')) {
+          tunnelEstablished = true;
+          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          return;
+        }
+
+        socket.end('HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+
+    // Reproduce the dispatcher completion failure independently of
+    // Undici/Node version: a graceful close that never settles must not keep
+    // testProxyConnection (and the serialized settings lane it occupies)
+    // pending forever after the probe itself has finished.
+    t.mock.method(ProxyAgent.prototype, 'close', () => new Promise<void>(() => {}));
+
+    try {
+      const result = await withTimeout(
+        testProxyConnection({
+          proxy: {
+            ...PROXY_DEFAULTS,
+            enabled: true,
+            type: 'http',
+            host: '127.0.0.1',
+            port: address.port,
+          },
+          url: 'http://example.com',
+          timeoutMs: 2_000,
+        }),
+        5_000,
+        'testProxyConnection never settled after a stalled dispatcher close',
+      );
+
+      assert.strictEqual(result.ok, true);
+    } finally {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

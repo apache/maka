@@ -24,6 +24,11 @@ import { resolveActiveProxy } from '../network/active-proxy-state.js';
 import { FETCH_PROXY_SNAPSHOT } from '../network/scoped-fetch-transport.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+// Bounded wait for dispatcher teardown in the error path: a graceful close
+// that never settles must not delay the rejection the caller is owed. The
+// success path keeps its fire-and-forget close, which owns the streaming
+// body lifecycle and is not bounded here.
+const DISPATCHER_CLOSE_GRACE_MS = 1_000;
 
 export type ProxiedFetchInit = Omit<
   NonNullable<Parameters<typeof globalThis.fetch>[1]>,
@@ -95,8 +100,20 @@ export async function proxiedFetch(
       : ((await request) as unknown as Response);
   } catch (error) {
     if (timer) clearTimeout(timer);
+    // Mirror the shared transport teardown ordering: begin dispatcher
+    // teardown before aborting so the graceful close can retire live
+    // CONNECT tunnels, with abort still cancelling pending connects. Keep
+    // the wait bounded so a stalled close cannot hold the rejection.
+    const teardown = disposeDispatcher(timedOut);
     controller.abort(error);
-    await disposeDispatcher(timedOut);
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      teardown,
+      new Promise<void>((resolve) => {
+        graceTimer = setTimeout(resolve, DISPATCHER_CLOSE_GRACE_MS);
+      }),
+    ]);
+    if (graceTimer) clearTimeout(graceTimer);
     throw error;
   }
 
