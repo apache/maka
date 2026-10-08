@@ -3367,6 +3367,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       executeRoot: (input) =>
         executeHostedExecutionToSettlement(requireCoordinator(coordinator), input),
       stopRoot: (identity, input) => requireCoordinator(coordinator).stopRoot(identity, input),
+      stopRootRun: (identity, input) =>
+        requireCoordinator(coordinator).stopRootRun(identity, input),
       stopSession: (sessionId, input) =>
         requireCoordinator(coordinator).stopSession(sessionId, input),
     };
@@ -7216,6 +7218,8 @@ async function createFailureFixture(options: {
           },
           stopRoot: (...args: Parameters<RuntimeHostedRootAuthority['stopRoot']>) =>
             requireCoordinator(coordinator).stopRoot(...args),
+          stopRootRun: (...args: Parameters<RuntimeHostedRootAuthority['stopRootRun']>) =>
+            requireCoordinator(coordinator).stopRootRun(...args),
           stopSession: (
             sessionId: string,
             input: Parameters<RuntimeHostedRootAuthority['stopSession']>[1],

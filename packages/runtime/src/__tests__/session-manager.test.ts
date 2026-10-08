@@ -15844,6 +15844,7 @@ function hostedRootAuthority(): RuntimeHostedRootAuthority {
       }
     },
     stopRoot: async () => {},
+    stopRootRun: async () => {},
     stopSession: async () => {},
   };
 }

@@ -3980,7 +3980,7 @@ export class SessionManager {
       // A recovered local claim can be new while the Host already owns its Run.
       // Recheck the gate after the durable read closes that lookup race.
       if (admission || this.findGraphRuntimeActivation(identity)?.hostAdmitted) {
-        await authority.stopRoot(identity, input, { scope: 'run' });
+        await authority.stopRootRun(identity, input);
         return;
       }
     }
