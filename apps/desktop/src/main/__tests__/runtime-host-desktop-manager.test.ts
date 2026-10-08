@@ -1959,6 +1959,72 @@ test('recovers a degraded Local start through a fresh target generation', async 
   await owner.close();
 });
 
+test('a replaced Local generation does not publish its late failure over the retry', { timeout: 5_000 }, async () => {
+  const recovered = candidateHarness();
+  const unobserveStarted = deferred<void>();
+  const unobserved = deferred<void>();
+  let starts = 0;
+  const epochActive: Array<() => boolean> = [];
+  const published: Array<{ readiness: string; epoch: string }> = [];
+  const failures: Error[] = [];
+  const manager = createRuntimeHostDesktopManager(LOCAL_INPUT, {
+    startCandidate: async (input, observations) => {
+      starts += 1;
+      epochActive.push(input.isTargetActive!);
+      if (starts > 1) return ready(recovered.candidate);
+      // Hold the failed generation's observation teardown open, so its
+      // failure publication is still pending when the retry replaces it.
+      await observations.attach({
+        observe: async () => undefined,
+        unobserve: () => {
+          unobserveStarted.resolve();
+          return unobserved.promise;
+        },
+      });
+      await observations.observe('session-1', 'observer-1', {
+        id: 1, send() {}, once() {}, off() {},
+      });
+      throw new Error('connect failed');
+    },
+    onFatalError: (error) => failures.push(error),
+    onTargetStateChanged: (state) => {
+      published.push({ readiness: state.readiness, epoch: state.epoch });
+    },
+  });
+  const failedEpoch = manager.entries()[0]!.epoch;
+  const starting = manager.start();
+  try {
+    // The initial start is not a serialized target mutation; once it marks
+    // its generation invalid, a retry may replace that generation.
+    await unobserveStarted.promise;
+    await manager.retryLocalStart();
+    const replacement = manager.current();
+    assert.equal(replacement?.readiness, 'ready');
+    assert.notEqual(replacement?.epoch, failedEpoch);
+
+    unobserved.resolve();
+    await starting;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(published, [
+      { readiness: 'connecting', epoch: failedEpoch },
+      { readiness: 'connecting', epoch: replacement!.epoch },
+      { readiness: 'ready', epoch: replacement!.epoch },
+    ]);
+    assert.deepEqual(
+      manager.entries().map((entry) => [entry.readiness, entry.epoch]),
+      [['ready', replacement!.epoch]],
+    );
+    assert.deepEqual(epochActive.map((isActive) => isActive()), [false, true]);
+    assert.equal(manager.ownsScope({ hostId: 'test-host', targetEpoch: failedEpoch }), false);
+    assert.equal(manager.ownsScope({ hostId: 'test-host', targetEpoch: replacement!.epoch }), true);
+    assert.deepEqual(failures.map((error) => error.message), ['connect failed']);
+  } finally {
+    unobserved.resolve();
+    await Promise.allSettled([starting]);
+    await manager.close();
+  }
+});
+
 test('keeps a known repair actionable when its first authority inspection fails', async () => {
   const repaired = candidateHarness({ ownership: 'supervised' });
   let inspected = false;
