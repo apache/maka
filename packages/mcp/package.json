@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@maka/core": "0.1.0",
-    "@modelcontextprotocol/client": "2.1.0"
+    "@modelcontextprotocol/client": "2.2.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/node": "2.1.0",
