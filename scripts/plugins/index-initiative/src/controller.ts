@@ -38,7 +38,7 @@ export class InitiativeController {
   }
   ready() { this.abort.signal.throwIfAborted(); this.store.fence(); }
   asOwner<T>(s: any, fn: () => T): T {
-    return this.ctx.agents.withInvocation({ sessionId: s.ownerSession, cwd: s.cwd, turnId: `initiative:${this.store.owner}`, toolCallId: randomUUID(), abortSignal: this.abort.signal }, fn);
+    return this.ctx.agents.withInvocation({ sessionId: s.sessionId, cwd: s.cwd, turnId: `initiative:${this.store.owner}`, toolCallId: randomUUID(), abortSignal: this.abort.signal }, fn);
   }
   tick(): Promise<void> {
     if (this.ticking || this.running || !this.owned || this.abort.signal.aborted) return this.ticking ?? Promise.resolve();
@@ -48,8 +48,8 @@ export class InitiativeController {
   }
   async dispatch() {
     const s = this.store.get(); if (!s?.enabled || s.active || s.nextAt > Date.now()) return;
-    const agent = await this.asOwner(s, () => this.ctx.agents.resume({ sessionId: s.worker }));
-    if ((await agent.snapshot())?.agent?.status === 'running') return;
+    const agent = await this.asOwner(s, () => this.ctx.agents.resume({ sessionId: s.sessionId }));
+    if (['running', 'waiting_for_user', 'blocked'].includes((await agent.snapshot())?.agent?.status)) return;
     this.ready(); const current = this.store.claim(); if (!current?.active) return;
     this.running = this.run(agent, current).finally(() => { this.running = undefined; });
   }
@@ -59,19 +59,21 @@ export class InitiativeController {
       const admitted = await agent.followup(wake(state));
       if (!['turn_started', 'followup'].includes(admitted?.disposition)) throw Error('Host rejected proactive wake');
       const completion = async () => {
-        // Queued admission is not completion; wait for the actual tool invocation to claim it.
-        while (this.store.get()?.active?.id === id && !this.store.get()?.active?.turnId)
+        // Queued admission is not completion; wait for its input to enter Session history.
+        while (admitted.disposition === 'followup' && !JSON.stringify(await agent.transcript()).includes(`Heartbeat ID: ${id}`))
           await delay(25, undefined, { signal: this.abort.signal });
         await agent.whenIdle(this.abort.signal);
       };
       await Promise.race([completion(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Proactive check timed out; inspect effects before resuming')), this.config.runTimeoutMs); timer.unref?.(); })]);
+      const status = (await agent.snapshot())?.agent?.status;
+      if (['aborted', 'blocked', 'waiting_for_user'].includes(status)) throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
       this.store.finish(id);
     } catch (e) {
       try {
         this.store.fence();
         if (this.store.get()?.active?.id === id) {
           this.store.finish(id, String(e));
-          await agent.cancel().catch(() => {});
+          // Shared foreground Session: do not cancel a user's concurrent turn.
         }
       } catch { /* A newer owner fences writes and cancellation. */ }
     } finally { clearTimeout(timer); }
@@ -82,20 +84,16 @@ export class InitiativeController {
     this.enabling = true;
     try {
     const old = this.store.get();
-    if (old && old.ownerSession !== call.sessionId) throw Error('Only the initiating conversation may configure initiative');
-    if (old?.active) throw Error('Pause the current check before changing instructions');
-    const agent = old ? { sessionId: old.worker } : await this.ctx.agents.create({ background: true, name: '主动观察 · 多索引' });
-    const s = this.store.configure({ ownerSession: call.sessionId, cwd: call.cwd, worker: agent.sessionId }, input.instructions, input.intervalMinutes * 60000);
+    if (old && old.sessionId !== call.sessionId) throw Error('Only the assistant conversation may configure heartbeats');
+    const s = this.store.configure({ sessionId: call.sessionId, cwd: call.cwd }, input.instructions, input.intervalMinutes * 60000);
     void this.tick(); return s;
     } finally { this.enabling = false; }
   }
   async control(action: string, call: any) {
     this.ready(); const old = this.store.get();
-    if (!old || old.ownerSession !== call.sessionId) throw Error('Only the initiating conversation may control initiative');
+    if (!old || old.sessionId !== call.sessionId) throw Error('Only the assistant conversation controls heartbeats');
     const s = this.store.control(action);
-    if (action === 'pause' && (old.active || this.running)) {
-      const agent = await this.asOwner(old, () => this.ctx.agents.resume({ sessionId: old.worker })); await agent.cancel();
-    } else void this.tick();
+    if (action !== 'pause') void this.tick();
     return s;
   }
   async close() {

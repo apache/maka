@@ -30,7 +30,12 @@ type RecordHead = {
   documents: string[];
   external?: boolean;
 };
-export type Cursor = { id: string; createdAt: number; sources: string[]; records: RecordHead[] };
+export type Cursor = {
+  id: string;
+  createdAt: number;
+  sources: string[];
+  records: RecordHead[];
+};
 export type WorkRange = {
   id: string;
   indexId: string;
@@ -39,7 +44,8 @@ export type WorkRange = {
   visibility: string[];
   completed: boolean;
 };
-const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const digest = (value: unknown) =>
+  createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** Opaque snapshot boundaries, independent of read pagination and index content edits. */
 export class CorpusStore extends NetworkStore {
@@ -50,6 +56,7 @@ export class CorpusStore extends NetworkStore {
       CREATE TABLE IF NOT EXISTS memory_worker_sessions(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS memory_source_records(key TEXT PRIMARY KEY,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_cursors(id TEXT PRIMARY KEY,fingerprint TEXT UNIQUE NOT NULL,payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS memory_cursor_checks(cursor_id TEXT PRIMARY KEY,checked_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_boundaries(index_id TEXT PRIMARY KEY,cursor_id TEXT,notes TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS memory_work_ranges(index_id TEXT PRIMARY KEY,payload TEXT NOT NULL);
     `);
@@ -105,7 +112,9 @@ export class CorpusStore extends NetworkStore {
     return heads;
   }
   record(key: string): RecordHead | undefined {
-    const row = this.db.prepare('SELECT payload FROM memory_source_records WHERE key=?').get(key);
+    const row = this.db
+      .prepare('SELECT payload FROM memory_source_records WHERE key=?')
+      .get(key);
     return row ? JSON.parse(String(row.payload)) : undefined;
   }
   capture(sources: string[], visible: string[], sessions: string[] = []): Cursor {
@@ -116,7 +125,9 @@ export class CorpusStore extends NetworkStore {
         .map((r) => [String(r.source), new Set<string>(JSON.parse(String(r.payload)))]),
     );
     const records = visible
-      .filter((key) => !sourceSets.has(sourceOf(key)) || sourceSets.get(sourceOf(key))!.has(key))
+      .filter(
+        (key) => !sourceSets.has(sourceOf(key)) || sourceSets.get(sourceOf(key))!.has(key),
+      )
       .filter(
         (key) =>
           sources.includes(sourceOf(key)) &&
@@ -143,6 +154,33 @@ export class CorpusStore extends NetworkStore {
       .prepare('INSERT INTO memory_cursors VALUES(?,?,?)')
       .run(cursor.id, fingerprint, JSON.stringify(cursor));
     return cursor;
+  }
+  recordCheck(cursorId: string, checkedAt: number) {
+    this.db
+      .prepare(
+        'INSERT INTO memory_cursor_checks VALUES(?,?) ON CONFLICT(cursor_id) DO UPDATE SET checked_at=MAX(checked_at,excluded.checked_at)',
+      )
+      .run(cursorId, checkedAt);
+  }
+  checkedAt(cursorId: string | null) {
+    return cursorId
+      ? Number(
+          this.db
+            .prepare('SELECT checked_at FROM memory_cursor_checks WHERE cursor_id=?')
+            .get(cursorId)?.checked_at ?? 0,
+        ) || null
+      : null;
+  }
+  lastCompletedAt(indexId: string) {
+    return (
+      Number(
+        this.db
+          .prepare(
+            "SELECT at FROM commits WHERE index_id=? AND json_extract(body,'$.complete')=1 ORDER BY id DESC LIMIT 1",
+          )
+          .get(indexId)?.at ?? 0,
+      ) || null
+    );
   }
   cursor(id: string): Cursor {
     const row = this.db.prepare('SELECT payload FROM memory_cursors WHERE id=?').get(id);
@@ -203,7 +241,8 @@ export class CorpusStore extends NetworkStore {
   pending(indexId: string, to: string, visible: string[]) {
     const r = this.range(this.boundary(indexId), to, visible);
     return (
-      r.records.reduce((n, x) => n + x.delta.length + x.removed.length, 0) + r.removedRecords.length
+      r.records.reduce((n, x) => n + x.delta.length + x.removed.length, 0) +
+      r.removedRecords.length
     );
   }
   work(indexId: string): WorkRange | undefined {
@@ -253,7 +292,8 @@ export class CorpusStore extends NetworkStore {
           throw Error('Coverage changed after this checkpoint');
         return { cursor: work.to, complete: true };
       }
-      if (this.boundary(indexId) !== work.from) throw Error('Coverage changed; stale checkpoint');
+      if (this.boundary(indexId) !== work.from)
+        throw Error('Coverage changed; stale checkpoint');
       if (this.index(indexId).revision !== expectedRevision)
         throw Error('Index content changed; read it before checkpointing');
       this.db
@@ -272,7 +312,14 @@ export class CorpusStore extends NetworkStore {
         .run(
           indexId,
           Date.now(),
-          JSON.stringify({ rangeId, complete, notes, from: work.from, to: work.to, sessionId }),
+          JSON.stringify({
+            rangeId,
+            complete,
+            notes,
+            from: work.from,
+            to: work.to,
+            sessionId,
+          }),
         );
       return { cursor: complete ? work.to : work.from, complete };
     });
@@ -291,8 +338,8 @@ export class CorpusStore extends NetworkStore {
   }
   notes(indexId: string) {
     return (
-      this.db.prepare('SELECT notes FROM memory_boundaries WHERE index_id=?').get(indexId)?.notes ??
-      ''
+      this.db.prepare('SELECT notes FROM memory_boundaries WHERE index_id=?').get(indexId)
+        ?.notes ?? ''
     );
   }
   history(
@@ -338,7 +385,9 @@ export class CorpusStore extends NetworkStore {
       }
       const ids = from ? record.delta : record.documents;
       const messages = ids.map((id) =>
-        JSON.parse(String(this.db.prepare('SELECT body FROM documents WHERE id=?').get(id)!.body)),
+        JSON.parse(
+          String(this.db.prepare('SELECT body FROM documents WHERE id=?').get(id)!.body),
+        ),
       );
       // Projection uses the standard runtime filter, never an ingestion-time type policy.
       const pages: any[] = [];
@@ -422,7 +471,13 @@ export class CorpusStore extends NetworkStore {
     refs.forEach((r) => this.fragment(String(r.ref), visible));
     return { key, text: String(row.body), revision: this.index(indexId).revision };
   }
-  write(indexId: string, key: string, text: string, expectedRevision: number, visible: string[]) {
+  write(
+    indexId: string,
+    key: string,
+    text: string,
+    expectedRevision: number,
+    visible: string[],
+  ) {
     return this.transaction(() => {
       this.assertIndexVisible(indexId, visible);
       const index = this.index(indexId);
@@ -438,7 +493,8 @@ export class CorpusStore extends NetworkStore {
           throw Error(`Citation outside index scope: ${ref}`);
       }
       this.db.prepare('DELETE FROM links WHERE index_id=? AND entry_id=?').run(indexId, key);
-      if (!text) this.db.prepare('DELETE FROM entries WHERE index_id=? AND id=?').run(indexId, key);
+      if (!text)
+        this.db.prepare('DELETE FROM entries WHERE index_id=? AND id=?').run(indexId, key);
       else {
         this.db
           .prepare(
@@ -452,7 +508,11 @@ export class CorpusStore extends NetworkStore {
       this.save(index);
       this.db
         .prepare('INSERT INTO commits(index_id,at,body) VALUES(?,?,?)')
-        .run(indexId, Date.now(), JSON.stringify({ key, text, refs, revision: index.revision }));
+        .run(
+          indexId,
+          Date.now(),
+          JSON.stringify({ key, text, refs, revision: index.revision }),
+        );
       return { key, revision: index.revision, coverageAdvanced: false };
     });
   }

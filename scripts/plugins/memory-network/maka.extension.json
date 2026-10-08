@@ -18,11 +18,13 @@
       },
       "intervalMs": {
         "type": "number",
-        "default": 1800000
+        "default": 43200000,
+        "description": "定时维护周期，默认 12 小时；到期才扫描来源。"
       },
       "threshold": {
         "type": "number",
-        "default": 100
+        "default": 100,
+        "description": "兼容旧配置；定时维护不再使用数量阈值。"
       },
       "retryMs": {
         "type": "number",

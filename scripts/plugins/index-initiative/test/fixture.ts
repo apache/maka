@@ -37,7 +37,7 @@ export async function fixture(options: any = {}) {
     historyList: async () => [...sessions].map(([id, messages]) => ({ id, title: id, historyRevision: JSON.stringify(messages) })),
     historyRead: async (id: string) => ({ session: { id }, messages: sessions.get(id) }),
   });
-  const workers = new Map<string, any>(); let runner: any; let indexRunner: any; let beforeRun: any; let queued = false; let cancels = 0;
+  const workers = new Map<string, any>([['owner', { status: 'idle', transcript: [] }]]); let runner: any; let indexRunner: any; let beforeRun: any; let queued = false; let cancels = 0;
   const invokeAs = async (sessionId: string, name: string, input: any, turnId = 'foreground') => {
     const tool = tools.resolve(sessionId, []).tools.find((t: any) => t.name === name); assert.ok(tool, name);
     return tool.impl(tool.parameters.parse(input), { sessionId, turnId, toolCallId: randomUUID(), cwd: root, abortSignal: new AbortController().signal, permissionMode: 'default' });
@@ -45,6 +45,7 @@ export async function fixture(options: any = {}) {
   agents.bindRuntime({
     create: async (input: any) => { assert.equal(input.background, true); const id = randomUUID(); workers.set(id, { status: 'idle' }); return { id, sessionId: id, root: false }; },
     resume: async ({ sessionId }: any) => ({ id: sessionId, sessionId, root: false }),
+    transcript: async (id: string) => workers.get(id)?.transcript ?? [],
     snapshot: async (id: string) => ({ agent: { status: workers.get(id)?.status ?? 'idle' } }),
     cancel: async (id: string) => { cancels++; workers.get(id).status = 'idle'; },
     whenIdle: async (id: string, signal: AbortSignal) => {
@@ -57,6 +58,7 @@ export async function fixture(options: any = {}) {
       const w = workers.get(id), turnId = randomUUID(); w.status = queued ? 'idle' : 'running';
       w.task = (async () => {
         await beforeRun?.(prompt); w.status = 'running';
+        (w.transcript ??= []).push({ role: 'user', text: prompt });
         const invoke = (name: string, input: any) => invokeAs(id, name, input, turnId);
         if (prompt.startsWith('Organize index')) {
           const indexId = /Organize index ([^. ]+)/.exec(prompt)![1];
@@ -66,7 +68,7 @@ export async function fixture(options: any = {}) {
           const saved = await invoke('MemoryIndexWrite', { indexId, key: 'evidence', expectedRevision: index.index.revision, text: page.items.map((m: any) => m.message.text + ' ' + m.citation).join('\n') });
           await invoke('MemoryIndexCheckpoint', { indexId, rangeId: index.range.rangeId, expectedRevision: saved.revision, notes: 'Fixture index built', complete: true });
         } else await runner({ id, prompt, turnId, invoke, finish: () => turns.evaluate({ sessionId: id, turnId, signal: new AbortController().signal }) });
-      })().finally(() => { w.status = 'idle'; });
+      })().finally(() => { w.status = w.endStatus ?? 'idle'; });
       void w.task.catch(() => {});
       return { disposition: queued ? 'followup' : 'turn_started', turnId };
     },
@@ -94,7 +96,4 @@ export async function fixture(options: any = {}) {
 }
 export async function until(fn: () => any, timeout = 5000) {
   const start = Date.now(); while (!await fn()) { if (Date.now() - start > timeout) throw Error('Test condition timed out'); await new Promise(r => setTimeout(r, 10)); }
-}
-export function checkpoint(s: any, overrides: any = {}) {
-  return { activationId: s.active.id, revision: s.revision, summary: 'No relevant change; quiet check', notebook: 'Remember the previous decision and check for fresh evidence.', bookmarks: {}, records: [], update: '', nextCheckAt: new Date(Date.now() + 3600000).toISOString(), nextReason: 'Check for new evidence later', ...overrides };
 }

@@ -23,56 +23,47 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InitiativeStore } from '../src/store.js';
-
-function setup() {
+function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'initiative-store-'));
   const store = new InitiativeStore(dir, 'first'); assert.equal(store.lease(), true);
-  store.configure({ ownerSession: 'owner', worker: 'worker', cwd: dir }, 'Use relevant indexes', 60000);
-  const active = store.claim(); store.bind('worker', active.active.id, 'turn');
-  const input = { activationId: active.active.id, revision: active.revision, summary: 'Quiet', notebook: '', bookmarks: {}, records: [], update: '', nextCheckAt: new Date(Date.now() + 60000).toISOString(), nextReason: 'Fresh evidence' };
-  return { dir, store, input, call: { sessionId: 'worker', turnId: 'turn' }, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
+  store.configure({ sessionId: 'owner', cwd: dir }, 'Explore', 60000);
+  return { dir, store, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
-
-test('revision/turn/activation guards and exact replay do not duplicate decisions', () => {
-  const f = setup(); try {
-    assert.throws(() => f.store.checkpoint({ ...f.call, turnId: 'old' }, f.input), /Read this activation/);
-    assert.throws(() => f.store.checkpoint(f.call, { ...f.input, revision: 0 }), /changed/);
-    f.store.checkpoint(f.call, f.input); f.store.checkpoint(f.call, f.input);
-    assert.equal(f.store.history().items.filter(i => i.kind === 'decision').length, 1);
-    assert.throws(() => f.store.checkpoint(f.call, { ...f.input, summary: 'Other' }), /different content/);
-    f.store.control('pause');
-    assert.throws(() => f.store.checkpoint(f.call, f.input), /matching active/);
+test('host cadence, natural completion, pause during a run does not re-enable', () => {
+  const f = fixture(); try {
+    assert.equal(f.store.claim().active, null);
+    f.store.control('check'); const active = f.store.claim().active;
+    f.store.control('pause'); f.store.finish(active.id);
+    assert.equal(f.store.get().enabled, false);
+    assert.equal(f.store.get().active, null);
+    assert.ok(f.store.get().nextAt >= Date.now() + 59000);
+    assert.equal(f.store.get().notebook, undefined);
   } finally { f.close(); }
 });
-
-test('waiting schedule survives restart; interrupted execution requires inspection', () => {
-  const f = setup(); let second: InitiativeStore | undefined;
+test('restart preserves cadence, interrupted admission stops rather than replaying', () => {
+  const f = fixture(); let other: InitiativeStore | undefined;
   try {
-    f.store.checkpoint(f.call, f.input); f.store.finish(f.input.activationId); f.store.release();
-    second = new InitiativeStore(f.dir, 'second'); assert.equal(second.lease(), true); second.recover();
-    assert.equal(second.get().enabled, true); assert.equal(second.get().nextAt, Date.parse(f.input.nextCheckAt));
-    assert.equal(second.claim().active, null);
-    second.control('check'); second.claim(); second.release();
-    assert.equal(f.store.lease(), true); f.store.recover();
+    f.store.release(); other = new InitiativeStore(f.dir, 'other'); assert.ok(other.lease()); other.recover();
+    assert.equal(other.get().enabled, true);
+    other.control('check'); other.claim(); other.release(); assert.ok(f.store.lease()); f.store.recover();
     assert.equal(f.store.get().enabled, false); assert.match(f.store.get().lastError, /interrupted/);
-  } finally { second?.close(); f.close(); }
+  } finally { other?.close(); f.close(); }
 });
-
-test('competing lease fences old writes, including late checkpoint', () => {
-  const f = setup(); const second = new InitiativeStore(f.dir, 'second');
-  try {
-    assert.equal(second.lease(), false);
-    f.store.db.prepare('UPDATE lease SET until_at=0').run();
-    assert.equal(second.lease(), true);
-    assert.throws(() => f.store.checkpoint(f.call, f.input), /ownership/);
-    f.store.release(); second.fence();
-  } finally { second.close(); f.close(); }
-});
-
-test('history pagination retains cursor when byte limit is reached before count limit', () => {
-  const f = setup(); try {
-    for (let i = 0; i < 5; i++) f.store.log('decision', { summary: 'x'.repeat(15000) });
-    const first = f.store.history(); assert.equal(first.items.length, 1); assert.ok(first.next);
-    const next = f.store.history(first.next); assert.ok(next.items[0].seq < first.items[0].seq);
+test('legacy notebook and worker are archived, upgrade never starts another task', () => {
+  const f = fixture(); try {
+    f.store.save({ ownerSession: 'owner', worker: 'old-worker', cwd: f.dir, instructions: 'Explore', intervalMs: 60000, enabled: true, notebook: 'D17 unknown', bookmarks: {}, active: null });
+    f.store.recover(); const s = f.store.get();
+    assert.equal(s.sessionId, 'owner'); assert.equal(s.enabled, false);
+    assert.equal(s.worker, undefined); assert.equal(s.notebook, undefined);
+    const archive = f.store.db.prepare("SELECT payload FROM journal WHERE kind='legacy-archive'").get();
+    assert.equal(JSON.parse(String(archive!.payload)).notebook, 'D17 unknown');
   } finally { f.close(); }
+});
+test('competing host cannot finish old work or change cadence', () => {
+  const f = fixture(), other = new InitiativeStore(f.dir, 'other'); try {
+    f.store.control('check'); const id = f.store.claim().active.id;
+    assert.equal(other.lease(), false); f.store.db.prepare('UPDATE lease SET until_at=0').run(); assert.ok(other.lease());
+    assert.throws(() => f.store.finish(id), /ownership/);
+    assert.throws(() => f.store.control('check'), /ownership/);
+  } finally { other.close(); f.close(); }
 });

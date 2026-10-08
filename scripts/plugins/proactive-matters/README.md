@@ -116,3 +116,12 @@ Review storage and limits:
 - Model review input is capped at 96,000 UTF-8 bytes. Execution history retains its most recent 48,000 bytes when necessary, explicitly marked as incomplete. Objectives, amendments, current state, draft and inbox are not silently truncated; an oversized combined input returns an error rather than approval. Full execution evidence is retained with verdicts. Invalidation uses matter/activation/revision/draft guards, identified user-message content changes, and the Host’s explicit invalidation signal; streaming tool-call bookkeeping alone does not invalidate a review.
 - Review output has an 8,192-token budget and a 60-second timeout. Timeout aborts the request and returns a retryable tool error; it does not settle or directly pause the matter. Existing activation-wide runtime budgets still apply.
 - `scripts/live.ts` now uses an independent real model call via `PluginLlmService`'s generate contract, with execution transcript and a separate review ledger in `report.json`. Both models currently use `MAKA_SCENARIO_MODEL` (default `deepseek-flash`); set `MAKA_SCENARIO_API_KEY` in the process environment. A successful run must contain an actual approving review. No API credential is committed.
+
+
+## 从助手对话委派
+
+普通对话可用 MatterDelegate(taskKey, title, request) 启动独立 Matter Session，无需把聊天本身登记成事项。taskKey 在发起会话内唯一，重复调用返回同一工作；同 key 不接受不同委托。任务沿用普通 loop、状态文件、独立审核和原有退出规则。
+
+MatterTasks 查询本会话的事项与最近报告；MatterTaskMessage 传达明确的用户补充；MatterTaskControl 操作指定事项。其他会话不可访问这些委派关系，Matter worker 不递归委派。已结束事项不会因旧 taskKey 重试而重新启动。
+
+本版由助手主动查询报告并在原会话回复，没有即时跨会话通知推送。任务报告不等于已送达用户，查询不会写送达回执。运行中的补充写入事项 inbox 并参与原有审核版本校验，未新增中途强制打断执行的机制。

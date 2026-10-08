@@ -19,18 +19,57 @@
 
 # Feishu Source
 
-Read-only Source plugin for memory-network. Requires the Host `sources` service.
+Read-only sources for memory-network, registered through the Host `sources` plugin service. The indexes use generic original references; native Feishu IDs, access checks, pagination and versions stay in this plugin.
 
-Configure a stable account/tenant `instanceId`, explicit `containers` (a JSON string containing an array of `chat`/`thread` objects with native IDs; the host configuration surface accepts scalar fields), and `startTime` (Unix seconds). Optional `endTime` freezes an upper boundary; otherwise each enumeration fixes its upper bound at scan start. Do not reuse an instance ID for a different account or tenant.
+## Local CLI mode
 
-Provide an existing authorized user/tenant access token through plugin credential slot `access-token`, or an absolute `tokenFile` with owner-only permissions. Tokens never enter tools, indexes or references. Token acquisition/refresh is currently managed by the caller. A signed-in desktop app is not an Open Platform credential.
+Install the official `@larksuite/cli` and authorize it as the user. Configure these scalar plugin fields:
 
-The adapter enumerates metadata, follows thread replies, resolves messages on demand, preserves original fields and revisions, and checks current access before returning cached evidence. The API may transfer content during listing/permission checks; memory persists addresses, not a bulk body mirror. Only actually read evidence is cached. To find recent replies on older roots, chat enumeration also visits older roots without retaining their bodies. Index maintenance currently uses scoped rescans to compare metadata revisions, not event subscriptions. Search reads one provider page and returns `next`; empty filtered pages can still have successors. Paging cursors expire on plugin reload and are distinct from durable index coverage cursors.
+```json
+{
+  "instanceId": "personal",
+  "cliPath": "/absolute/path/to/lark-cli",
+  "accountId": "ou_your_user_open_id",
+  "appId": "cli_your_app_id",
+  "cliProfile": "cli_your_app_id",
+  "kinds": "[\"documents\",\"tasks\",\"calendar\"]",
+  "calendarId": "primary",
+  "startTime": 1790697600,
+  "endTime": 1791993600,
+  "containers": "[]",
+  "messageStartTime": 0
+}
+```
 
-Official API contracts:
-- https://open.feishu.cn/document/server-docs/im-v1/message/list
-- https://open.feishu.cn/document/server-docs/im-v1/message/get
+`startTime`/`endTime` are an explicit calendar window in Unix seconds. Messages use independent `messageStartTime`/`messageEndTime`; defaults are 0 and the start of each scan. They do not inherit the calendar window. In CLI mode, omitted/empty `containers` automatically discovers all provider-accessible private and group chats, with pagination and no muted-chat exclusion. A nonempty list optionally restricts the source to selected chats/threads. Do not reuse `instanceId` for another account or application.
 
-No send/edit/delete APIs. Unavailable and permission errors fail closed; they do not mean deletion or completed coverage.
+- `feishu.<instanceId>.documents`: accessible docx documents, including docx behind Wiki links. `documentQuery` optionally scopes enumeration. Native document ID and revision are retained; bodies are fetched only on demand at the observed revision. A changed version is not substituted for an old citation.
+- `feishu.<instanceId>.tasks`: the current user's tasks, preserving native task fields, dates, status and origin links. Detail content determines revision; old incomplete tasks are historical evidence, not an automatic instruction to act.
+- `feishu.<instanceId>.calendar`: occurrences within the configured calendar/time window. Native event IDs and details are retained; cancelled events resolve as deleted.
+- `feishu.<instanceId>.messages`: all provider-discoverable private/group chats and their replies by default, or the configured subset. Every fresh enumeration discovers chats again, so newly joined chats enter the next source boundary. Messages past the provider retention period resolve as unavailable.
 
-`npm run verify` builds, tests and packages. Build memory-network `prepare:test` first for the package helper. Mock HTTP tests do not establish real account authorization.
+Document/task/calendar queries accept `{text?, limit?, cursor?}`. Follow `next`, even on an empty page, without changing the query. `limit` is 1–100 (document API pages cap at 20). Message queries accept `{text?, types?, chatId?, startTime?, endTime?, limit?, cursor?}` (limit 1–50, time bounds in integer Unix seconds; floor the start and ceil the end when converting millisecond timestamps). In the default all-chat mode, `text`, `chatId`, or time filters use native search and resolves native originals for stable citations. An unfiltered query or coverage enumeration walks chat pages, message pages and thread replies. Keep all filters unchanged while following a cursor, including empty pages. Native search results are not proof of exhaustive history coverage. These short-lived paging cursors differ from immutable memory coverage cursors.
+
+The official CLI owns credential storage and refresh. No access token is copied to Maka configuration, indexes, or tool results. Set `cliProfile` to pin the CLI profile as well as the user/app identity. Each invocation verifies the pinned user and app identity. All provider commands are fixed in the adapter, run without a shell, use explicit user identity, and pass a read-only command allowlist. Model input cannot choose a command. Metadata/detail reads use at most four concurrent calls, paced at least 250 ms apart. Rate-limit responses (`99991400`/`429`) retry up to three times with 1/2/4-second backoff; permission errors are not retried. Cancellation, CLI errors, permission errors, and unavailable sources fail closed; an error never becomes an empty successful scan.
+
+## Token mode
+
+Without `cliPath`, the original message adapter remains supported. Configure `instanceId`, explicit `containers`, and `startTime`; optionally `endTime`. Supply a protected absolute `tokenFile` (0600), or plugin credential slot `access-token`. The caller manages token refresh in this mode.
+
+## Memory loop
+
+Use `MemorySources` → `MemorySourceQuery` / `MemoryRange` → `MemoryOriginal` → `MemoryIndexCreate`. Index workers use the same source tools as ordinary agents. Citations resolve through the shared reference registry. `MemoryOriginal` returns backlinks, which lead back through `MemoryIndexContent`; references from different indexes may share the same original.
+
+Enumeration stores addresses, revisions and metadata, not a bulk original-body snapshot. Some provider list/detail APIs transfer content while checking metadata or access; only originals explicitly read through memory are persisted as evidence. Current index maintenance compares scoped enumerations, not push events or a native change feed. Search visibility is provider-defined and should not be presented as a dump of every document the user has ever accessed.
+
+## Current coverage and verification
+
+Mailbox, minutes/transcript, standalone spreadsheet cells, and Base records are not yet registered adapters. Permission grants alone do not make those data types supported. Embedded sheet references in a document remain references, not fetched cell contents. The CLI can be probed separately, but do not describe those probes as a completed memory integration.
+
+`npm run verify` builds, type-checks, tests and packages. Run memory-network `prepare:test` first for the bundle helper. Controlled tests cover account isolation, read-only routing, pagination, native document revisions, task revisions, calendar cancellation, message scope and thread expansion. Real-model validation is recorded separately from these tests.
+
+Official CLI: https://github.com/larksuite/cli
+
+Chat discovery means what the current user/API can enumerate, not a promise that every historical, departed, expired or inaccessible conversation is available. A failed discovery or message page fails the scan; it is never silently marked covered. Explicit chat restrictions remain a filter and cannot be bypassed by search.
+
+CLI account validation accepts `ready` and `needs_refresh` only for the configured app and user. The official CLI refreshes the latter on its next read; logged-out, expired, unknown, or switched identities still fail without treating the source as empty.

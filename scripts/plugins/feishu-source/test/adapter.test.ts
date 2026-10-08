@@ -74,7 +74,8 @@ test('Feishu pages, thread expansion, permission reads and stable versions are r
 });
 test('empty filtered page retains cursor; API errors and unconfigured containers fail closed', async () => {
   assert.throws(
-    () => createFeishuSource({ instanceId: 'x', containers: [], startTime: 1 }, async () => ''),
+    () =>
+      createFeishuSource({ instanceId: 'x', containers: [], startTime: 1 }, async () => ''),
     /containers/,
   );
   const source = createFeishuSource(
@@ -91,7 +92,8 @@ test('empty filtered page retains cursor; API errors and unconfigured containers
   const denied = createFeishuSource(
     { instanceId: 'x', containers: [{ type: 'chat', id: 'oc_a' }], startTime: 1 },
     async () => 'test',
-    async () => new Response(JSON.stringify({ code: 99991672, msg: 'secret should not leak' })),
+    async () =>
+      new Response(JSON.stringify({ code: 99991672, msg: 'secret should not leak' })),
   );
   await assert.rejects(denied.enumerate(undefined, { invocation: {} }), /99991672/);
 });
@@ -125,4 +127,136 @@ test('recent replies on old roots remain discoverable within the requested time 
   assert.ok(first.next);
   const next = await source.enumerate(first.next, caller);
   assert.equal(next.items[0].id, 'om_reply');
+});
+
+test('all chats discovery paginates, includes private chats and notices newly joined chats on fresh scans', async () => {
+  let added = false;
+  const queried: string[] = [];
+  const message = (chat: string) => ({
+    message_id: 'om_' + chat,
+    chat_id: chat,
+    msg_type: 'text',
+    create_time: '2000',
+    body: { content: 'hello' },
+  });
+  const source = createFeishuSource(
+    { instanceId: 'all', containers: [], startTime: 0 },
+    async () => '',
+    fetch,
+    async (_path, q) => {
+      queried.push(q.container_id);
+      return { items: [message(q.container_id)], has_more: false };
+    },
+    {
+      chats: async (cursor) =>
+        cursor === 'page2'
+          ? { items: [{ type: 'chat', id: added ? 'oc_new' : 'oc_private' }] }
+          : { items: [{ type: 'chat', id: 'oc_group' }], next: 'page2' },
+      search: async () => ({ items: [] }),
+    },
+  );
+  const caller = { invocation: {} };
+  const a = await source.enumerate(undefined, caller);
+  assert.ok(a.next);
+  const b = await source.enumerate(a.next, caller);
+  assert.equal(b.next, undefined);
+  assert.deepEqual(queried, ['oc_group', 'oc_private']);
+  assert.equal(source.scope.containers, 'all-accessible');
+  added = true;
+  const c = await source.enumerate(undefined, caller);
+  const d = await source.enumerate(c.next, caller);
+  assert.equal(d.items[0].locator.chatId, 'oc_new');
+  assert.deepEqual(await source.authorize(d.items, { invocation: {} }), ['om_oc_new']);
+});
+test('empty discovery pages retain cursors; chat/time/type filters and pagination identity are enforced', async () => {
+  const calls: any[] = [];
+  const source = createFeishuSource(
+    { instanceId: 'all', containers: [], startTime: 0 },
+    async () => '',
+    fetch,
+    async (_path, q) => {
+      calls.push(q);
+      return {
+        items: [
+          {
+            message_id: 'om_a',
+            chat_id: q.container_id,
+            msg_type: 'text',
+            create_time: '2000',
+          },
+        ],
+        has_more: !q.page_token,
+        page_token: 'm2',
+      };
+    },
+    {
+      chats: async (cursor) =>
+        cursor ? { items: [{ type: 'chat', id: 'oc_a' }] } : { items: [], next: 'c2' },
+      search: async (q) => ({
+        items: [
+          { message_id: 'om_a', chat_id: q.chatId, msg_type: 'text', create_time: '2000' },
+        ],
+        ...(q.cursor ? {} : { next: 'filtered2' }),
+      }),
+    },
+  );
+  const c = { invocation: {} };
+  const empty = await source.enumerate(undefined, c);
+  assert.equal(empty.items.length, 0);
+  assert.ok(empty.next);
+  const page = await source.enumerate(empty.next, c);
+  assert.equal(page.items.length, 1);
+  const q = { chatId: 'oc_other', startTime: 3, endTime: 10, types: ['text'], limit: 1 };
+  const filtered = await source.query(q, c);
+  assert.equal(filtered.items.length, 0);
+  assert.ok(filtered.next);
+  assert.equal(calls.at(-1).page_size, '50');
+  await assert.rejects(
+    source.query({ ...q, chatId: 'oc_changed', cursor: filtered.next }, c),
+    /query changed/,
+  );
+  await assert.rejects(source.query({ startTime: 10, endTime: 2 }, c), /time range/);
+});
+test('discovery failures cannot silently complete a scan and explicit containers remain a hard filter', async () => {
+  const c = { invocation: {} };
+  const discovery = {
+    chats: async () => {
+      throw Error('permission denied');
+    },
+    search: async () => {
+      throw Error('must not search outside explicit scope');
+    },
+  };
+  const all = createFeishuSource(
+    { instanceId: 'all', containers: [], startTime: 0 },
+    async () => '',
+    fetch,
+    async () => ({}),
+    discovery,
+  );
+  await assert.rejects(all.enumerate(undefined, c), /permission denied/);
+  const selected = createFeishuSource(
+    { instanceId: 'selected', containers: [{ type: 'chat', id: 'oc_one' }], startTime: 0 },
+    async () => '',
+    fetch,
+    async () => ({
+      items: [
+        {
+          message_id: 'om_a',
+          chat_id: 'oc_one',
+          msg_type: 'text',
+          create_time: '2000',
+          body: { content: 'not matched' },
+        },
+      ],
+      has_more: false,
+    }),
+    discovery,
+  );
+  assert.equal((await selected.query({ text: 'missing' }, c)).items.length, 0);
+  await assert.rejects(selected.query({ chatId: 'oc_two' }, c), /outside configured/);
+  assert.deepEqual(
+    await selected.authorize([{ id: 'x', locator: { chatId: 'oc_two', createdAt: 2000 } }], c),
+    [],
+  );
 });

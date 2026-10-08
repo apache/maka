@@ -19,109 +19,68 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixture, until, checkpoint } from './fixture.js';
+import { fixture, until } from './fixture.js';
 
-test('two real index instances + incremental originals drive action, unchanged evidence stays quiet', async () => {
-  const f = await fixture();
+test('heartbeat uses the human Session and exits normally without checkpoint or notebook', async () => {
+  const f = await fixture(); let checks = 0;
   try {
-    // Installing the second extension reloads the first; its existing lease refresh is 10 s.
-    await new Promise(r => setTimeout(r, 10100));
-    const range = await f.invoke('MemoryRange');
-    const indexes = [];
-    for (const name of ['Project context', 'Supplier commitments']) indexes.push(await f.invoke('MemoryIndexCreate', { name, instructions: 'Organize relevant evidence with original references.', cursor: range.to }));
-    const before = await Promise.all(indexes.map(i => f.invoke('MemoryIndexRead', { indexId: i.index.id })));
-    let checks = 0; const drafts: string[] = []; let stale: any;
-    f.setRunner(async ({ prompt, invoke, finish }: any) => {
-      const activationId = /Activation: ([^\n]+)/.exec(prompt)![1];
-      assert.equal((await finish()).allow, false);
-      const s = await invoke('InitiativeRead', { activationId });
-      const list = await invoke('MemoryIndexList', {}); assert.equal(list.length, 2);
-      let evidence = ''; const refs: string[] = [];
-      for (const index of list) {
-        const doc = await invoke('MemoryIndexContent', { indexId: index.id, key: 'evidence' });
-        evidence += doc.text;
-        for (const ref of [...doc.text.matchAll(/memory-original:([^\s)]+)/g)].map((m: any) => m[1])) {
-          const original = await invoke('MemoryOriginal', { ref }); assert.ok(original); refs.push(ref);
-        }
-        const delta = await invoke('MemoryRange', { indexId: index.id });
-        const page = await invoke('MemoryHistory', { from: delta.from, to: delta.to, mode: 'messages' });
-        evidence += page.items.map((m: any) => m.message.text).join(' ');
-      }
-      const prior = await invoke('InitiativeHistory', { key: 'demo-backup' });
-      const act = evidence.includes('Friday') && evidence.includes('delayed to Monday') && prior.items.length === 0;
-      // Controlled external action adapter; this is not a real LLM decision-quality test.
-      if (act) drafts.push('Prepare a backup demo checklist');
-      const input = checkpoint(s, { summary: act ? 'Cross-index conflict confirmed by newer original' : 'No new action needed', update: act ? 'Prepared backup checklist after verifying the delivery delay.' : '',
-        records: act ? [{ key: 'demo-backup', summary: 'Backup checklist created', evidence: refs }] : [], bookmarks: { observed: 'Own observation, not index coverage' } });
-      stale ??= input;
-      await invoke('InitiativeCheckpoint', input);
-      await invoke('InitiativeCheckpoint', input); // exact replay is idempotent
+    f.setRunner(async ({ id, prompt, finish }: any) => {
+      assert.equal(id, 'owner'); assert.match(prompt, /Runtime heartbeat/);
       assert.equal((await finish()).allow, true); checks++;
     });
-    await f.invoke('InitiativeEnable', { instructions: 'Check multiple indexes. You may prepare a local backup checklist if delivery slips. Do not contact anyone.' });
+    await f.invoke('InitiativeEnable', { intervalMinutes: 1 });
+    assert.equal(checks, 0); // enabling is not another unsolicited turn
+    const names = f.tools.resolve('owner', []).tools.map((t: any) => t.name);
+    assert.ok(!names.includes('InitiativeCheckpoint')); assert.ok(!names.includes('InitiativeRead'));
+    await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => checks === 1 && !(await f.invoke('InitiativeStatus')).active);
-    assert.deepEqual(drafts, []);
-    f.sessions.get('supplier')!.push({ id: 'delay', type: 'user', text: 'Delivery is now delayed to Monday.' });
-    await f.invoke('InitiativeControl', { action: 'check' });
-    await until(async () => checks === 2 && !(await f.invoke('InitiativeStatus')).active);
-    assert.equal(drafts.length, 1);
-    await f.invoke('InitiativeControl', { action: 'check' });
-    await until(async () => checks === 3 && !(await f.invoke('InitiativeStatus')).active);
-    assert.equal(drafts.length, 1);
-    const after = await Promise.all(indexes.map(i => f.invoke('MemoryIndexRead', { indexId: i.index.id })));
-    assert.deepEqual(after.map(i => i.coverage.cursor), before.map(i => i.coverage.cursor));
-    assert.deepEqual(after.map(i => i.index.revision), before.map(i => i.index.revision));
-    assert.equal((await f.invoke('InitiativeHistory', { key: 'demo-backup' })).items.length, 1);
-    await assert.rejects(f.invokeAs('intruder', 'InitiativeStatus', {}), /outside/);
-    await assert.rejects(f.invokeAs((await f.invoke('InitiativeStatus')).worker, 'InitiativeCheckpoint', stale), /matching active/);
-    assert.equal((await f.turns.evaluate({ sessionId: 'ordinary-chat', turnId: 'x', signal: new AbortController().signal })).allow, true);
+    assert.equal(f.workers.size, 1); assert.equal((await f.invoke('InitiativeStatus')).lastError, null);
+    assert.ok((await f.invoke('InitiativeStatus')).nextAt > Date.now());
+    await assert.rejects(f.invokeAs('other', 'InitiativeControl', { action: 'check' }), /conversation/);
   } finally { await f.close(); }
 });
-
-test('absolute timer wakes same worker; queued wake is claimed before idle means completion', async () => {
-  const f = await fixture(); let release!: () => void; const gate = new Promise<void>(r => { release = r; });
-  let checks = 0; const ids: string[] = [];
+test('busy conversation defers heartbeat; pause never cancels the user turn', async () => {
+  const f = await fixture(); let checks = 0;
   try {
-    f.setGate(() => gate, true);
-    f.setRunner(async ({ id, prompt, invoke }: any) => {
-      ids.push(id); const s = await invoke('InitiativeRead', { activationId: /Activation: ([^\n]+)/.exec(prompt)![1] });
-      await invoke('InitiativeCheckpoint', checkpoint(s, { nextCheckAt: new Date(Date.now() + (checks === 0 ? 100 : 3600000)).toISOString() })); checks++;
-    });
-    await f.invoke('InitiativeEnable', { instructions: 'Inspect evidence, stay quiet without changes.' });
-    await until(async () => (await f.invoke('InitiativeStatus')).active);
-    await new Promise(r => setTimeout(r, 30)); assert.equal(checks, 0); assert.equal((await f.invoke('InitiativeStatus')).enabled, true);
-    release(); await until(() => checks === 2); assert.equal(new Set(ids).size, 1);
-    await until(async () => !(await f.invoke('InitiativeStatus')).active);
+    f.setRunner(async () => { checks++; });
+    await f.invoke('InitiativeEnable', {}); f.workers.get('owner').status = 'running';
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await new Promise(r => setTimeout(r, 50)); assert.equal(checks, 0);
     await f.invoke('InitiativeControl', { action: 'pause' });
-    assert.equal((await f.invoke('InitiativeStatus')).enabled, false);
+    assert.equal(f.cancels(), 0); f.workers.get('owner').status = 'idle';
+    await new Promise(r => setTimeout(r, 30)); assert.equal(checks, 0);
+  } finally { await f.close(); }
+});
+test('queued wake cannot finish before it actually appears in Session history', async () => {
+  const f = await fixture(); let release!: () => void; const gate = new Promise<void>(r => release = r); let checks = 0;
+  try {
+    f.setGate(() => gate, true); f.setRunner(async () => { checks++; });
+    await f.invoke('InitiativeEnable', {}); await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => (await f.invoke('InitiativeStatus')).active);
+    await new Promise(r => setTimeout(r, 40)); assert.equal(checks, 0);
+    assert.equal((await f.invoke('InitiativeStatus')).lastCheckedAt, null);
+    release(); await until(async () => checks === 1 && !(await f.invoke('InitiativeStatus')).active);
   } finally { release(); await f.close(); }
 });
-
-test('past wake rejected and premature exit is held; unfinished runtime exit preserves a fault', async () => {
-  const f = await fixture();
+test('packaged extension uses ordinary finish; failures stop heartbeats without cancelling chat', async () => {
+  const f = await fixture({ bundle: new URL('../release/index-initiative.maka-extension', import.meta.url).pathname });
   try {
-    f.setRunner(async ({ prompt, invoke, finish }: any) => {
-      const s = await invoke('InitiativeRead', { activationId: /Activation: ([^\n]+)/.exec(prompt)![1] });
-      await assert.rejects(invoke('InitiativeCheckpoint', checkpoint(s, { nextCheckAt: '2000-01-01T00:00:00Z' })), /future/);
-      assert.equal((await finish()).allow, false);
-      // Simulate a forced runtime exit, bypassing its natural-finish hook.
-    });
-    await f.invoke('InitiativeEnable', { instructions: 'Inspect evidence.' });
+    f.setRunner(async () => { throw Error('provider unavailable'); });
+    await f.invoke('InitiativeEnable', {}); await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => (await f.invoke('InitiativeStatus')).lastError);
-    assert.equal((await f.invoke('InitiativeStatus')).enabled, false);
+    assert.equal((await f.invoke('InitiativeStatus')).enabled, false); assert.equal(f.cancels(), 0);
   } finally { await f.close(); }
 });
 
-test('exported extension installs and executes a quiet checkpoint', async () => {
-  const f = await fixture({ bundle: new URL('../release/index-initiative.maka-extension', import.meta.url).pathname });
-  let checked = false;
+
+test('aborted runtime completion stops future heartbeats without a model checkpoint', async () => {
+  const f = await fixture();
   try {
-    f.setRunner(async ({ prompt, invoke }: any) => {
-      const s = await invoke('InitiativeRead', { activationId: /Activation: ([^\n]+)/.exec(prompt)![1] });
-      await invoke('InitiativeCheckpoint', checkpoint(s)); checked = true;
-    });
-    await f.invoke('InitiativeEnable', { instructions: 'Inspect relevant indexes. Stay quiet when nothing useful changed.' });
-    await until(async () => checked && !(await f.invoke('InitiativeStatus')).active);
-    assert.equal((await f.invoke('InitiativeStatus')).lastUpdate, '');
+    f.workers.get('owner').endStatus = 'aborted'; f.setRunner(async () => {});
+    await f.invoke('InitiativeEnable', {}); await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => (await f.invoke('InitiativeStatus')).lastError);
+    assert.equal((await f.invoke('InitiativeStatus')).enabled, false);
+    assert.match((await f.invoke('InitiativeStatus')).lastError, /aborted/);
+    assert.equal(f.cancels(), 0);
   } finally { await f.close(); }
 });

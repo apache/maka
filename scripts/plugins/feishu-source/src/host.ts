@@ -20,14 +20,28 @@
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { createFeishuSource } from './adapter.js';
+import { createCliSources } from './cli-sources.js';
 export default {
   packageId: 'dev.maka.feishu-source',
   host: {
     name: 'feishu-source',
     inject: ['sources', 'credentials'],
     async apply(ctx: any, config: any = {}) {
-      if (ctx.maka?.rootId !== 'profile') throw Error('Install feishu-source in profile scope');
-      ctx.credentials.declare({ name: 'access-token', label: 'Feishu read access token' });
+      if (ctx.maka?.rootId !== 'profile')
+        throw Error('Install feishu-source in profile scope');
+      if (config.cliPath) {
+        for (const source of createCliSources({
+          ...config,
+          kinds: JSON.parse(config.kinds ?? '["documents","tasks","calendar"]'),
+          containers: JSON.parse(config.containers ?? '[]'),
+        }))
+          ctx.sources.register(source);
+        return;
+      }
+      ctx.credentials.declare({
+        name: 'access-token',
+        label: 'Feishu read access token',
+      });
       const token = async () => {
         if (config.tokenFile) {
           if (!isAbsolute(config.tokenFile)) throw Error('tokenFile must be absolute');
@@ -39,7 +53,10 @@ export default {
         return ctx.credentials.use('access-token', (value: string) => value);
       };
       ctx.sources.register(
-        createFeishuSource({ ...config, containers: JSON.parse(config.containers ?? '[]') }, token),
+        createFeishuSource(
+          { ...config, containers: JSON.parse(config.containers ?? '[]') },
+          token,
+        ),
       );
     },
   },

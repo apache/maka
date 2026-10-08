@@ -20,6 +20,12 @@
 import { Service, type Context, type Disposable } from './plugin-kernel.js';
 import type { PluginAgentService } from './plugin-agent-service.js';
 import type { PluginSessionQueryCaller } from './plugin-session-query-service.js';
+import {
+  pluginIdentity,
+  registerPluginContribution,
+  type MakaContributionIdentity,
+} from './plugin-runtime.js';
+import { PluginScopeRegistry } from './plugin-scope-registry.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -66,9 +72,15 @@ export interface PluginSourceAdapter {
   read(object: SourceObject, caller: PluginSessionQueryCaller): Promise<SourceRead>;
 }
 
+interface RegisteredSource extends MakaContributionIdentity {
+  readonly adapter: PluginSourceAdapter;
+  readonly token: symbol;
+  retired: boolean;
+}
+
 /** Generic read-only provider registry. No credentials, bodies or provider SDKs enter indexes. */
 export class PluginSourceService extends Service {
-  private readonly adapters = new Map<string, PluginSourceAdapter>();
+  private readonly adapters = new PluginScopeRegistry<RegisteredSource>();
   constructor(
     ctx: Context,
     private readonly agents: PluginAgentService,
@@ -80,24 +92,31 @@ export class PluginSourceService extends Service {
       throw Error('Sources require profile scope');
     if (!/^[a-z][a-z0-9._-]{0,79}$/.test(adapter.id) || adapter.id === 'maka')
       throw Error('Invalid or reserved source ID');
-    const adapters = this.adapters;
-    return this.ctx.effect(() => {
-      if (adapters.has(adapter.id)) throw Error('Source already registered');
-      adapters.set(adapter.id, adapter);
-      return () => {
-        if (adapters.get(adapter.id) === adapter) adapters.delete(adapter.id);
-      };
-    }, `source:${adapter.id}`);
+    const identity = pluginIdentity(this.ctx);
+    return registerPluginContribution(this.ctx, `source:${adapter.id}`, () => {
+      const existing = this.adapters.get('profile', adapter.id);
+      if (existing && existing.entryId !== identity.entryId)
+        throw Error('Source already registered by another entry');
+      return this.adapters.publish('profile', adapter.id, {
+        ...identity,
+        adapter,
+        token: Symbol(adapter.id),
+        retired: false,
+      });
+    });
   }
+
   list() {
     this.caller();
-    return [...this.adapters.values()].map(({ id, description, queryHelp, scope }) => ({
-      id,
-      description,
-      queryHelp,
-      scope,
-      storage: 'on-demand' as const,
-    }));
+    return this.adapters
+      .entries('profile')
+      .map(({ adapter: { id, description, queryHelp, scope } }) => ({
+        id,
+        description,
+        queryHelp,
+        scope,
+        storage: 'on-demand' as const,
+      }));
   }
   async enumerate(id: string, cursor?: string) {
     const caller = this.caller();
@@ -127,7 +146,10 @@ export class PluginSourceService extends Service {
     return result;
   }
   private page(page: SourcePage) {
-    if (!Array.isArray(page.items) || (page.next !== undefined && typeof page.next !== 'string'))
+    if (
+      !Array.isArray(page.items) ||
+      (page.next !== undefined && typeof page.next !== 'string')
+    )
       throw Error('Invalid source page');
     for (const o of page.items) {
       if (
@@ -159,7 +181,7 @@ export class PluginSourceService extends Service {
     };
   }
   private adapter(id: string) {
-    const adapter = this.adapters.get(id);
+    const adapter = this.adapters.get('profile', id)?.adapter;
     if (!adapter) throw Error(`Source unavailable: ${id}`);
     return adapter;
   }

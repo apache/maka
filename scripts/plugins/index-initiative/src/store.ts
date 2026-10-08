@@ -22,6 +22,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+/** Scheduler metadata only. Conversation history belongs to the ordinary Session. */
 export class InitiativeStore {
   db: DatabaseSync;
   constructor(directory: string, readonly owner: string) {
@@ -33,7 +34,7 @@ export class InitiativeStore {
       CREATE TABLE IF NOT EXISTS lease(id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, until_at INTEGER NOT NULL);`);
   }
   get(): any { const row = this.db.prepare('SELECT payload FROM state WHERE id=1').get(); return row ? JSON.parse(String(row.payload)) : null; }
-  save(state: any) { this.db.prepare('INSERT INTO state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(state)); }
+  save(s: any) { this.db.prepare('INSERT INTO state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(JSON.stringify(s)); }
   log(kind: string, payload: any) { this.db.prepare('INSERT INTO journal(at,kind,payload) VALUES(?,?,?)').run(Date.now(), kind, JSON.stringify(payload)); }
   transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -55,80 +56,63 @@ export class InitiativeStore {
   update(fn: (s: any) => void) {
     return this.transaction(() => { this.fence(); const s = this.get(); fn(s); if (s) this.save(s); return s; });
   }
-  configure(binding: any, instructions: string, intervalMs: number) {
+  configure(binding: { sessionId: string; cwd: string }, instructions: string, intervalMs: number) {
     return this.transaction(() => {
       this.fence(); const old = this.get();
-      if (old && (old.ownerSession !== binding.ownerSession || old.worker !== binding.worker)) throw Error('Initiative was configured concurrently');
-      if (old?.active) throw Error('Pause the current check before changing its instructions');
-      const state = { ...old, ...binding, instructions, intervalMs, enabled: true, revision: (old?.revision ?? 0) + 1,
-        nextAt: Date.now(), nextReason: 'User enabled proactive checks', notebook: old?.notebook ?? '', bookmarks: old?.bookmarks ?? {}, active: null, lastError: null };
-      this.save(state); this.log('configured', { revision: state.revision, instructions }); return state;
+      if (old && old.sessionId !== binding.sessionId) throw Error('Initiative belongs to another conversation');
+      if (old?.active) throw Error('A heartbeat is still running');
+      const s = { version: 2, ...binding, instructions, intervalMs, enabled: true,
+        revision: (old?.revision ?? 0) + 1, nextAt: Date.now() + intervalMs,
+        active: null, lastError: null, lastCheckedAt: old?.lastCheckedAt ?? null };
+      this.save(s); this.log('configured', { sessionId: s.sessionId, intervalMs }); return s;
     });
   }
   recover() {
-    return this.update(s => { if (s?.active) { s.enabled = false; s.active = null; s.revision++; s.lastError = 'Previous check was interrupted; inspect possible effects before resuming'; this.log('interrupted', { reason: s.lastError }); } });
+    return this.update(s => {
+      if (!s) return;
+      if (s.version !== 2) {
+        // Archive legacy decisions, but do not inject a private notebook into the user's chat.
+        this.log('legacy-archive', s);
+        const replacement = { version: 2, sessionId: s.ownerSession, cwd: s.cwd,
+          instructions: s.instructions, intervalMs: s.intervalMs, enabled: false,
+          nextAt: Date.now() + s.intervalMs, active: null, revision: (s.revision ?? 0) + 1,
+          lastError: 'Upgraded to conversation heartbeats. Previous worker history is preserved; explicitly enable in the conversation.', lastCheckedAt: null };
+        for (const key of Object.keys(s)) delete s[key]; Object.assign(s, replacement);
+      } else if (s.active) {
+        s.enabled = false; s.active = null; s.revision++;
+        s.lastError = 'Previous heartbeat was interrupted; inspect the conversation before resuming';
+        this.log('interrupted', { reason: s.lastError });
+      }
+    });
   }
   claim() {
     return this.update(s => {
       if (!s?.enabled || s.active || s.nextAt > Date.now()) return;
-      s.active = { id: randomUUID(), startedAt: Date.now(), turnId: null, settled: false };
-      s.revision++; this.log('wake', { activation: s.active.id, reason: s.nextReason });
-    });
-  }
-  bind(sessionId: string, activation: string, turnId: string) {
-    return this.update(s => {
-      this.assertWorker(s, sessionId, activation);
-      if (s.active.turnId && s.active.turnId !== turnId) throw Error('Stale initiative turn');
-      s.active.turnId = turnId;
-    });
-  }
-  assertWorker(s: any, session: string, activation: string) {
-    if (!s?.enabled || s.worker !== session || s.active?.id !== activation) throw Error('No matching active initiative check');
-  }
-  checkpoint(call: any, input: any) {
-    return this.update(s => {
-      this.assertWorker(s, call.sessionId, input.activationId);
-      if (s.active.turnId !== call.turnId) throw Error('Read this activation before submitting');
-      const payload = JSON.stringify(input);
-      if (s.active.settled) {
-        if (s.active.payload === payload) return;
-        throw Error('This check already settled with different content');
-      }
-      if (s.revision !== input.revision) throw Error('Initiative changed; refresh before submitting');
-      const at = Date.parse(input.nextCheckAt);
-      if (!Number.isFinite(at) || at <= Date.now()) throw Error('nextCheckAt must be a future absolute timestamp with timezone');
-      s.notebook = input.notebook; s.bookmarks = input.bookmarks;
-      s.nextAt = at; s.nextReason = input.nextReason; s.lastUpdate = input.update;
-      s.lastCheckedAt = Date.now(); s.revision++;
-      s.active.settled = true; s.active.payload = payload;
-      this.log('decision', { activation: input.activationId, ...input });
+      s.active = { id: randomUUID(), startedAt: Date.now() }; s.revision++;
+      this.log('heartbeat', { id: s.active.id });
     });
   }
   finish(id: string, error?: string) {
     return this.update(s => {
       if (s?.active?.id !== id) return;
-      if (error || !s.active.settled) {
-        s.enabled = false; s.lastError = error ?? 'Agent ended without a checkpoint';
-        this.log('interrupted', { activation: id, reason: s.lastError });
-      }
-      s.active = null; s.revision++;
+      s.active = null; s.revision++; s.lastError = error ?? null;
+      s.nextAt = Date.now() + s.intervalMs; // host cadence; never model-selected
+      if (error) s.enabled = false;
+      else s.lastCheckedAt = Date.now();
+      this.log(error ? 'interrupted' : 'finished', { id, error });
     });
   }
   control(action: string) {
     return this.update(s => {
       if (!s) throw Error('Initiative is not configured');
-      if (action === 'pause') { s.enabled = false; s.active = null; }
-      else { if (s.active) throw Error('A check is already active'); s.enabled = true; s.nextAt = Date.now(); s.nextReason = 'User requested a check'; s.lastError = null; }
+      if (action === 'pause') s.enabled = false; // never cancel a shared human conversation
+      else {
+        if (s.active) throw Error('A heartbeat is still running');
+        s.enabled = true; s.lastError = null;
+        s.nextAt = Date.now() + (action === 'check' ? 0 : s.intervalMs);
+      }
       s.revision++; this.log(action, {});
     });
-  }
-  history(before?: number, key?: string) {
-    const rows = this.db.prepare('SELECT * FROM journal WHERE seq < ? ORDER BY seq DESC').all(before ?? Number.MAX_SAFE_INTEGER);
-    const matches = rows.map(r => { const { notebook, bookmarks, ...record } = JSON.parse(String(r.payload)); return { seq: Number(r.seq), at: Number(r.at), kind: r.kind, ...record }; })
-      .filter(r => !key || r.records?.some((item: any) => item.key === key));
-    const items: any[] = []; let size = 0;
-    for (const item of matches) { const n = JSON.stringify(item).length; if (items.length && (items.length >= 20 || size + n > 24000)) break; items.push(item); size += n; }
-    return { items, next: matches.length > items.length ? items.at(-1)!.seq : null };
   }
   release() { this.db.prepare('DELETE FROM lease WHERE owner=?').run(this.owner); }
   close() { this.db.close(); }

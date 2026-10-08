@@ -46,7 +46,7 @@ report.permissions = { mode:'ordinary Maka built-in tools, read-only guidance (n
 function backendFor(sessionId: string) {
   if (backends.has(sessionId)) return backends.get(sessionId);
   const ledger: any[] = []; ledgers.set(sessionId, ledger);
-  const names = new Set(['MemoryIndexList','MemoryIndexRead','MemoryIndexContent','MemoryOriginal','MemoryRange','MemoryHistory','InitiativeRead','InitiativeHistory','InitiativeCheckpoint']);
+  const names = new Set(['MemoryIndexList','MemoryIndexRead','MemoryIndexContent','MemoryOriginal','MemoryRange','MemoryHistory']);
   const modelTools = f.tools.resolve(sessionId, []).tools.filter((t: any) => names.has(t.name)).map((t: any) => ({ ...t, impl: async (input: any, call: any) => {
     const entry: any = { at: new Date().toISOString(), tool: t.name, input }; toolEvents.push(entry); round?.tools.push(entry);
     try { const result = await t.impl(input, call); entry.result = result; await save(); return result; }
@@ -99,6 +99,7 @@ try{
   const range=await f.invoke('MemoryRange'); report.range=range;
   for(const seed of seeds){const result=await f.invoke('MemoryIndexCreate',{name:seed.name,instructions:seed.instructions,cursor:range.to});report.indexes.push(result);console.log(JSON.stringify({created:seed.name,indexId:result.index.id,documents:result.contents.total}));await save();}
   await f.invoke('InitiativeEnable',{instructions:PROACTIVE_TASK,intervalMinutes:30});
+  await f.invoke('InitiativeControl',{action:'check'});
   for(let pass=0;pass<roundCount;pass++){
     await until(async()=>{const s=await f.invoke('InitiativeStatus');if(s.lastError)throw Error(s.lastError);return report.rounds.length>=pass+1&&!!report.rounds[pass]?.finishedAt&&!s.active;},560000);
     report.rounds[pass].state=await f.invoke('InitiativeStatus');await save();

@@ -18,7 +18,7 @@
  */
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-type Container = { type: 'chat' | 'thread'; id: string };
+export type Container = { type: 'chat' | 'thread'; id: string };
 export type FeishuConfig = {
   instanceId: string;
   domain?: 'feishu' | 'lark';
@@ -26,15 +26,24 @@ export type FeishuConfig = {
   startTime: number;
   endTime?: number;
 };
+export type MessageDiscovery = {
+  chats: (
+    cursor: string | undefined,
+    caller: any,
+  ) => Promise<{ items: Container[]; next?: string }>;
+  search: (query: any, caller: any) => Promise<{ items: any[]; next?: string }>;
+};
 export function createFeishuSource(
   config: FeishuConfig,
   token: () => Promise<string>,
   request: typeof fetch = fetch,
+  transport?: (path: string, query: Record<string, string>, caller: any) => Promise<any>,
+  discovery?: MessageDiscovery,
 ) {
   if (!/^[a-z0-9][a-z0-9._-]{0,55}$/.test(config.instanceId))
     throw Error('A stable account/tenant instanceId is required');
   if (
-    !config.containers?.length ||
+    (!config.containers?.length && !discovery) ||
     config.containers.some(
       (c) => !['chat', 'thread'].includes(c.type) || !/^[a-zA-Z0-9_-]+$/.test(c.id),
     )
@@ -56,7 +65,7 @@ export function createFeishuSource(
   const digest = (value: unknown) =>
     createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const scope = {
-    containers: config.containers,
+    containers: config.containers.length ? config.containers : 'all-accessible',
     startTime: config.startTime,
     endTime: config.endTime ?? 'scan-start',
   };
@@ -84,6 +93,7 @@ export function createFeishuSource(
     return c;
   }
   async function api(path: string, query: Record<string, string>, caller: any) {
+    if (transport) return transport(path, query, caller);
     const url = new URL(base + path);
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
     const secret = (await token()).trim();
@@ -99,7 +109,9 @@ export function createFeishuSource(
     if (!response.ok) throw Error(`Feishu HTTP ${response.status}`);
     const data: any = await response.json();
     if (data.code !== 0)
-      throw Error(`Feishu API error ${data.code}; verify token, permissions and chat membership`);
+      throw Error(
+        `Feishu API error ${data.code}; verify token, permissions and chat membership`,
+      );
     return data.data;
   }
   function normalize(m: any) {
@@ -135,9 +147,10 @@ export function createFeishuSource(
   }
   function inScope(m: any, endTime = config.endTime ?? Infinity) {
     return (
-      config.containers.some((c) =>
-        c.type === 'chat' ? c.id === m.chat_id : c.id === m.thread_id,
-      ) &&
+      (config.containers.length === 0 ||
+        config.containers.some((c) =>
+          c.type === 'chat' ? c.id === m.chat_id : c.id === m.thread_id,
+        )) &&
       Number(m.create_time) >= config.startTime * 1000 &&
       Number(m.create_time) < endTime * 1000
     );
@@ -152,27 +165,50 @@ export function createFeishuSource(
     c.set(id, m);
     return m;
   }
-  async function scan(cursor: string | undefined, caller: any) {
+  async function scan(cursor: string | undefined, caller: any, query: any = {}) {
     const state = cursor
       ? decode(cursor)
       : {
           scopeHash,
-          endTime: config.endTime ?? Math.floor(Date.now() / 1000),
-          queue: [...config.containers],
+          queryHash: digest(query),
+          endTime: Math.min(
+            config.endTime ?? Infinity,
+            query.endTime ?? Infinity,
+            Math.floor(Date.now() / 1000),
+          ),
+          queue: query.chatId ? [{ type: 'chat', id: query.chatId }] : [...config.containers],
+          discover: !query.chatId && config.containers.length === 0,
+          chatsPage: undefined,
+          seenChats: [],
           visited: config.containers.filter((c) => c.type === 'thread').map((c) => c.id),
           page: undefined,
         };
-    if (state.scopeHash !== scopeHash) throw Error('Source cursor scope changed');
+    if (state.scopeHash !== scopeHash || state.queryHash !== digest(query))
+      throw Error('Source cursor scope or query changed');
+    if (!state.queue.length && state.discover) {
+      const page = await discovery!.chats(state.chatsPage, caller);
+      if (page.next && page.next === state.chatsPage) throw Error('Invalid chat pagination');
+      for (const chat of page.items) {
+        if (!state.seenChats.includes(chat.id)) {
+          state.seenChats.push(chat.id);
+          state.queue.push(chat);
+        }
+      }
+      state.chatsPage = page.next;
+      state.discover = !!page.next;
+    }
     const current = state.queue[0];
-    if (!current) return { items: [] };
+    if (!current) return { items: [], ...(state.discover ? { next: encode(state) } : {}) };
     const data = await api(
       '/im/v1/messages',
       {
         container_id_type: current.type,
         container_id: current.id,
-        page_size: '50',
+        page_size: String(query.limit ?? 50),
         sort_type: 'ByCreateTimeAsc',
-        ...(current.type === 'chat' ? { start_time: '0', end_time: String(state.endTime) } : {}),
+        ...(current.type === 'chat'
+          ? { start_time: '0', end_time: String(state.endTime) }
+          : {}),
         ...(state.page ? { page_token: state.page } : {}),
       },
       caller,
@@ -185,7 +221,12 @@ export function createFeishuSource(
         state.visited.push(m.thread_id);
         state.queue.push({ type: 'thread', id: m.thread_id });
       }
-      if (!inScope(m, state.endTime)) continue;
+      if (
+        !inScope(m, state.endTime) ||
+        Number(m.create_time) < (query.startTime ?? config.startTime) * 1000 ||
+        (query.chatId && m.chat_id !== query.chatId)
+      )
+        continue;
       cache(caller).set(m.message_id, m);
       items.push(object(m));
     }
@@ -197,17 +238,19 @@ export function createFeishuSource(
       state.queue.shift();
       delete state.page;
     }
-    return { items, ...(state.queue.length ? { next: encode(state) } : {}) };
+    return { items, ...(state.queue.length || state.discover ? { next: encode(state) } : {}) };
   }
   return {
     id: `feishu.${config.instanceId}`,
-    description: 'Feishu messages in explicitly configured chats/threads',
+    description: config.containers.length
+      ? 'Feishu messages in configured chats/threads'
+      : 'Feishu messages across all provider-discoverable private and group chats',
     scope,
     queryHelp:
-      '{cursor?: string, text?: string, types?: string[]}. Scans one provider page; follow next even when items is empty. Thread replies are included. Source timestamps are milliseconds; scan bounds are Unix seconds.',
+      '{cursor?:string, text?:string, types?:string[], chatId?:string, startTime?:number, endTime?:number, limit?:number (1..50)}. Default scans all accessible private/group chats; text/chatId/time filters use native search in default all-chat CLI mode. chatId/time/types narrow results. Follow next even when empty, preserving all query fields. Native search is not exhaustive coverage; enumerate with {} to scan the source. New chats are discovered on each fresh scan. Thread replies included. Bounds: integer Unix seconds (floor start, ceil end); record timestamps: milliseconds.',
     enumerate: scan,
     async query(query: any, caller: any) {
-      const allowed = ['cursor', 'text', 'types'];
+      const allowed = ['cursor', 'text', 'types', 'chatId', 'startTime', 'endTime', 'limit'];
       if (Object.keys(query).some((k) => !allowed.includes(k)))
         throw Error('Unsupported Feishu query field');
       if (query.text !== undefined && typeof query.text !== 'string')
@@ -217,13 +260,85 @@ export function createFeishuSource(
         (!Array.isArray(query.types) || query.types.some((x: any) => typeof x !== 'string'))
       )
         throw Error('Invalid types query');
-      const page = await scan(query.cursor, caller);
+      if (
+        query.chatId !== undefined &&
+        (typeof query.chatId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(query.chatId))
+      )
+        throw Error('Invalid chatId');
+      if (
+        query.chatId &&
+        config.containers.length &&
+        !config.containers.some((c) => c.type === 'chat' && c.id === query.chatId)
+      )
+        throw Error('Chat outside configured scope');
+      for (const field of ['startTime', 'endTime'])
+        if (
+          query[field] !== undefined &&
+          (!Number.isSafeInteger(query[field]) || query[field] < 0)
+        )
+          throw Error('Invalid time query');
+      if (
+        query.limit !== undefined &&
+        (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 50)
+      )
+        throw Error('Invalid limit');
+      if (
+        Math.max(config.startTime, query.startTime ?? 0) >=
+        Math.min(config.endTime ?? Infinity, query.endTime ?? Infinity)
+      )
+        throw Error('Invalid time range');
+      const { cursor, ...shape } = query;
+      const providerSearch =
+        discovery &&
+        !config.containers.length &&
+        (query.text ||
+          query.chatId ||
+          query.startTime !== undefined ||
+          query.endTime !== undefined);
+      let page: { items: any[]; next?: string };
+      if (providerSearch) {
+        const state = cursor
+          ? decode(cursor)
+          : {
+              scopeHash,
+              queryHash: digest(shape),
+              endTime: Math.min(
+                config.endTime ?? Infinity,
+                query.endTime ?? Infinity,
+                Math.floor(Date.now() / 1000),
+              ),
+            };
+        if (state.scopeHash !== scopeHash || state.queryHash !== digest(shape))
+          throw Error('Source cursor scope or query changed');
+        const found = await discovery!.search(
+          {
+            ...shape,
+            startTime: Math.max(config.startTime, query.startTime ?? 0),
+            endTime: state.endTime,
+            cursor: state.page,
+          },
+          caller,
+        );
+        if (found.next && found.next === state.page) throw Error('Invalid search pagination');
+        const items = found.items.filter(
+          (m) =>
+            inScope(m, state.endTime) &&
+            Number(m.create_time) >= Math.max(config.startTime, query.startTime ?? 0) * 1000 &&
+            (!query.chatId || m.chat_id === query.chatId),
+        );
+        for (const m of items) cache(caller).set(m.message_id, m);
+        page = {
+          items: items.map(object),
+          ...(found.next ? { next: encode({ ...state, page: found.next }) } : {}),
+        };
+      } else page = await scan(cursor, caller, shape);
       return {
         ...page,
         items: page.items.filter(
           (o) =>
             (!query.types || query.types.includes(o.kind)) &&
             (!query.text ||
+              providerSearch ||
               JSON.stringify(normalize(cache(caller).get(o.id)))
                 .toLowerCase()
                 .includes(query.text.toLowerCase())),
@@ -234,11 +349,15 @@ export function createFeishuSource(
       const allowed: string[] = [],
         c = cache(caller);
       for (const o of objects) {
-        const container = config.containers.find((x) =>
-          x.type === 'chat' ? x.id === o.locator.chatId : x.id === o.locator.threadId,
-        );
+        const container =
+          config.containers.length === 0
+            ? { type: 'chat', id: o.locator.chatId }
+            : config.containers.find((x) =>
+                x.type === 'chat' ? x.id === o.locator.chatId : x.id === o.locator.threadId,
+              );
         if (
           !container ||
+          !/^[a-zA-Z0-9_-]+$/.test(container.id) ||
           o.locator.createdAt < config.startTime * 1000 ||
           (config.endTime && o.locator.createdAt >= config.endTime * 1000)
         )
@@ -247,7 +366,11 @@ export function createFeishuSource(
         if (!c.has(accessKey)) {
           await api(
             '/im/v1/messages',
-            { container_id_type: container.type, container_id: container.id, page_size: '1' },
+            {
+              container_id_type: container.type,
+              container_id: container.id,
+              page_size: '1',
+            },
             caller,
           );
           c.set(accessKey, true);
@@ -260,6 +383,12 @@ export function createFeishuSource(
       const m = await message(o.id, caller);
       if (!inScope(m)) throw Error('Message is outside configured source scope');
       if (m.deleted) return { status: 'deleted' as const, object: object(m) };
+      if (
+        JSON.stringify(m.body ?? '').includes(
+          'The message has exceeded the retention period and has been deleted.',
+        )
+      )
+        return { status: 'unavailable' as const, object: object(m) };
       return { status: 'ok' as const, object: object(m), content: m };
     },
   };

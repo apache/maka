@@ -44,20 +44,41 @@ export class MemoryController {
         .map((r) => String(r.session_id)),
     );
   }
-  async visible() {
+  async visible(sources?: string[], tolerateUnavailable = false) {
+    // Apply the caller's history/privacy gate even when only external sources are requested.
+    await this.ctx.sessionQuery.historyList();
     const hidden = this.hidden(),
       keys: string[] = [];
-    for (const source of this.ctx.sessionQuery.historySources())
-      for (const head of await this.ctx.sessionQuery.sourceList(source.id))
-        if (source.id !== 'maka' || !hidden.has(head.id)) keys.push(sourceKey(source.id, head.id));
-    for (const source of this.ctx.sources.list()) {
-      const references = this.store.references(source.id);
-      const objects = [...new Map(references.map((r) => [r.object.id, r.object])).values()];
-      if (!objects.length) continue;
-      const allowed = new Set(await this.ctx.sources.authorize(source.id, objects));
-      keys.push(...references.filter((r) => allowed.has(r.object.id)).map((r) => r.recordKey));
-    }
+    const selected = (id: string) => !sources || sources.includes(id);
+    const inspect = async (read: () => Promise<void>) => {
+      try {
+        await read();
+      } catch (error) {
+        if (!tolerateUnavailable) throw error;
+      }
+    };
+    for (const source of this.ctx.sessionQuery
+      .historySources()
+      .filter((s: any) => selected(s.id)))
+      await inspect(async () => {
+        for (const head of await this.ctx.sessionQuery.sourceList(source.id))
+          if (source.id !== 'maka' || !hidden.has(head.id))
+            keys.push(sourceKey(source.id, head.id));
+      });
+    for (const source of this.ctx.sources.list().filter((s: any) => selected(s.id)))
+      await inspect(async () => {
+        const references = this.store.references(source.id);
+        const objects = [...new Map(references.map((r) => [r.object.id, r.object])).values()];
+        if (!objects.length) return;
+        const allowed = new Set(await this.ctx.sources.authorize(source.id, objects));
+        keys.push(
+          ...references.filter((r) => allowed.has(r.object.id)).map((r) => r.recordKey),
+        );
+      });
     return [...new Set(keys)];
+  }
+  indexVisible(indexId: string) {
+    return this.visible(this.store.index(indexId).sources ?? ['maka']);
   }
   async sourceQuery(source: string, request: any) {
     await this.ctx.sessionQuery.historyList();
@@ -77,10 +98,15 @@ export class MemoryController {
         }),
     };
   }
-  async readReference(ref: string, latest = false, expandBacklinks = false, visibility?: string[]) {
+  async readReference(
+    ref: string,
+    latest = false,
+    expandBacklinks = false,
+    visibility?: string[],
+  ) {
     const reference = this.store.reference(ref);
     if (!reference) throw Error('Unknown original reference');
-    const allowed = visibility ?? (await this.visible());
+    const allowed = visibility ?? (await this.visible(undefined, true));
     this.store.fragment(ref, allowed);
     if (reference.local) {
       const original = this.store.original(ref, allowed);
@@ -159,7 +185,7 @@ export class MemoryController {
       }));
   }
   async history(input: any) {
-    const visible = await this.visible();
+    const visible = await this.visible(this.store.cursor(input.to).sources);
     const range = this.store.range(input.from, input.to, visible);
     const remote = range.records.filter(
       (r) =>
@@ -208,7 +234,8 @@ export class MemoryController {
             ? { text: original.content }
             : { content: original.content }),
         };
-        if (!select([message], { ...input, after: undefined, limit: 1 }).items.length) continue;
+        if (!select([message], { ...input, after: undefined, limit: 1 }).items.length)
+          continue;
         items.push({
           source: record.source,
           recordId: record.id,
@@ -264,7 +291,8 @@ export class MemoryController {
         )
           continue;
         const key = sourceKey(source, head.id);
-        if (!head.historyRevision) throw Error('Source must expose an opaque content revision');
+        if (!head.historyRevision)
+          throw Error('Source must expose an opaque content revision');
         if (this.store.head(key)?.revision === head.historyRevision && this.store.record(key))
           continue;
         const existing = this.sourceReads.get(key);
@@ -294,17 +322,130 @@ export class MemoryController {
         await reading;
       }
   }
-  async capture(sources: string[], sessions: string[] = []) {
-    await this.sync(sources, sessions);
-    return this.store.capture(sources, await this.visible(), sessions);
+  async capture(sources: string[], sessions: string[] = [], indexId?: string) {
+    const checkedAt = Date.now();
+    if (indexId)
+      this.store.saveWorker(indexId, {
+        ...this.store.worker(indexId),
+        lastCheckAttemptAt: checkedAt,
+      });
+    try {
+      await this.sync(sources, sessions);
+      const cursor = this.store.capture(sources, await this.visible(sources), sessions);
+      this.store.recordCheck(cursor.id, checkedAt);
+      if (indexId)
+        this.store.saveWorker(indexId, {
+          ...this.store.worker(indexId),
+          latestCursor: cursor.id,
+          lastCheckedAt: checkedAt,
+          lastCheckError: undefined,
+        });
+      return cursor;
+    } catch (error) {
+      if (indexId)
+        this.store.saveWorker(indexId, {
+          ...this.store.worker(indexId),
+          lastCheckError: String(error),
+        });
+      throw error;
+    }
   }
-  summary(indexId: string, visible: string[]) {
+  interval(indexId: string) {
+    return this.store.worker(indexId)?.intervalMs ?? this.config.intervalMs ?? 43200000;
+  }
+  enabled(indexId: string) {
+    const w = this.store.worker(indexId);
+    return (
+      w?.protocol === 'cursor-v1' && w.maintenanceEnabled !== false && !w.continuationStopped
+    );
+  }
+  nextCheck(indexId: string) {
+    const w = this.store.worker(indexId);
+    return this.enabled(indexId)
+      ? (w.nextCheckAt ??
+          (w.lastCheckedAt || w.lastSuccess || Date.now()) + this.interval(indexId))
+      : null;
+  }
+  freshness(indexId: string, visible: string[], running = this.runs.has(indexId)) {
+    const w = this.store.worker(indexId),
+      work = this.store.work(indexId);
+    const coveredCursor = this.store.boundary(indexId);
+    const observedCursor = w?.latestCursor ?? work?.to ?? coveredCursor;
+    const checkedAt = w?.lastCheckedAt ?? this.store.checkedAt(observedCursor);
+    const knownPending = observedCursor
+      ? this.store.describe(coveredCursor, observedCursor, visible)
+      : null;
+    const pending = observedCursor
+      ? this.store.pending(indexId, observedCursor, visible)
+      : null;
+    return {
+      coveredCursor,
+      observedCursor,
+      lastOrganizedAt: (this.store.lastCompletedAt(indexId) ?? w?.lastSuccess) || null,
+      lastCheckedAt: checkedAt ?? null,
+      lastCheckAttemptAt: w?.lastCheckAttemptAt ?? null,
+      lastCheckError: w?.lastCheckError ?? null,
+      lastMaintenanceError: w?.lastError ?? null,
+      knownPending,
+      status: running
+        ? 'updating'
+        : w?.lastCheckError
+          ? 'check_failed'
+          : w?.lastError
+            ? 'maintenance_failed'
+            : !checkedAt
+              ? 'unknown'
+              : pending
+                ? 'pending'
+                : 'no_changes_at_last_check',
+      partialUpdate: !!work && !work.completed,
+      maintenanceEnabled: this.enabled(indexId),
+      intervalMs: this.interval(indexId),
+      nextCheckAt: this.nextCheck(indexId),
+      notice:
+        'Index may lag behind sources. knownPending is only what the last successful scan observed; zero does not mean no changes now. During partialUpdate, some entries may be updated while coverage stays at the previous completed boundary. Use MemoryHistory from coveredCursor to observedCursor as needed; MemoryRange(indexId) explicitly refreshes observations without organizing the index.',
+    };
+  }
+  control(indexId: string, action: 'pause' | 'resume' | 'configure', intervalMs?: number) {
+    this.assertOwner();
+    const w = this.store.worker(indexId);
+    if (!w) throw Error('Index has no maintenance worker');
+    if (
+      intervalMs !== undefined &&
+      (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2147483647)
+    )
+      throw Error('Invalid intervalMs');
+    this.store.saveWorker(indexId, {
+      ...w,
+      ...(intervalMs === undefined ? {} : { intervalMs }),
+      ...(action === 'pause'
+        ? {
+            maintenanceEnabled: false,
+            continuationStopped: true,
+            continuationStopReason: 'Maintenance paused',
+            nextCheckAt: null,
+          }
+        : {}),
+      ...(action === 'resume'
+        ? {
+            maintenanceEnabled: true,
+            continuationStopped: false,
+            continuationStopReason: undefined,
+          }
+        : {}),
+      ...(action !== 'pause'
+        ? { nextCheckAt: Date.now() + (intervalMs ?? this.interval(indexId)) }
+        : {}),
+    });
+  }
+  summary(indexId: string, visible: string[], running = this.runs.has(indexId)) {
     const { covered, view, sessions, ...index } = this.store.index(indexId);
     const worker = this.store.worker(indexId),
       work = this.store.work(indexId);
     const to = worker?.latestCursor ?? work?.to ?? this.store.boundary(indexId);
     return {
       index,
+      freshness: this.freshness(indexId, visible, running),
       range: work
         ? {
             ...this.store.describe(work.from, work.to, visible),
@@ -321,11 +462,15 @@ export class MemoryController {
       contents: this.store.overview(indexId, visible),
       maintenance: worker
         ? {
-            running: this.runs.has(indexId),
+            running,
             lastAttempt: worker.lastAttempt,
             lastSuccess: worker.lastSuccess,
             lastError: worker.lastError,
             protocol: worker.protocol ?? 'legacy-paused',
+            enabled: this.enabled(indexId),
+            intervalMs: this.interval(indexId),
+            nextCheckAt: this.nextCheck(indexId),
+            lastCheckedAt: worker.lastCheckedAt ?? null,
             continuationStopped: worker.continuationStopped ?? false,
           }
         : null,
@@ -348,6 +493,10 @@ export class MemoryController {
       lastAttempt: 0,
       lastSuccess: 0,
       protocol: 'cursor-v1',
+      maintenanceEnabled: true,
+      nextCheckAt: Date.now() + (this.config.intervalMs ?? 43200000),
+      latestCursor: this.store.work(indexId)?.to,
+      lastCheckedAt: this.store.checkedAt(this.store.work(indexId)?.to ?? null),
     });
   }
   inOwner<T>(indexId: string, fn: () => T): T {
@@ -378,7 +527,8 @@ export class MemoryController {
     this.owned = this.store.lease(this.owner);
     this.heartbeat = setInterval(() => {
       const owned = this.store.lease(this.owner);
-      if (this.owned && !owned) this.abort.abort(new Error('Memory maintenance ownership lost'));
+      if (this.owned && !owned)
+        this.abort.abort(new Error('Memory maintenance ownership lost'));
       this.owned = owned;
     }, 10000);
     this.heartbeat.unref?.();
@@ -389,39 +539,24 @@ export class MemoryController {
     void this.tick();
   }
   tick(): Promise<void> {
+    if (!this.owned && !this.abort.signal.aborted) this.owned = this.store.lease(this.owner);
     if (this.ticking || !this.owned || this.abort.signal.aborted)
       return this.ticking ?? Promise.resolve();
     this.ticking = (async () => {
       for (const index of this.store.list()) {
         if (this.abort.signal.aborted || this.runs.size >= 2) break;
+        if (!this.enabled(index.id) || this.runs.has(index.id)) continue;
         const binding = this.store.worker(index.id);
-        if (
-          binding?.protocol !== 'cursor-v1' ||
-          binding.continuationStopped ||
-          this.runs.has(index.id)
-        )
-          continue;
-        try {
-          await this.inOwner(index.id, async () => {
-            const cursor = await this.capture(index.sources ?? ['maka'], index.sessions);
-            const w = this.store.worker(index.id),
-              now = Date.now();
-            this.store.saveWorker(index.id, { ...w, latestCursor: cursor.id });
-            const pending = this.store.pending(index.id, cursor.id, await this.visible());
-            if (
-              (pending || (this.store.work(index.id) && !this.store.work(index.id)!.completed)) &&
-              now - w.lastAttempt >= (this.config.retryMs ?? 60000) &&
-              (pending >= (this.config.threshold ?? 100) ||
-                now - w.lastSuccess >= (this.config.intervalMs ?? 1800000))
-            )
-              void this.maintain(index.id).catch(() => {});
-          });
-        } catch (error) {
+        // Persist a due time for old workers without scheduling metadata; do not scan on each tick.
+        if (binding.nextCheckAt == null) {
           this.store.saveWorker(index.id, {
-            ...this.store.worker(index.id),
-            lastError: String(error),
+            ...binding,
+            nextCheckAt: this.nextCheck(index.id),
           });
+          continue;
         }
+        if (Date.now() < binding.nextCheckAt) continue;
+        void this.maintain(index.id).catch(() => {});
       }
     })().finally(() => {
       this.ticking = undefined;
@@ -432,9 +567,9 @@ export class MemoryController {
     this.assertOwner();
     const existing = this.runs.get(indexId);
     if (existing) return existing;
-    const run = this.inOwner(indexId, () => this.run(indexId)).finally(() =>
-      this.runs.delete(indexId),
-    );
+    const run = Promise.resolve()
+      .then(() => this.inOwner(indexId, () => this.run(indexId)))
+      .finally(() => this.runs.delete(indexId));
     this.runs.set(indexId, run);
     return run;
   }
@@ -449,7 +584,8 @@ export class MemoryController {
         new Promise((_, reject) => {
           onAbort = () =>
             reject(
-              callerSignal.reason ?? new Error('Caller stopped waiting; background task continues'),
+              callerSignal.reason ??
+                new Error('Caller stopped waiting; background task continues'),
             );
           callerSignal.addEventListener('abort', onAbort, { once: true });
         }),
@@ -467,22 +603,37 @@ export class MemoryController {
         ...this.store.worker(indexId),
         lastAttempt: Date.now(),
         lastError: undefined,
-        continuationStopped: undefined,
       });
-      const cursor = await this.capture(index.sources ?? ['maka'], index.sessions);
-      const visible = await this.visible();
-      this.store.saveWorker(indexId, {
-        ...this.store.worker(indexId),
-        latestCursor: cursor.id,
-      });
-      const work = this.store.begin(indexId, cursor.id, visible);
+      let work = this.store.work(indexId);
+      let visible: string[];
+      if (work && !work.completed) {
+        // Resume the exact unfinished range, including after restart; new arrivals wait for the next range.
+        visible = await this.indexVisible(indexId);
+        this.store.assertVisible(this.store.cursor(work.to), visible);
+      } else {
+        const cursor = await this.capture(index.sources ?? ['maka'], index.sessions, indexId);
+        visible = await this.indexVisible(indexId);
+        if (!this.store.pending(indexId, cursor.id, visible) && this.store.boundary(indexId)) {
+          this.store.saveWorker(indexId, {
+            ...this.store.worker(indexId),
+            lastError: undefined,
+            nextCheckAt: Date.now() + this.interval(indexId),
+          });
+          return {
+            ...this.summary(indexId, visible, false),
+            backgroundFinished: true,
+            noChanges: true,
+          };
+        }
+        work = this.store.begin(indexId, cursor.id, visible);
+      }
       agent = await this.ctx.agents.resume({
         sessionId: this.store.worker(indexId).sessionId,
       });
       let prompt = `Organize index ${indexId}.
 User requirement: ${index.instructions}
 Exact range: ${JSON.stringify(this.store.describe(work.from, work.to, visible))}
-Range ID: ${work.id}. Save entries with original links. Choose tools and message types yourself. Only set MemoryIndexCheckpoint complete=true when this range is finished; otherwise save progress with complete=false to continue.`;
+Range ID: ${work.id}. Update existing entries and links when new evidence changes earlier conclusions; revisit old originals as needed. Save entries with original links. Choose tools and message types yourself. Only set MemoryIndexCheckpoint complete=true when this range is finished; otherwise save progress with complete=false to continue.`;
       for (;;) {
         this.assertOwner();
         // A continuation gets its own existing per-turn timeout, not the previous turn's remainder.
@@ -494,7 +645,8 @@ Range ID: ${work.id}. Save entries with original links. Choose tools and message
         signal.throwIfAborted();
         const before = this.store.latestCheckpoint(indexId, work.id, agent.sessionId)?.id ?? 0;
         const result = await agent.followup(prompt);
-        if (result?.disposition === 'blocked') throw Error('Host rejected background maintenance');
+        if (result?.disposition === 'blocked')
+          throw Error('Host rejected background maintenance');
         await agent.whenIdle(signal);
         signal.throwIfAborted();
         const current = this.store.work(indexId);
@@ -522,15 +674,17 @@ Range ID: ${work.id}. Save entries with original links. Choose tools and message
         ...this.store.worker(indexId),
         lastSuccess: Date.now(),
         lastError: undefined,
+        nextCheckAt: Date.now() + this.interval(indexId),
       });
     } catch (error) {
       this.store.saveWorker(indexId, {
         ...this.store.worker(indexId),
         lastError: String(error),
+        nextCheckAt: Date.now() + (this.config.retryMs ?? 60000),
       });
       if (signal.aborted) await agent?.cancel().catch(() => {});
     }
-    const summary = this.summary(indexId, await this.visible());
+    const summary = this.summary(indexId, await this.indexVisible(indexId), false);
     return {
       ...summary,
       maintenance: { ...summary.maintenance, running: false },

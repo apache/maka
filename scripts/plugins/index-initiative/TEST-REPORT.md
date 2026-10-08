@@ -1,3 +1,13 @@
+# Heartbeat assistant revision — 2026-10-08
+
+Current implementation uses the initiating ordinary conversation Session. Removed the notebook, InitiativeRead / InitiativeHistory / InitiativeCheckpoint and the finish hook. Host cadence schedules checks; pause does not cancel user work. Legacy state is archived and paused on migration.
+
+Controlled validation: 9 tests passed, including packaged extension execution, natural finish without checkpoint, busy foreground deferral, queued admission, restart/interruption, aborted runtime completion, migration, and lease fencing. Build, pack and typecheck passed.
+
+Matter delegation is tested in proactive-matters: idempotent creation, separate worker lifecycle, wait → user amendment → completion, task ownership, cancellation, and late-write rejection. Real-model smoke artifacts are stored outside the repository. Real Sol smoke confirmed shared chat history, independent task delegation, host heartbeats, quiet completion, and an approved wait followed by timer resumption. Final task completion / result relay was not verified: repeated provider connection timeouts and an independent proxy timeout stopped the test. Original environment restored. Fixed a real integration bug where the Host ignored requested Session IDs; delegation now persists the actual returned ID. Controlled tests are not evidence of broad proactive recommendation quality.
+
+## Historical report (previous implementation)
+
 # Verification scope
 
 2026-09-30: `npm run verify` passed: build, exported-bundle packaging, 8/8 controlled tests and TypeScript checking.

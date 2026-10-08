@@ -60,7 +60,10 @@ const create = async (f: any, name = 'Events', sources = ['maka']) => {
   });
 };
 const pending = (range: any) =>
-  range.sources.reduce((n: number, s: any) => n + s.newOrChangedMessages + s.removedMessages, 0);
+  range.sources.reduce(
+    (n: number, s: any) => n + s.newOrChangedMessages + s.removedMessages,
+    0,
+  );
 
 for (const bundle of [false, true])
   test(`bundle=${bundle}: cursors, normal worker tools, backlinks and independent indexes`, async (t) => {
@@ -181,12 +184,11 @@ test('all types and fields by default; filtering and pagination are explicit cho
   );
 });
 
-for (const trigger of ['time', 'volume'])
+for (const trigger of ['time'])
   test(`${trigger} drives a normal independent background Session`, async (t) => {
     const f = await fixture(false, {
       tickMs: 15,
-      intervalMs: trigger === 'time' ? 20 : 999999,
-      threshold: trigger === 'volume' ? 1 : 1000,
+      intervalMs: 20,
       retryMs: 1,
     });
     let release!: () => void;
@@ -340,7 +342,10 @@ test('mid-run arrivals stay outside the captured range and become the next delta
   const first = await create(f);
   const range = await f.invoke('MemoryRange', { indexId: first.index.id });
   assert.equal(pending(range), 1);
-  const firstDoc = await f.invoke('MemoryIndexContent', { indexId: first.index.id, key: 'events' });
+  const firstDoc = await f.invoke('MemoryIndexContent', {
+    indexId: first.index.id,
+    key: 'events',
+  });
   assert.ok(!firstDoc.text.includes('New demand'));
   const second = await f.invoke('MemoryIndexMaintain', { indexId: first.index.id });
   assert.equal(second.coverage.cursor, range.to);
@@ -387,7 +392,10 @@ test('false checkpoints continue the same Session and range until true, without 
       assert.match(prompt, /previous turn saved complete=false/);
       assert.match(prompt, /Only set complete=true when finished/);
       assert.equal(summary.notes, `Remaining work after ${round - 1}`);
-      const old = await f.invokeAs(sessionId, 'MemoryIndexContent', { indexId, key: 'events' });
+      const old = await f.invokeAs(sessionId, 'MemoryIndexContent', {
+        indexId,
+        key: 'events',
+      });
       assert.equal(old.text, `Progress ${round - 1}`);
     }
     const write = await f.invokeAs(sessionId, 'MemoryIndexWrite', {
@@ -604,7 +612,11 @@ for (const bundle of [false, true])
       search.items.map((e: any) => e.key),
       ['event-104'],
     );
-    const small = await f.invoke('MemoryIndexContent', { indexId, view: 'full', maxChars: 10 });
+    const small = await f.invoke('MemoryIndexContent', {
+      indexId,
+      view: 'full',
+      maxChars: 10,
+    });
     assert.equal(small.items.length, 1);
     assert.equal(
       small.items[0].text,
@@ -612,7 +624,11 @@ for (const bundle of [false, true])
       'do not truncate even an oversized first document',
     );
     assert.equal(small.exceedsBudget, true);
-    const rest = await f.invoke('MemoryIndexContent', { indexId, view: 'full', after: small.next });
+    const rest = await f.invoke('MemoryIndexContent', {
+      indexId,
+      view: 'full',
+      after: small.next,
+    });
     assert.deepEqual(
       [...small.items, ...rest.items],
       full.items,
@@ -645,7 +661,10 @@ for (const bundle of [false, true])
     ])
       assert.ok(plan.activeTools.includes(name), `${name} is available without search`);
     f.sessions.delete('chat-a');
-    await assert.rejects(f.invoke('MemoryIndexContent', { indexId, view: 'full' }), /visibility/);
+    await assert.rejects(
+      f.invoke('MemoryIndexContent', { indexId, view: 'full' }),
+      /visibility/,
+    );
     await assert.rejects(
       f.invoke('MemoryIndexContent', { indexId, query: 'unique' }),
       /visibility/,

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { registerDelegation } from './delegation.js';
 import { reviewMatter } from './review.js';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -90,6 +91,7 @@ export default {
         if (!m) throw new Error('This session has no follow-up');
         return m;
       };
+      registerDelegation(ctx, location.value, store, controller);
       ctx.tools.register({
         name: 'MatterStart',
         description:

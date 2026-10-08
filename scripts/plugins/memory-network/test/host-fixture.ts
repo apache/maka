@@ -47,11 +47,20 @@ export async function fixture(bundle = true, config: any = {}) {
     ['chat-b', [{ id: 'b', type: 'user', text: 'Delivery is due next week' }]],
   ]);
   let incognito = false;
+  let historyError = false;
   const reads: string[] = [];
   let workerRunner: ((id: string, prompt: string) => Promise<void>) | undefined;
   let beforeWorker: (() => Promise<void>) | undefined;
   const query = new Main.PluginSessionQueryService(ctx, agents);
-  const sources = new Main.PluginSourceService(ctx, agents);
+  new Main.PluginSourceService(ctx, agents);
+  const sources = ctx.extend({
+    maka: {
+      rootId: 'profile',
+      packageId: 'test-sources',
+      entryId: 'test-sources',
+      generation: 1,
+    },
+  }).sources;
   const allowed = () => {
     if (incognito) throw Error('Incognito blocks history');
     return [...sessions.keys()].map((id) => ({
@@ -68,6 +77,7 @@ export async function fixture(bundle = true, config: any = {}) {
       return allowed();
     },
     historyRead: async (id, caller) => {
+      if (historyError) throw Error('Source temporarily unavailable');
       assert.ok(caller.invocation.sessionId);
       allowed();
       reads.push(id);
@@ -84,7 +94,9 @@ export async function fixture(bundle = true, config: any = {}) {
       return { id, sessionId: id, root: false };
     },
     resume: async ({ sessionId }: any) => ({ id: sessionId, sessionId, root: false }),
-    snapshot: async (id: string) => ({ agent: { status: workers.get(id)?.status ?? 'active' } }),
+    snapshot: async (id: string) => ({
+      agent: { status: workers.get(id)?.status ?? 'active' },
+    }),
     whenIdle: async (id: string, signal?: AbortSignal) => {
       signal?.throwIfAborted();
       let onAbort!: () => void;
@@ -214,6 +226,9 @@ export async function fixture(bundle = true, config: any = {}) {
       beforeWorker = fn;
     },
     invoke: (name: string, input: any) => invokeAs('agent-chat', name, input),
+    setHistoryError: (value: boolean) => {
+      historyError = value;
+    },
     setIncognito: (value: boolean) => {
       incognito = value;
     },

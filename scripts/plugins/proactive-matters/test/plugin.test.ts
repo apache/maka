@@ -232,6 +232,9 @@ test('ordinary Plan mode excludes every mutating Matter tool, including activati
     'MatterCheckpoint',
     'MatterSettle',
     'MatterWriteFile',
+    'MatterDelegate',
+    'MatterTaskMessage',
+    'MatterTaskControl',
   ];
   assert.deepEqual(
     tools
@@ -242,8 +245,8 @@ test('ordinary Plan mode excludes every mutating Matter tool, including activati
   );
   const selected = selectCollaborationTools({ mode: 'plan', tools, hasActiveExecution: false });
   assert.deepEqual(
-    selected.map((tool) => tool.name),
-    ['MatterReadFile'],
+    selected.map((tool) => tool.name).sort(),
+    ['MatterReadFile', 'MatterTasks'],
   );
   assert.equal(
     selectCollaborationTools({ mode: 'agent', tools, hasActiveExecution: false }).length,

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dev.maka.feishu-source",
   "displayName": "飞书只读 Source",
-  "description": "通过开放平台按需读取飞书消息；原文引用与索引分离。",
+  "description": "飞书 CLI 多来源只读查询、原文回查与索引引用",
   "runtime": {
     "entry": "dist/host.mjs"
   },
@@ -22,7 +22,7 @@
       },
       "containers": {
         "type": "string",
-        "description": "JSON 数组：[{\"type\":\"chat\",\"id\":\"oc_...\"}]"
+        "description": "可选 JSON 数组，限制聊天/话题；CLI 模式留空或 [] 自动发现全部可访问私聊和群聊"
       },
       "startTime": {
         "type": "number",
@@ -31,6 +31,42 @@
       "endTime": {
         "type": "number",
         "description": "可选结束 Unix 秒；否则固定为本次扫描开始时间"
+      },
+      "cliPath": {
+        "type": "string",
+        "description": "本地官方 lark-cli 绝对路径；配置后使用 CLI 登录身份"
+      },
+      "accountId": {
+        "type": "string",
+        "description": "固定 user openId，登录账号不一致时拒绝访问"
+      },
+      "appId": {
+        "type": "string",
+        "description": "固定 CLI appId"
+      },
+      "kinds": {
+        "type": "string",
+        "description": "JSON 数组：documents、tasks、calendar"
+      },
+      "calendarId": {
+        "type": "string",
+        "description": "日历 ID，默认 primary"
+      },
+      "documentQuery": {
+        "type": "string",
+        "description": "可选文档枚举搜索范围"
+      },
+      "messageStartTime": {
+        "type": "number",
+        "description": "消息起始 Unix 秒，默认 0，独立于日历窗口"
+      },
+      "messageEndTime": {
+        "type": "number",
+        "description": "可选消息结束 Unix 秒，默认每次扫描开始时间，独立于日历窗口"
+      },
+      "cliProfile": {
+        "type": "string",
+        "description": "固定 CLI profile 名称，避免跟随全局默认 profile 切换"
       }
     }
   },
