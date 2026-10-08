@@ -115,15 +115,15 @@
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
-    "@ai-sdk/provider-utils": "5.0.51",
-    "@astryxdesign/cli": "0.6.3",
-    "@astryxdesign/core": "0.6.3",
-    "@biomejs/biome": "2.5.14",
-    "@electron/asar": "4.3.0",
-    "@types/node": "^26.6.3",
+    "@ai-sdk/provider-utils": "5.0.53",
+    "@astryxdesign/cli": "0.6.5",
+    "@astryxdesign/core": "0.6.5",
+    "@biomejs/biome": "2.5.15",
+    "@electron/asar": "4.3.1",
+    "@types/node": "^26.6.4",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "knip": "^6.38.0",
+    "knip": "^6.39.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
     "yaml": "2.9.1"
