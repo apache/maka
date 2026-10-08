@@ -55,6 +55,7 @@ async function schedulerFixture() {
   let drainRequests = 0;
   let timer: { callback: () => void; delayMs: number } | undefined;
   const deliveries: Record<string, unknown>[] = [];
+  const deliveryMethods: string[] = [];
   const writeDatabase = (sql: string, taskId: string) => {
     const lease = acquireOperationalStateDatabase(root.canonicalPath);
     try {
@@ -82,6 +83,7 @@ async function schedulerFixture() {
       },
       callWorkspaceService: async (request) => {
         deliveries.push(request.input);
+        deliveryMethods.push(request.method);
         return {};
       },
     },
@@ -109,6 +111,7 @@ async function schedulerFixture() {
   return {
     store,
     deliveries,
+    deliveryMethods,
     mutate,
     setNow: (at: number) => {
       now = at;
@@ -131,6 +134,14 @@ async function schedulerFixture() {
     },
     repairCatalog: () =>
       writeDatabase('DELETE FROM workflow_scheduled_tasks WHERE task_id = ?', CORRUPT_TASK_ID),
+    /** Create rejects platforms without bot delivery, so only a stored row can hold one. */
+    storeBotPlatform: (taskId: string, platform: 'feishu' | 'wecom') =>
+      writeDatabase(
+        `UPDATE workflow_scheduled_tasks
+         SET record_json = json_set(record_json, '$.effect.platform', '${platform}')
+         WHERE task_id = ?`,
+        taskId,
+      ),
     timerDelay: () => timer?.delayMs,
     async create(patch: Partial<CreateScheduledTaskInput> = {}) {
       const outcome = await mutate({
@@ -228,6 +239,109 @@ for (const triggerAt of [1_000, 3_601_000]) {
     }
   });
 }
+
+test('manual trigger of a recurring notification waits, then resumes at its next regular slot', async () => {
+  const fixture = await schedulerFixture();
+  try {
+    const task = await fixture.create({
+      schedule: { kind: 'interval', everySeconds: 60, startAt: 61_000 },
+    });
+    await fixture.start();
+    assert.equal(fixture.timerDelay(), 60_000);
+    fixture.setNow(21_000);
+    assert.deepEqual(
+      await fixture.mutate({ kind: 'trigger_now', taskId: task.id }),
+      PROVIDER_UNAVAILABLE,
+    );
+    // The wait spans the regular 61_000 slot, which neither adds a claim nor
+    // shortens the provider retry.
+    for (let at = 26_000; at <= 66_000; at += 5_000) {
+      assert.equal(fixture.timerDelay(), 5_000);
+      await fixture.tick(at);
+      assert.deepEqual(
+        (await fixture.store.listPendingFires()).map((claim) => [
+          claim.scheduledFor,
+          claim.nativeState,
+        ]),
+        [[21_000, 'waiting_for_provider']],
+      );
+    }
+    fixture.connectProvider();
+    await fixture.tick(71_000);
+    assert.deepEqual(fixture.deliveries, [{ taskId: task.id, title: 'Reminder' }]);
+    const delivered = await fixture.store.get(task.id);
+    assert.equal(delivered?.status, 'active');
+    assert.equal(delivered?.fireCount, 1);
+    assert.equal(delivered?.runs[0]?.outcome, 'ok');
+    assert.equal(delivered?.lastFireAt, 71_000);
+    assert.equal(delivered?.nextFireAt, 121_000);
+    assert.deepEqual(await fixture.store.listPendingFires(), []);
+    assert.equal(fixture.timerDelay(), 50_000);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('due bot notifications wait for a provider and deliver once through the bot method', async () => {
+  const fixture = await schedulerFixture();
+  try {
+    const task = await fixture.create({
+      effect: { kind: 'notify', channel: 'bot', platform: 'telegram', chatId: 'chat-1' },
+    });
+    await fixture.start();
+    await fixture.tick(11_000);
+    assert.equal((await fixture.store.listPendingFires())[0]?.nativeState, 'waiting_for_provider');
+    assert.equal(fixture.timerDelay(), 5_000);
+    await fixture.tick(16_000);
+    assert.equal(fixture.timerDelay(), 5_000);
+    fixture.connectProvider();
+    await fixture.tick(21_000);
+    assert.deepEqual(fixture.deliveryMethods, ['notify_bot']);
+    assert.deepEqual(fixture.deliveries, [
+      {
+        taskId: task.id,
+        title: 'Reminder',
+        body: 'Review the report',
+        platform: 'telegram',
+        chatId: 'chat-1',
+      },
+    ]);
+    const completed = await fixture.store.get(task.id);
+    assert.equal(completed?.status, 'completed');
+    assert.equal(completed?.runs[0]?.outcome, 'ok');
+    assert.equal(completed?.runs[0]?.message, '已投递到 Telegram。');
+    assert.equal(fixture.timerDelay(), undefined);
+    await fixture.restart();
+    assert.equal(fixture.deliveries.length, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a stored bot notification for a non-delivery platform is blocked instead of waiting', async () => {
+  const fixture = await schedulerFixture();
+  try {
+    const task = await fixture.create({
+      effect: { kind: 'notify', channel: 'bot', platform: 'telegram', chatId: 'chat-1' },
+    });
+    fixture.storeBotPlatform(task.id, 'feishu');
+    await fixture.start();
+    await fixture.tick(11_000);
+    const blocked = await fixture.store.get(task.id);
+    assert.equal(blocked?.status, 'completed');
+    assert.deepEqual(
+      blocked?.runs.map(({ outcome, message }) => ({ outcome, message })),
+      [{ outcome: 'blocked', message: '飞书 当前不是可投递目标。' }],
+    );
+    assert.deepEqual(await fixture.store.listPendingFires(), []);
+    assert.equal(fixture.timerDelay(), undefined);
+    fixture.connectProvider();
+    await fixture.restart();
+    assert.deepEqual(fixture.deliveries, []);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test('recovery retries a persisted waiting fire before its original future due time', async () => {
   const fixture = await schedulerFixture();
