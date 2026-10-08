@@ -23,26 +23,28 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import { testConnection } from '../test-connection.js';
 
 for (const providerType of ['opencode-free', 'commandcode-go', 'claude-subscription'] as const) {
-  test(`${providerType} refuses a connection test before making a request`, async () => {
-    const connection: LlmConnection = {
-      slug: providerType,
-      name: providerType,
-      providerType,
-      defaultModel: 'stored-model',
-      enabledModelIds: ['stored-model'],
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    let requests = 0;
-    const result = await testConnection(connection, 'stored-secret', 'stored-model', {
-      fetch: async () => {
-        requests += 1;
-        throw new Error('Retired providers must not make requests');
-      },
+  for (const model of ['stored-model', undefined]) {
+    test(`${providerType} refuses a connection test ${model ? 'with' : 'without'} a model before making a request`, async () => {
+      const connection: LlmConnection = {
+        slug: providerType,
+        name: providerType,
+        providerType,
+        defaultModel: model ?? '',
+        enabledModelIds: model ? [model] : [],
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      let requests = 0;
+      const result = await testConnection(connection, 'stored-secret', model, {
+        fetch: async () => {
+          requests += 1;
+          throw new Error('Retired providers must not make requests');
+        },
+      });
+      assert.equal(result.ok, false);
+      assert.match(result.errorMessage ?? '', /retired/i);
+      assert.equal(requests, 0);
     });
-    assert.equal(result.ok, false);
-    assert.match(result.errorMessage ?? '', /retired/i);
-    assert.equal(requests, 0);
-  });
+  }
 }
