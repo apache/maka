@@ -28,7 +28,7 @@ import {
   contextCompactionNotice,
   createContextCompactionPresentation,
   presentContextCompactionResult,
-} from '../../renderer/app-shell-context-compaction.js';
+} from '../../renderer/features/conversation/testing.js';
 
 test('targets manual diagnostics to the current task or new-task Host profile', () => {
   assert.deepEqual(
@@ -114,12 +114,15 @@ test('conversation copy and save wait for the complete transcript', async (t) =>
     clientPathsAccessible: false,
     connections: [],
     defaultConnection: null,
-    readCompleteTranscript: async (sessionId: string) => {
+    renderCompleteConversation: async (sessionId: string) => {
       requested.push(sessionId);
-      return [
-        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'oldest question' },
-        { type: 'assistant', id: 'new-answer', turnId: 'new-turn', ts: 2, modelId: 'model', text: 'newest answer' },
-      ] as const;
+      return 'oldest question\nnewest answer';
+    },
+    paletteActions: {
+      saveConversationToFile: async ({ markdown }: { markdown: string }) => {
+        saved = markdown;
+        return { ok: true };
+      },
     },
     newTaskProfileId: undefined,
     settingsOpen: false,

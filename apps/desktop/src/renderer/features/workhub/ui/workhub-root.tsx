@@ -415,7 +415,6 @@ export function WorkHubRoot() {
           activeTurn={controller.activeTurn}
           messageLoading={!transcript.ready}
           activeSession={session}
-          activeModel={session?.model}
           emptyOverride={
             <div className="workHubLiveWelcome">
               <MakaWordmark width={112} />

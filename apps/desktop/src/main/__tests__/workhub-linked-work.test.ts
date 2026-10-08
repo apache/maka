@@ -21,11 +21,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { parseHTML } from 'linkedom';
-import {
-  workHubLinkedWork,
-} from "../../renderer/features/workhub/index.js";
 import { ChatSurfaceLayout, LocaleProvider } from '@maka/ui';
-import { WorkHubConversation } from '../../renderer/features/workhub/testing.js';
+import { WorkHubConversation, workHubLinkedWork } from '../../renderer/features/workhub/testing.js';
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 

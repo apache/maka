@@ -395,6 +395,9 @@ function ShellSettingsSection(props: {
       await props.onUpdate({
         shell: { preference, executable: normalizedExecutable },
       });
+      // The save action disappears once the draft matches what was saved, so
+      // the confirmation has to come from somewhere else.
+      if (mountedRef.current) toast.success(copy.shellSaved);
     } catch (error) {
       if (mountedRef.current) {
         toast.error(
@@ -450,15 +453,20 @@ function ShellSettingsSection(props: {
           />
         </SettingsField>
       ) : null}
-      <SettingsActions>
-        <Button
-          variant="secondary"
-          isDisabled={!canSave || !props.isInteractive}
-          isLoading={saving}
-          onClick={() => void save()}
-          label={saving ? copy.savingShell : dirty ? copy.saveShell : copy.shellSaved}
-        />
-      </SettingsActions>
+      {/* Only while there is something to save. A permanent disabled
+          "已保存" button took a row of its own under the select even in the
+          default auto mode, where there is never anything to confirm. */}
+      {dirty || saving ? (
+        <SettingsActions>
+          <Button
+            variant="secondary"
+            isDisabled={!canSave || !props.isInteractive}
+            isLoading={saving}
+            onClick={() => void save()}
+            label={saving ? copy.savingShell : copy.saveShell}
+          />
+        </SettingsActions>
+      ) : null}
     </SettingsSection>
   );
 }

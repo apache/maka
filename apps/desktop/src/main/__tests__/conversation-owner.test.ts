@@ -25,9 +25,10 @@ import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
-import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices } from '../../renderer/features/conversation/index.js';
-import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
+import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
+import { renderConversationMarkdown, stubComposerGateInputs, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import { withComposerSubmission } from './composer-submission-fixture.js';
 
 const row = (id: string): DesktopSessionSummary => ({
   id, name: id, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -43,7 +44,7 @@ function harness(options: {
   hasNewer?: boolean;
   completeMessages?: readonly StoredMessage[];
   searchTarget?: ComponentProps<typeof ConversationLifecycle>['searchTarget'];
-  listTurnLandmarks?: ComponentProps<typeof ConversationLifecycle>['listTurnLandmarks'];
+  listTurnLandmarks?: ConversationServices['sessions']['listTurnLandmarks'];
 } = {}) {
   const { root } = installReactRenderer();
   const catalog = createSessionCatalogController();
@@ -54,7 +55,9 @@ function harness(options: {
     publish(messages: StoredMessage[]): void; error(error: unknown): void;
   }> = [];
   const observations: Array<{ sessionId: string; closed: boolean; phase: Parameters<ConversationObservationServices['subscribeEvents']>[2]; fail: () => void }> = [];
-  const services = stubConversationServices();
+  const services = stubConversationServices(
+    options.listTurnLandmarks ? { sessions: { listTurnLandmarks: options.listTurnLandmarks } } : {},
+  );
   services.observation.openTranscript = (sessionId, error, initialTurnId) => {
     let messages: StoredMessage[] = [];
     let ready = false;
@@ -117,18 +120,18 @@ function harness(options: {
     return createElement(Fragment, null,
       createElement(Profiler, { id: 'conversation-lifecycle', onRender: () => { lifecycleCommits += 1; } }, createElement(ConversationLifecycle, {
         refreshSessions: async () => [], onExecutionBoundaryChanged() {},
-        onContextCompactionOutcome() {}, showModelSetupToast() {}, onTurnCompleted() {},
-        searchTarget: options.searchTarget ?? null, clearSearchTarget() {}, listTurnLandmarks: options.listTurnLandmarks ?? (async () => ({ landmarks: [] })),
+        showModelSetupToast() {}, onTurnCompleted() {},
+        searchTarget: options.searchTarget ?? null, clearSearchTarget() {},
       })),
-      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript }) : null,
-      createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer }),
+      visible ? createElement(ConversationTranscriptRegion<Parameters<typeof Transcript>[0]>, { surface: Transcript, localInteractionAvailable: true }) : null,
+      createElement(ConversationComposerRegion<Parameters<typeof Composer>[0]>, { surface: Composer, ...stubComposerGateInputs() }),
     );
   }
   act(() => root.render(createElement(LocaleProvider, { locale: options.locale ?? 'en', children:
     createElement(ToastProvider, { children:
       createElement(SessionCatalogContext.Provider, { value: catalog, children:
         createElement(ConversationServicesProvider, { services, children:
-          createElement(ConversationProvider, { children: createElement(Shell) }),
+          createElement(ConversationProvider, { children: withComposerSubmission(createElement(Shell)) }),
         }),
       }),
     }),
@@ -170,8 +173,8 @@ describe('Conversation ownership', () => {
     assert.equal(h.transcript?.hasEarlierHistory, true);
     assert.equal(h.transcript?.hasLaterHistory, true);
     const before = h.counts;
-    assert.deepEqual(await h.target.readCompleteTranscript('A'), complete);
-    assert.deepEqual(h.target.readMessages(), [complete[1]!]);
+    assert.equal(await h.target.renderCompleteConversation('A', 'Task A', 'en'), renderConversationMarkdown('Task A', complete, 'en'));
+    assert.deepEqual(h.transcript?.messages, [complete[1]!]);
     assert.deepEqual(h.counts, before, 'export leaves the displayed window and its readers unchanged');
     await act(async () => {
       await h.transcript?.onLoadEarlierHistory?.();
@@ -231,6 +234,19 @@ describe('Conversation ownership', () => {
       await act(async () => h.root.unmount());
     });
   }
+
+  it('exports complete history for Copy and Save without handing the shell its messages', async () => {
+    const h = harness();
+    await act(async () => h.target.setActiveId('A'));
+    const published = [message('first'), message('second')];
+    await act(async () => h.opened[0]!.publish(published));
+    assert.equal(
+      await h.target.renderCompleteConversation('A', 'Task A', 'en'),
+      renderConversationMarkdown('Task A', published, 'en'),
+    );
+    assert.equal('readMessages' in h.target, false, 'the shell has no invocation-time message read');
+    await act(async () => h.root.unmount());
+  });
 
   it('publishes only to regional readers and preserves the persistent composer across transcript remounts', async () => {
     const h = harness();

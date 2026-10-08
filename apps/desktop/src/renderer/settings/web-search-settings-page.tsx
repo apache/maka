@@ -316,7 +316,7 @@ export function WebSearchSettingsPage(props: {
               </span>
               {hasCheckedAt && (
                 <small>
-                  {copy.lastTest}<RelativeTime ts={checkedAtMs} />
+                  {copy.lastTest}<RelativeTime ts={checkedAtMs} className="settingsInlineTime" />
                 </small>
               )}
               <small>

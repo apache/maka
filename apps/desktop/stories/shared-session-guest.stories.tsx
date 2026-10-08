@@ -39,6 +39,7 @@ import {
 const stagingServices: ComposerStagingServices = {
   pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
   previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
 };
 
 const SESSION_ID = 'shared-session-story';
@@ -157,7 +158,7 @@ function GuestComposer(props: { sessionId: string }) {
   return (
     <ComposerStagingServicesProvider services={stagingServices}>
     <ComposerStagingProvider commands={stagingCommands} draftKey={props.sessionId}>
-    <GuestTurnRequests sessionId={props.sessionId} composerRef={composerRef}>
+    <GuestTurnRequests sessionId={props.sessionId} discardDraft={(draftKey) => composerRef.current?.clearDraft(draftKey)}>
       {(guest) => (
         <ChatComposerRegion
           composerRef={composerRef}

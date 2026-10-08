@@ -229,7 +229,7 @@ test('shared turn presentation only exposes lineage when the surface supports na
       }),
       onLineageBadgeClick: canNavigate ? () => {} : undefined,
     }));
-    assert.equal(document.querySelectorAll('.maka-turn-lineage-badge').length, canNavigate ? 1 : 0);
+    assert.equal(document.querySelectorAll('.maka-turn-lineage-row .astryx-button').length, canNavigate ? 1 : 0);
   }
 });
 
@@ -238,12 +238,12 @@ test('Resume is offered only when the displayed window covers the session tail',
     const markup = await renderChat(undefined, {
       messages: [
         { type: 'user', id: 'ask', turnId: 'stopped', text: 'Ask', ts: 1 },
-        { type: 'turn_state', id: 'stopped-state', turnId: 'stopped', status: 'aborted', abortSource: 'renderer.stop_button', ts: 2 },
+        { type: 'turn_state', id: 'stopped-state', turnId: 'stopped', status: 'failed', failureMessage: 'Provider unavailable', ts: 2 },
       ],
       hasLaterHistory,
       safeResumeAction: { pending: false, onResume() {} },
       deriveTurnPresentation: () => ({
-        footerActionsByTurn: {}, failedReasonLabels: {}, failedSeverities: {}, failedExecutionStateLabels: {},
+        footerActionsByTurn: {}, failedReasonLabels: { stopped: 'Provider unavailable' }, failedSeverities: {}, failedExecutionStateLabels: {},
         resumeCandidateTurnId: 'stopped',
         lineageBadgesByTurn: {},
       }),

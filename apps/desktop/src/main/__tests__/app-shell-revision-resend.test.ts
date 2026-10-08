@@ -33,6 +33,7 @@
  */
 
 import { ComposerStagingFixture } from './composer-staging-fixture.js';
+import { windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
@@ -47,19 +48,19 @@ import {
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
   completeTurnRevisionCopyAttempt,
-  createAppShellRevisionActions,
+  createRevisionActions,
   type TurnRevisionDraft,
-} from '../../renderer/app-shell-revision-actions.js';
-import { parseDesktopSlashCommand } from '../../renderer/desktop-slash-command.js';
+} from '../../renderer/features/conversation/testing.js';
+import { parseDesktopSlashCommand } from '../../renderer/application/contracts/desktop-slash-command.js';
 import {
   mergeWorkspaceReferences,
   rebaseWorkspaceFileReferences,
-} from '../../renderer/follow-up-submit-routing.js';
+} from '../../renderer/features/conversation/testing.js';
 import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import {
   createRevisionAwareOnSend,
   type RevisionSendPorts,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 const SESSION_2 = JSON.stringify(['host-1', 'session-2']);
@@ -203,7 +204,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   };
 
   const composer = createRef<ComposerHandle>();
-  const revisionActions = createAppShellRevisionActions({
+  const revisionActions = createRevisionActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en' as never,
     activeIdRef,
     captureSelection: () => {

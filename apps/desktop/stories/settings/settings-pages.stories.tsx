@@ -55,6 +55,10 @@ import {
   AppUpdateServicesProvider,
   type AppUpdateServices,
 } from '../../src/renderer/features/app-update/index.js';
+import {
+  DiagnosticsServicesProvider,
+  createFakeDiagnosticsServices,
+} from '../../src/renderer/features/diagnostics/testing.js';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -64,6 +68,7 @@ import type {
   ProviderType,
 } from '@maka/core/llm-connections';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import { connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
@@ -160,7 +165,8 @@ function makeConnection(input: {
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60_000,
   };
-  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
+  const projected = { ...stored, enabledModelIds: connectionEnabledModelIds(stored) };
+  return { ...projected, catalogEntries: resolveConnectionModelCatalog(projected) };
 }
 
 const connections: ProjectedLlmConnection[] = [
@@ -1005,6 +1011,23 @@ const makaBridge = {
     readSpriteSheet: async () => ({ ok: false as const, reason: 'not_found' as const }),
     subscribeChanges: () => () => undefined,
   },
+  // 工作区 reads and subscribes on window.maka.projects when it mounts. Only
+  // the projects-specific bridges supplied it, so opening 工作区 from any other
+  // settings story through the sidebar threw (getSnapshot / subscribeChanges
+  // of undefined).
+  projects: {
+    getSnapshot: async () => ({
+      projects: [],
+      capabilities: {
+        chooseClientDirectory: false,
+        chooseHostDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: true,
+        viewClientPath: true,
+      },
+    }),
+    subscribeChanges: () => () => undefined,
+  },
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
@@ -1080,6 +1103,9 @@ const settingsAppUpdateServices: AppUpdateServices = {
     subscribeUpdateStatus: (handler) => window.maka.app.subscribeUpdateStatus(handler),
   },
 };
+
+/** About's 复制诊断信息 resolves without a Desktop bridge to copy from. */
+const settingsDiagnosticsServices = createFakeDiagnosticsServices();
 
 /**
  * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
@@ -1972,11 +1998,13 @@ function fieldChrome(element: HTMLElement) {
 function SettingsStory(props: SettingsStoryProps) {
   return (
     <ToastProvider>
-      <AppUpdateServicesProvider services={settingsAppUpdateServices}>
-        <AppUpdateProvider>
-          <SettingsStoryFrame {...props} />
-        </AppUpdateProvider>
-      </AppUpdateServicesProvider>
+      <DiagnosticsServicesProvider services={settingsDiagnosticsServices}>
+        <AppUpdateServicesProvider services={settingsAppUpdateServices}>
+          <AppUpdateProvider>
+            <SettingsStoryFrame {...props} />
+          </AppUpdateProvider>
+        </AppUpdateServicesProvider>
+      </DiagnosticsServicesProvider>
     </ToastProvider>
   );
 }
@@ -2095,7 +2123,7 @@ export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
 };
-// Real path: 设置 → 模型 → 连接详情, comparing the action before selection
+// Real path: 设置 → 模型 → 连接详情 with one enabled chat model, comparing the action before selection
 // with the settled state after a connection is the default. Both occupy the
 // same header slot, so changing state must not shrink the label typography.
 export const ModelsDefaultBadgeTypography: Story = {
@@ -2113,7 +2141,7 @@ export const ModelsDefaultBadgeTypography: Story = {
 
     await userEvent.click(setDefaultButton);
     const detailHeader = await canvas.findByRole('toolbar', { name: 'OpenAI Review' });
-    const defaultLabel = within(detailHeader).getByText('默认');
+    const defaultLabel = await within(detailHeader).findByText('默认');
     const defaultBadge = defaultLabel.closest<HTMLElement>('.astryx-badge');
     if (!defaultBadge) throw new Error('Connection default-state badge did not render');
 
@@ -2574,13 +2602,13 @@ export const Appearance: Story = {
     const canvas = within(canvasElement);
     await canvas.findByRole('heading', { name: 'App icon' });
     const workbarToggle = await canvas.findByRole('switch', { name: 'Show Workbar toggle in titlebar' });
-    expect(workbarToggle).not.toBeChecked();
-    await userEvent.click(workbarToggle);
-    await waitFor(() => expect(workbarToggle).toBeChecked());
-    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
+    expect(workbarToggle).toBeChecked();
     await userEvent.click(workbarToggle);
     await waitFor(() => expect(workbarToggle).not.toBeChecked());
     expect(storyClientSettings.appearance.workbarTogglePosition).toBe('edge');
+    await userEvent.click(workbarToggle);
+    await waitFor(() => expect(workbarToggle).toBeChecked());
+    expect(storyClientSettings.appearance.workbarTogglePosition).toBe('titlebar');
 
     for (const name of ['Azure', 'Classic']) {
       const input = await canvas.findByRole('checkbox', { name });

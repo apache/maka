@@ -4503,7 +4503,7 @@ Slug openai-work<cursor>
     assert.equal(driver.stopCalls, 0);
   });
 
-  test('Alt+Enter during a turn queues a followup and shows a pending Queued line', async () => {
+  test('Tab during a turn queues a followup and shows a pending Queued line', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -4521,7 +4521,7 @@ Slug openai-work<cursor>
     await waitFor(() => terminal.progressStates.at(-1) === true);
 
     terminal.input('do this next');
-    terminal.input('\x1b\r'); // Alt+Enter
+    terminal.input('\t'); // Tab
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('Queued: do this next'),
     );
@@ -4538,7 +4538,33 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Up takes the queued messages back into the editor', async () => {
+  test('Tab while idle stays with the editor and does not submit', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('not submitted');
+    terminal.input('\t'); // Idle Tab is the editor's completion trigger, not submit.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(driver.queuedMessages, []);
+    assert.deepEqual(driver.steered, []);
+    assert.equal(terminal.progressStates.at(-1) ?? false, false);
+
+    terminal.input('\x03'); // clear the draft
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('Shift+Left takes the queued messages back into the editor', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -4561,7 +4587,7 @@ Slug openai-work<cursor>
       plainTerminalOutput(terminal.screenOutput()).includes('Steering: reword this later'),
     );
 
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     // The pending bar is cleared and the text is back in the editor.
     await waitFor(() => {
@@ -4580,7 +4606,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Up removes the exact transient rows without a subscription retraction event', async () => {
+  test('Shift+Left removes the exact transient rows without a subscription retraction event', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -4598,10 +4624,10 @@ Slug openai-work<cursor>
     await waitFor(() => terminal.progressStates.at(-1) === true);
 
     terminal.input('take this back');
-    terminal.input('\x1b\r');
+    terminal.input('\t'); // Tab
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('take this back'));
 
-    terminal.input('\x1b[1;3A');
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     await waitFor(() => {
       const screen = plainTerminalOutput(terminal.screenOutput());
@@ -4617,9 +4643,9 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Up in the enqueue tick retracts from the authority, not the lagging mirror', async () => {
+  test('Shift+Left in the enqueue tick retracts from the authority, not the lagging mirror', async () => {
     // Round-6 R2: the enqueue outcome arrives synchronously but the mirror
-    // updates only when the queue_update event is consumed. An Alt+Up in
+    // updates only when the queue_update event is consumed. A Shift+Left in
     // that same tick must still call the authoritative retract — gating the
     // mutation on the (empty) mirror would strand a message the runtime
     // demonstrably holds.
@@ -4641,7 +4667,7 @@ Slug openai-work<cursor>
 
     terminal.input('reword this later');
     terminal.input('\r'); // steer — queued synchronously in the driver
-    terminal.input('\x1b[1;3A'); // Alt+Up in the same tick, mirror still empty
+    terminal.input('\x1b[1;2D'); // Shift+Left in the same tick, mirror still empty
     await waitFor(() => driver.retractCalls === 1);
     await waitFor(() => {
       const screen = plainTerminalOutput(terminal.screenOutput());
@@ -4722,7 +4748,7 @@ Slug openai-work<cursor>
     );
 
     terminal.input('still queued');
-    terminal.input('\x1b\r'); // Alt+Enter queues a followup
+    terminal.input('\t'); // Tab queues a followup
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('Queued: still queued'),
     );
@@ -4753,7 +4779,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Enter during a control action keeps the draft in the editor', async () => {
+  test('Tab during a control action keeps the draft in the editor', async () => {
     const terminal = new FakeTerminal();
     const driver = new DeferredControlDriver();
     const run = runMakaPiTui({
@@ -4773,7 +4799,7 @@ Slug openai-work<cursor>
     terminal.input('a draft to keep');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('a draft to keep'));
 
-    terminal.input('\x1b\r'); // Alt+Enter while a control action holds `busy`
+    terminal.input('\t'); // Tab while a control action holds `busy`
     // The submit gate runs synchronously off the input dispatch; one macrotask
     // turn (which drains every queued microtask first) is a deterministic
     // settle for the prompt check.
@@ -4852,7 +4878,7 @@ Slug openai-work<cursor>
 
     terminal.input('after stop');
     terminal.input('\r'); // Enter: submits are disabled during convergence
-    terminal.input('\x1b\r'); // Alt+Enter: gated before touching the editor
+    terminal.input('\t'); // Tab: gated before touching the editor
     // The convergence gates run synchronously off the input dispatch; one
     // macrotask turn (which drains every queued microtask first) settles them.
     await delay(0);
@@ -11191,7 +11217,7 @@ class InterruptibleTurnDriver extends FakeSessionDriver {
 }
 
 // A parking turn plus an in-memory steering/followup mirror, so the runner's
-// keybindings (Enter steer, Alt+Enter queue, Alt+↑ retract, Esc Esc refill) can
+// keybindings (Enter steer, Tab queue, Shift+← retract, Esc Esc refill) can
 // be exercised end-to-end without a real runtime.
 class SteeringTurnDriver extends FakeSessionDriver {
   stopCalls = 0;

@@ -43,6 +43,8 @@ Every pull request to `main` needs an approving review from a committer other th
 
 Submit only work you have the right to contribute, and record third-party sources, licenses, and attribution. Contributions are licensed under the [Apache License 2.0](./LICENSE); for material AI-generated content, follow the [ASF Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html).
 
+Pending clarification of Grok's terms of use, please do not use Grok to generate contributions to Maka.
+
 ## Quick start
 
 Requires Node `>=22.19.0` and npm `11.19.0` (root `package.json`). Direct Peer or Peer Mesh Desktop development additionally needs Rust stable 1.98 or newer and Xcode Command Line Tools on macOS, or MSVC Build Tools on Windows.

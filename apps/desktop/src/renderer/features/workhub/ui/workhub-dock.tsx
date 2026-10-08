@@ -19,6 +19,7 @@
 
 import type { WorkbarTogglePosition } from '@maka/core/settings';
 import { isNativeSurfaceOccluded, watchNativeSurface, type NativeSurfaceWatch } from '../../../application/contracts/native-surface-occlusion.js';
+import { useWorkHubEnabled } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core';
 import { useUiLocale } from '@maka/ui';
@@ -27,13 +28,13 @@ import { useWorkHubServices } from '../services.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 
 /** The main window owns only this landing space; the live view keeps its React owner. */
-export function WorkHubDock({ enabled, visible = true, workbar, workbarTogglePosition }: {
-  enabled: boolean;
+export function WorkHubDock({ visible = true, workbar, workbarTogglePosition }: {
   visible?: boolean;
   workbar: { bottomOpen: boolean; rightCollapsed: boolean };
   workbarTogglePosition?: WorkbarTogglePosition;
 }) {
   const { presentation } = useWorkHubServices();
+  const enabled = useWorkHubEnabled();
   const t = workHubLiveCopy[useUiLocale()];
   const element = useRef<HTMLElement>(null);
   const workbarRef = useRef({

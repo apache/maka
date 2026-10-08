@@ -6,6 +6,7 @@
   "type": "module",
   "private": true,
   "exports": {
+    "./admission-limiter": "./dist/admission-limiter.js",
     "./ask-user-question-tool": "./dist/ask-user-question-tool.js",
     "./ai-sdk-backend": "./dist/ai-sdk-backend.js",
     "./mcp-tools": "./dist/mcp-tools.js",

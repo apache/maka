@@ -207,10 +207,11 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly isTurnBusy?: (sessionId: string) => boolean;
   readonly configureExecutor?: (
     header: SessionHeader,
     config: import('@maka/core/executor-catalog').ExecutorConfiguration,
-  ) => Promise<void>;
+  ) => Promise<import('@maka/core/executor-catalog').ExecutorConfiguration | void>;
   readonly retireExecutor?: (sessionId: string) => Promise<void>;
   readonly assertExecutorAvailable?: (
     sessionId: string,
@@ -329,6 +330,7 @@ export class HostSessionCatalogCoordinator {
   readonly #turnIndex: SessionTurnIndexReader;
   readonly #runtimePolicy: SessionRuntimePolicyStores;
   readonly #manager: SessionConfigurationAuthority;
+  readonly #isTurnBusy?: (sessionId: string) => boolean;
   readonly #admission: SessionAdmissionGate;
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
@@ -345,6 +347,7 @@ export class HostSessionCatalogCoordinator {
     this.#turnIndex = options.turnIndex;
     this.#runtimePolicy = options.runtimePolicy;
     this.#manager = options.manager;
+    this.#isTurnBusy = options.isTurnBusy;
     this.#admission = options.admission;
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
@@ -828,7 +831,7 @@ export class HostSessionCatalogCoordinator {
           );
         }
 
-        const configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
+        let configuration = await this.#mergeConfigurationPatch(current.header, input.patch);
         const clearsConnectionBlock =
           input.patch.modelTarget !== undefined &&
           current.header.blockedReason === 'NO_REAL_CONNECTION';
@@ -850,6 +853,8 @@ export class HostSessionCatalogCoordinator {
         if (input.patch.executorConfig) {
           if (
             this.#manager.runningTurnIds(input.sessionId).length ||
+            this.#isTurnBusy?.(input.sessionId) ||
+            current.header.status === 'running' ||
             current.header.status === 'waiting_for_user'
           )
             throw new SessionOperationFailure(
@@ -862,7 +867,31 @@ export class HostSessionCatalogCoordinator {
               'Executor configuration is unavailable',
             );
           try {
-            await this.#configureExecutor(current.header, input.patch.executorConfig);
+            const confirmed = await this.#configureExecutor(
+              current.header,
+              // A model-only edit lets the Agent confirm mode side effects.
+              // Do not turn the previous mode into an explicit requirement.
+              input.patch.executorConfig.model && input.patch.executorConfig.mode === undefined
+                ? { model: input.patch.executorConfig.model }
+                : configuration.executorConfig!,
+            );
+            if (confirmed) {
+              if (
+                (input.patch.executorConfig.model &&
+                  confirmed.model !== input.patch.executorConfig.model) ||
+                (input.patch.executorConfig.mode &&
+                  confirmed.mode !== input.patch.executorConfig.mode)
+              )
+                throw new Error('Executor confirmation differs from the requested configuration');
+              configuration = {
+                ...configuration,
+                // A provider confirmation is the complete current snapshot. In
+                // particular, omission clears an option the provider removed as
+                // a side effect of changing another option.
+                executorConfig: confirmed,
+                model: confirmed.model ?? current.header.executorId ?? configuration.model,
+              };
+            }
             confirmedExecutor = current.header;
           } catch {
             throw new SessionOperationFailure(
@@ -916,7 +945,7 @@ export class HostSessionCatalogCoordinator {
       const actual = (await this.#stores.readHeaderRecordSnapshot(previous.id)).header;
       if (
         actual.executorId !== previous.executorId ||
-        !actual.executorConfig?.model ||
+        !actual.executorConfig ||
         !this.#configureExecutor
       )
         throw new Error('Confirmed executor model is unavailable');
@@ -1443,7 +1472,9 @@ export class HostSessionCatalogCoordinator {
     return {
       backend: patch.modelTarget || current.backend === 'ai-sdk' ? 'ai-sdk' : 'plugin-executor',
       executorId: patch.modelTarget ? undefined : current.executorId,
-      executorConfig: patch.executorConfig ?? current.executorConfig,
+      executorConfig: patch.executorConfig
+        ? { ...current.executorConfig, ...patch.executorConfig }
+        : current.executorConfig,
       llmConnectionId: model.connectionId,
       llmConnectionSlug: model.connectionSlug,
       model: patch.executorConfig?.model ?? model.model,
@@ -1473,7 +1504,9 @@ export class HostSessionCatalogCoordinator {
         executorConfig = await this.#assertExecutorAvailable?.(
           input.sessionId,
           input.executorId,
-          requestedModel ? { model: requestedModel } : input.executorConfig,
+          requestedModel
+            ? { ...input.executorConfig, model: requestedModel }
+            : input.executorConfig,
           cwd,
         );
       } catch {
@@ -1524,6 +1557,7 @@ function sessionConfigurationMatches(
     header.backend === configuration.backend &&
     header.executorId === configuration.executorId &&
     header.executorConfig?.model === configuration.executorConfig?.model &&
+    header.executorConfig?.mode === configuration.executorConfig?.mode &&
     header.llmConnectionId === configuration.llmConnectionId &&
     header.llmConnectionSlug === configuration.llmConnectionSlug &&
     header.model === configuration.model &&
@@ -1614,7 +1648,12 @@ function createRequestFingerprint(
     prepared.name,
     prepared.labels,
     input.executorId
-      ? ['executor', input.executorId, input.executorConfig?.model ?? input.executorModel ?? null]
+      ? [
+          'executor',
+          input.executorId,
+          input.executorConfig?.model ?? input.executorModel ?? null,
+          input.executorConfig?.mode ?? null,
+        ]
       : input.modelTarget?.kind === 'default'
         ? ['default']
         : [
