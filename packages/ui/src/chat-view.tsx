@@ -56,7 +56,7 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, VStack } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText } from './materialize.js';
@@ -185,20 +185,6 @@ export function ChatView(props: {
    */
   activeTurn?: { readonly turnId: string; readonly awaitingInput?: boolean; readonly compacting?: boolean };
   activeSession?: SessionSummary;
-  activeConnectionLabel?: string;
-  activeModel?: string;
-  activeModelLabel?: string;
-  /** Renders a provider brand mark next to the model name in the chat tab. */
-  activeProviderType?: ProviderType;
-  /** Optional renderer for the provider mark; supplied by the desktop app to
-   *  avoid bringing the full provider SVG library into @maka/ui. */
-  renderProviderMark?(type: ProviderType): ReactNode;
-  modelChoices?: ChatModelChoice[];
-  onModelChange?(input: {
-    llmConnectionId: string;
-    llmConnectionSlug: string;
-    model: string;
-  }): void | Promise<void>;
   /** Personalized user label shown on user messages. Falls back to "你". */
   userLabel?: string;
   /**
@@ -539,7 +525,10 @@ export function ChatView(props: {
   // Tail rows have no Turn ancestor, so the reading measure that `.maka-turn`
   // owns would not reach them: without it the bubble spans the full window.
   const tail = hasPendingAnswer || tailTransientMessages.length > 0 ? (
-    <section
+    <VStack
+      as="section"
+      gap={3}
+      width="100%"
       className={hasPendingAnswer ? 'maka-turn maka-pending-turn' : 'maka-turn'}
       data-awaiting-host={awaitingHost || undefined}
     >
@@ -557,7 +546,7 @@ export function ChatView(props: {
           providerRetry={activeContent?.providerRetry}
         />
       )}
-    </section>
+    </VStack>
   ) : null;
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
   const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({

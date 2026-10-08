@@ -288,6 +288,11 @@ describe('createCtxRefresher', () => {
 
     const fired2 = deferred<void>();
     scheduleCtxRefreshTimeout(() => fired2.resolve(), 0);
-    await fired2.promise;
+    await Promise.race([
+      fired2.promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('unref timeout did not fire')), 100),
+      ),
+    ]);
   });
 });

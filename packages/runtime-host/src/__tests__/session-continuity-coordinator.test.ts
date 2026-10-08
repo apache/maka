@@ -2003,48 +2003,49 @@ test('absolute live offsets survive a gap with no connected subscribers', async 
   coordinator.close();
 });
 
-test('publishes retry state to reconnecting clients until the Turn makes progress', async () => {
+const verifyReconnectRetryProjection = async () => {
+  const readCanonical = async (_sessionId: string) => canonical();
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
-    async () => canonical(),
+    readCanonical,
     new SessionAdmissionGate(),
   );
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
-    type: 'provider_retry',
-    id: 'retry-scheduled',
-    turnId: 'turn-1',
-    ts: 5_000,
-    phase: 'scheduled',
-    attempt: 2,
-    maxAttempts: 4,
-    delayMs: 30_000,
-    reason: 'rate_limit',
-  });
+  const retryEvent = Object.freeze(
+    Object.fromEntries([
+      ['type', 'provider_retry'],
+      ['id', 'retry-scheduled'],
+      ['turnId', 'turn-1'],
+      ['ts', 5 * 1_000],
+      ['phase', 'scheduled'],
+      ['attempt', 1 + 1],
+      ['maxAttempts', 2 * 2],
+      ['delayMs', 30 * 1_000],
+      ['reason', 'rate_limit'],
+    ]),
+  ) as Parameters<typeof coordinator.acceptRuntimeEvent>[2];
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', retryEvent);
 
-  attachTestConnection(coordinator, 'connection-during-wait', new RecordingSink());
-  const waiting = await open(coordinator, 'connection-during-wait');
-  const waitingTurn = waiting.snapshot.rootTurn;
-  assert.equal(waitingTurn?.status, 'running');
-  if (waitingTurn?.status !== 'running') return;
-  assert.deepEqual(waitingTurn.providerRetry, {
-    phase: 'scheduled',
-    attempt: 2,
-    maxAttempts: 4,
-    delayMs: 30_000,
-    ts: 5_000,
-    reason: 'rate_limit',
-  });
-
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
-  attachTestConnection(coordinator, 'connection-after-progress', new RecordingSink());
-  const progressed = await open(coordinator, 'connection-after-progress');
-  const progressedTurn = progressed.snapshot.rootTurn;
-  assert.equal(progressedTurn?.status, 'running');
-  if (progressedTurn?.status !== 'running') return;
-  assert.equal(progressedTurn.providerRetry, undefined);
-  coordinator.close();
-});
-
+  const { id: _eventId, turnId: _turnId, type: _type, ...expectedRetry } = retryEvent;
+  const retryFor = async (connectionId: string) => {
+    attachTestConnection(coordinator, connectionId, new RecordingSink());
+    const turn = (await open(coordinator, connectionId)).snapshot.rootTurn;
+    assert.equal(turn?.status, 'running');
+    return turn?.status === 'running' ? turn.providerRetry : undefined;
+  };
+  try {
+    const beforeProgress = await retryFor('connection-during-wait');
+    assert.deepEqual(beforeProgress, expectedRetry);
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+    const afterProgress = await retryFor('connection-after-progress');
+    assert.equal(afterProgress, undefined);
+  } finally {
+    void coordinator.close();
+  }
+};
+test(
+  'publishes retry state to reconnecting clients until the Turn makes progress',
+  verifyReconnectRetryProjection,
+);
 test('rejoin seeds tool_result_preview at the open nextSequence without sequence_gap', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,

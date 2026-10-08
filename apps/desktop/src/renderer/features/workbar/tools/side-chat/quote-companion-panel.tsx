@@ -39,7 +39,7 @@ import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
-import { preflightAttachmentItems } from '../../../../attachment-preflight';
+import { preflightAttachmentItems } from '../../../../application/contracts/attachment-preflight.js';
 import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
 import { useAppShellTurnPresentation } from '../../../../application/contracts/turn-presentation.js';
 import {

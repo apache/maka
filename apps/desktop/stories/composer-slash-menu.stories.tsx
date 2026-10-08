@@ -33,17 +33,20 @@
  * that exists without a real Selection.
  */
 
-import { useMemo, useState } from 'react';
+import { stubConversationServices } from '../src/renderer/features/conversation/testing.js';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
-import { Composer } from '@maka/ui';
+import { Composer, ToastProvider } from '@maka/ui';
 import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
 } from '../src/renderer/composer-mentions';
 import {
   ConversationServicesProvider,
+  ComposerStagingProvider, ComposerStagingServicesProvider, createComposerStagingCommands,
+  NEW_TASK_PENDING_KEY, type ComposerStagingServices,
   type ConversationServices,
 } from '../src/renderer/features/conversation';
 import {
@@ -51,7 +54,7 @@ import {
   SessionCatalogContext,
 } from '../src/renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../src/shared/desktop-session-projection.js';
-import { desktopSlashCommandAvailability } from '../src/renderer/desktop-slash-command';
+import { desktopSlashCommandAvailability } from '../src/renderer/application/contracts/desktop-slash-command';
 import { getShellCopy } from '../src/renderer/locales/shell-copy';
 import { withScopedMakaBridge } from './maka-bridge';
 
@@ -149,6 +152,8 @@ const makaBridge = {
 };
 
 const conversationServices: ConversationServices = {
+  observation: stubConversationServices().observation,
+  resume: stubConversationServices().resume,
   listMessages: async () => [],
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,
@@ -163,6 +168,10 @@ const conversationServices: ConversationServices = {
     promoteQueueEntry: async () => undefined,
     retractQueueEntry: async () => undefined,
     reorderQueueEntries: async () => undefined,
+    compact: async () => {
+      throw new Error('Context compaction is not used in slash menu stories');
+    },
+    listTurnLandmarks: async () => ({ landmarks: [] }),
   },
   runtimeHosts: { subscribeChanges: () => () => undefined },
   skills: { listInvocable: loadProjection },
@@ -203,6 +212,29 @@ function SlashMenuComposer({
   );
 }
 
+const stagingServices: ComposerStagingServices = {
+  pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
+  previewApproval: async () => ({ ok: false, reason: 'unavailable' }),
+  readBytes: async () => ({ ok: false, reason: 'not_found' }),
+};
+
+// Match AppShell's persistent staging scope around the real mention reader.
+function StagingScope(props: { hasSession: boolean; children: ReactNode }) {
+  const commands = useMemo(createComposerStagingCommands, []);
+  return (
+    <ToastProvider>
+      <ComposerStagingServicesProvider services={stagingServices}>
+        <ComposerStagingProvider
+          commands={commands}
+          draftKey={props.hasSession ? SESSION_ID : NEW_TASK_PENDING_KEY}
+        >
+          {props.children}
+        </ComposerStagingProvider>
+      </ComposerStagingServicesProvider>
+    </ToastProvider>
+  );
+}
+
 function SlashMenuHarness({
   hasSession = true,
   streaming = false,
@@ -214,18 +246,20 @@ function SlashMenuHarness({
     <div style={{ display: 'flex', alignItems: 'flex-end', height: 520, padding: 24 }}>
       <ConversationServicesProvider services={conversationServices}>
         <SessionCatalogContext.Provider value={sessionCatalog}>
-          <ComposerMentionsProvider
-            skillCatalogRevision={0}
-            sessionId={hasSession ? SESSION_ID : undefined}
-            projectPath="/workspace/maka-agent"
-            newTaskTarget={
-              hasSession
-                ? undefined
-                : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
-            }
-          >
-            <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
-          </ComposerMentionsProvider>
+          <StagingScope hasSession={hasSession}>
+            <ComposerMentionsProvider
+              skillCatalogRevision={0}
+              sessionId={hasSession ? SESSION_ID : undefined}
+              projectPath="/workspace/maka-agent"
+              newTaskTarget={
+                hasSession
+                  ? undefined
+                  : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }
+              }
+            >
+              <SlashMenuComposer hasSession={hasSession} streaming={streaming} />
+            </ComposerMentionsProvider>
+          </StagingScope>
         </SessionCatalogContext.Provider>
       </ConversationServicesProvider>
     </div>
@@ -248,16 +282,18 @@ function ContextSwitchHarness(): React.ReactElement {
       <div style={{ display: 'flex', flex: 1, alignItems: 'flex-end' }}>
         <ConversationServicesProvider services={conversationServices}>
           <SessionCatalogContext.Provider value={sessionCatalog}>
-            <ComposerMentionsProvider
-              skillCatalogRevision={0}
-              sessionId={hasSession ? SESSION_ID : undefined}
-              projectPath="/workspace/maka-agent"
-              newTaskTarget={hasSession
-                ? undefined
-                : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
-            >
-              <SlashMenuComposer hasSession={hasSession} streaming={false} />
-            </ComposerMentionsProvider>
+            <StagingScope hasSession={hasSession}>
+              <ComposerMentionsProvider
+                skillCatalogRevision={0}
+                sessionId={hasSession ? SESSION_ID : undefined}
+                projectPath="/workspace/maka-agent"
+                newTaskTarget={hasSession
+                  ? undefined
+                  : { profileId: 'profile-local', hostId: 'host-local', projectId: 'project-maka' }}
+              >
+                <SlashMenuComposer hasSession={hasSession} streaming={false} />
+              </ComposerMentionsProvider>
+            </StagingScope>
           </SessionCatalogContext.Provider>
         </ConversationServicesProvider>
       </div>

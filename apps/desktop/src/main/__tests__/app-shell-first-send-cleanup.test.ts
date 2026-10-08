@@ -40,14 +40,13 @@ import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   ConversationServicesProvider,
-  useAppShellSessionUiState,
 } from '../../renderer/features/conversation/index.js';
 import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 import { LocaleProvider, ToastProvider, type LiveTurnProjection } from '@maka/ui';
 import type { DesktopTranscriptRangeController } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
-import { prepareTranscriptForSend, stubConversationServices } from '../../renderer/features/conversation/testing.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
+import { prepareTranscriptForSend, stubConversationServices, createConversationWorkspace, createTranscriptCommands } from '../../renderer/features/conversation/testing.js';
 
 import {
   createActionsDeps,
@@ -69,7 +68,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         captureComposerImportOwner: () => ({
@@ -99,7 +98,7 @@ describe('composer first-send cleanup', () => {
       newTasks: { create: async () => { creates += 1; return { id: 'stale-session' }; } },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         captureComposerImportOwner: () => ({
           sessionId: undefined,
@@ -141,7 +140,7 @@ describe('composer first-send cleanup', () => {
       },
     });
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         captureComposerImportOwner: () => ({
           sessionId: undefined,
@@ -197,7 +196,7 @@ describe('composer first-send cleanup', () => {
           model: 'mimo-v2.5-free',
         },
       };
-      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+      assert.equal(await createChatActions(deps).send('hello'), true);
     } finally {
       restoreWindow();
     }
@@ -244,7 +243,7 @@ describe('composer first-send cleanup', () => {
         ...createActionsDeps(),
         newChatPermissionChoice: 'bypass' as const,
       };
-      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+      assert.equal(await createChatActions(deps).send('hello'), true);
     } finally {
       restoreWindow();
     }
@@ -289,15 +288,15 @@ describe('composer first-send cleanup', () => {
           choice = undefined;
         },
       });
-      assert.equal(await createAppShellChatActions(deps()).send('task A'), false);
+      assert.equal(await createChatActions(deps()).send('task A'), false);
       assert.equal(choice, 'ask');
       assert.deepEqual(removed, ['session-1']);
-      assert.equal(await createAppShellChatActions(deps()).send('retry task A'), false);
+      assert.equal(await createChatActions(deps()).send('retry task A'), false);
       assert.equal(choice, 'ask');
       assert.deepEqual(removed, ['session-1', 'session-2']);
-      assert.equal(await createAppShellChatActions(deps()).send('retry task A again'), true);
+      assert.equal(await createChatActions(deps()).send('retry task A again'), true);
       assert.equal(choice, undefined);
-      assert.equal(await createAppShellChatActions(deps()).send('task B'), true);
+      assert.equal(await createChatActions(deps()).send('task B'), true);
     } finally {
       restoreWindow();
     }
@@ -338,7 +337,7 @@ describe('composer first-send cleanup', () => {
           projectId: 'project-docs',
         },
       };
-      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+      assert.equal(await createChatActions(deps).send('hello'), true);
     } finally {
       restoreWindow();
     }
@@ -365,7 +364,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      assert.equal(await createAppShellChatActions(createActionsDeps()).send('hello'), false);
+      assert.equal(await createChatActions(createActionsDeps()).send('hello'), false);
     } finally {
       restoreWindow();
     }
@@ -393,7 +392,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         captureComposerImportOwner: () => ({
           sessionId: undefined,
@@ -436,7 +435,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions(createActionsDeps());
+      const actions = createChatActions(createActionsDeps());
       const result = await actions.send('hello', undefined, {
         onSessionResolved: () => {
           resolved += 1;
@@ -470,7 +469,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const sending = createAppShellChatActions({
+      const sending = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         addTransientMessage: () => {
@@ -513,7 +512,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         activateSessionForFirstSend: async (session) => {
@@ -558,7 +557,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'existing-session' },
       });
@@ -588,7 +587,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'existing-session' },
       });
@@ -628,7 +627,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions(createActionsDeps());
+      const actions = createChatActions(createActionsDeps());
       const result = await actions.send('hello', undefined, {
         onSessionResolved: () => {
           resolved += 1;
@@ -658,7 +657,7 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const sending = createAppShellChatActions({
+      const sending = createChatActions({
         ...createActionsDeps(),
         activeIdRef,
         onFollowLatest: (sessionId) => prepareTranscriptForSend({
@@ -675,83 +674,52 @@ describe('composer first-send cleanup', () => {
   });
 
   it('refresh waits for durable messages without bypassing range publication', async () => {
-    const deps = createActionsDeps();
-    deps.activeIdRef.current = 'session';
+    const catalog = createSessionCatalogController();
+    const workspace = createConversationWorkspace(catalog, stubConversationServices().observation);
+    workspace.commands.setActiveId('session');
     let durable = false;
-    const durableAnswer = { id: 'answer' };
-    let publishedAnswer = { id: 'answer' };
+    const answer = { type: 'assistant', id: 'answer', text: 'done', ts: 1 } as StoredMessage;
     const ready = deferred<void>();
     const controller = {
       ready: () => ready.promise,
       waitForDurableMessage: async () => { durable = true; return true; },
       store: {
-        snapshot: () => ({ sessionId: 'session', messages: [durableAnswer] }),
+        range: () => ({ sessionId: 'session', ready: true, hasOlder: false }),
+        snapshot: () => ({ sessionId: 'session', messages: [answer] }),
         hasDurableMessage: () => durable,
       },
     } as unknown as DesktopTranscriptRangeController;
-    const dependencies = {
-      ...deps,
-      transcriptRangeRef: { current: controller },
-      isMessagePublished: (message: unknown) => message === publishedAnswer,
-    };
-    const actions = createAppShellChatActions(dependencies);
+    workspace.transcriptRangeRef.current = controller;
+    const actions = createTranscriptCommands(workspace, { current: { locale: 'en', toast: { error: () => '' } } });
     const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
     assert.equal(durable, false);
     ready.resolve();
     assert.equal(await refresh, false, 'durability cannot retire the live answer before publication');
-    publishedAnswer = durableAnswer;
+    workspace.commitTranscript('session', [answer], controller);
     assert.equal(await actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' }), true);
   });
 
   it('an in-flight refresh reads publication that commits after the call began', async () => {
-    const deps = createActionsDeps();
-    deps.activeIdRef.current = 'session';
+    const catalog = createSessionCatalogController();
+    const workspace = createConversationWorkspace(catalog, stubConversationServices().observation);
+    workspace.commands.setActiveId('session');
     const answer = { type: 'assistant', id: 'answer', text: 'done', ts: 1 } as StoredMessage;
     const ready = deferred<void>();
     const controller = {
       ready: () => ready.promise,
       store: {
+        range: () => ({ sessionId: 'session', ready: true, hasOlder: false }),
         snapshot: () => ({ sessionId: 'session', messages: [answer] }),
         hasDurableMessage: () => true,
       },
     } as unknown as DesktopTranscriptRangeController;
-    const { root } = installReactRenderer();
-    let publication!: ReturnType<typeof useAppShellSessionUiState>['publication'];
-    const catalog = createSessionCatalogController();
-    const services = stubConversationServices();
-    function Probe(): null {
-      publication = useAppShellSessionUiState(
-        catalog, undefined, deps.activeIdRef,
-        (_sessionId, _messages, _controller: DesktopTranscriptRangeController) => true,
-      ).publication;
-      return null;
-    }
-    try {
-      act(() => root.render(
-        createElement(LocaleProvider, {
-          locale: 'en',
-          children: createElement(ToastProvider, {
-            children: createElement(ConversationServicesProvider, {
-              services, children: createElement(Probe),
-            }),
-          }),
-        }),
-      ));
-      const actions = createAppShellChatActions({
-        ...deps, transcriptRangeRef: { current: controller },
-        isMessagePublished: publication.isMessagePublished,
-      });
-      const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
-      act(() => {
-        publication.messagesRef.current = [answer];
-        publication.setMessagesState([answer]);
-      });
-      ready.resolve();
-      assert.equal(await refresh, true, 'the original invocation must see the new publication');
-      assert.equal(publication.isMessagePublished({ ...answer }), false, 'same id is not the published version');
-    } finally {
-      cleanupFakeDom();
-    }
+    workspace.transcriptRangeRef.current = controller;
+    const actions = createTranscriptCommands(workspace, { current: { locale: 'en', toast: { error: () => '' } } });
+    const refresh = actions.refreshMessages('session', { requiredAssistantMessageId: 'answer' });
+    workspace.commitTranscript('session', [answer], controller);
+    ready.resolve();
+    assert.equal(await refresh, true, 'the original invocation must see the new publication');
+    assert.equal(workspace.isMessagePublished({ ...answer }), false, 'same id is not the published version');
   });
 
 });
@@ -781,7 +749,7 @@ describe('composer send failure feedback', () => {
     const restoreWindow = installWindow(readinessFailure());
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         // The user is on 技能 now. `activeId` is still 'session-a' — that is
@@ -803,7 +771,7 @@ describe('composer send failure feedback', () => {
     const restoreWindow = installWindow(readinessFailure());
 
     try {
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         activeIdRef: { current: 'session-a' },
         isShellSurfaceOwnerActive: () => true,

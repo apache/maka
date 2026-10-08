@@ -34,7 +34,7 @@
  */
 import { isNativeSurfaceOccluded, watchNativeSurface } from '../../../../application/contracts/native-surface-occlusion.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, Maximize2, Minimize2, RotateCw, X } from '@maka/ui/icons';
+import { ICON_SIZE, AlertTriangle, ChevronLeft, ChevronRight, Globe, Maximize2, Minimize2, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core/browser';
 import {
   IconButton,
@@ -44,9 +44,10 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Button } from '@astryxdesign/core/Button';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { getBrowserCopy, type BrowserCopy } from '../../../../locales/browser-copy';
+import { getBrowserCopy, type BrowserCopy } from '../../../../locales/browser-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 
 const EMPTY_STATE: BrowserState = {
@@ -57,7 +58,18 @@ const EMPTY_STATE: BrowserState = {
   loading: false,
   secure: false,
   hasPage: false,
+  loadError: null,
 };
+
+function browserLoadFailureCopy(code: number, copy: BrowserCopy): string {
+  if (code === -105 || code === -137) return copy.loadFailureDns;
+  if (code === -106) return copy.loadFailureOffline;
+  if (code === -7 || code === -118) return copy.loadFailureTimeout;
+  if (code >= -299 && code <= -200) return copy.loadFailureCertificate;
+  if (code === -107 || code === -113) return copy.loadFailureSecureConnection;
+  if (code === -20 || code === -27) return copy.loadFailureBlocked;
+  return copy.loadFailureNetwork;
+}
 
 function browserAddressFailureCopy(reason: 'unsupported_scheme' | 'invalid_url', copy: BrowserCopy): string {
   switch (reason) {
@@ -99,6 +111,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
   useEffect(() => {
     if (hidden) return;
     let alive = true;
+    let receivedPush = false;
     if (stateSessionRef.current !== sessionId) {
       stateSessionRef.current = sessionId;
       editingRef.current = false;
@@ -108,15 +121,19 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
     const apply = (next: BrowserState) => {
       if (!alive) return;
       setState(next);
-      if (!editingRef.current) setAddress(next.url);
+      if (!editingRef.current) setAddress(next.loadError?.url ?? next.url);
     };
+    const off = browser.subscribeState((payload) => {
+      if (payload.sessionId === sessionId) {
+        receivedPush = true;
+        apply(payload.state);
+      }
+    });
+    // A newer failure/recovery push wins over a delayed initial snapshot.
     void browser
       .getState(sessionId)
-      .then((s) => apply(s ?? EMPTY_STATE))
-      .catch(() => apply(EMPTY_STATE));
-    const off = browser.subscribeState((payload) => {
-      if (payload.sessionId === sessionId) apply(payload.state);
-    });
+      .then((s) => { if (!receivedPush) apply(s ?? EMPTY_STATE); })
+      .catch(() => { if (!receivedPush) apply(EMPTY_STATE); });
     return () => {
       alive = false;
       off();
@@ -125,7 +142,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
 
   // Mirror the strip's on-screen rect to main while it is showable. The IPC
   // only fires when the rect changes.
-  const showView = !hidden && state.hasPage;
+  const showView = !hidden && state.hasPage && !state.loadError;
   useEffect(() => {
     // Capture the injected capability because this passive cleanup may run
     // after its provider has started tearing down the host composition.
@@ -200,6 +217,16 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
     });
   }, [address, copy, isBrowserPanelSessionCurrent, sessionId, toast]);
 
+  const retry = () => {
+    const ownerSessionId = sessionId;
+    void browser.reload(ownerSessionId).catch(() => {
+      if (isBrowserPanelSessionCurrent(ownerSessionId)) {
+        toast.error(copy.navigationFailed, copy.navigationFailedDetail, undefined, { sessionId: ownerSessionId });
+      }
+    });
+  };
+  const liveAddress = state.loadError?.url ?? state.url;
+
   return (
     <div
       className="maka-browser-panel"
@@ -246,7 +273,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
                 icon={state.loading ? <X size={ICON_SIZE.chrome} aria-hidden /> : <RotateCw size={ICON_SIZE.chrome} aria-hidden />}
                 variant="ghost"
                 size="sm"
-                isDisabled={!state.hasPage && !state.loading}
+                isDisabled={!state.hasPage && !state.loading && !state.loadError}
                 onClick={() =>
                   state.loading ? void browser.stop(sessionId) : void browser.reload(sessionId)
                 }
@@ -268,13 +295,13 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
                 }}
                 onBlur={() => {
                   editingRef.current = false;
-                  setAddress(state.url);
+                  setAddress(liveAddress);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Escape' && address !== state.url) {
+                  if (e.key === 'Escape' && address !== liveAddress) {
                     e.preventDefault();
                     e.stopPropagation();
-                    setAddress(state.url);
+                    setAddress(liveAddress);
                     e.currentTarget.blur();
                   }
                   if (e.key === 'Enter') {
@@ -314,7 +341,18 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean; focuse
       />
       <div className="maka-browser-strip" ref={stripRef}>
         {backdrop && <img className="maka-browser-backdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
-        {!state.hasPage && (
+        {state.loadError && (
+          <div className="maka-browser-error" role="alert">
+            <EmptyState
+              isCompact
+              icon={<AlertTriangle size={ICON_SIZE.empty} aria-hidden="true" />}
+              title={copy.loadFailed}
+              description={`${browserLoadFailureCopy(state.loadError.code, copy)} ${copy.retryDetail}`}
+              actions={<Button label={copy.retry} aria-label={copy.retryAria} isDisabled={state.loading} onClick={retry} />}
+            />
+          </div>
+        )}
+        {!state.hasPage && !state.loadError && (
           <EmptyState
             icon={<Globe size={ICON_SIZE.empty} aria-hidden="true" />}
             title={copy.title}

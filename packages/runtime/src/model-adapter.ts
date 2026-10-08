@@ -168,11 +168,9 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // Verified against @ai-sdk/open-responses@2.0.34: replay preserves
-      // item order and IDs, but a provider-executed result embedded in the
-      // assistant message (Maka's provider-tool chronology) is still dropped,
-      // leaving a dangling function_call on the wire. Fail closed until the
-      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
+      // General Open Responses provider tool replay remains unsupported.
+      // AiSdkMessageProjection admits only DeepSeek calls with a paired,
+      // original web_search_call item through its narrower per-item check.
       providerExecutedTools:
         this.runtime.reasoningReplay.kind !== 'responses' ||
         this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
@@ -197,6 +195,15 @@ export class ModelAdapter {
                   }
                 : 'none',
     };
+  }
+
+  supportsDeepSeekWebSearchReplay(): boolean {
+    return (
+      this.input.connection.providerType === 'deepseek' &&
+      this.runtime.wire === 'openai-responses' &&
+      this.runtime.reasoningReplay.kind === 'responses' &&
+      this.runtime.reasoningReplay.contract.adapter === 'open-responses'
+    );
   }
 
   resolveModel(): unknown {

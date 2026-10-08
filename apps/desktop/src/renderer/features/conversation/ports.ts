@@ -21,6 +21,7 @@ import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSnapshot } from '@maka/core/session-reference';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import type { DesktopSessionLocalBridge } from '../../../shared/session-local-contract.js';
 
@@ -55,6 +56,7 @@ export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
   'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
+  readonly observation: import('./transcript-ports.js').ConversationObservationServices;
   readonly promptSuggestions?: {
     generate(sessionId: string): Promise<string | undefined>;
     readEnabled(): boolean;
@@ -74,9 +76,28 @@ export interface ConversationServices extends Pick<
       entryIds: readonly string[],
       expectedQueueRevision: number,
     ): Promise<void>;
+    compact(sessionId: string): Promise<ContextCompactResult>;
+    /** Sampled prompt-rail landmarks, or where the one Turn `turnId` sits. */
+    listTurnLandmarks(
+      sessionId: string,
+      turnId: string | null,
+    ): Promise<{ readonly landmarks: readonly import('./controller/transcript-reading-position-controller.js').TranscriptTurnLandmark[] }>;
   };
   readonly runtimeHosts: {
     subscribeChanges(handler: (event: ConversationHostChange) => void): () => void;
+  };
+  /**
+   * Safe-boundary resume (#1223, #5903): the read-only plan preview behind the
+   * composer's Resume offer, the admission behind every resume click, and the
+   * catalog changes that move the answer.
+   */
+  readonly resume: {
+    queryPlan(sessionId: string): Promise<import('@maka/runtime-host/protocol').TurnResumePlan>;
+    start(sessionId: string): Promise<
+      | { readonly disposition: 'started'; readonly runId: string; readonly turnId: string }
+      | { readonly disposition: 'park'; readonly rejectionReasons: readonly string[]; readonly diagnostics: readonly unknown[] }
+    >;
+    subscribeChanges(handler: (event: import('@maka/core/session').SessionChangedEvent) => void): () => void;
   };
   readonly skills: {
     listInvocable(sessionId?: string): Promise<InvocableSkillEntry[]>;
@@ -88,7 +109,7 @@ export interface ConversationServices extends Pick<
     ): Promise<ConversationFileSearchResult>;
   };
   readonly newTasks: {
-    getExecutors?(target: ConversationNewTaskTarget, cwd: string): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
+    getExecutors?(target: ConversationNewTaskTarget, cwd: string, refresh?: boolean): Promise<readonly import('@maka/core/executor-catalog').ExecutorCatalogEntry[]>;
     subscribeChanges(handler: () => void): () => void;
     listInvocableSkills(
       target: ConversationNewTaskTarget,

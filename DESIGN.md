@@ -121,12 +121,21 @@ Prose uses exactly two tiers — `--foreground` and `--muted-foreground` — whi
 
 Three strengths, each a job, spaced at ~1.6× like the ink ladder:
 
-- `--border-soft` (6% ink): quiet separation inside a plate — rails, row dividers that fills can't carry.
+- `--border-soft` (6% ink): quiet separation inside a plate — rails, and the dividers between records in a record list that fills can't carry.
 - `--border` (10% ink): structural boundaries between regions.
 - `--border-strong` (16% ink): emphasis chrome — selected and active outlines, emphasized region boundaries, and the scrollbar thumb (§9). It is not "the border for when you're unsure," and it is not the general-purpose strong neutral: anything wanting a neutral *tint* at that weight takes `--foreground-alpha-16`. A hairline drawn with `background` is still a border and keeps it.
 - `--ring-soft` is a 1px ring drawn with box-shadow (`0 0 0 1px`) at the soft tier's own 6% alpha. It belongs to this chapter, not §5: a token is filed by the job it does, not by the CSS property it happens to use, and a shadow-shaped name on a border attracts call sites that wanted lift.
 
 **The One Means Rule.** Each boundary picks one separator: a fill step, a line, or a shadow — never stacked on the same edge.
+
+**The Group Rule.** A settings section draws one line: the divider under its header. Rows are sorted by what a press does, not by what they list:
+
+- *Setting rows* (`SettingsRow`: a name, a helper line, one control) and *entry rows* (`SettingsEntryRow`: the whole row opens a detail or setup page, marked by a chevron — model connections, external agents, remote-access channels) carry no row dividers. The header divider, the gap between sections and the rows' own padding group them; a line under every row made a section's start read as one more row break. An entry row leads with a 32px icon tile — a full-bleed app icon as is, a bare brand mark on the neutral `.providerLogo` plate — and states status inline after its name as `StatusDot` + text.
+- *Record lists* — rows that carry their own actions or selection (archived tasks, projects, imported conversations, capability details) — keep `List hasDividers`. Several controls share each row, and the line is what bounds one record's actions from the next.
+
+The provider catalog (`provider-catalog-page.tsx`) is an entry list that still renders `List hasDividers`: it sits in the legacy app-shell closure, which the renderer architecture check closes to new dependencies, so it moves to `SettingsEntryRow` when it leaves that closure.
+
+(Maintainer decision, #5888.)
 
 ## 5. Elevation
 
