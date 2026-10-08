@@ -54,8 +54,9 @@ export function createTranscriptCommands(workspace: ConversationWorkspace, feedb
       const observation = observationRef.current;
       if (!observation || observation.sessionId !== sessionId || !workspace.commands.isSessionSelected(sessionId)
         || !ui.messageRetryPending.claim(sessionId)) return;
+      // The controller reports a failed reload through the observation's onError, as for its own reloads.
       try { await observation.controller.reload(); }
-      catch (error) { if (observationRef.current === observation && workspace.commands.isSessionSelected(sessionId)) reportError(sessionId, error); }
+      catch { /* already reported */ }
       finally { ui.messageRetryPending.release(sessionId); }
     },
   };

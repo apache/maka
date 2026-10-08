@@ -20,13 +20,14 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { act, createElement, Fragment } from 'react';
-import { LocaleProvider, ToastProvider } from '@maka/ui';
+import { LocaleProvider, ToastProvider, useToast } from '@maka/ui';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import type { StoredMessage } from '@maka/core/session';
 import type { DesktopTranscriptHandle } from '../../preload/transcript-contract.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import { parseDesktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
+import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
 import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
@@ -62,6 +63,9 @@ function harness() {
   const catalog = createSessionCatalogController();
   catalog.commitSessions([A, B].map(row));
   const reads: TranscriptRead[] = [];
+  /** Error toasts, as title then description. */
+  const toastErrors: [string, string | undefined][] = [];
+  const recordedToasts = new WeakSet<object>();
   const services = stubConversationServices();
   services.observation.openTranscript = (sessionKey, onError) => {
     const store = new DesktopTranscriptRangeStore(sessionKey);
@@ -101,6 +105,15 @@ function harness() {
   let transcript!: TranscriptView;
   function Transcript(props: TranscriptView) { transcript = props; return null; }
   function Shell() {
+    const toast = useToast();
+    if (!recordedToasts.has(toast)) {
+      recordedToasts.add(toast);
+      const error = toast.error;
+      toast.error = (title, description, ...rest) => {
+        toastErrors.push([title, description]);
+        return error(title, description, ...rest);
+      };
+    }
     target = useAppShellSessionUiState();
     owner = useConversationOwner();
     return createElement(Fragment, null,
@@ -121,7 +134,7 @@ function harness() {
     }),
   })));
   return {
-    root, catalog, reads,
+    root, catalog, reads, toastErrors,
     get owner() { return owner; }, get target() { return target; }, get transcript() { return transcript; },
     async failInitialReads() {
       await act(async () => target.setActiveId(A));
@@ -166,16 +179,21 @@ describe('Conversation transcript retry', () => {
   it('coalesces repeated Retry clicks and permits another attempt after rejection', async () => {
     const h = harness();
     await h.failInitialReads();
+    const readError = h.transcript.messageLoadError;
+    const reported = h.toastErrors.length;
     await act(async () => { h.transcript.onRetryMessages?.(); h.transcript.onRetryMessages?.(); });
     assert.equal(h.reads.length, 3);
     await act(async () => h.reads[2]!.fail());
-    assert.ok(h.transcript.messageLoadError);
+    assert.deepEqual(h.toastErrors.slice(reported), [[getDesktopConversationCopy('en').actions.messageReadFailedTitle, readError]],
+      'a failed Retry is reported once');
+    assert.equal(h.transcript.messageLoadError, readError, 'a failed Retry keeps the read error');
     assert.equal(h.transcript.messageLoadRetryPending, false);
     await act(async () => h.transcript.onRetryMessages?.());
     assert.equal(h.reads.length, 4);
     await act(async () => h.reads[3]!.succeed('manual recovery'));
     assert.deepEqual(h.transcript.messages.map((message) => message.type === 'user' ? message.text : undefined), ['manual recovery']);
     assert.equal(h.transcript.messageLoadError, undefined);
+    assert.equal(h.toastErrors.length, reported + 1, 'a successful Retry reports nothing');
   });
 
   it('does not retry the published Session after another Session is requested', async () => {
