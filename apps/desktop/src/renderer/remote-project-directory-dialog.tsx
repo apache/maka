@@ -51,7 +51,7 @@ export function RemoteProjectDirectoryDialog(props: {
   host?: DirectoryHost;
   returnFocusTo?: HTMLElement | null;
   onClose(): void;
-  onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
+  onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef, restored: boolean): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).projectActions;
@@ -175,7 +175,7 @@ export function RemoteProjectDirectoryDialog(props: {
           : { ok: false, reason: 'archived', projectId: project.id };
       }, () => sequence === undefined || request.current === sequence);
       if (request.current !== sequence || !result?.ok) return;
-      props.onRegistered(result.project, host);
+      props.onRegistered(result.project, host, result.restored === true);
     } catch (cause) {
       if (request.current !== sequence) return;
       reportUnexpectedError('project-directory:register', cause);

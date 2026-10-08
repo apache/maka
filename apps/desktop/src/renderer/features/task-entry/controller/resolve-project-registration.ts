@@ -17,7 +17,12 @@
  * under the License.
  */
 
+import type { ProjectRecord } from '@maka/core/project';
 import type { TaskEntryProjectMutationResult } from '../ports.js';
+
+export type ProjectRegistrationResult =
+  | { readonly ok: true; readonly project: ProjectRecord; readonly restored?: true }
+  | Exclude<TaskEntryProjectMutationResult, { readonly ok: true }>;
 
 /** Resolves registration without deciding how the caller uses the Project. */
 export async function resolveProjectRegistration(input: {
@@ -25,7 +30,7 @@ export async function resolveProjectRegistration(input: {
   confirm(onConfirm: () => Promise<void>): Promise<boolean>;
   restore(projectId: string): Promise<TaskEntryProjectMutationResult>;
   isCurrent(): boolean;
-}): Promise<TaskEntryProjectMutationResult | undefined> {
+}): Promise<ProjectRegistrationResult | undefined> {
   if (!input.isCurrent()) return;
   const result = await input.register();
   if (!input.isCurrent()) return;
@@ -41,5 +46,5 @@ export async function resolveProjectRegistration(input: {
   if (!restored.ok && restored.reason === 'archived') {
     throw new Error('Project remains archived after restore');
   }
-  return restored;
+  return restored.ok ? { ...restored, restored: true } : restored;
 }

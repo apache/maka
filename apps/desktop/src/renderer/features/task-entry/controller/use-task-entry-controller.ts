@@ -415,6 +415,7 @@ export function useTaskEntryController(
   const acceptRegisteredProject = useCallback(async (
     project: ProjectRecord,
     registeredHost: TaskEntryHostRef,
+    restored = false,
   ): Promise<void> => {
     const host = directoryHost;
     if (
@@ -428,7 +429,8 @@ export function useTaskEntryController(
     // has no name field of its own — so the name typed before the folder was
     // picked is applied here. A failed rename must not lose the project that was
     // just created, so it falls back to the folder-derived name.
-    if (host.projectName) {
+    // Restoring preserves the archived project's name, matching local Add.
+    if (host.projectName && !restored) {
       await service
         .renameProject(registeredHost, project.id, host.projectName)
         .catch(() => undefined);

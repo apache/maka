@@ -17,78 +17,15 @@
  * under the License.
  */
 
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { useToast, useUiLocale } from '@maka/ui';
-import { getShellCopy } from '../../../locales/shell-copy.js';
-import type { TaskEntryHostRef, TaskEntryProjectMutationResult } from '../ports.js';
-import { useTaskEntryServices } from '../services-context.js';
-import { resolveProjectRegistration } from '../controller/resolve-project-registration.js';
+import type { ReactNode } from 'react';
+import type { TaskEntryHostRef } from '../ports.js';
+import { useProjectRegistration, type ProjectRegistration } from '../controller/use-project-registration.js';
 
-export interface ProjectRegistration {
-  readonly pending: boolean;
-  register(
-    operation: () => Promise<TaskEntryProjectMutationResult>,
-    isCurrent?: () => boolean,
-  ): Promise<TaskEntryProjectMutationResult | undefined>;
-}
-
-/** Owns only the single-flight registration/archived-project recovery transaction. */
+/** Adapts registration to legacy callers without adding hooks to their lifecycle. */
 export function ProjectRegistrationBoundary(props: {
   host?: TaskEntryHostRef;
   children(registration: ProjectRegistration): ReactNode;
 }) {
-  const { catalog } = useTaskEntryServices();
-  const toast = useToast();
-  const locale = useUiLocale();
-  const copy = getShellCopy(locale).projectActions;
-  const [pending, setPending] = useState(false);
-  const generation = useRef(0);
-  const inFlight = useRef(false);
-  const mounted = useRef(false);
-
-  useLayoutEffect(() => {
-    mounted.current = true;
-    generation.current += 1;
-    inFlight.current = false;
-    setPending(false);
-    return () => {
-      mounted.current = false;
-      generation.current += 1;
-    };
-  }, [props.host?.profileId, props.host?.hostId, catalog, locale]);
-
-  async function register(
-    operation: () => Promise<TaskEntryProjectMutationResult>,
-    isCurrent: () => boolean = () => true,
-  ): Promise<TaskEntryProjectMutationResult | undefined> {
-    const host = props.host;
-    if (!host || !mounted.current || inFlight.current || !isCurrent()) return;
-    const sequence = generation.current;
-    const current = () => mounted.current && generation.current === sequence && isCurrent();
-    inFlight.current = true;
-    setPending(true);
-    try {
-      return await resolveProjectRegistration({
-        register: operation,
-        confirm: (onConfirm) => toast.confirm({
-          onConfirm,
-          title: copy.archivedProjectTitle,
-          description: copy.archivedProjectDescription,
-          confirmLabel: copy.archivedProjectRestore,
-          cancelLabel: copy.archivedProjectCancel,
-        }),
-        restore: (projectId) => catalog.restoreProject(host, projectId),
-        isCurrent: current,
-      });
-    } catch (cause) {
-      if (current()) throw cause;
-    } finally {
-      if (mounted.current && generation.current === sequence) {
-        inFlight.current = false;
-        setPending(false);
-      }
-    }
-  }
-
-  return props.children({ pending, register });
+  const registration = useProjectRegistration(props.host);
+  return props.children(registration);
 }

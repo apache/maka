@@ -216,8 +216,8 @@ describe('Session workspace archived-project recovery', () => {
   it('confirms use for this Session, restores original identity, then relocates without selecting a new-task Project', async () => {
     const harness = await sessionRecoveryHarness({
       confirm: async (input) => {
-        assert.equal(input.confirmLabel, 'Restore and use for this session');
-        assert.match(input.description ?? '', /this session’s workspace/);
+        assert.equal(input.confirmLabel, 'Restore and use for this task');
+        assert.match(input.description ?? '', /this task’s workspace/);
         return true;
       },
     });
@@ -309,7 +309,7 @@ describe('Session workspace archived-project recovery', () => {
     assert.equal(controller().selectors.sessionWorkspaceRecovery, undefined);
     assert.equal(controller().selectors.workspacePicker.pending, false);
     assert.equal(harness.errors.length, 1);
-    assert.match(JSON.stringify(harness.errors), /Could not refresh projects/);
+    assert.match(JSON.stringify(harness.errors), /Could not refresh the project list/);
     assert.doesNotMatch(JSON.stringify(harness.errors), /Could not move|Could not confirm/);
   });
 
@@ -774,6 +774,36 @@ describe('useTaskEntryController', () => {
     assert.equal(controller().host.directoryHost, undefined);
     assert.equal(reads, 2);
   });
+
+  for (const restored of [false, true]) {
+    it(`remote directory registration ${restored ? 'preserves a restored name' : 'applies the requested name'}`, async () => {
+      const { root } = installReactRenderer();
+      const original = { ...project('project-b'), name: 'Original name' };
+      const remote = { ...readyRemoteHost('generation-a'), projects: [original] };
+      const renames: string[] = [];
+      const services = createFakeTaskEntryServices({
+        catalog: {
+          ...createFakeTaskEntryServices().catalog,
+          getCatalog: async () => ({ defaultProfileId: 'remote', hosts: [remote] }),
+          renameProject: async (_host, _projectId, name) => {
+            renames.push(name);
+            original.name = name;
+          },
+        },
+      });
+      await act(async () => renderController(root, services));
+      await act(async () => controller().commands.addProject('Requested name'));
+      await act(async () => controller().host.acceptRegisteredProject(
+        original,
+        { profileId: 'remote', hostId: 'generation-a' },
+        restored,
+      ));
+      assert.deepEqual(renames, restored ? [] : ['Requested name']);
+      assert.equal(controller().selectors.target?.projectId, original.id);
+      assert.equal(controller().selectors.projectScopes.find((scope) => scope.project.id === original.id)?.project.name, restored ? 'Original name' : 'Requested name');
+      assert.equal(controller().host.directoryHost, undefined);
+    });
+  }
 
   it('closes a remote directory handoff when the Host generation changes', async () => {
     const { root } = installReactRenderer();

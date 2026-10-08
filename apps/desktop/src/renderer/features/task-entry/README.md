@@ -66,18 +66,19 @@ workspace-unavailable notice instead.
 - Draft identity is target-scoped. An unresolved catalog always uses the stable
   unresolved new-task key, preserving reload and target-switch handoff behavior.
 
-## Registration recovery boundary
+## Registration recovery
 
-`ProjectRegistrationBoundary` provides a render-prop transaction for legacy
-registration callers. It owns single-flight pending state, archived-project
-confirmation, and recovery through the injected catalog. Cancellation is silent;
+`useProjectRegistration` owns single-flight pending state, archived-project
+confirmation, and recovery through the injected catalog.
+`ProjectRegistrationBoundary` is a thin render-prop adapter for legacy callers,
+whose architecture contract forbids adding hook calls. Cancellation is silent;
 failures return to the caller's existing error surface. Host changes, lost Host
 verification, locale changes, unmount, and caller request fences prevent stale
 confirmation or recovery results from continuing.
 
 Project Settings keeps its original folder-picker add operation, row-action
 errors, and refresh. The shared remote-directory browser keeps directory I/O,
-navigation, request sequencing, and accepted-project handoff. This boundary does
+navigation, request sequencing, and accepted-project handoff. The hook does
 not take ownership of either surface's broader lifecycle.
 
 ## Existing Session workspace recovery

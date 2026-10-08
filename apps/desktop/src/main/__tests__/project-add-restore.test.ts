@@ -35,7 +35,7 @@ interface RenderModules {
   RemoteProjectDirectoryDialog: ComponentType<{
     host?: DesktopRuntimeHostRef;
     onClose(): void;
-    onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef): void;
+    onRegistered(project: ProjectRecord, host: DesktopRuntimeHostRef, restored: boolean): void;
   }>;
   SettingsFixture: ComponentType<{ host?: DesktopRuntimeHostRef; verified?: boolean }>;
   SessionRecoveryFixture: ComponentType<{ sessionId?: string }>;
@@ -208,7 +208,7 @@ for (const action of ['submit', 'cancel'] as const) {
     } else {
       await submitProjectName();
       assert.deepEqual(calls, ['add']);
-      await click('Restore and use for this session');
+      await click('Restore and use for this task');
       assert.deepEqual(calls, ['add', 'restore', 'relocate:session-1:p']);
     }
   });
@@ -219,6 +219,7 @@ for (const outcome of ['restore', 'cancel', 'failure', 'normal'] as const) {
     const harness = installRenderer();
     const accepted: ProjectRecord[] = [];
     const restores: unknown[][] = [];
+    const restorationFlags: boolean[] = [];
     bridge({
       registerDirectory: async () => outcome === 'normal' ? restored : archived,
     });
@@ -229,7 +230,7 @@ for (const outcome of ['restore', 'cancel', 'failure', 'normal'] as const) {
     };
     const render = (target: DesktopRuntimeHostRef | undefined = host) => harness.render(
       createElement(components.RemoteProjectDirectoryDialog, {
-        host: target, onClose() {}, onRegistered(project) { accepted.push(project); },
+        host: target, onClose() {}, onRegistered(project, _host, wasRestored) { accepted.push(project); restorationFlags.push(wasRestored); },
       }),
     );
     await render();
@@ -237,6 +238,7 @@ for (const outcome of ['restore', 'cancel', 'failure', 'normal'] as const) {
     if (outcome === 'normal') {
       assert.deepEqual(accepted, [restored]);
       assert.equal(restores.length, 0);
+      assert.deepEqual(restorationFlags, [false]);
       return;
     }
     assert.equal(accepted.length, 0, 'must not accept an archived project before confirmation');
@@ -252,6 +254,7 @@ for (const outcome of ['restore', 'cancel', 'failure', 'normal'] as const) {
     if (outcome === 'restore') {
       assert.deepEqual(restores, [[host, 'p']]);
       assert.deepEqual(accepted, [restored]);
+      assert.deepEqual(restorationFlags, [true]);
     } else {
       assert.equal(accepted.length, 0);
       assert.equal(restores.length, outcome === 'failure' ? 1 : 0);

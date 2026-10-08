@@ -3026,7 +3026,9 @@ const makaBridge = {
       });
     },
     add(host?: DesktopRuntimeHostRef, options?: { name?: string }): Promise<
-      { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
+      | { ok: true; project: ProjectRecord; path: string }
+      | { ok: false; reason: 'cancelled' }
+      | { ok: false; reason: 'archived'; projectId: string }
     > {
       return invokeSelectedRuntimeHost(host, 'projects:add', options);
     },
