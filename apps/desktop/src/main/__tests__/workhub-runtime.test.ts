@@ -231,7 +231,7 @@ test('stop and resume receipts survive the client capability JSON boundary', asy
     const result = await f.runtime.actTasks(scope, 'turn', 'action', disposition === 'stop_work'
       ? { operation: 'stop', targetSessionId: 'target' }
       : { operation: 'resume', targetSessionId: 'target', resumesActionId: 'previous' });
-    assert.deepEqual(decodeClientCapabilityResult({ content: [], structuredContent: result }).structuredContent, result);
+    assert.deepEqual(decodeClientCapabilityResult({ outcome: 'success', content: [], structuredContent: result }).structuredContent, result);
     assert.equal(Object.hasOwn(result, 'executionEvidence'), false);
   }
 });

@@ -71,7 +71,10 @@ describe('ClientCapabilityInvocationBroker', () => {
               broker.accept('connection-a', {
                 kind: 'client.capability.result',
                 invocationId: frame.invocationId,
-                result: { content: [{ type: 'text', text: 'ok' }] },
+                result: {
+                  outcome: 'success',
+                  content: [{ type: 'text', text: 'ok' }],
+                },
               }),
             );
           }
@@ -88,7 +91,10 @@ describe('ClientCapabilityInvocationBroker', () => {
       false,
     );
 
-    assert.deepEqual(await prepared.admit(), { content: [{ type: 'text', text: 'ok' }] });
+    assert.deepEqual(await prepared.admit(), {
+      outcome: 'success',
+      content: [{ type: 'text', text: 'ok' }],
+    });
     assert.equal(sent.filter((frame) => frame.kind === 'client.capability.admitted').length, 1);
     broker.close();
   });
