@@ -642,6 +642,8 @@ export class RuntimeHostSessionObserver {
         type: "user_question_answer_ack",
         ...base,
       });
+    } else if (answered.outcome.kind === 'terminal_handoff_answer') {
+      this.#broadcast(answered.sessionId, { type: 'terminal_handoff_answer_ack', ...base });
     } else if (answered.outcome.kind === "form_answer") {
       this.#broadcast(answered.sessionId, {
         type: "form_answer_ack",

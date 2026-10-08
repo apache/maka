@@ -162,6 +162,15 @@ reuse. The patch keeps writes synchronous on node-pty's non-blocking PTY master,
 checks an `fstat` fingerprint before retries, yields between attempts, and cancels
 the queue at the native exit fence. See #2978.
 
+The `makaWriteSync` seam lets Runtime's bounded input queue obtain an actual
+nonblocking OS receipt while using the same write-stream/socket close fence.
+Runtime must not write directly to a cached fd: unrelated Linux PTY masters can
+have identical `fstat` fields. The real two-PTY regression forces EIO before exit
+and fd reuse on Linux; the macOS variant closes the read stream before exit.
+An unpatched dependency does not advertise support for fenced private input.
+The resize method also rejects a closed socket/write stream before using its fd;
+the lifecycle regression checks both first-write rejection and stale resize.
+
 Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 
 ## `@ai-sdk/provider-utils@5.0.51`

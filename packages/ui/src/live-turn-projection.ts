@@ -217,6 +217,15 @@ function projectLiveTurnEvent(
   event: SessionEvent,
   locale: UiLocale,
 ): LiveTurnProjection | undefined {
+  if (event.type === 'terminal_handoff_request') {
+    // A pending request replayed after reload is live evidence of the waiting
+    // tool. Without it, an unfinished historical call looks interrupted.
+    if (current?.turnId === event.turnId && current.terminal) return current;
+    return projectLiveTurnEvent(current, {
+      type: 'tool_start', id: event.id, turnId: event.turnId, ts: event.ts,
+      toolUseId: event.toolUseId, toolName: 'WriteStdin', activityKind: 'command', args: { ref: event.ref },
+    }, locale);
+  }
   if (event.type === 'steering_message') {
     const prior = current?.turnId === event.turnId
       ? current

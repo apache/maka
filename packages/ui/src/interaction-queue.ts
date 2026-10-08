@@ -24,10 +24,12 @@ import type {
   SandboxBoundaryRequestEvent,
   SessionEvent,
   UserQuestionRequestEvent,
+  TerminalHandoffRequestEvent,
 } from '@maka/core/events';
 
 /** Requests this surface can render and settle itself. */
 export type ComposerInteraction =
+  | TerminalHandoffRequestEvent
   | SandboxBoundaryRequestEvent
   | ClientCapabilityRequestEvent
   | UserQuestionRequestEvent
@@ -36,6 +38,7 @@ export type InteractionQueues = Record<string, ComposerInteraction[]>;
 
 function isComposerInteraction(event: ActiveInteractionRequestEvent): event is ComposerInteraction {
   return (
+    event.type === 'terminal_handoff_request' ||
     event.type === 'sandbox_boundary_request' ||
     event.type === 'client_capability_request' ||
     event.type === 'user_question_request' ||
@@ -85,6 +88,7 @@ export function reduceInteractionQueues(
   event: SessionEvent,
 ): InteractionQueues {
   switch (event.type) {
+    case 'terminal_handoff_request':
     case 'sandbox_boundary_request':
     case 'client_capability_request':
     case 'user_question_request':
@@ -94,6 +98,7 @@ export function reduceInteractionQueues(
     case 'client_capability_decision_ack':
     case 'user_question_answer_ack':
     case 'form_answer_ack':
+    case 'terminal_handoff_answer_ack':
       return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
     case 'tool_result':
       return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);

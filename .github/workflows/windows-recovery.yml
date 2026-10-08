@@ -53,83 +53,84 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'package-lock.json'
-      - 'patches/**'
-      - 'scripts/apply-dependency-patches.mjs'
-      - 'scripts/install-electron-with-retry.mjs'
-      - 'scripts/run-electron-installer.cjs'
-      - 'scripts/clean-build.mjs'
-      - 'scripts/clean-paths.mjs'
-      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      - "package-lock.json"
+      - "patches/**"
+      - "scripts/apply-dependency-patches.mjs"
+      - "scripts/install-electron-with-retry.mjs"
+      - "scripts/run-electron-installer.cjs"
+      - "scripts/clean-build.mjs"
+      - "scripts/clean-paths.mjs"
+      - "scripts/windows-runtime-host-local-ipc-trust.ps1"
       # Every file in the import closure of the suites below that branches on
       # `process.platform === 'win32'`. Generated, not curated:
       # `scripts/windows-package-source-closure.test.mjs` recomputes this set
       # from the dist tests the steps run and fails on any difference in either
       # direction.
-      - 'packages/core/src/diagnostic-log.ts'
-      - 'packages/runtime-host/src/__tests__/control-endpoint.test.ts'
-      - 'packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts'
-      - 'packages/runtime-host/src/__tests__/skill-catalog-protocol.test.ts'
-      - 'packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts'
-      - 'packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts'
-      - 'packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts'
-      - 'packages/runtime-host/src/client/client-instance-identity.ts'
-      - 'packages/runtime-host/src/client/host-profile.ts'
-      - 'packages/runtime-host/src/client/ssh-operator-activation.ts'
-      - 'packages/runtime-host/src/client/ssh-tunnel.ts'
-      - 'packages/runtime-host/src/client/wsl-control.ts'
-      - 'packages/runtime-host/src/control/access-credential-delivery.ts'
-      - 'packages/runtime-host/src/control/endpoint.ts'
-      - 'packages/runtime-host/src/control/registration.ts'
-      - 'packages/runtime-host/src/control/startup-diagnostic.ts'
-      - 'packages/runtime-host/src/operator/local-deployment-owner.ts'
-      - 'packages/runtime-host/src/operator/managed-deployment.ts'
-      - 'packages/runtime-host/src/operator/operator-command.ts'
-      - 'packages/runtime-host/src/peer-mesh/store.ts'
-      - 'packages/runtime-host/src/peer-reachability/owner.ts'
-      - 'packages/runtime-host/src/peer-reachability/publisher.ts'
-      - 'packages/runtime-host/src/protocol/host-status.ts'
-      - 'packages/runtime-host/src/protocol/skill-catalog.ts'
-      - 'packages/runtime-host/src/server/access-credential-store.ts'
-      - 'packages/runtime-host/src/server/host-resource-probe.ts'
-      - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
-      - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
-      - 'packages/runtime/src/__tests__/runtime-continuation-crash.test.ts'
-      - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
-      - 'packages/runtime/src/builtin-tools.ts'
-      - 'packages/runtime/src/file-stable-write.ts'
-      - 'packages/runtime/src/filesystem-worker/client.ts'
-      - 'packages/runtime/src/filesystem-worker/launch-spec.ts'
-      - 'packages/runtime/src/filesystem-worker/process-runner.ts'
-      - 'packages/runtime/src/pipe-process-driver.ts'
-      - 'packages/runtime/src/process-tree-terminator.ts'
-      - 'packages/runtime/src/pty-process-driver.ts'
-      - 'packages/runtime/src/ripgrep-guidance.ts'
-      - 'packages/runtime/src/ripgrep-executable.ts'
-      - 'packages/runtime/src/sandbox-boundary-declaration.ts'
-      - 'packages/runtime/src/sandbox/default-sandbox-manager.ts'
-      - 'packages/runtime/src/sandbox/sandbox-manager.ts'
-      - 'packages/runtime/src/sandbox/windows-profile.ts'
-      - 'packages/runtime/src/sandbox/windows-sandbox.ts'
-      - 'packages/runtime/src/shell-detect.ts'
-      - 'packages/runtime/src/shell-exec.ts'
-      - 'packages/storage/src/__tests__/managed-dependency-environment.test.ts'
-      - 'packages/storage/src/__tests__/root-authority.test.ts'
-      - 'packages/storage/src/artifact-store.ts'
-      - 'packages/storage/src/artifact-writer-bootstrap-lock.ts'
-      - 'packages/storage/src/artifact-writer-lock.ts'
-      - 'packages/storage/src/atomic-file-write.ts'
-      - 'packages/storage/src/file-lifetime-owner.ts'
-      - 'packages/storage/src/managed-dependency-environment.ts'
-      - 'packages/storage/src/marker-file.ts'
-      - 'packages/storage/src/memory-bundle-io.ts'
-      - 'packages/storage/src/native-file-lock.ts'
-      - 'packages/storage/src/root-authority.ts'
-      - 'packages/storage/src/runtime-policy/document-io.ts'
-      - 'packages/storage/src/session-bundle-file-service.ts'
-      - 'packages/storage/src/sqlite-long-term-memory-store.ts'
-      - 'packages/storage/src/stable-storage.ts'
-      - '.github/workflows/windows-recovery.yml'
+      - "packages/core/src/diagnostic-log.ts"
+      - "packages/runtime-host/src/__tests__/control-endpoint.test.ts"
+      - "packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts"
+      - "packages/runtime-host/src/__tests__/skill-catalog-protocol.test.ts"
+      - "packages/runtime-host/src/__tests__/skill-catalog-repository.test.ts"
+      - "packages/runtime-host/src/__tests__/skill-catalog-transaction.test.ts"
+      - "packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts"
+      - "packages/runtime-host/src/client/client-instance-identity.ts"
+      - "packages/runtime-host/src/client/host-profile.ts"
+      - "packages/runtime-host/src/client/ssh-operator-activation.ts"
+      - "packages/runtime-host/src/client/ssh-tunnel.ts"
+      - "packages/runtime-host/src/client/wsl-control.ts"
+      - "packages/runtime-host/src/control/access-credential-delivery.ts"
+      - "packages/runtime-host/src/control/endpoint.ts"
+      - "packages/runtime-host/src/control/registration.ts"
+      - "packages/runtime-host/src/control/startup-diagnostic.ts"
+      - "packages/runtime-host/src/operator/local-deployment-owner.ts"
+      - "packages/runtime-host/src/operator/managed-deployment.ts"
+      - "packages/runtime-host/src/operator/operator-command.ts"
+      - "packages/runtime-host/src/peer-mesh/store.ts"
+      - "packages/runtime-host/src/peer-reachability/owner.ts"
+      - "packages/runtime-host/src/peer-reachability/publisher.ts"
+      - "packages/runtime-host/src/protocol/host-status.ts"
+      - "packages/runtime-host/src/protocol/skill-catalog.ts"
+      - "packages/runtime-host/src/server/access-credential-store.ts"
+      - "packages/runtime-host/src/server/host-resource-probe.ts"
+      - "packages/runtime-host/src/server/runtime-resource-coordinator.ts"
+      - "packages/runtime-host/src/server/skill-catalog-repository.ts"
+      - "packages/runtime-host/src/server/skill-catalog-transaction.ts"
+      - "packages/runtime/src/__tests__/runtime-continuation-crash.test.ts"
+      - "packages/runtime/src/__tests__/runtime-resume-crash.test.ts"
+      - "packages/runtime/src/builtin-tools.ts"
+      - "packages/runtime/src/file-stable-write.ts"
+      - "packages/runtime/src/filesystem-worker/client.ts"
+      - "packages/runtime/src/filesystem-worker/launch-spec.ts"
+      - "packages/runtime/src/filesystem-worker/process-runner.ts"
+      - "packages/runtime/src/pipe-process-driver.ts"
+      - "packages/runtime/src/process-tree-terminator.ts"
+      - "packages/runtime/src/pty-process-driver.ts"
+      - "packages/runtime/src/ripgrep-guidance.ts"
+      - "packages/runtime/src/ripgrep-executable.ts"
+      - "packages/runtime/src/sandbox-boundary-declaration.ts"
+      - "packages/runtime/src/sandbox/default-sandbox-manager.ts"
+      - "packages/runtime/src/sandbox/sandbox-manager.ts"
+      - "packages/runtime/src/sandbox/windows-profile.ts"
+      - "packages/runtime/src/sandbox/windows-sandbox.ts"
+      - "packages/runtime/src/shell-detect.ts"
+      - "packages/runtime/src/shell-exec.ts"
+      - "packages/storage/src/__tests__/managed-dependency-environment.test.ts"
+      - "packages/storage/src/__tests__/root-authority.test.ts"
+      - "packages/storage/src/artifact-store.ts"
+      - "packages/storage/src/artifact-writer-bootstrap-lock.ts"
+      - "packages/storage/src/artifact-writer-lock.ts"
+      - "packages/storage/src/atomic-file-write.ts"
+      - "packages/storage/src/file-lifetime-owner.ts"
+      - "packages/storage/src/managed-dependency-environment.ts"
+      - "packages/storage/src/marker-file.ts"
+      - "packages/storage/src/memory-bundle-io.ts"
+      - "packages/storage/src/native-file-lock.ts"
+      - "packages/storage/src/root-authority.ts"
+      - "packages/storage/src/runtime-policy/document-io.ts"
+      - "packages/storage/src/session-bundle-file-service.ts"
+      - "packages/storage/src/sqlite-long-term-memory-store.ts"
+      - "packages/storage/src/stable-storage.ts"
+      - ".github/workflows/windows-recovery.yml"
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
   # two independently green halves still agree. It is also the backstop for the
@@ -139,7 +140,7 @@ on:
     branches: [main]
   schedule:
     # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
-    - cron: '17 8 * * *'
+    - cron: "17 8 * * *"
   workflow_dispatch:
 
 # Pull request pushes supersede each other, keyed on the pull request number

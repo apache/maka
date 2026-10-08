@@ -81,3 +81,63 @@ function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
     }),
   ]);
 }
+
+test('a real PTY input fence drains backpressure before the next owner writes', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const stack = await loadPtyStack();
+  let ready!: () => void;
+  let finished!: () => void;
+  const started = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const complete = new Promise<void>((resolve) => {
+    finished = resolve;
+  });
+  const count = 512 * 1024;
+  let output = '';
+  const driver = new PtyProcessDriver({
+    stack,
+    file: process.execPath,
+    args: [
+      '-e',
+      `process.stdin.setRawMode(true); process.stdin.pause(); process.stdout.write('READY');
+      setTimeout(() => { let received = ''; process.stdin.on('data', data => {
+        received += data; if (received.includes('!')) {
+          process.stdout.write(received === 'A'.repeat(${count}) + '!' ? 'ORDER_OK' : 'ORDER_BAD');
+        }
+      }); process.stdin.resume(); }, 150);`,
+    ],
+    cwd: process.cwd(),
+    env: process.env,
+    cols: 80,
+    rows: 24,
+    onData: (data) => {
+      output += data;
+      if (output.includes('READY')) ready();
+      if (output.includes('ORDER_')) finished();
+    },
+    onExit: () => {},
+    onInvariantFailure: (error) => {
+      throw error;
+    },
+  });
+  try {
+    await withTimeout(started, 'Child did not become ready');
+    driver.write('A'.repeat(count));
+    let drained = false;
+    const fence = driver.drainInput(AbortSignal.timeout(TEST_TIMEOUT_MS)).then(() => {
+      drained = true;
+    });
+    assert.equal(drained, false, 'backpressured input was reported delivered synchronously');
+    await fence;
+    driver.write('!');
+    await driver.drainInput(AbortSignal.timeout(TEST_TIMEOUT_MS));
+    await withTimeout(complete, 'Child did not acknowledge complete input');
+    assert.match(output, /ORDER_OK/);
+    assert.doesNotMatch(output, /ORDER_BAD/);
+  } finally {
+    driver.kill('SIGKILL');
+    driver.dispose();
+  }
+});

@@ -68,6 +68,159 @@ const RUN = Object.freeze({
 });
 
 describe('HostInteractionCoordinator', () => {
+  test('terminal handoff persists decisions only, rejects premature Resume and applies one decision', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      let ready = false;
+      const applied: string[] = [];
+      let admissionActive = false;
+      const pending = coordinator.requestTerminalHandoff({
+        ...RUN,
+        requestId: 'private-terminal',
+        request: {
+          kind: 'terminal_handoff',
+          toolUseId: 'write-terminal',
+          ref: 'maka://runtime/background-tasks/shell-1',
+          message: 'Enter credentials in the original terminal',
+        },
+        withAnswerAdmission: async (answer) => {
+          admissionActive = true;
+          try {
+            return await answer();
+          } finally {
+            admissionActive = false;
+          }
+        },
+        canAnswer: (action, id) => {
+          assert.equal(admissionActive, true, 'readiness is checked inside resource admission');
+          return action === 'cancel' || (ready && id === 'connection_1');
+        },
+        apply: async (action) => {
+          assert.equal(admissionActive, true, 'admission spans persistence and apply');
+          assert.equal(
+            (await store.listPending(RUN)).length,
+            0,
+            'apply follows the durable decision',
+          );
+          applied.push(action);
+        },
+      });
+      await published.promise;
+      const answer = {
+        sessionId: RUN.sessionId,
+        interactionId: 'private-terminal',
+        answer: {
+          kind: 'terminal_handoff' as const,
+          action: 'resume' as const,
+          controllerId: 'card-1',
+        },
+      };
+      assert.equal(
+        (await coordinator.handlers['interaction.answer'](answer, connection())).ok,
+        false,
+      );
+      assert.equal((await store.listPending(RUN)).length, 1);
+      ready = true;
+      assert.equal(
+        (await coordinator.handlers['interaction.answer'](answer, connection())).ok,
+        true,
+      );
+      assert.equal((await pending).kind, 'terminal_handoff_answer');
+      assert.equal(
+        (await coordinator.handlers['interaction.answer'](answer, connection())).ok,
+        true,
+      );
+      assert.deepEqual(applied, ['resume']);
+      assert.deepEqual(await store.listPending(RUN), []);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('terminal apply failure rejects that request without poisoning other interactions', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const pending = coordinator.requestTerminalHandoff({
+        ...RUN,
+        requestId: 'failing-terminal',
+        request: {
+          kind: 'terminal_handoff',
+          toolUseId: 'write-terminal',
+          ref: 'maka://runtime/background-tasks/shell-1',
+          message: 'Private input',
+        },
+        canAnswer: () => true,
+        apply: async () => {
+          throw new Error('terminal stop failed');
+        },
+      });
+      const rejected = assert.rejects(pending, /terminal stop failed/);
+      await published.promise;
+      const result = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: 'failing-terminal',
+          answer: { kind: 'terminal_handoff', action: 'cancel', controllerId: 'card' },
+        },
+        connection(),
+      );
+      assert.equal(result.ok, true, 'the durable answer was committed');
+      await rejected;
+      assert.equal(coordinator.isPoisoned(), false);
+      assert.deepEqual(await store.listPending(RUN), []);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('terminal handoff abort during publication closes instead of leaving a pending interaction', async () => {
+    await withStore(async ({ store }) => {
+      const abort = new AbortController();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          abort.abort();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const applied: string[] = [];
+      const result = await coordinator.requestTerminalHandoff({
+        ...RUN,
+        requestId: 'cancelled-terminal',
+        signal: abort.signal,
+        request: {
+          kind: 'terminal_handoff',
+          toolUseId: 'write-terminal',
+          ref: 'maka://runtime/background-tasks/shell-1',
+          message: 'Private input',
+        },
+        canAnswer: () => true,
+        apply: async (action) => {
+          applied.push(action);
+        },
+      });
+      assert.equal(result.kind, 'closure');
+      assert.deepEqual(applied, ['cancel']);
+      assert.deepEqual(await store.listPending(RUN), []);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('Host-owned forms reuse durable answers and concurrent requests without rebinding the Run', async () => {
     await withStore(async ({ store }) => {
       const published = deferred();

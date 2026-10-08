@@ -156,6 +156,23 @@ export interface PtyControlWriter {
   writeStdin(input: ShellRunWriteInput): Promise<ShellRunToolResult>;
 }
 
+export interface PtyPrivateSnapshot {
+  readonly text: string;
+}
+
+/** Host-owned human control. None of these payloads are model tool arguments. */
+export interface PtyHandoffController {
+  preparePtyHandoff(sessionId: string, ref: string, signal: AbortSignal): Promise<void>;
+  writePrivatePtyInput(
+    sessionId: string,
+    ref: string,
+    input: string,
+    signal: AbortSignal,
+  ): Promise<void>;
+  readPrivatePtySnapshot(sessionId: string, ref: string): Promise<PtyPrivateSnapshot>;
+  resumePtyHandoff(sessionId: string, ref: string): Promise<boolean>;
+}
+
 export function validateWriteStdinInput(input: ShellRunWriteInput): void {
   if (input.input !== undefined && input.actions !== undefined) {
     throw new Error('WriteStdin raw input and terminal actions are mutually exclusive');

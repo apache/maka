@@ -47,6 +47,7 @@ interface PendingEntry {
   generation: number;
   dropped: boolean;
   started: boolean;
+  replyToQueries: boolean;
 }
 
 interface SanitizedBuffer {
@@ -115,7 +116,7 @@ export class PtyScreenCollector {
     return !this.failure && !this.disposed;
   }
 
-  accept(data: string): void {
+  accept(data: string, replyToQueries = true): void {
     if (!data) return;
     if (!this.dataOpen || this.disposed) {
       this.fail(new Error('PTY data arrived after collector admission closed'));
@@ -133,13 +134,14 @@ export class PtyScreenCollector {
       tail &&
       !tail.dropped &&
       !tail.started &&
+      tail.replyToQueries === replyToQueries &&
       tail.bytes + bytes <= PTY_PARSER_HIGH_WATER_BYTES
     ) {
       tail.data += data;
       tail.bytes += bytes;
       tail.generation = generation;
     } else {
-      this.enqueue({ data, bytes, generation, dropped: false, started: false });
+      this.enqueue({ data, bytes, generation, dropped: false, started: false, replyToQueries });
     }
     this.pendingBytes += bytes;
     this.evictOldestIfOverBudget();
@@ -151,7 +153,7 @@ export class PtyScreenCollector {
     const parse = this.sequence.then(() => {
       if (entry.dropped) return undefined;
       entry.started = true;
-      return this.write(entry.data);
+      return this.write(entry.data, entry.replyToQueries);
     });
     this.sequence = parse.then(
       () => {
@@ -349,7 +351,7 @@ export class PtyScreenCollector {
     );
   }
 
-  private write(data: string): Promise<void> {
+  private write(data: string, replyToQueries: boolean): Promise<void> {
     this.throwIfUnavailable();
     return new Promise<void>((resolve, reject) => {
       this.protocolReplyBatch = '';
@@ -362,7 +364,7 @@ export class PtyScreenCollector {
           this.suppressNextNormalScrollRetention = false;
           const protocolReply = this.protocolReplyBatch;
           this.protocolReplyBatch = undefined;
-          if (!this.failure && protocolReply) {
+          if (!this.failure && protocolReply && replyToQueries) {
             try {
               this.options.onProtocolReply(protocolReply);
             } catch (error) {
