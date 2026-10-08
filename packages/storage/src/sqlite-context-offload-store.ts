@@ -40,13 +40,6 @@ import {
   configureSqliteContextOffloadDatabase,
   migrateSqliteContextOffloadDatabase,
 } from './sqlite-context-offload-schema.js';
-import { readSqliteDatabaseFileSetBytes } from './sqlite-file-set.js';
-import {
-  readSqliteFreelistPages,
-  runBoundedIncrementalVacuum,
-  runPassiveWalCheckpoint,
-  type SqlitePageReclamationResult,
-} from './sqlite-page-reclamation.js';
 import {
   readStableBoundedFile,
   syncDirectory,
@@ -130,7 +123,6 @@ type PreparedContextRead =
 /** Low-level implementation; production callers must use the Storage Root authority facade. */
 export class SqliteContextOffloadStore implements ContextOffloadStore {
   readonly #database: DatabaseSync;
-  readonly #databaseFilePath: string;
   readonly #limits: ContextOffloadLimits;
   readonly #now: () => number;
   readonly #idFactory: () => string;
@@ -143,7 +135,6 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
 
   constructor(path: string, options: SqliteContextOffloadStoreOptions) {
     if (!path) throw new Error('Context-offload SQLite path is required');
-    this.#databaseFilePath = path;
     this.#limits = validateLimits(options.limits);
     this.#now = options.now ?? Date.now;
     this.#idFactory = options.idFactory ?? randomUUID;
@@ -516,37 +507,41 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
     });
   }
 
+  /**
+   * Returns up to `maxPages` free pages to the filesystem with one bounded
+   * `incremental_vacuum`. The schema guarantees `auto_vacuum = INCREMENTAL`.
+   */
   async reclaimFreePages(input: {
     readonly maxPages: number;
-  }): Promise<SqlitePageReclamationResult> {
-    if (!Number.isSafeInteger(input.maxPages) || input.maxPages <= 0) {
-      throw new Error('Context page reclamation limit must be a positive integer');
-    }
+  }): Promise<{ readonly reclaimedPages: number; readonly hasMore: boolean }> {
+    assertPositiveSafeInteger(input.maxPages, 'Context page reclamation limit');
     this.#assertOpen();
-    if (this.#databaseFilePath !== ':memory:') {
-      const freelistEmpty = this.#readTransaction(
-        () => readSqliteFreelistPages(this.#database) === 0,
-      );
-      if (freelistEmpty) {
-        return { reclaimedPages: 0, reclaimedBytes: 0, hasMore: false };
-      }
+    // Probe under a read transaction so an idle tick never takes the write lock.
+    if (this.#readTransaction(() => this.#freelistPages()) === 0) {
+      return { reclaimedPages: 0, hasMore: false };
     }
-    const beforeBytes =
-      this.#databaseFilePath === ':memory:'
-        ? 0
-        : await readSqliteDatabaseFileSetBytes(this.#databaseFilePath);
-    const result = this.#writeTransaction(() =>
-      runBoundedIncrementalVacuum(this.#database, input.maxPages),
-    );
-    if (result.reclaimedPages > 0) {
-      runPassiveWalCheckpoint(this.#database);
+    const result = this.#writeTransaction(() => {
+      const before = this.#freelistPages();
+      // incremental_vacuum(0) would free every page, so an emptied list stops here.
+      if (before === 0) return { reclaimedPages: 0, hasMore: false };
+      this.#database.exec(`PRAGMA incremental_vacuum(${Math.min(input.maxPages, before)})`);
+      const after = this.#freelistPages();
+      return { reclaimedPages: before - after, hasMore: after > 0 };
+    });
+    // PASSIVE never waits on readers; it moves the shrink into the main file.
+    if (result.reclaimedPages > 0) this.#database.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    return result;
+  }
+
+  #freelistPages(): number {
+    const row = this.#database.prepare('PRAGMA freelist_count').get() as
+      | { freelist_count?: unknown }
+      | undefined;
+    const pages = row?.freelist_count;
+    if (typeof pages !== 'number' || !Number.isSafeInteger(pages) || pages < 0) {
+      throw new Error('Invalid SQLite freelist_count');
     }
-    if (this.#databaseFilePath === ':memory:') return result;
-    const afterBytes = await readSqliteDatabaseFileSetBytes(this.#databaseFilePath);
-    return {
-      ...result,
-      reclaimedBytes: Math.max(0, beforeBytes - afterBytes),
-    };
+    return pages;
   }
 
   async usage(sessionId?: string): Promise<ContextOffloadUsage> {

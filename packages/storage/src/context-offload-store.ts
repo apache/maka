@@ -62,7 +62,6 @@ export interface InteractiveContextOffloadWriter extends Omit<ContextOffloadStor
   readonly [writerBrand]: true;
   reclaimFreePages(input: { readonly maxPages: number }): Promise<{
     readonly reclaimedPages: number;
-    readonly reclaimedBytes: number;
     readonly hasMore: boolean;
   }>;
   close(): Promise<void>;
