@@ -526,7 +526,8 @@ export class SqliteContextOffloadStore implements ContextOffloadStore {
       if (before === 0) return { reclaimedPages: 0, hasMore: false };
       this.#database.exec(`PRAGMA incremental_vacuum(${Math.min(input.maxPages, before)})`);
       const after = this.#freelistPages();
-      return { reclaimedPages: before - after, hasMore: after > 0 };
+      // A batch that frees nothing reports no more work instead of spinning the lane.
+      return { reclaimedPages: before - after, hasMore: after > 0 && after < before };
     });
     // PASSIVE never waits on readers; it moves the shrink into the main file.
     if (result.reclaimedPages > 0) this.#database.exec('PRAGMA wal_checkpoint(PASSIVE)');

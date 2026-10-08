@@ -258,5 +258,9 @@ test('context-offload page reclamation lane runs with bounded batches', async (t
   t.mock.timers.tick(100);
   await settle();
   assert.equal(reclaimCalls, 2);
+  // Once a batch reports no more work the lane idles instead of retrying every 100 ms.
+  t.mock.timers.tick(100);
+  await settle();
+  assert.equal(reclaimCalls, 2);
   await maintenance.close();
 });

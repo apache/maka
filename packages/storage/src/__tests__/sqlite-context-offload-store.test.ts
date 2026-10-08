@@ -1121,6 +1121,12 @@ test('reclaimFreePages returns garbage-collected pages to the file in bounded ba
 
   const first = await fixture.store.reclaimFreePages({ maxPages: 64 });
   assert.deepEqual(first, { reclaimedPages: 64, hasMore: true });
+  // Before any external checkpoint: the store's own PASSIVE checkpoint has
+  // already moved this batch's shrink into the main database file.
+  assert.ok(
+    (await stat(fixture.path)).size < before.fileBytes,
+    'one batch shrinks the main file without an external checkpoint',
+  );
   assert.equal((await inspect()).freePages, before.freePages - 64);
 
   let reclaimed = first.reclaimedPages;
