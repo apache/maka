@@ -25,6 +25,7 @@ import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-conte
 import type { createMainWindowController } from './main-window.js';
 import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
+import type { ManagedTaskDirectoryClass } from './managed-task-directory.js';
 import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
 import type { resolveBuildInfo } from './build-info.js';
 import type { DesktopUpdateChannel } from './app-update-attestation.js';
@@ -53,6 +54,12 @@ export interface AppIpcDeps {
   e2eFixture: E2eFixture;
   projectManagement: ProjectManagementService;
   allowLocalProjectPaths?: boolean;
+  /**
+   * Classifies the directory a Session's workspace is bound to. Absent on
+   * Hosts that cannot manage Client task directories — the field is then
+   * simply not reported.
+   */
+  getSessionTaskDirectoryBinding?(sessionId: string): Promise<ManagedTaskDirectoryClass | undefined>;
 }
 
 export interface AppClientIpcDeps {
@@ -182,6 +189,7 @@ export function registerAppIpc(
     return {
       projectPath,
       projectGit: await resolveProjectGitInfo(projectPath),
+      taskDirectory: await deps.getSessionTaskDirectoryBinding?.(sessionId),
     };
   });
   targetIpc.handle('app:openPath', async (_event, key: string, sessionId: unknown): Promise<OpenPathResult> => {

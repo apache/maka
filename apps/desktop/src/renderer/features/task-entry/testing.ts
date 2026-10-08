@@ -61,6 +61,7 @@ export function createFakeTaskEntryServices(
     },
     sessions: {
       relocateWorkspace: async () => ({ ok: false, reason: 'operation_unavailable' }),
+      relocateToDedicatedDirectory: async () => ({ ok: false, reason: 'operation_unavailable' }),
     },
     folders: {
       openProjectFolder: async () => ({ kind: 'opened' }),

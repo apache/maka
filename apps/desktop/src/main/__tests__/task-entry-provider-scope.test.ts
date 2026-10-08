@@ -313,6 +313,7 @@ describe('TaskEntryRoot render scope', () => {
           recoverySelectedProject = projectId;
           return { ok: true };
         },
+        relocateToDedicatedDirectory: async () => ({ ok: true, directory: '/tasks/task-1' }),
       },
     });
 
@@ -382,6 +383,7 @@ describe('TaskEntryRoot render scope', () => {
           calls.push(`relocate:${sessionId}:${projectId}`);
           return { ok: true };
         },
+        relocateToDedicatedDirectory: async () => ({ ok: true, directory: '/tasks/task-1' }),
       },
     });
 

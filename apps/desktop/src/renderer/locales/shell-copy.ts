@@ -493,6 +493,13 @@ type ShellCopy = {
     tryAgainLater: string;
     loading: string;
     goToModels: string;
+    /** Banner on a task bound to an unsafe inherited directory. */
+    taskDirectorySuspiciousTitle: string;
+    taskDirectorySuspiciousDescription: string;
+    /** Banner action and task menu item that rebinds to a dedicated directory. */
+    taskDirectoryMoveLabel: string;
+    taskDirectoryMovedTitle: string;
+    taskDirectoryMovedDescription(directory: string): string;
     boundaryUnreadableTitle: string;
     boundaryUnreadableDetail: string;
     boundaryUnreadableRetry: string;
@@ -1235,6 +1242,12 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: '请稍后重试。',
       loading: '加载中',
       goToModels: '去模型',
+      taskDirectorySuspiciousTitle: '此任务的工作目录可能混入无关文件',
+      taskDirectorySuspiciousDescription:
+        '任务输出可能混入了无关文件。可将工作目录迁移到此任务的专属目录；旧目录中的文件不会被移动。',
+      taskDirectoryMoveLabel: '迁移到专属任务目录',
+      taskDirectoryMovedTitle: '已迁移任务目录',
+      taskDirectoryMovedDescription: (directory: string) => `此任务现在使用专属目录 ${directory}`,
       boundaryUnreadableTitle: '暂时读不到这个任务的权限',
       boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的任务。',
       boundaryUnreadableRetry: '重试',
@@ -1759,6 +1772,12 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: '請稍後重試。',
       loading: '載入中',
       goToModels: '去模型',
+      taskDirectorySuspiciousTitle: '此任務的工作目錄可能混入無關檔案',
+      taskDirectorySuspiciousDescription:
+        '任務輸出可能混入了無關檔案。可將工作目錄遷移至此任務的專屬目錄；舊目錄中的檔案不會被移動。',
+      taskDirectoryMoveLabel: '遷移到專屬任務目錄',
+      taskDirectoryMovedTitle: '已遷移任務目錄',
+      taskDirectoryMovedDescription: (directory: string) => `此任務現在使用專屬目錄 ${directory}`,
       boundaryUnreadableTitle: '暫時讀不到這個任務的權限',
       boundaryUnreadableDetail: '在讀到之前，這裡暫時不能輸入。可以重試，或先切換到別的任務。',
       boundaryUnreadableRetry: '重試',
@@ -2329,6 +2348,12 @@ const SHELL_COPY_BY_LOCALE = {
       tryAgainLater: 'Try again later.',
       loading: 'Loading',
       goToModels: 'Go to Models',
+      taskDirectorySuspiciousTitle: 'This task’s working directory may contain unrelated files',
+      taskDirectorySuspiciousDescription:
+        'Task output may be mixed with unrelated files. You can move it to a dedicated task directory; existing files stay where they are.',
+      taskDirectoryMoveLabel: 'Move to dedicated task directory',
+      taskDirectoryMovedTitle: 'Task directory moved',
+      taskDirectoryMovedDescription: (directory: string) => `This task now uses the dedicated directory ${directory}`,
       boundaryUnreadableTitle: 'Could not read this task’s permissions',
       boundaryUnreadableDetail:
         'Until they can be read, you cannot type here. Try again, or switch to another task.',

@@ -63,6 +63,7 @@ import {
   type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
+import type { ManagedTaskDirectoryAuthority } from "./managed-task-directory.js";
 import {
   createBotIncomingMainService,
   type BotIncomingMainService,
@@ -155,6 +156,12 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly resolveExternalSessionImportWorkspace: (
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<WorkspaceTarget>;
+  /**
+   * Dedicated task-directory authority on the Client filesystem. Wired only
+   * for targets that resolve workspaces there; remote Hosts see `undefined`
+   * and refuse dedicated-directory relocation.
+   */
+  readonly taskDirectories?: ManagedTaskDirectoryAuthority;
   readonly emitSessionsChanged: (
     scope: DesktopTargetScope,
     reason: SessionChangedReason,
@@ -894,6 +901,9 @@ export async function createDesktopRuntimeHostCandidate(
           queryExecutors: (input) => client.request('plugin.executor.query', input),
           runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
           resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
+          ...(deps.taskDirectories && !runtimeHostProfileUsesHostWorkspace(target.kind)
+            ? { dedicatedTaskDirectory: deps.taskDirectories }
+            : {}),
           emitSessionsChanged,
           releaseSessionResources: releaseNativeSession,
           sessionCopyCleanup,

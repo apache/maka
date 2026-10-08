@@ -173,6 +173,7 @@ import {
   createProjectRootController,
   type ProjectRootController,
 } from "./project-root-controller.js";
+import { createManagedTaskDirectoryAuthority } from "./managed-task-directory.js";
 import { createSessionCopyCleanupAuthority } from "@maka/storage/session-copy-cleanup";
 import {
   projectHostConnections,
@@ -264,6 +265,7 @@ import {
   type SettingsBotsIpcHandle,
 } from "./settings-bots-ipc-main.js";
 import {
+  hasIsolatedE2eProfile,
   isComputerUseRealModelE2e,
   isE2e,
   isIsolatedE2e,
@@ -442,6 +444,25 @@ mainWindowDelegates.onMainWindowClose = () => {
   native.computerUsePip.destroyAll();
 };
 const attachmentApprovals = createAttachmentApprovalRegistry();
+/**
+ * Dedicated task directories live in the user-owned `~/Maka/tasks` root —
+ * deliberately separate from `userData` (settings, credentials, session
+ * state) and from the install location. Isolated e2e profiles redirect both
+ * `userData` and the fake home into one sandbox, so the root moves under
+ * the isolated workspace instead — `~` there resolves inside `userData`
+ * itself and would trip the reserved-location guard; inside the sandbox the
+ * Client-data reserved roots no longer apply.
+ */
+const managedTaskDirectories = createManagedTaskDirectoryAuthority({
+  root:
+    e2eFixture || hasIsolatedE2eProfile
+      ? join(workspaceRoot, 'task-directories')
+      : join(app.getPath('home'), app.getName(), 'tasks'),
+  reservedRoots:
+    e2eFixture || hasIsolatedE2eProfile
+      ? [app.getAppPath()]
+      : [userDataDir, workspaceRoot, app.getAppPath()],
+});
 const sessionLocalStore = new DesktopSessionLocalStore(join(userDataDir, 'session-experience.sqlite'));
 const localSessionChanged = createSessionLocalChangedEmitter({
   send: (channel, scope, payload) => mainWindowController.send(channel, scope, payload),
@@ -464,6 +485,7 @@ registerDesktopSessionLocalIpc({
     if (!context?.isActive()) throw new Error('Select a cached project before creating an offline task');
     return resolveDesktopSessionWorkspace(input, context.projectManagement, context.projectCatalog, {
       allowHostPath: !runtimeHostProfileUsesHostWorkspace(context.policy.kind),
+      allocateDedicatedDirectory: () => managedTaskDirectories.allocate(),
     });
   },
 });
@@ -732,6 +754,11 @@ const currentDesktopWorkspaceTarget = async (
   const workspace = await selectedDesktopWorkspaceTarget(target);
   if (!workspace) {
     throw new Error("Select a project from the Runtime Host first");
+  }
+  // A projectless binding inherits only an implicit path; a new top-level
+  // task gets a dedicated directory instead.
+  if (workspace.kind === 'host_path') {
+    return { kind: 'host_path', path: await managedTaskDirectories.allocate() };
   }
   return workspace;
 };
@@ -1148,9 +1175,13 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
             : {}),
         },
         currentTarget.projectCatalog,
-        { allowHostPath: !runtimeHostProfileUsesHostWorkspace(target.kind) },
+        {
+          allowHostPath: !runtimeHostProfileUsesHostWorkspace(target.kind),
+          allocateDedicatedDirectory: () => managedTaskDirectories.allocate(),
+        },
       );
     },
+    taskDirectories: managedTaskDirectories,
     resolveExternalSessionImportWorkspace: (target) =>
       currentDesktopWorkspaceTarget(target),
     emitSessionsChanged,
@@ -1747,6 +1778,15 @@ function registerHostClientIpc(
       e2eFixture,
       projectManagement: targetProjectManagement,
       allowLocalProjectPaths: !usesHostWorkspace,
+      getSessionTaskDirectoryBinding: usesHostWorkspace
+        ? undefined
+        : async (sessionId) => {
+            const session = await client.getSession(sessionId);
+            if (!session || session.workspace.target.kind !== 'host_path') {
+              return undefined;
+            }
+            return managedTaskDirectories.classify(session.workspace.hostCwd);
+          },
     },
     scopedIpc,
   );

@@ -2639,6 +2639,9 @@ const makaBridge = {
     moveToProject(sessionId: string, projectId: string | null): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
       return invokeSessionUpdate('sessions:moveToProject', sessionId, projectId);
     },
+    moveToDedicatedDirectory(sessionId: string): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
+      return invokeSessionUpdate('sessions:moveToDedicatedDirectory', sessionId);
+    },
     setPermissionMode(sessionId: string, mode: PermissionMode): Promise<DesktopSessionUpdateResult<DesktopSessionSummary>> {
       return invokeSessionUpdate('sessions:setPermissionMode', sessionId, mode);
     },
@@ -3927,6 +3930,7 @@ const makaBridge = {
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
+      taskDirectory?: 'managed' | 'suspicious' | 'other';
     }> {
       return invokeSessionRuntimeHost('app:sessionProjectInfo', sessionId);
     },

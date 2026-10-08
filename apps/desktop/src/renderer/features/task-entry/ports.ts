@@ -137,6 +137,13 @@ export interface TaskEntrySessionService {
     sessionId: string,
     projectId: string,
   ): Promise<TaskEntrySessionWorkspaceResult>;
+  /**
+   * Rebinds the Session to a fresh dedicated task directory through the
+   * Host's relocation authority; reports the directory it landed on.
+   */
+  relocateToDedicatedDirectory(
+    sessionId: string,
+  ): Promise<TaskEntrySessionWorkspaceResult & { readonly directory?: string }>;
 }
 
 /** A folder Task Entry / Workspace reveals in the system file manager. */

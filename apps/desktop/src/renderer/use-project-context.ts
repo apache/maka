@@ -17,24 +17,44 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
+import type { TitlebarProject, ToastApi } from '@maka/ui';
 import type {
   DesktopProjectCapabilities,
   DesktopRuntimeHostRef,
+  TaskDirectoryBinding,
 } from '../preload/bridge-contract.js';
+import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+import type { SessionCollaborationDialogProjection } from './features/session-collaboration/index.js';
+import type { getShellCopy } from './locales/shell-copy.js';
 import {
   runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
 } from './platform/desktop/default-runtime-host-operation.js';
 
 type RefBox<T> = { current: T };
+type ShellAppCopy = ReturnType<typeof getShellCopy>['app'];
+
+interface TitlebarMenuItem {
+  readonly label: string;
+  onClick(): void;
+}
+
+interface TaskDirectoryNotice {
+  readonly title: string;
+  readonly description: string;
+  readonly actionLabel: string;
+  onAction(): void;
+}
 
 interface RendererAppInfo {
   projectId?: string | null;
   projectPath: string;
   projectGit: { isGitRepo: boolean; branch?: string };
+  /** How a projectless Session's bound directory is classified; absent when unclassified. */
+  taskDirectory?: TaskDirectoryBinding;
 }
 
 interface SessionProjectInfoState extends RendererAppInfo {
@@ -62,6 +82,16 @@ export function useAppShellProjectContext(options: {
   sessionCwd?: string;
   sessionProjectId?: string | null;
   sessionProfileKind?: RuntimeHostProfileKind;
+  /** Everything the titlebar identity needs that this hook does not already own. */
+  titlebar: {
+    sharedSessionActive: boolean;
+    activeSession: DesktopSessionSummary | undefined;
+    sharedSessionDialog: SessionCollaborationDialogProjection;
+    moveToDedicatedDirectory(sessionId: string): Promise<string | undefined>;
+    openProjectFolder(): void;
+    copy: ShellAppCopy;
+    toastApi: ToastApi;
+  };
 }): {
   /** Re-reads the default Host's project context; resolves to its projects. */
   refreshProjects(): Promise<ProjectRecord[]>;
@@ -70,6 +100,14 @@ export function useAppShellProjectContext(options: {
   activeProjectCapabilities: DesktopProjectCapabilities;
   currentProjectId: string | null | undefined;
   currentProject: ProjectRecord | undefined;
+  /** Menu state for TitlebarSessionIdentity: share action, repair item, project. */
+  titlebarSession: {
+    readonly action: TitlebarMenuItem | undefined;
+    readonly actions: readonly TitlebarMenuItem[] | undefined;
+    readonly project: TitlebarProject | undefined;
+  };
+  /** Repair prompt shown above the conversation for an unsafe bound directory. */
+  taskDirectoryNotice: TaskDirectoryNotice | undefined;
 } {
   const {
     rendererMountedRef,
@@ -77,6 +115,7 @@ export function useAppShellProjectContext(options: {
     sessionCwd,
     sessionProjectId,
     sessionProfileKind,
+    titlebar,
   } = options;
   const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(null);
   const [sessionProjectInfo, setSessionProjectInfo] = useState<SessionProjectInfoState | null>(null);
@@ -212,6 +251,43 @@ export function useAppShellProjectContext(options: {
   const refreshProjects = async (): Promise<ProjectRecord[]> =>
     (await runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host))).value;
 
+  const {
+    sharedSessionActive,
+    activeSession,
+    sharedSessionDialog,
+    moveToDedicatedDirectory,
+    openProjectFolder,
+    copy,
+    toastApi,
+  } = titlebar;
+  // The titlebar names the directory the ACTIVE session runs in, so it reads
+  // the same projected project state the picker does — `projectInfo` already
+  // resolves to the session's own cwd once a session owns it. Mirrors
+  // @maka/ui's deriveTitlebarProjectName: importing it would add a value
+  // dependency edge the renderer architecture budget forbids here.
+  const titlebarProjectName = sharedSessionActive
+    ? undefined
+    : currentProject?.name ||
+      projectInfo?.projectPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ||
+      undefined;
+  /**
+   * The explicit per-task correction: rebinds the Session to a fresh
+   * dedicated task directory through the Runtime Host's relocation
+   * authority. On success the catalog refresh re-reads the binding class
+   * and both the banner and the menu item retire themselves.
+   */
+  const moveSessionToDedicatedDirectory = useCallback(async () => {
+    if (!sessionId) return;
+    // Task Entry reports refusals and failures itself; only success lands here.
+    const directory = await moveToDedicatedDirectory(sessionId);
+    if (directory === undefined) return;
+    toastApi.toast({
+      title: copy.taskDirectoryMovedTitle,
+      description: copy.taskDirectoryMovedDescription(directory),
+    });
+  }, [sessionId, moveToDedicatedDirectory, copy, toastApi]);
+  const taskDirectory = projectInfo?.taskDirectory;
+
   return {
     refreshProjects,
     projectInfo,
@@ -219,5 +295,40 @@ export function useAppShellProjectContext(options: {
     activeProjectCapabilities,
     currentProjectId,
     currentProject,
+    titlebarSession: {
+      action:
+        sharedSessionActive || !activeSession || activeSession.profileKind === 'environment'
+          ? undefined
+          : {
+              label: sharedSessionDialog.shareActionLabel,
+              onClick: () => sharedSessionDialog.openSession(activeSession),
+            },
+      actions:
+        !sharedSessionActive && taskDirectory !== undefined && taskDirectory !== 'managed'
+          ? [{ label: copy.taskDirectoryMoveLabel, onClick: () => void moveSessionToDedicatedDirectory() }]
+          : undefined,
+      project: titlebarProjectName
+        ? {
+            name: titlebarProjectName,
+            path: projectInfo?.projectPath,
+            onOpenFolder: activeProjectCapabilities.viewClientPath ? openProjectFolder : undefined,
+          }
+        : undefined,
+    },
+    /**
+     * The proactive repair prompt: only a binding that cannot be a
+     * deliberate choice (filesystem root, inside the install or app state,
+     * a redirected path) earns a banner — 'other' stays reachable through
+     * the task menu.
+     */
+    taskDirectoryNotice:
+      !sharedSessionActive && activeSession && taskDirectory === 'suspicious'
+        ? {
+            title: copy.taskDirectorySuspiciousTitle,
+            description: copy.taskDirectorySuspiciousDescription,
+            actionLabel: copy.taskDirectoryMoveLabel,
+            onAction: () => void moveSessionToDedicatedDirectory(),
+          }
+        : undefined,
   };
 }

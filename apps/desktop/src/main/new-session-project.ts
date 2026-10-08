@@ -26,16 +26,26 @@ export interface DesktopSessionWorkspaceInput {
 }
 
 interface DesktopSessionWorkspaceSelection {
-  current(): Promise<{ projectId: string | null | undefined; path: string }>;
-  select(projectId: unknown): Promise<{ project: { id: string } | null; path: string }>;
+  current(): Promise<{
+    projectId: string | null | undefined;
+  }>;
+  select(projectId: unknown): Promise<{ project: { id: string } | null }>;
   defaultProjectId?(): Promise<string | undefined>;
+}
+
+export interface DesktopSessionWorkspaceOptions {
+  readonly allowHostPath?: boolean;
+  /**
+   * Allocates a dedicated directory for a new projectless task.
+   */
+  readonly allocateDedicatedDirectory: () => Promise<string>;
 }
 
 export async function resolveDesktopSessionWorkspace(
   input: DesktopSessionWorkspaceInput,
   selection: DesktopSessionWorkspaceSelection,
   catalog: Pick<ProjectCatalog, 'register'>,
-  options: { readonly allowHostPath?: boolean } = {},
+  options: DesktopSessionWorkspaceOptions,
 ): Promise<WorkspaceTarget> {
   if (input.cwd) {
     if (input.projectId === null) {
@@ -52,7 +62,7 @@ export async function resolveDesktopSessionWorkspace(
   if (input.projectId !== undefined) {
     if (input.projectId === null) {
       if (options.allowHostPath === false) throw remoteProjectRequired();
-      return { kind: 'host_path', path: (await selection.current()).path };
+      return { kind: 'host_path', path: await options.allocateDedicatedDirectory() };
     }
     // Session creation names a Project; it must not also mutate the Host's
     // persisted current-Project preference. The Runtime Host validates the
@@ -71,7 +81,7 @@ export async function resolveDesktopSessionWorkspace(
     return { kind: 'project', projectId: current.projectId };
   }
   if (options.allowHostPath === false) throw remoteProjectRequired();
-  return { kind: 'host_path', path: current.path };
+  return { kind: 'host_path', path: await options.allocateDedicatedDirectory() };
 }
 
 function remoteProjectRequired(): Error {

@@ -752,6 +752,7 @@ describe('useTaskEntryController', () => {
       },
       sessions: {
         relocateWorkspace: async () => ({ ok: false, reason: 'session_busy' }),
+        relocateToDedicatedDirectory: async () => ({ ok: false, reason: 'session_busy' }),
       },
     });
 

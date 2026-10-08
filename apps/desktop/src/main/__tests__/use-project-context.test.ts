@@ -78,6 +78,18 @@ test('discards a pending Project projection after the default Host changes', asy
   function Probe() {
     const context = projectContext.useAppShellProjectContext({
       rendererMountedRef: { current: true },
+      titlebar: {
+        sharedSessionActive: false,
+        activeSession: undefined,
+        sharedSessionDialog: {
+          shareActionLabel: 'Share',
+          openSession: () => {},
+        } as never,
+        moveToDedicatedDirectory: async () => undefined,
+        openProjectFolder: () => {},
+        copy: {} as never,
+        toastApi: { toast: () => '' } as never,
+      },
     });
     projectInfo = context.projectInfo;
     currentProjectId = context.currentProjectId;

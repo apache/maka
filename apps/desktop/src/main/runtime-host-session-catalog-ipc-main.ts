@@ -38,6 +38,7 @@ import type {
   DesktopSessionUpdateResult,
 } from '../shared/desktop-session-projection.js';
 import { resolveCreateSessionRequest } from './create-session-input.js';
+import type { ManagedTaskDirectoryAuthority } from './managed-task-directory.js';
 import {
   type DesktopRuntimeHostClient,
   DesktopRuntimeHostClientError,
@@ -81,6 +82,12 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
   ) => Promise<WorkspaceTarget>;
+  /**
+   * Dedicated task-directory authority for the explicit relocation
+   * correction. Absent on Hosts that cannot provision Client directories —
+   * the IPC then refuses rather than guessing.
+   */
+  dedicatedTaskDirectory?: ManagedTaskDirectoryAuthority;
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
@@ -280,6 +287,9 @@ export function registerRuntimeHostSessionCatalogIpc(
       return moveSessionToProject(deps, sessionId, projectId);
     },
   );
+  ipcMain.handle('sessions:moveToDedicatedDirectory', async (_event, sessionId: string) =>
+    moveSessionToDedicatedDirectory(deps, sessionId),
+  );
 }
 
 /**
@@ -318,6 +328,55 @@ async function moveSessionToProject(
       sessionId,
       current.revision,
       workspace,
+    );
+  } catch (error) {
+    const code = updateFailureCode(error);
+    if (code) return { ok: false, code };
+    throw error;
+  }
+  deps.emitSessionsChanged('updated', sessionId);
+  return { ok: true, session: toDesktopHostSessionSummary(session) };
+}
+
+/**
+ * The explicit correction for a Session bound to an unintended implicit
+ * directory: allocate a dedicated task directory, then rebind through the
+ * same `session.workspace.relocate` authority `moveToProject` uses — one
+ * revision read, one compare-and-set commit, and no project re-pointing.
+ *
+ * The directory is created only once the Session proves eligible, and before
+ * the relocate because the Host requires the target to already exist. Keep
+ * the directory on failure: the Host may have committed the binding before
+ * its response failed.
+ */
+async function moveSessionToDedicatedDirectory(
+  deps: RuntimeHostSessionCatalogIpcDeps,
+  sessionId: string,
+): Promise<DesktopSessionUpdateResult<DesktopHostSessionSummary>> {
+  const authority = deps.dedicatedTaskDirectory;
+  if (!authority) {
+    throw new Error('Dedicated task directories are unavailable on this Runtime Host');
+  }
+  let session: SessionCatalogProjection;
+  try {
+    const current = await deps.client.getSession(sessionId);
+    if (!current) {
+      throw new DesktopRuntimeHostClientError(
+        'session_not_found',
+        `No such Session: ${sessionId}`,
+      );
+    }
+    // A Project-bound Session relocates through `moveToProject` — this
+    // correction is only for a projectless Host-path binding, so dropping a
+    // Project association here can never be an accident.
+    if (current.workspace.target.kind !== 'host_path') {
+      return { ok: false, code: 'operation_unavailable' };
+    }
+    const directory = await authority.allocate();
+    session = await deps.client.relocateSessionWorkspace(
+      sessionId,
+      current.revision,
+      { kind: 'host_path', path: directory },
     );
   } catch (error) {
     const code = updateFailureCode(error);

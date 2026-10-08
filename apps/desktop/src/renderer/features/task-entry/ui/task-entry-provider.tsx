@@ -84,6 +84,7 @@ const EMPTY_CONTROLLER: TaskEntryController = {
     openSessionWorkspaceRecovery() {},
     closeSessionWorkspaceRecovery() {},
     async relocateSessionWorkspace() { return false; },
+    async moveSessionToDedicatedDirectory() { return undefined; },
     async addSessionWorkspace() { return false; },
     resolveWorkBoardTarget: (
       _item: Parameters<TaskEntryControllerCommands['resolveWorkBoardTarget']>[0],
@@ -150,6 +151,8 @@ function createTaskEntryOwner(): TaskEntryOwner & {
         input: Parameters<TaskEntryControllerCommands['relocateSessionWorkspace']>[0],
       ) =>
         current.commands.relocateSessionWorkspace(input),
+      moveSessionToDedicatedDirectory: (sessionId: string) =>
+        current.commands.moveSessionToDedicatedDirectory(sessionId),
       addSessionWorkspace: (
         input: Parameters<TaskEntryControllerCommands['addSessionWorkspace']>[0],
       ) =>

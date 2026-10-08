@@ -71,6 +71,13 @@ interface ChatMessageSurfaceProps extends Omit<
   /** Identifies the active session observation whose seed is visible. */
   liveContentSeedGeneration: number;
   sessionHealthNotice?: SessionHealthNoticeView;
+  /** Repair prompt for a task bound to an unsafe inherited directory. */
+  taskDirectoryNotice?: {
+    title: string;
+    description: string;
+    actionLabel: string;
+    onAction: () => void;
+  };
   sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   showOnboardingHero: boolean;
@@ -100,6 +107,7 @@ export function ChatMessageSurface({
   activeSessionId,
   liveContentSeedGeneration,
   sessionHealthNotice,
+  taskDirectoryNotice,
   sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
   showOnboardingHero,
@@ -208,6 +216,15 @@ export function ChatMessageSurface({
         )}
       </ChatViewGoalProjectionConsumer>
       <TaskReadinessNoticeConsumer surface={ChatRecoveryNotice} />
+      {taskDirectoryNotice && (
+        <ChatRecoveryNotice
+          status="warning"
+          title={taskDirectoryNotice.title}
+          description={taskDirectoryNotice.description}
+          actionLabel={taskDirectoryNotice.actionLabel}
+          onAction={taskDirectoryNotice.onAction}
+        />
+      )}
       {workspaceReadinessRecovery && (
         <ChatRecoveryNotice
           status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}
