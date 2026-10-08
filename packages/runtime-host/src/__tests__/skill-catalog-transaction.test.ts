@@ -786,6 +786,24 @@ test('workspace deletion refuses a changed tree before tombstoning it', async ()
   assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), '# third-party edit\n');
 });
 
+test('recovery cancels an unapplied workspace deletion when the rename fails', async () => {
+  const root = await tempRoot();
+  const directory = join(root, 'skills', 'workspace-skill');
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, 'SKILL.md'), '# workspace\n');
+
+  await assert.rejects(
+    deleteWorkspaceSkill(writer(root, 'before_delete_rename'), root, 'workspace-skill'),
+    isTransactionError('commit_outcome_unknown'),
+  );
+
+  const recovery = writer(root, 'before_delete_rename');
+  await recovery.recover();
+
+  assert.equal(await readFile(join(directory, 'SKILL.md'), 'utf8'), '# workspace\n');
+  assert.deepEqual(await transactionEntries(root), []);
+});
+
 test('workspace deletion compares the caller snapshot before publishing intent', async () => {
   const root = await tempRoot();
   const directory = join(root, 'skills', 'workspace-skill');
