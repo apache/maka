@@ -19,14 +19,17 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { messageContentDigest } from '@maka/core/events';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from '@maka/storage/operational-state-store';
 import { createSessionStore } from '@maka/storage/session-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { exportSessionBundle } from '../session-export.js';
@@ -452,6 +455,88 @@ for (const populated of [true, false]) {
       await rm(target.root, { recursive: true, force: true });
     }
   });
+}
+
+test('imports local sequences in source order even when SQLite scans the bundle backwards', async () => {
+  const source = await makeWorkspace('maka-import-order-source');
+  const target = await makeWorkspace('maka-import-order-target');
+  try {
+    const sessionId = await createSession(source.workspaceRoot);
+    await seedCompletedToolCall(source.workspaceRoot, sessionId);
+    await seedQueuedMessages(source.workspaceRoot, sessionId);
+    const existingId = await createSession(target.workspaceRoot, 'Existing');
+    await seedCompletedToolCall(target.workspaceRoot, existingId);
+    await seedQueuedMessages(target.workspaceRoot, existingId);
+    const bundle = join(source.root, 'order.maka-session');
+    await packSession(source.workspaceRoot, sessionId, bundle);
+
+    // Both keys alias the rowid, so a plain scan of the bundle returns rows in
+    // sequence order however they were written, and the order tests above pass
+    // without the import's ORDER BY. Reversing unordered scans on the
+    // connection the import borrows leaves that ORDER BY as the only thing
+    // keeping source order.
+    const lease = acquireOperationalStateDatabase(await realpath(target.workspaceRoot));
+    try {
+      lease.database.exec('PRAGMA reverse_unordered_selects = ON');
+      const dataVersion = readDataVersion(lease.database);
+      const imported = await importSessionBundle({
+        workspaceRoot: target.workspaceRoot,
+        source: bundle,
+      });
+      assert.equal(imported.ok, true, JSON.stringify(imported));
+      // Unchanged only if the import committed through this same connection.
+      assert.equal(readDataVersion(lease.database), dataVersion);
+    } finally {
+      lease.close();
+    }
+
+    const expected = readLocalSequences(source.workspaceRoot, sessionId);
+    const actual = readLocalSequences(target.workspaceRoot, sessionId);
+    const existing = readLocalSequences(target.workspaceRoot, existingId);
+    for (const key of ['journal', 'admissions'] as const) {
+      assert.deepEqual(
+        actual[key].map((row) => row.id),
+        expected[key].map((row) => row.id),
+        `${key} rows keep source order`,
+      );
+      const floor = Math.max(...existing[key].map((row) => row.seq));
+      assert.ok(
+        actual[key].every((row) => row.seq > floor),
+        `${key} sequences are allocated after the target's own`,
+      );
+    }
+    assert.deepEqual(
+      await readToolHistory(target.workspaceRoot, sessionId),
+      await readToolHistory(source.workspaceRoot, sessionId),
+    );
+  } finally {
+    await rm(source.root, { recursive: true, force: true });
+    await rm(target.root, { recursive: true, force: true });
+  }
+});
+
+function readDataVersion(database: DatabaseSync): number {
+  return (database.prepare('PRAGMA data_version').get() as { data_version: number }).data_version;
+}
+
+function readLocalSequences(workspaceRoot: string, sessionId: string) {
+  const database = openDatabase(workspaceRoot, true);
+  try {
+    return {
+      journal: database
+        .prepare(
+          'SELECT journal_seq AS seq, journal_event_id AS id FROM tool_journal_events WHERE operation_id = ? ORDER BY journal_seq',
+        )
+        .all(`${sessionId}-operation`) as Array<{ seq: number; id: string }>,
+      admissions: database
+        .prepare(
+          'SELECT sequence AS seq, message_id AS id FROM message_admissions WHERE session_id = ? ORDER BY sequence',
+        )
+        .all(sessionId) as Array<{ seq: number; id: string }>,
+    };
+  } finally {
+    database.close();
+  }
 }
 
 test('rolls back reallocated rows after a late identity conflict and allows retry', async () => {
