@@ -266,8 +266,8 @@ jobs:
           $output = Get-Content "$env:RUNNER_TEMP/shell-command-ownership.tap"
           # Most of these suites carry POSIX-only skips; pin how many still run
           # here so a widened skip cannot leave the lane green while testing less.
-          if ($output -notcontains '# tests 18' -or $output -notcontains '# pass 10' -or $output -notcontains '# skipped 8') {
-            Write-Error 'Shell command ownership gate did not run exactly 10 passing Windows tests'
+          if ($output -notcontains '# tests 19' -or $output -notcontains '# pass 11' -or $output -notcontains '# skipped 8') {
+            Write-Error 'Shell command ownership gate did not run exactly 11 passing Windows tests'
             exit 1
           }
 

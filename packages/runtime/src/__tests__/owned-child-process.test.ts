@@ -19,11 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { fork } from 'node:child_process';
 import { openSync } from 'node:fs';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { runProcessWithBoundedTail } from '../shell-exec.js';
 import { spawnOwnedProcess } from '../owned-child-process.js';
 
@@ -226,6 +228,66 @@ test('a supervisor that loses its lease stops the command', {
         /* already exited */
       }
     }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a supervisor fault is reported as a failure before its tree is stopped', {
+  timeout: 10_000,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-owned-fault-'));
+  const late = join(directory, 'late');
+  // Throw inside the real supervisor once it has admitted the command; the
+  // test plays the Host on the other end of its lease channel.
+  const preload = join(directory, 'fault.cjs');
+  await writeFile(
+    preload,
+    `const send = process.send.bind(process);
+process.send = (message, ...rest) => {
+  const result = send(message, ...rest);
+  if (message && message.kind === 'started') setImmediate(() => { throw new Error('injected fault'); });
+  return result;
+};`,
+  );
+  const supervisor = fork(fileURLToPath(new URL('../owned-process-main.js', import.meta.url)), [], {
+    execArgv: ['--require', preload],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    detached: true,
+  });
+  const messages: Array<{ kind: string; message?: string }> = [];
+  supervisor.on('message', (message) => messages.push(message as (typeof messages)[number]));
+  const exited = new Promise((resolve) => supervisor.once('exit', resolve));
+  try {
+    supervisor.send({
+      kind: 'launch',
+      program: process.execPath,
+      args: [
+        '-e',
+        `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 1000);
+        setInterval(() => {}, 1000);`,
+      ],
+      cwd: directory,
+      env: process.env,
+      shell: false,
+      inheritedFds: [],
+    });
+    await exited;
+    assert.deepEqual(
+      messages.map((message) => message.kind),
+      ['started', 'failed'],
+    );
+    assert.equal(messages[1]?.message, 'Command supervisor failed: injected fault');
+    await delay(1200);
+    await assert.rejects(readFile(late), { code: 'ENOENT' });
+  } finally {
+    if (supervisor.pid && process.platform !== 'win32') {
+      try {
+        process.kill(-supervisor.pid, 'SIGKILL');
+      } catch {
+        /* already exited */
+      }
+    }
+    supervisor.kill('SIGKILL');
     await rm(directory, { recursive: true, force: true });
   }
 });

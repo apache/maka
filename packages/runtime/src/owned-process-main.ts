@@ -43,9 +43,30 @@ function loseOwner(): void {
   );
 }
 
+/** An unexpected supervisor error. Stopping the tree ends this process with
+ * its own group's SIGKILL, which the Host cannot tell from a forced stop, so
+ * report the fault first while the lease is still up. */
+function fault(error: unknown): void {
+  if (completed || ownerLost) return;
+  if (!process.connected) {
+    loseOwner();
+    return;
+  }
+  // The tree stops whether or not the report goes through.
+  setTimeout(loseOwner, 1_000);
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    process.send!({ kind: 'failed', message: `Command supervisor failed: ${message}` }, () =>
+      loseOwner(),
+    );
+  } catch {
+    loseOwner();
+  }
+}
+
 process.on('disconnect', loseOwner);
-process.on('uncaughtException', loseOwner);
-process.on('unhandledRejection', loseOwner);
+process.on('uncaughtException', fault);
+process.on('unhandledRejection', fault);
 // The command shares this process group, so a group-wide signal its own script
 // sends (`kill -HUP 0`) reaches the supervisor too. Ignore the ones whose
 // default action would end it, or for SIGUSR1 start the inspector, so the
