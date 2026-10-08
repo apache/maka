@@ -107,6 +107,10 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 208 as const;
 // 208: Usage queries filter by model call kind. Epoch-207 peers reject the
 // filter or ignore it.
+// 206: `storage.retention.query` and `storage.retention.set` read and change the
+// opt-in retention for archived tasks. An epoch-205 Client could not show or
+// turn off a Host that deletes archived tasks on its own, and an epoch-205 Host
+// rejects the unknown operations, so the pair must fail admission.
 // 205: Default-model selection can enable atomically; discovery can preserve the model selection.
 // 204: Executor catalogs and Session configuration carry opaque mode IDs;
 // catalog queries may request a provider refresh. Older peers reject these fields.

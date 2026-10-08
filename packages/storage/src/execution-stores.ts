@@ -142,6 +142,10 @@ export type {
 export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
 export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
+  ArchiveRetentionCandidate,
+  ArchiveRetentionCandidateCount,
+  ArchiveRetentionCandidateQuery,
+  ArchiveRetentionCandidateRow,
   CreateStableSessionRequest,
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
@@ -698,6 +702,11 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
+      listArchiveRetentionCandidates: (query) =>
+        run(() => sessionStore.listArchiveRetentionCandidates(query)),
+      countArchiveRetentionCandidates: (enabledAt) =>
+        run(() => sessionStore.countArchiveRetentionCandidates(enabledAt)),
+      readLatestSessionMetadataTime: () => run(() => sessionStore.readLatestSessionMetadataTime()),
       close,
     },
     agentRunStore: {

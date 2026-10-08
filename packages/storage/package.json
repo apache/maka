@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     "./activation-secret-injector": "./dist/activation-secret-injector.js",
+    "./archive-retention-store": "./dist/archive-retention-store.js",
     "./agent-graph-control-store": "./dist/agent-graph-control-store.js",
     "./agent-run-store": "./dist/agent-run-store.js",
     "./artifact-stores": "./dist/artifact-stores.js",
