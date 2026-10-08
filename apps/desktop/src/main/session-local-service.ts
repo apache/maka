@@ -358,7 +358,7 @@ export class DesktopSessionLocalService {
 
   #startCatalogRefresh(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): void {
     const client = target.client!;
-    const revision = this.store.revision;
+    const revision = this.store.partitionRevision(target.partition);
     const invalidationVersion = connection.invalidationVersion;
     let freshnessRevoked = false;
     let locallyInvalidated = false;
@@ -366,7 +366,7 @@ export class DesktopSessionLocalService {
       .then((sessions) => {
         if (!this.#currentCatalogConnection(target, connection)) return;
         // A late catalog cannot erase a Session created/removed while it read.
-        if (this.store.revision !== revision) {
+        if (this.store.partitionRevision(target.partition) !== revision) {
           locallyInvalidated = true;
           return;
         }
@@ -396,8 +396,8 @@ export class DesktopSessionLocalService {
           if (freshnessRevoked || (!this.#catalogFresh.has(target.partition) && locallyInvalidated))
             this.deps.changed(target.scope);
           if (locallyInvalidated || connection.invalidationVersion !== invalidationVersion) {
-            // Retry a fenced read too: another partition's successful save
-            // advances the local store revision without a Host invalidation.
+            // Retry a read fenced by local mutations in this partition even
+            // when no Host invalidation requested another observation.
             this.#catalogPending.set(target.partition, { target, connection });
           }
         }

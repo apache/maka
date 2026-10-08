@@ -71,6 +71,7 @@ import {
   type HostSessionCatalogCoordinatorOptions,
 } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { SessionBackgroundActivityProjection } from '../server/session-background-activity.js';
 
 type CatalogStores = HostSessionCatalogCoordinatorOptions['stores'];
 type CatalogTurnIndex = HostSessionCatalogCoordinatorOptions['turnIndex'];
@@ -406,6 +407,54 @@ test('catalog get and list retain Graph activity after the parent Turn completes
       assert.equal(session.status, 'active', 'the completed parent is not rewritten as running');
     }
   }
+});
+
+test('Guest shared queries do not expose activity transitions in private Sessions', async () => {
+  const graph = new Map<string, SessionBackgroundActivity>();
+  const projection = new SessionBackgroundActivityProjection({
+    hostGeneration: 'host-1',
+    graph: (id) => graph.get(id) ?? 'idle',
+    supervisor: () => 'idle',
+    publish: () => undefined,
+  });
+  const grant = {
+    grantId: 'shared-observation-grant',
+    principalId: 'guest-1',
+    sessionId: 'session-1',
+    kind: 'session_observation' as const,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const fixture = createFixture({
+    readBackgroundActivity: (sessionId) => projection.snapshot(sessionId),
+    sessionAccessAuthority: {
+      activeSessionGrantForPrincipal: (principalId, kind) => {
+        assert.equal(principalId, grant.principalId);
+        assert.equal(kind, grant.kind);
+        return grant;
+      },
+    },
+  });
+  const guestContext = { ...context, principal: grant.principalId };
+  const queryShared = async () => {
+    const outcome = await fixture.coordinator.handlers['session.shared.query']({}, guestContext);
+    assert.ok(outcome.ok);
+    assert.ok(outcome.result.session);
+    return outcome.result.session;
+  };
+  for (const sharedActivity of ['idle', 'running', 'idle', 'running'] as const) {
+    graph.set(fixture.sessionId, sharedActivity);
+    projection.changed(fixture.sessionId);
+    const shared = await queryShared();
+    assert.equal(shared.id, fixture.sessionId);
+    assert.equal(shared.backgroundActivity, sharedActivity);
+    for (const activity of ['running', 'waiting_for_user', 'blocked', 'idle'] as const) {
+      graph.set('private-session', activity);
+      projection.changed('private-session');
+      assert.deepEqual(await queryShared(), shared);
+    }
+  }
+  const final = await queryShared();
+  assert.deepEqual(final.backgroundActivityVersion, { hostGeneration: 'host-1', revision: 3 });
 });
 
 test('catalog queries de-duplicate Runtime live turn ids in stable order', async () => {
@@ -2197,6 +2246,7 @@ function createFixture(
     readonly turnIndex?: Partial<CatalogTurnIndex>;
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly readBackgroundActivity?: HostSessionCatalogCoordinatorOptions['readBackgroundActivity'];
+    readonly sessionAccessAuthority?: HostSessionCatalogCoordinatorOptions['sessionAccessAuthority'];
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
     readonly runtimePolicy?: RuntimePolicy;
@@ -2291,6 +2341,9 @@ function createFixture(
     manager,
     ...(options.readBackgroundActivity
       ? { readBackgroundActivity: options.readBackgroundActivity }
+      : {}),
+    ...(options.sessionAccessAuthority
+      ? { sessionAccessAuthority: options.sessionAccessAuthority }
       : {}),
     admission: new SessionAdmissionGate(),
     continuity,

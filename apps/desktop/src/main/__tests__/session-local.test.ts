@@ -521,7 +521,7 @@ test('waiting Owner partitions precede a busy partition trailing read and share 
   await waitFor(() => db.store.sessions('a')[0]?.backgroundActivity === 'idle');
 });
 
-test('parallel Owner observations retry local revision fences until all partitions publish', async (t) => {
+test('parallel Owner observations publish without fencing unrelated partitions', async (t) => {
   const db = await database(t);
   let active = 0;
   let maximumActive = 0;
@@ -542,6 +542,87 @@ test('parallel Owner observations retry local revision fences until all partitio
   await waitFor(() => targets.every(({ partition }) => db.store.sessions(partition)[0]?.backgroundActivity === 'idle'));
   assert.equal(maximumActive, 2);
   assert.ok(service.catalog().every((catalog) => catalog.authoritative));
+});
+
+test('continuous fast Owner invalidations cannot fence a slower partition catalog', async (t) => {
+  const db = await database(t);
+  const reads = new Map<string, ReturnType<typeof deferred<SessionCatalogProjection[]>>[]>();
+  const target = (partition: string): DesktopSessionLocalTarget => ({
+    partition, profileId: partition, scope: { hostId: partition, targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => {
+      const read = deferred<SessionCatalogProjection[]>();
+      reads.set(partition, [...(reads.get(partition) ?? []), read]);
+      return read.promise;
+    } },
+  });
+  const slow = target('slow');
+  const fast = target('fast');
+  let targets = [slow];
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => targets, changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  reads.get('slow')![0]!.resolve([swarmCatalogSession()]);
+  await nextTurn();
+  assert.equal(service.catalog()[0]?.authoritative, true);
+
+  targets = [slow, fast];
+  service.changed(slow.scope);
+  service.catalog();
+  for (let index = 0; index < 8; index += 1) {
+    const activity = index % 2 === 0 ? 'idle' : 'running';
+    service.changed(fast.scope);
+    service.changed(slow.scope);
+    // The fast authority commits while the slower authority's read is held.
+    // Both keep getting invalidations, so each success starts a trailing read.
+    reads.get('fast')![index]!.resolve([swarmCatalogSession(activity)]);
+    await waitFor(() => reads.get('fast')!.length === index + 2);
+    reads.get('slow')![index + 1]!.resolve([swarmCatalogSession(activity)]);
+    await waitFor(() => reads.get('slow')!.length === index + 3);
+    const catalog = service.catalog()[0]!;
+    assert.equal(catalog.authoritative, true);
+    assert.equal(catalog.sessions[0]?.backgroundActivity, activity,
+      'a successful slow observation must publish while another authority remains busy');
+  }
+
+  reads.get('slow')![9]!.resolve([swarmCatalogSession('idle')]);
+  await nextTurn();
+  assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'idle');
+  assert.equal(reads.get('slow')!.length, 10, 'the final clean observation stops trailing reads');
+});
+
+test('Owner mutation revisions advance only for their partition and survive purge', async (t) => {
+  const { store } = await database(t);
+  const summary = { id: 'draft', name: 'Pending task' } as DesktopSessionSummaryInput;
+  store.saveSession('other', { ...summary, id: 'other' });
+  const otherRevision = store.partitionRevision('other');
+  const mutate = (operation: () => void) => {
+    const globalRevision = store.revision;
+    const partitionRevision = store.partitionRevision('authority');
+    operation();
+    assert.ok(store.revision > globalRevision, 'existing global mutation fences still advance');
+    assert.ok(store.partitionRevision('authority') > partitionRevision);
+    assert.equal(store.partitionRevision('other'), otherRevision,
+      'another authority catalog must not be fenced by this mutation');
+  };
+  assert.equal(store.partitionRevision('authority'), 0);
+  store.bindAuthority('profile', 'authority');
+  mutate(() => store.saveSession('authority', summary, {
+    sessionId: 'draft', workspace: { kind: 'host_path', path: '/workspace' },
+  }));
+  assert.ok(store.creation('authority', 'draft'));
+  mutate(() => store.enqueue('authority', intent('draft-message', 'draft')));
+  mutate(() => store.saveSession('authority', { ...summary, name: 'Host admitted task' }));
+  assert.equal(store.creation('authority', 'draft'), undefined);
+  mutate(() => store.saveCatalog('authority', [summary, { ...summary, id: 'second' }]));
+  mutate(() => store.removeSession('authority', 'draft'));
+  mutate(() => store.saveCatalog('authority', []));
+  mutate(() => store.saveSession('authority', summary));
+  mutate(() => store.purge('authority'));
+  mutate(() => store.saveSession('authority', summary));
+  mutate(() => store.bindAuthority('profile', 'replacement'));
+  assert.equal(store.partitionRevision('replacement'), 0);
 });
 
 test('a retired queued Owner connection never starts a read', async (t) => {

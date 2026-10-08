@@ -81,6 +81,26 @@ test('permission needs attention while automatic failure handling remains runnin
   assert.equal(projection.read('parent'), 'idle');
 });
 
+test('activity versions reveal only their own Session while idle and running', () => {
+  const graph = new Map<string, SessionBackgroundActivity>();
+  const projection = new SessionBackgroundActivityProjection({
+    hostGeneration: 'host-1',
+    graph: (id) => graph.get(id) ?? 'idle',
+    supervisor: () => 'idle',
+    publish: () => undefined,
+  });
+  for (const sharedActivity of ['idle', 'running'] as const) {
+    graph.set('shared', sharedActivity);
+    projection.changed('shared');
+    const shared = projection.snapshot('shared');
+    for (const activity of ['running', 'waiting_for_user', 'blocked', 'idle'] as const) {
+      graph.set('private', activity);
+      projection.changed('private');
+      assert.deepEqual(projection.snapshot('shared'), shared);
+    }
+  }
+});
+
 test('activity versions advance across idle transitions and reset only with a new Host generation', () => {
   let activity: SessionBackgroundActivity = 'idle';
   const published: number[] = [];
@@ -108,12 +128,13 @@ test('activity versions advance across idle transitions and reset only with a ne
     running.backgroundActivityVersion.revision > initial.backgroundActivityVersion.revision,
   );
   assert.deepEqual(published, [1, 2], 'the version advances before publishing');
-  activity = 'waiting_for_user';
+  activity = 'running';
   projection.changed('root');
   assert.ok(
     projection.snapshot('root').backgroundActivityVersion.revision >
       idle.backgroundActivityVersion.revision,
   );
+  assert.deepEqual(published, [1, 2, 3], 'returning to idle must not discard the clock');
   const restarted = new SessionBackgroundActivityProjection({
     hostGeneration: 'host-2',
     graph: () => 'idle',

@@ -30,7 +30,11 @@ import type {
  */
 export class SessionBackgroundActivityProjection {
   readonly #published = new Map<string, SessionBackgroundActivity>();
-  #revision = 0;
+  // Keep idle tombstones for this Host generation: forgetting a Session's
+  // clock would let an older running response outrank its newer idle state.
+  // Only Sessions with an activity transition allocate an entry, and the
+  // Host-scoped projection releases these clocks when its generation ends.
+  readonly #revisions = new Map<string, number>();
 
   constructor(
     private readonly sources: {
@@ -57,7 +61,7 @@ export class SessionBackgroundActivityProjection {
       backgroundActivity: this.read(sessionId),
       backgroundActivityVersion: {
         hostGeneration: this.sources.hostGeneration,
-        revision: this.#revision,
+        revision: this.#revisions.get(sessionId) ?? 0,
       },
     };
   }
@@ -66,9 +70,9 @@ export class SessionBackgroundActivityProjection {
     const next = this.read(sessionId);
     const previous = this.#published.get(sessionId) ?? 'idle';
     if (previous === next) return;
-    // One Host-wide clock orders observations even after an idle Session is
-    // removed from the deduplication map, without retaining per-Session clocks.
-    this.#revision += 1;
+    // Guests can read their shared Session's version, so its clock must not
+    // expose transitions in other Sessions on the same Host.
+    this.#revisions.set(sessionId, (this.#revisions.get(sessionId) ?? 0) + 1);
     if (next === 'idle') this.#published.delete(sessionId);
     else this.#published.set(sessionId, next);
     this.sources.publish(sessionId);
