@@ -28,7 +28,6 @@ import {
 } from '../operator/managed-deployment.js';
 import type { RuntimeHostCompositionSource } from './host-composition-source.js';
 import type { RuntimeHostKernel, RuntimeHostKernelOptions } from './host-kernel.js';
-import type { RuntimeHostAccessAuthority } from './access-authority.js';
 
 export interface InteractiveRuntimeHostCandidateOptions {
   rootPath: string;
@@ -85,18 +84,18 @@ export async function startInteractiveRuntimeHostCandidate(
   if (!ownership) return { kind: 'loser' };
   const { owner, managedConfig } = ownership;
   const prepared = await (async () => {
-    let preparedAccessAuthority: RuntimeHostAccessAuthority | undefined;
     try {
       const composition = await createComposition(managedConfig);
       const loadedKernel = await kernelModule;
       if (loadedKernel.kind === 'failed') throw loadedKernel.error;
       const websocket = managedConfig?.listeners.websocket;
+      // Keep this the last fallible step: once opened, the authority passes
+      // straight to Kernel.start, which owns its cleanup.
       const accessAuthority = websocket
         ? await import('./access-authority.js').then(({ openRuntimeHostAccessAuthority }) =>
             openRuntimeHostAccessAuthority(owner.controlDirectory),
           )
         : undefined;
-      preparedAccessAuthority = accessAuthority;
       const kernelOptions = {
         owner,
         lifecycleMode: 'ephemeral',
@@ -124,7 +123,6 @@ export async function startInteractiveRuntimeHostCandidate(
       } satisfies RuntimeHostKernelOptions;
       return { Kernel: loadedKernel.module.RuntimeHostKernel, options: kernelOptions };
     } catch (error) {
-      await preparedAccessAuthority?.close().catch(() => undefined);
       if (!owner.closed) await owner.close();
       throw error;
     }
