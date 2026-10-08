@@ -41,12 +41,14 @@ export function formatRetryDelay(seconds: number, units: DurationUnits): string 
   const h = Math.floor((s % 86_400) / 3_600);
   const m = Math.floor((s % 3_600) / 60);
   const sec = s % 60;
-  const parts: string[] = [];
-  if (d > 0) parts.push(`${d}${units.day}`);
-  if (h > 0) parts.push(`${h}${units.hour}`);
-  if (m > 0) parts.push(`${m}${units.minute}`);
-  if (sec > 0 || parts.length === 0) parts.push(`${sec}${units.second}`);
-  return parts.join(' ');
+  return [
+    d > 0 ? `${d}${units.day}` : undefined,
+    h > 0 ? `${h}${units.hour}` : undefined,
+    m > 0 ? `${m}${units.minute}` : undefined,
+    sec > 0 || d === 0 && h === 0 && m === 0 ? `${sec}${units.second}` : undefined,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(' ');
 }
 
 /** One shared elapsed ladder so the zh/en goalElapsed entries cannot drift. */
@@ -100,6 +102,10 @@ export interface ConversationCopy {
     reorderQueuedEntry: string;
     stopLabel: string;
     stopping: string;
+    /** Send-slot replacement offered while the latest interrupted Turn can safely resume and the draft stays empty (#5903). */
+    resumeLabel: string;
+    resumePending: string;
+    resumeTitle: string;
     addContext: string;
     /** Noun label for the composer drawer's staged quotes/attachments — the
      *  collapsed badge, the drawer group's accessible name, and the collapse
@@ -408,6 +414,7 @@ export interface ConversationCopy {
     groupByTime: string;
     groupByProject: string;
     groupingAriaLabel: string;
+    groupingHeading: string;
     projectActionsAriaLabel: (name: string) => string;
     projectNewTask: string;
     projectRename: string;
@@ -447,6 +454,7 @@ const CONVERSATION_COPY = {
       queuedMessages: '待发送',
       promoteQueuedEntry: '直接发送', editQueuedEntry: '编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
+      resumeLabel: '继续', resumePending: '正在继续…', resumeTitle: '继续被中断的上一轮',
       addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件', referenceFolder: '引用文件夹',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
@@ -552,7 +560,7 @@ const CONVERSATION_COPY = {
       untitled: '新建任务',
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
-      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', delete: '删除', moveToProject: '移动到项目', moveToNoProject: '移出项目', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
+      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', delete: '删除', moveToProject: '移动到项目', moveToNoProject: '移出项目', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', groupingHeading: '任务', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
     },
   },
   'zh-TW': {
@@ -571,6 +579,7 @@ const CONVERSATION_COPY = {
       queuedMessages: '待發送',
       promoteQueuedEntry: '直接傳送', editQueuedEntry: '編輯', deleteQueuedEntry: '刪除', reorderQueuedEntry: '拖動排序',
       stopLabel: '停止', stopping: '停止中…',
+      resumeLabel: '繼續', resumePending: '正在繼續…', resumeTitle: '繼續被中斷的上一輪',
       addContext: '新增上下文', stagedContext: '附加內容',
       selectModel: '選擇模型', dropToImport: '鬆開以匯入檔案內容', addingAttachment: '正在新增附件', addFileOrDirectory: '新增檔案或目錄', referenceFolder: '引用資料夾',
       chooseSkill: '選擇技能', noSkillsAvailable: '目前沒有可用技能',
@@ -676,7 +685,7 @@ const CONVERSATION_COPY = {
       untitled: '建立任務',
       status: { active: '可繼續', running: '進行中', waiting_for_user: '等你確認', blocked: '需要處理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待設定可用模型連線', auth: '需要重新登入', permission_required: '等待權限確認', tool_failed: '工具呼叫失敗', unknown: '執行中斷，可重試' },
-      listAriaLabel: '任務列表', showMore: '顯示更多', showMoreAriaLabel: (count) => `顯示 ${count} 條更多工`, renameAriaLabel: '重新命名任務', renameProjectTitle: '重新命名專案', renameSubmit: '儲存', respondingAriaLabel: '正在響應', respondingTitle: '任務正在流式響應中', staleTitle: '此任務使用的模型連線已不可用，傳送時會切換到預設連線', staleAriaLabel: '任務已過期', stale: '已過期', unreadAriaLabel: '未讀訊息', actionsAriaLabel: (name) => `${name} 任務操作`, pin: '置頂', unpin: '取消置頂', rename: '重新命名', archive: '歸檔', delete: '刪除', moveToProject: '移動到專案', moveToNoProject: '移出專案', pinned: '置頂', recent: '最近', projects: '專案', groupByTime: '按時間', groupByProject: '按專案', groupingAriaLabel: '任務分組方式', projectActionsAriaLabel: (name) => `${name} 專案操作`, projectNewTask: '建立任務', projectRename: '重新命名', projectArchive: '歸檔', projectRestore: '恢復', projectRelink: '重新定位', projectUnavailable: '專案目錄不可用', archivedProjects: '已歸檔專案', archivedProjectsAriaLabel: '展開已歸檔專案', worktreeAriaLabel: 'Git 工作樹', promptRailAriaLabel: '按提問跳轉', emptyPrompt: '（空提問）', jumpToPrompt: (preview) => `跳到提問：${preview}`, pickedAriaLabel: '已選取', pinCount: (count) => `置頂 ${count} 項`, unpinCount: (count) => `取消置頂 ${count} 項`, archiveCount: (count) => `歸檔 ${count} 項`,
+      listAriaLabel: '任務列表', showMore: '顯示更多', showMoreAriaLabel: (count) => `顯示 ${count} 條更多工`, renameAriaLabel: '重新命名任務', renameProjectTitle: '重新命名專案', renameSubmit: '儲存', respondingAriaLabel: '正在響應', respondingTitle: '任務正在流式響應中', staleTitle: '此任務使用的模型連線已不可用，傳送時會切換到預設連線', staleAriaLabel: '任務已過期', stale: '已過期', unreadAriaLabel: '未讀訊息', actionsAriaLabel: (name) => `${name} 任務操作`, pin: '置頂', unpin: '取消置頂', rename: '重新命名', archive: '歸檔', delete: '刪除', moveToProject: '移動到專案', moveToNoProject: '移出專案', pinned: '置頂', recent: '最近', projects: '專案', groupByTime: '按時間', groupByProject: '按專案', groupingAriaLabel: '任務分組方式', groupingHeading: '任務', projectActionsAriaLabel: (name) => `${name} 專案操作`, projectNewTask: '建立任務', projectRename: '重新命名', projectArchive: '歸檔', projectRestore: '恢復', projectRelink: '重新定位', projectUnavailable: '專案目錄不可用', archivedProjects: '已歸檔專案', archivedProjectsAriaLabel: '展開已歸檔專案', worktreeAriaLabel: 'Git 工作樹', promptRailAriaLabel: '按提問跳轉', emptyPrompt: '（空提問）', jumpToPrompt: (preview) => `跳到提問：${preview}`, pickedAriaLabel: '已選取', pinCount: (count) => `置頂 ${count} 項`, unpinCount: (count) => `取消置頂 ${count} 項`, archiveCount: (count) => `歸檔 ${count} 項`,
     },
   },
   en: {
@@ -695,6 +704,7 @@ const CONVERSATION_COPY = {
       queuedMessages: 'queued',
       promoteQueuedEntry: 'Send now', editQueuedEntry: 'Edit', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
+      resumeLabel: 'Resume', resumePending: 'Resuming…', resumeTitle: 'Resume the interrupted turn',
       addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add files', referenceFolder: 'Reference folder',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
@@ -797,7 +807,7 @@ const CONVERSATION_COPY = {
       untitled: 'New task',
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
-      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', delete: 'Delete', moveToProject: 'Move to project', moveToNoProject: 'Remove from project', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
+      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', delete: 'Delete', moveToProject: 'Move to project', moveToNoProject: 'Remove from project', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', groupingHeading: 'Tasks', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
     },
   },
 } satisfies UiCatalog<ConversationCopy>;

@@ -656,7 +656,7 @@ function ProviderStoryFrame(props: {
           <Layout
             height="auto"
             padding={0}
-            contentWidth={920}
+            contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
             header={(
               <LayoutHeader padding={6}>
                 <div className="settingsPageHeader">

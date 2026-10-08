@@ -18,6 +18,7 @@
  */
 
 import { createContext, useContext, useRef } from 'react';
+import type { SessionChangedEvent } from '@maka/core/session';
 import { valuesEqual } from '@maka/ui';
 import {
   compareDesktopSessionCatalogSummaries,
@@ -43,6 +44,11 @@ import { createObservableState } from './observable-state.js';
 export interface SessionCatalogState {
   readonly sessions: readonly DesktopSessionSummary[];
   readonly revision: number;
+  /**
+   * A list read has committed. A row patch also moves `revision`, but it can
+   * only vouch for its own row, so membership readers wait for a list.
+   */
+  readonly listed: boolean;
   readonly activeSessionId: string | undefined;
   readonly automaticQueryBlockedSessionIds: ReadonlySet<string>;
   /**
@@ -54,10 +60,28 @@ export interface SessionCatalogState {
   readonly removedIds: ReadonlySet<string>;
 }
 
-export function createSessionCatalogController() {
+/**
+ * Where the catalog's full lists and change events come from. Desktop
+ * supplies it at composition, so the shell's catalog refresh and change
+ * subscription do not reach the Session bridge themselves.
+ */
+export interface SessionCatalogSource {
+  list(): Promise<DesktopSessionSummary[]>;
+  subscribeChanges(handler: (event: SessionChangedEvent) => void): () => void;
+}
+
+const NO_SOURCE = 'This session catalog was created without a source';
+/** A catalog that is only ever committed to, as in tests and stories; reading through it fails. */
+const DETACHED_SOURCE: SessionCatalogSource = {
+  list: () => Promise.reject(new Error(NO_SOURCE)),
+  subscribeChanges: () => { throw new Error(NO_SOURCE); },
+};
+
+export function createSessionCatalogController(source: SessionCatalogSource = DETACHED_SOURCE) {
   const state = createObservableState<SessionCatalogState>({
     sessions: [],
     revision: 0,
+    listed: false,
     activeSessionId: undefined,
     automaticQueryBlockedSessionIds: new Set(),
     removedIds: new Set(),
@@ -79,6 +103,7 @@ export function createSessionCatalogController() {
   };
 
   return {
+    source,
     getState: state.getState,
     subscribe: state.subscribe,
     isAutomaticQueryBlocked(sessionId: string): boolean {
@@ -150,14 +175,15 @@ export function createSessionCatalogController() {
       const sameRows = sessions.length === current.sessions.length
         && sessions.every((s, i) => s === current.sessions[i]);
       // A commit that changed nothing publishes nothing — except the first
-      // one: revision 0 means "no authoritative observation yet", and even an
-      // empty list is one.
-      if (sameRows && removedIds === current.removedIds && current.revision > 0) return;
+      // list: until one lands there is no authoritative observation, and even
+      // an empty list, or one matching the rows patches admitted, is one.
+      if (sameRows && removedIds === current.removedIds && current.listed) return;
       state.replaceState({
         ...current,
         sessions: sameRows ? current.sessions : sessions,
         removedIds,
         revision: current.revision + 1,
+        listed: true,
       });
     },
     commitPatch(sessionId: string, summary: DesktopSessionSummary | null): void {
@@ -284,8 +310,9 @@ export const selectActiveSessionId = (state: SessionCatalogState): string | unde
 export const selectAuthoritativeSessionIds = (
   state: SessionCatalogState,
 ): ReadonlySet<string> | undefined =>
-  // The initial empty catalog cannot prove that persisted Sessions were deleted.
-  state.revision > 0 ? new Set(state.sessions.map(({ id }) => id)) : undefined;
+  // Neither the initial empty catalog nor rows admitted by targeted patches
+  // before the first list can prove that persisted Sessions were deleted.
+  state.listed ? new Set(state.sessions.map(({ id }) => id)) : undefined;
 
 /**
  * The shell's catalog instance, mounted once above the feature services.

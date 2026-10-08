@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -37,7 +39,73 @@ import {
   asarLookupPath,
   assertPackagedDependencyClosure,
   assertPackagedResources,
+  stopChild,
 } from './verify-packaged-app.mjs';
+
+test('stopChild waits for a process that ignores SIGTERM to exit before returning', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `
+    process.on('SIGTERM', () => {});
+    process.send('ready');
+    setInterval(() => {}, 1000);
+  `,
+    ],
+    { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+  );
+  t.after(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, 'exit');
+    child.kill('SIGKILL');
+    await exited;
+  });
+  await once(child, 'message');
+  await stopChild(child);
+  assert.equal(child.signalCode, 'SIGKILL');
+  assert.equal(child.exitCode, null);
+  // A child already terminated by a signal is also stopped, even though its
+  // numeric exitCode is null; stopping it again must not wait for another exit.
+  await stopChild(child);
+});
+
+test('stopChild reports the pid when a child never exits after SIGKILL', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const child = new EventEmitter();
+  child.pid = 12345;
+  child.exitCode = null;
+  child.signalCode = null;
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    return true;
+  };
+  let outcome;
+  const stopped = stopChild(child).then(
+    () => {
+      outcome = 'resolved';
+    },
+    (error) => {
+      outcome = error;
+    },
+  );
+  assert.deepEqual(signals, ['SIGTERM']);
+  t.mock.timers.tick(5_000);
+  await new Promise(setImmediate);
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+  t.mock.timers.tick(9_999);
+  await new Promise(setImmediate);
+  assert.equal(outcome, undefined, 'wait for exit throughout the SIGKILL grace period');
+  t.mock.timers.tick(1);
+  await new Promise(setImmediate);
+  assert.ok(outcome instanceof Error, 'an unresponsive child must reject within 10 seconds');
+  assert.match(outcome.message, /12345.*10_?000ms.*SIGKILL/);
+  assert.equal(child.listenerCount('exit'), 0);
+  await stopped;
+});
 
 test('Windows file rules keep test code and renderer side-files out of the app', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-app-package-'));

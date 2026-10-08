@@ -155,31 +155,6 @@ test('places the turn status row at the top of the assistant content', async () 
   assert.equal(content.firstElementChild?.isSameNode(statusbar), true);
 });
 
-test('offers Safe resume in the Desktop Stop outcome notice', async () => {
-  const { container, root } = domRoot();
-  let resumeCalls = 0;
-  await renderTurn(
-    root,
-    {
-      ...turnWith([{ ...ANSWER, live: false }]),
-      status: 'aborted',
-      abortSource: 'renderer.stop_button',
-    },
-    undefined,
-    { pending: false, onResume: () => resumeCalls++ },
-  );
-
-  const statusbar = container.querySelector('.maka-turn-statusbar');
-  const button = [...container.querySelectorAll('button')].find(
-    (candidate) => candidate.textContent?.trim() === 'Continue this turn',
-  );
-  assert.ok(statusbar, 'the existing turn status row remains the single outcome indicator');
-  assert.ok(button, 'the action stays attached to the stopped turn it continues');
-  assert.equal(button.textContent, 'Continue this turn');
-  await act(() => button.click());
-  assert.equal(resumeCalls, 1);
-});
-
 /**
  * Keying the answer by its first timeline entry made the key change whenever
  * that entry did, so React unmounted the answer and mounted a copy — taking

@@ -502,9 +502,11 @@ retry the tool. The old Run remains stopped.
 
 When the user later sends a new explicit message, that message starts a new
 Turn. Only provider requests in that fresh Turn receive a temporary history
-projection: the old tool call is paired with an `outcome_unknown` response and
-a system notice, then the new user message follows. The temporary response and
-notice are not written to the RuntimeEvent ledger or transcript. For example, after
+projection: the old tool call is paired with an `outcome_unknown` response,
+then the new user message follows. The temporary response is not written to
+the RuntimeEvent ledger or transcript, and nothing about the event is added
+to the request's system prompt, so the provider-stable request prefix is not
+churned on exactly the turns that replay the full history. For example, after
 `Bash("touch marker.txt")` was dispatched but its result was not committed, a
 new request such as “check whether `marker.txt` exists” lets the model inspect
 the current state before deciding what to do; Maka does not decide whether the

@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionName,
   decodeConnectionSlug,
@@ -438,9 +439,38 @@ export class ConnectionCatalogDocumentOwner {
     if (current.revision !== input.expectedCatalogRevision) {
       return revisionConflict(input.expectedCatalogRevision, current.revision);
     }
+    const connections = [...current.connections];
+    if (input.target && input.enableModel) {
+      const { connectionId, modelId } = input.target;
+      const index = connections.findIndex((item) => item.connectionId === connectionId);
+      const connection = connections[index];
+      if (!connection?.enabled || isRetiredProvider(connection.providerType)) {
+        return deepFreeze({ kind: 'invalid_default_target', target: input.target });
+      }
+      if (!connection.enabledModelIds.includes(modelId)) {
+        const model = resolveConnectionModelCatalog({
+          ...connection,
+          models: [...connection.models],
+          enabledModelIds: [...connection.enabledModelIds],
+          defaultModel: '',
+        }).find((entry) => entry.id === modelId);
+        if (
+          !model?.canUseAsChatDefault ||
+          connection.enabledModelIds.length >= CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS
+        ) {
+          return deepFreeze({ kind: 'invalid_default_target', target: input.target });
+        }
+        const { lastTest: _lastTest, ...withoutTest } = connection;
+        connections[index] = {
+          ...withoutTest,
+          revision: nextRevision(connection.revision),
+          enabledModelIds: [...connection.enabledModelIds, modelId],
+        };
+      }
+    }
     // The one call that states a target, so the one place an unusable one is
     // the caller's error rather than a consequence to release.
-    if (input.target && !isValidTarget(input.target, current.connections)) {
+    if (input.target && !isValidTarget(input.target, connections)) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
     // Refused rather than accepted-then-released: committing it would succeed
@@ -455,7 +485,7 @@ export class ConnectionCatalogDocumentOwner {
     ) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
-    const next = this.nextDocument(current, current.connections, input.target);
+    const next = this.nextDocument(current, connections, input.target);
     await this.write(root, next);
     return committed(next);
   }
@@ -465,6 +495,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionModelDiscoveryResult,
+    preserveSelection = false,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     if (result.models.length === 0) {
@@ -479,22 +510,27 @@ export class ConnectionCatalogDocumentOwner {
       current.defaultTarget?.connectionId === previous.connectionId
         ? current.defaultTarget
         : undefined;
-    const reconciled = reconcileConnectionAfterModelFetch(
-      {
-        defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
-        enabledModelIds: previous.enabledModelIds,
-        // An entry always carries a `models` array, so "has an inventory" has
-        // to be read off its contents: empty means this connection has never
-        // had a list to pick from and discovery may seed one. A non-empty one
-        // means an empty selection is the user's answer.
-        hasModelInventory: previous.models.length > 0,
-      },
-      result.models,
-      {
-        aliases: modelIdAliasesForProvider(previous.providerType),
-        authoritative: providerReportsCompleteModelCatalog(previous.providerType),
-      },
-    );
+    const reconciled = preserveSelection
+      ? {
+          defaultModel: currentDefaultTarget?.modelId ?? '',
+          enabledModelIds: [...previous.enabledModelIds],
+        }
+      : reconcileConnectionAfterModelFetch(
+          {
+            defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
+            enabledModelIds: previous.enabledModelIds,
+            // An entry always carries a `models` array, so "has an inventory" has
+            // to be read off its contents: empty means this connection has never
+            // had a list to pick from and discovery may seed one. A non-empty one
+            // means an empty selection is the user's answer.
+            hasModelInventory: previous.models.length > 0,
+          },
+          result.models,
+          {
+            aliases: modelIdAliasesForProvider(previous.providerType),
+            authoritative: providerReportsCompleteModelCatalog(previous.providerType),
+          },
+        );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
     // decided is its own bug — fail closed where it is still attributable.

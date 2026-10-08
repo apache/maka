@@ -54,10 +54,11 @@
     "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
     "smoke:browser": "npm run build:workspace-deps && npm run build:main && npm run smoke:browser:run",
     "smoke:workhub-browser:run": "electron scripts/workhub-browser-presentation-smoke.mjs",
-    "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs"
+    "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs",
+    "smoke:browser-load-failure:run": "electron scripts/browser-load-failure-smoke.mjs"
   },
   "dependencies": {
-    "@jackwener/opencli": "1.8.7",
+    "@jackwener/opencli": "1.8.8",
     "@maka/computer-use": "0.1.0",
     "@maka/core": "0.1.0",
     "@maka/mcp": "0.1.0",
@@ -75,13 +76,13 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@astryxdesign/core": "0.6.2",
-    "@astryxdesign/theme-neutral": "0.6.2",
-    "@babel/parser": "7.29.7",
+    "@astryxdesign/core": "0.6.3",
+    "@astryxdesign/theme-neutral": "0.6.3",
+    "@babel/parser": "7.29.9",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@maka/ui": "0.1.0",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "@playwright/test": "^1.63.0",
     "@storybook/react-vite": "^10.6.0",
     "@types/react": "^19.3.0",
@@ -92,14 +93,14 @@
     "@xterm/addon-web-links": "0.12.0",
     "@xterm/xterm": "^6.0.0",
     "electron": "43.4.1",
-    "electron-builder": "26.16.1",
+    "electron-builder": "26.17.0",
     "esbuild": "^0.28.1",
     "linkedom": "^0.18.13",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "simple-icons": "16.31.0",
+    "simple-icons": "16.32.0",
     "storybook": "^10.4.6",
-    "vite": "^8.3.0"
+    "vite": "^8.3.1"
   },
   "maka": {
     "rendererBundledDependencies": [

@@ -24,10 +24,11 @@ import type { ProjectRecord } from '@maka/core/project';
 import {
   LocaleProvider,
   useSessionRailData,
+  type SessionRailChrome,
   type SessionRailData,
   type SessionRailSelection,
 } from '@maka/ui';
-import { useSessionRailSelection } from '@maka/ui/testing';
+import { useSessionRailChrome, useSessionRailSelection } from '@maka/ui/testing';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeSessionNavigationServices,
@@ -45,6 +46,19 @@ import {
 } from '../../renderer/features/session-navigation/testing.js';
 import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
+import type { SnapshotReader } from '../../renderer/application/contracts/snapshot-reader.js';
+import { createProductionSessionUiStateController } from '../../renderer/features/conversation/testing.js';
+import {
+  WorkHubEnablementProvider,
+  type WorkHubEnablement,
+} from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
+import {
+  OnboardingAuthorityProvider,
+  type OnboardingAuthority,
+  type OnboardingSnapshot,
+} from '../../renderer/application/contracts/onboarding/onboarding-authority.js';
+
+const EMPTY_STREAMING_SESSIONS = new Set<string>();
 
 function session(
   id: string,
@@ -142,7 +156,6 @@ function ports(
   return {
     sessionsRef: { current: sessions },
     acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
-    activateSession: (sessionId) => calls.push(`activate:${sessionId ?? 'none'}`),
     clearSessionRendererState: (sessionId) => calls.push(`clear:${sessionId}`),
     refreshSessions: async () => sessions,
     toastApi: {
@@ -188,13 +201,23 @@ function input(
 
 function navigationTree(
   catalog: ReturnType<typeof createSessionCatalogController>,
-  shell: { activeSessionId: string; workHubActive: boolean },
+  shell: {
+    activeSessionId: string;
+    workHubActive: boolean;
+    onOpenWorkHub?(): void;
+  },
   sibling: ReactNode,
   child: ReactNode,
+  streamingSessions: SnapshotReader<ReadonlySet<string>> = {
+    getSnapshot: () => EMPTY_STREAMING_SESSIONS,
+    subscribe: () => () => undefined,
+  },
+  authorities: { workHub?: WorkHubEnablement; onboarding?: OnboardingAuthority } = {},
 ) {
   return createElement(LocaleProvider, {
     locale: 'en',
-    children: createElement(
+    children: createElement(WorkHubEnablementProvider, { value: authorities.workHub ?? WORKHUB_OFF },
+      createElement(OnboardingAuthorityProvider, { value: authorities.onboarding ?? onboardingWith(null) }, createElement(
       SessionNavigationServicesProvider,
       { services: fakeServices },
       sibling,
@@ -205,8 +228,7 @@ function navigationTree(
           catalog,
           hiddenSessionIds,
           projectScopes: [localProjectScope],
-          streamingSessionIds: new Set<string>(),
-          sessionSendOutcomes: {},
+          streamingSessions,
           ports: ports(linkedCatalog, shell.activeSessionId),
           commandsRef: { current: null },
           selection: { section: 'sessions' },
@@ -218,8 +240,18 @@ function navigationTree(
         },
         child,
       ),
-    ),
+    ))),
   });
+}
+
+const WORKHUB_OFF: WorkHubEnablement = { isEnabled: () => false, subscribe: () => () => {} };
+function onboardingWith(snapshot: OnboardingSnapshot | null): OnboardingAuthority {
+  return {
+    getProjection: () => ({ snapshot, failed: false }),
+    subscribe: () => () => {},
+    refresh: () => {},
+    skipInitialOnboarding: async () => {},
+  };
 }
 
 const linkedCatalog = [
@@ -513,6 +545,54 @@ describe('useSessionNavigationReads', () => {
 });
 
 describe('SessionNavigationProvider selection', () => {
+  it('subscribes to streaming membership inside the rail without waking its parent', async () => {
+    const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const sessionUi = createProductionSessionUiStateController();
+    let parentRenders = 0;
+    let railRenders = 0;
+    let rail!: SessionRailData;
+    function Rail() {
+      railRenders += 1;
+      rail = useSessionRailData();
+      return null;
+    }
+    function Parent() {
+      parentRenders += 1;
+      return navigationTree(catalog, { activeSessionId: 'root', workHubActive: false },
+        null, createElement(Rail), sessionUi.reads.streaming);
+    }
+    await act(async () => root.render(createElement(Parent)));
+    const initialParent = parentRenders;
+    const initialRail = railRenders;
+    await act(async () => sessionUi.setExecution('remote', {
+      type: 'host_execution', available: true,
+      rootTurn: { sessionId: 'remote', turnId: 'turn', runId: 'run', status: 'running' },
+    }));
+    assert.equal(rail.streamingSessionIds?.has('remote'), false);
+    assert.equal(railRenders, initialRail);
+    assert.equal(parentRenders, initialParent);
+    await act(async () => sessionUi.setLiveTurnBySession((state) => ({
+      ...state,
+      remote: [{ turnId: 'turn', steps: [{ stepId: 'message', tools: [],
+        text: { text: 'a token', complete: false, truncated: false } }] }],
+    })));
+    assert.equal(rail.streamingSessionIds?.has('remote'), true);
+    assert.equal(railRenders, initialRail + 1);
+    await act(async () => sessionUi.setLiveTurnBySession((state) => ({
+      ...state,
+      remote: [{ turnId: 'turn', steps: [{ stepId: 'message', tools: [],
+        text: { text: 'another token', complete: false, truncated: false } }] }],
+    })));
+    assert.equal(railRenders, initialRail + 1);
+    await act(async () => sessionUi.clearSessionUiState('remote'));
+    assert.equal(rail.streamingSessionIds?.has('remote'), false);
+    assert.equal(railRenders, initialRail + 2);
+    assert.equal(parentRenders, initialParent);
+    await act(async () => root.unmount());
+  });
+
   it('drops the picks when WorkHub stops painting the open row', async () => {
     let latest: SessionRailSelection | null = null;
     function SelectionProbe() {
@@ -551,6 +631,63 @@ describe('SessionNavigationProvider selection', () => {
     await render(true);
 
     assert.deepEqual([...selection().selectedIds], []);
+  });
+
+  it('marks stale rows from the onboarding authority rather than a shell prop', async () => {
+    let rail: SessionRailData | undefined;
+    function Rail() {
+      rail = useSessionRailData();
+      return null;
+    }
+    const onboarding = onboardingWith({
+      sessionSendOutcomes: { remote: { kind: 'blocked', reason: 'connection_missing', connectionLocked: false } },
+    } as unknown as OnboardingSnapshot);
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const { root } = installReactRenderer();
+    await act(async () => root.render(navigationTree(catalog, { activeSessionId: 'root', workHubActive: false },
+      null, createElement(Rail), undefined, { onboarding })));
+    assert.deepEqual([...(rail?.staleSessionIds ?? [])], ['remote']);
+    await act(async () => root.unmount());
+  });
+
+  it('offers the WorkHub entry only while the switch is on, checked again on select', async () => {
+    let chrome: SessionRailChrome | undefined;
+    function ChromeProbe() {
+      chrome = useSessionRailChrome();
+      return null;
+    }
+    let enabled = false;
+    const listeners = new Set<() => void>();
+    const enablement: WorkHubEnablement = {
+      isEnabled: () => enabled,
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    const opened: string[] = [];
+    const catalog = createSessionCatalogController();
+    catalog.commitSessions(linkedCatalog);
+    const { root } = installReactRenderer();
+    await act(async () => root.render(navigationTree(catalog, {
+      activeSessionId: 'root',
+      workHubActive: false,
+      onOpenWorkHub: () => opened.push('workhub'),
+    }, null, createElement(ChromeProbe), undefined, { workHub: enablement })));
+    const workHubEntry = () => chrome?.workHubEntry;
+    assert.equal(workHubEntry(), undefined);
+    enabled = true;
+    await act(async () => listeners.forEach((listener) => listener()));
+    const entry = workHubEntry();
+    assert.equal(entry?.label, 'WorkHub');
+    enabled = false;
+    entry?.onSelect();
+    assert.deepEqual(opened, [], 'a click that lands after the switch went off does nothing');
+    enabled = true;
+    entry?.onSelect();
+    assert.deepEqual(opened, ['workhub']);
+    await act(async () => root.unmount());
   });
 });
 

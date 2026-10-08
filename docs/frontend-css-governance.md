@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-27
+last_verified: 2026-09-28
 owners:
   - maka-backend
 ---
@@ -33,64 +33,71 @@ owners:
 
 [中文](./frontend-css-governance.zh-CN.md)
 
-Maka's frontend styling combines Astryx, `@maka/ui` product compositions, and renderer surface CSS. Cascade order is an explicit contract rather than an implementation detail.
+Maka's frontend styling combines Astryx, `@maka/ui` product compositions, and renderer surface CSS. Cascade order is an explicit contract rather than an implementation detail. This document describes the current contract for contributors working in `apps/desktop/src/renderer/**` and `packages/ui/src/**`.
 
 ## 1. Entry file
 
 - `apps/desktop/src/renderer/styles.css` is an entry file only.
 - It may contain `@import` and other top-level orchestration statements.
 - New per-surface selector blocks belong in `apps/desktop/src/renderer/styles/**/*.css`.
-- `maka-tokens.css` holds tokens only, including the type-role table and its code-font rebind. Document-level defaults live in `styles/document.css`; surface rules never go into the token file.
+- `cascade-layers.css` declares cascade order, and `maka-tokens.css` owns shared renderer tokens and the type-role table. Document-level defaults live in `styles/document.css`; ordinary surface rules belong in `styles/**/*.css`.
 
 ### Selector naming
 
-- Shared renderer and `@maka/ui` selectors use the kebab-case `.maka-*` dialect.
+- New selectors shared across renderer surfaces or exported by `@maka/ui` use the kebab-case `.maka-*` dialect.
 - `agents-*` class names are frozen: keep the existing ones, add no new `agents-*` selectors or class names.
 - The established `styles/settings/**` surface uses camelCase `.settings*` selectors. Keep that dialect for settings-local selectors instead of mixing both forms within one surface.
+- Feature-local namespaces already exist, including `.workhub-*`. Keep them local to their feature; do not turn them into a second cross-surface dialect. Legacy `.agents-*` and `.detailPane` names are compatibility debt, not examples for new selectors.
 - Moving existing settings selectors between concern files does not require a repository-wide rename; any future naming migration should be handled as an explicit compatibility change.
 
 ## 2. Layers
 
-- Pure presentation rules should use `@layer base` or `@layer components` where practical.
+- `apps/desktop/src/renderer/cascade-layers.css` is the single owner of the order: `reset`, `theme`, `base`, `astryx-components`, `astryx-tokens`, then `components`.
+- `styles.css` imports Astryx's neutral component sheet into `astryx-components`, the generated Maka theme into `astryx-tokens`, and `@maka/ui` plus renderer surfaces into `components`. `maka-tokens.css` declares a `base` block for type roles; `styles/document.css` declares its own `base` block and keeps global motion and icon rules unlayered.
+- Keep ordinary product presentation in `components`. Use another existing layer only when that layer owns the rule's semantics.
 - Use `@import "./file.css" layer(components)` only when the build chain explicitly supports it.
 - Do not place `@import` inside an `@layer` block.
 
-Astryx reset and component layers come first; Maka base tokens and product `components` come later. Keep layer ownership at the closest existing seam instead of adding a higher-priority compatibility layer.
+Keep layer ownership at the closest existing seam instead of adding a higher-priority compatibility layer. Do not reorder the declared layers from a surface stylesheet; a cascade-order change belongs in `cascade-layers.css` and needs rendered regression evidence.
 
-## 4. `!important`
+## 3. `!important`
 
-- `!important` is allowed by default only for accessibility helpers such as `.maka-visually-hidden`, and for reduced-motion or e2e-fixture overrides.
-- Every other use requires an adjacent `Justified:` comment.
+- Default exceptions are the HTML `[hidden]` invariant, accessibility helpers such as `.maka-visually-hidden`, reduced-motion and e2e-fixture overrides, and the centralized native-cursor policy.
+- Narrow compatibility and product overrides remain in `styles/settings/usage.css`, `styles/shell-layout.css`, `styles/sidebar.css`, and `packages/ui/src/styles.css`. The shell layout override keeps SideNav width following its animated wrapper; sidebar overrides reconcile SideNav appearance and spacing with unlayered StyleX rules. They are explicit debt or bounded component fixes, not precedent for another override.
+- Every new use outside the default exceptions needs an adjacent comment that names the competing rule, explains why the normal component or layer seam cannot express the fix, and states when the override can be removed. `Justified:` is the conventional marker.
 - Prefer fixing the primitive API or semantic class when it can express the behavior directly.
 
-## 5. Tokens
+## 4. Tokens
 
-- Shared custom properties belong in `apps/desktop/src/renderer/maka-tokens.css`.
-- Component-local properties are allowed only with a `/* local: ... */` comment.
-- Do not add raw colors, radii, or ungoverned z-index values.
+- Shared renderer custom properties belong in `apps/desktop/src/renderer/maka-tokens.css`.
+- `apps/desktop/src/renderer/astryx-theme/maka.css` is generated by `npm run astryx:theme`; do not edit it by hand.
+- Component-local properties are allowed only near their owner with a `/* local: ... */` comment.
+- Do not add raw colors for semantic roles, one-off radii that duplicate the radius ladder, or ungoverned z-index values. Literal geometry is acceptable only when it describes a local measured constraint rather than a reusable design role.
 
-## 6. How these rules are checked
+## 5. How these rules are checked
 
 These rules are conventions enforced in review. Static correctness belongs to
 Biome, Knip, and typecheck; accessibility keeps its focused check. CSS usage and
 Story prose are not decided by repository-wide regex baselines.
 
+- `npm run astryx:surface-inventory` verifies that the generated surface inventory matches disk and fails on new raw interactive-control blockers. It does not prove the entire CSS governance contract.
 - Renderer CSS behavior is verified where it renders: Storybook, the app, or an
   e2e assertion on the real surface.
 - Remove selectors with the source or surface that owned them instead of
   maintaining an allowlist of strings that may be generated at runtime.
 
-## 7. Change order
+## 6. Change order
 
 When changing renderer CSS:
 
-1. Move real rule blocks out of `styles.css` into surface files.
+1. Keep `styles.css` as an import entry and place rules in the owning surface file.
 2. Keep generic component chrome in Astryx and product composition in `@maka/ui` or the matching renderer surface.
 3. Remove dead selectors.
 4. Remove remaining `!important` only after primitive and layer ownership is stable.
 
-## 8. Governing principles
+## 7. Governing principles
 
+- Keep the CI guardrails credible before using their green result as evidence for structural work.
 - Delete dead CSS before aesthetic refactoring.
 - Resolve shared `Button`, `Textarea`, and `EmptyState` overrides at the component API seam instead of accumulating renderer specificity.
 - Every change to cascade order requires the narrowest relevant regression check on the rendered surface.

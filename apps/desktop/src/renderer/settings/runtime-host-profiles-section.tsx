@@ -459,7 +459,6 @@ export function RuntimeHostProfilesSection(props: {
                 <>
                   <Button
                     variant="secondary"
-                    size="sm"
                     label={copy.enableRemoteAccess}
                     isLoading={localAccessEnabling}
                     isDisabled={
@@ -495,7 +494,6 @@ export function RuntimeHostProfilesSection(props: {
           end={(
             <Button
               variant="secondary"
-              size="sm"
               label={copy.managePeerMesh}
               isDisabled={switching}
               onClick={() => setPeerMeshTarget({
@@ -514,7 +512,6 @@ export function RuntimeHostProfilesSection(props: {
           <HStack gap={2} align="center">
             <Button
               variant="secondary"
-              size="sm"
               label={collaborationCopy.joinAction}
               isDisabled={switching}
               onClick={() => setShowJoinSharedSession(true)}
