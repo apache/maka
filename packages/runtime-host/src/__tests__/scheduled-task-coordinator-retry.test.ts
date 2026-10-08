@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { CreateScheduledTaskInput } from '@maka/core/scheduled-task';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { ScheduledTaskMutateInput } from '../protocol/index.js';
@@ -31,17 +32,37 @@ import {
   type HostScheduledTaskCoordinatorInput,
 } from '../server/scheduled-task-coordinator.js';
 
+const PROVIDER_UNAVAILABLE = {
+  ok: false,
+  error: {
+    code: 'operation_conflict',
+    message: 'ScheduledTask native delivery is waiting for a Desktop provider',
+  },
+} as const;
+const EXPIRED_BEFORE_DELIVERY = '定时任务已过期，通知没有送达。';
+const CORRUPT_TASK_ID = 'corrupt-scheduled-task-row';
+
 async function schedulerFixture() {
   const base = await mkdtemp(join(tmpdir(), 'maka-scheduled-task-retry-'));
-  const owner = await tryAcquireInteractiveRootOwner(
-    await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' }),
-  );
+  const root = await resolveStorageRoot({ path: join(base, 'root'), kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(root);
   assert.ok(owner);
   const store = await openInteractiveScheduledTaskStoreForWrite(owner.lease);
   let now = 1_000;
   let providerAvailable = false;
+  let afterProviderCheck: (() => void) | undefined;
+  let drainAllowed = false;
+  let drainRequests = 0;
   let timer: { callback: () => void; delayMs: number } | undefined;
   const deliveries: Record<string, unknown>[] = [];
+  const writeDatabase = (sql: string, taskId: string) => {
+    const lease = acquireOperationalStateDatabase(root.canonicalPath);
+    try {
+      lease.transaction('write', () => lease.database.prepare(sql).run(taskId));
+    } finally {
+      lease.close();
+    }
+  };
   const input: HostScheduledTaskCoordinatorInput = {
     store,
     sessions: null as never,
@@ -53,7 +74,12 @@ async function schedulerFixture() {
       },
     } as never,
     nativeEffects: {
-      hasWorkspaceService: () => providerAvailable,
+      hasWorkspaceService: () => {
+        const hook = afterProviderCheck;
+        afterProviderCheck = undefined;
+        hook?.();
+        return providerAvailable;
+      },
       callWorkspaceService: async (request) => {
         deliveries.push(request.input);
         return {};
@@ -62,7 +88,11 @@ async function schedulerFixture() {
     createSession: async () => assert.fail('Notification must not create a Session'),
     changes: { publish: () => {} },
     acquireResidency: () => ({ release: () => {} }),
-    requestDrain: () => assert.fail('Scheduler must not drain'),
+    requestDrain: () => {
+      drainRequests += 1;
+      if (!drainAllowed) assert.fail('Scheduler must not drain');
+      coordinator.beginDrain();
+    },
     now: () => now,
     setTimeout: (callback, delayMs) => {
       timer = { callback, delayMs };
@@ -86,6 +116,21 @@ async function schedulerFixture() {
     connectProvider: () => {
       providerAvailable = true;
     },
+    allowDrain: () => {
+      drainAllowed = true;
+    },
+    drainRequests: () => drainRequests,
+    /** The waiting claim still persists, but catalog reads fail after the next provider check. */
+    corruptCatalogAfterProviderCheck: () => {
+      afterProviderCheck = () =>
+        writeDatabase(
+          `INSERT INTO workflow_scheduled_tasks(task_id, created_at, updated_at, record_json)
+           VALUES (?, 0, 0, '{}')`,
+          CORRUPT_TASK_ID,
+        );
+    },
+    repairCatalog: () =>
+      writeDatabase('DELETE FROM workflow_scheduled_tasks WHERE task_id = ?', CORRUPT_TASK_ID),
     timerDelay: () => timer?.delayMs,
     async create(patch: Partial<CreateScheduledTaskInput> = {}) {
       const outcome = await mutate({
@@ -167,13 +212,7 @@ for (const triggerAt of [1_000, 3_601_000]) {
       assert.equal(fixture.timerDelay(), 3_600_000);
       fixture.setNow(triggerAt);
       const outcome = await fixture.mutate({ kind: 'trigger_now', taskId: task.id });
-      assert.deepEqual(outcome, {
-        ok: false,
-        error: {
-          code: 'operation_conflict',
-          message: 'ScheduledTask native delivery is waiting for a Desktop provider',
-        },
-      });
+      assert.deepEqual(outcome, PROVIDER_UNAVAILABLE);
       assert.equal(
         (await fixture.store.listPendingFires())[0]?.nativeState,
         'waiting_for_provider',
@@ -268,18 +307,118 @@ test('a waiting fire does not delay another task with an earlier deadline', asyn
   }
 });
 
-test('a waiting task still expires at its earlier expiry deadline without a zero-delay loop', async () => {
+test('trigger now reports the waiting provider even when its retry schedule cannot be read', async () => {
+  const fixture = await schedulerFixture();
+  try {
+    const task = await fixture.create({ schedule: { kind: 'once', runAt: 3_601_000 } });
+    await fixture.start();
+    fixture.allowDrain();
+    fixture.corruptCatalogAfterProviderCheck();
+    const outcome = await fixture.mutate({ kind: 'trigger_now', taskId: task.id });
+    assert.deepEqual(outcome, PROVIDER_UNAVAILABLE);
+    // The Store failure drains this Host. Recovery in the next one retries the
+    // durable claim, so the reminder is neither lost nor delivered twice.
+    assert.equal(fixture.drainRequests(), 1);
+    fixture.repairCatalog();
+    assert.equal((await fixture.store.listPendingFires())[0]?.nativeState, 'waiting_for_provider');
+    await fixture.restart();
+    assert.equal(fixture.timerDelay(), 5_000);
+    fixture.connectProvider();
+    await fixture.tick(6_000);
+    assert.deepEqual(fixture.deliveries, [{ taskId: task.id, title: 'Reminder' }]);
+    assert.equal((await fixture.store.get(task.id))?.fireCount, 1);
+    assert.equal(fixture.drainRequests(), 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+for (const schedule of [
+  { kind: 'once', runAt: 11_000 },
+  { kind: 'interval', everySeconds: 10, startAt: 11_000 },
+] as const) {
+  test(`${schedule.kind} notification still waiting at expiry is blocked, not delivered late`, async () => {
+    const fixture = await schedulerFixture();
+    try {
+      const task = await fixture.create({ schedule, expiresAt: 12_000 });
+      await fixture.start();
+      await fixture.tick(11_000);
+      assert.equal(fixture.timerDelay(), 1_000);
+      await fixture.tick(12_000);
+      const blocked = await fixture.store.get(task.id);
+      // Settling consumes the fire: a one-shot task completes, a recurring one
+      // stays expired. Either way the poll stops and nothing is delivered.
+      assert.equal(blocked?.status, schedule.kind === 'once' ? 'completed' : 'expired');
+      assert.equal(blocked?.nextFireAt, null);
+      assert.equal(blocked?.fireCount, 1);
+      assert.deepEqual(
+        blocked?.runs.map(({ at, outcome, message }) => ({ at, outcome, message })),
+        [{ at: 12_000, outcome: 'blocked', message: EXPIRED_BEFORE_DELIVERY }],
+      );
+      assert.deepEqual(await fixture.store.listPendingFires(), []);
+      assert.equal(fixture.timerDelay(), undefined);
+      fixture.connectProvider();
+      await fixture.restart();
+      assert.deepEqual(fixture.deliveries, []);
+      assert.equal(fixture.timerDelay(), undefined);
+    } finally {
+      await fixture.close();
+    }
+  });
+}
+
+test('recovery blocks a waiting notification whose task expired while the Host was stopped', async () => {
   const fixture = await schedulerFixture();
   try {
     const task = await fixture.create({ expiresAt: 12_000 });
     await fixture.start();
     await fixture.tick(11_000);
-    assert.equal(fixture.timerDelay(), 1_000);
-    await fixture.tick(12_000);
-    assert.equal((await fixture.store.get(task.id))?.status, 'expired');
-    assert.equal((await fixture.store.get(task.id))?.nextFireAt, null);
     assert.equal((await fixture.store.listPendingFires())[0]?.nativeState, 'waiting_for_provider');
+    fixture.setNow(60_000);
+    fixture.connectProvider();
+    await fixture.restart();
+    assert.deepEqual(fixture.deliveries, []);
+    assert.deepEqual(
+      (await fixture.store.get(task.id))?.runs.map(({ at, outcome }) => ({ at, outcome })),
+      [{ at: 60_000, outcome: 'blocked' }],
+    );
+    assert.deepEqual(await fixture.store.listPendingFires(), []);
+    assert.equal(fixture.timerDelay(), undefined);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a recurring notification delivered late resumes at its next slot without catching up', async () => {
+  const fixture = await schedulerFixture();
+  try {
+    const task = await fixture.create({
+      schedule: { kind: 'interval', everySeconds: 10, startAt: 11_000 },
+    });
+    await fixture.start();
+    await fixture.tick(11_000);
+    await fixture.tick(16_000);
+    // The 21_000 slot passes while the 11_000 fire still waits; it adds no claim.
+    await fixture.tick(21_000);
+    const waiting = await fixture.store.listPendingFires();
+    assert.deepEqual(
+      waiting.map((claim) => [claim.scheduledFor, claim.nativeState]),
+      [[11_000, 'waiting_for_provider']],
+    );
     assert.equal(fixture.timerDelay(), 5_000);
+    fixture.connectProvider();
+    await fixture.tick(26_000);
+    assert.equal(fixture.deliveries.length, 1);
+    const delivered = await fixture.store.get(task.id);
+    assert.equal(delivered?.status, 'active');
+    assert.equal(delivered?.fireCount, 1);
+    assert.equal(delivered?.lastFireAt, 26_000);
+    assert.equal(delivered?.nextFireAt, 31_000);
+    assert.deepEqual(await fixture.store.listPendingFires(), []);
+    await fixture.tick(31_000);
+    assert.equal(fixture.deliveries.length, 2);
+    assert.equal((await fixture.store.get(task.id))?.nextFireAt, 41_000);
+    assert.equal(fixture.timerDelay(), 10_000);
   } finally {
     await fixture.close();
   }
