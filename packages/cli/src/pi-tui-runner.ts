@@ -1338,7 +1338,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   // A session switch re-keys the driver only partway through its work: the
   // driver stops user commands and opens the target Session's channel before
-  // adopting the new id, and Alt+Up stays live through that whole window. A
+  // adopting the new id, and Shift+← stays live through that whole window. A
   // retraction asked for there starts after the switch's `settleRetractions`
   // drain yet still addresses the old Session — the Host removes the queued
   // entries while the driver re-keys, and the switched-session fence then
@@ -1599,7 +1599,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // switch's own settle drain only covers retractions asked for before it,
     // and past that drain a retraction would still address the old Session
     // while the driver is busy re-keying (#5265 review). Swallowing the
-    // keypress loses nothing: the entries stay queued and Alt+Up works once
+    // keypress loses nothing: the entries stay queued and Shift+← works once
     // the switch lands.
     if (sessionSwitchesInFlight > 0) return;
     const retractionTask = (async () => {
@@ -2141,7 +2141,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
   // The whole switch — its settle drain, the driver's asynchronous re-key,
-  // and the adoption — runs inside the switch window so Alt+Up cannot send a
+  // and the adoption — runs inside the switch window so Shift+← cannot send a
   // retraction for the session being left (#5265 review).
   const switchSession = (sessionId: string, relocateCwd?: string): Promise<void> =>
     holdSwitchWindow(() => runSessionSwitch(sessionId, relocateCwd));
@@ -2207,7 +2207,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
   // Same window as the idle switch: the mid-turn detach also re-keys the
-  // driver through asynchronous work, so Alt+Up waits it out (#5265 review).
+  // driver through asynchronous work, so Shift+← waits it out (#5265 review).
   const switchAwayMidTurn = (sessionId: string): Promise<void> =>
     holdSwitchWindow(() => runMidTurnSwitch(sessionId));
 
@@ -2333,6 +2333,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const openSideConversation = async (prompt: string): Promise<void> => {
+    // One detach at a time (#5265 review): the running Turn can end while a
+    // mid-turn detach is still inside its retraction drain, making this
+    // command's idle branch reachable mid-drain — the open's re-key must not
+    // race the in-flight switch's, the same concurrent-re-key class
+    // `/session`'s guard closes.
+    if (detaching) return;
     if (sideConversation) {
       state.entries.push({
         kind: 'notice',
@@ -2471,7 +2477,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
   // Same window as the open: closing re-keys the driver back onto the parent
-  // Session through its own asynchronous switch, so Alt+Up waits it out
+  // Session through its own asynchronous switch, so Shift+← waits it out
   // (#5265 review).
   const closeSideConversation = (): Promise<void> => holdSwitchWindow(runCloseSideConversation);
   const interruptAndCloseSideConversation = (): void => {
@@ -3857,6 +3863,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const newSession = async (): Promise<boolean> => {
+    // `/new` must stay reachable while a Turn runs (#3210 review), so the busy
+    // lock never gates it — the end of the Turn does not either. A mid-turn
+    // detach's retraction-drain window leaves `detaching` as the only guard:
+    // startNewSession's re-key must not race the in-flight switch's (#5265
+    // review).
+    if (detaching) return false;
     try {
       await input.driver.startNewSession();
     } catch {

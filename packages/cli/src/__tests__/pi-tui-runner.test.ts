@@ -8166,11 +8166,11 @@ Slug openai-work<cursor>
       { text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-0' },
     ]);
 
-    // Alt+Up takes the message back. The Host's queue.retract returns the
+    // Shift+Left takes the message back. The Host's queue.retract returns the
     // full MessageContent, so the quotes ride the retraction — and they must
     // land back in the staging instead of vanishing with the queue row
     // (#5109 review, third round).
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
 
@@ -8226,7 +8226,7 @@ Slug openai-work<cursor>
     assert.equal(driver.submittedQuotes[1], undefined);
     await waitFor(() => driver.queuedRows.length === 2);
 
-    terminal.input('\x1b[1;3A'); // Alt+Up retracts both.
+    terminal.input('\x1b[1;2D'); // Shift+Left retracts both.
     await waitFor(() => driver.retractCalls === 1);
     // The quotes survive a multi-message retraction; the texts are both back.
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
@@ -8272,7 +8272,7 @@ Slug openai-work<cursor>
     terminal.input('\r');
     await waitFor(() => driver.submittedQuotes.length === 1);
 
-    // Park a second enqueue inside the driver, then Alt+Up: the runner must
+    // Park a second enqueue inside the driver, then Shift+Left: the runner must
     // wait for that enqueue, notice the session moved underneath it, and drop
     // the retraction *before* calling retractQueued — otherwise the Host call
     // retracts the switched-to session's queue and the mismatch fence then
@@ -8280,7 +8280,7 @@ Slug openai-work<cursor>
     driver.enqueueGate = deferred<void>();
     terminal.input('second queued');
     terminal.input('\r');
-    terminal.input('\x1b[1;3A'); // Alt+Up: waits on the parked enqueue
+    terminal.input('\x1b[1;2D'); // Shift+Left: waits on the parked enqueue
     driver.switchSession('session-other');
     driver.enqueueGate.resolve();
     await waitFor(() => driver.submittedQuotes.length === 2);
@@ -8375,12 +8375,12 @@ Slug openai-work<cursor>
     terminal.input('\r');
     await waitFor(() => driver.submittedQuotes.length === 1);
 
-    // The Alt+Up retraction is held on the Host call; a mid-turn `/session`
+    // The Shift+Left retraction is held on the Host call; a mid-turn `/session`
     // arriving while it is in flight must wait for it — the retracted text
     // and quotes land in the session they were asked for before the driver
     // re-keys (#5109 review).
     driver.retractGate = deferred<void>();
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     terminal.input('/session session-other');
     terminal.input('\r');
@@ -8446,7 +8446,7 @@ Slug openai-work<cursor>
     // `detaching`, so the second must not pass the same guard and re-key the
     // driver concurrently with the first (#5265 review).
     driver.retractGate = deferred<void>();
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     terminal.input('/session session-a');
     terminal.input('\r');
@@ -8506,7 +8506,7 @@ Slug openai-work<cursor>
     // still wait for the in-flight detach instead of re-keying the driver
     // concurrently (#5265 review).
     driver.retractGate = deferred<void>();
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     terminal.input('/session session-a');
     terminal.input('\r');
@@ -8524,6 +8524,134 @@ Slug openai-work<cursor>
       1,
       'the idle switch must be refused while the detach still holds the driver: ' +
         driver.eventLog.join(','),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('refuses an idle /side while a mid-turn detach is still draining its retraction', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingSideConversationDriver([
+      { turnId: 'turn-1', label: 'first question' },
+    ]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // The mid-turn detach parks inside the retraction drain; the turn ends
+    // while it waits, so an idle `/side` is no longer busy-gated. Its re-key
+    // must be refused instead of racing the in-flight detach's own re-key
+    // (#5265 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b[1;2D'); // Shift+Left
+    await waitFor(() => driver.retractCalls === 1);
+    terminal.input('/session session-a');
+    terminal.input('\r');
+    await delay(50); // the detach is parked inside the retraction drain
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('/side');
+    terminal.input('\r');
+    await delay(50);
+    driver.retractGate.resolve();
+    await delay(50);
+    assert.ok(
+      !driver.eventLog.some((entry) => entry.startsWith('open-start:')),
+      'the idle side open must be refused while the detach still holds the driver: ' +
+        driver.eventLog.join(','),
+    );
+    const switchStarts = driver.eventLog.filter((entry) => entry.startsWith('switch-start:'));
+    assert.equal(
+      switchStarts.length,
+      1,
+      'the detach must complete exactly once: ' + driver.eventLog.join(','),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('refuses /new while a mid-turn detach is still draining its retraction', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('queued resend');
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+
+    // `/new` must stay reachable while a Turn runs (#3210 review), so the end
+    // of the Turn does not gate it either: while the mid-turn detach is still
+    // parked inside the retraction drain, startNewSession's re-key must be
+    // refused instead of racing the detach's own re-key (#5265 review).
+    driver.retractGate = deferred<void>();
+    terminal.input('\x1b[1;2D'); // Shift+Left
+    await waitFor(() => driver.retractCalls === 1);
+    terminal.input('/session session-a');
+    terminal.input('\r');
+    await delay(50); // the detach is parked inside the retraction drain
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('/new');
+    terminal.input('\r');
+    await delay(50);
+    driver.retractGate.resolve();
+    await delay(50);
+    assert.equal(
+      driver.startNewSessionCalls,
+      0,
+      '/new must be refused while the detach still holds the driver: ' + driver.eventLog.join(','),
+    );
+    const switchStarts = driver.eventLog.filter((entry) => entry.startsWith('switch-start:'));
+    assert.equal(
+      switchStarts.length,
+      1,
+      'the detach must complete exactly once: ' + driver.eventLog.join(','),
     );
 
     exitMaka(terminal);
@@ -8575,12 +8703,12 @@ Slug openai-work<cursor>
     terminal.input('\r');
     await waitFor(() => terminal.progressStates.at(-1) === true);
 
-    // Alt+Up during that wait: the root key handler still retracts, and the
+    // Shift+Left during that wait: the root key handler still retracts, and the
     // retraction must land before the parked switch re-keys the driver — the
     // switched-session fence would otherwise discard what the Host already
     // removed from the queue (#5265 review).
     driver.retractGate = deferred<void>();
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
 
     heldLease.release();
@@ -8648,7 +8776,7 @@ Slug openai-work<cursor>
     // into the session we landed on, where the next submit could carry the
     // abandoned context (#5109 review).
     driver.retractGate = deferred<void>();
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     driver.switchSession('session-other');
     driver.retractGate.resolve();
@@ -8672,7 +8800,7 @@ Slug openai-work<cursor>
     ]);
   });
 
-  test('blocks Alt+Up for the entire in-progress switch window, not just its drain', async () => {
+  test('blocks Shift+Left for the entire in-progress switch window, not just its drain', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingQuotesDriver([{ turnId: 'turn-1', label: 'first question' }]);
     const run = runMakaPiTui({
@@ -8704,7 +8832,7 @@ Slug openai-work<cursor>
 
     // Park the idle `/session` INSIDE the driver's switch, before it re-keys:
     // the real driver spends this window stopping user commands and opening
-    // the target Session channel, and Alt+Up stays live throughout (#5265
+    // the target Session channel, and Shift+Left stays live throughout (#5265
     // review).
     driver.switchGate = deferred<void>();
     driver.retractGate = deferred<void>();
@@ -8712,10 +8840,10 @@ Slug openai-work<cursor>
     terminal.input('\r');
     await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('switch-start:')));
 
-    // Alt+Up in that window must not send a retraction for the old Session:
+    // Shift+Left in that window must not send a retraction for the old Session:
     // the Host would remove the queued entries while the driver re-keys, and
     // the switched-session fence would then discard what the Host removed.
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await delay(50);
     assert.equal(
       driver.retractCalls,
@@ -8744,7 +8872,7 @@ Slug openai-work<cursor>
     ]);
   });
 
-  test('blocks Alt+Up while a side conversation is still opening', async () => {
+  test('blocks Shift+Left while a side conversation is still opening', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingSideConversationDriver([
       { turnId: 'turn-1', label: 'first question' },
@@ -8778,18 +8906,18 @@ Slug openai-work<cursor>
 
     // Park `/side` inside the driver's open, before it re-keys onto the side
     // Session: the real driver spends this window forking the parent and
-    // switching onto the fork, and Alt+Up stays live throughout (#5265
+    // switching onto the fork, and Shift+Left stays live throughout (#5265
     // review).
     driver.openGate = deferred<void>();
     terminal.input('/side');
     terminal.input('\r');
     await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('open-start:')));
 
-    // Alt+Up in that window must not send a retraction for the parent
+    // Shift+Left in that window must not send a retraction for the parent
     // Session: the Host would remove its queued entries while the driver
     // re-keys, and the side-session fence would then discard what the Host
     // removed.
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await delay(50);
     assert.equal(
       driver.retractCalls,
@@ -8816,7 +8944,7 @@ Slug openai-work<cursor>
     ]);
   });
 
-  test('blocks Alt+Up while a side conversation is still closing', async () => {
+  test('blocks Shift+Left while a side conversation is still closing', async () => {
     const terminal = new FakeTerminal();
     const driver = new RetractingSideConversationDriver([
       { turnId: 'turn-1', label: 'first question' },
@@ -8858,10 +8986,10 @@ Slug openai-work<cursor>
     terminal.input('\x03');
     await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('close-start:')));
 
-    // Alt+Up in that window would retract the parent's queued entry under the
+    // Shift+Left in that window would retract the parent's queued entry under the
     // side Session's identity; the close's fence would then discard the
     // returned text and quotes while the entries are gone from the Host.
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await delay(50);
     assert.equal(
       driver.retractCalls,
@@ -8921,13 +9049,13 @@ Slug openai-work<cursor>
       driver.turnGate.resolve();
       await waitFor(() => terminal.progressStates.at(-1) === false);
 
-      // The Alt+Up retraction is held on the Host call when `/side` arrives:
+      // The Shift+Left retraction is held on the Host call when `/side` arrives:
       // the open must drain it inside its switch window. The Host removes the
       // parent's queued entries as the retraction resolves, so a response
       // landing after the re-key onto the side Session would be discarded by
       // the side-session fence (#5265 review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
       terminal.input('/side');
       terminal.input('\r');
@@ -9010,11 +9138,11 @@ Slug openai-work<cursor>
       await waitFor(() => driver.submittedQuotes.length === 1);
 
       // Same reachable order as the idle open, with the Turn still running:
-      // Alt+Up parks on the Host call and the mid-turn `/side` detaches behind
+      // Shift+Left parks on the Host call and the mid-turn `/side` detaches behind
       // it. The detach re-keys onto the side Session, so the open must drain
       // the retraction first or its response is fenced away (#5265 review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
       terminal.input('/side');
       terminal.input('\r');
@@ -9093,12 +9221,12 @@ Slug openai-work<cursor>
       driver.turnGate.resolve();
       await waitFor(() => terminal.progressStates.at(-1) === false);
 
-      // The Alt+Up retraction is held on the Host call when the close arrives:
+      // The Shift+Left retraction is held on the Host call when the close arrives:
       // the close must drain it before re-keying onto the parent, or the
       // close's session fence discards the response for entries the Host
       // already removed (#5265 review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
       terminal.input('\x03');
       await Promise.race([
@@ -9178,13 +9306,13 @@ Slug openai-work<cursor>
       driver.turnGate.resolve();
       await waitFor(() => terminal.progressStates.at(-1) === false);
 
-      // The Alt+Up retraction is held on the Host call when a second rewind is
+      // The Shift+Left retraction is held on the Host call when a second rewind is
       // selected: each rewind branches onto a fresh Session, so the pending
       // retraction crosses a re-key and the branch-switch fence would discard
       // what the Host already removed from the first branch's queue (#5265
       // review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
 
       terminal.input('/rewind');
@@ -9261,7 +9389,7 @@ Slug openai-work<cursor>
       // draft through the side round trip instead of dying on the switch's
       // staging clear (#5265 review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
       terminal.input('/side');
       terminal.input('\r');
@@ -9329,7 +9457,7 @@ Slug openai-work<cursor>
       // across the switch — so they must survive, keyed to wherever the text
       // now lives (#5265 review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
       terminal.input('/session session-other');
       terminal.input('\r');
@@ -9395,7 +9523,7 @@ Slug openai-work<cursor>
 
       // The retraction restores the queued text and its quotes into the
       // draft-following lane (#5265 review).
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
       await waitFor(
         () => editorInputText(terminal)?.includes('queued resend') === true,
@@ -9474,7 +9602,7 @@ Slug openai-work<cursor>
       await waitFor(() => terminal.progressStates.at(-1) === false);
 
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
 
       terminal.input('/rewind');
@@ -9538,7 +9666,7 @@ Slug openai-work<cursor>
       // recovered text — side editor, parent editor, and Host queue all end up
       // empty with no notice (#5265 review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.retractCalls === 1);
       terminal.input('\x1f'); // Ctrl+/ — toggle to the parent
       await Promise.race([
@@ -9650,7 +9778,7 @@ Slug openai-work<cursor>
       driver.quoteOnlyRetraction = [
         { text: 'side quote', label: 'earlier turn', sourceTurnId: 'turn-0' },
       ];
-      terminal.input('\x1b[1;3A'); // Alt+Up
+      terminal.input('\x1b[1;2D'); // Shift+Left
       await waitFor(() => driver.eventLog.some((entry) => entry.startsWith('retract-done:')));
       assert.equal(editorInputText(terminal) ?? '', '', 'a quote-only retraction restores no text');
 
@@ -9707,7 +9835,7 @@ Slug openai-work<cursor>
       // typing from the wait window, and the kept-open notice must not
       // attribute it to a retraction (#5265 review).
       driver.retractGate = deferred<void>();
-      terminal.input('\x1b[1;3A'); // Alt+Up — queue is empty, call parks on the gate
+      terminal.input('\x1b[1;2D'); // Shift+Left — queue is empty, call parks on the gate
       await waitFor(() => driver.retractCalls === 1);
       terminal.input('\x03');
       terminal.input('my own note');
