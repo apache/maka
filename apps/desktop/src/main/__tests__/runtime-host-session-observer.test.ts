@@ -721,6 +721,7 @@ test('fences earlier transcript failures across same-source replica recovery', a
     },
     emitSessionsChanged() {},
     transcriptHistoryBytes: 1,
+    transcriptInitialHistoryBytes: 1,
   });
   const observations = new RuntimeHostSessionObservationRegistry();
   const batches: DesktopTranscriptBatch[] = [];
@@ -1340,6 +1341,107 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
   await observer.close();
 });
 
+test('opens a small recent range and reads larger earlier ranges without losing history', async (t) => {
+  const rows = Array.from({ length: 24 }, (_, index) =>
+    turnRow((index + 1) * 10, `turn-${index}`, 'x'.repeat(64 * 1024)),
+  );
+  const host = historyHost(rows, { pageRows: 2 });
+  const requests: number[] = [];
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot(), events,
+        transcriptBootstrap: host.bootstrap,
+        loadTranscriptPage: async (request) => {
+          requests.push(request.maxBytes);
+          return host.loadTranscriptPage(request);
+        },
+        decodeTranscriptPage: host.decodeTranscriptPage,
+        async close() { events.end(); },
+      }),
+    },
+    emitSessionsChanged() {},
+    transcriptInitialHistoryBytes: 128 * 1024,
+    transcriptHistoryBytes: 512 * 1024,
+  });
+  t.after(() => observer.close());
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-bounded-open';
+  await observer.openTranscript('session-1', consumerId, ackingTranscriptTarget(observer, consumerId, 26, batches), 'history');
+  const takeAnswer = () => {
+    const answer = batches.splice(0);
+    assert.equal(answer.filter((batch) => batch.ready).length, 1);
+    assert.equal(answer.at(-1)!.ready, true);
+    return {
+      rows: answer.flatMap(durableSequences).sort((left, right) => left - right),
+      hasOlder: answer.at(-1)!.hasOlder,
+      earlierThan: answer[0]!.earlierThan,
+    };
+  };
+  const initial = takeAnswer();
+  assert.deepEqual(initial.rows, [230, 240], 'opening must not replay the entire history');
+  assert.equal(initial.hasOlder, true);
+  assert.ok(requests.every((bytes) => bytes <= 128 * 1024), 'bound Host reads as well as the final answer');
+  requests.splice(0);
+
+  await observer.loadEarlierTranscript(consumerId, 26);
+  const earlier = takeAnswer();
+  assert.equal(earlier.earlierThan, initial.rows[0]);
+  assert.ok(earlier.rows.length > initial.rows.length, 'reading earlier uses its own larger budget');
+  assert.equal(earlier.hasOlder, true, 'one earlier read does not automatically fetch everything');
+  assert.ok(requests.every((bytes) => bytes <= 512 * 1024));
+  const delivered = [...earlier.rows, ...initial.rows];
+  let hasOlder: boolean | undefined = earlier.hasOlder;
+  while (hasOlder) {
+    await observer.loadEarlierTranscript(consumerId, 26);
+    const answer = takeAnswer();
+    assert.equal(answer.earlierThan, delivered[0]);
+    delivered.unshift(...answer.rows);
+    hasOlder = answer.hasOlder;
+  }
+  assert.deepEqual(delivered, rows.map((row) => row.identity), 'paging must retain every row exactly once');
+});
+
+test('finishes an oversized opening Turn with the regular page budget', async (t) => {
+  const rows = Array.from({ length: 6 }, (_, index) => turnRow(index + 1, 'oversized'));
+  const host = historyHost(rows, { pageRows: 2 });
+  const requests: number[] = [];
+  const events = new AsyncFrameQueue();
+  const observer = new RuntimeHostSessionObserver({
+    client: {
+      openSession: async () => runtimeHostSessionFixture({
+        snapshot: continuitySnapshot(), events,
+        transcriptBootstrap: host.bootstrap,
+        loadTranscriptPage: async (request) => {
+          requests.push(request.maxBytes);
+          return host.loadTranscriptPage(request);
+        },
+        decodeTranscriptPage: host.decodeTranscriptPage,
+        async close() { events.end(); },
+      }),
+    },
+    emitSessionsChanged() {},
+    transcriptInitialHistoryBytes: 1,
+    transcriptHistoryBytes: 4,
+  });
+  t.after(() => observer.close());
+  const batches: DesktopTranscriptBatch[] = [];
+  const consumerId = 'consumer-oversized-open';
+  await observer.openTranscript(
+    'session-1',
+    consumerId,
+    ackingTranscriptTarget(observer, consumerId, 26, batches),
+    'history',
+  );
+
+  assert.deepEqual(requests, [1, 4, 4]);
+  assert.deepEqual(
+    batches.flatMap(durableSequences).sort((left, right) => left - right),
+    rows.map((row) => row.identity),
+  );
+});
+
 test('delivers history in whole Turns within the budget and continues exactly on load earlier', async () => {
   const events = new AsyncFrameQueue();
   // Oldest first: a (3 rows), b (1 huge row), c (2 rows), d (1 huge row). The budget is one and a half
@@ -1371,6 +1473,7 @@ test('delivers history in whole Turns within the budget and continues exactly on
     },
     emitSessionsChanged() {},
     transcriptHistoryBytes: Math.floor(smallRowBytes * 1.5),
+    transcriptInitialHistoryBytes: Math.floor(smallRowBytes * 1.5),
   });
   const batches: DesktopTranscriptBatch[] = [];
   const consumerId = 'consumer-history';
@@ -1436,6 +1539,7 @@ test('reads earlier history past its budget down to the requested Turn in one an
     },
     emitSessionsChanged() {},
     transcriptHistoryBytes: Math.floor(smallRowBytes * 1.5),
+    transcriptInitialHistoryBytes: Math.floor(smallRowBytes * 1.5),
   });
   const batches: DesktopTranscriptBatch[] = [];
   const consumerId = 'consumer-located';
@@ -1489,6 +1593,7 @@ test('keeps the history already delivered across a same-session recovery', async
     },
     emitSessionsChanged() {},
     transcriptHistoryBytes: Math.floor(smallRowBytes * 1.5),
+    transcriptInitialHistoryBytes: Math.floor(smallRowBytes * 1.5),
   });
   const batches: DesktopTranscriptBatch[] = [];
   const consumerId = 'consumer-recovered-history';
@@ -1548,6 +1653,7 @@ test('keeps the history already delivered across a replacement of the Host conne
       },
       emitSessionsChanged() {},
       transcriptHistoryBytes: Math.floor(smallRowBytes * 1.5),
+      transcriptInitialHistoryBytes: Math.floor(smallRowBytes * 1.5),
     });
   const first = sources();
   const second = sources();
@@ -1613,6 +1719,7 @@ test('a tail transcript consumer still receives the replica snapshot', async () 
     },
     emitSessionsChanged() {},
     transcriptHistoryBytes: 1,
+    transcriptInitialHistoryBytes: 1,
   });
   const batches: DesktopTranscriptBatch[] = [];
   await observer.openTranscript('session-1', 'consumer-tail', ackingTranscriptTarget(observer, 'consumer-tail', 27, batches));

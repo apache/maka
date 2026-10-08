@@ -37,6 +37,7 @@ export function createAppShellSessionUiStateController(initialState?: AppShellSe
 export {
   createTranscriptRestoreLifecycle,
   prepareTranscriptForSend,
+  readCompleteTranscript,
   restoreSessionTranscriptRange,
 } from './controller/transcript-reading-position.js';
 export { shellSessionRowEqual } from './model/conversation-catalog-row.js';

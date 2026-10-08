@@ -25,21 +25,25 @@ type SessionExecutionProjection = Parameters<AppShellSessionUiStateController['s
 /** The visible range is distinct from the event subscription and its watermark. */
 export interface ConversationTranscriptController {
   readonly store: {
-    range(): { readonly sessionId: string; readonly hasOlder: boolean; readonly ready: boolean; readonly generation?: string };
-    snapshot(): { readonly sessionId: string; readonly messages: readonly StoredMessage[]; readonly ready: boolean };
+    range(): { readonly sessionId: string; readonly hasOlder: boolean; readonly hasNewer?: boolean; readonly ready: boolean; readonly generation?: string };
+    snapshot(): { readonly sessionId: string; readonly messages: readonly StoredMessage[]; readonly ready: boolean; readonly hasNewer?: boolean };
     subscribe(listener: () => void): () => void;
     hasDurableMessage(messageId: string): boolean;
   };
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
   loadEarlier(throughSequence?: number): Promise<void>;
+  loadNewer(): Promise<void>;
+  seek(sequence: number): Promise<void>;
+  showLatest(): Promise<void>;
+  readComplete(): Promise<readonly StoredMessage[]>;
   reload(): Promise<void>;
   observationChanged(phase: 'pending' | 'ready'): void;
   close(): Promise<void>;
 }
 
 export interface ConversationObservationServices {
-  openTranscript(sessionId: string, onError: (error: unknown) => void): ConversationTranscriptController;
+  openTranscript(sessionId: string, onError: (error: unknown) => void, initialTurnId?: string): ConversationTranscriptController;
   subscribeEvents(
     sessionId: string,
     onEvent: (event: SessionEvent) => void,

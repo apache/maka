@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createElement } from 'react';
+import { act, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
@@ -29,26 +29,27 @@ import { materializeTurns, overlayLiveTurn, type TurnTimelineItem, type TurnView
 import { createTranscriptProjection } from '../transcript-projection.js';
 import { ChatView } from '../chat-view.js';
 import { Composer } from '../composer.js';
-import { renderTranscriptMarkup } from './transcript-test-dom.js';
+import { installTranscriptDom, renderTranscriptMarkup } from './transcript-test-dom.js';
 import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { armLiveTurn, type LiveTurnProjection } from '../live-turn-projection.js';
 import { applyLiveTurnEvent } from './live-turn-zh.js';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 
-test('renders a thinking-only interruption as a divider without an empty answer bubble', () => {
+test('renders a thinking-only interruption as a divider without an empty answer bubble', async () => {
   const messages: StoredMessage[] = [
     { type: 'user', id: 'user', turnId: 'turn', ts: 1, text: 'request' },
     { type: 'assistant', id: 'partial', turnId: 'turn', ts: 2, modelId: 'mock', text: '', interrupted: true, thinking: { text: 'partial thought' } },
   ];
   const [turn] = materializeTurns(messages, 'en');
   assert.ok(turn);
-  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'en', children: createElement(TurnView, { turn }),
-  }));
-  const { document } = parseHTML(`<html><body>${markup}</body></html>`);
-  assert.equal(document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
-  assert.match(document.body.textContent, /partial thought/);
-  assert.match(document.body.textContent, /Response stream ended before completion/);
+  const dom = installTranscriptDom();
+  try {
+    await dom.render(createElement(LocaleProvider, { locale: 'en', children: createElement(TurnView, { turn }) }));
+    assert.equal(dom.document.querySelectorAll('.maka-chat-message-bubble-assistant').length, 0);
+    assert.match(dom.container.textContent, /Response stream ended before completion/);
+    await act(() => { dom.document.querySelector('.maka-processing-summary')!.dispatchEvent(new dom.window.Event('click', { bubbles: true, cancelable: true })); });
+    assert.match(dom.container.textContent, /partial thought/);
+  } finally { await dom.cleanup(); }
 });
 
 test('renders steering where it arrived in the assistant timeline', () => {

@@ -182,6 +182,7 @@ function harness(options: {
       },
       ready: async () => {}, waitForDurableMessage: async () => true,
       reload: async () => {}, loadEarlier: async () => {}, observationChanged: () => {},
+      loadNewer: async () => {}, seek: async () => {}, showLatest: async () => {}, readComplete: async () => messages,
       close: async () => {},
     };
   };

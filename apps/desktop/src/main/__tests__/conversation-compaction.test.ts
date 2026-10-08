@@ -152,6 +152,7 @@ describe('Conversation owner context compaction', () => {
       },
       ready: async () => {}, waitForDurableMessage: async () => true,
       reload: async () => {}, loadEarlier: async () => {}, observationChanged: () => {},
+      loadNewer: async () => {}, seek: async () => {}, showLatest: async () => {}, readComplete: async () => [],
       close: async () => {},
     });
     services.observation.subscribeEvents = (_sessionId, onEvent, phase) => {

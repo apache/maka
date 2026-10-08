@@ -72,8 +72,8 @@ export function useConversationController() {
        * Copy and Save's export of the published range, rendered as Markdown at
        * invocation. Callers get the export, not the published messages.
        */
-      renderPublishedConversation: (sessionName: string, locale: UiLocale) =>
-        renderConversationMarkdown(sessionName, workspace.commands.readMessages(), locale),
+      renderCompleteConversation: async (sessionId: string, sessionName: string, locale: UiLocale) =>
+        renderConversationMarkdown(sessionName, await workspace.commands.readCompleteTranscript(sessionId), locale),
     };
   });
   return { workspace, commands, readingCommands, events, interactionHydration };

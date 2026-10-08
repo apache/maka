@@ -273,9 +273,12 @@ export function ChatView(props: {
   hasEarlierHistory?: boolean;
   /** Prepends whole earlier Turns to `messages`. */
   onLoadEarlierHistory?(): void | Promise<void>;
+  hasLaterHistory?: boolean;
+  onLoadLaterHistory?(): void | Promise<void>;
+  onLoadLatestHistory?(): void | Promise<void>;
   /** Turns outside `messages`, from the Session's Turn index, oldest first. */
   transcriptTurnIndex?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>;
-  /** Loads `messages` back to the start of an indexed Turn. */
+  /** Opens a reading range containing an indexed Turn. */
   onLoadTranscriptTurn?(turn: { turnId: string; sequence: number }): void | Promise<void>;
   /** Optional identity decorations shared with a host's work navigation. */
   promptRailDecorations?: ReadonlyMap<string, Pick<PromptAnchorRailTurn, 'accentColor' | 'accentBackground' | 'highlighted'>>;
@@ -335,7 +338,8 @@ export function ChatView(props: {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
-  const drainingStepIdsKey = (props.liveTurns ?? [])
+  const visibleLiveTurns = props.hasLaterHistory ? undefined : props.liveTurns;
+  const drainingStepIdsKey = (visibleLiveTurns ?? [])
     .flatMap((turn) => turn.steps.flatMap((step) => (step.text ? [step.stepId] : [])))
     .join('\u0000');
   const drainingMessageIds = useMemo(
@@ -358,7 +362,7 @@ export function ChatView(props: {
     ),
     [visibleMessages],
   );
-  const transientMessages = (props.transientMessages ?? []).filter((message) => message.transientPlacement === 'transcript');
+  const transientMessages = (props.hasLaterHistory ? [] : props.transientMessages ?? []).filter((message) => message.transientPlacement === 'transcript');
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
@@ -367,7 +371,7 @@ export function ChatView(props: {
     sessionId: props.activeSession?.id,
     locale,
     messages: visibleMessages,
-    liveTurns: props.liveTurns,
+    liveTurns: visibleLiveTurns,
     shellRunUpdates: props.shellRunUpdates,
   });
   // Derived FROM the projected turns, not beside them: the consumer keys its
@@ -393,15 +397,15 @@ export function ChatView(props: {
   // footer on a still-running answer (review P2-B). A tool-only tail renders the
   // running tool from its timeline with no empty live bubble.
   // Execution identity comes from the Host. Buffered output can outlive it.
-  const activeContent = props.liveTurns?.find((turn) => turn.turnId === props.activeTurn?.turnId);
-  const isCompactionLive = props.activeTurn?.compacting === true;
+  const activeContent = visibleLiveTurns?.find((turn) => turn.turnId === props.activeTurn?.turnId);
+  const isCompactionLive = !props.hasLaterHistory && props.activeTurn?.compacting === true;
   // overlayLiveTurn renders one "compacting" system row for a live compaction
   // Turn that has no assistant steps — including in a session with no settled
   // chat messages yet. The empty-state decision (below) keys off
   // `hasVisibleChatContent`, which does not see that overlaid row, so it must
   // treat this as visible content or the row is hidden behind the empty hero.
   const hasLiveCompactionRow = isCompactionLive && (activeContent?.steps.length ?? 0) === 0;
-  const streamingActive = props.activeTurn !== undefined && !isCompactionLive;
+  const streamingActive = !props.hasLaterHistory && props.activeTurn !== undefined && !isCompactionLive;
   const tailTurnId = streamingActive ? props.activeTurn?.turnId : undefined;
   const runningStatus = streamingActive && !props.activeTurn?.awaitingInput;
   const hasRenderedLiveTurn = tailTurnId !== undefined && turns.some((turn) => turn.turnId === tailTurnId);
@@ -549,6 +553,38 @@ export function ChatView(props: {
     </VStack>
   ) : null;
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
+  const earlierReader = useRef({ sessionId: props.activeSession?.id, pending: false });
+  const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
+  const [earlierHistoryLoadFailed, setEarlierHistoryLoadFailed] = useState(false);
+  if (earlierReader.current.sessionId !== props.activeSession?.id) {
+    earlierReader.current = { sessionId: props.activeSession?.id, pending: false };
+  }
+  useEffect(() => {
+    setLoadingEarlierHistory(false);
+    setEarlierHistoryLoadFailed(false);
+  }, [props.activeSession?.id]);
+  const loadEarlierHistory = (): boolean => {
+    if (!props.hasEarlierHistory || !props.onLoadEarlierHistory) return false;
+    const reader = earlierReader.current;
+    if (reader.pending) return true;
+    reader.pending = true;
+    setLoadingEarlierHistory(true);
+    const settled = (failed: boolean) => {
+      if (earlierReader.current !== reader) return;
+      reader.pending = false;
+      setLoadingEarlierHistory(false);
+      setEarlierHistoryLoadFailed(failed);
+    };
+    try {
+      void Promise.resolve(props.onLoadEarlierHistory()).then(
+        () => settled(false),
+        () => settled(true),
+      );
+    } catch {
+      settled(true);
+    }
+    return true;
+  };
   const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
     scrollRef,
     measureStartMargin,
@@ -559,6 +595,14 @@ export function ChatView(props: {
     restoreTarget: props.restoreTargetTurn,
     viewportNavigation: props.viewportNavigation,
     onReadingAnchorChange: props.onReadingAnchorChange,
+    onReadEarlier: loadEarlierHistory,
+    hasLaterHistory: props.hasLaterHistory,
+    onReadLater: () => {
+      if (!props.hasLaterHistory || !props.onLoadLaterHistory) return false;
+      void Promise.resolve(props.onLoadLaterHistory()).catch(() => undefined);
+      return true;
+    },
+    onReadLatest: () => { void Promise.resolve(props.onLoadLatestHistory?.()).catch(() => undefined); },
     behavior: props.scrollBehavior,
   });
   const onLoadTranscriptTurnRef = useRef(props.onLoadTranscriptTurn);
@@ -587,16 +631,6 @@ export function ChatView(props: {
       keepMountedIndexes.add(index);
     }
   }
-  const [loadingEarlierHistory, setLoadingEarlierHistory] = useState(false);
-  const loadEarlierHistory = (): void => {
-    const pending = props.onLoadEarlierHistory?.();
-    if (!pending) return;
-    setLoadingEarlierHistory(true);
-    void pending.then(
-      () => setLoadingEarlierHistory(false),
-      () => setLoadingEarlierHistory(false),
-    );
-  };
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
     Boolean(props.onQuoteSelection || props.onAskAboutSelection),
@@ -894,7 +928,7 @@ export function ChatView(props: {
         type="button"
         variant="ghost"
         size="sm"
-        label={copy.loadEarlierHistory}
+        label={earlierHistoryLoadFailed ? copy.retryLoad : copy.loadEarlierHistory}
         isDisabled={loadingEarlierHistory}
         onClick={loadEarlierHistory}
       />
@@ -1003,7 +1037,7 @@ export function ChatView(props: {
                           failedExecutionStateLabel={
                             turnPresentation?.failedExecutionStateLabels[turn.turnId]
                           }
-                          safeResumeAction={turnPresentation?.resumeCandidateTurnId === turn.turnId
+                          safeResumeAction={!props.hasLaterHistory && turnPresentation?.resumeCandidateTurnId === turn.turnId
                             ? props.safeResumeAction
                             : undefined}
                           lineageBadges={props.onLineageBadgeClick ? turnPresentation?.lineageBadgesByTurn[turn.turnId] : undefined}

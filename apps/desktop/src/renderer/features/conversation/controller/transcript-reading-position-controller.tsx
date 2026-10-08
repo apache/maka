@@ -44,6 +44,8 @@ export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): boolean;
   captureAnchor(turnId?: string): void;
   loadEarlier(throughSequence?: number): Promise<void>;
+  loadNewer(): Promise<void>;
+  showLatest(): Promise<void>;
 }
 
 /** The conversation owns restoration lifetime; the shell supplies explicit ports. */
@@ -81,7 +83,10 @@ export function TranscriptReadingPositionController(props: {
     prepareSend(sessionId) {
       return prepareTranscriptForSend({
         sessionId, currentSessionId: props.currentSessionId, cancel,
-        followLatest: props.sessionUi.transcriptViewportNavigation.followLatest,
+        followLatest: (id) => {
+          void props.rangeController.current?.showLatest?.().catch((error) => props.onRestoreError(error, id));
+          props.sessionUi.transcriptViewportNavigation.followLatest(id);
+        },
       });
     },
     captureAnchor(turnId) {
@@ -94,7 +99,15 @@ export function TranscriptReadingPositionController(props: {
       const controller = props.rangeController.current;
       const { sessionId } = props;
       if (!controller || !sessionId || !isCurrent(sessionId, controller)) return;
-      await controller.loadEarlier(throughSequence);
+      if (throughSequence !== undefined && controller.seek) await controller.seek(throughSequence);
+      else await controller.loadEarlier(throughSequence);
+    },
+    async loadNewer() { await props.rangeController.current?.loadNewer?.(); },
+    async showLatest() {
+      const { sessionId } = props;
+      if (!sessionId || props.currentSessionId.current !== sessionId) return;
+      cancel(sessionId, true);
+      await props.rangeController.current?.showLatest?.();
     },
   }));
 
@@ -105,7 +118,7 @@ export function TranscriptReadingPositionController(props: {
   // New Turns land in the resident tail, so the index is read once per Session
   // and only once some history lies outside the resident range.
   const range = currentTranscriptRange(props.rangeController.current, props.sessionId);
-  const hasOlder = range?.hasOlder ?? false;
+  const hasOlder = Boolean(range?.hasOlder || range?.hasNewer);
   // A reopen reads the index again, so a lookup that failed does not stay failed.
   const generation = range?.ready ? range.generation : undefined;
   useEffect(() => {

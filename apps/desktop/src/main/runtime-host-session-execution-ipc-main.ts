@@ -78,6 +78,7 @@ import {
 } from "./runtime-host-session-observer.js";
 import type {
   DesktopTranscriptOpenMode,
+  DesktopTranscriptPosition,
   DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
@@ -235,6 +236,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
     RuntimeHostSessionObservationRegistry,
     | 'acknowledgeTranscriptTail'
     | 'loadEarlierTranscript'
+    | 'loadNewerTranscript'
     | 'observe'
     | 'trackRenderer'
     | 'openTranscript'
@@ -268,7 +270,7 @@ export function registerRuntimeHostSessionObservationIpc(
   );
   ipcMain.handle(
     'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown, mode: unknown, resumeFrom: unknown) => {
+    async (event, sessionId: unknown, consumerId: unknown, mode: unknown, resumeFrom: unknown, position: unknown) => {
       deps.observations.trackRenderer(event.sender);
       return observationIpcResult(
         deps.observations.openTranscript(
@@ -277,6 +279,7 @@ export function registerRuntimeHostSessionObservationIpc(
           event.sender as RuntimeHostTranscriptTarget,
           normalizeTranscriptOpenMode(mode),
           optionalSequence(resumeFrom, 'Desktop transcript resume position'),
+          normalizeTranscriptPosition(position),
         ),
       );
     },
@@ -296,6 +299,9 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:transcript:read-turn',
     (_event, sessionId: unknown, turnId: unknown) =>
       deps.observations.readTranscriptTurn(requiredId(sessionId, 'Session'), requiredId(turnId, 'Turn')),
+  );
+  ipcMain.handle('sessions:transcript:load-newer', (event, consumerId: unknown) =>
+    deps.observations.loadNewerTranscript(requiredId(consumerId, 'Transcript consumer'), event.sender.id),
   );
   ipcMain.handle('sessions:transcript:acknowledge-tail', async (event, input: unknown) => {
     await deps.observations.acknowledgeTranscriptTail(
@@ -869,6 +875,20 @@ export function registerRuntimeHostSessionExecutionIpc(
 function normalizeTranscriptOpenMode(mode: unknown): DesktopTranscriptOpenMode {
   if (mode === 'tail' || mode === 'history') return mode;
   throw new Error('Invalid Desktop transcript open mode');
+}
+
+function normalizeTranscriptPosition(value: unknown): DesktopTranscriptPosition | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object') throw new Error('Invalid Desktop transcript position');
+  const position = value as Record<string, unknown>;
+  if ('turnId' in position) return { turnId: requiredId(position.turnId, 'Transcript Turn') };
+  const sequence = optionalSequence(position.sequence, 'Desktop transcript sequence');
+  const throughSequence = optionalSequence(position.throughSequence, 'Desktop transcript range end');
+  if (sequence === undefined || (throughSequence !== undefined && throughSequence < sequence) ||
+    (position.hasOlder !== undefined && typeof position.hasOlder !== 'boolean')) {
+    throw new Error('Invalid Desktop transcript range');
+  }
+  return { sequence, throughSequence, hasOlder: position.hasOlder as boolean | undefined };
 }
 
 function optionalSequence(value: unknown, label: string): number | undefined {
