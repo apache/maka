@@ -1222,6 +1222,57 @@ describe('stream graph schedule reconciliation', () => {
     }
   });
 
+  test('reports a persistently failing control read once as stuck and clears it when reads recover', async (t) => {
+    const wave = await gatedScheduleWave(1);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const flush = async () => {
+      for (let turn = 0; turn < 3; turn += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
+    const base = wave.controlReads;
+    const advanceToRead = async (target: number) => {
+      await flush();
+      while (wave.controlReads - base < target) {
+        t.mock.timers.tick(5_000);
+        await flush();
+      }
+    };
+    try {
+      wave.failControlReads(new Error('schedule read failure'));
+      await wave.commit('stuck-read', {
+        stop: [
+          { target_id: wave.workIds[0]!, reason: 'Stop although control reads keep failing.' },
+        ],
+      });
+      await advanceToRead(7);
+      assert.equal(wave.failures.length, 1, 'read retries before the threshold stay silent');
+      assert.equal(wave.failures[0]!.phase, 'schedule');
+      assert.doesNotMatch(String(wave.failures[0]!.error), /is stuck/);
+
+      await advanceToRead(8);
+      assert.equal(wave.failures.length, 2);
+      assert.equal(wave.failures[1]!.phase, 'schedule');
+      assert.match(String(wave.failures[1]!.error), /is stuck after 8 consecutive failures/);
+
+      await advanceToRead(12);
+      assert.equal(wave.failures.length, 2, 'a stuck read is reported once, not on every retry');
+      assert.equal(wave.settled, false);
+
+      wave.failControlReads(undefined);
+      await advanceToRead(13);
+      await flush();
+      assert.equal(wave.settled, true);
+      const result = await wave.reconciliation;
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.failures.length, 0, 'a recovered read clears the stuck failure');
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+    } finally {
+      t.mock.timers.reset();
+      await wave.close();
+    }
+  });
+
   test('a driver abort keeps retrying a failed stop until its parked wave settles', async () => {
     const wave = await gatedScheduleWave(1);
     let attempts = 0;
@@ -1355,6 +1406,8 @@ async function gatedScheduleWave(count: number) {
     observations: 0,
     settled: false,
     readFailure: undefined as Error | undefined,
+    persistentReadFailure: undefined as Error | undefined,
+    controlReads: 0,
     stopCalls: 0,
     // Models the runtime's retained cleanup owner after a failed exact stop.
     retainedStops: new Set<string>(),
@@ -1371,11 +1424,13 @@ async function gatedScheduleWave(count: number) {
     get(target, property) {
       if (property === 'listAgentGraphScheduleUpdates') {
         return async (graphId: string) => {
+          state.controlReads += 1;
           if (state.readFailure) {
             const error = state.readFailure;
             state.readFailure = undefined;
             throw error;
           }
+          if (state.persistentReadFailure) throw state.persistentReadFailure;
           return target.listAgentGraphScheduleUpdates(graphId);
         };
       }
@@ -1502,6 +1557,13 @@ async function gatedScheduleWave(count: number) {
     },
     failNextControlRead(error: Error) {
       state.readFailure = error;
+    },
+    /** Fail every control read until called without an error. */
+    failControlReads(error: Error | undefined) {
+      state.persistentReadFailure = error;
+    },
+    get controlReads() {
+      return state.controlReads;
     },
     reconcileAgain: () => reconcileAgentGraphSchedule(input),
     async close() {

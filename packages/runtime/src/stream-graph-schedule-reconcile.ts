@@ -62,11 +62,11 @@ const SCHEDULE_INTENT_SCHEMA_VERSION = 1 as const;
 // wake it. Retry with a capped backoff while that wave is still running.
 const CONTROL_RETRY_INITIAL_DELAY_MS = 100;
 const CONTROL_RETRY_MAX_DELAY_MS = 5_000;
-// The eighth consecutive failure lands about 11 s after the first, once the
-// backoff has reached its cap: a fault that clears during the ramp is never
-// reported as stuck, while a persistent one is surfaced instead of leaving
-// the graph parked behind a single failure record.
-const STOP_CLEANUP_STUCK_FAILURES = 8;
+// The eighth consecutive failure of a stop or a control read lands about 11 s
+// after the first, once the backoff has reached its cap: a fault that clears
+// during the ramp is never reported as stuck, while a persistent one is
+// surfaced instead of leaving the graph parked behind a single failure record.
+const CONTROL_STUCK_FAILURES = 8;
 
 export interface AgentGraphScheduleStopController {
   stopAgentGraphActivation(
@@ -486,6 +486,7 @@ async function reconcileSchedule(
       wake.notify();
     });
     let controlReadFailure: AgentGraphScheduleReconciliationFailure | undefined;
+    let controlReadFailureStreak = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = CONTROL_RETRY_INITIAL_DELAY_MS;
     try {
@@ -506,14 +507,30 @@ async function reconcileSchedule(
             failures.splice(failures.indexOf(controlReadFailure), 1);
             controlReadFailure = undefined;
           }
+          controlReadFailureStreak = 0;
           retry = controls.failures.length > 0;
         } catch (error) {
-          const repeated = controlReadFailure !== undefined;
           if (controlReadFailure) failures.splice(failures.indexOf(controlReadFailure), 1);
-          controlReadFailure = { phase: 'schedule', error };
-          // Notify once per streak of read failures, not on every retry.
-          if (repeated) failures.push(controlReadFailure);
-          else recordReconciliationFailure(input, failures, controlReadFailure);
+          controlReadFailureStreak += 1;
+          // Like a stop, a read failure notifies on its first occurrence and,
+          // once, when it has persisted long enough to be stuck.
+          controlReadFailure =
+            controlReadFailureStreak < CONTROL_STUCK_FAILURES
+              ? { phase: 'schedule', error }
+              : {
+                  phase: 'schedule',
+                  error: new Error(
+                    `Reading graph schedule controls is stuck after ${controlReadFailureStreak} consecutive failures and is still retrying`,
+                    { cause: error },
+                  ),
+                };
+          failures.push(controlReadFailure);
+          if (
+            controlReadFailureStreak === 1 ||
+            controlReadFailureStreak === CONTROL_STUCK_FAILURES
+          ) {
+            notifySupervisor(input.supervisor?.onReconciliationFailure, controlReadFailure);
+          }
           retry = true;
         }
         // A failed stop can keep its child, and so this wave, parked until a
@@ -764,7 +781,7 @@ function recordScheduleStops(
     // The stuck state travels in the message: supervisor notifications are
     // structured clones and the durable client failure keeps only the reason.
     const recorded: AgentGraphScheduleReconciliationFailure =
-      streak < STOP_CLEANUP_STUCK_FAILURES
+      streak < CONTROL_STUCK_FAILURES
         ? failure
         : {
             ...failure,
@@ -781,7 +798,7 @@ function recordScheduleStops(
     );
     if (previous >= 0) failures[previous] = recorded;
     else failures.push(recorded);
-    if (streak === 1 || streak === STOP_CLEANUP_STUCK_FAILURES) {
+    if (streak === 1 || streak === CONTROL_STUCK_FAILURES) {
       notifySupervisor(input.supervisor?.onReconciliationFailure, recorded);
     }
   }
