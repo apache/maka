@@ -23,7 +23,8 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import { AgentGraphPanel, getAgentGraphPanelCopy } from '../src/renderer/agent-graph-panel';
+import { AgentGraphPanel } from '../src/renderer/agent-graph-panel';
+import { getAgentGraphPanelCopy } from '../src/renderer/locales/agent-graph-copy';
 import { withScopedMakaBridge } from './maka-bridge';
 
 // Fidelity convention (#1433): every story names the real app path that
@@ -31,15 +32,15 @@ import { withScopedMakaBridge } from './maka-bridge';
 //
 // Real host: app-shell.tsx mounts <AgentGraphPanel> in the conversation column
 // when the active session runs in `graph` orchestration mode. The panel reads
-// its snapshot from `window.maka.graphs` itself (not props or context), so each
-// story installs a scoped bridge that serves one pinned snapshot rather than
+// its snapshot through the explicit backend port, so each story installs a
+// scoped bridge that serves one pinned snapshot rather than
 // driving a live graph. The panel renders operators as a flat list — it draws
 // no edges or hierarchy — so tree depth and cycles have no distinct rendering
 // and are not enumerated here.
 
 const ROOT_SESSION_ID = 'session-graph';
 const GRAPH_ID = 'graph-storybook';
-const LOCALE = 'zh';
+const LOCALE = 'zh-CN';
 const copy = getAgentGraphPanelCopy(LOCALE);
 
 const meta = {
@@ -141,8 +142,8 @@ function graphBridge(snap: AgentGraphClientSnapshot, fail = false) {
 // `.maka-detail-with-artifacts`). Reuse those wrapper classes so the panel
 // inherits the composer column's seam rather than an arbitrary fixed box. The
 // full AppShell grid and Composer chrome around it are not rebuilt here — that
-// seam lives in Product/Shell Official AppShell, and its geometry is pinned by
-// e2e/session-workbar.spec.ts — so this isolates the panel itself at a
+// seam lives in Product/Shell Official AppShell, where its geometry is pinned
+// by that group's own play functions — so this isolates the panel itself at a
 // composer-column width.
 function panel() {
   return (
@@ -237,6 +238,64 @@ export const BlockedOnUpstream: Story = {
   },
 };
 
+// Real path: one child task is streaming while another has settled. The graph
+// read model supplies bounded text and provider-reported throughput; the panel
+// never reads either child Session independently.
+export const OutputPreviews: Story = {
+  decorators: [
+    withScopedMakaBridge(
+      graphBridge(
+        snapshot({
+          status: 'active',
+          operators: [
+            operator({
+              operatorId: 'op-research',
+              status: 'running',
+              output: {
+                activationId: 'run-research',
+                preview: 'Comparing the three provider adapters and their retry boundaries…',
+                previewTruncated: false,
+                phase: 'streaming',
+                previewUpdatedAt: 2_000,
+                sourceEventId: 'event-research',
+                messageId: 'message-research',
+                sampleStartedAt: 1_000,
+                outputTokens: 42,
+                sampleDurationMs: 1_000,
+                tokensPerSecond: 42,
+              },
+            }),
+            operator({
+              operatorId: 'op-review',
+              status: 'completed',
+              output: {
+                activationId: 'run-review',
+                preview: 'Found one retry guard that needs a focused regression test.',
+                previewTruncated: false,
+                phase: 'completed',
+                previewUpdatedAt: 3_000,
+                sourceEventId: 'event-review',
+                sampleStartedAt: 2_000,
+                outputTokens: 18,
+                sampleDurationMs: 1_000,
+                tokensPerSecond: 18,
+              },
+            }),
+          ],
+        }),
+      ),
+    ),
+  ],
+  render: panel,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.textContent).toContain(copy.liveOutput);
+      expect(canvasElement.textContent).toContain(copy.completedOutput);
+      expect(canvasElement.textContent).toContain(copy.throughput(42));
+    });
+  },
+};
+
 // Real path: a wide fan-out — many operators provisioned at once, the breadth a
 // small graph never shows. The read-model only elides operators past 256 (far
 // beyond a story's scale), so this shows a genuine many-operator list rather
@@ -259,10 +318,40 @@ export const ManyOperators: Story = {
   ],
   render: panel,
   play: async ({ canvasElement }) => {
-    // The full list renders (its last operator is reachable). An exact row
-    // count and the omitted "+N" line are read-model contracts, covered by the
-    // read-model's own tests rather than asserted here (review feedback).
     await waitFor(() => expect(canvasElement.textContent).toContain('op-27'));
+    const panelElement = canvasElement.querySelector<HTMLElement>('.maka-agent-graph-panel');
+    const heading = panelElement?.querySelector<HTMLElement>('.maka-agent-graph-heading');
+    const content = panelElement?.querySelector<HTMLElement>('.maka-agent-graph-content');
+    const collapse = panelElement?.querySelector<HTMLButtonElement>(
+      '.maka-agent-graph-collapse-toggle',
+    );
+    if (!panelElement || !heading || !content || !collapse) {
+      throw new Error('Agent Graph production panel structure is incomplete');
+    }
+    expect(panelElement.querySelectorAll('.maka-agent-graph-operators > li')).toHaveLength(28);
+
+    const before = {
+      headingTop: heading.getBoundingClientRect().top,
+      contentTop: content.getBoundingClientRect().top,
+      contentScrollHeight: content.scrollHeight,
+      contentClientHeight: content.clientHeight,
+    };
+    expect(before.contentScrollHeight).toBeGreaterThan(before.contentClientHeight);
+    content.scrollTop = content.scrollHeight;
+    await waitFor(() => expect(content.scrollTop).toBeGreaterThan(0));
+
+    const headingRect = heading.getBoundingClientRect();
+    expect(Math.abs(headingRect.top - before.headingTop)).toBeLessThanOrEqual(1);
+    expect(Math.abs(content.getBoundingClientRect().top - before.contentTop)).toBeLessThanOrEqual(1);
+    expect(content.getBoundingClientRect().top).toBeGreaterThanOrEqual(headingRect.bottom);
+
+    collapse.click();
+    await waitFor(() => expect(panelElement.dataset.collapsed).toBe('true'));
+    await waitFor(() => {
+      const style = getComputedStyle(heading);
+      expect(style.paddingBottom).toBe('0px');
+      expect(style.borderBottomWidth).toBe('0px');
+    });
   },
 };
 

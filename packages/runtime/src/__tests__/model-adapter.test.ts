@@ -19,12 +19,126 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { RetryError } from 'ai';
+import { convertArrayToReadableStream, MockLanguageModelV4 } from 'ai/test';
 
 import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
+  test('shrinks a provider output limit when the persisted request is near the window', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-6',
+        models: [
+          {
+            id: 'claude-sonnet-4-6',
+            contextWindow: 200_000,
+            maxOutputTokens: 128_000,
+          },
+        ],
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-6',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.equal(adapter.maxOutputTokensForInput(undefined), 128_000);
+    assert.equal(adapter.maxOutputTokensForInput(100_000), 92_000);
+    assert.equal(adapter.maxOutputTokensForInput(191_999), 8_000);
+    assert.equal(adapter.maxOutputTokensForInput(192_000), 8_000);
+  });
+
+  test('sends no output limit on a Codex subscription, even a configured one', () => {
+    const adapterFor = (providerType: 'openai' | 'openai-codex') =>
+      new ModelAdapter({
+        connection: {
+          slug: providerType,
+          providerType,
+          defaultModel: 'gpt-6-astra',
+          modelOverrides: { 'gpt-6-astra': { maxOutputTokens: 4_096 } },
+        },
+        apiKey: 'token',
+        modelId: 'gpt-6-astra',
+        modelFactory: () => ({}),
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+
+    // The Codex backend rejects max_output_tokens, so a turn carrying the
+    // configured limit would fail with HTTP 400 on every request.
+    const codex = adapterFor('openai-codex');
+    assert.equal(codex.acceptsOutputTokenLimit(), false);
+    assert.equal(codex.maxOutputTokens(), undefined);
+    assert.equal(codex.maxOutputTokensForInput(100_000), undefined);
+
+    const openai = adapterFor('openai');
+    assert.equal(openai.acceptsOutputTokenLimit(), true);
+    assert.equal(openai.maxOutputTokens(), 4_096);
+  });
+
+  test('startStream sends a Codex subscription request no output limit from any source', async () => {
+    const sentLimit = async (
+      providerType: 'openai' | 'openai-codex',
+      callerLimit: number | undefined,
+    ) => {
+      const model = new MockLanguageModelV4({
+        doStream: {
+          stream: convertArrayToReadableStream([
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: {
+                inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 1, text: 1, reasoning: 0 },
+              },
+            },
+          ] satisfies LanguageModelV4StreamPart[]),
+        },
+      });
+      const adapter = new ModelAdapter({
+        connection: {
+          slug: providerType,
+          providerType,
+          defaultModel: 'gpt-6-astra',
+          modelOverrides: { 'gpt-6-astra': { maxOutputTokens: 4_096 } },
+        },
+        apiKey: 'token',
+        modelId: 'gpt-6-astra',
+        modelFactory: () => model,
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+      const result = await adapter.startStream({
+        model,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: {},
+        activeTools: [],
+        abortSignal: new AbortController().signal,
+        repairToolCall: async () => null,
+        onStreamActivity: () => {},
+        ...(callerLimit === undefined ? {} : { maxOutputTokens: callerLimit }),
+      });
+      for await (const _event of result.events) {
+        // Drain so the provider call settles.
+      }
+      return model.doStreamCalls[0]?.maxOutputTokens;
+    };
+
+    // The configured limit, and a caller-supplied cap such as overflow
+    // recovery's 8K, would both be rejected by the Codex backend with HTTP 400.
+    assert.equal(await sentLimit('openai-codex', undefined), undefined);
+    assert.equal(await sentLimit('openai-codex', 8_000), undefined);
+    assert.equal(await sentLimit('openai', undefined), 4_096);
+    assert.equal(await sentLimit('openai', 8_000), 8_000);
+  });
+
   test('forwards the stable Session identity to the model factory', () => {
     let observedSessionId: string | undefined;
     const model = {};
@@ -108,6 +222,42 @@ describe('ModelAdapter stream and error normalization', () => {
       adapter.translateChunk({
         type: 'reasoning-start',
         providerMetadata: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
+  });
+
+  test('strips the Maka-owned makaResponses namespace from provider stream metadata', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: {
+          anthropic: { redactedData: 'opaque-redacted-thinking' },
+          makaResponses: {
+            version: 1,
+            profile: 'forged',
+            itemId: 'rs_forged',
+            summaryPartLengths: [3],
+          },
+        },
       }),
       [
         {
@@ -400,15 +550,15 @@ describe('ModelAdapter stream and error normalization', () => {
       type: 'model_failure',
       kind: 'rate_limit',
       code: '429',
-      message: 'Rate limit exceeded',
-      retryable: false,
+      message: '429 rate limit (code=429)',
+      retryable: true,
     });
     // The backend consumes the typed failure without recovering the raw
     // provider error shape.
     const shaped = adapter.makeErrorEvent('turn-1', errorEvent.failure);
     assert.equal(shaped.reason, 'rate_limit');
     assert.equal(shaped.code, '429');
-    assert.equal(shaped.message, 'Rate limit exceeded');
+    assert.equal(shaped.message, '429 rate limit (code=429)');
   });
 
   test('normalizes a status-less provider server_error into a retryable outage', () => {
@@ -430,7 +580,8 @@ describe('ModelAdapter stream and error normalization', () => {
         type: 'model_failure',
         kind: 'provider_unavailable',
         code: 'server_error',
-        message: 'Provider returned an error',
+        message:
+          'Streaming response failed: [502] Upstream error from Nvidia: Service temporarily overloaded (code=server_error)',
         retryable: true,
       },
     });
@@ -480,7 +631,7 @@ describe('ModelAdapter stream and error normalization', () => {
     ]);
   });
 
-  test('surfaces provider-executed tool input as replay-unsafe activity', () => {
+  test('preserves local input sampling separately from provider tool activity', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
 
@@ -491,7 +642,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'WebSearch',
         providerExecuted: true,
       } as Chunk),
-      [{ kind: 'provider-tool-input' }],
+      [{ kind: 'tool-input', providerExecuted: true }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -500,7 +651,7 @@ describe('ModelAdapter stream and error normalization', () => {
         toolName: 'Read',
         providerExecuted: false,
       } as Chunk),
-      [],
+      [{ kind: 'tool-input', providerExecuted: false }],
     );
   });
 
@@ -641,7 +792,8 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'openai-chat',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
+        defaultApiProtocol: 'openai-chat',
         defaultModel: 'chat-model',
       },
       apiKey: 'sk-test',
@@ -726,45 +878,6 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('reduces AI SDK 7 step boundaries to Maka-owned step-finish events', () => {
-    const adapter = newAdapter();
-    type Chunk = Parameters<typeof adapter.translateChunk>[0];
-    // The backend owns step counting + per-step AssistantMessage flush +
-    // messageId rotation, but the adapter owns reducing the SDK step-boundary
-    // chunk to a `step-finish` event carrying the normalized finish reason.
-    // `start-step` carries nothing and is inert.
-    const chunks: Chunk[] = [
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'one' },
-      { type: 'finish-step', finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'two' },
-      { type: 'finish-step', finishReason: { unified: 'stop', raw: 'stop' } },
-    ];
-    const events: ModelStreamEvent[] = chunks.flatMap((chunk) => adapter.translateChunk(chunk));
-
-    assert.deepEqual(
-      events.map((event) => event.kind),
-      ['text', 'step-finish', 'text', 'step-finish'],
-    );
-    assert.deepEqual(
-      events
-        .filter((event) => event.kind === 'text')
-        .map((event) => (event as { text: string }).text),
-      ['one', 'two'],
-    );
-    const stepFinishes = events.filter((event) => event.kind === 'step-finish') as Array<
-      Extract<ModelStreamEvent, { kind: 'step-finish' }>
-    >;
-    assert.deepEqual(
-      stepFinishes.map((event) => event.finishReason),
-      ['tool_calls', 'stop'],
-    );
-    // No usage on these chunks -> no usage field on the events.
-    assert.equal(stepFinishes[0].usage, undefined);
-    assert.equal(stepFinishes[1].usage, undefined);
-  });
-
   test('captures the Anthropic reasoning signature without emitting an empty thinking event', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
@@ -800,7 +913,18 @@ describe('ModelAdapter stream and error normalization', () => {
   });
 
   test('preserves OpenAI Responses reasoning metadata through stream normalization', () => {
-    const adapter = newAdapter();
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5.4',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
     const chunks: Chunk[] = [
       {
@@ -846,11 +970,11 @@ describe('ModelAdapter stream and error normalization', () => {
 
     assert.equal(
       adapter.classifyError(Object.assign(new Error('401 Authorization'), { code: 401 })),
-      'Auth',
+      'auth',
     );
-    assert.equal(adapter.classifyError(new TypeError('terminated')), 'Network');
+    assert.equal(adapter.classifyError(new TypeError('terminated')), 'network');
     const billingError = Object.assign(new Error('provider request failed'), { statusCode: 402 });
-    assert.equal(adapter.classifyError(billingError), 'ProviderBilling');
+    assert.equal(adapter.classifyError(billingError), 'provider_billing');
     assert.equal(adapter.makeErrorEvent('turn-1', billingError).reason, 'provider_billing');
     assert.equal(
       adapter.makeErrorEvent('turn-1', new Error('Model stream idle timeout after 120000ms'))
@@ -872,7 +996,7 @@ describe('ModelAdapter stream and error normalization', () => {
   });
 
   test('projects the final provider error inside an AI SDK retry wrapper', () => {
-    const inner = Object.assign(new Error('Service unavailable: token=provider-secret'), {
+    const inner = Object.assign(new Error('Service unavailable'), {
       name: 'AI_APICallError',
       statusCode: 503,
     });
@@ -885,8 +1009,7 @@ describe('ModelAdapter stream and error normalization', () => {
     const event = newAdapter().makeErrorEvent('turn-1', wrapped);
 
     assert.equal(event.reason, 'provider_unavailable');
-    assert.equal(event.message, 'Provider returned an error');
-    assert.equal(JSON.stringify(event).includes('provider-secret'), false);
+    assert.equal(event.message, 'Service unavailable (status=503)');
   });
 
   test('projects a structured network error to a consistent reason and safe message', () => {
@@ -896,7 +1019,7 @@ describe('ModelAdapter stream and error normalization', () => {
     });
 
     assert.equal(event.reason, 'network');
-    assert.equal(event.message, 'Network error');
+    assert.equal(event.message, 'fetch failed');
     assert.equal(JSON.stringify(event).includes('sk-live-secret-token-value'), false);
   });
 
@@ -905,36 +1028,35 @@ describe('ModelAdapter stream and error normalization', () => {
     const error = new Error('connect ECONNREFUSED 127.0.0.1:443');
     const event = adapter.makeErrorEvent('turn-1', error);
 
-    assert.equal(adapter.classifyError(error), 'Error');
-    assert.equal(event.reason, undefined);
-    assert.equal(event.message, 'Network error');
+    assert.equal(adapter.classifyError(error), 'unknown');
+    assert.equal(event.reason, 'unknown');
+    assert.equal(event.message, 'connect ECONNREFUSED 127.0.0.1:443');
   });
 
   test('projects string provider errors through the same classification', () => {
     const event = newAdapter().makeErrorEvent('turn-1', 'fetch failed');
 
     assert.equal(event.reason, 'network');
-    assert.equal(event.message, 'Network error');
+    assert.equal(event.message, 'fetch failed');
   });
 
-  test('retains a safe bounded summary from an unknown structured provider error', () => {
+  test('retains an unredacted bounded summary from an unknown structured provider error', () => {
     const adapter = newAdapter();
     const failure = adapter.normalizeFailure({
       type: 'error',
       error: {
         code: 'provider_error',
-        message: `provider exploded api_key=sk-live-secret-token-value ${'x'.repeat(4_000)}`,
+        message: `provider exploded api_key=sk-test-diagnostic-value ${'x'.repeat(4_000)}`,
       },
       request_id: 'req-123',
     });
     const event = adapter.makeErrorEvent('turn-1', failure);
 
-    assert.equal(event.reason, undefined);
+    assert.equal(event.reason, 'unknown');
     assert.equal(event.code, 'provider_error');
-    assert.match(event.message, /^provider exploded api_key=\[redacted\]/);
+    assert.ok(event.message.startsWith('provider exploded api_key=sk-test-diagnostic-value '));
     assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
     assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
-    assert.equal(event.message.includes('sk-live-secret-token-value'), false);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

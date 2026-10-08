@@ -23,15 +23,18 @@ import {
   createRuntimeHostSessionProjectionSeed,
   type RuntimeHostSessionProjectionSeed,
 } from '@maka/runtime-host/adapter';
-import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
 import {
-  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from '@maka/runtime-host/client';
+import {
+  SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SessionTranscriptPage,
 } from '@maka/runtime-host/protocol';
 import {
-  DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS,
-  DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES,
-  DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS,
 } from '../preload/transcript-contract.js';
 import type { DesktopRuntimeHostSession } from './runtime-host-client.js';
 
@@ -40,7 +43,6 @@ export interface DesktopTranscriptReplicaOptions {
   readonly maxMessageBytes?: number;
   readonly maxResidentBytes?: number;
   readonly maxResidentTurns?: number;
-  readonly maxOverlayBytes?: number;
   readonly accountPreparationBytes?: (deltaBytes: number) => void;
   readonly onChange?: (
     replica: DesktopTranscriptReplica,
@@ -59,33 +61,50 @@ export interface DesktopTranscriptReplicaSnapshot {
   readonly hostEpoch: string;
   readonly durableThrough: number | null;
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
-  readonly overlay: readonly StoredMessage[];
   readonly hasOlder: boolean;
-  readonly hasNewer: boolean;
+  /**
+   * Whether the oldest Turn in the tail has all its rows here. The tail is
+   * bounded by bytes, so it can begin inside a Turn — what it holds of that
+   * Turn then says nothing about how much of it exists.
+   */
+  readonly beginsAtTurnBoundary: boolean;
 }
 
+/** One durable page read for a history consumer; never installed here. Rows ascend. */
+export interface DesktopTranscriptHistoryPage {
+  readonly durable: readonly DesktopSequencedTranscriptMessage[];
+  readonly nextCursor: string | null;
+  /** Whether the Host holds nothing more of the Turns this page carries rows of. */
+  readonly endsAtTurnBoundary: boolean;
+}
+
+/**
+ * Tail-cache growth broadcast to every consumer. `coversFrom` is the watermark
+ * the read that produced these rows started at; `null` means the read started
+ * at the beginning of the transcript.
+ */
 export interface DesktopTranscriptReplicaChange {
+  readonly coversFrom: number | null;
   readonly durableThrough: number | null;
   readonly durableUpserts: readonly DesktopSequencedTranscriptMessage[];
-  readonly evictedDurableSequences: readonly number[];
-  readonly completedOverlayMessageIds: readonly string[];
-  readonly hasOlder: boolean;
-  readonly hasNewer: boolean;
 }
 
 interface ResidentMessage extends DesktopSequencedTranscriptMessage {
   readonly encodedBytes: number;
 }
 
+/**
+ * Main's view of one Session transcript: the durable tail the projector needs
+ * and pass-through reads of older history. This class only keeps the tail
+ * current and answers those reads.
+ */
 export class DesktopTranscriptReplica {
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
   readonly #handle: DesktopRuntimeHostSession;
-  readonly #durableCoverage: DesktopRuntimeHostSession['transcriptBootstrap']['durableCoverage'];
   readonly #maxResidentBytes: number;
   readonly #maxResidentTurns: number;
-  readonly #maxOverlayBytes: number;
   readonly #maxMessageBytes: number;
   readonly #accountPreparationBytes: (deltaBytes: number) => void;
   readonly #onChange: (
@@ -93,67 +112,83 @@ export class DesktopTranscriptReplica {
     change: DesktopTranscriptReplicaChange,
   ) => void;
   readonly #durable = new Map<number, ResidentMessage>();
-  readonly #overlay = new Map<string, StoredMessage>();
   #residentBytes = 0;
-  #overlayBytes = 0;
   #durableThrough: number | null;
-  #targetThrough: number | null;
   #hasOlder: boolean;
-  #hasNewer = false;
+  #beginsAtTurnBoundary: boolean;
   #resident = true;
   #residentExternallyAccounted = true;
   #closed = false;
+  #failure: Error | undefined;
   #catchUpTask: Promise<void> | undefined;
-  #operationTail = Promise.resolve();
 
   private constructor(
     handle: DesktopRuntimeHostSession,
     options: DesktopTranscriptReplicaOptions,
+    durable: SessionTranscriptPage,
   ) {
     this.#handle = handle;
-    this.#durableCoverage = handle.transcriptBootstrap.durableCoverage;
     this.sessionId = handle.snapshot.session.sessionId;
     this.generation = options.generation ?? randomUUID();
     this.hostEpoch = handle.hostEpoch;
     this.#maxResidentBytes =
-      options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES;
+      options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES;
     this.#maxResidentTurns =
-      options.maxResidentTurns ?? DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS;
-    this.#maxOverlayBytes =
-      options.maxOverlayBytes ?? DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES;
-    this.#maxMessageBytes = options.maxMessageBytes ?? SESSION_TRANSCRIPT_RANGE_MAX_BYTES;
+      options.maxResidentTurns ?? DESKTOP_TRANSCRIPT_TAIL_MAX_TURNS;
+    this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
     this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
-    this.#durableThrough = handle.transcriptBootstrap.throughSequence;
-    this.#targetThrough = this.#durableThrough;
-    this.#hasOlder = handle.transcriptBootstrap.durable.nextCursor !== null;
+    this.#durableThrough = durable.throughSequence;
+    this.#hasOlder = durable.nextCursor !== null;
+    this.#beginsAtTurnBoundary = durable.endsAtTurnBoundary;
   }
 
   static async prepare(
     handle: DesktopRuntimeHostSession,
     options: DesktopTranscriptReplicaOptions = {},
   ): Promise<DesktopTranscriptReplica> {
-    const replica = new DesktopTranscriptReplica(handle, options);
+    return this.#install(handle, options, handle.transcriptBootstrap.durable);
+  }
+
+  /**
+   * Rebuilds the tail on a live subscription whose replica was evicted. The
+   * bootstrap page is stale by then — the durable tail is re-read at the
+   * current watermark, then one catch-up closes whatever landed during the
+   * fetch.
+   */
+  static async reseed(
+    handle: DesktopRuntimeHostSession,
+    options: DesktopTranscriptReplicaOptions = {},
+  ): Promise<DesktopTranscriptReplica> {
+    const durable = await handle.loadTranscriptPage({
+      direction: 'older',
+      throughSequence: handle.transcriptWatermark,
+      cursor: null,
+      anchorSequence: null,
+      maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+    });
+    const replica = await this.#install(handle, options, durable);
     try {
-      await replica.#withAssembly(async (accountAssemblyBytes) => {
-        replica.#installOverlay(
-          await handle.loadTranscriptOverlay(replica.#maxMessageBytes, accountAssemblyBytes),
-        );
+      await replica.advance();
+    } catch (error) {
+      replica.close();
+      throw error;
+    }
+    return replica;
+  }
+
+  static async #install(
+    handle: DesktopRuntimeHostSession,
+    options: DesktopTranscriptReplicaOptions,
+    durable: SessionTranscriptPage,
+  ): Promise<DesktopTranscriptReplica> {
+    const replica = new DesktopTranscriptReplica(handle, options, durable);
+    try {
+      await replica.#withDecodedPage(durable, (decoded) => {
+        replica.#installDurable(decoded.messages);
+        replica.#hasOlder = decoded.nextCursor !== null;
       });
-      await replica.#withDecodedPage(handle.transcriptBootstrap.durable, (durable) => {
-        replica.#installDurable(durable.messages);
-        replica.#hasOlder = durable.nextCursor !== null;
-      });
-      replica.#evictToBudget(
-        undefined,
-        'oldest',
-        handle.transcriptBootstrap.durable.protectedTurnSequence ??
-          replica.#durableThrough ??
-          undefined,
-      );
-      if (replica.#overlayBytes > replica.#maxOverlayBytes) {
-        throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
-      }
+      replica.#evictToBudget();
       return replica;
     } catch (error) {
       replica.close();
@@ -166,7 +201,10 @@ export class DesktopTranscriptReplica {
   }
 
   get resident(): boolean {
-    return this.#resident;
+    // A latched failure makes this a dead read model even while it still holds
+    // durable bytes, so callers see what they see for an evicted replica and
+    // take the same reseed/recovery path instead of touching it.
+    return this.#resident && this.#failure === undefined;
   }
 
   adoptResidentAccounting(): void {
@@ -180,31 +218,26 @@ export class DesktopTranscriptReplica {
   }
 
   get projectionSeed(): RuntimeHostSessionProjectionSeed {
-    this.#assertResident();
+    this.#assertLive();
     return createRuntimeHostSessionProjectionSeed(this.messages(), this.#handle.snapshot);
   }
 
   snapshot(): DesktopTranscriptReplicaSnapshot {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     return {
       sessionId: this.sessionId,
       generation: this.generation,
       hostEpoch: this.hostEpoch,
       durableThrough: this.#durableThrough,
       durable: this.#orderedDurable(false),
-      overlay: [...this.#overlay.values()],
       hasOlder: this.#hasOlder,
-      hasNewer: this.#hasNewer,
+      beginsAtTurnBoundary: this.#beginsAtTurnBoundary,
     };
   }
 
   messages(): StoredMessage[] {
-    this.#assertOpen();
-    this.#assertResident();
-    return this.#orderedDurable()
-      .map((entry) => entry.message)
-      .concat([...this.#overlay.values()].map((message) => structuredClone(message)));
+    this.#assertLive();
+    return this.#orderedDurable().map((entry) => entry.message);
   }
 
   messagesForTurn(turnId: string): StoredMessage[] {
@@ -212,8 +245,7 @@ export class DesktopTranscriptReplica {
   }
 
   latestDurableVisibleMessageId(): string | null {
-    this.#assertOpen();
-    this.#assertResident();
+    this.#assertLive();
     let latest: ResidentMessage | undefined;
     for (const entry of this.#durable.values()) {
       if (
@@ -226,161 +258,140 @@ export class DesktopTranscriptReplica {
     return latest?.message.id ?? null;
   }
 
-  async loadBefore(
-    anchorSequence: number | null,
-    maxBytes: number,
-  ): Promise<void> {
-    return this.#enqueue(() => this.#loadBefore(anchorSequence, maxBytes));
-  }
-
-  async #loadBefore(anchorSequence: number | null, maxBytes: number): Promise<void> {
-    this.#assertOpen();
-    const throughSequence = this.#durableThrough;
-    if (throughSequence === null) return;
-    const anchor = anchorSequence ?? this.#oldestSequence();
+  /** One page older than `cursor`, or the newest page through `throughSequence` when it is null. */
+  async readOlderPage(
+    throughSequence: number,
+    cursor: string | null,
+  ): Promise<DesktopTranscriptHistoryPage> {
+    this.#assertLive();
     const page = await this.#handle.loadTranscriptPage({
-      source: 'durable',
       direction: 'older',
       throughSequence,
-      cursor: null,
-      anchorSequence: anchor,
-      maxBytes,
+      cursor,
+      anchorSequence: null,
+      maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
     });
-    await this.#withDecodedPage(page, (decoded) => {
-      this.#assertOpen();
-      // Same post-await `#resident` invariant as `#replaceWithRange` and the
-      // paged catch-up: a concurrent `discard()` may have reclaimed this
-      // replica while the older page was in flight. Installing the page here
-      // would repopulate durable state and undo the eviction.
-      if (!this.#resident) return;
+    return this.#withDecodedPage(page, (decoded) => {
+      this.#assertLive();
       this.#acceptRange(decoded.messages);
-      if (
-        anchor !== null &&
-        decoded.messages.length > 0 &&
-        !this.#matchesCoverageStep(anchor, decoded.messages.at(-1)!.identity + 1)
-      ) {
-        throw correlationError('Desktop transcript older page did not meet its anchor');
-      }
-      const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-      this.#hasOlder = decoded.nextCursor !== null;
-      const evictedDurableSequences = this.#evictToBudget(
-        undefined,
-        'newest',
-        anchor ?? undefined,
-      );
-      this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+      return {
+        durable: decoded.messages.map((entry) => ({
+          sequence: entry.identity,
+          message: entry.message,
+        })),
+        nextCursor: decoded.nextCursor,
+        endsAtTurnBoundary: page.endsAtTurnBoundary,
+      };
     });
   }
 
-  async loadAround(sequence: number, maxBytes: number): Promise<void> {
-    return this.#enqueue(() => this.#loadAround(sequence, maxBytes));
-  }
-
-  async #loadAround(sequence: number, maxBytes: number): Promise<void> {
-    this.#assertOpen();
-    const throughSequence = this.#durableThrough;
-    if (throughSequence === null || sequence > throughSequence) return;
-    await this.#replaceWithRange(throughSequence, sequence, maxBytes);
-  }
-
-  async #replaceWithRange(
-    throughSequence: number,
-    sequence: number,
+  /**
+   * Every durable row of one Turn this replica's watermark covers, read
+   * forward across the extent the Host's Turn index gives it. Only the Turn's
+   * own rows count toward `maxBytes`: a nested Turn's rows sit inside the
+   * extent of the Turn around it.
+   */
+  async readTurn(
+    turnId: string,
+    extent: { readonly sequence: number; readonly lastSequence: number },
     maxBytes: number,
-  ): Promise<void> {
-    const loadTail = sequence === throughSequence;
-    const page = await this.#handle.loadTranscriptPage({
-      source: 'durable',
-      direction: loadTail ? 'older' : 'newer',
-      throughSequence,
-      cursor: null,
-      anchorSequence: loadTail ? sequence + 1 : sequence === 0 ? null : sequence - 1,
-      maxBytes,
-    });
-    await this.#withDecodedPage(page, (decoded) => {
-      this.#assertOpen();
-      // `#resident` can flip to false across the `await` above (a concurrent
-      // `discard()` reclaims memory for a non-visible session while the page is
-      // in flight). Re-anchoring here would repopulate durable state and undo
-      // the eviction, resurrecting a deliberately discarded replica past its
-      // memory budget. The paged catch-up guards its own post-await callback
-      // the same way; mirror it before mutating or publishing.
-      if (!this.#resident) return;
-      this.#acceptRange(decoded.messages);
-      if (
-        decoded.messages.length > 0 &&
-        (loadTail
-          ? !this.#matchesCoverageStep(sequence, decoded.messages.at(-1)!.identity)
-          : decoded.messages[0]!.identity !== sequence)
-      ) {
-        throw correlationError('Desktop transcript range did not meet its anchor');
-      }
-      const evictedDurableSequences = [...this.#durable.keys()];
-      this.#clearDurable();
-      const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-      this.#durableThrough = throughSequence;
-      this.#hasOlder = loadTail ? decoded.nextCursor !== null : sequence > 0;
-      this.#hasNewer = loadTail ? false : decoded.nextCursor !== null;
-      evictedDurableSequences.push(
-        ...this.#evictToBudget(
-          undefined,
-          loadTail ? 'oldest' : 'newest',
-          loadTail ? (page.protectedTurnSequence ?? sequence) : sequence,
-        ),
-      );
-      this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
-    });
+  ): Promise<StoredMessage[]> {
+    this.#assertLive();
+    const firstSequence = extent.sequence;
+    const throughSequence =
+      this.#durableThrough === null ? null : Math.min(this.#durableThrough, extent.lastSequence);
+    const durable: StoredMessage[] = [];
+    let bytes = 0;
+    let cursor: string | null = null;
+    let nextSequence = firstSequence;
+    if (throughSequence !== null && firstSequence <= throughSequence) {
+      do {
+        const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
+          direction: 'newer',
+          throughSequence,
+          cursor,
+          anchorSequence: cursor === null && firstSequence > 0 ? firstSequence - 1 : null,
+          maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+        });
+        await this.#withDecodedPage(page, (decoded) => {
+          this.#assertLive();
+          if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
+            throw correlationError('Desktop transcript Turn read returned an empty continuation');
+          }
+          this.#acceptRange(decoded.messages);
+          const first = decoded.messages[0];
+          if (first && !this.#matchesCoverageStep(first.identity, nextSequence)) {
+            throw correlationError('Desktop transcript Turn read has a sequence gap');
+          }
+          nextSequence = (decoded.messages.at(-1)?.identity ?? nextSequence - 1) + 1;
+          for (const { message } of decoded.messages) {
+            if (messageTurnId(message) !== turnId) continue;
+            bytes += encodedMessageBytes(message);
+            if (bytes > maxBytes) throw new RangeError('Desktop transcript Turn exceeds its read limit');
+            durable.push(message);
+          }
+          cursor = decoded.nextCursor;
+        });
+      } while (cursor !== null);
+    }
+    return durable;
   }
 
-  advance(throughSequence: number): Promise<void> {
+  advance(): Promise<void> {
+    if (this.#failure) return Promise.reject(this.#failure);
     this.#assertOpen();
-    if (this.#targetThrough === null || throughSequence > this.#targetThrough) {
-      this.#targetThrough = throughSequence;
-    }
-    if (!this.#resident) {
-      this.#durableThrough = this.#targetThrough;
+    if (!this.#resident) return Promise.resolve();
+    const target = this.#handle.transcriptWatermark;
+    if (
+      target === null ||
+      (this.#durableThrough !== null && target <= this.#durableThrough)
+    ) {
       return Promise.resolve();
     }
-    this.#catchUpTask ??= this.#enqueue(() => this.#catchUp()).finally(() => {
-      this.#catchUpTask = undefined;
-      if (
-        !this.#closed &&
-        this.#targetThrough !== null &&
-        (this.#durableThrough === null || this.#targetThrough > this.#durableThrough)
-      ) {
-        void this.advance(this.#targetThrough).catch(() => undefined);
-      }
-    });
+    this.#catchUpTask ??= this.#catchUp().then(
+      () => {
+        this.#catchUpTask = undefined;
+        const watermark = this.#handle.transcriptWatermark;
+        // A frame that arrived mid-catch-up may not be covered by it, so a
+        // settled read re-arms once to close that gap. A rejection never
+        // re-arms — this replica's read failures are permanent for the
+        // subscription it is bound to.
+        if (
+          this.#isLive() &&
+          watermark !== null &&
+          (this.#durableThrough === null || watermark > this.#durableThrough)
+        ) {
+          void this.advance().catch(() => undefined);
+        }
+      },
+      (error: unknown) => {
+        this.#catchUpTask = undefined;
+        throw error;
+      },
+    );
     return this.#catchUpTask;
   }
 
-  trimDurable(targetResidentBytes: number): DesktopTranscriptReplicaChange | undefined {
+  // A closed replica reports !resident, so the residency check must precede
+  // the liveness assert: the observer's global trim/discard pass can meet a
+  // replica that recovery just closed, and that must be a no-op, not a throw.
+  trimDurable(targetResidentBytes: number): void {
+    if (!this.#resident) return;
     this.#assertOpen();
-    if (!this.#resident) return undefined;
-    const evictedDurableSequences = this.#evictToBudget(targetResidentBytes);
-    return evictedDurableSequences.length === 0
-      ? undefined
-      : this.#change([], [], evictedDurableSequences);
+    this.#evictToBudget(targetResidentBytes);
   }
 
   discard(): void {
-    this.#assertOpen();
     if (!this.#resident) return;
+    this.#assertOpen();
     this.#resident = false;
     this.#clearDurable();
-    for (const message of this.#overlay.values()) {
-      this.#adjustOverlayBytes(-encodedMessageBytes(message));
-    }
-    this.#overlay.clear();
-    this.#overlayBytes = 0;
   }
 
   close(): void {
     this.#closed = true;
     this.#resident = false;
     this.#durable.clear();
-    this.#overlay.clear();
-    this.#overlayBytes = 0;
     if (this.#residentExternallyAccounted) {
       this.#accountPreparationBytes(-this.#residentBytes);
     }
@@ -388,40 +399,54 @@ export class DesktopTranscriptReplica {
   }
 
   async #catchUp(): Promise<void> {
-    while (!this.#closed && this.#resident) {
-      const target = this.#targetThrough;
-      if (target === null || (this.#durableThrough !== null && target <= this.#durableThrough)) {
-        return;
+    try {
+      await this.#readToWatermark();
+    } catch (error) {
+      // A Runtime Host read failure is permanent for the subscription this
+      // replica is bound to when it names a dead subscription or a gone
+      // transcript context. Latch it so later calls fail with the same error
+      // instead of retrying a dead subscription — the owner decides whether
+      // recovery means replacing this replica or the whole subscription.
+      // Transient operation failures stay retryable: the only caller that
+      // swallows a rejection is the post-settle re-arm, and latching there
+      // would turn a retryable blip into a sticky terminal on the next frame.
+      if (
+        error instanceof RuntimeHostSubscriptionError ||
+        (error instanceof RuntimeHostOperationError &&
+          error.operation === 'session.transcript.page' &&
+          error.code === 'not_found')
+      ) {
+        this.#failure ??= error;
       }
-      if (this.#hasNewer) {
-        // The resident window was trimmed off the tail (e.g. after loading
-        // older history, `#evictToBudget(..., 'newest')` set `#hasNewer`), so
-        // `target` cannot be appended contiguously to what is resident. Bumping
-        // the watermark and publishing an empty change here silently dropped
-        // the freshly persisted message: an already-open consumer never learned
-        // about it and only a fresh subscription (the user switching sessions
-        // and back) re-read it. Re-anchor to the newest window instead — the
-        // same recovery a fresh subscription performs — so the append reaches
-        // open consumers live.
-        await this.#replaceWithRange(target, target, 512 * 1024);
-        return;
-      }
-      let cursor: string | null = null;
+      throw error;
+    }
+  }
+
+  async #readToWatermark(): Promise<void> {
+    while (this.#isLive()) {
+      const target = this.#handle.transcriptWatermark;
+      if (target === null) return;
       const anchorSequence = this.#durableThrough;
+      if (anchorSequence !== null && target <= anchorSequence) return;
+      let cursor: string | null = null;
       let nextSequence = (anchorSequence ?? -1) + 1;
+      // What each publish is spliceable onto: where the read that produced it
+      // started, which is the watermark the previous publish ended at.
+      let published = anchorSequence;
       do {
-        if (!this.#resident) return;
+        if (!this.#isLive()) return;
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
-          source: 'durable',
           direction: 'newer',
           throughSequence: target,
           cursor,
           anchorSequence: cursor === null ? anchorSequence : null,
-          maxBytes: 512 * 1024,
+          maxBytes: SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
         });
         await this.#withDecodedPage(page, (decoded) => {
-          this.#assertOpen();
-          if (!this.#resident) return;
+          // A concurrent `discard()` (LRU reclaim for another observed session)
+          // can flip `#resident` across the `await` above; installing the page
+          // would resurrect the reclaimed replica.
+          if (!this.#isLive()) return;
           if (decoded.messages.length === 0 && decoded.nextCursor !== null) {
             throw correlationError('Desktop transcript catch-up returned an empty continuation');
           }
@@ -435,38 +460,21 @@ export class DesktopTranscriptReplica {
           if (decoded.messages.length > 0) {
             nextSequence = decoded.messages.at(-1)!.identity + 1;
           }
-          const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-          const evictedDurableSequences = this.#evictToBudget(
-            undefined,
-            'oldest',
-            page.protectedTurnSequence ?? decoded.messages.at(-1)?.identity,
-          );
-          this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
+          this.#installDurable(decoded.messages);
+          this.#evictToBudget();
+          // The watermark moves with every page, not only at the end: a window
+          // opening mid-catch-up takes a snapshot whose rows must agree with the
+          // `durableThrough` it names, or the next change cannot join it.
+          const through = decoded.messages.at(-1)?.identity ?? published;
+          if (through !== null) this.#durableThrough = through;
+          this.#publish(published, through, decoded.messages);
+          published = through;
           cursor = decoded.nextCursor;
         });
       } while (cursor !== null);
-      // A concurrent `discard()` (LRU reclaim for another observed session) can
-      // flip `#resident` to false across any page `await` above. The per-page
-      // callback already returns early in that case, so `nextSequence` is
-      // left short of the watermark. Without this guard the check below would
-      // turn a benign memory reclaim into a fatal `correlation_changed` that
-      // drives the session terminal. A discarded replica has no watermark to
-      // meet, so return cleanly and let a later resume re-catch-up.
-      if (!this.#resident) return;
-      if (this.#durableCoverage === 'complete' && nextSequence !== target + 1) {
-        throw correlationError('Desktop transcript catch-up ended before its watermark');
-      }
+      if (!this.#isLive()) return;
       this.#durableThrough = target;
-      this.#publish([], [], []);
-    }
-  }
-
-  #installOverlay(messages: readonly StoredMessage[]): void {
-    for (const message of messages) {
-      const previous = this.#overlay.get(message.id);
-      if (previous) this.#adjustOverlayBytes(-encodedMessageBytes(previous));
-      this.#overlay.set(message.id, message);
-      this.#adjustOverlayBytes(encodedMessageBytes(message));
+      this.#publish(published, target, []);
     }
   }
 
@@ -475,8 +483,7 @@ export class DesktopTranscriptReplica {
       readonly identity: number;
       readonly message: StoredMessage;
     }[],
-  ): string[] {
-    const completedOverlayMessageIds: string[] = [];
+  ): void {
     for (const item of messages) {
       const previous = this.#durable.get(item.identity);
       if (previous && previous.message.id !== item.message.id) {
@@ -491,14 +498,7 @@ export class DesktopTranscriptReplica {
         encodedBytes,
       });
       this.#adjustResidentBytes(encodedBytes);
-      const overlay = this.#overlay.get(message.id);
-      if (overlay) {
-        this.#overlay.delete(message.id);
-        this.#adjustOverlayBytes(-encodedMessageBytes(overlay));
-        completedOverlayMessageIds.push(message.id);
-      }
     }
-    return completedOverlayMessageIds;
   }
 
   #acceptRange(
@@ -513,118 +513,70 @@ export class DesktopTranscriptReplica {
     }
   }
 
+  /**
+   * A durable sequence is an event ordinal times its stride, so the next row is
+   * only ever at or after the previous one plus one — never exactly there.
+   */
   #matchesCoverageStep(sequence: number, firstPossibleSequence: number): boolean {
-    return this.#durableCoverage === 'complete'
-      ? sequence === firstPossibleSequence
-      : sequence >= firstPossibleSequence;
+    return sequence >= firstPossibleSequence;
   }
 
   #publish(
+    coversFrom: number | null,
+    durableThrough: number | null,
     messages: readonly {
       readonly identity: number;
       readonly message: StoredMessage;
     }[],
-    completedOverlayMessageIds: readonly string[],
-    evictedDurableSequences: readonly number[],
   ): void {
-    this.#onChange(this, this.#change(messages, completedOverlayMessageIds, evictedDurableSequences));
+    this.#onChange(this, {
+      coversFrom,
+      durableThrough,
+      // Every row this catch-up read, whether or not the tail cache kept it:
+      // the budget that evicts it here is Main's, not any window's.
+      durableUpserts: messages.map((entry) => ({
+        sequence: entry.identity,
+        message: entry.message,
+      })),
+    });
   }
 
-  #change(
-    messages: readonly {
-      readonly identity: number;
-      readonly message: StoredMessage;
-    }[],
-    completedOverlayMessageIds: readonly string[],
-    evictedDurableSequences: readonly number[],
-  ): DesktopTranscriptReplicaChange {
-    return {
-      durableThrough: this.#durableThrough,
-      durableUpserts: messages.flatMap((entry) => {
-        const resident = this.#durable.get(entry.identity);
-        return resident?.message.id === entry.message.id
-          ? [{ sequence: entry.identity, message: resident.message }]
-          : [];
-      }),
-      evictedDurableSequences: [...new Set(evictedDurableSequences)].filter(
-        (sequence) => !this.#durable.has(sequence),
-      ),
-      completedOverlayMessageIds,
-      hasOlder: this.#hasOlder,
-      hasNewer: this.#hasNewer,
-    };
-  }
-
-  #evictToBudget(
-    budget: number | undefined = undefined,
-    edge: 'oldest' | 'newest' = 'oldest',
-    protectedSequence?: number,
-  ): number[] {
-    const residentBudget = budget ?? this.#maxResidentBytes + this.#overlayBytes;
-    const evicted: number[] = [];
+  /**
+   * Evicts whole Turns from the oldest edge until the tail fits. The newest
+   * Turn stays even when it alone exceeds the budget: the projector needs it
+   * complete. Global pressure passes a budget and may empty the tail.
+   */
+  #evictToBudget(budget?: number): void {
+    const residentBudget = budget ?? this.#maxResidentBytes;
+    const turns = new Map<string, number[]>();
     const sequences = [...this.#durable.keys()].sort((left, right) => left - right);
-    const turnGroups = new Map<string, number[]>();
     for (const sequence of sequences) {
-      const entry = this.#durable.get(sequence);
-      if (!entry) continue;
-      const turnKey = residentTurnKey(entry);
-      const group = turnGroups.get(turnKey);
+      const key = residentTurnKey(this.#durable.get(sequence)!);
+      const group = turns.get(key);
       if (group) group.push(sequence);
-      else turnGroups.set(turnKey, [sequence]);
+      else turns.set(key, [sequence]);
     }
-    const orderedTurns = [...turnGroups.entries()];
-    let oldestIndex = 0;
-    let newestIndex = orderedTurns.length - 1;
-    let residentTurns = orderedTurns.length;
-    const protectedEntry = protectedSequence === undefined
-      ? undefined
-      : this.#durable.get(protectedSequence);
-    const protectedTurnKey = protectedEntry === undefined
-      ? undefined
-      : residentTurnKey(protectedEntry);
-    const protectedIndex = protectedTurnKey === undefined
-      ? -1
-      : orderedTurns.findIndex(([turnKey]) => turnKey === protectedTurnKey);
-    const take = (
-      candidateEdge: 'oldest' | 'newest',
-    ): readonly [string, number[]] | undefined => {
-      const index = candidateEdge === 'oldest' ? oldestIndex : newestIndex;
-      if (oldestIndex > newestIndex) return undefined;
-      const turn = orderedTurns[index];
-      if (!turn || turn[0] === protectedTurnKey) return undefined;
-      if (candidateEdge === 'oldest') oldestIndex += 1;
-      else newestIndex -= 1;
-      return turn;
-    };
-    while (
-      this.#residentBytes > residentBudget
-      || residentTurns > this.#maxResidentTurns
-    ) {
-      let evictionEdge = protectedIndex < 0
-        ? edge
-        : protectedIndex - oldestIndex > newestIndex - protectedIndex
-          ? 'oldest'
-          : protectedIndex - oldestIndex < newestIndex - protectedIndex
-            ? 'newest'
-            : edge;
-      let turn = take(evictionEdge);
-      if (turn === undefined) {
-        evictionEdge = edge === 'oldest' ? 'newest' : 'oldest';
-        turn = take(evictionEdge);
-      }
-      if (turn === undefined) break;
-      for (const sequence of turn[1]) {
+    // A trailing Session note is not the Turn the projector needs to keep whole.
+    const keys = [...turns.keys()];
+    const protectedKey = budget === undefined
+      ? [...keys].reverse().find((key) => key.startsWith('turn:')) ?? keys.at(-1)
+      : undefined;
+    let residentTurns = turns.size;
+    for (const [key, sequences] of turns) {
+      if (this.#residentBytes <= residentBudget && residentTurns <= this.#maxResidentTurns) return;
+      if (key === protectedKey) return;
+      for (const sequence of sequences) {
         const entry = this.#durable.get(sequence);
         if (!entry) continue;
         this.#durable.delete(sequence);
         this.#adjustResidentBytes(-entry.encodedBytes);
-        evicted.push(sequence);
       }
       residentTurns -= 1;
-      if (evictionEdge === 'oldest') this.#hasOlder = true;
-      else this.#hasNewer = true;
+      this.#hasOlder = true;
+      // Eviction groups rows by their owner, which is not where a Turn ends
+      // when another Turn's rows are written between them.
+      this.#beginsAtTurnBoundary = false;
     }
-    return evicted;
   }
 
   #orderedDurable(cloneMessages = true): DesktopSequencedTranscriptMessage[] {
@@ -636,14 +588,6 @@ export class DesktopTranscriptReplica {
       }));
   }
 
-  #oldestSequence(): number | null {
-    let oldest: number | null = null;
-    for (const sequence of this.#durable.keys()) {
-      if (oldest === null || sequence < oldest) oldest = sequence;
-    }
-    return oldest;
-  }
-
   #clearDurable(): void {
     for (const entry of this.#durable.values()) this.#adjustResidentBytes(-entry.encodedBytes);
     this.#durable.clear();
@@ -652,11 +596,6 @@ export class DesktopTranscriptReplica {
   #adjustResidentBytes(deltaBytes: number): void {
     if (this.#residentExternallyAccounted) this.#accountPreparationBytes(deltaBytes);
     this.#residentBytes += deltaBytes;
-  }
-
-  #adjustOverlayBytes(deltaBytes: number): void {
-    this.#adjustResidentBytes(deltaBytes);
-    this.#overlayBytes += deltaBytes;
   }
 
   async #withDecodedPage<T>(
@@ -698,20 +637,20 @@ export class DesktopTranscriptReplica {
     }
   }
 
+  #isLive(): boolean {
+    return !this.#closed && this.#resident;
+  }
+
   #assertOpen(): void {
     if (this.#closed) throw new Error('Desktop transcript replica is closed');
   }
 
-  #assertResident(): void {
+  #assertLive(): void {
+    if (this.#failure) throw this.#failure;
+    this.#assertOpen();
     if (!this.#resident) {
       throw new Error('Desktop transcript replica was evicted');
     }
-  }
-
-  #enqueue(operation: () => Promise<void>): Promise<void> {
-    const task = this.#operationTail.then(operation);
-    this.#operationTail = task.catch(() => undefined);
-    return task;
   }
 }
 

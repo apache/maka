@@ -20,10 +20,11 @@
 import type { WorkbarServices } from './ports.js';
 
 export { WorkbarServicesProvider } from './services-context.js';
+export { BrowserPanel } from './tools/browser/browser-panel.js';
 export type {
   WorkbarServices,
-  WorkbarSessionTracePage,
-  WorkbarSessionUsageSummary,
+  SessionTracePage,
+  SessionUsageSummary,
 } from './ports.js';
 
 export * from './model/workbar-tabs.js';
@@ -31,15 +32,19 @@ export * from './model/workbar-layout.js';
 export * from './model/workbar-tool-definitions.js';
 export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
-export * from './tools/inspector/session-inspector-panel-model.js';
+export * from '../../application/contracts/session-inspector/session-inspector-panel-model.js';
+export { SessionReviewPanel } from './tools/review/session-review-panel.js';
+export { SessionReviewBaseBranchPicker } from './tools/review/session-review-base-branch-picker.js';
 export {
-  compactNumberFormatter,
+  formatDuration,
   InspectorCompositionSection,
   RING_ACTIVE_MIN_SWEEP,
   RING_MIN_SWEEP,
   usageRingArcs,
-} from './tools/inspector/session-inspector-panel.js';
-export * from './tools/inspector/session-inspector-overview-model.js';
+} from '../../application/contracts/session-inspector/session-inspector-panel.js';
+export * from '../../application/contracts/session-inspector/session-inspector-overview-model.js';
+export * from '../../application/contracts/session-inspector/session-trace-refresh.js';
+export * from '../../application/contracts/session-inspector/live-context-usage.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
 export * from './tools/side-chat/quote-companion-core.js';
 export * from './tools/side-chat/quote-companion-context-compaction.js';
@@ -47,11 +52,19 @@ export * from './tools/side-chat/quote-companion-visibility.js';
 export {
   useQuoteCompanion,
 } from './tools/side-chat/use-quote-companion.js';
+export * from './tools/terminal/terminal-interaction-policy.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
-export * from './tools/inspector/use-session-trace.js';
-export * from './controller/use-workbar-controller.js';
+export * from '../../application/contracts/session-inspector/use-session-trace.js';
+export { useWorkbarController } from './controller/use-workbar-controller.js';
+export type {
+  UseWorkbarControllerInput,
+  WorkbarController,
+} from './controller/use-workbar-controller.js';
+export { createWorkbarShellBridge } from './controller/workbar-shell-bridge.js';
+export { WorkbarShellRoot } from './ui/workbar-shell-root.js';
+export { WorkbarProvider, useWorkbarHostModel } from './ui/workbar-provider.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
@@ -64,7 +77,16 @@ const noopSubscription = (): (() => void) => () => undefined;
 export function createFakeWorkbarServices(
   overrides: Partial<WorkbarServices> = {},
 ): WorkbarServices {
+  const reviewBaseBranches = new Map<string, string>();
   return {
+    reviewBaseBranchPreference: {
+      read: (sessionId) => reviewBaseBranches.get(sessionId) ?? null,
+      write: (sessionId, branch) => {
+        if (branch === null) reviewBaseBranches.delete(sessionId);
+        else reviewBaseBranches.set(sessionId, branch);
+      },
+    },
+    popupMenu: async () => null,
     review: {
       read: async () => {
         throw new Error('Fake review.read is not configured');
@@ -72,23 +94,23 @@ export function createFakeWorkbarServices(
       subscribeSessionEvents: noopSubscription,
     },
     terminal: {
+      recover: async () => ({ resources: [], closes: [] }),
+      subscribeCloseChanges: noopSubscription,
+      subscribeUpdates: noopSubscription,
       start: async () => {
         throw new Error('Fake terminal.start is not configured');
       },
-      stop: async () => null,
+      stop: async () => undefined,
       attach: async () => null,
       detach: async () => undefined,
-      write: async () => null,
+      write: async () => undefined,
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
-    },
-    todo: {
-      read: async () => [],
-      subscribeChanges: noopSubscription,
     },
     browser: {
       setActiveSession: () => undefined,
       setViewport: () => undefined,
+      capturePage: async () => undefined,
       navigate: async () => undefined,
       back: async () => undefined,
       forward: async () => undefined,
@@ -97,15 +119,14 @@ export function createFakeWorkbarServices(
       close: async () => undefined,
       getState: async () => null,
       subscribeState: noopSubscription,
-      subscribeLive: noopSubscription,
     },
     artifacts: {
       list: async () => [],
       readText: async () => ({ ok: false, reason: 'not_found' }),
       readBinary: async () => ({ ok: false, reason: 'not_found' }),
       delete: async () => undefined,
-      subscribeChanges: noopSubscription,
       openPath: async () => ({ ok: false, reason: 'missing' }),
+      showInFolder: async () => ({ ok: false, reason: 'missing' }),
       saveAs: async () => ({ ok: false, reason: 'canceled' }),
     },
     inspector: {
@@ -140,13 +161,18 @@ export function createFakeWorkbarServices(
       },
       send: async () => ({ ok: false, reason: 'not configured' }),
       stop: async () => undefined,
-      steer: async () => {
-        throw new Error('Fake sideChat.steer is not configured');
+      submitFollowUp: async () => {
+        throw new Error('Fake sideChat.submitFollowUp is not configured');
       },
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({ messageId, state: 'pending' as const })),
+      }),
+      retractQueueEntry: async () => undefined,
+      promoteQueueEntry: async () => undefined,
+      reorderQueueEntries: async () => undefined,
       setPermissionMode: async () => {
         throw new Error('Fake sideChat.setPermissionMode is not configured');
       },
-      regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,

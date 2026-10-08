@@ -958,6 +958,7 @@ function buildOperatorProvisionInput(
     ...(work.target.kind === 'preset'
       ? { subagentId: work.target.presetId }
       : { agentId: work.target.agentId }),
+    ...(work.target.executorId ? { executorId: work.target.executorId } : {}),
     operatorId,
     source,
     edges,

@@ -1093,7 +1093,7 @@ function createHarness(
     terminateProcessTree: async ({ pid, signal, fallback, hasExited, beforeSignal }) => {
       terminatedProcesses.push({ pid, signal });
       await Promise.resolve();
-      if (hasExited?.() || beforeSignal?.() === false) return false;
+      if (hasExited?.() || (beforeSignal && !(await beforeSignal()))) return false;
       fallback?.();
       return true;
     },

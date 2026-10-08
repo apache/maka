@@ -45,6 +45,9 @@ import {
   type CollaborationInvitationPrepareInput,
   type CollaborationInvitationPrepareResult,
   type CollaborationPrincipalRevokeResult,
+  type CollaborationPrincipalRenameInput,
+  type CollaborationPrincipalRenameResult,
+  decodeCollaborationDisplayName,
   type CollaborationTurnRequestAcknowledgeInput,
   type CollaborationTurnRequestAcknowledgeResult,
   type CollaborationTurnRequestCreateInput,
@@ -126,6 +129,9 @@ export interface RuntimeHostAccessAuthority {
     input: CollaborationGrantRevokeInput,
   ): Promise<CollaborationGrantRevokeResult>;
   revokeCollaborationPrincipal(principalId: string): Promise<CollaborationPrincipalRevokeResult>;
+  renameCollaborationPrincipal(
+    input: CollaborationPrincipalRenameInput,
+  ): Promise<CollaborationPrincipalRenameResult>;
   createTurnAccessRequest(
     principalId: string,
     input: CollaborationTurnRequestCreateInput,
@@ -334,6 +340,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
                 principalId,
                 status: credential.status as 'active' | 'pending',
                 createdAt: credential.createdAt,
+                ...(credential.displayName === undefined
+                  ? {}
+                  : { displayName: credential.displayName }),
                 ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
               },
             ]
@@ -372,6 +381,30 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return this.revokePrincipal({
       principalKind: 'session_guest',
       principalId,
+    });
+  }
+
+  renameCollaborationPrincipal(
+    input: CollaborationPrincipalRenameInput,
+  ): Promise<CollaborationPrincipalRenameResult> {
+    const displayName = decodeCollaborationDisplayName(input.displayName);
+    return this.#mutate(async () => {
+      const matches = (credential: StoredAccessCredential) =>
+        credential.principalKind === 'session_guest' &&
+        credential.principalId === input.principalId &&
+        credential.status !== 'revoked';
+      if (!this.#file.credentials.some(matches)) return { renamed: false };
+      await this.#commit(
+        createNextAccessCredentialFile(
+          this.#file,
+          this.#file.credentials.map((credential) =>
+            matches(credential) ? { ...credential, displayName } : credential,
+          ),
+          this.#file.sessionGrants,
+        ),
+        [],
+      );
+      return { renamed: true };
     });
   }
 
@@ -1548,11 +1581,28 @@ export async function revokeCollaborationPrincipal(
   }
 }
 
+export async function renameCollaborationPrincipal(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: CollaborationPrincipalRenameInput,
+): Promise<OperationOutcome<'collaboration.principal.rename'>> {
+  if (!authority) return collaborationUnavailable('collaboration.principal.rename');
+  try {
+    return { ok: true, result: await authority.renameCollaborationPrincipal(input) };
+  } catch (error) {
+    return accessPersistenceFailure(
+      error,
+      'Guest alias commit outcome is unknown',
+      'Guest alias could not be saved',
+    );
+  }
+}
+
 function collaborationUnavailable<
   K extends
     | 'collaboration.invitation.prepare'
     | 'collaboration.grant.revoke'
     | 'collaboration.principal.revoke'
+    | 'collaboration.principal.rename'
     | 'collaboration.turn-request.create'
     | 'collaboration.turn-request.acknowledge'
     | 'collaboration.turn-request.withdraw'

@@ -73,7 +73,7 @@ test('AgentRun closes its write contract against a type this build does not emit
     store.appendEvent('session-1', 'run-1', retired);
   assert.equal(typeof appendRetired, 'function');
 
-  const emitted: EmittedAgentRunEvent = { ...retired, type: 'run_started' };
+  const emitted: EmittedAgentRunEvent = { ...retired, type: 'turn_started' };
   const appendEmitted = (store: AgentRunStore) => store.appendEvent('session-1', 'run-1', emitted);
   assert.equal(typeof appendEmitted, 'function');
 });

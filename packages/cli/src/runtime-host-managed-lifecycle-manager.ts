@@ -136,6 +136,7 @@ export async function manageRuntimeHostManagedLifecycle(
     }
     if (input.action === 'restart') {
       const retirement = await retireRuntimeHostLifecycleOwner({
+        ...(input.expectedHost ? { expectedOwner: input.expectedHost } : {}),
         rootPath: config.root.path,
         rootId,
         supervisor: provider.supervisor,

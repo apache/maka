@@ -18,38 +18,14 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
+import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type {
   SessionBlockedReason,
   SessionHeader,
   SessionStatus,
-  StoredMessage,
   TurnRecord,
-  TurnStateMessage,
 } from '@maka/core/session';
-
-export type TurnStateLineage = Partial<
-  Pick<
-    TurnStateMessage,
-    | 'parentTurnId'
-    | 'retriedFromTurnId'
-    | 'regeneratedFromTurnId'
-    | 'branchOfTurnId'
-    | 'parentSessionId'
-  >
->;
-
-export interface BuildTurnStateMessageInput {
-  id: string;
-  turnId: string;
-  ts: number;
-  status: TurnRecord['status'];
-  lineage?: TurnStateLineage;
-  errorClass?: string;
-  abortSource?: string;
-  partialOutputRetained: boolean;
-}
 
 export function buildStatusPatch(
   status: SessionStatus,
@@ -63,40 +39,8 @@ export function buildStatusPatch(
   };
 }
 
-export function buildTurnStateMessage(input: BuildTurnStateMessageInput): TurnStateMessage {
-  const lineage = input.lineage ?? {};
-  return {
-    type: 'turn_state',
-    id: input.id,
-    turnId: input.turnId,
-    ts: input.ts,
-    status: input.status,
-    ...(lineage.parentTurnId ? { parentTurnId: lineage.parentTurnId } : {}),
-    ...(lineage.retriedFromTurnId ? { retriedFromTurnId: lineage.retriedFromTurnId } : {}),
-    ...(lineage.regeneratedFromTurnId
-      ? { regeneratedFromTurnId: lineage.regeneratedFromTurnId }
-      : {}),
-    ...(lineage.branchOfTurnId ? { branchOfTurnId: lineage.branchOfTurnId } : {}),
-    ...(lineage.parentSessionId ? { parentSessionId: lineage.parentSessionId } : {}),
-    ...(input.status === 'aborted' ? { abortedAt: input.ts } : {}),
-    ...(input.status === 'aborted' && input.abortSource ? { abortSource: input.abortSource } : {}),
-    ...(input.status === 'failed' ? { errorClass: input.errorClass ?? 'unknown' } : {}),
-    partialOutputRetained: input.partialOutputRetained,
-  };
-}
-
-export function turnHasRetainedOutput(messages: readonly StoredMessage[], turnId: string): boolean {
-  return messages.some(
-    (message) =>
-      (message.type === 'assistant' &&
-        message.turnId === turnId &&
-        message.text.trim().length > 0) ||
-      (message.type === 'tool_result' && message.turnId === turnId),
-  );
-}
-
 export function normalizeStopSessionSource(
-  source: 'stop_button' | 'graph_supervisor' | 'workhub_direct_stop' | undefined,
+  source: 'stop_button' | 'graph_supervisor' | 'host_shutdown' | 'workhub_direct_stop' | undefined,
   workHubActionId?: string,
 ): string | undefined {
   if (source !== 'workhub_direct_stop' && workHubActionId !== undefined) {
@@ -107,6 +51,8 @@ export function normalizeStopSessionSource(
       return 'renderer.stop_button';
     case 'graph_supervisor':
       return 'graph.supervisor';
+    case 'host_shutdown':
+      return 'runtime_host.shutdown';
     case 'workhub_direct_stop':
       return workHubDirectStopAbortSource(workHubActionId);
     case undefined:
@@ -122,7 +68,13 @@ export function workHubDirectStopAbortSource(actionId: string | undefined): stri
   return `workhub.direct_stop.${suffix}`;
 }
 
-export function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
+/**
+ * What a live run says about itself before its events close it. Only the
+ * outcomes are durable; the other two describe a run still in flight.
+ */
+export type RunLifecycleStatus = RuntimeInvocationOutcome | 'running' | 'waiting_for_user';
+
+export function isTerminalRunStatus(status: RunLifecycleStatus): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 

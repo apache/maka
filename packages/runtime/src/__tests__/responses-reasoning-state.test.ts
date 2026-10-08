@@ -112,21 +112,20 @@ test('reconstructs provider-native summary parts', () => {
   );
 });
 
-test('rejects summary boundaries that disagree with canonical text', () => {
+test('drops summary boundaries that disagree with canonical text', () => {
   const state = {
     version: 1,
     profile: 'alibaba-token-plan-cn',
     itemId: 'summary-item',
     summaryPartLengths: [8],
   } as const;
-  assert.throws(
-    () =>
-      replayPlaintextResponsesProviderOptions({
-        providerOptionsKey: 'alibaba-token-plan-cn',
-        state: { ...state, summaryPartLengths: [3] },
-        text: 'expected',
-      }),
-    /summary boundaries do not match text/,
+  assert.equal(
+    replayPlaintextResponsesProviderOptions({
+      providerOptionsKey: 'alibaba-token-plan-cn',
+      state: { ...state, summaryPartLengths: [3] },
+      text: 'expected',
+    }),
+    undefined,
   );
 });
 

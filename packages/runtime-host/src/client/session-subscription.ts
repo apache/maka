@@ -21,10 +21,11 @@ import { createHash } from 'node:crypto';
 import {
   encodeProtocolMessage,
   type SessionAssistantStreamIdentity,
+  type SessionRuntimeResourcePtyDataFrame,
+  type SessionDomainChangedFrame,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
-  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
-  SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES,
+  type SubscriptionClosedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type SessionTranscriptBootstrap,
@@ -42,7 +43,6 @@ export type RuntimeHostSubscriptionFailureReason =
   | 'correlation_changed'
   | 'projection_revision_invalid'
   | 'slow_consumer'
-  | 'transcript_release_failed'
   | 'connection_closed';
 
 export class RuntimeHostSubscriptionError extends Error {
@@ -56,22 +56,51 @@ export class RuntimeHostSubscriptionError extends Error {
   }
 }
 
+export class SessionRemovedSubscriptionError extends Error {
+  readonly name = 'SessionRemovedSubscriptionError';
+}
+
+export function subscriptionClosedError(reason: SubscriptionClosedFrame['reason']): Error {
+  if (reason === 'session_removed') {
+    return new SessionRemovedSubscriptionError(
+      'Runtime Host Session was removed while it was observed',
+    );
+  }
+  if (reason === 'access_revoked') {
+    return new SessionRemovedSubscriptionError(
+      'Access to the shared Runtime Host Session was revoked',
+    );
+  }
+  return new RuntimeHostSubscriptionError(
+    'slow_consumer',
+    'Runtime Host Session subscription closed for a slow consumer',
+  );
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 export interface RuntimeHostSessionSubscription extends AsyncIterable<SubscriptionFrame> {
+  subscribePtyData(listener: (frame: SessionRuntimeResourcePtyDataFrame) => void): () => void;
+  subscribeSessionDomainChanges(listener: (frame: SessionDomainChangedFrame) => void): () => void;
   readonly hostEpoch: string;
   readonly subscriptionId: string;
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
+  /** Newest durable sequence the Host announced; updated before the frame is handed out. */
+  readonly transcriptWatermark: number | null;
+  /**
+   * The subscription's own death certificate: the reason on a received
+   * `subscription.closed` frame, or the failure that terminated it. A
+   * transcript read racing the death only sees the dead-state mask; classify
+   * by this instead. The closed reason is recorded before any terminal error
+   * can exist, so it always wins here. Optional introspection — fakes that
+   * never produce a certificate need not declare it.
+   */
+  readonly deathCause?: Error | undefined;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
-  loadTranscriptOverlay<T>(
-    decodeMessage: (value: unknown) => T,
-    maxMessageBytes?: number,
-    accountAssemblyBytes?: (deltaBytes: number) => void,
-  ): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
     decodeMessage: (value: unknown) => T,
@@ -81,6 +110,8 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   loadTranscriptPage(
     input: Omit<SessionTranscriptPageInput, 'subscriptionId'>,
   ): Promise<SessionTranscriptPage>;
+  /** Frames are held by the Host until this resolves. */
+  ready(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -106,12 +137,25 @@ export class ClientSessionSubscription
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
   readonly #requestClose: () => Promise<void>;
+  readonly #requestReady: () => Promise<void>;
+  #readyTask: Promise<void> | undefined;
   readonly #readTranscriptPage: (
     input: SessionTranscriptPageInput,
   ) => Promise<SessionTranscriptPage>;
-  readonly #releaseTranscriptOverlay: () => Promise<void>;
   readonly #expectedSessionId: string;
+  get transcriptWatermark(): number | null {
+    return this.#latestTranscriptThroughSequence;
+  }
+  get deathCause(): Error | undefined {
+    // #closedReason is recorded at accept()-time, before #terminalError can
+    // exist — it is always the authoritative death statement.
+    return this.#closedReason === undefined
+      ? this.#terminalError
+      : subscriptionClosedError(this.#closedReason);
+  }
   readonly #queue: QueuedFrame[] = [];
+  readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
+  readonly #sessionDomainListeners = new Set<(frame: SessionDomainChangedFrame) => void>();
   #queuedBytes = 0;
   #expectedSequence: number;
   #latestProjectionRevision: number;
@@ -122,20 +166,19 @@ export class ClientSessionSubscription
       }
     | undefined;
   #terminalError: Error | undefined;
+  #closedReason: SubscriptionClosedFrame['reason'] | undefined;
   #done = false;
   #doneAfterQueue = false;
   #closing = false;
   #closeTask: Promise<void> | undefined;
   #transcriptTask: Promise<unknown[]> | undefined;
-  #overlayTask: Promise<Array<{ identity: number; value: unknown }>> | undefined;
-  #overlayConsumed = false;
   #latestTranscriptThroughSequence: number | null;
 
   constructor(
     result: SubscriptionOpenResult,
     requestClose: () => Promise<void>,
     readTranscriptPage: (input: SessionTranscriptPageInput) => Promise<SessionTranscriptPage>,
-    releaseTranscriptOverlay: () => Promise<void> = async () => undefined,
+    requestReady: () => Promise<void>,
   ) {
     this.hostEpoch = result.hostEpoch;
     this.subscriptionId = result.subscriptionId;
@@ -145,14 +188,38 @@ export class ClientSessionSubscription
     this.#expectedSessionId = result.snapshot.session.sessionId;
     this.#expectedSequence = result.nextSequence;
     this.#latestProjectionRevision = result.snapshot.projectionRevision;
-    this.#latestTranscriptThroughSequence = result.transcript?.throughSequence ?? null;
+    this.#latestTranscriptThroughSequence = result.transcript?.durable.throughSequence ?? null;
     this.#requestClose = requestClose;
     this.#readTranscriptPage = readTranscriptPage;
-    this.#releaseTranscriptOverlay = releaseTranscriptOverlay;
+    this.#requestReady = requestReady;
+  }
+
+  /**
+   * Take frames from here on.
+   *
+   * Until this is called the Host holds them, so a subscriber assembles the
+   * state frames apply to without an in-flight answer of any size arriving
+   * against a queue sized for live traffic.
+   */
+  ready(): Promise<void> {
+    this.#readyTask ??= this.#requestReady();
+    return this.#readyTask;
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
     return this;
+  }
+
+  subscribePtyData(listener: (frame: SessionRuntimeResourcePtyDataFrame) => void): () => void {
+    if (this.#done || this.#terminalError || this.#closing) return () => undefined;
+    this.#ptyListeners.add(listener);
+    return () => this.#ptyListeners.delete(listener);
+  }
+
+  subscribeSessionDomainChanges(listener: (frame: SessionDomainChangedFrame) => void): () => void {
+    if (this.#done || this.#terminalError || this.#closing) return () => undefined;
+    this.#sessionDomainListeners.add(listener);
+    return () => this.#sessionDomainListeners.delete(listener);
   }
 
   next(): Promise<IteratorResult<SubscriptionFrame>> {
@@ -183,6 +250,7 @@ export class ClientSessionSubscription
   close(): Promise<void> {
     if (this.#done || this.#terminalError) return Promise.resolve();
     this.#closing = true;
+    this.#ptyListeners.clear();
     if (!this.#closeTask) this.#closeTask = this.#requestClose();
     return this.#closeTask;
   }
@@ -195,26 +263,6 @@ export class ClientSessionSubscription
     return this.#transcriptTask.then((messages) => messages.map(decodeMessage));
   }
 
-  loadTranscriptOverlay<T>(
-    decodeMessage: (value: unknown) => T,
-    maxMessageBytes = Number.MAX_SAFE_INTEGER,
-    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
-  ): Promise<T[]> {
-    this.#assertTranscriptReadable();
-    const bootstrap = this.transcriptBootstrap;
-    if (!bootstrap) {
-      return Promise.reject(
-        new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session subscription was opened without transcript access',
-        ),
-      );
-    }
-    return this.#consumeTranscriptOverlay(bootstrap, maxMessageBytes, accountAssemblyBytes).then(
-      (messages) => messages.map((entry) => decodeMessage(entry.value)),
-    );
-  }
-
   async decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
     decodeMessage: (value: unknown) => T,
@@ -223,13 +271,11 @@ export class ClientSessionSubscription
   ): Promise<DecodedSessionTranscriptPage<T>> {
     this.#assertTranscriptReadable();
     this.#assertTranscriptPage(page, {
-      source: page.source,
       direction: page.direction,
       throughSequence: page.throughSequence,
       maxBytes: Math.max(1, page.rawBytes),
     });
     const assembler = new TranscriptFragmentAssembler(
-      page.source,
       page.direction,
       maxMessageBytes,
       accountAssemblyBytes,
@@ -237,15 +283,7 @@ export class ClientSessionSubscription
     try {
       assembler.accept(page.fragments);
       let cursor = page.nextCursor;
-      let rangeBytes = page.fragments.reduce((total, fragment) => total + fragment.totalBytes, 0);
-      const rangeIdentities = new Set(
-        page.fragments.map((fragment) =>
-          fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex,
-        ),
-      );
-      let reachedBoundary =
-        page.rangeBoundarySequence === null || rangeIdentities.has(page.rangeBoundarySequence);
-      while (assembler.continuationBytes !== null || !reachedBoundary) {
+      while (assembler.continuationBytes !== null) {
         if (cursor === null) {
           throw new RuntimeHostSubscriptionError(
             'correlation_changed',
@@ -254,15 +292,11 @@ export class ClientSessionSubscription
         }
         const requestedCursor = cursor;
         const continuation = await this.loadTranscriptPage({
-          source: page.source,
           direction: page.direction,
           throughSequence: page.throughSequence,
           cursor,
           anchorSequence: null,
-          maxBytes:
-            assembler.continuationBytes === null
-              ? SESSION_TRANSCRIPT_PAGE_MAX_BYTES
-              : Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
+          maxBytes: Math.min(SESSION_TRANSCRIPT_PAGE_MAX_BYTES, assembler.continuationBytes),
         });
         if (continuation.nextCursor === requestedCursor) {
           throw new RuntimeHostSubscriptionError(
@@ -270,22 +304,7 @@ export class ClientSessionSubscription
             'Session transcript cursor did not advance',
           );
         }
-        for (const fragment of continuation.fragments) {
-          const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
-          if (!rangeIdentities.has(identity)) {
-            rangeIdentities.add(identity);
-            rangeBytes += fragment.totalBytes;
-          }
-        }
-        if (
-          rangeBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES ||
-          rangeIdentities.size > SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES
-        ) {
-          throw new RangeError('Session transcript range exceeds the local capacity limit');
-        }
         assembler.accept(continuation.fragments);
-        reachedBoundary =
-          page.rangeBoundarySequence === null || rangeIdentities.has(page.rangeBoundarySequence);
         cursor = continuation.nextCursor;
       }
       return {
@@ -343,99 +362,24 @@ export class ClientSessionSubscription
         'Session subscription was opened without transcript access',
       );
     }
-    const overlay = await this.#consumeTranscriptOverlay(bootstrap);
     const durable = await this.#loadTranscriptSource(bootstrap.durable);
-    if (bootstrap.durableCoverage === 'complete') {
-      assertCompleteIdentities(durable, bootstrap.throughSequence);
-    }
-    const messages = durable.map((entry) => entry.value);
-    const indexById = new Map<string, number>();
-    for (const [index, message] of messages.entries()) {
-      const id = messageIdentity(message);
-      if (id) indexById.set(id, index);
-    }
-    for (const entry of overlay) {
-      const id = messageIdentity(entry.value);
-      const index = id ? indexById.get(id) : undefined;
-      if (index === undefined) {
-        if (id) indexById.set(id, messages.length);
-        messages.push(entry.value);
-      } else {
-        messages[index] = entry.value;
-      }
-    }
-    return messages;
-  }
-
-  #consumeTranscriptOverlay(
-    bootstrap: SessionTranscriptBootstrap,
-    maxMessageBytes = Number.MAX_SAFE_INTEGER,
-    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
-  ): Promise<Array<{ identity: number; value: unknown }>> {
-    if (this.#overlayConsumed && !this.#overlayTask) {
-      return Promise.reject(
-        new RuntimeHostSubscriptionError(
-          'correlation_changed',
-          'Session transcript overlay was already consumed',
-        ),
-      );
-    }
-    this.#overlayTask ??= (async () => {
-      const overlay = await this.#loadTranscriptSource(
-        bootstrap.overlay,
-        maxMessageBytes,
-        accountAssemblyBytes,
-      );
-      assertCompleteIdentities(
-        overlay,
-        bootstrap.overlayMessageCount === 0 ? null : bootstrap.overlayMessageCount - 1,
-      );
-      if (bootstrap.overlayMessageCount === 0) {
-        this.#overlayConsumed = true;
-        return overlay;
-      }
-      try {
-        await this.#releaseTranscriptOverlay();
-      } catch (cause) {
-        await this.close().catch(() => undefined);
-        throw new RuntimeHostSubscriptionError(
-          'transcript_release_failed',
-          'Runtime Host Session transcript overlay release was not confirmed',
-          { cause },
-        );
-      }
-      this.#overlayConsumed = true;
-      return overlay;
-    })();
-    const task = this.#overlayTask;
-    return task.finally(() => {
-      if (this.#overlayTask === task) this.#overlayTask = undefined;
-    });
+    return durable.map((entry) => entry.value);
   }
 
   async #loadTranscriptSource(
     initial: SessionTranscriptPage,
-    maxMessageBytes = Number.MAX_SAFE_INTEGER,
-    accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
   ): Promise<Array<{ identity: number; value: unknown }>> {
     this.#assertTranscriptPage(initial, {
-      source: initial.source,
       direction: initial.direction,
       throughSequence: initial.throughSequence,
       maxBytes: Math.max(1, initial.rawBytes),
     });
-    const assembler = new TranscriptFragmentAssembler(
-      initial.source,
-      initial.direction,
-      maxMessageBytes,
-      accountAssemblyBytes,
-    );
+    const assembler = new TranscriptFragmentAssembler(initial.direction);
     try {
       assembler.accept(initial.fragments);
       let cursor = initial.nextCursor;
       while (cursor !== null) {
         const page = await this.loadTranscriptPage({
-          source: initial.source,
           direction: initial.direction,
           throughSequence: initial.throughSequence,
           cursor,
@@ -458,7 +402,8 @@ export class ClientSessionSubscription
   }
 
   #assertTranscriptReadable(): void {
-    if (this.#closing || this.#done || this.#terminalError) {
+    if (this.#terminalError) throw this.#terminalError;
+    if (this.#closing || this.#done) {
       throw new RuntimeHostSubscriptionError(
         'connection_closed',
         'Session subscription closed during transcript loading',
@@ -468,14 +413,10 @@ export class ClientSessionSubscription
 
   #assertTranscriptPage(
     page: SessionTranscriptPage,
-    expected: Pick<
-      SessionTranscriptPageInput,
-      'source' | 'direction' | 'throughSequence' | 'maxBytes'
-    >,
+    expected: Pick<SessionTranscriptPageInput, 'direction' | 'throughSequence' | 'maxBytes'>,
   ): void {
     if (
       page.sessionId !== this.#expectedSessionId ||
-      page.source !== expected.source ||
       page.direction !== expected.direction ||
       page.throughSequence !== expected.throughSequence ||
       page.rawBytes > expected.maxBytes
@@ -507,6 +448,24 @@ export class ClientSessionSubscription
         'Session subscription correlation changed',
       );
     }
+    if (frame.kind === 'subscription.runtime_resource_pty_data') {
+      if (frame.sessionId !== this.#expectedSessionId) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'PTY Session identity changed',
+        );
+      }
+      // No iterator backlog when nobody is displaying a terminal. Attaching
+      // consumers hydrate from a snapshot, including bytes before attachment.
+      for (const listener of this.#ptyListeners) {
+        try {
+          listener(frame);
+        } catch {
+          /* A display consumer cannot terminate Session state. */
+        }
+      }
+      return;
+    }
     if (frame.sequence !== this.#expectedSequence) {
       throw new RuntimeHostSubscriptionError(
         'sequence_gap',
@@ -533,8 +492,7 @@ export class ClientSessionSubscription
       (frame.kind === 'subscription.session_delta' ||
         frame.kind === 'subscription.session_event' ||
         frame.kind === 'subscription.transcript_advanced' ||
-        frame.kind === 'subscription.session_domain_changed' ||
-        frame.kind === 'subscription.runtime_resource_pty_data') &&
+        frame.kind === 'subscription.session_domain_changed') &&
       frame.sessionId !== this.#expectedSessionId
     ) {
       throw new RuntimeHostSubscriptionError(
@@ -563,11 +521,29 @@ export class ClientSessionSubscription
       this.#latestTranscriptThroughSequence = frame.throughSequence;
     }
 
+    if (frame.kind === 'subscription.session_domain_changed') {
+      for (const listener of this.#sessionDomainListeners) {
+        try {
+          listener(frame);
+        } catch {
+          /* An invalidation consumer cannot terminate Session state. */
+        }
+      }
+    }
+
+    if (frame.kind === 'subscription.closed') {
+      // Record the reason before the offer: a full client queue makes #offer
+      // throw 'slow_consumer', which would otherwise discard the real reason
+      // the Host gave for closing this subscription.
+      this.#closedReason = frame.reason;
+      this.#doneAfterQueue = true;
+    }
     this.#offer(frame);
-    if (frame.kind === 'subscription.closed') this.#doneAfterQueue = true;
   }
 
   finish(): void {
+    this.#ptyListeners.clear();
+    this.#sessionDomainListeners.clear();
     if (this.#done || this.#terminalError) return;
     this.#doneAfterQueue = true;
     if (this.#queue.length === 0) {
@@ -578,6 +554,8 @@ export class ClientSessionSubscription
   }
 
   fail(error: Error): void {
+    this.#ptyListeners.clear();
+    this.#sessionDomainListeners.clear();
     if (this.#done || this.#terminalError) return;
     this.#terminalError = error;
     this.#queue.length = 0;
@@ -623,7 +601,6 @@ class TranscriptFragmentAssembler {
   #lastStartedIdentity: number | undefined;
 
   constructor(
-    private readonly source: 'durable' | 'overlay',
     private readonly direction: 'older' | 'newer',
     private readonly maxMessageBytes = Number.MAX_SAFE_INTEGER,
     private readonly accountAssemblyBytes: (deltaBytes: number) => void = () => undefined,
@@ -657,15 +634,9 @@ class TranscriptFragmentAssembler {
   }
 
   #accept(fragment: SessionTranscriptFragment): void {
-    if (fragment.kind !== this.source) {
-      throw new RuntimeHostSubscriptionError(
-        'correlation_changed',
-        'Session transcript fragment source changed',
-      );
-    }
-    const identity = fragment.kind === 'durable' ? fragment.sequence : fragment.messageIndex;
+    const identity = fragment.sequence;
     const bytes = Buffer.from(fragment.data, 'base64');
-    const payloadDigest = fragment.kind === 'durable' ? fragment.payloadDigest : null;
+    const payloadDigest = fragment.payloadDigest;
     if (!this.#current) this.#start(identity, fragment.totalBytes, payloadDigest);
     if (
       this.#current?.identity !== identity ||
@@ -756,34 +727,4 @@ class TranscriptFragmentAssembler {
     }
     this.#current = undefined;
   }
-}
-
-function assertCompleteIdentities(
-  messages: readonly { identity: number }[],
-  throughIdentity: number | null,
-): void {
-  if (throughIdentity === null) {
-    if (messages.length !== 0) {
-      throw new RuntimeHostSubscriptionError(
-        'correlation_changed',
-        'Session transcript contains messages without a watermark',
-      );
-    }
-    return;
-  }
-  if (
-    messages.length !== throughIdentity + 1 ||
-    messages.some((message, index) => message.identity !== index)
-  ) {
-    throw new RuntimeHostSubscriptionError(
-      'correlation_changed',
-      'Session transcript has a message sequence gap',
-    );
-  }
-}
-
-function messageIdentity(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-  const id = (value as Record<string, unknown>).id;
-  return typeof id === 'string' ? id : undefined;
 }

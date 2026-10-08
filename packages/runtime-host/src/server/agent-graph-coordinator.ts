@@ -211,12 +211,6 @@ export function projectAgentGraphClientSnapshot(
   return projectSnapshot(snapshot);
 }
 
-export function projectAgentGraphOperatorInspection(
-  inspection: RuntimeAgentGraphOperatorInspection,
-): AgentGraphOperatorInspection {
-  return projectInspection(inspection);
-}
-
 function projectSnapshot(snapshot: RuntimeAgentGraphClientSnapshot): AgentGraphClientSnapshot {
   const operators = snapshot.operators.slice(0, AGENT_GRAPH_MAX_OPERATORS).map(projectOperator);
   const visibleOperatorIds = new Set(operators.map((operator) => operator.operatorId));
@@ -405,6 +399,29 @@ function projectOperator(
               ? { terminalRecordId: operator.currentActivation.terminalRecordId }
               : {}),
             run: projectRunRef(operator.currentActivation.run),
+          },
+        }
+      : {}),
+    ...(operator.output
+      ? {
+          output: {
+            activationId: operator.output.activationId,
+            preview: operator.output.preview,
+            previewTruncated: operator.output.previewTruncated,
+            phase: operator.output.phase,
+            previewUpdatedAt: operator.output.previewUpdatedAt,
+            sourceEventId: operator.output.sourceEventId,
+            sampleStartedAt: operator.output.sampleStartedAt,
+            ...(operator.output.messageId ? { messageId: operator.output.messageId } : {}),
+            ...(operator.output.outputTokens !== undefined
+              ? { outputTokens: operator.output.outputTokens }
+              : {}),
+            ...(operator.output.sampleDurationMs !== undefined
+              ? { sampleDurationMs: operator.output.sampleDurationMs }
+              : {}),
+            ...(operator.output.tokensPerSecond !== undefined
+              ? { tokensPerSecond: operator.output.tokensPerSecond }
+              : {}),
           },
         }
       : {}),

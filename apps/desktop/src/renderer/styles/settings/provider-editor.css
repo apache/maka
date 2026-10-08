@@ -44,6 +44,20 @@
   color: var(--muted-foreground);
 }
 
+.providerEndpointField {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.providerRequestUrlPreview {
+  margin: 0;
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 980px) {
   .app {
     grid-template-columns: 1fr;
@@ -58,4 +72,19 @@
     border: 0;
     border-radius: 0;
   }
+}
+
+.externalAgentRelease {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: 4px;
+}
+
+.externalAgentDownloadProgress {
+  display: block;
+  inline-size: min(100%, 24rem);
+  block-size: 4px;
+  margin-block-start: 8px;
+  accent-color: var(--primary);
 }

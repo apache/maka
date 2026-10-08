@@ -33,6 +33,7 @@ export function projectSessionCatalogSummary(
     name: session.name,
     isFlagged: session.isFlagged,
     isArchived: session.isArchived,
+    ...(session.archivedAt === undefined ? {} : { archivedAt: session.archivedAt }),
     labels: [...session.labels],
     hasUnread: session.hasUnread,
     ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
@@ -44,7 +45,15 @@ export function projectSessionCatalogSummary(
     ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
     ...(session.liveRunState === undefined
       ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
+      : {
+          runningTurnIds: [...session.liveRunState.runningTurnIds],
+          ...(session.liveRunState.runEpoch === undefined
+            ? {}
+            : { runEpoch: session.liveRunState.runEpoch }),
+          ...(session.liveRunState.hostGeneration === undefined
+            ? {}
+            : { runHostGeneration: session.liveRunState.hostGeneration }),
+        }),
     ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
     ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
     ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
@@ -60,6 +69,12 @@ export function projectSessionCatalogSummary(
     ...(session.revisionIndex === undefined ? {} : { revisionIndex: session.revisionIndex }),
     ...(session.revisionState === undefined ? {} : { revisionState: session.revisionState }),
     backend: session.backend,
+    ...(session.executorId
+      ? {
+          executorId: session.executorId,
+          ...(session.executorConfig ? { executorConfig: session.executorConfig } : {}),
+        }
+      : {}),
     ...(session.llmConnectionId === null ? {} : { llmConnectionId: session.llmConnectionId }),
     llmConnectionSlug: session.llmConnectionSlug,
     connectionLocked: session.connectionLocked,

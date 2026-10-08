@@ -78,15 +78,16 @@ RuntimeEvent 是语义事实的唯一权威，但不能替代执行所有权的�
 11. strict args identity 明确处理 `__proto__` 并拒绝 sparse/accessor/custom array；
 12. 唯一 canonical RuntimeEvent codec 负责 decode、normalization、strict JSON、稳定 bytes 与
     lossless round-trip；SQLite/JSONL、未来 prefix digest 均复用它；
-13. JSONL immutable exact retry 物理去重，写前验证 Run header identity；
+13. JSONL immutable exact retry 物理去重，写前验证 invocation identity；
 14. SQLite 强制一个 invocation 只对应一个 `(sessionId, runId, turnId)`；
 15. journal ID 只由 store 派生；正式 schema 4 的无 dispatch legacy rows保守隔离。
 
 PR A 首版的 prospective gate 是 workspace-wide semantic fail-stop：任何 session 中已存在的
 canonical tool-ledger corruption 都会拒绝同一 SQLite workspace 后续所有 tool-bearing write。
-这会扩大故障域并在写事务内产生全历史扫描成本，但它是明确的 correctness-first 选择。后续只能
-用可从 immutable events 重建的增量 reducer 收缩到 candidate execution spine；不能用可变缓存
-替代事实权威。
+当前实现已把校验范围缩到 candidate invocation 及其显式父工具依赖闭包。每次写入在同一
+SQLite 事务视图下读取 immutable events，使用与整段扫描相同的 reducer 规则校验候选，
+随后丢弃临时状态。reducer 不跨事务缓存，不需要镜像失效版本、候选撤销日志或 LRU；
+SQLite 事务仍负责事实与投影的原子提交、回滚。无关 invocation 的损坏不会扩大当前写入的失败域。
 
 PR A 的证明矩阵包括：
 
@@ -184,7 +185,7 @@ schema 6 增加 `runtime_continuation_claims` 与 capability
 - immediate source execution identity、physical high-water、prefix digest；
 - provider projection version 与 provider replay digest；
 - fresh target session/invocation/run/turn；
-- target Run 的完整、严格解码 `AgentRunHeader`（含 V2 continuation source）；
+- target invocation 的完整、严格解码开场事实（含 continuation source）；
 - claim id、claimed-at、protocol version；
 - 可空、唯一的 continuation-start event id；
 - 与 start 同生存期的 store-owned `start_kind`：`runtime_admission | claim_repair`。
@@ -288,8 +289,8 @@ retry 入口。历史 `linked_child_resume` / `linked_child_provider_retry` desc
 `retriedFromRunId` 只保留重启关闭、查询和展示兼容，不会重新触发 provider。
 
 live continuation-start 同时绑定 claim id、boundary digest、immediate source identity/high-water/prefix
-digest、replay manifest、provider projection version 和 provider replay digest。V2 AgentRun header 的
-`continuationSource` 必须与首条 continuation-start 完全一致。若当前执行使用
+digest、replay manifest、provider projection version 和 provider replay digest。target invocation 开场事实里的
+continuation source 必须与首条 continuation-start 完全一致。若当前执行使用
 `t1_after_preflight_v1`，该 marker 也写在同一 event-seq 1；repair start 不得携带它。
 
 只有 `RuntimeKernel` 能 dispatch durable continuation。AgentRun 仅在 live start 返回

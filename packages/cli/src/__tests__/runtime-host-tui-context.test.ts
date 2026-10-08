@@ -20,7 +20,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { RuntimeHostConnection, RuntimeHostProfile } from '@maka/runtime-host/client';
-import { resolveRuntimeHostTuiWorkspace } from '../runtime-host-tui-context.js';
+import {
+  createRuntimeHostExternalSessionSurface,
+  resolveRuntimeHostTuiWorkspace,
+} from '../runtime-host-tui-context.js';
 
 const REMOTE_PROFILE: RuntimeHostProfile = {
   id: 'office',
@@ -95,5 +98,40 @@ describe('Runtime Host TUI workspace selection', () => {
         { kind: 'project', projectId: 'project-1' },
       );
     }
+  });
+});
+
+describe('Runtime Host external Session surface', () => {
+  test('owns both available scopes and current-workspace request projection', async () => {
+    const requests: Array<{ operation: string; input: unknown }> = [];
+    const connection = {
+      request: async (operation: string, input: unknown) => {
+        requests.push({ operation, input });
+        return { sessions: [], nextCursor: null };
+      },
+    } as unknown as RuntimeHostConnection;
+    let workspace = undefined as { kind: 'host_path'; path: string } | undefined;
+    const surface = createRuntimeHostExternalSessionSurface(connection, () => workspace);
+
+    assert.deepEqual(surface.listScopes(), ['all']);
+    await assert.rejects(
+      () => surface.listSessions({ adapterId: 'codex', scope: 'current_workspace' }),
+      /workspace is unavailable/,
+    );
+    assert.deepEqual(requests, []);
+
+    workspace = { kind: 'host_path', path: '/repo' };
+    assert.deepEqual(surface.listScopes(), ['current_workspace', 'all']);
+    await surface.listSessions({
+      adapterId: 'codex',
+      scope: 'current_workspace',
+      text: 'parser',
+    });
+    assert.deepEqual(requests, [
+      {
+        operation: 'external-session.catalog.query',
+        input: { adapterId: 'codex', workspace, text: 'parser' },
+      },
+    ]);
   });
 });

@@ -17,21 +17,20 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
+import { isTerminalShellRunStatus } from '@maka/core/shell-run';
 import { useUiLocale } from '@maka/ui';
 import { ICON_SIZE, Terminal as TerminalIcon } from '@maka/ui/icons';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy';
-import { SessionTerminalHydration } from './session-terminal-hydration';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy';
+import { SessionTerminalHydration, SessionTerminalRenderQueue } from './session-terminal-hydration';
 import { suppressTerminalQueryReplies } from './session-terminal-query';
 import { scheduleTerminalFrame } from './session-terminal-frame';
+import { loadTerminalWebLinks } from './terminal-web-links';
 import { useWorkbarServices } from '../../services-context.js';
 import { getTerminalFontSize, subscribeTerminalFontSize } from '../../../../theme';
 
@@ -62,11 +61,21 @@ export function SessionTerminalPanel(props: {
   const activeRef = useRef(props.active);
   const lastSizeRef = useRef('');
   const [error, setError] = useState<string | null>(null);
+  const loadFailed = useEffectEvent((cause?: unknown) => {
+    setError(cause === undefined ? copy.loadFailed :
+      generalizedErrorMessageForLocale(cause, copy.loadFailed, locale));
+  });
+  const writeFailed = useEffectEvent((cause: unknown) => {
+    setError(generalizedErrorMessageForLocale(cause, copy.writeFailed, locale));
+  });
 
   useEffect(() => {
     activeRef.current = props.active;
-    if (!props.active) return;
     const terminal = terminalRef.current;
+    // Hidden terminals retain their parser and buffer, but have no accessible
+    // viewport to announce or measure. xterm recreates that view on activation.
+    if (terminal) terminal.options.screenReaderMode = props.active;
+    if (!props.active) return;
     const fit = fitRef.current;
     if (!terminal || !fit) return;
     return scheduleTerminalFrame(() => {
@@ -82,6 +91,9 @@ export function SessionTerminalPanel(props: {
 
     lastSizeRef.current = '';
     let disposed = false;
+    let ended = false;
+    let hydrationPending = false;
+    let resyncRequested = false;
     let cancelHydrationFrame: (() => void) | null = null;
     const hydration = new SessionTerminalHydration();
     const terminal = new Terminal({
@@ -92,12 +104,13 @@ export function SessionTerminalPanel(props: {
       fontSize: getTerminalFontSize(),
       letterSpacing: 0,
       lineHeight: 1.2,
-      screenReaderMode: true,
+      screenReaderMode: activeRef.current,
       scrollback: 5_000,
       theme: terminalTheme(host),
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    loadTerminalWebLinks(terminal);
     terminal.open(host);
     terminalRef.current = terminal;
     fitRef.current = fit;
@@ -107,10 +120,19 @@ export function SessionTerminalPanel(props: {
     // the next prompt. Do not route xterm-generated query replies through that
     // input path; terminal setters and ordinary user input remain unaffected.
     const terminalQueryReplies = suppressTerminalQueryReplies(terminal);
+    const renderQueue = new SessionTerminalRenderQueue({
+      write: (data, done) => terminal.write(data, done),
+      reset: () => terminal.reset(),
+      resync: () => {
+        if (hydrationPending) resyncRequested = true;
+        else hydrate(hydration.begin());
+      },
+    });
 
     const writeEvent = (event: { sequence: number; data: string }) => {
       const live = hydration.accept(event);
-      if (live) terminal.write(live.data);
+      if (live) renderQueue.append(live.data);
+      if (hydration.needsSnapshot && !hydrationPending) hydrate(hydration.begin());
     };
     const unsubscribe = terminalService.subscribePtyData((event) => {
       if (
@@ -123,19 +145,23 @@ export function SessionTerminalPanel(props: {
       writeEvent(event);
     });
     const hydrate = (epoch: number) => {
+      if (ended || disposed) return;
+      hydrationPending = true;
       void terminalService
         .attach({ sessionId: props.sessionId, ref: props.terminalRef! })
         .then((snapshot) => {
-          if (disposed || !hydration.isCurrent(epoch)) return;
+          if (disposed || ended || !hydration.isCurrent(epoch)) return;
           if (!snapshot) {
-            setError(copy.loadFailed);
+            loadFailed();
             return;
           }
           const committed = hydration.commit(epoch, snapshot);
-          if (!committed) return;
-          terminal.reset();
-          if (committed.snapshot.buffer) terminal.write(committed.snapshot.buffer);
-          for (const event of committed.replay) terminal.write(event.data);
+          if (!committed) {
+            resyncRequested = hydration.needsSnapshot;
+            return;
+          }
+          renderQueue.replace(committed.snapshot.buffer);
+          for (const event of committed.replay) renderQueue.append(event.data);
           setError(null);
           cancelHydrationFrame?.();
           cancelHydrationFrame = scheduleTerminalFrame(() => {
@@ -145,21 +171,36 @@ export function SessionTerminalPanel(props: {
             if (activeRef.current) terminal.focus();
           });
         })
-        .catch((nextError) => {
-          if (disposed || !hydration.isCurrent(epoch)) return;
-          setError(
-            locale === 'zh'
-              ? generalizedErrorMessageChinese(nextError, copy.loadFailed)
-              : generalizedErrorMessage(nextError, copy.loadFailed),
-          );
+        .catch(async (nextError) => {
+          if (disposed || ended || !hydration.isCurrent(epoch)) return;
+          // Exit can precede mounting this view, so no terminal update need
+          // arrive after subscription. A failed attach is not itself proof of
+          // exit; use the existing authoritative inventory to distinguish it.
+          const recovery = await terminalService.recover(props.sessionId).catch(() => undefined);
+          if (disposed || ended || !hydration.isCurrent(epoch)) return;
+          if (recovery && !recovery.resources.some((update) => update.result.ref === props.terminalRef)) {
+            finish();
+            return;
+          }
+          loadFailed(nextError);
+        })
+        .finally(() => {
+          hydrationPending = false;
+          if (disposed || !resyncRequested) return;
+          resyncRequested = false;
+          hydrate(hydration.begin());
         });
     };
     const unsubscribeResync = terminalService.subscribeResync((event) => {
       if (disposed || event.sessionId !== props.sessionId) return;
+      if (hydrationPending) {
+        resyncRequested = true;
+        return;
+      }
       hydrate(hydration.begin());
     });
     const inputSubscription = terminal.onData((input) => {
-      if (!input || disposed) return;
+      if (!input || disposed || ended) return;
       void terminalService
         .write({
           sessionId: props.sessionId,
@@ -168,11 +209,7 @@ export function SessionTerminalPanel(props: {
         })
         .catch((nextError) => {
           if (disposed) return;
-          setError(
-            locale === 'zh'
-              ? generalizedErrorMessageChinese(nextError, copy.writeFailed)
-              : generalizedErrorMessage(nextError, copy.writeFailed),
-          );
+          writeFailed(nextError);
         });
     });
     const resize = () => {
@@ -180,6 +217,7 @@ export function SessionTerminalPanel(props: {
         return;
       }
       fit.fit();
+      if (ended) return;
       const key = `${terminal.cols}:${terminal.rows}`;
       if (lastSizeRef.current === key) return;
       lastSizeRef.current = key;
@@ -203,17 +241,38 @@ export function SessionTerminalPanel(props: {
       resize();
     });
 
+    const finish = () => {
+      if (disposed || ended) return;
+      ended = true;
+      setError(null);
+      terminal.options.disableStdin = true;
+      cancelHydrationFrame?.();
+      unsubscribe();
+      unsubscribeResync();
+      unsubscribeUpdates();
+      inputSubscription.dispose();
+      // Keep the existing buffer and let already queued writes finish. Output
+      // arriving after resource retirement has no recovery guarantee.
+      void terminalService.detach({ sessionId: props.sessionId, ref: props.terminalRef! }).catch(() => {});
+    };
+    const unsubscribeUpdates = terminalService.subscribeUpdates((update) => {
+      if (update.sessionId === props.sessionId && update.result.ref === props.terminalRef &&
+          isTerminalShellRunStatus(update.result.status)) finish();
+    });
+
     setError(null);
     hydrate(hydration.begin());
 
     return () => {
       disposed = true;
+      renderQueue.close();
       cancelHydrationFrame?.();
       cancelHydrationFrame = null;
       observer.disconnect();
       unsubscribeFontSize();
       unsubscribe();
       unsubscribeResync();
+      unsubscribeUpdates();
       inputSubscription.dispose();
       terminalQueryReplies.dispose();
       void terminalService
@@ -224,9 +283,6 @@ export function SessionTerminalPanel(props: {
       terminal.dispose();
     };
   }, [
-    copy.loadFailed,
-    copy.writeFailed,
-    locale,
     props.sessionId,
     props.terminalRef,
     terminalService,
@@ -247,6 +303,7 @@ export function SessionTerminalPanel(props: {
   return (
     <div
       className="maka-session-terminal-panel"
+      data-maka-assistant-exclude="terminal"
       role="region"
       aria-label={copy.ariaLabel}
       data-terminal-ref={props.terminalRef}

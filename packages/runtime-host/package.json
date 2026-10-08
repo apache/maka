@@ -6,6 +6,7 @@
   "type": "module",
   "private": true,
   "exports": {
+    "./antigravity-program": "./dist/antigravity-program.js",
     "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
@@ -24,17 +25,22 @@
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
     "build": "tsc -p tsconfig.json",
+    "benchmark:session-copy": "node scripts/session-copy-cost-benchmark.mjs",
     "benchmark:transcript": "node scripts/transcript-data-plane-benchmark.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.5.0",
+    "@maka/acp-executor-plugin": "0.1.0",
+    "@maka/antigravity-acp-plugin": "0.1.0",
     "@maka/core": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
+    "systeminformation": "^5.33.13",
     "ws": "^8.21.3",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

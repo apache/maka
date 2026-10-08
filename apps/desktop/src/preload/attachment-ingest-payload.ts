@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import {
+  AttachmentIngestBlockedError,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_COUNT,
+} from '@maka/core/attachments';
 
 export type IngestInput =
   | { approvalId: string; name: string; mimeType?: string }
@@ -37,15 +41,24 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 export async function encodeIngestItems(items: IngestInput[]): Promise<IngestPayload[]> {
-  if (items.length > MAX_ATTACHMENT_COUNT) throw new Error('附件数量超过 8 个');
+  if (items.length > MAX_ATTACHMENT_COUNT) throw new AttachmentIngestBlockedError('count_limit');
   const out: IngestPayload[] = [];
   for (const item of items) {
     if ('file' in item) {
       // Reject oversized blobs before arrayBuffer() so the renderer never
       // loads the bytes into memory. Main-side resolveIngestItems is the
       // authoritative backstop; this guard exists only to avoid renderer OOM.
-      if (item.file.size > MAX_ATTACHMENT_BYTES) throw new Error('附件大小超过 50MB');
-      const bytes = new Uint8Array(await item.file.arrayBuffer());
+      if (item.file.size > MAX_ATTACHMENT_BYTES) throw new AttachmentIngestBlockedError('item_too_large');
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await item.file.arrayBuffer());
+      } catch {
+        // A pasted or dropped folder arrives as a File that can never be read,
+        // and so does a file moved or made unreadable after it was staged.
+        // Name the item instead of letting the DOMException become a generic
+        // send failure.
+        throw new AttachmentIngestBlockedError('item_unreadable');
+      }
       const mimeType = item.file.type || undefined;
       out.push({
         name: item.file.name || 'clipboard-image.png',
@@ -55,7 +68,7 @@ export async function encodeIngestItems(items: IngestInput[]): Promise<IngestPay
     } else if (typeof item.approvalId === 'string') {
       out.push(item);
     } else {
-      throw new Error('附件信息无效。');
+      throw new AttachmentIngestBlockedError('items_invalid');
     }
   }
   return out;

@@ -1,0 +1,5 @@
+{
+  "epoch": 133,
+  "files": ["packages/runtime-host/src/protocol/project-catalog.ts"],
+  "reason": "Unexports two path-limit constants that are referenced only inside project-catalog.ts itself; no wire codec, frame, or error-code shape changes and no consumer imports either name"
+}

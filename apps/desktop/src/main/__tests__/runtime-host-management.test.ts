@@ -736,6 +736,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
       assert.fail('published update must not inspect the development target'),
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.3.0' }),
     currentHostEpoch: () => 'host-before-update',
+    liveHost: () => undefined,
     awaitUpdatedConnection: async (...args) => {
       connectionCompletions.push(args);
       if (failConnection) throw new Error('authentication required');
@@ -1502,6 +1503,7 @@ function unusedUpdateDependencies() {
       assert.fail('published update must not inspect the development target'),
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.2.3' } as const),
     currentHostEpoch: () => undefined,
+    liveHost: () => undefined,
     awaitUpdatedConnection: async () => undefined,
     sendProgress: () => undefined,
   };

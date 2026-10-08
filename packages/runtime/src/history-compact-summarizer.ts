@@ -18,7 +18,12 @@
  */
 
 import { rawFinishReasonString, type ModelMessage, type ToolCallPart } from './model-protocol.js';
-import { buildRuntimeEventModelReplayPlan } from './model-history.js';
+import {
+  buildRuntimeEventModelReplayPlan,
+  buildRuntimeEventReplayTimeline,
+  type RuntimeEventReplayToolCallItem,
+  type RuntimeEventReplayToolResultItem,
+} from './model-history.js';
 import {
   findCheckpointSummaryDefect,
   SUMMARY_FORMAT_TEMPLATE,
@@ -41,7 +46,6 @@ export { HistoryCompactSummarizerError } from './history-compact-error.js';
 
 export interface AiSdkGenerateTextOptions {
   model: unknown;
-  instructions: string;
   messages: ModelMessage[];
   providerOptions?: Record<string, unknown>;
   maxOutputTokens?: number;
@@ -69,7 +73,12 @@ export interface BuildLlmHistorySummarizerOptions {
 // folded events are projected with the same policy the model would see them.
 // The format block is the validation module's template, so the mandated
 // format and the validation can never drift apart.
-const SUMMARIZATION_SYSTEM_PROMPT = [
+// It rides as the trailing user message, never as provider instructions
+// (system role): agentic coding models such as kimi k3-256k ignore a system
+// prompt in this shape and keep answering the conversation instead, so the
+// fold fails open forever (#4634), and a distinct system prompt also forfeits
+// the prefix cache the main-loop requests built.
+const SUMMARIZATION_PROMPT = [
   'You are a context summarization assistant.',
   'Read the conversation between a user and an AI assistant, then produce a structured summary another LLM will use to continue the same task.',
   'Do NOT continue the conversation. Do NOT answer questions in it. ONLY output the structured summary.',
@@ -84,17 +93,17 @@ const SUMMARIZATION_SYSTEM_PROMPT = [
 const SUMMARY_REQUEST_INSTRUCTION =
   'Now write the structured summary of the conversation above. Output only the summary.';
 
-function shortenSummarizationSystemPrompt(): string {
+function shortenSummarizationPrompt(): string {
   return [
-    SUMMARIZATION_SYSTEM_PROMPT,
+    SUMMARIZATION_PROMPT,
     '',
     'Your previous attempt was cut off at the output limit. Produce the same summary in well under half the length: keep every section, drop detail rather than sections.',
   ].join('\n');
 }
 
-function repairSummarizationSystemPrompt(reason: string): string {
+function repairSummarizationPrompt(reason: string): string {
   return [
-    SUMMARIZATION_SYSTEM_PROMPT,
+    SUMMARIZATION_PROMPT,
     '',
     `A prior attempt was rejected as ${reason}.`,
     'Produce one complete replacement summary from the source conversation.',
@@ -127,16 +136,6 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           ],
         });
       }
-      // The folded span usually ends on an assistant message. A chat-template
-      // model handed a conversation that already ends with its own turn emits
-      // an end-of-sequence token and nothing else (Ollama qwen2.5: finish
-      // `stop`, one output token, empty text), so the request must end with
-      // an instruction the model can answer. Hosted providers do not need the
-      // nudge and are not disturbed by it (#4559).
-      projectedMessages.push({
-        role: 'user',
-        content: [{ type: 'text', text: SUMMARY_REQUEST_INSTRUCTION }],
-      });
       // Nothing is trimmed on a local estimate: whether this input fits the
       // summarizer's window is its provider's answer (`input_too_large`, which
       // the planner retreats on), and the output is capped outright (#4559).
@@ -162,8 +161,21 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         step += 1;
         const result = await generateText({
           model,
-          instructions,
-          messages,
+          // The instruction rides as the trailing user message rather than the
+          // AI SDK's `instructions` (system role): the request must still end
+          // with an imperative the model can answer (#4559), and no
+          // system-role prompt may precede the conversation, which agentic
+          // models ignore and which forfeits the main loop's prefix cache
+          // (#4634).
+          messages: [
+            ...messages,
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: `${instructions}\n\n${SUMMARY_REQUEST_INSTRUCTION}` },
+              ],
+            },
+          ],
           maxOutputTokens,
           ...(options.providerOptions !== undefined
             ? { providerOptions: options.providerOptions }
@@ -190,12 +202,12 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         return { text: result.text, defect, truncated };
       };
 
-      let initial = await generateSummary(SUMMARIZATION_SYSTEM_PROMPT, projectedMessages);
+      let initial = await generateSummary(SUMMARIZATION_PROMPT, projectedMessages);
       if (initial.truncated) {
         // The provider cut the summary at the output cap. One shorter attempt;
         // a second cut is the provider saying this span will not summarize
         // inside the cap, and the fold fails open.
-        initial = await generateSummary(shortenSummarizationSystemPrompt(), projectedMessages);
+        initial = await generateSummary(shortenSummarizationPrompt(), projectedMessages);
         if (initial.truncated) throw new HistoryCompactSummarizerError('output_length');
       }
       if (!initial.defect) return initial.text;
@@ -206,7 +218,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       // A malformed provider completion is often repairable, but retries must
       // be bounded: one stricter attempt, then the caller's failure circuit
       // records the stable defect for this compaction input.
-      const repairInstructions = repairSummarizationSystemPrompt(initial.defect);
+      const repairInstructions = repairSummarizationPrompt(initial.defect);
       let repaired: Awaited<ReturnType<typeof generateSummary>>;
       try {
         repaired = await generateSummary(repairInstructions, projectedMessages);
@@ -217,7 +229,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
         // the fold past the summarizer provider's window, the rejection is the
         // planner's retreat signal, not a repair failure to file under the
         // initial defect (#4559).
-        if (classifyError(error) === 'ContextLength') {
+        if (classifyError(error) === 'context_overflow') {
           throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
         }
         throw new HistoryCompactSummarizerError(initial.defect, {
@@ -244,7 +256,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       // The summarizer's provider is the one judge of whether this fold fits
       // its own window: a context-length rejection is the signal the planner
       // retreats on, so it must keep its name here (#4559).
-      if (classifyError(error) === 'ContextLength') {
+      if (classifyError(error) === 'context_overflow') {
         throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
       }
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
@@ -272,94 +284,63 @@ async function loadAiSdkTextModule(): Promise<AiSdkTextModule> {
 
 type ReplayPlanItems = ReturnType<typeof buildRuntimeEventModelReplayPlan>['items'];
 
-interface OpenToolStep {
-  stepId: string | undefined;
-  calls: ToolCallPart[];
-  callIds: Set<string>;
-  settledCallIds: Set<string>;
-  bufferedResults: ModelMessage[];
-}
-
 export function replayPlanItemsToModelMessages(items: ReplayPlanItems): ModelMessage[] {
   const out: ModelMessage[] = [];
-  // One assistant step's tool calls share one assistant message and every
-  // result is deferred to the step boundary: strict OpenAI-compatible
-  // providers reject an assistant message that arrives while a previous
-  // assistant message's tool calls are still unanswered, and Runtime history
-  // can legitimately interleave a step's calls and results
-  // (call A, call B, result A, call C, result B, result C). Step membership
-  // follows the stamped stepId when both sides carry one; legacy items
-  // without a stepId join while the open step still has unsettled calls,
-  // which is exactly the interleaving case. This mirrors the primary replay
-  // materializer's step merge; the primary path is untouched.
-  let openStep: OpenToolStep | undefined;
-  const flushOpenStep = () => {
-    if (!openStep) return;
-    out.push(...openStep.bufferedResults);
-    openStep = undefined;
+  const toolCallPart = (item: RuntimeEventReplayToolCallItem): ToolCallPart => ({
+    type: 'tool-call',
+    toolCallId: item.toolCallId,
+    toolName: item.toolName,
+    input: item.input,
+  });
+  const pushToolResult = (item: RuntimeEventReplayToolResultItem) => {
+    out.push({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: item.toolCallId,
+          toolName: item.toolName,
+          output: effectiveReplayToolResultOutput(item),
+        },
+      ],
+    });
   };
-  for (const item of items) {
-    if (item.kind === 'text') {
-      flushOpenStep();
-      // Split on role so each push matches exactly one ModelMessage arm — no cast.
-      const textPart = { type: 'text' as const, text: item.content };
-      if (item.role === 'user') {
-        out.push({ role: 'user', content: [textPart] });
-      } else {
-        out.push({ role: 'assistant', content: [textPart] });
-      }
-    } else if (item.kind === 'tool_call') {
-      const part: ToolCallPart = {
-        type: 'tool-call',
-        toolCallId: item.toolCallId,
-        toolName: item.toolName,
-        input: item.input,
-      };
-      const joinsOpenStep =
-        openStep !== undefined &&
-        (openStep.stepId !== undefined && item.stepId !== undefined
-          ? openStep.stepId === item.stepId
-          : openStep.settledCallIds.size < openStep.callIds.size);
-      if (openStep && joinsOpenStep) {
-        openStep.calls.push(part);
-        openStep.callIds.add(item.toolCallId);
-      } else {
-        flushOpenStep();
-        const calls = [part];
-        openStep = {
-          stepId: item.stepId,
-          calls,
-          callIds: new Set([item.toolCallId]),
-          settledCallIds: new Set(),
-          bufferedResults: [],
-        };
-        out.push({ role: 'assistant', content: calls });
-      }
-    } else if (item.kind === 'tool_result') {
-      const message: ModelMessage = {
-        role: 'tool',
-        content: [
-          {
-            type: 'tool-result',
-            toolCallId: item.toolCallId,
-            toolName: item.toolName,
-            output: effectiveReplayToolResultOutput(item),
-          },
-        ],
-      };
-      if (openStep?.callIds.has(item.toolCallId)) {
-        openStep.settledCallIds.add(item.toolCallId);
-        openStep.bufferedResults.push(message);
-      } else {
-        // A result for a call outside the open step means that step's block
-        // is complete; settle it before emitting the foreign result.
-        flushOpenStep();
-        out.push(message);
+
+  for (const entry of buildRuntimeEventReplayTimeline(items)) {
+    if (entry.kind === 'text') {
+      const textPart = { type: 'text' as const, text: entry.item.content };
+      out.push(
+        entry.item.role === 'user'
+          ? { role: 'user', content: [textPart] }
+          : { role: 'assistant', content: [textPart] },
+      );
+      continue;
+    }
+    if (entry.kind === 'thinking') continue;
+
+    const providerCalls = entry.calls.filter(({ call }) => call.providerExecuted === true);
+    if (providerCalls.length > 0) {
+      out.push({
+        role: 'assistant',
+        content: providerCalls.map(({ call }) => toolCallPart(call)),
+      });
+      for (const { result } of providerCalls) {
+        if (result) pushToolResult(result);
       }
     }
-    // thinking entries are intentionally skipped for summarization; they do
-    // not interrupt an open tool step.
+
+    const clientCalls = entry.calls.filter(({ call }) => call.providerExecuted !== true);
+    const lateContent: Array<{ type: 'text'; text: string } | ToolCallPart> = [];
+    if (entry.text?.content) {
+      lateContent.push({ type: 'text', text: entry.text.content });
+    }
+    lateContent.push(...clientCalls.map(({ call }) => toolCallPart(call)));
+    if (lateContent.length > 0) {
+      out.push({ role: 'assistant', content: lateContent });
+    }
+    for (const { result } of clientCalls) {
+      if (result) pushToolResult(result);
+    }
   }
-  flushOpenStep();
   return out;
 }

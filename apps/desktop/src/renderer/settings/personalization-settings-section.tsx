@@ -28,13 +28,12 @@
 // another. It is one section of someone else's page: named, filed, and shaped
 // as one.
 import { useEffect, useRef, useState } from 'react';
-import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import { SettingsField, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy';
 import type { AppSettings, PersonalizationSettings, UpdateAppSettingsResult } from '@maka/core/settings';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
-import { TextArea, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Selector, TextArea, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
@@ -189,6 +188,7 @@ export function PersonalizationSettingsSection(props: {
           settled value and opens on demand; Cancel puts the draft back. */}
       {props.runtimeHostSettingsAvailable ? (
         <SettingsExpandableRow
+          assistantTarget="displayName"
           label={copy.displayName}
           value={value.displayName || copy.displayNameUnset}
           actionLabel={value.displayName ? copy.displayNameChange : copy.displayNameSet}
@@ -211,7 +211,7 @@ export function PersonalizationSettingsSection(props: {
             }
           }}
         >
-          <TextInput
+          <div data-maka-assistant-target="displayName.input"><TextInput
             type="text"
             value={displayName}
             onChange={(value) => setDisplayName(value.slice(0, 60))}
@@ -221,7 +221,7 @@ export function PersonalizationSettingsSection(props: {
             isLabelHidden
             width="100%"
             isDisabled={!props.runtimeHostSettingsInteractive}
-          />
+          /></div>
         </SettingsExpandableRow>
       ) : props.showRuntimeHostSettingsPlaceholder ? (
         <SettingsRowSkeleton
@@ -232,22 +232,22 @@ export function PersonalizationSettingsSection(props: {
       ) : null}
       {/*
         PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
-        acceptance criteria): 自动 / 中文 / English. User explicit
+        acceptance criteria): automatic / Simplified Chinese / Traditional Chinese / English. User explicit
         choice wins over the temporary auto -> zh fallback;
         e2e-fixture override wins over both (deterministic baselines).
       */}
       <SettingsRow
         label={copy.interfaceLanguage}
         description={copy.interfaceLanguageHelp}
-        end={<SegmentedControl
-          value={uiLocale}
-          onChange={(next) => persistLocale(next as UiLocalePreference)}
-          label={copy.interfaceLanguage}
-        >
-          {copy.localeOptions.map(([value, label]) => (
-            <SegmentedControlItem key={value} value={value} label={label} />
-          ))}
-        </SegmentedControl>}
+        end={
+          <span data-maka-assistant-target="language"><Selector
+            label={copy.interfaceLanguage}
+            isLabelHidden
+            value={uiLocale}
+            options={copy.localeOptions.map(([value, label]) => ({ value, label }))}
+            onChange={(next) => persistLocale(next as UiLocalePreference)}
+          /></span>
+        }
       />
       {props.runtimeHostSettingsAvailable ? <SettingsField>
         {/* No fixed height style: it lands as inline style on the wrapper,

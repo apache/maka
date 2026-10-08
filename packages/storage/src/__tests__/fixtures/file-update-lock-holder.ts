@@ -18,11 +18,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import {
-  withLegacyFileUpdateLockLease,
-  withProcessLifetimeFileUpdateLock,
-} from '../../process-lifetime-file-update-lock.js';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { withProcessLifetimeFileUpdateLock } from '../../process-lifetime-file-update-lock.js';
 
 const targetPath = process.argv[2];
 if (!targetPath) throw new Error('Missing file update lock target');
@@ -33,11 +30,10 @@ const hold = async () => {
 };
 
 if (process.argv[3] === 'legacy') {
-  await withLegacyFileUpdateLockLease(targetPath, async (inheritedFd) => {
-    if (inheritedFd <= 2) throw new Error('Legacy lock lease is not inheritable');
-    await mkdir(`${targetPath}.lock`);
-    await hold();
-  });
+  // The on-disk shape a supervised legacy holder leaves behind when killed.
+  await writeFile(`${targetPath}.supervised`, '');
+  await mkdir(`${targetPath}.lock`);
+  await hold();
 } else if (process.argv[3] === 'inherit') {
   await withProcessLifetimeFileUpdateLock(targetPath, async (inheritedFd) => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], {

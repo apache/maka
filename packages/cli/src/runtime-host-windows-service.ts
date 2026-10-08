@@ -27,6 +27,7 @@ import {
 } from './runtime-host-lifecycle-provider.js';
 import { resolveRuntimeHostNativePath } from './runtime-host-peer-artifact.js';
 import { RuntimeHostServiceManagerError } from './runtime-host-service-manager.js';
+import { resolveRuntimeHostWindowsTaskLauncherPath } from './runtime-host-windows-task-launcher-artifact.js';
 
 const require = createRequire(import.meta.url);
 const ROOT_ID_PATTERN = /^[a-f0-9]{64}$/u;
@@ -63,6 +64,18 @@ interface WindowsLifecycleNative {
     runnerPath: string,
     command: string[],
   ) => void;
+  readonly windowsTaskConvergeLauncher?: (
+    rootId: string,
+    target: WindowsTaskTarget,
+    launcherPath: string,
+    command: string[],
+  ) => void;
+  readonly windowsTaskVerifyLauncher?: (
+    rootId: string,
+    target: WindowsTaskTarget,
+    launcherPath: string,
+    command: string[],
+  ) => void;
   readonly windowsTaskStatus: (rootId: string, target: WindowsTaskTarget) => unknown;
   readonly windowsTaskActivate: (rootId: string) => void;
   readonly windowsTaskRetire: (rootId: string) => void;
@@ -86,19 +99,38 @@ export function createWindowsRuntimeHostLifecycleProvider(
   }
   const native = createWindowsLifecycleNativeLoader(options.cliPath);
   const runnerPath = join(dirname(options.cliPath), 'runtime-host-windows-task-runner.js');
+  let launcherPath: Promise<string> | undefined;
+  const resolveLauncherPath = (): Promise<string> => {
+    launcherPath ??= resolveRuntimeHostWindowsTaskLauncherPath(options.cliPath);
+    return launcherPath;
+  };
   const converge = async (
     target: WindowsTaskTarget,
     definition: RuntimeHostProviderDefinition,
   ): Promise<void> => {
     assertRuntimeHostProviderDefinition(definition);
-    (await native()).windowsTaskConverge(rootId, target, runnerPath, [...definition.command]);
+    const control = await native();
+    if (supportsLauncherProjection(control)) {
+      control.windowsTaskConvergeLauncher(rootId, target, await resolveLauncherPath(), [
+        ...definition.command,
+      ]);
+    } else {
+      control.windowsTaskConverge(rootId, target, runnerPath, [...definition.command]);
+    }
   };
   const verify = async (
     target: WindowsTaskTarget,
     definition: RuntimeHostProviderDefinition,
   ): Promise<void> => {
     assertRuntimeHostProviderDefinition(definition);
-    (await native()).windowsTaskVerify(rootId, target, runnerPath, [...definition.command]);
+    const control = await native();
+    if (supportsLauncherProjection(control)) {
+      control.windowsTaskVerifyLauncher(rootId, target, await resolveLauncherPath(), [
+        ...definition.command,
+      ]);
+    } else {
+      control.windowsTaskVerify(rootId, target, runnerPath, [...definition.command]);
+    }
   };
   const status = async (target: WindowsTaskTarget): Promise<WindowsTaskStatus> =>
     decodeStatus((await native()).windowsTaskStatus(rootId, target));
@@ -106,7 +138,11 @@ export function createWindowsRuntimeHostLifecycleProvider(
   return {
     supervisor: {
       provider: 'windows_task',
-      preflight: async () => (await native()).windowsTaskProbe(),
+      preflight: async () => {
+        const control = await native();
+        if (supportsLauncherProjection(control)) await resolveLauncherPath();
+        control.windowsTaskProbe();
+      },
       converge: (definition) => converge('host', definition),
       verify: (definition) => verify('host', definition),
       status: async () => {
@@ -177,7 +213,24 @@ function loadWindowsLifecycleNative(path: string): WindowsLifecycleNative {
       'The Runtime Host native artifact does not support Windows lifecycle control',
     );
   }
+  if (
+    (typeof loaded.windowsTaskConvergeLauncher === 'function') !==
+    (typeof loaded.windowsTaskVerifyLauncher === 'function')
+  ) {
+    throw unavailable(
+      'The Runtime Host native artifact has an incomplete Windows launcher contract',
+    );
+  }
   return loaded as WindowsLifecycleNative;
+}
+
+function supportsLauncherProjection(
+  native: WindowsLifecycleNative,
+): native is WindowsLifecycleNative &
+  Required<
+    Pick<WindowsLifecycleNative, 'windowsTaskConvergeLauncher' | 'windowsTaskVerifyLauncher'>
+  > {
+  return typeof native.windowsTaskConvergeLauncher === 'function';
 }
 
 function decodeStatus(value: unknown): WindowsTaskStatus {

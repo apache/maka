@@ -23,7 +23,9 @@ import {
   type GoalAuthorityRecord,
   type GoalControlLease as DurableGoalControlLease,
   type GoalCurrentExecution,
+  type GoalPendingContinuation,
   type GoalState as DurableGoalState,
+  type GoalTextLimit,
 } from '@maka/core/goal';
 import { userFacingText, type StoredMessage } from '@maka/core/session';
 import {
@@ -37,6 +39,7 @@ import {
   GoalManager,
   GOAL_REASON_TEXT_LIMIT,
   TERMINAL_GOAL_STATUSES,
+  isGoalTextWithinLimit,
   truncateGoalText,
   type GoalCheckpoint,
   type GoalControlLease,
@@ -58,6 +61,7 @@ import type {
   OperationOutcome,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostResidencyKind } from './host-residency-registry.js';
 import type { GoalOperationHandlerMap } from './operation-dispatcher.js';
 import { projectGoalState } from './goal-projection.js';
 import {
@@ -75,6 +79,8 @@ type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'a
 export interface HostGoalCoordinatorOptions {
   readonly store: InteractiveGoalAuthorityWriter;
   readonly stores: GoalStores;
+  /** The Session transcript as its ledger projects it; the Goal reads its tail. */
+  readonly readSessionMessages: (sessionId: string) => Promise<readonly StoredMessage[]>;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly evaluator: GoalEvaluatorResource;
   readonly executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
@@ -84,7 +90,7 @@ export interface HostGoalCoordinatorOptions {
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
   ) => GoalTurnAdmission;
-  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly acquireResidency: (kind?: HostResidencyKind) => RuntimeHostResidency;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
   readonly now?: () => number;
@@ -114,7 +120,7 @@ export class HostGoalCoordinator {
   readonly #onProjectionChanged: (sessionId: string) => void;
   readonly #newId: () => string;
   readonly #requestDrain: () => void;
-  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #acquireResidency: HostGoalCoordinatorOptions['acquireResidency'];
   readonly #executions: Pick<HostedExecutionAuthority, 'reconcile' | 'subscribe'>;
   readonly #authorityBySession = new Map<string, GoalAuthoritySnapshot>();
   /**
@@ -127,6 +133,15 @@ export class HostGoalCoordinator {
   readonly #tokenCache = new Map<string, number>();
   readonly #recoveryWaits = new Set<Promise<void>>();
   readonly #recoveryAbort = new AbortController();
+  readonly #queuedAuthorityCommits = new Map<
+    string,
+    {
+      readonly expectedAuthorityRevision: number | null;
+      readonly nextAuthorityRevision: number;
+      record: GoalAuthorityRecord | null;
+      started: boolean;
+    }
+  >();
   #persistenceLane: Promise<void> = Promise.resolve();
   #persistenceFailure: unknown;
   #prepared = false;
@@ -154,16 +169,23 @@ export class HostGoalCoordinator {
     const tokenCache = this.#tokenCache;
     this.continuation = new GoalContinuationCoordinator({
       goalManager: this.manager,
+      acquireActivity: () => this.#acquireResidency(),
       evaluator: options.evaluator,
       getRecentContext: async (sessionId) => {
-        const messages = await this.#stores.sessionStore.readMessagesSnapshot(sessionId);
-        tokenCache.set(sessionId, tokenCount(messages));
+        const controlLease = this.manager.getControlLease(sessionId);
+        const messages = await options.readSessionMessages(sessionId);
+        if (controlLease && this.manager.matchesControlLease(sessionId, controlLease)) {
+          tokenCache.set(sessionId, tokenCount(messages));
+        }
         return recentContext(messages);
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
       admitTurn: options.admitTurn,
       durability: {
         flush: (sessionId) => this.#flushGoalState(sessionId),
+        recordPendingContinuation: (pending) => this.#recordPendingContinuation(pending),
+        clearPendingContinuation: (sessionId, controlLease) =>
+          this.#clearPendingContinuation(sessionId, controlLease),
         recordCurrentExecution: (current) => this.#recordCurrentExecution(current),
         settleCurrentExecution: (sessionId, turnId) =>
           this.#settleCurrentExecution(sessionId, turnId),
@@ -224,6 +246,8 @@ export class HostGoalCoordinator {
     for (const snapshot of this.#authorityBySession.values()) {
       if (snapshot.record.currentExecution) {
         await this.#recoverCurrentExecution(snapshot.record.currentExecution);
+      } else if (snapshot.record.pendingContinuation) {
+        this.continuation.recoverPendingContinuation(snapshot.record.pendingContinuation);
       } else {
         this.continuation.recoverActiveGoal(snapshot.record.goal.sessionId);
       }
@@ -294,6 +318,7 @@ export class HostGoalCoordinator {
         for (const sessionId of unique) {
           operations.get(sessionId)?.commit();
           this.#authorityBySession.delete(sessionId);
+          this.#tokenCache.delete(sessionId);
           if (this.manager.remove(sessionId)) this.#onProjectionChanged(sessionId);
         }
       },
@@ -311,12 +336,58 @@ export class HostGoalCoordinator {
     }
   }
 
+  holdForHandoff():
+    | {
+        settled(): Promise<void>;
+        residencies(
+          executions: readonly { sessionId: string; turnId: string; runId: string }[],
+        ): Promise<readonly RuntimeHostResidency[] | undefined>;
+        release(): void;
+      }
+    | undefined {
+    if (this.#draining) return undefined;
+    const hold = this.continuation.holdForHandoff();
+    if (!hold) return undefined;
+    const settled = async () => {
+      await hold.settled();
+      await this.#flushGoalState();
+    };
+    return {
+      settled,
+      release: hold.release,
+      residencies: async (executions) => {
+        await settled();
+        if (this.#draining) return undefined;
+        for (const [sessionId] of this.#residencies) {
+          const authority = this.#authorityBySession.get(sessionId);
+          if (!authority) return undefined;
+          const current = authority.record.currentExecution;
+          const paused = executions.find((execution) => execution.sessionId === sessionId);
+          // An observed external turn is not a durable Goal execution. Its
+          // in-memory completion registration cannot be silently discarded.
+          if (
+            paused &&
+            (!current ||
+              current.execution.turnId !== paused.turnId ||
+              current.execution.runId !== paused.runId)
+          )
+            return undefined;
+          if (current && !paused) return undefined;
+          if (current && !this.matchesActive(sessionId, current.checkpoint, current.controlLease))
+            return undefined;
+        }
+        return [...this.#residencies.values()];
+      },
+    };
+  }
+
   beginDrain(): void {
     if (this.#draining) return;
     this.#draining = true;
     this.#recoveryAbort.abort();
     this.continuation.dispose();
     this.manager.dispose();
+    this.#tokenCache.clear();
     for (const residency of this.#residencies.values()) residency.release();
     this.#residencies.clear();
   }
@@ -447,7 +518,49 @@ export class HostGoalCoordinator {
         current?.record.goal.id === goal.id && goal.revision >= current.record.goal.revision
           ? current.record.currentExecution
           : null,
+      pendingContinuation:
+        current?.record.goal.id === goal.id && goal.revision === current.record.goal.revision
+          ? current.record.pendingContinuation
+          : null,
     });
+  }
+
+  async #recordPendingContinuation(pending: GoalPendingContinuation): Promise<void> {
+    const sessionId = this.manager.getSessionIdByGoalId(pending.checkpoint.goalId);
+    const authority = sessionId ? this.#authorityBySession.get(sessionId) : undefined;
+    if (
+      !authority ||
+      authority.record.goal.id !== pending.checkpoint.goalId ||
+      !sameGoalControlLease(authority.record.controlLease, pending.controlLease) ||
+      authority.record.goal.revision !== pending.checkpoint.revision
+    ) {
+      throw new Error('Goal pending continuation no longer matches its durable authority');
+    }
+    this.#enqueueAuthorityCommit(sessionId!, {
+      ...authority.record,
+      currentExecution: null,
+      pendingContinuation: pending,
+    });
+    await this.#flushGoalState(sessionId!);
+  }
+
+  async #clearPendingContinuation(
+    sessionId: string,
+    controlLease: GoalControlLease,
+  ): Promise<void> {
+    const authority = this.#authorityBySession.get(sessionId);
+    if (
+      !authority ||
+      !sameGoalControlLease(authority.record.controlLease, controlLease) ||
+      !authority.record.pendingContinuation
+    ) {
+      return;
+    }
+    this.#enqueueAuthorityCommit(sessionId, {
+      ...authority.record,
+      pendingContinuation: null,
+    });
+    await this.#flushGoalState(sessionId);
   }
 
   async #recordCurrentExecution(current: GoalCurrentExecution): Promise<void> {
@@ -462,6 +575,7 @@ export class HostGoalCoordinator {
     this.#enqueueAuthorityCommit(current.execution.sessionId, {
       ...authority.record,
       currentExecution: current,
+      pendingContinuation: null,
     });
     await this.#flushGoalState(current.execution.sessionId);
   }
@@ -522,6 +636,28 @@ export class HostGoalCoordinator {
 
   #enqueueAuthorityCommit(sessionId: string, record: GoalAuthorityRecord | null): void {
     const current = this.#authorityBySession.get(sessionId);
+    const queued = this.#queuedAuthorityCommits.get(sessionId);
+    if (
+      queued &&
+      !queued.started &&
+      queued.record !== null &&
+      record !== null &&
+      queued.record.goal.id === record.goal.id &&
+      queued.record.goal.revision === record.goal.revision &&
+      queued.record.pendingContinuation === null &&
+      record.pendingContinuation !== null
+    ) {
+      // GoalManager emits its state transition synchronously. A continuation
+      // is recorded immediately afterwards, so coalesce both records before
+      // the persistence lane starts. The authority writer then commits the
+      // revised Goal and its frozen continuation in one transaction.
+      queued.record = record;
+      this.#authorityBySession.set(sessionId, {
+        authorityRevision: queued.nextAuthorityRevision,
+        record,
+      });
+      return;
+    }
     const expectedAuthorityRevision = current?.authorityRevision ?? null;
     const nextAuthorityRevision = (expectedAuthorityRevision ?? -1) + 1;
     if (record === null) {
@@ -532,38 +668,56 @@ export class HostGoalCoordinator {
         record,
       });
     }
-    const commit = this.#persistenceLane.then(async () => {
-      let result;
-      try {
-        result = await this.#store.commit({
-          sessionId,
-          expectedAuthorityRevision,
-          record,
-        });
-      } catch (error) {
-        const currentExecution = record?.currentExecution;
-        throw new Error(
-          `Unable to persist Goal authority for Session ${sessionId}, Goal revision ${String(record?.goal.revision)}, execution checkpoint ${String(currentExecution?.checkpoint.revision)}, control generations ${String(currentExecution?.controlLease.generation)}/${String(record?.controlLease.generation)}`,
-          { cause: error },
-        );
-      }
-      if (result.kind === 'revision_conflict') {
-        throw new Error(
-          `Goal authority revision conflict for Session ${sessionId}: expected ${String(expectedAuthorityRevision)}, actual ${String(result.actualAuthorityRevision)}`,
-        );
-      }
-      if (record === null) {
-        if (result.snapshot !== null) {
-          throw new Error(`Goal authority deletion retained Session ${sessionId}`);
+    const residency = this.#acquireResidency();
+    const pending = {
+      expectedAuthorityRevision,
+      nextAuthorityRevision,
+      record,
+      started: false,
+    };
+    this.#queuedAuthorityCommits.set(sessionId, pending);
+    const commit = this.#persistenceLane
+      .then(async () => {
+        pending.started = true;
+        const committedRecord = pending.record;
+        let result;
+        try {
+          result = await this.#store.commit({
+            sessionId,
+            expectedAuthorityRevision: pending.expectedAuthorityRevision,
+            record: committedRecord,
+          });
+        } catch (error) {
+          const currentExecution = committedRecord?.currentExecution;
+          throw new Error(
+            `Unable to persist Goal authority for Session ${sessionId}, Goal revision ${String(committedRecord?.goal.revision)}, execution checkpoint ${String(currentExecution?.checkpoint.revision)}, control generations ${String(currentExecution?.controlLease.generation)}/${String(committedRecord?.controlLease.generation)}`,
+            { cause: error },
+          );
         }
-      } else if (result.snapshot?.authorityRevision !== nextAuthorityRevision) {
-        throw new Error(`Goal authority changed its committed revision for Session ${sessionId}`);
-      }
-    });
-    this.#persistenceLane = commit.catch((error) => {
-      this.#persistenceFailure ??= error;
-      this.#requestDrain();
-    });
+        if (result.kind === 'revision_conflict') {
+          throw new Error(
+            `Goal authority revision conflict for Session ${sessionId}: expected ${String(expectedAuthorityRevision)}, actual ${String(result.actualAuthorityRevision)}`,
+          );
+        }
+        if (committedRecord === null) {
+          if (result.snapshot !== null) {
+            throw new Error(`Goal authority deletion retained Session ${sessionId}`);
+          }
+        } else if (result.snapshot?.authorityRevision !== pending.nextAuthorityRevision) {
+          throw new Error(`Goal authority changed its committed revision for Session ${sessionId}`);
+        }
+      })
+      .finally(() => {
+        if (this.#queuedAuthorityCommits.get(sessionId) === pending) {
+          this.#queuedAuthorityCommits.delete(sessionId);
+        }
+      });
+    this.#persistenceLane = commit
+      .catch((error) => {
+        this.#persistenceFailure ??= error;
+        this.#requestDrain();
+      })
+      .finally(() => residency.release());
   }
 
   async #deleteOrphanedAuthority(snapshot: GoalAuthoritySnapshot): Promise<void> {
@@ -584,10 +738,10 @@ export class HostGoalCoordinator {
     if (this.#persistenceFailure !== undefined) throw this.#persistenceFailure;
   }
 
-  #syncResidency(goal: GoalState, acquire: () => RuntimeHostResidency): void {
+  #syncResidency(goal: GoalState, acquire: HostGoalCoordinatorOptions['acquireResidency']): void {
     const retained = this.#residencies.get(goal.sessionId);
     if (!TERMINAL_GOAL_STATUSES.has(goal.status)) {
-      if (!retained && !this.#draining) this.#residencies.set(goal.sessionId, acquire());
+      if (!retained && !this.#draining) this.#residencies.set(goal.sessionId, acquire('idle'));
       return;
     }
     retained?.release();
@@ -597,16 +751,52 @@ export class HostGoalCoordinator {
 
 function recentContext(messages: readonly StoredMessage[]): string {
   return messages
-    .filter(
-      (message): message is Extract<StoredMessage, { type: 'user' | 'assistant' }> =>
-        message.type === 'user' || message.type === 'assistant',
-    )
-    .slice(-6)
-    .map((message) => {
+    .flatMap((message) => {
+      if (message.type !== 'user' && message.type !== 'assistant') return [];
       const text = message.type === 'user' ? userFacingText(message) : message.text;
-      return `[${message.type}]: ${truncateGoalText(text, GOAL_REASON_TEXT_LIMIT)}`;
+      // A step that only thought or called a tool stores an assistant row with
+      // no text: it would take one of the six places and tell the evaluator nothing.
+      return /\S/.test(text) ? [{ type: message.type, text }] : [];
     })
+    .slice(-6)
+    .map(({ type, text }) => `[${type}]: ${evaluatorExcerpt(text)}`)
     .join('\n');
+}
+
+const EXCERPT_GAP = ' … ';
+const EXCERPT_END_LIMIT: GoalTextLimit = Object.freeze({
+  codeUnits: Math.floor((GOAL_REASON_TEXT_LIMIT.codeUnits - EXCERPT_GAP.length) / 2),
+  utf8Bytes: Math.floor(
+    (GOAL_REASON_TEXT_LIMIT.utf8Bytes - Buffer.byteLength(EXCERPT_GAP, 'utf8')) / 2,
+  ),
+});
+
+/**
+ * One message within the budget each context row has always had. A longer one
+ * keeps its opening and its end, since a report usually closes with what is
+ * verified and what remains.
+ */
+function evaluatorExcerpt(text: string): string {
+  if (isGoalTextWithinLimit(text, GOAL_REASON_TEXT_LIMIT)) return text;
+  return `${truncateGoalText(text, EXCERPT_END_LIMIT)}${EXCERPT_GAP}${goalTextTail(text, EXCERPT_END_LIMIT)}`;
+}
+
+/** The longest end of `text` within `limit`, never splitting a surrogate pair. */
+function goalTextTail(text: string, limit: GoalTextLimit): string {
+  // One code unit more than can fit: a pair cut by this slice leaves a lone
+  // half at the front, which the walk below always stops before.
+  const characters = Array.from(text.slice(-(limit.codeUnits + 1)));
+  let start = characters.length;
+  let codeUnits = 0;
+  let utf8Bytes = 0;
+  while (start > 0) {
+    const character = characters[start - 1]!;
+    codeUnits += character.length;
+    utf8Bytes += Buffer.byteLength(character, 'utf8');
+    if (codeUnits > limit.codeUnits || utf8Bytes > limit.utf8Bytes) break;
+    start -= 1;
+  }
+  return characters.slice(start).join('');
 }
 
 function tokenCount(messages: readonly StoredMessage[]): number {

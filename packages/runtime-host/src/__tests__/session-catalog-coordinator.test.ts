@@ -17,15 +17,24 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  SESSION_CATALOG_PAGE_MAX_ITEMS,
+  type SessionCatalogQueryResult,
+  type SessionCatalogQueryInput,
+} from '../protocol/index.js';
+
 import assert from 'node:assert/strict';
+import type { ExecutorConfiguration } from '@maka/core/executor-catalog';
+import { Context } from '@maka/runtime/plugin-kernel';
+import { PluginExecutorService } from '@maka/runtime/plugin-executor-service';
 import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
-import { type RelayModelProfile } from '@maka/core/model-thinking';
+import { type ModelOverride } from '@maka/core/model-thinking';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
@@ -54,11 +63,16 @@ import { HostProjectMembershipGate } from '../server/project-membership-gate.js'
 import { HostWorkspaceResolver } from '../server/workspace-resolver.js';
 import {
   HostSessionCatalogCoordinator,
+  NoUsableImportModelError,
+  projectSessionCatalogRecord,
+  SessionOperationFailure,
+  WorkHubDefaultModelRequiredError,
   type HostSessionCatalogCoordinatorOptions,
 } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 type CatalogStores = HostSessionCatalogCoordinatorOptions['stores'];
+type CatalogTurnIndex = HostSessionCatalogCoordinatorOptions['turnIndex'];
 type RuntimePolicy = HostSessionCatalogCoordinatorOptions['runtimePolicy'];
 type ConfigurationAuthority = HostSessionCatalogCoordinatorOptions['manager'];
 type SessionContinuity = HostSessionCatalogCoordinatorOptions['continuity'];
@@ -102,8 +116,8 @@ test('reduces turn pages to their encoded wire budget without skipping contribut
   }));
   const requestedLimits: number[] = [];
   const fixture = createFixture({
-    stores: {
-      readTurnContributionsSnapshot: async (_sessionId, _watermark, position, limit) => {
+    turnIndex: {
+      readDurableTurnContributions: async (_sessionId, _watermark, position, limit) => {
         requestedLimits.push(limit);
         const end = Math.min(position + limit, contributions.length);
         return {
@@ -146,9 +160,114 @@ test('reduces turn pages to their encoded wire budget without skipping contribut
   assert.ok(requestedLimits.some((limit) => limit < 128));
 });
 
+test('read marker clears unread only at the ledger transcript tail', async () => {
+  const fixture = createFixture({
+    header: { hasUnread: true },
+    turnIndex: {
+      readDurableRecords: async () => ({
+        throughSequence: 1,
+        records: [
+          {
+            sequence: 1,
+            cluster: 1,
+            message: {
+              type: 'assistant',
+              id: 'message-2',
+              turnId: 'turn-1',
+              ts: 20,
+              text: 'answer',
+              modelId: 'fake-model',
+            },
+          },
+          {
+            sequence: 0,
+            cluster: 1,
+            message: { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 10, text: 'ask' },
+          },
+        ],
+        nextPosition: null,
+      }),
+    },
+  });
+  const setReadMarker = async (readThroughMessageId: string) => {
+    const outcome = await fixture.coordinator.handlers['session.read_marker.set'](
+      { sessionId: fixture.sessionId, readThroughMessageId },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok || !('hasUnread' in outcome.result)) assert.fail('Read marker failed');
+    return outcome.result;
+  };
+
+  const behind = await setReadMarker('message-1');
+  assert.equal(behind.hasUnread, true);
+  assert.equal(behind.lastReadMessageId, undefined);
+
+  const caughtUp = await setReadMarker('message-2');
+  assert.equal(caughtUp.hasUnread, false);
+  assert.equal(caughtUp.lastReadMessageId, 'message-2');
+});
+
+test('read marker pages past a hidden tail to reach the newest visible message', async () => {
+  // A Turn that ends on tool traffic can put more hidden records at the tail
+  // than one page holds. Stopping at the page boundary would read the Session
+  // as never caught up and leave it unread for good.
+  const hiddenTail = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 2,
+        cluster: 1,
+        message: {
+          type: 'turn_state' as const,
+          id: 'turn-state-1',
+          turnId: 'turn-1',
+          ts: 30,
+          status: 'completed' as const,
+        },
+      },
+    ],
+    nextPosition: 1,
+  };
+  const visiblePage = {
+    throughSequence: 2,
+    records: [
+      {
+        sequence: 1,
+        cluster: 1,
+        message: {
+          type: 'assistant' as const,
+          id: 'message-2',
+          turnId: 'turn-1',
+          ts: 20,
+          text: 'answer',
+          modelId: 'fake-model',
+        },
+      },
+    ],
+    nextPosition: null,
+  };
+  const fixture = createFixture({
+    header: { hasUnread: true },
+    turnIndex: {
+      readDurableRecords: async (_sessionId, request) =>
+        request.position === undefined ? hiddenTail : visiblePage,
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.read_marker.set'](
+    { sessionId: fixture.sessionId, readThroughMessageId: 'message-2' },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || !('hasUnread' in outcome.result)) assert.fail('Read marker failed');
+  assert.equal(outcome.result.hasUnread, false);
+  assert.equal(outcome.result.lastReadMessageId, 'message-2');
+});
+
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
-    labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL],
+    labels: ['old-user-label', 'mode:deep_research'],
     manager: {
       runningTurnIds: () => ['turn-live'],
     },
@@ -159,7 +278,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision(),
       patch: {
-        labels: ['new-user-label', DEEP_RESEARCH_SESSION_LABEL],
+        labels: ['new-user-label', 'mode:deep_research'],
       },
     },
     context,
@@ -172,7 +291,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
   if ('kind' in outcome.result.session) {
     assert.fail('Metadata replacement returned an unsupported Session projection');
   }
-  assert.deepEqual(outcome.result.session.labels, ['new-user-label', DEEP_RESEARCH_SESSION_LABEL]);
+  assert.deepEqual(outcome.result.session.labels, ['new-user-label', 'mode:deep_research']);
   assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
   assert.equal(fixture.drainRequests(), 0);
 });
@@ -199,6 +318,8 @@ test('catalog queries project known-empty and running state from Runtime authori
   assert.deepEqual(emptyOutcome.result.session.liveRunState, {
     schemaVersion: 1,
     runningTurnIds: [],
+    runEpoch: 0,
+    hostGeneration: 'test-host-generation',
   });
 
   runningTurnIds = ['turn-live'];
@@ -217,6 +338,8 @@ test('catalog queries project known-empty and running state from Runtime authori
   assert.deepEqual(session.liveRunState, {
     schemaVersion: 1,
     runningTurnIds: ['turn-live'],
+    runEpoch: 0,
+    hostGeneration: 'test-host-generation',
   });
 });
 
@@ -264,6 +387,8 @@ test('catalog queries de-duplicate Runtime live turn ids in stable order', async
   assert.deepEqual(outcome.result.session.liveRunState, {
     schemaVersion: 1,
     runningTurnIds: ['turn-a', 'turn-b'],
+    runEpoch: 0,
+    hostGeneration: 'test-host-generation',
   });
 });
 
@@ -431,7 +556,7 @@ test('creation rejects reserved execution labels before claiming a Session ident
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      labels: [DEEP_RESEARCH_SESSION_LABEL],
+      labels: ['mode:deep_research'],
       modelTarget: { kind: 'default' },
     },
     context,
@@ -505,6 +630,78 @@ test('ordinary configuration rejects the WorkHub Coordination Session identity',
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('WorkHub model authority preserves its execution policy and uses versioned runtime configuration', async () => {
+  const fixture = createFixture({
+    header: {
+      id: WORKHUB_COORDINATION_SESSION_ID,
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      toolProfile: 'workhub-coordination-v2',
+      permissionMode: 'bypass',
+      orchestrationMode: 'default',
+      model: 'old-model',
+    },
+  });
+  const input = {
+    expectedRevision: fixture.revision(),
+    thinkingLevel: null,
+    modelTarget: {
+      kind: 'explicit' as const,
+      connectionId: 'connection-1',
+      connectionSlug: 'test',
+      model: 'model-1',
+    },
+  };
+  const outcome = await fixture.coordinator.configureWorkHubModel(input);
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(fixture.header().model, 'model-1');
+  assert.equal(fixture.header().permissionMode, 'bypass');
+  assert.equal(fixture.header().toolProfile, 'workhub-coordination-v2');
+  assert.equal(fixture.header().orchestrationMode, 'default');
+  const stale = await fixture.coordinator.configureWorkHubModel(input);
+  assert.equal(stale.ok && stale.result.kind, 'revision_conflict');
+  const corrupt = createFixture();
+  const rejected = await corrupt.coordinator.configureWorkHubModel(input);
+  assert.equal(rejected.ok, false);
+  assert.equal(corrupt.revision(), 3);
+});
+
+test('WorkHub thinking level persists, clears to default and rejects unsupported levels', async () => {
+  const fixture = createFixture({
+    header: {
+      id: WORKHUB_COORDINATION_SESSION_ID,
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      toolProfile: 'workhub-coordination-v2',
+      permissionMode: 'bypass',
+    },
+    connection: {
+      providerType: 'custom',
+      modelOverrides: { 'model-1': { thinkingLevels: ['low', 'high'] } },
+    },
+  });
+  const modelTarget = {
+    kind: 'explicit' as const,
+    connectionId: 'connection-1',
+    connectionSlug: 'test',
+    model: 'model-1',
+  };
+  const set = (thinkingLevel: 'low' | 'high' | 'xhigh' | null) =>
+    fixture.coordinator.configureWorkHubModel({
+      expectedRevision: fixture.revision(),
+      modelTarget,
+      thinkingLevel,
+    });
+  assert.equal((await set('high')).ok, true);
+  assert.equal(fixture.header().thinkingLevel, 'high');
+  const revision = fixture.revision();
+  assert.equal((await set('xhigh')).ok, false);
+  assert.equal(fixture.revision(), revision);
+  assert.equal(fixture.header().thinkingLevel, 'high');
+  assert.equal((await set(null)).ok, true);
+  assert.equal(fixture.header().thinkingLevel, undefined);
+  assert.equal(fixture.header().permissionMode, 'bypass');
+  assert.equal(fixture.header().toolProfile, 'workhub-coordination-v2');
+});
+
 test('ordinary metadata and configuration reject a corrupt Coordination role on another identity', async () => {
   const corrupt = {
     ...sessionHeader('session-1', ['user-label']),
@@ -554,8 +751,8 @@ test('ordinary metadata and configuration reject a corrupt Coordination role on 
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('creation on a relay connection honours declared levels via the catalog projection', async () => {
-  // The catalog entry carries the typed relayModelProfiles projection (never
+test('creation on a custom connection honours declared levels via the catalog projection', async () => {
+  // The catalog entry carries the typed modelOverrides projection (never
   // the extras bag), so a declared relay level passes the gate — and what
   // passes is exactly what execution rebuilds the runtime connection from.
   let createAttempts = 0;
@@ -563,10 +760,10 @@ test('creation on a relay connection honours declared levels via the catalog pro
   let persistedConnectionId: unknown;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
-      relayModelProfiles: { 'relay-model': { thinkingLevels: ['minimal', 'low'] } },
+      modelOverrides: { 'relay-model': { thinkingLevels: ['minimal', 'low'] } },
     },
     stores: {
       createStableSession: async (args) => {
@@ -600,6 +797,252 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(createAttempts, 1);
   assert.equal(persistedThinkingLevel, 'low');
   assert.equal(persistedConnectionId, 'connection-1');
+});
+
+test("creation applies the selected model's configured thinking default", async () => {
+  let persistedThinkingLevel: unknown;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'custom',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+      modelOverrides: {
+        'relay-model': {
+          thinkingLevels: ['low', 'high'],
+          defaultThinkingLevel: 'high',
+        },
+      },
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedThinkingLevel = args.input.thinkingLevel;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(persistedThinkingLevel, 'high');
+});
+
+test('creation can explicitly bypass a configured model thinking default', async () => {
+  let persistedThinkingLevel: unknown = 'not-called';
+  const fixture = createFixture({
+    connection: {
+      providerType: 'custom',
+      enabledModelIds: ['relay-model'],
+      models: [{ id: 'relay-model' }],
+      modelOverrides: {
+        'relay-model': {
+          thinkingLevels: ['low', 'high'],
+          defaultThinkingLevel: 'high',
+        },
+      },
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedThinkingLevel = args.input.thinkingLevel;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
+      thinkingLevel: null,
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(persistedThinkingLevel, undefined);
+});
+
+test('plugin executor creation bypasses model resolution and persists the executor route', async () => {
+  let persistedInput: Parameters<CatalogStores['createStableSession']>[0]['input'] | undefined;
+  const externalHeader = (sessionId: string): SessionHeader => {
+    const { llmConnectionId: _connectionId, ...base } = sessionHeader(sessionId, ['user-label']);
+    return {
+      ...base,
+      backend: 'plugin-executor',
+      executorId: 'codex',
+      executorConfig: { model: 'account-model' },
+      llmConnectionSlug: 'executor:codex',
+      model: 'gpt-codex',
+    };
+  };
+  const fixture = createFixture({
+    connection: {
+      onResolve: () => assert.fail('Plugin executor creation must not resolve a Maka model'),
+    },
+    stores: {
+      createStableSession: async (args) => {
+        persistedInput = args.input;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(externalHeader(args.sessionId), 1),
+        };
+      },
+      readCatalogRecord: async (sessionId) => catalogRecord(externalHeader(sessionId), 1),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      executorId: 'codex',
+      executorModel: 'gpt-codex',
+      thinkingLevel: 'high',
+      executorConfig: { model: 'gpt-codex', mode: 'auto' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.equal(persistedInput?.executorId, 'codex');
+  assert.deepEqual(persistedInput?.executorConfig, { model: 'gpt-codex', mode: 'auto' });
+  assert.equal(persistedInput?.llmConnectionId, undefined);
+  assert.equal(persistedInput?.llmConnectionSlug, 'executor:codex');
+  assert.equal(persistedInput?.model, 'gpt-codex');
+  assert.equal(persistedInput?.thinkingLevel, 'high');
+  if (outcome.ok && !('kind' in outcome.result)) {
+    assert.equal(outcome.result.backend, 'plugin-executor');
+    assert.equal(outcome.result.executorId, 'codex');
+    assert.deepEqual(outcome.result.executorConfig, { model: 'account-model' });
+  }
+});
+
+for (const selection of [
+  { executorModel: 'chosen' },
+  { executorModel: 'chosen', executorConfig: {} },
+  { executorConfig: { model: 'chosen' } },
+  { executorModel: 'chosen', executorConfig: { model: 'chosen' } },
+  {},
+]) {
+  test(`catalog-managed executor creation pins configuration for ${JSON.stringify(selection)}`, async () => {
+    let persistedInput: Parameters<CatalogStores['createStableSession']>[0]['input'] | undefined;
+    const expected =
+      'executorModel' in selection || 'executorConfig' in selection ? { model: 'chosen' } : {};
+    const fixture = createFixture({
+      assertExecutorAvailable: (_session, _executor, configuration) => {
+        assert.deepEqual(configuration ?? {}, expected);
+        return configuration ?? {};
+      },
+      stores: {
+        createStableSession: async (args) => {
+          persistedInput = args.input;
+          return {
+            kind: 'existing' as const,
+            record: headerSnapshot(sessionHeader(args.sessionId, []), 1),
+          };
+        },
+      },
+    });
+    const result = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        executorId: 'fixture-acp',
+        ...selection,
+      },
+      context,
+    );
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(persistedInput?.executorConfig, expected);
+    assert.equal(persistedInput?.model, expected.model ?? 'fixture-acp');
+  });
+}
+
+for (const selection of [
+  { executorModel: 'removed' },
+  { executorModel: 'removed', executorConfig: {} },
+  { executorConfig: { model: 'removed' } },
+  { executorModel: 'fast', executorConfig: { model: 'slow' } },
+]) {
+  test(`invalid executor model selection never persists: ${JSON.stringify(selection)}`, async () => {
+    const fixture = createFixture({
+      assertExecutorAvailable: (_session, _executor, configuration) => {
+        if (configuration?.model === 'removed') throw new Error('model unavailable');
+      },
+      stores: {
+        createStableSession: async () => assert.fail('Invalid selection must not persist'),
+      },
+    });
+    const result = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        executorId: 'fixture-acp',
+        ...selection,
+      },
+      context,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok)
+      assert.equal(
+        result.error.code,
+        selection.executorModel === 'fast' ? 'invalid_request' : 'operation_unavailable',
+      );
+  });
+}
+
+test('plugin executor creation fails before persistence when the executor is unavailable', async () => {
+  let createAttempts = 0;
+  const fixture = createFixture({
+    assertExecutorAvailable: () => {
+      throw new Error('not installed');
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        throw new Error('must not persist');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      executorId: 'missing',
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: { code: 'operation_unavailable', message: 'Plugin executor is unavailable: missing' },
+  });
+  assert.equal(createAttempts, 0);
 });
 
 test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
@@ -810,14 +1253,14 @@ test('creation admits an enabled model a live list omits', async () => {
   assert.equal(createAttempts, 1);
 });
 
-test('creation on a relay connection without declarations still fails closed on any thinkingLevel', async () => {
+test('creation on a custom connection without declarations still fails closed on any thinkingLevel', async () => {
   // Undeclared relay models resolve no variants — accepting an unverifiable
   // level would be worse than rejecting it, because the wire could never
   // honour what the catalog cannot see.
   let createAttempts = 0;
   const fixture = createFixture({
     connection: {
-      providerType: 'openai-compatible',
+      providerType: 'custom',
       enabledModelIds: ['relay-model'],
       models: [{ id: 'relay-model' }],
     },
@@ -886,39 +1329,72 @@ test('creation rejects explore permission without a declared mode', async () => 
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('creation materializes Deep Research semantics inside the Host transaction', async () => {
-  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+test('new tasks snapshot the current global Code Mode setting', async () => {
+  let enabled = true;
+  const runtimePolicy: RuntimePolicy = {
+    ...runtimePolicyFixture({}),
+    runtimePolicy: {
+      getSnapshot: async () => ({
+        revision: 1,
+        policy: {
+          ...createDefaultRuntimePolicy(),
+          chatDefaults: { permissionMode: 'ask', codeModeEnabled: enabled },
+        },
+      }),
+    },
+  };
+  const modes: unknown[] = [];
   const fixture = createFixture({
+    runtimePolicy,
     stores: {
       createStableSession: async (request) => {
-        created = request;
+        modes.push(request.input.toolMode);
         return {
           kind: 'existing',
-          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
+          record: headerSnapshot(sessionHeader(request.sessionId, []), 3),
         };
       },
     },
   });
-
-  const outcome = await fixture.coordinator.handlers['session.create'](
+  for (const value of [true, false]) {
+    enabled = value;
+    const expectedMode = value ? 'code_mode' : 'direct';
+    assert.equal(
+      (await fixture.coordinator.resolveExternalSessionImportTarget()).toolMode,
+      expectedMode,
+    );
+    assert.equal((await fixture.coordinator.resolveDefaultCreateTarget()).toolMode, expectedMode);
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        modelTarget: { kind: 'default' },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true);
+  }
+  assert.deepEqual(modes, ['code_mode', 'direct']);
+  // A scheduled task carries its frozen mode through the internal creation
+  // path even when the user's global default has since changed.
+  await fixture.coordinator.createForHost(
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      mode: 'deep_research',
-      name: 'Caller override',
-      labels: ['customer-label'],
       modelTarget: { kind: 'default' },
-      permissionMode: 'ask',
     },
-    context,
+    'code_mode',
   );
-
-  assert.equal(outcome.ok, true);
-  assert.ok(created);
-  assert.equal(created.input.name, DEEP_RESEARCH_SESSION_NAME);
-  assert.deepEqual(created.input.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-  assert.equal(created.input.permissionMode, 'explore');
-  assert.equal(fixture.drainRequests(), 0);
+  enabled = true;
+  await fixture.coordinator.createForHost(
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    },
+    'direct',
+  );
+  assert.deepEqual(modes.slice(2), ['code_mode', 'direct']);
 });
 
 test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {
@@ -978,6 +1454,55 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   assert.equal(outcome.result.session.collaborationMode, 'plan');
   assert.equal(fixture.header().llmConnectionId, 'connection-1');
   assert.equal(fixture.header().collaborationMode, 'plan');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('permission-only Host updates select the live boundary transition path', async () => {
+  const observed: boolean[] = [];
+  const fixture = createFixture({
+    manager: {
+      transitionSessionConfiguration: async (_sessionId, input) => {
+        observed.push(input.permissionModeOnly);
+        if (!input.permissionModeOnly) {
+          throw new SessionConfigurationTransitionError(
+            'session_busy',
+            'Session configuration cannot change while a linked Turn is active',
+          );
+        }
+        return headerSnapshot(
+          { ...fixture.header(), permissionMode: input.configuration.permissionMode },
+          fixture.revision() + 1,
+        );
+      },
+    },
+  });
+
+  const widening = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass' },
+    },
+    context,
+  );
+  const mixed = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass', collaborationMode: 'plan' },
+    },
+    context,
+  );
+
+  assert.equal(widening.ok, true);
+  assert.deepEqual(mixed, {
+    ok: false,
+    error: {
+      code: 'session_busy',
+      message: 'Session configuration cannot change while a linked Turn is active',
+    },
+  });
+  assert.deepEqual(observed, [true, false]);
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -1354,11 +1879,11 @@ test('same-workspace relocation still enters Runtime eligibility authority', asy
   });
 });
 
-test('catalog paging stops before the encoded 48 KiB result boundary', async () => {
-  const records = Array.from({ length: 32 }, (_, index) => {
+test('catalog paging preserves the byte-limited prefix and storage continuation cursor', async () => {
+  const records = Array.from({ length: 40 }, (_, index) => {
     const header = {
       ...sessionHeader(
-        `session-${index}`,
+        `session-${String(index).padStart(3, '0')}`,
         Array.from({ length: 32 }, (_, label) => `label-${label}-${'x'.repeat(110)}`),
       ),
       name: `Session ${index} ${'n'.repeat(280)}`,
@@ -1367,30 +1892,60 @@ test('catalog paging stops before the encoded 48 KiB result boundary', async () 
   });
   const fixture = createFixture({
     stores: {
-      listCatalogPage: async () => ({
-        kind: 'page',
-        revision: 'sha256:test',
-        records,
-        hasMore: false,
-      }),
+      listCatalogPage: async (_filter, cursor, limit) => {
+        const offset = cursor
+          ? records.findIndex((record) => record.header.id === cursor.sessionId) + 1
+          : 0;
+        return {
+          kind: 'page',
+          revision: 'sha256:test',
+          records: records.slice(offset, offset + limit),
+          hasMore: offset + limit < records.length,
+        };
+      },
     },
   });
-
-  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
-    { kind: 'list_start' },
-    context,
+  const pages: Extract<SessionCatalogQueryResult, { kind: 'page' }>[] = [];
+  let input: SessionCatalogQueryInput = { kind: 'list_start' };
+  let end = 0;
+  const cursorAt = (end: number) =>
+    end === records.length
+      ? null
+      : Buffer.from(
+          JSON.stringify({
+            version: 1,
+            activityAt: records[end - 1]!.activityAt,
+            sessionId: records[end - 1]!.header.id,
+          }),
+        ).toString('base64url');
+  do {
+    const outcome = await fixture.coordinator.handlers['session.catalog.query'](input, context);
+    assert.ok(outcome.ok && outcome.result.kind === 'page');
+    const page = outcome.result;
+    assert.ok(page.sessions.length > 0);
+    pages.push(page);
+    end += page.sessions.length;
+    assert.equal(page.nextCursor, cursorAt(end));
+    if (page.nextCursor === null) break;
+    input = { kind: 'list_continue', revision: page.revision, cursor: page.nextCursor };
+  } while (end < records.length);
+  const items = pages.flatMap((page) => page.sessions);
+  assert.deepEqual(
+    items.map((item) => item.id),
+    records.map((record) => record.header.id),
   );
-
-  assert.equal(outcome.ok, true);
-  if (!outcome.ok || outcome.result.kind !== 'page') {
-    assert.fail('Catalog query did not return a page');
-  }
-  assert.ok(outcome.result.sessions.length > 0);
-  assert.ok(outcome.result.sessions.length < records.length);
-  assert.ok(outcome.result.nextCursor);
   assert.ok(
-    Buffer.byteLength(JSON.stringify(outcome.result), 'utf8') <= SESSION_CATALOG_RESULT_MAX_BYTES,
+    items.every((item) => !('kind' in item)),
+    'fixture must exercise ordinary Session projections',
   );
+  assert.ok(pages.length > 1);
+  assert.ok(pages[0]!.sessions.length < SESSION_CATALOG_PAGE_MAX_ITEMS);
+  assertMaximalJsonPages(pages, items, {
+    maxBytes: SESSION_CATALOG_RESULT_MAX_BYTES,
+    maxItems: SESSION_CATALOG_PAGE_MAX_ITEMS,
+    items: (page) => page.sessions,
+    candidate: (page, sessions, end) => ({ ...page, sessions, nextCursor: cursorAt(end) }),
+  });
 });
 
 test('rejects a legacy cursor that carries a Session catalog filter', async () => {
@@ -1419,18 +1974,194 @@ test('rejects a legacy cursor that carries a Session catalog filter', async () =
   assert.equal(outcome.error.code, 'invalid_request');
 });
 
+test('external import target falls back to a ready connection when no default is set', async () => {
+  // The reported bug: a self-configured profile has `defaultTarget: null` while
+  // holding usable connections, and every import failed before reading the source.
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: null,
+      connections: [{ connectionId: 'conn-a', slug: 'anthropic', enabledModelIds: ['model-1'] }],
+    }),
+  });
+
+  const target = await fixture.coordinator.resolveExternalSessionImportTarget();
+
+  assert.equal(target.llmConnectionId, 'conn-a');
+  assert.equal(target.llmConnectionSlug, 'anthropic');
+  assert.equal(target.model, 'model-1');
+  assert.equal(target.collaborationMode, 'agent');
+});
+
+test('external import target uses a ready configured default even when it is not first in catalog order', async () => {
+  // Pins "behavior is unchanged when a default is set and ready": without the
+  // default-first preference the enumerator would pick conn-a (first in catalog
+  // order); the configured default is conn-b and must win.
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: { connectionId: 'conn-b', modelId: 'model-2' },
+      connections: [
+        { connectionId: 'conn-a', slug: 'anthropic', enabledModelIds: ['model-1'] },
+        { connectionId: 'conn-b', slug: 'openai', enabledModelIds: ['model-2'] },
+      ],
+    }),
+  });
+
+  const target = await fixture.coordinator.resolveExternalSessionImportTarget();
+
+  assert.equal(target.llmConnectionId, 'conn-b');
+  assert.equal(target.model, 'model-2');
+});
+
+test('external import target does not substitute a set-but-unusable default; it surfaces the failure', async () => {
+  // A configured default whose connection lost its credential must fail exactly
+  // as an explicit default target does today — not silently attach the task to
+  // another connection the user never chose. Fallback is only for `null` default.
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: { connectionId: 'conn-a', modelId: 'model-1' },
+      connections: [
+        {
+          connectionId: 'conn-a',
+          slug: 'anthropic',
+          verdict: { kind: 'credential_not_configured', status: { configured: false } as never },
+        },
+        { connectionId: 'conn-b', slug: 'openai', enabledModelIds: ['model-2'] },
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    fixture.coordinator.resolveExternalSessionImportTarget(),
+    (error: unknown) =>
+      error instanceof SessionOperationFailure && error.code === 'operation_unavailable',
+  );
+});
+
+test('external import target skips an over-long model id and uses the next ready model on the connection', async () => {
+  // The first enabled model is within the catalog's code-unit limit but exceeds
+  // the 512-byte wire cap (emoji), which `#resolveModel` rejects. Enumerating one
+  // candidate per connection must not let that mask the connection's shorter,
+  // usable model.
+  const overLong = '😀'.repeat(200); // 400 UTF-16 units (<=512), 800 UTF-8 bytes (>512)
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: null,
+      connections: [
+        { connectionId: 'conn-a', slug: 'openai', enabledModelIds: [overLong, 'model-short'] },
+      ],
+    }),
+  });
+
+  const target = await fixture.coordinator.resolveExternalSessionImportTarget();
+
+  assert.equal(target.llmConnectionId, 'conn-a');
+  assert.equal(target.model, 'model-short');
+});
+
+test('external import target fails cleanly when no connection is usable', async () => {
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: null,
+      connections: [
+        {
+          connectionId: 'conn-a',
+          slug: 'openai',
+          verdict: { kind: 'credential_not_configured', status: { configured: false } as never },
+        },
+        { connectionId: 'conn-b', slug: 'deepseek', enabled: false },
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    fixture.coordinator.resolveExternalSessionImportTarget(),
+    (error: unknown) =>
+      error instanceof NoUsableImportModelError &&
+      error.code === 'operation_unavailable' &&
+      /No usable Session model/i.test(error.message),
+  );
+});
+
+test('external import target surfaces a mid-selection identity race instead of masking it', async () => {
+  // A connection deleted or renamed between the snapshot and resolution makes
+  // `#resolveModel` throw `operation_conflict`. That is a real race, not an
+  // unusable candidate: import must surface it, not swallow it and silently pick
+  // the next (lower-priority) connection. conn-a is the first candidate and is
+  // mid-race; conn-b is ready — the pre-fix fallback returned conn-b, hiding the
+  // conflict.
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: null,
+      connections: [
+        { connectionId: 'conn-a', slug: 'anthropic', verdict: { kind: 'not_found' } },
+        { connectionId: 'conn-b', slug: 'openai', enabledModelIds: ['model-2'] },
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    fixture.coordinator.resolveExternalSessionImportTarget(),
+    (error: unknown) =>
+      error instanceof SessionOperationFailure &&
+      !(error instanceof NoUsableImportModelError) &&
+      error.code === 'operation_conflict',
+  );
+});
+
+test('autonomous create target uses the configured default when one is set', async () => {
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: { connectionId: 'conn-a', modelId: 'model-1' },
+      connections: [{ connectionId: 'conn-a', slug: 'anthropic', enabledModelIds: ['model-1'] }],
+    }),
+  });
+
+  const target = await fixture.coordinator.resolveDefaultCreateTarget();
+
+  assert.equal(target.llmConnectionId, 'conn-a');
+  assert.equal(target.model, 'model-1');
+});
+
+test('autonomous create target fails closed when no default is set, even with a ready connection', async () => {
+  // The WorkHub coordination / scheduled / root paths must not silently bind a
+  // connection the user never chose: with no user in the loop, the absence of a
+  // default fails closed rather than starting on an unintended account. This is
+  // the counterpart to import's fallback and guards against re-merging the two
+  // resolutions.
+  const fixture = createFixture({
+    runtimePolicy: importTargetPolicy({
+      defaultTarget: null,
+      connections: [{ connectionId: 'conn-a', slug: 'anthropic', enabledModelIds: ['model-1'] }],
+    }),
+  });
+
+  await assert.rejects(
+    fixture.coordinator.resolveDefaultCreateTarget(),
+    (error: unknown) =>
+      error instanceof WorkHubDefaultModelRequiredError &&
+      error.code === 'operation_unavailable' &&
+      /No default Session model is configured/i.test(error.message),
+  );
+});
+
 function createFixture(
   options: {
     readonly labels?: readonly string[];
     readonly cwd?: string;
     readonly stores?: Partial<CatalogStores>;
+    readonly turnIndex?: Partial<CatalogTurnIndex>;
     readonly manager?: Partial<ConfigurationAuthority>;
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
+    readonly runtimePolicy?: RuntimePolicy;
     readonly projectCatalog?: ProjectCatalog;
     readonly onProjectChanged?: () => void;
     readonly legacyConnectionIdentity?: boolean;
     readonly header?: Partial<SessionHeader>;
+    readonly assertExecutorAvailable?: HostSessionCatalogCoordinatorOptions['assertExecutorAvailable'];
+    readonly configureExecutor?: HostSessionCatalogCoordinatorOptions['configureExecutor'];
+    readonly isTurnBusy?: HostSessionCatalogCoordinatorOptions['isTurnBusy'];
+    readonly retireExecutor?: HostSessionCatalogCoordinatorOptions['retireExecutor'];
   } = {},
 ) {
   const sessionId = 'session-1';
@@ -1455,17 +2186,10 @@ function createFixture(
       records: [catalogRecord(header, revision)],
       hasMore: false,
     }),
-    markSessionReadThroughMessage: async () => headerSnapshot(header, revision),
     probeStableSessionCreate: async () => ({ kind: 'absent' }),
     readCatalogRecord: async () => catalogRecord(header, revision),
     readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
     readHeaderRecordSnapshot: async () => headerSnapshot(header, revision),
-    readTurnContributionsSnapshot: async () => ({
-      throughSequence: null,
-      contributions: [],
-      nextPosition: null,
-    }),
-    readTurnLandmarksSnapshot: async () => ({ throughSequence: null, landmarks: [] }),
     updateHeaderVersioned: async (_sessionId, patch, expectedRevision) => {
       if (expectedRevision !== revision) {
         throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, revision);
@@ -1476,9 +2200,21 @@ function createFixture(
     },
     ...options.stores,
   };
-  const runtimePolicy = runtimePolicyFixture(options.connection ?? {});
+  const turnIndex: CatalogTurnIndex = {
+    readDurableRecords: async () => ({ throughSequence: null, records: [], nextPosition: null }),
+    readDurableTurnContributions: async () => ({
+      throughSequence: null,
+      contributions: [],
+      nextPosition: null,
+    }),
+    readDurableTurnLandmarks: async () => ({ throughSequence: null, landmarks: [] }),
+    ...options.turnIndex,
+  };
+  const runtimePolicy = options.runtimePolicy ?? runtimePolicyFixture(options.connection ?? {});
   const manager: ConfigurationAuthority = {
     runningTurnIds: () => [],
+    sessionRunEpoch: () => 0,
+    sessionHostGeneration: () => 'test-host-generation',
     transitionSessionConfiguration: async (_sessionId, input) => {
       header = {
         ...header,
@@ -1504,6 +2240,7 @@ function createFixture(
   };
   const coordinator = new HostSessionCatalogCoordinator({
     stores,
+    turnIndex,
     runtimePolicy,
     manager,
     admission: new SessionAdmissionGate(),
@@ -1516,6 +2253,12 @@ function createFixture(
     requestDrain: () => {
       drains += 1;
     },
+    ...(options.configureExecutor ? { configureExecutor: options.configureExecutor } : {}),
+    ...(options.isTurnBusy ? { isTurnBusy: options.isTurnBusy } : {}),
+    ...(options.retireExecutor ? { retireExecutor: options.retireExecutor } : {}),
+    ...(options.assertExecutorAvailable
+      ? { assertExecutorAvailable: options.assertExecutorAvailable }
+      : {}),
   });
   return {
     coordinator,
@@ -1531,7 +2274,7 @@ type FixtureConnection = {
     | 'claude-subscription'
     | 'deepseek'
     | 'openai'
-    | 'openai-compatible'
+    | 'custom'
     | 'volcengine-agent-plan';
   /** Lets a case exercise a resolver verdict other than `ready`. */
   readonly executionResolution?: ResolveExecutionConnectionResult;
@@ -1544,7 +2287,7 @@ type FixtureConnection = {
   // an empty one carries none — that is the row a connection has before its
   // first discovery run.
   readonly modelSource?: 'fetched' | 'fallback';
-  readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
+  readonly modelOverrides?: Readonly<Record<string, ModelOverride>>;
 };
 
 function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
@@ -1555,6 +2298,9 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
     slug: 'test',
     name: 'Test',
     providerType: overrides.providerType ?? ('openai' as const),
+    ...(overrides.providerType === 'custom'
+      ? { baseUrl: 'https://relay.example/v1', defaultApiProtocol: 'openai-chat' as const }
+      : {}),
     enabled: true,
     enabledModelIds: overrides.enabledModelIds ?? ['model-1'],
     models: overrides.models ?? [{ id: 'model-1' }],
@@ -1563,9 +2309,7 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
       : (overrides.models ?? [{ id: 'model-1' }]).length > 0
         ? { modelSource: 'fetched' as const }
         : {}),
-    ...(overrides.relayModelProfiles === undefined
-      ? {}
-      : { relayModelProfiles: overrides.relayModelProfiles }),
+    ...(overrides.modelOverrides === undefined ? {} : { modelOverrides: overrides.modelOverrides }),
   };
   return {
     connectionCatalog: {
@@ -1592,6 +2336,67 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
             networkProxy: policy.networkProxy,
           }
         );
+      },
+    },
+  };
+}
+
+/**
+ * A runtime policy with several connections and per-connection resolver verdicts,
+ * for the external-import target tests. `verdict` defaults to `ready`; a connection
+ * with `enabled: false` is filtered out before resolution, exactly as the catalog
+ * candidate enumeration does.
+ */
+function importTargetPolicy(input: {
+  readonly defaultTarget: { readonly connectionId: string; readonly modelId: string } | null;
+  readonly connections: ReadonlyArray<{
+    readonly connectionId: string;
+    readonly slug: string;
+    readonly enabled?: boolean;
+    readonly enabledModelIds?: readonly string[];
+    readonly verdict?: 'ready' | ResolveExecutionConnectionResult;
+  }>;
+}): RuntimePolicy {
+  const policy = createDefaultRuntimePolicy();
+  const entries = input.connections.map((connection) => ({
+    connectionId: connection.connectionId,
+    revision: 1,
+    slug: connection.slug,
+    name: connection.slug,
+    providerType: 'openai' as const,
+    enabled: connection.enabled ?? true,
+    enabledModelIds: connection.enabledModelIds ?? ['model-1'],
+    models: (connection.enabledModelIds ?? ['model-1']).map((id) => ({ id })),
+    modelSource: 'fetched' as const,
+  }));
+  const entryById = new Map(entries.map((entry) => [entry.connectionId, entry] as const));
+  const specById = new Map(input.connections.map((spec) => [spec.connectionId, spec] as const));
+  return {
+    connectionCatalog: {
+      getSnapshot: async () => ({
+        revision: 1,
+        defaultTarget: input.defaultTarget,
+        connections: entries,
+      }),
+    },
+    runtimePolicy: {
+      getSnapshot: async () => ({ revision: 1, policy }),
+    },
+    operations: {
+      resolveExecutionConnection: async (ref) => {
+        const connectionId = 'connectionId' in ref ? ref.connectionId : undefined;
+        const spec = connectionId === undefined ? undefined : specById.get(connectionId);
+        const entry = connectionId === undefined ? undefined : entryById.get(connectionId);
+        if (!spec || !entry) return { kind: 'not_found' };
+        if (spec.verdict === undefined || spec.verdict === 'ready') {
+          return {
+            kind: 'ready',
+            connection: entry,
+            secretMaterial: {},
+            networkProxy: policy.networkProxy,
+          };
+        }
+        return spec.verdict;
       },
     },
   };
@@ -1656,3 +2461,544 @@ function catalogRecord(header: SessionHeader, revision: number): SessionCatalogR
     summary: headerToSummary(header),
   };
 }
+
+test('executor model changes commit only after idle agent confirmation', async () => {
+  const order: string[] = [];
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+    configureExecutor: async (_header, config) => {
+      assert.equal(fixture.header().executorConfig?.model, 'before');
+      assert.equal(config.model, 'after');
+      order.push('confirmed');
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.deepEqual(order, ['confirmed']);
+  assert.equal(fixture.header().executorConfig?.model, 'after');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('mode-only changes retain the saved model and wait for Agent confirmation', async () => {
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before', mode: 'ask' },
+    },
+    configureExecutor: async (_header, config) => {
+      assert.deepEqual(config, { model: 'before', mode: 'auto' });
+      assert.deepEqual(fixture.header().executorConfig, { model: 'before', mode: 'ask' });
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { mode: 'auto' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.deepEqual(fixture.header().executorConfig, { model: 'before', mode: 'auto' });
+});
+
+test('Agent-confirmed mode side effects are persisted with a model change', async () => {
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before', mode: 'ask' },
+    },
+    configureExecutor: async (_header, config) => {
+      assert.deepEqual(config, { model: 'after' });
+      return { model: 'after', mode: 'auto' };
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.deepEqual(fixture.header().executorConfig, { model: 'after', mode: 'auto' });
+});
+
+test('Agent-confirmed snapshots clear options removed by a model change', async () => {
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before', mode: 'ask' },
+    },
+    configureExecutor: async (_header, config) => {
+      assert.deepEqual(config, { model: 'after' });
+      return { model: 'after' };
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.deepEqual(fixture.header().executorConfig, { model: 'after' });
+});
+
+test('an explicit mode remains required when a model changes', async () => {
+  const configuration = { model: 'after', mode: 'ask' };
+  let received: ExecutorConfiguration | undefined;
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before', mode: 'ask' },
+    },
+    configureExecutor: async (_header, config) => {
+      received = config;
+      throw new Error('Mode unavailable for the selected model');
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: configuration },
+    },
+    context,
+  );
+  assert.deepEqual(received, configuration);
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(fixture.header().executorConfig, { model: 'before', mode: 'ask' });
+});
+
+test('Agent-confirmed snapshots clear removed models from both executor routes', async () => {
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before', mode: 'ask' },
+    },
+    configureExecutor: async (_header, config) => {
+      assert.deepEqual(config, { model: 'before', mode: 'auto' });
+      return { mode: 'auto' };
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { mode: 'auto' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.deepEqual(fixture.header().executorConfig, { mode: 'auto' });
+  assert.equal(fixture.header().model, 'remote');
+});
+
+test('failed Session commit restores the confirmed executor model', async () => {
+  const confirmed: string[] = [];
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+    configureExecutor: async (_header, config) => {
+      confirmed.push(config.model!);
+    },
+    manager: {
+      transitionSessionConfiguration: async () => {
+        throw new SessionConfigurationTransitionError('operation_unavailable', 'Commit failed');
+      },
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(confirmed, ['after', 'before']);
+  assert.equal(fixture.header().executorConfig?.model, 'before');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('failed executor rollback retires the external conversation', async () => {
+  let retired = false;
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+    configureExecutor: async (_header, config) => {
+      if (config.model === 'before') throw new Error('Rollback failed');
+    },
+    retireExecutor: async () => {
+      retired = true;
+    },
+    manager: {
+      transitionSessionConfiguration: async () => {
+        throw new SessionConfigurationTransitionError('operation_unavailable', 'Commit failed');
+      },
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { model: 'after' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(retired, true);
+  assert.equal(fixture.header().executorConfig?.model, 'before');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('rejected or busy executor model changes preserve durable configuration without draining Host', async () => {
+  for (const busy of [false, true]) {
+    let called = false;
+    const fixture = createFixture({
+      header: {
+        backend: 'plugin-executor',
+        executorId: 'remote',
+        executorConfig: { model: 'before' },
+      },
+      manager: { runningTurnIds: () => (busy ? ['turn'] : []) },
+      configureExecutor: async () => {
+        called = true;
+        throw new Error('unconfirmed');
+      },
+    });
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { executorConfig: { model: 'after' } },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, false);
+    assert.equal(called, !busy);
+    assert.equal(fixture.header().executorConfig?.model, 'before');
+    assert.equal(fixture.drainRequests(), 0);
+  }
+});
+
+test('idle executor changes remain available after failed or aborted turns', async () => {
+  for (const status of ['blocked', 'aborted'] as const) {
+    let confirmations = 0;
+    const fixture = createFixture({
+      header: {
+        status,
+        backend: 'plugin-executor',
+        executorId: 'remote',
+        executorConfig: { model: 'before' },
+      },
+      configureExecutor: async () => {
+        confirmations++;
+      },
+    });
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { executorConfig: { model: 'after' } },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true, JSON.stringify(outcome));
+    assert.equal(confirmations, 1);
+    assert.equal(fixture.header().executorConfig?.model, 'after');
+  }
+});
+
+test('executor changes reject running and waiting Sessions even without an active manager turn', async () => {
+  for (const status of ['running', 'waiting_for_user'] as const) {
+    let confirmations = 0;
+    const fixture = createFixture({
+      header: {
+        status,
+        backend: 'plugin-executor',
+        executorId: 'remote',
+        executorConfig: { model: 'before' },
+      },
+      configureExecutor: async () => {
+        confirmations++;
+      },
+    });
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { executorConfig: { model: 'after' } },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, false);
+    assert.equal(confirmations, 0);
+    assert.equal(fixture.header().executorConfig?.model, 'before');
+  }
+});
+
+test('native execution settings cannot mutate an external task', async () => {
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before' },
+    },
+  });
+  for (const patch of [
+    { permissionMode: 'bypass' },
+    { thinkingLevel: 'high' },
+    { collaborationMode: 'plan' },
+    { orchestrationMode: 'swarm' },
+  ] as const) {
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      { sessionId: fixture.sessionId, expectedRevision: fixture.revision(), patch },
+      context,
+    );
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.error.code, 'operation_unavailable');
+    assert.equal(fixture.header().executorConfig?.model, 'before');
+    assert.equal(fixture.drainRequests(), 0);
+  }
+});
+
+test('reselecting the persisted executor model still confirms the Agent state and respects busy locks', async () => {
+  for (const busy of [false, true]) {
+    let confirmations = 0;
+    const fixture = createFixture({
+      header: {
+        backend: 'plugin-executor',
+        executorId: 'remote',
+        executorConfig: { model: 'same' },
+      },
+      manager: { runningTurnIds: () => (busy ? ['turn'] : []) },
+      configureExecutor: async () => {
+        confirmations++;
+      },
+    });
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { executorConfig: { model: 'same' } },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, !busy);
+    assert.equal(confirmations, busy ? 0 : 1);
+    assert.equal(fixture.header().executorConfig?.model, 'same');
+  }
+});
+
+test('projects the archive time of an archived Session and drops one on an active Session', () => {
+  const archivedHeader = { ...sessionHeader('archived', []), isArchived: true };
+  const archived = catalogRecord(archivedHeader, 2);
+  const projected = projectSessionCatalogRecord({
+    ...archived,
+    summary: { ...archived.summary, archivedAt: 1_234 },
+  });
+  if ('kind' in projected) assert.fail('Expected a supported Session projection');
+  assert.equal(projected.archivedAt, 1_234);
+
+  // A time left on an active row must not turn the task into an
+  // unsupported-record placeholder.
+  const active = catalogRecord(sessionHeader('active', []), 2);
+  const stray = projectSessionCatalogRecord({
+    ...active,
+    summary: { ...active.summary, archivedAt: 1_234 },
+  });
+  if ('kind' in stray) assert.fail('Expected a supported Session projection');
+  assert.equal(stray.isArchived, false);
+  assert.equal(Object.hasOwn(stray, 'archivedAt'), false);
+});
+
+for (const mode of ['auto', undefined])
+  test(`Runtime preserves the Agent-confirmed mode ${mode ?? '(removed)'} through Host persistence`, async () => {
+    const root = new Context();
+    const executors = new PluginExecutorService(root);
+    root
+      .extend({
+        maka: { rootId: 'profile', packageId: 'fixture', entryId: 'bridge', generation: 1 },
+      })
+      .executors.register({
+        id: 'remote',
+        execute: async () => ({ status: 'completed', text: '' }),
+        configureConversation: async () => ({ model: 'after', ...(mode ? { mode } : {}) }),
+      });
+    const fixture = createFixture({
+      header: {
+        backend: 'plugin-executor',
+        executorId: 'remote',
+        executorConfig: { model: 'before', mode: 'ask' },
+      },
+      configureExecutor: (header, configuration) =>
+        executors.configureConversation(header.id, 'remote', {
+          conversationKey: header.id,
+          cwd: header.cwd,
+          configuration,
+        }),
+    });
+    try {
+      const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+        {
+          sessionId: fixture.sessionId,
+          expectedRevision: fixture.revision(),
+          patch: { executorConfig: { model: 'after' } },
+        },
+        context,
+      );
+      assert.equal(outcome.ok, true, JSON.stringify(outcome));
+      assert.deepEqual(fixture.header().executorConfig, {
+        model: 'after',
+        ...(mode ? { mode } : {}),
+      });
+    } finally {
+      await root.fiber.dispose();
+    }
+  });
+
+for (const key of ['model', 'mode'] as const)
+  test(`unconfirmed explicit ${key} is rejected before persistence`, async () => {
+    const before = { model: 'before', mode: 'ask' };
+    const fixture = createFixture({
+      header: { backend: 'plugin-executor', executorId: 'remote', executorConfig: before },
+      configureExecutor: async () => before,
+    });
+    const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { executorConfig: key === 'model' ? { model: 'after' } : { mode: 'auto' } },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, false);
+    assert.deepEqual(fixture.header().executorConfig, before);
+  });
+test('queued turn blocks configuration before a running turn exists', async () => {
+  let calls = 0;
+  const fixture = createFixture({
+    header: {
+      backend: 'plugin-executor',
+      executorId: 'remote',
+      executorConfig: { model: 'before', mode: 'ask' },
+    },
+    isTurnBusy: () => true,
+    configureExecutor: async () => {
+      calls++;
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { mode: 'auto' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, false);
+  assert.equal(calls, 0);
+});
+test('creation validates the exact selected mode alongside its model', async () => {
+  let received: ExecutorConfiguration | undefined;
+  const fixture = createFixture({
+    assertExecutorAvailable: (_session, _executor, config) => {
+      received = config;
+      return config;
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      executorId: 'remote',
+      executorConfig: { model: 'chosen', mode: 'auto' },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.deepEqual(received, { model: 'chosen', mode: 'auto' });
+});
+test('changing the mode changes creation request identity', async () => {
+  const fingerprints: string[] = [];
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async (args) => {
+        fingerprints.push(args.requestFingerprint);
+        return { kind: 'existing', record: headerSnapshot(sessionHeader(args.sessionId, []), 1) };
+      },
+    },
+  });
+  for (const mode of ['ask', 'auto']) {
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        workspace: { kind: 'host_path', path: process.cwd() },
+        executorId: 'remote',
+        executorConfig: { model: 'chosen', mode },
+      },
+      context,
+    );
+    assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  }
+  assert.equal(fingerprints.length, 2);
+  assert.notEqual(fingerprints[0], fingerprints[1]);
+});
+test('failed local commit restores a mode-only durable task', async () => {
+  const confirmed: ExecutorConfiguration[] = [];
+  let retired = false;
+  const fixture = createFixture({
+    header: { backend: 'plugin-executor', executorId: 'remote', executorConfig: { mode: 'ask' } },
+    configureExecutor: async (_header, config) => {
+      confirmed.push(config);
+      return config;
+    },
+    retireExecutor: async () => {
+      retired = true;
+    },
+    manager: {
+      transitionSessionConfiguration: async () => {
+        throw new SessionConfigurationTransitionError('operation_unavailable', 'Commit failed');
+      },
+    },
+  });
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { executorConfig: { mode: 'auto' } },
+    },
+    context,
+  );
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(confirmed, [{ mode: 'auto' }, { mode: 'ask' }]);
+  assert.equal(retired, false);
+});

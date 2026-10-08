@@ -48,9 +48,12 @@ import {
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_CHUNK_CHARS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
-  applyToolOutputChunk,
+  applyToolOutputChunk as applyToolOutputChunkWithLocale,
   type ToolOutputChunk,
 } from '@maka/ui';
+// Tests exercise stream mechanics, not copy; pin zh so markers stay verbatim.
+const applyToolOutputChunk = (prev: Parameters<typeof applyToolOutputChunkWithLocale>[0], chunk: Parameters<typeof applyToolOutputChunkWithLocale>[1], options?: Partial<Parameters<typeof applyToolOutputChunkWithLocale>[2]>) =>
+  applyToolOutputChunkWithLocale(prev, chunk, { locale: 'zh-CN', ...options });
 
 function chunk(seq: number, text: string, stream: 'stdout' | 'stderr' = 'stdout', redacted = false): ToolOutputChunk {
   return { seq, text, stream, redacted, createdAt: 1_700_000_000_000 + seq };
@@ -76,7 +79,6 @@ describe('applyToolOutputChunk — secondary redaction (defense in depth)', () =
     assert.equal(result.chunks[0]!.text.includes('sk-ant-1234567890abcdefghijklmnopqrstuvwxyz'), false);
     assert.equal(result.chunks[0]!.redacted, true);
   });
-
 
 });
 
@@ -105,7 +107,6 @@ describe('applyToolOutputChunk — per-chunk cap', () => {
       `stored.text.length=${stored.text.length} should be <= maxChunkChars=${TOOL_STREAM_MAX_CHUNK_CHARS}`,
     );
   });
-
 
 });
 

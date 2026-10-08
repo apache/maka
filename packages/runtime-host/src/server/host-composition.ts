@@ -17,21 +17,15 @@
  * under the License.
  */
 
-import type { RuntimeHostCompositionFactory } from './host-kernel.js';
-import { INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID } from '../protocol/index.js';
 import {
   createUnavailableDomainOperationHandlers,
   type DomainOperationHandlerMap,
 } from './operation-dispatcher.js';
 
-const COMPOSITION_ID_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
+export * from './host-composition-source.js';
+
 const MODULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const moduleDrainFailures = new WeakMap<RuntimeHostDomainModule, unknown[]>();
-
-export interface HostCompositionDescriptor {
-  readonly id: string;
-  readonly revision: string;
-}
 
 export const HOST_RECOVERY_PHASES = [
   'state',
@@ -216,48 +210,3 @@ async function closeModuleResources(
     throw new AggregateError(errors, `Unable to close Runtime Host ${moduleId} module`);
   }
 }
-
-export interface RuntimeHostCompositionSource {
-  readonly descriptor: HostCompositionDescriptor;
-  readonly create: RuntimeHostCompositionFactory;
-}
-
-export function defineRuntimeHostComposition(
-  descriptor: HostCompositionDescriptor,
-  create: RuntimeHostCompositionFactory,
-): RuntimeHostCompositionSource {
-  return Object.freeze({
-    descriptor: normalizeHostCompositionDescriptor(descriptor),
-    create,
-  });
-}
-
-export function defineInteractiveRuntimeHostComposition(
-  create: RuntimeHostCompositionFactory,
-): RuntimeHostCompositionSource {
-  return defineRuntimeHostComposition(INTERACTIVE_HOST_COMPOSITION_DESCRIPTOR, create);
-}
-
-export function normalizeHostCompositionDescriptor(
-  descriptor: HostCompositionDescriptor,
-): HostCompositionDescriptor {
-  if (!COMPOSITION_ID_PATTERN.test(descriptor.id) || descriptor.id.length > 128) {
-    throw new TypeError('Runtime Host composition id is invalid');
-  }
-  if (
-    descriptor.revision.length === 0 ||
-    descriptor.revision.length > 128 ||
-    /[\u0000-\u001f\u007f]/u.test(descriptor.revision)
-  ) {
-    throw new TypeError('Runtime Host composition revision is invalid');
-  }
-  return Object.freeze({
-    id: descriptor.id,
-    revision: descriptor.revision,
-  });
-}
-
-export const INTERACTIVE_HOST_COMPOSITION_DESCRIPTOR = normalizeHostCompositionDescriptor({
-  id: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-  revision: '3',
-});

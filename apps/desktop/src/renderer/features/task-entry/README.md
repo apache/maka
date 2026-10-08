@@ -24,17 +24,29 @@ loads the Runtime Host/Project catalog, preserves a selection per Host, derives
 the new-task target and draft identity, projects the Workspace Picker, and owns
 add/relink plus remote-directory handoff lifecycles.
 
+It also reveals folders in the system file manager: a task's project folder
+through that task, otherwise the default Runtime Host's project or workspace
+folder. The Desktop adapter resolves the default Host and names the task or
+Host profile each failure belongs to; the controller reports it in the shell's
+open-folder copy, and a task whose workspace is gone gets the
+workspace-unavailable notice instead.
+
 ## Dependency direction
 
 - Consumers import production APIs from `features/task-entry`.
 - Tests and stories may additionally import `features/task-entry/testing`.
+- `TaskEntryRoot` is the only production owner of the
+  controller hook. Renderer roots receive a stable semantic projection rather
+  than catalog lifecycle state or the controller itself.
 - Task Entry may use shared renderer copy, shared project UI, core/runtime-host
   types, and Maka UI.
 - Task Entry must not import `AppShell`, preload, or the main process.
 - Desktop catalog I/O enters through `TaskEntryServices`; feature code never
   reads the Desktop global bridge directly.
-- `AppShell` supplies explicit navigation/error intents and consumes only the
-  target, Host defaults, project path, draft identity, and Workspace Picker.
+- `AppShell` consumes only the target, Host defaults, project path, draft
+  identity, and stable commands. Host and Workspace Picker updates are read at
+  their local UI boundaries; Project Settings remains an injected navigation
+  intent.
 
 ## Lifecycle invariants
 

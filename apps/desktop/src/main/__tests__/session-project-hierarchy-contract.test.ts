@@ -31,18 +31,39 @@ if (!sidebarCssUrl) throw new Error('Could not locate renderer/styles/sidebar.cs
 const sidebarCss = readFileSync(sidebarCssUrl, 'utf8');
 
 describe('project-grouped session hierarchy', () => {
-  it('aligns session titles with the project name', () => {
+  it('shares the project row left edge with its sessions', () => {
     const projectChildrenRule = sidebarCss.match(
       /\.maka-project-row\s*>\s*div\s*>\s*\[role=["']group["']\]\s*>\s*div\s*\{([^}]*)\}/,
     );
 
     assert.ok(projectChildrenRule, 'project children must have an explicit hierarchy rule');
-    // Product contract: 8px nest so session titles share the project title's x.
-    // SideNav's default spacing-6 is a fixed child inset, not that alignment.
+    // Product contract: session rows sit on the project row's left edge, so
+    // the two hover/selected fills start on the same x rather than the 8px
+    // nest that used to offset only the session rows. SideNav's default
+    // spacing-6 is a fixed child inset, not that alignment.
+    //
+    // These pin the declarations, not the geometry they serve: a StyleX
+    // default, a later equal-or-higher-specificity rule, or a renamed wrapper
+    // class would leave this green while the rail drifts apart. The rendered
+    // half is owned by the ProjectGroups play in
+    // packages/ui/stories/session-list-panel.stories.tsx (session inset within
+    // 1px, title x within 2px).
     assert.match(
       projectChildrenRule[1] ?? '',
-      /padding-inline-start:\s*var\(--spacing-2\)\s*!important;/,
-      'project sessions must keep an 8px hierarchical nest',
+      /padding-inline-start:\s*0\s*!important;/,
+      'project sessions must not be inset from the project row',
+    );
+
+    // What replaces the nest: the task title, which has no icon, is pushed past
+    // the project folder's 1rem box so titles still share one x.
+    const titleInsetRule = sidebarCss.match(
+      /\.maka-project-row\s+\.maka-session-row\s*>\s*div\s*>\s*\.astryx-side-nav-item\s*\{([^}]*)\}/,
+    );
+    assert.ok(titleInsetRule, 'project sessions must declare their title inset');
+    assert.match(
+      titleInsetRule[1] ?? '',
+      /padding-inline-start:\s*calc\(var\(--spacing-2\)\s*\+\s*1rem\s*\+\s*var\(--spacing-2\)\);/,
+      'the title inset must match the project row padding, folder icon and gap',
     );
   });
 });

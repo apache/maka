@@ -30,7 +30,6 @@ import {
   PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE,
 } from '../prompt-composition.js';
 import type { SizedRequestSegment } from '../prompt-composition.js';
-import { prepareRequestObservation } from '../request-shape.js';
 
 function segment(overrides: Partial<SizedRequestSegment> = {}): SizedRequestSegment {
   return { kind: 'message', bytes: 10, ...overrides };
@@ -109,66 +108,6 @@ describe('foldPromptComposition', () => {
     const composition = foldPromptComposition([segment({ kind: 'message', bytes: 10 })]);
 
     assert.equal(composition?.tools, undefined);
-    assert.equal(composition?.unlabelledToolBytes, undefined);
-  });
-});
-
-describe('a real observation survives the whole chain into one fold', () => {
-  test('prepare -> canonical segments -> fold keeps the same breakdown', () => {
-    // Every other test here writes its own segments, so a field renamed on one
-    // side and not the other would pass all of them; and the decode side reads
-    // `label` and `bytes` off an untyped record, so a hand-written fixture
-    // agrees with itself by construction. This is the one test where the
-    // writer, the storage encoding, the reader and the fold all meet.
-    const material = prepareRequestObservation({
-      prompt: [
-        { role: 'system', content: 'you are a helpful assistant' },
-        { role: 'user', content: 'hello' },
-      ],
-      tools: [
-        { name: 'Bash', description: 'Run a command', inputSchema: { type: 'object' } },
-        { name: 'Read', inputSchema: { type: 'object' } },
-      ],
-      providerOptions: { anthropic: { thinking: { type: 'enabled' } } },
-    });
-
-    const composition = foldPromptComposition(material.observation.segments);
-
-    assert.deepEqual(
-      composition?.tools?.map((tool) => tool.name),
-      ['Bash', 'Read'],
-      'the tool names survive capture, storage shape and fold',
-    );
-    assert.equal(composition?.unlabelledToolBytes, undefined, 'both tools were named');
-    assert.deepEqual(
-      composition?.segments.map((part) => part.kind),
-      ['system_instructions', 'tool_definitions', 'messages', 'other'],
-    );
-    assert.equal(
-      composition?.segments.find((part) => part.kind === 'tool_definitions')?.bytes,
-      composition!.tools!.reduce((carry, tool) => carry + tool.bytes, 0),
-      'the per-tool rows sum to the tool total above them',
-    );
-  });
-
-  test('a single-tool bounded remainder still counts as one remaining tool', () => {
-    const material = prepareRequestObservation({
-      prompt: [
-        { role: 'system', content: 'system' },
-        { role: 'user', content: 'hello' },
-        { role: 'assistant', content: 'hi' },
-      ],
-      tools: Array.from({ length: 253 }, (_, index) => ({
-        name: `tool-${String(index).padStart(3, '0')}`,
-        inputSchema: { type: 'object' },
-      })),
-      providerOptions: { anthropic: { thinking: { type: 'enabled' } } },
-    });
-
-    assert.equal(material.observation.segments.length, 256);
-    const composition = foldPromptComposition(material.observation.segments);
-    assert.equal(composition?.tools?.length, 64);
-    assert.equal(composition?.remainingTools?.count, 189);
     assert.equal(composition?.unlabelledToolBytes, undefined);
   });
 });

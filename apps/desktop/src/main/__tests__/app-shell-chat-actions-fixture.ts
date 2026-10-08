@@ -18,13 +18,17 @@
  */
 
 /**
- * Shared scaffolding for the `createAppShellChatActions` suites. The dependency
+ * Shared scaffolding for the Composer submission action suites. The dependency
  * surface is wide and the suites only ever vary a handful of entries, so a
  * second copy of it drifts silently and has to be edited twice whenever the
  * actions gain a dependency.
  */
 
-import type { LiveTurnProjection, TransientUserMessageProjection } from '@maka/ui';
+import type { TransientUserMessageProjection } from '@maka/ui';
+import {
+  createDesktopComposerSubmissionServices,
+  type DesktopComposerSubmissionBridge,
+} from '../../renderer/platform/desktop/create-composer-submission-services.js';
 
 /** Installs a `window.maka` bridge double; the returned function restores it. */
 export function installWindow(maka: unknown): () => void {
@@ -50,22 +54,16 @@ export function installWindow(maka: unknown): () => void {
 }
 
 /**
- * The live-turn arm as a real map rather than a black-hole stub: a send that
- * never lands must leave nothing behind, and that cannot be asserted against a
- * no-op setter.
+ * The production Desktop adapter over whichever `window.maka` double is
+ * installed when a call runs, so the suites keep stubbing the bridge they
+ * always stubbed and the adapter's mapping is exercised along the way.
  */
-export function createTurnState() {
-  const liveTurnBySession: Record<string, LiveTurnProjection> = {};
-  return {
-    liveTurnBySession,
-    setLiveTurnBySession(
-      updater: (c: Record<string, LiveTurnProjection>) => Record<string, LiveTurnProjection>,
-    ) {
-      const next = updater({ ...liveTurnBySession });
-      for (const key of Object.keys(liveTurnBySession)) delete liveTurnBySession[key];
-      Object.assign(liveTurnBySession, next);
-    },
-  };
+export function windowSubmissionServices() {
+  const installed = () => (globalThis as unknown as { window: { maka: DesktopComposerSubmissionBridge } }).window.maka;
+  return createDesktopComposerSubmissionServices({
+    get sessions() { return installed().sessions; },
+    get newTasks() { return installed().newTasks; },
+  });
 }
 
 /**
@@ -94,30 +92,32 @@ export function createTransientState() {
 export function createActionsDeps() {
   const activeIdRef = { current: undefined as string | undefined };
   return {
+    services: windowSubmissionServices(),
+    onFollowLatest: (_sessionId: string) => true,
     uiLocale: 'en' as const,
     activeIdRef,
     captureComposerImportOwner: () => ({
       sessionId: undefined,
       navSection: 'sessions' as const,
     }),
+    captureSelection: () => () => true,
     checkTaskSubmissionReadiness: async () => true,
     isNewChatSendSurfaceActive: () => true,
     isShellSurfaceOwnerActive: () => true,
     markSessionReadLocally: () => undefined,
     messageRetryPending: { claim: () => true, release: () => undefined },
     refreshSessions: async () => [],
-    activateSessionForFirstSend: async (sessionId: string) => {
-      activeIdRef.current = sessionId;
+    activateSessionForFirstSend: async (session: { id: string }) => {
+      activeIdRef.current = session.id;
     },
-    setActiveId: () => undefined,
-    setMessageLoadErrorBySession: () => undefined,
-    setMessages: () => undefined,
+    retireSession: (_sessionId: string) => undefined,
+    clearMessageLoadError: () => undefined,
     addTransientMessage: () => undefined,
     updateTransientMessage: () => undefined,
     removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
-    setLiveTurnBySession: () => undefined,
-    setInteractionBySession: () => undefined,
+    isMessagePublished: (_message: unknown) => false,
+    settleInteraction: () => undefined,
     respondToUserForm: async () => undefined,
     showModelSetupToast: () => undefined,
     toastApi: { error: () => undefined, info: () => undefined },

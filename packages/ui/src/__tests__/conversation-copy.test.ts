@@ -21,18 +21,76 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getConversationCopy } from '../conversation-copy.js';
 
+test('goal token labels use shared compact units in every locale', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const { goalTokens } = getConversationCopy(locale).chat;
+    assert.equal(goalTokens(45_200, 100_000), '45.2K / 100K');
+    assert.equal(goalTokens(12_647_391, 20_000_000), '12.6M / 20M');
+  }
+});
+
 test('labels the Chinese default thinking level as default', () => {
-  assert.equal(getConversationCopy('zh').model.defaultLevel, '默认');
+  assert.equal(getConversationCopy('zh-CN').model.defaultLevel, '默认');
+  assert.equal(getConversationCopy('zh-TW').model.defaultLevel, '預設');
 });
 
 test('explains why folder-reference messages cannot be edited and resent', () => {
   assert.equal(
-    getConversationCopy('zh').messages.editMessageDisabledDirectoryReferences,
+    getConversationCopy('zh-CN').messages.editMessageDisabledDirectoryReferences,
     '包含文件夹引用的历史消息暂不支持编辑并重发',
   );
   assert.equal(
     getConversationCopy('en').messages.editMessageDisabledDirectoryReferences,
     'Edit & resend does not yet support messages with folder references',
+  );
+});
+
+test('context usage explains missing data without exposing provider internals', () => {
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageUnavailable,
+    '暂无用量数据',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageUnavailable,
+    'No usage data is available for this request.',
+  );
+});
+
+test('context usage tooltip leads with the measured share', () => {
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(12_345, 128_000),
+    '上下文窗口：已用 10%（12.3K / 128K token）',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageShare(12_345, 128_000),
+    'Context window: 10% used (12.3K / 128K tokens).',
+  );
+  // Million-scale windows collapse to the M tier, mirroring the "1M context" marketing term.
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(44_060, 1_048_576),
+    '上下文窗口：已用 4%（44.1K / 1M token）',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageShare(44_060, 1_048_576),
+    'Context window: 4% used (44.1K / 1M tokens).',
+  );
+  // Compact counts are lossy: near-full usage can render identical numerator
+  // and denominator while the percentage still differs. Pinned on purpose —
+  // the percentage is the authoritative figure, the counts are for scale.
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageShare(1_000_000, 1_048_576),
+    '上下文窗口：已用 95%（1M / 1M token）',
+  );
+});
+
+test('context usage tooltip keeps measured usage when the limit is unknown', () => {
+  assert.equal(
+    getConversationCopy('zh-CN').messages.systemNotes.contextUsageNoWindow(12_345),
+    '已用 12.3K token；上下文窗口上限未知',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.systemNotes.contextUsageNoWindow(12_345),
+    'This request used 12.3K tokens; no context limit is available for this model.',
   );
 });
 
@@ -42,7 +100,8 @@ test('explains why folder-reference messages cannot be edited and resent', () =>
  * five-digit second count that reads as a frozen hang (#3401).
  */
 test('providerRetryScheduled humanizes hour-scale delays in both locales', () => {
-  const zh = getConversationCopy('zh').messages.providerRetryScheduled;
+  const zh = getConversationCopy('zh-CN').messages.providerRetryScheduled;
+  const zhTw = getConversationCopy('zh-TW').messages.providerRetryScheduled;
   const en = getConversationCopy('en').messages.providerRetryScheduled;
 
   // Sub-second and zero inputs still read as one second (never "0秒后重试").
@@ -59,6 +118,7 @@ test('providerRetryScheduled humanizes hour-scale delays in both locales', () =>
   assert.equal(zh(75, 2, 10), '1分 15秒后重试（2/10）');
   assert.equal(en(75, 2, 10), 'Retrying in 1m 15s (2/10)');
   assert.equal(zh(16_083, 2, 10), '4小时 28分 3秒后重试（2/10）');
+  assert.equal(zhTw(16_083, 2, 10), '4小時 28分 3秒後重試（2/10）');
   assert.equal(en(16_083, 2, 10), 'Retrying in 4h 28m 3s (2/10)');
   assert.equal(zh(90_061, 2, 10), '1天 1小时 1分 1秒后重试（2/10）');
   assert.equal(en(90_061, 2, 10), 'Retrying in 1d 1h 1m 1s (2/10)');

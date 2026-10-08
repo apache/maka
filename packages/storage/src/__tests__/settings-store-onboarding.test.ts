@@ -30,7 +30,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSettingsStore } from '../settings-store.js';
@@ -330,7 +330,7 @@ describe('SettingsStore.get file recovery', () => {
     }
   });
 
-  it('creates defaults only when settings.json is missing', async () => {
+  it('creates defaults without a backup when settings.json is missing', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-defaults-'));
     try {
       const store = createSettingsStore(workspaceRoot);
@@ -340,22 +340,30 @@ describe('SettingsStore.get file recovery', () => {
 
       assert.equal(settings.schemaVersion, 1);
       assert.match(raw, /"schemaVersion": 1/);
+      assert.deepEqual(await readdir(workspaceRoot), ['settings.json']);
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });
 
-  it('rejects corrupt settings.json without overwriting user settings bytes', async () => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-corrupt-'));
+  it('preserves a restrictive umask-derived settings.json mode and leaves no temp file behind', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-mode-'));
+    const previousUmask = process.umask(0o027);
     try {
       const store = createSettingsStore(workspaceRoot);
-      const settingsPath = join(workspaceRoot, 'settings.json');
-      const corrupt = '{"appearance":{"theme":"dark"}';
-      await writeFile(settingsPath, corrupt, 'utf8');
 
-      await assert.rejects(() => store.get(), SyntaxError);
-      assert.equal(await readFile(settingsPath, 'utf8'), corrupt);
+      await store.get(); // first run writes the defaults
+
+      assert.deepEqual(await readdir(workspaceRoot), ['settings.json']);
+      assert.equal(
+        (await stat(join(workspaceRoot, 'settings.json'))).mode & 0o777,
+        0o640,
+        'settings.json retains the mode produced by the legacy default and current umask',
+      );
     } finally {
+      process.umask(previousUmask);
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });

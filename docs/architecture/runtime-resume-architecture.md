@@ -133,7 +133,7 @@ These three words are easy to mix up:
 
 | Term | Subject | Result |
 |---|---|---|
-| Repair | Durable state of an old Run | Align terminal RuntimeEvent, Run header, and Turn state |
+| Repair | Durable state of an old Run | Give an interrupted Run its terminal RuntimeEvent and align Turn state |
 | Resume / Continuation | A history boundary already proved safe | Create fresh identities and continue the provider loop |
 | Reconcile | A tool operation with T1 but no T2 outcome | Observe the external world and commit either completed or parked |
 
@@ -204,7 +204,8 @@ Safety does not come merely from putting everything in SQLite. It comes from ass
 | Data | Nature | Purpose |
 |---|---|---|
 | Immutable `RuntimeEvent` | Canonical semantic fact | Model history, tool call/dispatch/outcome, recovery observation/decision, terminal fact |
-| `AgentRunHeader` and AgentRun events | Durable operational envelope | Attempt identity, status, lineage, and diagnostics |
+| Invocation opening fact | Immutable statement of one attempt | Identity, route, configuration, root authority, lineage |
+| AgentRun events | Durable operational record | What the runtime did, stage by stage, and its diagnostics |
 | `tool_operations` | SQLite projection | Fast current-state lookup for an operation |
 | `tool_journal_events` | SQLite projection | Fast prepared/outcome/recovery transition lookup |
 | Session messages / Turn state | Product and UI projection | Conversation and Turn display, not recovery judgment |
@@ -401,14 +402,11 @@ sequenceDiagram
   participant UI as Renderer
 
   App->>SM: recoverInterruptedSessions()
-  SM->>RS: list non-terminal / suspicious AgentRuns
+  SM->>ES: list invocations with no terminal event
   SM->>ES: read immutable RuntimeEvents
-  SM->>SM: compare terminal ledger and Run header
-  alt terminal RuntimeEvent exists, header lags
-    SM->>RS: repair the matching Run header
-  else no terminal RuntimeEvent
-    SM->>ES: commit recovered terminal RuntimeEvent first
-    SM->>RS: then commit matching failed/cancelled header
+  SM->>RS: read the operational events for the Run
+  alt no terminal RuntimeEvent
+    SM->>ES: commit a recovered terminal RuntimeEvent
   else ledger is ambiguous / unreadable
     SM-->>UI: preserve inspectable state and fail closed
   end
@@ -418,9 +416,9 @@ sequenceDiagram
 
 The invariant is:
 
-> The terminal RuntimeEvent commits before the terminal Run header. A header cannot declare completion without its semantic fact.
+> A Run has ended exactly when its terminal RuntimeEvent is durable, and nothing else records that it ended.
 
-A second crash between those commits remains repairable from the terminal event. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
+There is no second commit for a crash to land between. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
 
 ## Phase 1: create a new execution at a safe boundary
 
@@ -429,7 +427,7 @@ Phase 1 does not resolve unknown side effects. It continues only when every acce
 Planner gates include:
 
 - readable source Run and RuntimeEvent ledger;
-- exactly one terminal event matching the Run header;
+- exactly one terminal event for the source invocation;
 - one source execution identity across events;
 - Phase 0 `safe_replay`;
 - no pending permission;
@@ -491,7 +489,51 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Desktop startup auto-resume also reuses it.
+CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Startup
+recovery can reconstruct an already admitted continuation through that seam,
+but it does not automatically select an ordinary failed or cancelled Run.
+
+### A missing tool result is projected only for a fresh user turn
+
+An uncertain tool side effect is not a resumable boundary. If recovery finds a
+durable T1 dispatch without a committed T2 result, it seals the old invocation
+as `outcome_unknown`; it does not invent a durable tool response and does not
+retry the tool. The old Run remains stopped.
+
+When the user later sends a new explicit message, that message starts a new
+Turn. Only provider requests in that fresh Turn receive a temporary history
+projection: the old tool call is paired with an `outcome_unknown` response,
+then the new user message follows. The temporary response is not written to
+the RuntimeEvent ledger or transcript, and nothing about the event is added
+to the request's system prompt, so the provider-stable request prefix is not
+churned on exactly the turns that replay the full history. For example, after
+`Bash("touch marker.txt")` was dispatched but its result was not committed, a
+new request such as “check whether `marker.txt` exists” lets the model inspect
+the current state before deciding what to do; Maka does not decide whether the
+write happened and does not retry it automatically.
+
+Automated triggers such as cloud activation, schedules, Goals, WorkHub results,
+and Agent Graph wakes are not explicit user messages. If such a fresh Turn sees
+an unresolved unknown tool outcome, Runtime rejects it before making a provider
+request; a user must inspect the current state and send a new message.
+
+The unknown is retired once the conversation demonstrably moved on with the
+model informed: a later fresh, lineage-free invocation (an explicit user
+message — not a retry, regenerate, branch, sub-agent, continuation, or
+automated wake) that opened after the crash seal and completed. From the next
+Turn on, the gate no longer fires, automated triggers run normally, and
+compaction is no longer held open for that history. If the explicit Turn fails
+or is stopped, the unknown stays active and is projected again on the next
+explicit message. Retirement is inferred from durable invocation facts already
+in the ledger; no synthetic outcome is ever written.
+
+This projection must not lose the T1 call. If an existing checkpoint or the
+current context budget would hide it, Runtime falls back to the full effective
+history for that request. This is a deliberate fail-closed trade-off: a very
+large unresolved history may exceed the provider's context limit, in which case
+the provider's real error is surfaced rather than dropping the uncertainty or
+claiming success. Compaction that preserves this uncertainty while reducing
+the rest of that history is not implemented here.
 
 ### Current parked-reason boundary
 
@@ -791,7 +833,7 @@ Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to e
 4. Atomically commit call, dispatch, and projection at T1.
 5. Execute the external effect without a long database transaction.
 6. Atomically commit T2 before publishing the result.
-7. Commit terminal RuntimeEvent before terminal Run header.
+7. End a Run by committing exactly one terminal RuntimeEvent.
 8. On restart, repair the old Run first.
 9. Resolve immutable facts into completed / not-dispatched / indeterminate / parked / corruption.
 10. If a production reconciler exists, commit one atomic recovery bundle; otherwise park.
@@ -831,9 +873,20 @@ Start with production-shaped red tests, then land core contract, storage constra
 
 ## Feature flags, migration, and rollback
 
-| Flag | Purpose | Rollback meaning |
+| Setting | Purpose | Rollback meaning |
 |---|---|---|
-| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Enable Desktop manual/auto resume and CLI `/resume` | May disable visible continuation; does not delete durable facts |
+| unset | Enable explicit Desktop and CLI/TUI resume; keep automated WorkHub and `maka activate` resume disabled | Default product behavior |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | Also enable automated WorkHub and `maka activate` resume | Preserves the previous full opt-in behavior |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` | Disable explicit and model-driven resume planning | May park reconstruction; does not delete durable facts |
+
+Unknown non-empty values fail closed like `0`. Every enabled entry point still
+uses the same authoritative planner; the policy only controls whether a new
+resume attempt may reach it.
+
+With automated `maka activate` resume enabled, a ready continuation is used
+instead of submitting that activation's new stimulus. If no continuation is
+ready, the stimulus is submitted normally. Callers that need every activation
+stimulus processed should not opt into this legacy resume behavior.
 
 RuntimeEvent migration is unconditional on the first write. Downgrading to a
 reader that does not understand the new schema requires explicit, verified

@@ -34,6 +34,7 @@ import {
 } from './operational-state-store.js';
 
 export interface ClosableShellRunStore extends ShellRunStore {
+  listShellRunRecoverySessionIds(): Promise<string[]>;
   ready(): Promise<void>;
   close(): void;
 }
@@ -122,6 +123,21 @@ class SqliteShellRunStore implements ClosableShellRunStore {
         throw new Error('Invalid SQLite ShellRun row');
       }
       return normalizeShellRunRecord(JSON.parse(row.record_json), sessionId, row.shell_run_id);
+    });
+  }
+
+  async listShellRunRecoverySessionIds(): Promise<string[]> {
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT DISTINCT session_id
+        FROM core_shell_runs
+        WHERE json_extract(record_json, '$.status') IN ('starting', 'running')
+        ORDER BY session_id
+      `)
+      .all() as Array<{ session_id?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.session_id !== 'string') throw new Error('Invalid SQLite ShellRun row');
+      return row.session_id;
     });
   }
 

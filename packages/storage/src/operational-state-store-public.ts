@@ -26,6 +26,7 @@
  */
 export {
   acquireOperationalStateDatabase,
+  OperationalStateMigrationBlockedError,
   OPERATIONAL_STATE_DATABASE_NAME,
   OPERATIONAL_STATE_SCHEMA_VERSION,
   resolveOperationalStateDatabasePath,

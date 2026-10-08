@@ -32,6 +32,7 @@ import {
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
 import type { MainProcessRecoveryEvidence } from './main-process-recovery-journal.js';
+import type { RuntimeHostDesktopTargetState } from './runtime-host-desktop-manager.js';
 
 const INPUT_LIMITS = {
   title: 512,
@@ -130,6 +131,7 @@ export interface DesktopDiagnosticsDeps {
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
   readonly runtimeHostProcessLogs?: () => readonly string[];
+  readonly runtimeHostConnections?: () => readonly RuntimeHostDesktopTargetState[];
   readonly resolveActiveRuntimeHost: () => RuntimeHostDiagnosticsClient | undefined;
   readonly resolveRuntimeHost: (scope: DesktopTargetScope) => RuntimeHostDiagnosticsClient | undefined;
   readonly writeClipboard: (value: string) => void;
@@ -389,6 +391,7 @@ export async function copyDesktopDiagnosticReport(
       runtimeExecution,
       undefined,
       deps.runtimeHostProcessLogs?.() ?? [],
+      deps.runtimeHostConnections?.() ?? [],
     ),
   );
 }
@@ -401,6 +404,7 @@ export function formatDesktopDiagnosticReport(
   runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined = undefined,
   capturedAt = new Date(),
   runtimeHostProcessLogs: readonly string[] = [],
+  runtimeHostConnections: readonly RuntimeHostDesktopTargetState[] = [],
 ): string {
   const lines = ['Maka Desktop diagnostic report', `Captured at: ${capturedAt.toISOString()}`];
   const rendererContext =
@@ -460,6 +464,25 @@ export function formatDesktopDiagnosticReport(
         ? runtimeHostProcessLogs
         : ['<none captured>']),
     );
+  }
+
+  if (input.surface !== 'previous_main_process_interruption' && runtimeHostConnections.length > 0) {
+    lines.push('', `Runtime Host connections (${runtimeHostConnections.length})`);
+    for (const state of runtimeHostConnections) {
+      lines.push(`${JSON.stringify(state.target.profile.id)}: ${state.readiness}`);
+      if (state.reconnect) {
+        lines.push(
+          `  Failed attempts: ${state.reconnect.failures}`,
+          `  First failure: ${new Date(state.reconnect.firstFailureAt).toISOString()}`,
+          `  Last failure: ${new Date(state.reconnect.lastFailureAt).toISOString()}`,
+        );
+      }
+      if (state.readiness !== 'ready' && state.error) {
+        const code = 'code' in state.error && typeof state.error.code === 'string'
+          ? ` [${state.error.code}]` : '';
+        lines.push(`  Latest error${code}: ${boundedDiagnosticError(state.error)}`);
+      }
+    }
   }
 
   lines.push('', 'Runtime Host');

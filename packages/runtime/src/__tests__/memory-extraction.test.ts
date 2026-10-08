@@ -22,6 +22,7 @@ import { describe, test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import {
   bindProviderVisibleEvidence,
   projectMemoryExtractionEvidence,
@@ -124,7 +125,7 @@ describe('bounded Memory Extraction', () => {
   test('keeps Assistant text while excluding parallel Tool and provider-native semantics', () => {
     const stepText = {
       ...event('assistant-step', 'model', { kind: 'text', text: 'Checking both sources.' }),
-      refs: { storedMessageId: 'step-1' },
+      refs: { providerEventId: 'step-1' },
     };
     const firstCall = {
       ...event('call-a', 'model', {
@@ -196,6 +197,33 @@ describe('bounded Memory Extraction', () => {
     );
   });
 
+  test('drops a repaired Assistant prefix before Memory provider context', () => {
+    const repairedAssistant = {
+      ...event('repaired-assistant', 'model', {
+        kind: 'text',
+        text: 'Assistant text before any user message.',
+      }),
+      refs: { storedMessageId: 'stored-assistant' },
+    };
+    const source = buildMemoryCompactionSourceContext(
+      [
+        repairedAssistant,
+        event('first-user', 'user', { kind: 'text', text: 'User-led memory evidence.' }),
+      ],
+      'first-user',
+    );
+
+    assert.ok(source);
+    assert.deepEqual(source.messages, [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'User-led memory evidence.' }],
+      },
+    ]);
+    assert.equal(source.eventMessagePositions?.['repaired-assistant'], undefined);
+    assert.deepEqual(source.eventMessagePositions?.['first-user'], [0]);
+  });
+
   test('rebuilds only the post-Cursor Event slice behind the previous Compaction summary', () => {
     const compacted = event('compacted-user', 'user', {
       kind: 'text',
@@ -204,8 +232,7 @@ describe('bounded Memory Extraction', () => {
     const previousCheckpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [compacted],
-      summary: 'The old summary remains interpretation context.',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('The old summary remains interpretation context.'),
     });
     const source = buildMemoryCompactionSourceContext(
       [

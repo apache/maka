@@ -27,7 +27,7 @@
  * `<pre>{thinkingText}</pre>` — no Markdown, no redaction, no size
  * cap. Two trust-boundary failures: (1) model thinking output can
  * echo prompts / env / tool stderr / pasted credentials, so the
- * raw text must NOT enter React state without secondary
+ * raw text must NOT enter React state without
  * `redactSecrets`; (2) extended thinking can stream tens or
  * hundreds of KB, and `<pre>` `max-height: 320px` only bounds
  * VISUAL height, not the DOM text length / React state / DevTools
@@ -52,20 +52,16 @@ import {
 } from './stream-delta.js';
 
 /**
- * Default caps. Tuned to:
- *   - 4 KB per single delta: matches A3 tool-output's per-chunk
- *     cap and the runtime's `TOOL_OUTPUT_DELTA_MAX_CHARS`.
- *   - 32 KB total per session: thinking can run longer than tool
- *     stream (multiple paragraphs of reasoning before the answer),
- *     so 2× A3's per-tool cap. Above this we tail-keep so the
- *     "most recent" reasoning is what the user sees scrolling.
+ * 32 KB total per session: thinking can run longer than tool stream
+ * (multiple paragraphs of reasoning before the answer), so 2× A3's per-tool
+ * cap. Above this we tail-keep so the "most recent" reasoning is what the
+ * user sees scrolling.
  */
-export const THINKING_MAX_DELTA_CHARS = 4 * 1024;
 export const THINKING_MAX_TOTAL_CHARS = 32 * 1024;
 
 export interface ApplyThinkingOptions extends ApplyStreamOptions {
   /** Resolved UI locale for user-visible truncation markers. */
-  locale?: UiLocale;
+  locale: UiLocale;
 }
 
 export type ApplyThinkingResult = ApplyStreamResult;
@@ -74,15 +70,12 @@ export type ApplyThinkingResult = ApplyStreamResult;
 export function applyThinkingDelta(
   prev: string,
   rawDelta: string,
-  options: ApplyThinkingOptions = {},
+  options: ApplyThinkingOptions,
 ): ApplyThinkingResult {
-  const copy = getSharedUiCopy(options.locale ?? 'zh').stream;
   return applyStreamDelta(prev, rawDelta, {
-    maxDeltaChars: options.maxDeltaChars ?? THINKING_MAX_DELTA_CHARS,
     maxTotalChars: options.maxTotalChars ?? THINKING_MAX_TOTAL_CHARS,
     recovery: 'tail',
-    chunkMarker: copy.thinkingChunkTruncated,
-    totalMarker: copy.thinkingHeadTruncated,
+    totalMarker: getSharedUiCopy(options.locale).stream.thinkingHeadTruncated,
     ...(options.redactionState === undefined
       ? {}
       : { redactionState: options.redactionState }),
@@ -96,11 +89,11 @@ export function applyThinkingDelta(
  */
 export function applyThinkingComplete(
   rawText: string,
-  options: ApplyThinkingOptions = {},
+  options: ApplyThinkingOptions,
 ): ApplyThinkingResult {
   return applyStreamComplete(rawText, {
     maxTotalChars: options.maxTotalChars ?? THINKING_MAX_TOTAL_CHARS,
     recovery: 'tail',
-    totalMarker: getSharedUiCopy(options.locale ?? 'zh').stream.thinkingHeadTruncated,
+    totalMarker: getSharedUiCopy(options.locale).stream.thinkingHeadTruncated,
   });
 }

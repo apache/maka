@@ -53,7 +53,7 @@ describe('ShellRun UI projection', () => {
       }), 4),
     ];
 
-    const turns = materializeTurns(messages);
+    const turns = materializeTurns(messages, 'en');
     const bash = turns[0]?.tools[0];
     const write = turns[1]?.tools[0];
     assert.equal(bash?.toolName, 'Bash');
@@ -86,7 +86,7 @@ describe('ShellRun UI projection', () => {
       { type: 'user', id: 'user-2', turnId: 'turn-2', ts: 3, text: 'next' },
     ];
     const projection = createTranscriptProjection();
-    const unrelatedTurn = projection.project({ messages })[1];
+    const unrelatedTurn = projection.project({ locale: 'en', messages })[1];
     const update: ShellRunUpdate = {
       sessionId: 'session-1',
       ownership: { kind: 'local' },
@@ -94,13 +94,12 @@ describe('ShellRun UI projection', () => {
       sourceToolCallId: 'bash-1',
       result: shellRunSnapshot(3, { status: 'completed', completedAt: 5, exitCode: 0 }),
     };
-    const durable = projection.project({ messages, shellRunUpdates: [update] });
+    const durable = projection.project({ locale: 'en', messages, shellRunUpdates: [update] });
     assert.equal(durable[1], unrelatedTurn);
     assert.equal(durable[0]?.tools[0]?.status, 'completed');
 
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -113,7 +112,7 @@ describe('ShellRun UI projection', () => {
         }],
       }],
     };
-    const overlaid = projection.project({ messages, liveTurn: live, shellRunUpdates: [update] });
+    const overlaid = projection.project({ locale: 'en', messages, liveTurns: [live], shellRunUpdates: [update] });
     assert.equal(overlaid[1], unrelatedTurn, 'the live overlay must not disturb an unrelated turn');
     const result = overlaid[0]?.tools[0]?.result;
     assert.equal(result?.kind === 'shell_run' ? result.revision : undefined, 3);
@@ -132,7 +131,6 @@ describe('ShellRun UI projection', () => {
     liveResult.output.screen = 'still running';
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -154,7 +152,7 @@ describe('ShellRun UI projection', () => {
     };
 
     const tool = createTranscriptProjection()
-      .project({ messages, liveTurn: live })[0]?.tools[0];
+      .project({ locale: 'en', messages, liveTurns: [live] })[0]?.tools[0];
     assert.equal(tool?.result?.kind === 'shell_run' ? tool.result.revision : undefined, 2);
     assert.equal(
       tool?.result?.kind === 'shell_run' && tool.result.output?.mode === 'pty'
@@ -168,7 +166,6 @@ describe('ShellRun UI projection', () => {
   test('applies a durable update that arrives before the live Bash result', () => {
     const live: LiveTurnProjection = {
       turnId: 'turn-1',
-      phase: 'streamed',
       steps: [{
         stepId: 'tool:bash-1',
         contentOrder: ['tools'],
@@ -189,7 +186,7 @@ describe('ShellRun UI projection', () => {
     };
 
     const turns = createTranscriptProjection()
-      .project({ messages: [], liveTurn: live, shellRunUpdates: [update] });
+      .project({ locale: 'en', messages: [], liveTurns: [live], shellRunUpdates: [update] });
     const result = turns[0]?.tools[0]?.result;
     assert.equal(result?.kind, 'shell_run');
     assert.equal(result?.kind === 'shell_run' ? result.output?.mode : undefined, 'pty');
@@ -206,7 +203,7 @@ describe('ShellRun UI projection', () => {
       toolCall('bash-1', 'turn-1', 'Bash', { command: 'job', pty: true }, 1),
       toolResult('bash-1', 'turn-1', shellRun(1), 2),
     ];
-    const turns = createTranscriptProjection().project({ messages, shellRunUpdates: [{
+    const turns = createTranscriptProjection().project({ locale: 'en', messages, shellRunUpdates: [{
       sessionId: 'branch-session',
       ownership: {
         kind: 'source_owned',
@@ -223,7 +220,7 @@ describe('ShellRun UI projection', () => {
       ? turns[0]?.tools[0]?.result?.status
       : undefined, 'running');
 
-    const unavailable = createTranscriptProjection().project({ messages, shellRunUpdates: [{
+    const unavailable = createTranscriptProjection().project({ locale: 'en', messages, shellRunUpdates: [{
       sessionId: 'branch-session',
       ownership: { kind: 'source_unavailable', sourceSessionId: 'source-session' },
       sourceTurnId: 'turn-1',

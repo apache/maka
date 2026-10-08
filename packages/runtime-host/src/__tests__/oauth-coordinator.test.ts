@@ -177,6 +177,76 @@ test('authenticated OAuth attempts reconcile by attemptId after Host restart', a
   });
 });
 
+test('OAuth create identity is part of the attempt binding', async () => {
+  await withFixture('openai-codex', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-oauth-create', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startCodexAuthorization: async () => ({
+        deviceAuthId: 'deviceauth-custom-identity',
+        userCode: 'CODE-CUSTOM',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        expiresAt: NOW + 60_000,
+        intervalMs: 1_000,
+      }),
+      pollCodexAuthorization: async () => ({
+        authorizationCode: 'custom-code',
+        codeVerifier: 'custom-verifier',
+      }),
+      exchangeCodexCode: async () => tokenFixture('custom-access'),
+    });
+    const input = {
+      attemptId: 'attempt-custom-identity',
+      target: {
+        kind: 'create' as const,
+        providerType: 'openai-codex' as const,
+        slug: 'codex-work',
+        name: 'Work Codex',
+      },
+    };
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      input,
+      operationContext('client-oauth-create', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    assert.equal((await waitForTerminal(coordinator, input.attemptId)).phase, 'authenticated');
+    const created = (await fixture.stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ slug }) => slug === 'codex-work',
+    );
+    assert.equal(created?.name, 'Work Codex');
+
+    const rebound = await coordinator.handlers['oauth.login.start'](
+      { ...input, target: { ...input.target, name: 'Other Codex' } },
+      operationContext('client-oauth-create', fixture.acquireResidency),
+    );
+    assert.equal(rebound.ok, false);
+    if (!rebound.ok) assert.equal(rebound.error.code, 'invalid_request');
+
+    const collision = await coordinator.handlers['oauth.login.start'](
+      {
+        attemptId: 'attempt-custom-identity-collision',
+        target: { ...input.target, name: 'Other Codex' },
+      },
+      operationContext('client-oauth-create', fixture.acquireResidency),
+    );
+    assert.equal(collision.ok, false);
+    if (!collision.ok) assert.equal(String(collision.error.code), 'slug_taken');
+
+    await coordinator.close();
+    client.close();
+  });
+});
+
 test('durable OAuth receipt failures stay bounded on start, query, and cancel', async () => {
   await withFixture('openai-codex', async (fixture) => {
     await writeFile(

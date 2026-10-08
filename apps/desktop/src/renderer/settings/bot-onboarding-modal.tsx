@@ -37,7 +37,7 @@ import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { ICON_SIZE, AlertCircle, Check } from '@maka/ui/icons';
 import { BotBrandLogo } from './bot-chat-shared';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
+import { botOnboardingStatusCopy, getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
 
 export function BotOnboardingModal(props: {
   provider: BotOnboardingProvider;
@@ -156,7 +156,7 @@ export function BotOnboardingModal(props: {
     if (!isOpen) requestClose();
   }
 
-  const status = statusCopy(snapshot, starting, error, copy, locale);
+  const status = botOnboardingStatusCopy(snapshot, starting, error, copy, locale);
   const qrDataUrl = snapshot?.qrCodeDataUrl ?? qrCacheRef.current;
   const showQr = Boolean(qrDataUrl)
     && snapshot?.state !== 'expired'
@@ -190,7 +190,7 @@ export function BotOnboardingModal(props: {
             ) : starting || snapshot?.state === 'connecting' ? (
               <Spinner size="lg" aria-label={onboardingCopy.generatingAria} />
             ) : snapshot?.state === 'connected' ? (
-              snapshot.warning ? (
+              snapshot.warningCode ? (
                 <span className="settingsBotOnboardingEmpty" aria-hidden="true">
                   <AlertCircle size={ICON_SIZE.plate} />
                 </span>
@@ -244,31 +244,4 @@ function providerCopy(
 ): BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider] {
   if (provider !== 'feishu' || brand !== 'lark') return copy.providers[provider];
   return copy.lark;
-}
-
-function statusCopy(
-  snapshot: BotOnboardingSnapshot | null,
-  starting: boolean,
-  error: string | null,
-  copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
-  locale: 'zh' | 'en' = 'zh',
-): string {
-  const shared = getBotSettingsCopy(locale).onboarding;
-  if (starting) return shared.generating;
-  if (error) return error;
-  switch (snapshot?.state) {
-    case 'waiting': return copy.waiting;
-    case 'scanned': return copy.scanned;
-    case 'connecting': return shared.connecting;
-    // PR1197 review (P0-3): honour the honest "saved but not connected" notice
-    // instead of claiming a healthy connection.
-    case 'connected': return snapshot.warning
-      ? (locale === 'zh' ? snapshot.warning : shared.connectedWarning)
-      : shared.connected(getBotSettingsCopy(locale).providers[snapshot.provider].label);
-    case 'expired': return shared.expired;
-    case 'denied': return shared.denied;
-    case 'cancelled': return shared.cancelled;
-    case 'error': return locale === 'zh' ? (snapshot.error ?? shared.failed) : shared.failed;
-    default: return shared.preparing;
-  }
 }

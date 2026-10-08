@@ -24,10 +24,12 @@ import {
   matchesKey,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Component,
   type TUI,
 } from '@earendil-works/pi-tui';
 import type { McpProtocolPreference, McpServerConfig } from '@maka/core/mcp';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import {
   defineUiMessageCatalog,
   formatUiMessage,
@@ -51,6 +53,7 @@ interface TuiMcpStatusCopy {
   readonly title: string;
   readonly footer: {
     readonly back: string;
+    readonly diagnostic: string;
     readonly readOnly: string;
     readonly manage: string;
     readonly managePublication: string;
@@ -59,6 +62,7 @@ interface TuiMcpStatusCopy {
   readonly unavailableDetail: string;
   readonly loading: string;
   readonly loadError: string;
+  readonly invalidConfigFile: string;
   readonly noServers: string;
   readonly publication: Readonly<
     Record<ReturnType<TuiMcpManagement['snapshot']>['publication'], string>
@@ -67,6 +71,7 @@ interface TuiMcpStatusCopy {
   readonly configuredOnly: string;
   readonly configPending: string;
   readonly toolCount: string;
+  readonly connectionFailed: string;
   readonly editor: {
     readonly addTitle: string;
     readonly transportTitle: string;
@@ -86,8 +91,10 @@ interface TuiMcpStatusCopy {
   };
 }
 
+type TuiMcpNoticeResult = Exclude<TuiMcpActionResult, { reason: 'invalid-config-file' }>;
+
 type TuiMcpResultCode =
-  | Extract<TuiMcpActionResult, { status: 'conflict' | 'failed' }>['reason']
+  | Extract<TuiMcpNoticeResult, { status: 'conflict' | 'failed' }>['reason']
   | Extract<TuiMcpActionResult, { status: 'applied' }>['effect']
   | 'turn_active'
   | 'invalid'
@@ -134,6 +141,7 @@ type InputKind =
 
 type McpOverlayPhase =
   | { kind: 'list' }
+  | { kind: 'config_error'; path: string }
   | { kind: 'add_choice' }
   | { kind: 'transport'; draft: GuidedDraft }
   | { kind: 'protocol'; draft: GuidedDraft }
@@ -165,6 +173,7 @@ export class McpManagementOverlay implements Component {
   private editor: OverlayTextInput | undefined;
   private closed = false;
   private actionAttempt = 0;
+  private pendingConfigErrorPath: string | undefined;
 
   constructor(
     private readonly input: {
@@ -195,10 +204,8 @@ export class McpManagementOverlay implements Component {
     }
     if (this.phase.kind === 'busy') {
       if (matchesKey(data, Key.escape)) {
-        this.actionAttempt += 1;
         this.backToList();
       } else if (matchesKey(data, 'q')) {
-        this.actionAttempt += 1;
         this.close();
       }
       return;
@@ -208,7 +215,8 @@ export class McpManagementOverlay implements Component {
       else this.backToList();
       return;
     }
-    if (this.phase.kind === 'list') this.handleListInput(data);
+    if (this.phase.kind === 'config_error') this.handleTextScroll(data);
+    else if (this.phase.kind === 'list') this.handleListInput(data);
     else if (this.phase.kind === 'add_choice') this.handleAddChoice(data);
     else if (this.phase.kind === 'transport') this.handleTransport(data);
     else if (this.phase.kind === 'protocol') this.handleProtocol(data);
@@ -268,6 +276,13 @@ export class McpManagementOverlay implements Component {
   private handleListInput(data: string): void {
     const snapshot = this.input.surface?.snapshot();
     const servers = snapshot?.servers ?? [];
+    if (snapshot?.initialization === 'error') {
+      this.handleTextScroll(data);
+      return;
+    }
+    // A ready empty list still has explanatory text below the publication
+    // status, which must remain reachable in a short terminal.
+    if (servers.length === 0 && this.handleTextScroll(data)) return;
     if (matchesKey(data, Key.up)) {
       this.selected = clamp(this.selected - 1, 0, servers.length - 1);
     } else if (matchesKey(data, Key.down)) {
@@ -312,6 +327,19 @@ export class McpManagementOverlay implements Component {
     this.input.onChange();
   }
 
+  private handleTextScroll(data: string): boolean {
+    if (matchesKey(data, Key.up)) this.top -= 1;
+    else if (matchesKey(data, Key.down)) this.top += 1;
+    else if (matchesKey(data, Key.pageUp)) this.top -= Math.max(1, this.bodyRows);
+    else if (matchesKey(data, Key.pageDown)) this.top += Math.max(1, this.bodyRows);
+    else if (matchesKey(data, Key.home)) this.top = 0;
+    else if (matchesKey(data, Key.end)) this.top = this.maxTop();
+    else return false;
+    this.top = clamp(this.top, 0, this.maxTop());
+    this.input.onChange();
+    return true;
+  }
+
   private handleAddChoice(data: string): void {
     if (matchesKey(data, 'g')) this.startInput('server_id', { serverId: '' });
     else if (matchesKey(data, 'j')) this.startInput('import');
@@ -332,7 +360,7 @@ export class McpManagementOverlay implements Component {
     if (this.phase.kind !== 'protocol') return;
     const protocol = matchesKey(data, '1')
       ? 'legacy'
-      : matchesKey(data, '2')
+      : matchesKey(data, '2') || matchesKey(data, 'enter')
         ? 'auto'
         : matchesKey(data, '3')
           ? '2026-07-28'
@@ -464,8 +492,25 @@ export class McpManagementOverlay implements Component {
       result = { status: 'failed', reason: 'manager-failed' };
     }
     if (this.closed || attempt !== this.actionAttempt) return;
+    if (result.status === 'failed' && result.reason === 'invalid-config-file') {
+      // Esc dismisses the busy view, not the operation or its file diagnostic.
+      // Defer presentation while the user is editing another form.
+      this.pendingConfigErrorPath = result.path;
+      this.showPendingConfigError();
+      this.input.onChange();
+      return;
+    }
+    if (
+      result.status === 'applied' &&
+      ['add', 'edit', 'commit_import', 'set_enabled', 'remove'].includes(action.kind)
+    ) {
+      this.pendingConfigErrorPath = undefined;
+    }
+    // Do not restore a dismissed busy view for ordinary completion results.
+    if (this.phase.kind !== 'busy') return;
     this.phase = { kind: 'list' };
     this.notice = actionNotice(result, this.input.locale);
+    this.showPendingConfigError();
     this.input.onChange();
   }
 
@@ -473,6 +518,9 @@ export class McpManagementOverlay implements Component {
     this.serverRows = [];
     const snapshot = this.input.surface?.snapshot();
     if (!snapshot) return unavailableDocument(this.input.locale);
+    if (this.phase.kind === 'config_error') {
+      return wrapTextWithAnsi(invalidConfigFileCopy(this.input.locale, this.phase.path), width);
+    }
     if (this.phase.kind === 'input') return this.inputDocument(width);
     const editor = MCP_STATUS_COPY[this.input.locale].editor;
     if (this.phase.kind === 'add_choice') {
@@ -482,7 +530,7 @@ export class McpManagementOverlay implements Component {
       return [ansi.bold(editor.transportTitle), '', '1  stdio', '2  Streamable HTTP'];
     }
     if (this.phase.kind === 'protocol') {
-      return [ansi.bold(editor.protocolTitle), '', '1  legacy', '2  auto', '3  2026-07-28'];
+      return [ansi.bold(editor.protocolTitle), '', '1  legacy', '2  auto (Enter)', '3  2026-07-28'];
     }
     if (this.phase.kind === 'confirm_add') {
       return confirmAddDocument(this.phase.draft, this.input.locale);
@@ -526,7 +574,16 @@ export class McpManagementOverlay implements Component {
     }
     if (snapshot.initialization === 'loading') return [...lines, loadingCopy(this.input.locale)];
     if (snapshot.initialization === 'error') {
-      return [...lines, ansi.red(loadErrorCopy(this.input.locale))];
+      lines.push(ansi.red(loadErrorCopy(this.input.locale)));
+      if (snapshot.invalidConfigPath) {
+        lines.push(
+          ...wrapTextWithAnsi(
+            invalidConfigFileCopy(this.input.locale, snapshot.invalidConfigPath),
+            width,
+          ),
+        );
+      }
+      return lines;
     }
     if (snapshot.servers.length === 0) return [...lines, '', emptyCopy(this.input.locale)];
     lines.push('');
@@ -555,7 +612,9 @@ export class McpManagementOverlay implements Component {
 
   private footer(): string {
     const copy = MCP_STATUS_COPY[this.input.locale].footer;
+    if (this.phase.kind === 'config_error') return copy.diagnostic;
     if (this.phase.kind !== 'list') return copy.back;
+    if (this.input.surface?.snapshot().initialization === 'error') return copy.readOnly;
     if (!this.management()) return copy.readOnly;
     return this.input.surface?.snapshot().canManagePublicationCredential
       ? copy.managePublication
@@ -569,7 +628,20 @@ export class McpManagementOverlay implements Component {
     this.clearEditor();
     this.phase = { kind: 'list' };
     if (clearNotice) this.notice = undefined;
+    this.showPendingConfigError();
     this.input.onChange();
+  }
+
+  private showPendingConfigError(): void {
+    if (
+      this.pendingConfigErrorPath === undefined ||
+      (this.phase.kind !== 'list' && this.phase.kind !== 'busy')
+    )
+      return;
+    this.phase = { kind: 'config_error', path: this.pendingConfigErrorPath };
+    this.pendingConfigErrorPath = undefined;
+    this.notice = undefined;
+    this.top = 0;
   }
 
   private clearEditor(): void {
@@ -732,12 +804,22 @@ function serverLines(server: TuiMcpServerSnapshot, locale: UiLocale, selected: b
   const cursor = selected ? ansi.accent('›') : ' ';
   return [
     `${cursor} ${statusMarker(server.state)} ${ansi.bold(server.serverId)}  ${details}`,
-    ...(server.error ? [`    ${ansi.red(server.error)}`] : []),
+    ...(server.error
+      ? [
+          `    ${ansi.red(
+            generalizedErrorMessageForLocale(
+              new Error(server.error),
+              locale === 'en' ? server.error : copy.connectionFailed,
+              locale,
+            ),
+          )}`,
+        ]
+      : []),
   ];
 }
 
 function actionNotice(
-  result: TuiMcpActionResult,
+  result: TuiMcpNoticeResult,
   locale: UiLocale,
 ): { level: 'info' | 'error'; text: string } {
   if (result.status === 'conflict' || result.status === 'failed') {
@@ -763,7 +845,15 @@ function actionNotice(
 }
 
 function resultCopy(locale: UiLocale, code: TuiMcpResultCode): string {
-  return MCP_STATUS_COPY[locale].editor.results[code];
+  return MCP_STATUS_COPY[locale].editor.results[code] ?? code;
+}
+
+function invalidConfigFileCopy(locale: UiLocale, path: string): string {
+  return formatUiMessage(
+    MCP_STATUS_COPY[locale].invalidConfigFile,
+    { path: path.replace(/[\u0000-\u001f\u007f-\u009f]/gu, '') },
+    locale,
+  );
 }
 
 function confirmAddDocument(draft: GuidedDraft, locale: UiLocale): string[] {

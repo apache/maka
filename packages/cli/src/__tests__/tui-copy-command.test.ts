@@ -100,7 +100,7 @@ describe('serializeTranscriptText', () => {
   });
 
   test('keeps two adjacent user turns in separate blocks', () => {
-    // Queued steering (Alt+Enter) appends a user entry before any assistant
+    // Queued steering (Tab) appends a user entry before any assistant
     // text, so two user entries can sit adjacent. They are distinct messages,
     // not one message with two paragraphs, and must not merge.
     const state = stateWith([
@@ -155,7 +155,7 @@ describe('serializeTranscriptText', () => {
 describe('getTuiCopyCopy', () => {
   test('resolves localized copy for each locale', () => {
     assert.equal(typeof getTuiCopyCopy('en').nothingToCopy, 'string');
-    assert.equal(typeof getTuiCopyCopy('zh').nothingToCopy, 'string');
+    assert.equal(typeof getTuiCopyCopy('zh-CN').nothingToCopy, 'string');
     assert.ok(getTuiCopyCopy('en').copiedLast.includes('{count'));
     const tooLarge = getTuiCopyCopy('en').tooLarge;
     assert.ok(tooLarge.includes('{bytes}') && tooLarge.includes('{limit}'));

@@ -39,7 +39,7 @@ function buildDailyReviewModelOptions(
   connections: readonly ProjectedLlmConnection[],
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
-  locale: 'zh' | 'en',
+  locale: 'zh-CN' | 'zh-TW' | 'en',
 ): Array<{ value: string; label: string }> {
   return [
     { value: DAILY_REVIEW_DEFAULT_MODEL_VALUE, label: copy.defaultModel },
@@ -181,6 +181,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly Projected
             label={copy.model}
             isLabelHidden
             options={modelOptions}
+            hasSearch
             placement="below"
             isDisabled={formDisabled || modelOptions.length === 0}
             onChange={(value) => void patchConfig('modelKey', {

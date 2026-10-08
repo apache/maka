@@ -21,35 +21,58 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ConnectionThinkingContext,
-  normalizeRelayModelProfiles,
-  relayModelProfile,
+  defaultThinkingLevelForConnection,
+  normalizeModelOverrides,
+  modelApplyPatchEnabled,
+  modelOverride,
   resolveThinkingLevel,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,
-  supportsRelayFastServiceTier,
+  supportsCustomFastServiceTier,
+  declaredModelApiProtocol,
 } from '../model-thinking.js';
-import { isRelayProviderType } from '../llm-connections.js';
 
 test('declarable relay levels are every intensity tier but off', () => {
   // `off` is a disable-wire encoding (reasoning_effort 'none'), not an
   // intensity tier — a hybrid UI/data contract keeps it out of declarations.
-  assert.deepEqual(normalizeRelayModelProfiles({ m: { thinkingLevels: ['off', 'low'] } }), {
+  assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off', 'low'] } }), {
     m: { thinkingLevels: ['low'] },
   });
-  assert.equal(normalizeRelayModelProfiles({ m: { thinkingLevels: ['off'] } }), undefined);
+  assert.deepEqual(normalizeModelOverrides({ m: { thinkingLevels: ['off'] } }), { m: {} });
   const declaredOff = {
-    providerType: 'openai-compatible',
-    relayModelProfiles: { m: { thinkingLevels: ['off', 'low'] } },
+    providerType: 'custom',
+    modelOverrides: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.deepEqual([...thinkingVariantsForConnection(declaredOff, 'm')], ['low']);
 });
 
 test('relay profiles preserve the fast service tier declaration', () => {
-  assert.deepEqual(normalizeRelayModelProfiles({ m: { serviceTier: 'fast' } }), {
+  assert.deepEqual(normalizeModelOverrides({ m: { serviceTier: 'fast' } }), {
     m: { serviceTier: 'fast' },
   });
-  assert.deepEqual(normalizeRelayModelProfiles({ m: { serviceTier: 'unknown' } }), undefined);
+  assert.deepEqual(normalizeModelOverrides({ m: { serviceTier: 'unknown' } }), { m: {} });
+});
+
+test('per-model thinking defaults resolve only when the model offers the level', () => {
+  const connection = {
+    providerType: 'custom',
+    modelOverrides: {
+      reasoner: { thinkingLevels: ['low', 'high'], defaultThinkingLevel: 'high' },
+      stale: { thinkingLevels: ['low'], defaultThinkingLevel: 'high' },
+      invalid: { thinkingLevels: ['low'], defaultThinkingLevel: 'turbo' },
+    },
+  } as unknown as ConnectionThinkingContext;
+  assert.equal(defaultThinkingLevelForConnection(connection, 'reasoner'), 'high');
+  assert.equal(defaultThinkingLevelForConnection(connection, 'stale'), undefined);
+  assert.equal(defaultThinkingLevelForConnection(connection, 'invalid'), undefined);
+  assert.deepEqual(normalizeModelOverrides(connection.modelOverrides)?.reasoner, {
+    thinkingLevels: ['low', 'high'],
+    defaultThinkingLevel: 'high',
+  });
+  assert.deepEqual(normalizeModelOverrides(connection.modelOverrides)?.invalid, {
+    thinkingLevels: ['low'],
+  });
 });
 
 test('Fast visibility mirrors the pinned OpenAI SDK priority-processing families', () => {
@@ -65,15 +88,46 @@ test('Fast visibility mirrors the pinned OpenAI SDK priority-processing families
     ['plain-relay-id', false],
   ] as const;
   for (const [modelId, expected] of cases) {
-    assert.equal(supportsRelayFastServiceTier('openai-responses-compatible', modelId), expected);
-    assert.equal(supportsRelayFastServiceTier('openai-compatible', modelId), false);
+    const responses = { providerType: 'custom', defaultApiProtocol: 'openai-responses' } as const;
+    const chat = { providerType: 'custom', defaultApiProtocol: 'openai-chat' } as const;
+    assert.equal(supportsCustomFastServiceTier(responses, modelId), expected);
+    assert.equal(supportsCustomFastServiceTier(chat, modelId), false);
+    // The gate follows the model's own wire, not the connection default.
+    assert.equal(
+      supportsCustomFastServiceTier(
+        { ...chat, modelOverrides: { [modelId]: { apiProtocol: 'openai-responses' } } },
+        modelId,
+      ),
+      expected,
+    );
+    assert.equal(
+      supportsCustomFastServiceTier({ providerType: 'openai', models: [] }, modelId),
+      false,
+    );
   }
 });
 
-test('relayModelProfile returns undefined without a usable declaration', () => {
+test('a model wire is its declaration, then discovery, then the connection default', () => {
   const connection = {
-    providerType: 'openai-compatible',
-    relayModelProfiles: {
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-chat',
+    models: [
+      { id: 'discovered', apiProtocol: 'anthropic-messages' },
+      { id: 'declared', apiProtocol: 'anthropic-messages' },
+      { id: 'plain' },
+    ],
+    modelOverrides: { declared: { apiProtocol: 'openai-responses' } },
+  } as const;
+  assert.equal(declaredModelApiProtocol(connection, 'declared'), 'openai-responses');
+  assert.equal(declaredModelApiProtocol(connection, 'discovered'), 'anthropic-messages');
+  assert.equal(declaredModelApiProtocol(connection, 'plain'), 'openai-chat');
+  assert.equal(declaredModelApiProtocol(connection, 'unlisted'), 'openai-chat');
+});
+
+test('modelOverride returns undefined without a usable declaration', () => {
+  const connection = {
+    providerType: 'custom',
+    modelOverrides: {
       empty: {},
       junk: 'nope',
       badLevels: { thinkingLevels: 'low' },
@@ -91,71 +145,63 @@ test('relayModelProfile returns undefined without a usable declaration', () => {
     'offOnly',
     'badVision',
   ]) {
-    assert.equal(relayModelProfile(connection, modelId), undefined, modelId);
+    assert.deepEqual(
+      modelOverride(connection, modelId),
+      ['missing', 'junk'].includes(modelId) ? undefined : {},
+      modelId,
+    );
   }
 });
 
-test('relayModelProfile normalizes order, keeps explicit vision:false, and bounds context windows', () => {
+test('modelOverride normalizes order, keeps explicit vision:false, and bounds context windows', () => {
   const connection = {
-    providerType: 'openai-compatible',
-    relayModelProfiles: {
+    providerType: 'custom',
+    modelOverrides: {
       reasoner: { thinkingLevels: ['high', 'low', 'turbo'], vision: false },
       visual: { vision: true },
     },
   } as unknown as ConnectionThinkingContext;
   // Declared levels keep display order; unknown values are dropped;
   // vision:false is a meaningful DISABLE, distinct from absence (Auto).
-  assert.deepEqual(relayModelProfile(connection, 'reasoner'), {
+  assert.deepEqual(modelOverride(connection, 'reasoner'), {
     thinkingLevels: ['low', 'high'],
     vision: false,
   });
-  assert.deepEqual(relayModelProfile(connection, 'visual'), { vision: true });
+  assert.deepEqual(modelOverride(connection, 'visual'), { vision: true });
 
   const windowed = (contextWindow: unknown) =>
     ({
-      providerType: 'openai-compatible' as const,
-      relayModelProfiles: { m: { contextWindow } },
+      providerType: 'custom' as const,
+      modelOverrides: { m: { contextWindow } },
     }) as unknown as ConnectionThinkingContext;
-  assert.deepEqual(relayModelProfile(windowed(128_000), 'm'), { contextWindow: 128_000 });
+  assert.deepEqual(modelOverride(windowed(128_000), 'm'), { contextWindow: 128_000 });
   // Unusable values degrade to "no declaration", not to a lie.
   for (const bad of [0, -1, 1.5, 2 ** 60, '128000', null]) {
-    assert.equal(relayModelProfile(windowed(bad), 'm'), undefined, JSON.stringify(bad));
+    assert.deepEqual(modelOverride(windowed(bad), 'm'), {}, JSON.stringify(bad));
   }
 });
 
-test('relayModelProfile honours a declaration on any provider', () => {
+test('modelOverride honours a declaration on any provider', () => {
   const profiles = { m: { vision: true, contextWindow: 64_000 } };
   // A declaration is a user statement about one model, and the reason to make
   // one — Maka has no other way to learn the fact — is not confined to relays:
   // it holds for any model newer than the bundled snapshot, and for every
   // model on a provider with no model-list endpoint (#1584).
-  for (const providerType of [
-    'openai-compatible',
-    'openai-responses-compatible',
-    'anthropic',
-    'volcengine-agent-plan',
-  ] as const) {
-    assert.deepEqual(relayModelProfile({ providerType, relayModelProfiles: profiles }, 'm'), {
+  for (const providerType of ['custom', 'anthropic', 'volcengine-agent-plan'] as const) {
+    assert.deepEqual(modelOverride({ providerType, modelOverrides: profiles }, 'm'), {
       vision: true,
       contextWindow: 64_000,
     });
   }
   // Absent stays absent: an undeclared model falls through to the metadata chain.
   assert.equal(
-    relayModelProfile({ providerType: 'anthropic', relayModelProfiles: profiles }, 'other'),
+    modelOverride({ providerType: 'anthropic', modelOverrides: profiles }, 'other'),
     undefined,
   );
 });
 
-test('isRelayProviderType only accepts the two custom OpenAI relay providers', () => {
-  assert.equal(isRelayProviderType('openai-compatible'), true);
-  assert.equal(isRelayProviderType('openai-responses-compatible'), true);
-  assert.equal(isRelayProviderType('openai'), false);
-  assert.equal(isRelayProviderType('anthropic'), false);
-});
-
-test('normalizeRelayModelProfiles sanitizes write-side tables', () => {
-  const sanitized = normalizeRelayModelProfiles({
+test('normalizeModelOverrides sanitizes write-side tables', () => {
+  const sanitized = normalizeModelOverrides({
     reasoner: { thinkingLevels: ['high', 'low', 'turbo'], vision: true, contextWindow: 200_000 },
     empty: {},
     junk: 'not-an-entry',
@@ -164,14 +210,16 @@ test('normalizeRelayModelProfiles sanitizes write-side tables', () => {
     [`${'x'.repeat(513)}`]: { vision: true },
   });
   assert.deepEqual(sanitized, {
+    empty: {},
+    huge: {},
     reasoner: { thinkingLevels: ['low', 'high'], vision: true, contextWindow: 200_000 },
   });
-  assert.equal(normalizeRelayModelProfiles({}), undefined);
-  assert.equal(normalizeRelayModelProfiles(undefined), undefined);
-  assert.equal(normalizeRelayModelProfiles({ junk: 'not-an-entry' }), undefined);
+  assert.equal(normalizeModelOverrides({}), undefined);
+  assert.equal(normalizeModelOverrides(undefined), undefined);
+  assert.equal(normalizeModelOverrides({ junk: 'not-an-entry' }), undefined);
   // Relay-supplied ids may be prototype keys; the table defines them as own
   // data properties or the entries would vanish on the next enumeration.
-  const hostile = normalizeRelayModelProfiles(
+  const hostile = normalizeModelOverrides(
     JSON.parse('{"__proto__":{"vision":true},"toString":{"contextWindow":64}}'),
   );
   assert.deepEqual(Object.keys(hostile ?? {}).sort(), ['__proto__', 'toString']);
@@ -180,8 +228,8 @@ test('normalizeRelayModelProfiles sanitizes write-side tables', () => {
 
 test('resolveThinkingLevel discards levels the model does not offer', () => {
   const relay = {
-    providerType: 'openai-compatible',
-    relayModelProfiles: { m: { thinkingLevels: ['off', 'low'] } },
+    providerType: 'custom',
+    modelOverrides: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.equal(resolveThinkingLevel(relay, 'm', 'low'), 'low');
   // `off` is not declarable for relays: a stray entry degrades to absent.
@@ -206,3 +254,33 @@ test('Alibaba Token Plan exposes the formal Qwen3.8 effort and disable contract'
 // reasoning_content in tool-call history (400 otherwise), and other relays
 // ignore it, so the runtime replays unconditionally. That contract is
 // enforced per provider by the runtime provider-contract matrix, not here.
+
+test('normalizes per-model ApplyPatch without confusing false with automatic', () => {
+  assert.deepEqual(
+    normalizeModelOverrides({
+      on: { applyPatch: true },
+      off: { applyPatch: false },
+      auto: {},
+      invalid: { applyPatch: 'true' },
+    }),
+    { on: { applyPatch: true }, off: { applyPatch: false }, auto: {}, invalid: {} },
+  );
+});
+
+test('ApplyPatch defaults are model-specific and explicit choices win', () => {
+  for (const model of [
+    'gpt-5.6-luna',
+    'gpt-6-astra',
+    'gpt-5.4-2026-03-05',
+    'deepseek-flash',
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
+  ]) {
+    assert.equal(modelApplyPatchEnabled(model), true, model);
+    assert.equal(modelApplyPatchEnabled(model, { applyPatch: false }), false, model);
+  }
+  for (const model of ['unknown', 'future-model', 'deepseek-v99', 'gpt-99', 'gemini-3.8-flash']) {
+    assert.equal(modelApplyPatchEnabled(model), false, model);
+    assert.equal(modelApplyPatchEnabled(model, { applyPatch: true }), true, model);
+  }
+});

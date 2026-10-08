@@ -59,6 +59,7 @@ unsigned-varint = "0.8"
 webrtc = { git = "https://github.com/webrtc-rs/webrtc", rev = "e132552fc67b84c30e63c5ce916a9a63e2484b6f" }
 
 [target.'cfg(windows)'.dependencies]
+base64 = "0.22"
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Security",

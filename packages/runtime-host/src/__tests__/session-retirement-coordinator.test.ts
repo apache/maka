@@ -22,6 +22,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { createHostExecutionArtifactServices } from '../server/execution-artifacts.js';
 import { describe, test } from 'node:test';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
@@ -41,6 +46,9 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 import { HostSessionRetirementCoordinator } from '../server/session-retirement-coordinator.js';
+import { HostArchiveRetentionCoordinator } from '../server/archive-retention-coordinator.js';
+import type { StorageRetentionQueryResult } from '../protocol/index.js';
+import type { ArchiveRetentionDocument } from '@maka/storage/archive-retention-store';
 import { purgeSessionSidecars } from '../server/session-sidecar-purge.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -52,7 +60,117 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Host Session retirement coordinator', () => {
-  test('retires context refs before draining every physical garbage batch', async () => {
+  test('retirement finalizes admitted patches and fences late artifact publication', async (t) => {
+    await withHarness(async (harness) => {
+      const capability = await resolveStorageRoot({
+        path: harness.workspaceRoot,
+        kind: 'interactive',
+      });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+      const source = join(harness.workspaceRoot, 'late.txt');
+      await fsPromises.writeFile(source, 'late payload');
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const original = fsPromises.realpath;
+      const pause = t.mock.method(
+        fsPromises,
+        'realpath',
+        async (...args: Parameters<typeof original>) => {
+          if (args[0] === source) {
+            entered();
+            await blocked;
+          }
+          return original(...args);
+        },
+      );
+      syncBuiltinESMExports();
+      let recording: Promise<void> | undefined;
+      try {
+        harness.purgeArtifact = (sessionId) => artifacts.purgeSessionArtifacts(sessionId);
+        const recorder = createHostExecutionArtifactServices({
+          artifacts,
+          requestDrain: () => assert.fail('unexpected drain'),
+          sessionAdmission: harness.admission,
+          sessions: harness.store,
+        });
+        const patch = {
+          turnId: 'turn-1',
+          patch: Buffer.from('workspace patch'),
+          binding: {
+            schemaVersion: 1 as const,
+            kind: 'git_worktree' as const,
+            leaseId: `subagent_worktree_${'a'.repeat(32)}`,
+            gitCommonDir: join(harness.workspaceRoot, '.git'),
+            worktreePath: harness.workspaceRoot,
+            branch: `maka/subagent/${'a'.repeat(32)}`,
+            baseCommit: 'b'.repeat(40),
+          },
+        };
+        harness.finalizeWorkspacePatches = async (sessionId) => {
+          const published = await recorder.publishChildWorkspacePatch({ ...patch, sessionId });
+          assert.equal(published.source, 'subagent_writeback');
+          assert.deepEqual(await artifacts.readTextInSession(sessionId, published.id), {
+            ok: true,
+            text: 'workspace patch',
+          });
+        };
+        recording = recorder.recordToolArtifacts({
+          sessionId: harness.revisionId,
+          turnId: 'turn-1',
+          toolUseId: 'tool-1',
+          toolName: 'Write',
+          args: {},
+          result: {},
+          cwd: harness.workspaceRoot,
+          candidates: [{ kind: 'file', name: 'late.txt', sourcePath: source }],
+        });
+        await started;
+        const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
+        const removed = await harness.coordinator.handlers['session.remove'](
+          {
+            sessionId: harness.revisionId,
+            expectedRevision: target.revision,
+          },
+          CONNECTION_CONTEXT,
+        );
+        assert.equal(removed.ok, true);
+        await waitFor(
+          async () => (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
+          'retirement cleanup completes while source read is paused',
+        );
+        release();
+        await recording;
+        await assert.rejects(
+          recorder.publishChildWorkspacePatch({ ...patch, sessionId: harness.revisionId }),
+          /retired before patch publication/,
+        );
+        assert.deepEqual(
+          (await artifacts.listPage(harness.revisionId, { offset: 0, limit: 10 })).records,
+          [],
+        );
+      } finally {
+        release();
+        try {
+          await recording;
+        } finally {
+          pause.mock.restore();
+          syncBuiltinESMExports();
+          artifacts.close();
+          await owner.close();
+        }
+      }
+    });
+  });
+
+  test('retires only its own context refs without draining global garbage', async () => {
     const contextActions: string[] = [];
     let garbageBatches = 0;
     await purgeSessionSidecars(
@@ -64,10 +182,12 @@ describe('Host Session retirement coordinator', () => {
             contextActions.push(`retire:${sessionId}`);
             return { releasedReferences: 1, releasedLogicalBytes: 10 };
           },
-          collectGarbage: async (input) => {
-            contextActions.push(`collect:${input.maxBlobs}`);
-            garbageBatches += 1;
-            return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+          ...{
+            collectGarbage: async (input: { maxBlobs: number }) => {
+              contextActions.push(`collect:${input.maxBlobs}`);
+              garbageBatches += 1;
+              return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+            },
           },
         },
         purgeOperationalState: async () => {},
@@ -75,12 +195,8 @@ describe('Host Session retirement coordinator', () => {
       'session-context',
     );
 
-    assert.deepEqual(contextActions, [
-      'retire:session-context',
-      'collect:64',
-      'collect:64',
-      'collect:64',
-    ]);
+    assert.deepEqual(contextActions, ['retire:session-context']);
+    assert.equal(garbageBatches, 0);
   });
 
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
@@ -153,6 +269,15 @@ describe('Host Session retirement coordinator', () => {
       if ('kind' in archived.result) assert.fail('Expected a supported Session projection');
       assert.equal(archived.result.id, harness.revisionId);
       assert.equal(archived.result.isArchived, true);
+      // The whole family entered the archive in one write, at one time.
+      const archivedAt = archived.result.archivedAt;
+      assert.equal(typeof archivedAt, 'number');
+      for (const sessionId of harness.familyIds) {
+        assert.equal(
+          (await harness.store.readCatalogRecord(sessionId)).summary.archivedAt,
+          archivedAt,
+        );
+      }
       await assertFamilyLifecycle(harness, true);
       assert.deepEqual(new Set(harness.actions.disposed), new Set(harness.familyIds));
       assert.deepEqual(new Set(harness.actions.refreshed), new Set(harness.familyIds));
@@ -167,6 +292,13 @@ describe('Host Session retirement coordinator', () => {
       if (!restored.ok) return;
       if ('kind' in restored.result) assert.fail('Expected a supported Session projection');
       assert.equal(restored.result.isArchived, false);
+      assert.equal(Object.hasOwn(restored.result, 'archivedAt'), false);
+      for (const sessionId of harness.familyIds) {
+        assert.equal(
+          (await harness.store.readCatalogRecord(sessionId)).summary.archivedAt,
+          undefined,
+        );
+      }
       await assertFamilyLifecycle(harness, false);
       assert.deepEqual(harness.actions.disposed, []);
       assert.deepEqual(new Set(harness.actions.refreshed), new Set(harness.familyIds));
@@ -235,10 +367,15 @@ describe('Host Session retirement coordinator', () => {
       // The read-only preview reports the same deduped count the confirm warns
       // off, before the delete executes.
       const preview = await harness.coordinator.handlers['session.remove.preview'](
-        { sessionId: harness.revisionId },
+        { sessionIds: [harness.revisionId] },
         CONNECTION_CONTEXT,
       );
-      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 32 } });
+      // A single delete's confirm does not ask for bytes, so nothing is sized.
+      assert.deepEqual(preview, {
+        ok: true,
+        result: { archivableSubtaskCount: 32, removedSubtaskCount: 0, worktreeCount: 0 },
+      });
+      assert.deepEqual(harness.actions.measuredSessions, []);
 
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
@@ -439,12 +576,19 @@ describe('Host Session retirement coordinator', () => {
 
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
       // Graph operators retire with the root rather than archive, so the delete
-      // preview promises nothing — the renderer must not warn about them.
+      // preview promises no archived subtask; it counts them as deleted.
       const preview = await harness.coordinator.handlers['session.remove.preview'](
-        { sessionId: harness.revisionId },
+        { sessionIds: [harness.revisionId] },
         CONNECTION_CONTEXT,
       );
-      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 0 } });
+      assert.deepEqual(preview, {
+        ok: true,
+        result: {
+          archivableSubtaskCount: 0,
+          removedSubtaskCount: childSessionIds.length,
+          worktreeCount: 0,
+        },
+      });
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
         CONNECTION_CONTEXT,
@@ -628,6 +772,32 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('archives a Session whose Agent Graph is stopped but remains open', async () => {
+    await withHarness(async (harness) => {
+      harness.quiescentGraphs.add(harness.rootId);
+      harness.blockers.graphWake.add(harness.rootId);
+
+      const busy = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.revisionId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(busy.ok, false);
+      if (busy.ok) assert.fail('An active supervisor wake must block Session retirement');
+      assert.equal(busy.error.code, 'session_busy');
+      await assertFamilyLifecycle(harness, false);
+
+      harness.blockers.graphWake.clear();
+
+      const outcome = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.revisionId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(outcome.ok, true);
+      await assertFamilyLifecycle(harness, true);
+    });
+  });
+
   test('retires a bound child worktree only after the Session tombstone commits', async () => {
     await withHarness(async (harness) => {
       const binding = {
@@ -695,6 +865,173 @@ describe('Host Session retirement coordinator', () => {
         'Worktree cleanup did not run',
       );
       assert.deepEqual(harness.actions.retiredWorktrees, [binding.leaseId]);
+    });
+  });
+
+  test('previews a batch as the union of its plans, from one header read', async () => {
+    await withHarness(async (harness) => {
+      const archivedChildren = [
+        await createClosedSubagent(harness, harness.rootId, 0),
+        await createClosedSubagent(harness, harness.revisionId, 1),
+      ];
+      const operatorId = await createClosedGraphOperator(harness, harness.rootId, 'a');
+      // An ordinary subtask of the root that is also a requested removal: the
+      // root's plan would archive it, but the batch deletes it outright.
+      const worktreeChildId = await createClosedSubagent(
+        harness,
+        harness.rootId,
+        2,
+        worktreeBinding('d'),
+      );
+      const reads = harness.actions.headerReads;
+
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        // The revision repeats the root's family, the operator has no delete of
+        // its own, and an unknown id previews nothing.
+        {
+          sessionIds: [harness.rootId, harness.revisionId, worktreeChildId, operatorId, 'gone'],
+          measureBytes: true,
+        },
+        CONNECTION_CONTEXT,
+      );
+
+      const removedIds = [...harness.familyIds, operatorId, worktreeChildId].sort();
+      assert.deepEqual(preview, {
+        ok: true,
+        result: {
+          archivableSubtaskCount: archivedChildren.length,
+          removedSubtaskCount: 1,
+          worktreeCount: 1,
+          bytes: MEASURED_SESSION_TOTAL * removedIds.length,
+        },
+      });
+      assert.equal(harness.actions.headerReads - reads, 1, 'one header snapshot per request');
+      assert.deepEqual(
+        harness.actions.measuredSessions.map((ids) => [...ids].sort()),
+        [removedIds],
+      );
+      // A preview reads; it neither removes nor archives anything.
+      for (const sessionId of [...removedIds, ...archivedChildren]) {
+        const probe = await harness.store.probeSessionRemoval(sessionId);
+        assert.equal(probe.kind, 'present');
+        if (probe.kind === 'present') assert.equal(probe.record.header.isArchived, false);
+      }
+      assert.deepEqual(harness.actions.disposed, []);
+    });
+  });
+
+  test('previews only archived targets under requireArchived, sized in bounded pages', async () => {
+    await withHarness(async (harness) => {
+      const worktreeChildId = await createClosedSubagent(
+        harness,
+        harness.rootId,
+        0,
+        worktreeBinding('f'),
+      );
+      const others: string[] = [];
+      for (let index = 0; index < 23; index += 1) {
+        others.push((await harness.store.create(sessionInput(`Archived ${index}`))).id);
+      }
+      const active = await harness.store.create(sessionInput('Still active'));
+      // An ordinary subtask is archived on its own, not with its parent.
+      for (const sessionId of [harness.rootId, worktreeChildId, ...others]) {
+        const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+          { sessionId, state: 'archived' },
+          CONNECTION_CONTEXT,
+        );
+        assert.equal(archived.ok, true);
+      }
+
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        {
+          sessionIds: [harness.rootId, worktreeChildId, ...others, active.id],
+          measureBytes: true,
+          requireArchived: true,
+        },
+        CONNECTION_CONTEXT,
+      );
+
+      const removedIds = [...harness.familyIds, worktreeChildId, ...others];
+      assert.deepEqual(preview, {
+        ok: true,
+        result: {
+          archivableSubtaskCount: 0,
+          removedSubtaskCount: 0,
+          worktreeCount: 1,
+          bytes: MEASURED_SESSION_TOTAL * removedIds.length,
+        },
+      });
+      // 26 removed Sessions from 25 targets: sized in pages of at most 25, and
+      // the active target is not among them.
+      assert.deepEqual(
+        harness.actions.measuredSessions.map((ids) => ids.length),
+        [25, 1],
+      );
+      assert.deepEqual(harness.actions.measuredSessions.flat().sort(), [...removedIds].sort());
+    });
+  });
+
+  test('returns the counts without bytes when measurement fails', async () => {
+    await withHarness(async (harness) => {
+      await createClosedGraphOperator(harness, harness.rootId, 'a');
+      harness.failMeasurement = true;
+      // A figure measured as zero would read as "nothing to free"; it is unknown.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionIds: [harness.rootId], measureBytes: true },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(preview, {
+        ok: true,
+        result: { archivableSubtaskCount: 0, removedSubtaskCount: 1, worktreeCount: 0 },
+      });
+    });
+  });
+
+  test('keeps a task not archived long enough by the Host clock', async () => {
+    await withHarness(async (harness) => {
+      const archived = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId: harness.rootId, state: 'archived' },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(archived.ok, true);
+      const { archivedAt } = (await harness.store.readCatalogRecord(harness.rootId)).summary;
+      assert.ok(archivedAt !== undefined);
+      const threshold = 7 * 24 * 60 * 60 * 1000;
+      const remove = async (sessionId: string) =>
+        harness.coordinator.handlers['session.remove'](
+          {
+            sessionId,
+            expectedRevision: (await harness.store.readHeaderRecordSnapshot(sessionId)).revision,
+            requireArchivedForMs: threshold,
+          },
+          CONNECTION_CONTEXT,
+        );
+
+      const disposedByArchive = harness.actions.disposed.length;
+      // Exactly the threshold is not "more than": kept.
+      harness.now = archivedAt + threshold;
+      assert.deepEqual(await remove(harness.rootId), {
+        ok: true,
+        result: { kind: 'too_recent', sessionId: harness.rootId },
+      });
+      assert.equal((await harness.store.probeSessionRemoval(harness.rootId)).kind, 'present');
+      assert.equal(harness.actions.disposed.length, disposedByArchive);
+
+      // An active task has no archive time to judge by: kept.
+      const active = await harness.store.create(sessionInput('Active'));
+      assert.deepEqual(await remove(active.id), {
+        ok: true,
+        result: { kind: 'too_recent', sessionId: active.id },
+      });
+
+      harness.now = archivedAt + threshold + 1;
+      assert.deepEqual(await remove(harness.rootId), {
+        ok: true,
+        result: { kind: 'removed', sessionId: harness.rootId },
+      });
+      assert.deepEqual(await harness.store.probeSessionRemoval(harness.rootId), {
+        kind: 'removed',
+      });
     });
   });
 
@@ -1052,6 +1389,376 @@ describe('Host Session retirement coordinator', () => {
   });
 });
 
+describe('archive retention through the removal path', () => {
+  test("a task's clock starts no earlier than enablement and must run longer than the period", async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const legacy = await rig.archivedTask('Legacy');
+        const early = await rig.archivedTask('Archived before enablement');
+        const late = await rig.archivedTask('Archived after enablement');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([legacy], null);
+        rig.setArchivedAt([early], enabledAt - 10 * DAY);
+        rig.setArchivedAt([late], enabledAt + 5 * DAY);
+
+        // Exactly the period after enablement is not "longer than" it.
+        await rig.advanceTo(enabledAt + 30 * DAY);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([legacy, early, late]), [legacy, early, late]);
+
+        // An unknown or earlier archive time counts from enablement.
+        await rig.advanceTo(enabledAt + 30 * DAY + 1);
+        const first = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([legacy, early, late]), [late]);
+        assert.equal(first.lastSweep?.deleted, 2);
+        assert.deepEqual(first.lastDeletion, {
+          at: enabledAt + 30 * DAY + 1,
+          count: 2,
+          bytes: 2 * MEASURED_SESSION_TOTAL,
+        });
+
+        // A later archive time counts from itself, with the same strict boundary.
+        await rig.advanceTo(enabledAt + 35 * DAY);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([late]), [late]);
+        await rig.advanceTo(enabledAt + 35 * DAY + 1);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([late]), []);
+      });
+    });
+  });
+
+  test('restoring a task cancels its deadline and archiving it again starts a fresh one', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const task = await rig.archivedTask('Restored');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([task], enabledAt);
+
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        await rig.setLifecycle(task, 'active');
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), [task]);
+
+        await rig.setLifecycle(task, 'archived');
+        rig.setArchivedAt([task], enabledAt + 31 * DAY);
+        await rig.advanceTo(enabledAt + 61 * DAY);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), [task]);
+        await rig.advanceTo(enabledAt + 61 * DAY + 1);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), []);
+      });
+    });
+  });
+
+  test('a pinned revision keeps its whole family', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        await rig.setLifecycle(harness.rootId, 'archived');
+        await harness.store.setFlagged(harness.revisionId, true);
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt(harness.familyIds, null);
+
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
+
+        await harness.store.setFlagged(harness.revisionId, false);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), []);
+      });
+    });
+  });
+
+  test('a family that would archive an active subtask or reclaim a worktree needs review', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        // An active subtask the deletion would move to the archive.
+        const parent = await rig.archivedTask('Parent of an active subtask');
+        const active = await createClosedSubagent(harness, parent, 1);
+        // An orphaned archived subtask whose deletion would reclaim its worktree.
+        const owner = (await harness.store.create(sessionInput('Worktree owner'))).id;
+        const orphan = await createClosedSubagent(harness, owner, 2, worktreeBinding('f'));
+        await rig.setLifecycle(orphan, 'archived');
+        const removed = await harness.coordinator.handlers['session.remove'](
+          {
+            sessionId: owner,
+            expectedRevision: (await harness.store.readHeaderRecordSnapshot(owner)).revision,
+          },
+          CONNECTION_CONTEXT,
+        );
+        assert.equal(removed.ok, true);
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([parent, orphan], null);
+
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        const result = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([parent, active, orphan]), [parent, active, orphan]);
+        assert.equal(result.lastSweep?.needsReview, 2);
+        assert.equal(result.lastSweep?.deleted, 0);
+        assert.equal(result.lastDeletion, undefined);
+        assert.deepEqual(harness.actions.retiredWorktrees, []);
+      });
+    });
+  });
+
+  test('a family is as young as its most recently archived member', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        await rig.setLifecycle(harness.rootId, 'archived');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([harness.rootId], null);
+        rig.setArchivedAt([harness.revisionId], enabledAt + 5 * DAY);
+
+        // The root alone is due; its revision is not, so neither is deleted.
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
+        await rig.advanceTo(enabledAt + 35 * DAY + 1);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), []);
+      });
+    });
+  });
+
+  test('a revision pinned after the candidate read keeps its whole family at the admission', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        await rig.setLifecycle(harness.rootId, 'archived');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt(harness.familyIds, null);
+        rig.afterCandidates(() => harness.store.setFlagged(harness.revisionId, true));
+
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present(harness.familyIds), [...harness.familyIds]);
+      });
+    });
+  });
+
+  test('a task already removed by hand is not counted as this sweep deletion', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const task = await rig.archivedTask('Removed by hand');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([task], null);
+        rig.afterCandidates(async () => {
+          const removed = await harness.coordinator.handlers['session.remove'](
+            {
+              sessionId: task,
+              expectedRevision: (await harness.store.readHeaderRecordSnapshot(task)).revision,
+            },
+            CONNECTION_CONTEXT,
+          );
+          assert.equal(removed.ok, true);
+        });
+
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        const result = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), []);
+        assert.equal(result.lastDeletion, undefined);
+        assert.equal(result.lastSweep, undefined);
+      });
+    });
+  });
+
+  test('turning retention off waits for the family in flight, which is recorded', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const first = await rig.archivedTask('In flight');
+        const second = await rig.archivedTask('Not yet admitted');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([first], enabledAt - 2 * DAY);
+        rig.setArchivedAt([second], enabledAt - DAY);
+        let settled = false;
+        let atAnswer: { present: string[]; deleted?: number } | undefined;
+        let disabling: Promise<unknown> | undefined;
+        // After the guard admitted `first`, before its tombstone is written.
+        harness.disposeBackend = async (sessionId) => {
+          harness.disposeBackend = undefined;
+          disabling = rig.disable().then(async (answer) => {
+            settled = true;
+            atAnswer = {
+              present: await rig.present([first]),
+              deleted: (await rig.query()).lastDeletion?.count,
+            };
+            return answer;
+          });
+          for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+          assert.equal(settled, false, 'the change waits for the family in flight');
+          harness.actions.disposed.push(sessionId);
+        };
+
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        await rig.sweepUntilIdle();
+        await disabling;
+        // When the change answered, the admitted family was gone and recorded;
+        // nothing was admitted after it.
+        assert.deepEqual(atAnswer, { present: [], deleted: 1 });
+        assert.deepEqual(await rig.present([first, second]), [second]);
+        const result = await rig.query();
+        assert.equal(result.enabled, false);
+        assert.equal(result.lastDeletion?.count, 1);
+      });
+    });
+  });
+
+  test('a busy task is skipped as busy and deleted by a later sweep', async () => {
+    await withHarness(async (harness) => {
+      await withRetention(harness, async (rig) => {
+        const task = await rig.archivedTask('Busy');
+        const enabledAt = await rig.enable(30);
+        rig.setArchivedAt([task], null);
+        harness.blockers.message.add(task);
+
+        await rig.advanceTo(enabledAt + 31 * DAY);
+        const busy = await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), [task]);
+        assert.equal(busy.lastSweep?.skippedBusy, 1);
+
+        harness.blockers.message.delete(task);
+        await rig.sweepUntilIdle();
+        assert.deepEqual(await rig.present([task]), []);
+      });
+    });
+  });
+});
+
+const DAY = 24 * 60 * 60 * 1000;
+
+interface RetentionRig {
+  archivedTask(name: string): Promise<string>;
+  setLifecycle(sessionId: string, state: 'active' | 'archived'): Promise<void>;
+  /** Overrides the recorded archive time; null is a task archived before it was recorded. */
+  setArchivedAt(sessionIds: readonly string[], archivedAt: number | null): void;
+  /** Enables the policy at the harness clock and returns `enabledAt`. */
+  enable(days: 30 | 60 | 90): Promise<number>;
+  /** Disables the policy, not waiting for anything first. */
+  disable(): Promise<unknown>;
+  query(): Promise<StorageRetentionQueryResult>;
+  /** Runs once, right after the next candidate read and before any admission. */
+  afterCandidates(hook: () => Promise<unknown>): void;
+  sweepUntilIdle(): Promise<StorageRetentionQueryResult>;
+  /**
+   * Moves the Host clock as a running Host sees it, sweeping at least every
+   * six days on the way so no step reads as a forward clock jump.
+   */
+  advanceTo(time: number): Promise<void>;
+  /** The given Sessions that still exist, in order. */
+  present(sessionIds: readonly string[]): Promise<string[]>;
+}
+
+async function withRetention(
+  harness: RetirementHarness,
+  operation: (rig: RetentionRig) => Promise<void>,
+): Promise<void> {
+  // Far enough ahead of the real clock that metadata writes stamped by it never
+  // read as a clock that went back.
+  harness.now = Date.now() + 1_000 * DAY;
+  let document: ArchiveRetentionDocument | undefined;
+  let afterCandidates: (() => Promise<unknown>) | undefined;
+  const retention = new HostArchiveRetentionCoordinator({
+    document: {
+      read: async () => (document ? { kind: 'valid', document } : { kind: 'absent' }),
+      write: async (next) => {
+        document = next;
+      },
+    },
+    catalog: {
+      listArchiveRetentionCandidates: async (query) => {
+        const rows = await harness.store.listArchiveRetentionCandidates(query);
+        const hook = afterCandidates;
+        afterCandidates = undefined;
+        await hook?.();
+        return rows;
+      },
+      countArchiveRetentionCandidates: (enabledAt) =>
+        harness.store.countArchiveRetentionCandidates(enabledAt),
+      readLatestSessionMetadataTime: () => harness.store.readLatestSessionMetadataTime(),
+      readCatalogRecord: (sessionId) => harness.store.readCatalogRecord(sessionId),
+    },
+    retirement: harness.coordinator,
+    now: () => harness.now ?? Date.now(),
+    log: () => undefined,
+  });
+  const query = async () => {
+    const result = await retention.handlers['storage.retention.query']({}, CONNECTION_CONTEXT);
+    assert.ok(result.ok);
+    return result.result;
+  };
+  const rig: RetentionRig = {
+    archivedTask: async (name) => {
+      const { id } = await harness.store.create(sessionInput(name));
+      await rig.setLifecycle(id, 'archived');
+      return id;
+    },
+    setLifecycle: async (sessionId, state) => {
+      const result = await harness.coordinator.handlers['session.lifecycle.set'](
+        { sessionId, state },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(result.ok, true);
+    },
+    setArchivedAt: (sessionIds, archivedAt) => {
+      const database = new DatabaseSync(
+        join(harness.workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+      );
+      try {
+        const update = database.prepare(
+          'UPDATE session_metadata SET archived_at = ? WHERE session_id = ?',
+        );
+        for (const sessionId of sessionIds) update.run(archivedAt, sessionId);
+      } finally {
+        database.close();
+      }
+    },
+    enable: async (days) => {
+      const set = await retention.handlers['storage.retention.set'](
+        { expectedRevision: (await query()).revision, enabled: true, days },
+        CONNECTION_CONTEXT,
+      );
+      assert.ok(set.ok && set.result.kind === 'committed');
+      assert.equal(set.result.setting.enabledAt, harness.now);
+      return set.result.setting.enabledAt!;
+    },
+    disable: async () =>
+      retention.handlers['storage.retention.set'](
+        { expectedRevision: document?.revision ?? 0, enabled: false, days: document?.days ?? 30 },
+        CONNECTION_CONTEXT,
+      ),
+    query,
+    afterCandidates: (hook) => {
+      afterCandidates = hook;
+    },
+    advanceTo: async (time) => {
+      while (time - (harness.now ?? Date.now()) > 6 * DAY) {
+        harness.now = (harness.now ?? Date.now()) + 6 * DAY;
+        await retention.sweep();
+      }
+      harness.now = time;
+    },
+    sweepUntilIdle: async () => {
+      for (let tick = 0; await retention.sweep(); tick += 1) assert.ok(tick < 100);
+      return query();
+    },
+    present: async (sessionIds) => {
+      const present: string[] = [];
+      for (const sessionId of sessionIds) {
+        if ((await harness.store.probeSessionRemoval(sessionId)).kind === 'present') {
+          present.push(sessionId);
+        }
+      }
+      return present;
+    },
+  };
+  await operation(rig);
+}
+
+/** What the fake footprint reports for any Session: 124 bytes in all. */
+const MEASURED_SESSION_BYTES = { transcript: 100, runtime: 20, artifacts: 3, context: 1 };
+const MEASURED_SESSION_TOTAL = 124;
+
 interface RetirementActions {
   readonly disposed: string[];
   readonly refreshed: string[];
@@ -1066,6 +1773,9 @@ interface RetirementActions {
   readonly retiredWorktrees: string[];
   readonly finalizedWorkspacePatches: string[];
   readonly retiredGraphWakes: string[];
+  /** Each `measureSessions` call the removal preview made. */
+  readonly measuredSessions: string[][];
+  headerReads: number;
   goalCommits: number;
   goalRollbacks: number;
   scheduledTaskCommits: number;
@@ -1105,6 +1815,8 @@ async function withHarness(
       retiredWorktrees: [],
       finalizedWorkspacePatches: [],
       retiredGraphWakes: [],
+      measuredSessions: [],
+      headerReads: 0,
       goalCommits: 0,
       goalRollbacks: 0,
       scheduledTaskCommits: 0,
@@ -1122,6 +1834,7 @@ async function withHarness(
       graphWake: new Set<string>(),
       scheduledTasks: new Set<string>(),
     };
+    const quiescentGraphs = new Set<string>();
     const memoryExtractionLane = new MemoryExtractionSessionLane();
     const admission = new SessionAdmissionGate();
     const harness: RetirementHarness = {
@@ -1133,6 +1846,7 @@ async function withHarness(
       familyIds: [rootSession.id, revision.id],
       actions,
       blockers,
+      quiescentGraphs,
       admission,
       memoryExtractionLane,
       failRemoveCommit: false,
@@ -1145,11 +1859,14 @@ async function withHarness(
       disposeBackend: undefined,
       finalizeWorkspacePatches: undefined,
       retireWorktree: undefined,
+      failMeasurement: false,
+      now: undefined,
       coordinator: undefined as unknown as HostSessionRetirementCoordinator,
     };
     harness.coordinator = new HostSessionRetirementCoordinator({
       stores: {
         listHeaders: async () => {
+          actions.headerReads += 1;
           const headers = await store.listHeaders();
           if (!harness.hideRevisionFromNextFamilyRead) return headers;
           harness.hideRevisionFromNextFamilyRead = false;
@@ -1212,7 +1929,12 @@ async function withHarness(
         hasLiveSessionState: (sessionId) => blockers.effect.has(sessionId),
       },
       graph: {
-        hasLiveSessionState: async (sessionId) => blockers.graph.has(sessionId),
+        readRetirementDisposition: async (sessionId) =>
+          blockers.graph.has(sessionId)
+            ? ({ kind: 'busy', status: 'active' } as const)
+            : quiescentGraphs.has(sessionId)
+              ? ({ kind: 'quiescent_open' } as const)
+              : ({ kind: 'clear' } as const),
         listGraphIds: async (sessionId) => [agentGraphIdForRootSession(sessionId)],
       },
       graphWake: {
@@ -1239,7 +1961,9 @@ async function withHarness(
         },
       },
       capabilities: {
-        retireSessions: (sessionIds) => actions.retiredCapabilities.push(...sessionIds),
+        retireSessions: async (sessionIds) => {
+          actions.retiredCapabilities.push(...sessionIds);
+        },
       },
       continuity: {
         refreshCanonical: async (sessionId) => {
@@ -1269,7 +1993,6 @@ async function withHarness(
           actions.retiredContext.push(sessionId);
           return { releasedReferences: 0, releasedLogicalBytes: 0 };
         },
-        collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
@@ -1284,6 +2007,19 @@ async function withHarness(
           actions.retiredWorktrees.push(binding.leaseId);
         },
       },
+      footprint: {
+        // Every Session measures the same, so a total is a count of Sessions.
+        measureSessions: async (sessionIds) => {
+          if (harness.failMeasurement) throw new Error('injected measurement failure');
+          actions.measuredSessions.push([...sessionIds]);
+          return sessionIds.map((sessionId) => ({
+            sessionId,
+            bytes: { ...MEASURED_SESSION_BYTES },
+            worktreeCount: 0,
+          }));
+        },
+      },
+      now: () => harness.now ?? Date.now(),
       requestDrain: () => {
         actions.drains += 1;
       },
@@ -1317,10 +2053,14 @@ interface RetirementHarness {
     readonly graphWake: Set<string>;
     readonly scheduledTasks: Set<string>;
   };
+  readonly quiescentGraphs: Set<string>;
   readonly admission: SessionAdmissionGate;
   readonly memoryExtractionLane: MemoryExtractionSessionLane;
   coordinator: HostSessionRetirementCoordinator;
   failRemoveCommit: boolean;
+  failMeasurement: boolean;
+  /** The Host clock; the real one while undefined. */
+  now: number | undefined;
   failRemovalPublication: boolean;
   failArtifactCleanup: boolean;
   purgeArtifact: ((sessionId: string) => Promise<void>) | undefined;
@@ -1385,14 +2125,28 @@ function sessionInput(
   };
 }
 
+function worktreeBinding(seed: string) {
+  return {
+    schemaVersion: 1 as const,
+    kind: 'git_worktree' as const,
+    leaseId: `subagent_worktree_${seed.repeat(32)}`,
+    gitCommonDir: '/tmp/project/.git',
+    worktreePath: `/tmp/maka-subagent-worktree-${seed}`,
+    branch: `maka/subagent/${seed.repeat(32)}`,
+    baseCommit: 'e'.repeat(40),
+  };
+}
+
 async function createClosedSubagent(
   harness: RetirementHarness,
   parentSessionId: string,
   index: number,
+  workspace?: import('@maka/core/subagent-workspace').SubagentWorkspaceBinding,
 ): Promise<string> {
   const seed = index.toString(16).padStart(64, '0');
   const { header } = await harness.store.createSubagent(
     sessionInput(`Subagent ${index}`, {
+      ...(workspace ? { cwd: workspace.worktreePath, subagentWorkspace: workspace } : {}),
       permissionMode: 'ask',
       subagentParent: {
         kind: 'subagent',

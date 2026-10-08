@@ -18,8 +18,15 @@
  */
 
 import { RetryError } from 'ai';
+import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
-import { isAuthenticationErrorText, redactSecrets } from '@maka/core/redaction';
+import { isAuthenticationErrorText } from '@maka/core/redaction';
+import type { ModelFailure, ModelFailureKind } from './model-protocol.js';
+import { providerRetryDecision, responseHeadersFromError } from './provider-retry-policy.js';
+import {
+  OPENAI_RESPONSES_TRANSPORT_CODES,
+  PROVIDER_BILLING_PROVIDER_CODES,
+} from './provider-error-signals.js';
 
 /**
  * Structured provider error identifiers that mean the INPUT exceeded the
@@ -50,6 +57,18 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
   'ENETUNREACH',
 ]);
 
+// A successful status acknowledges the headers, not a complete response body.
+// Unlike pre-response failures, require an explicit interruption code here:
+// neither SDK retryability nor arbitrary TLS/undici errors prove a transient cut.
+const RESPONSE_TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ECONNABORTED',
+  'UND_ERR_SOCKET',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
 /**
  * xAI emits this code for transient model capacity failures, including when
  * the same payload is relayed through an OpenAI-compatible gateway. Do not
@@ -57,19 +76,6 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
  * represents quota exhaustion and needs different user guidance.
  */
 const PROVIDER_CAPACITY_CODES: ReadonlySet<string> = new Set(['resource-exhausted']);
-
-/**
- * Structured provider error identifiers that mean an ACCOUNT-level usage or
- * billing condition — exhausted credits or a closed plan/quota window —
- * rather than an invalid credential. Providers disagree on which HTTP status
- * travels with them (402, 401/403, even 429); the structured code is the
- * stable evidence, so it outranks every numeric fallback below.
- */
-const PROVIDER_BILLING_PROVIDER_CODES: ReadonlySet<string> = new Set([
-  'insufficient_quota', // OpenAI & OpenAI-compatible: error.code
-  'insufficient_balance', // DeepSeek: error.code
-  'quota_exceeded', // OpenAI-compatible variants: error.code
-]);
 
 /**
  * Free-text usage/billing wording that overrides a credential-shaped HTTP
@@ -108,11 +114,12 @@ interface ProviderErrorEvidence {
   code: string;
   /** Structured provider identifiers (code/type), lowercased. */
   structuredCodes: string[];
-  /** Structured pre-response transport evidence from SDK metadata or cause codes. */
+  /** Structured transport evidence, including interruptions after successful headers. */
   transportFailure: boolean;
 }
 
 interface ProviderErrorFacts {
+  aborted?: boolean;
   target: unknown;
   evidence: ProviderErrorEvidence;
   summarySources: ProviderFailureSources;
@@ -120,14 +127,9 @@ interface ProviderErrorFacts {
   responseHeaders?: Record<string, string>;
 }
 
-export interface ProviderRetryMetadata {
-  retryable: boolean;
-  retryAfterMs?: number;
-}
-
 /** Bounded, allowlisted provider failure facts safe for durable telemetry. */
 export interface ProviderFailureDiagnostic {
-  errorClass: string;
+  errorClass: ModelFailureKind;
   httpStatus?: number;
   providerCode?: string;
   providerRequestId?: string;
@@ -139,15 +141,7 @@ interface ProviderFailureSummary {
   code?: string;
 }
 
-const PROVIDER_FAILURE_SUMMARY_MAX_BYTES = 2 * 1024;
 const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
-
-const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;
-const OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR = 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR';
-const RUNTIME_RETRYABLE_ERROR_CODES: ReadonlySet<string> = new Set([
-  OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR,
-  'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
-]);
 
 function providerErrorTarget(error: unknown): unknown {
   return RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
@@ -156,10 +150,12 @@ function providerErrorTarget(error: unknown): unknown {
 }
 
 function isTransportFailure(target: unknown, statusCode: string): boolean {
-  if (statusCode) return false;
+  const successfulResponse = /^2\d\d$/.test(statusCode);
+  if (statusCode && !successfulResponse) return false;
   const record = objectRecord(target);
   if (!record) return false;
   if (
+    !successfulResponse &&
     target instanceof Error &&
     target.name === 'AI_APICallError' &&
     safeField(record, 'isRetryable') === true
@@ -173,13 +169,29 @@ function isTransportFailure(target: unknown, statusCode: string): boolean {
     seen.add(current);
     const currentRecord = objectRecord(current);
     if (!currentRecord) return false;
+    if (successfulResponse) {
+      const nestedStatus =
+        safeField(currentRecord, 'statusCode') ?? safeField(currentRecord, 'status');
+      // Do not reinterpret a cancellation or a nested HTTP rejection as a
+      // recoverable body interruption merely because it has a socket cause.
+      if (
+        safeField(currentRecord, 'name') === 'AbortError' ||
+        ((typeof nestedStatus === 'number' || typeof nestedStatus === 'string') &&
+          nestedStatus !== '' &&
+          !/^2\d\d$/.test(String(nestedStatus)))
+      ) {
+        return false;
+      }
+    }
     const code = safeField(currentRecord, 'code');
     if (
       typeof code === 'string' &&
-      (TRANSPORT_FAILURE_CODES.has(code) ||
-        code.startsWith('ERR_SSL_') ||
-        code.startsWith('ERR_TLS_') ||
-        code.startsWith('UND_ERR_'))
+      (successfulResponse
+        ? RESPONSE_TRANSPORT_FAILURE_CODES.has(code)
+        : TRANSPORT_FAILURE_CODES.has(code) ||
+          code.startsWith('ERR_SSL_') ||
+          code.startsWith('ERR_TLS_') ||
+          code.startsWith('UND_ERR_'))
     ) {
       return true;
     }
@@ -188,73 +200,18 @@ function isTransportFailure(target: unknown, statusCode: string): boolean {
   return false;
 }
 
-function responseHeadersFromError(error: unknown): Record<string, string> | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const value = (error as { responseHeaders?: unknown }).responseHeaders;
-  if (typeof value !== 'object' || value === null) return undefined;
-  const headers: Record<string, string> = {};
-  for (const [key, header] of Object.entries(value)) {
-    if (typeof header === 'string') headers[key.toLowerCase()] = header;
-  }
-  return headers;
-}
-
-function parseRetryAfterMs(headers: Record<string, string>): number | null | undefined {
-  const rawMilliseconds = headers['retry-after-ms'];
-  const rawRetryAfter = headers['retry-after'];
-  if (rawMilliseconds === undefined && rawRetryAfter === undefined) return undefined;
-
-  let delayMs: number;
-  if (rawMilliseconds !== undefined) {
-    delayMs = Number(rawMilliseconds);
-  } else {
-    const seconds = Number(rawRetryAfter);
-    delayMs = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(rawRetryAfter!) - Date.now();
-  }
-  if (!Number.isFinite(delayMs) || delayMs <= 0 || delayMs > MAX_SAFE_TIMER_DELAY_MS) return null;
-  return Math.ceil(delayMs);
-}
-
-/**
- * Normalizes provider retry facts without leaking SDK error objects or raw
- * response headers across the ModelAdapter boundary.
- */
-export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
-  const facts = normalizeProviderError(error);
-  if (!facts) return { retryable: false };
-  const { evidence } = facts;
-
-  if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
+function retryMetadataFromFacts(
+  facts: ProviderErrorFacts,
+  errorClass = classifyProviderFacts(facts),
+): Pick<ModelFailure, 'retryable' | 'retryAfterMs'> {
+  if (facts.aborted) return { retryable: false };
   // The Codex transport already spent its complete 2/10/30-second budget.
   // Do not let the outer model loop restart that same transport budget.
   if (isTrustedCodexEdgeRejection(facts)) return { retryable: false };
-
-  const status = Number(evidence.statusCode || evidence.code);
-  const errorClass = classifyProviderFacts(facts);
-  const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
-  if (errorClass === 'ProviderCapacity') {
-    // Capacity is transient even when the provider sends a malformed delay;
-    // fall back to the adapter's bounded local backoff in that case.
-    return {
-      retryable: true,
-      ...(retryAfterMs !== undefined && retryAfterMs !== null ? { retryAfterMs } : {}),
-    };
-  }
-  if (errorClass === 'RateLimit' || status === 429) {
-    if (retryAfterMs === undefined || retryAfterMs === null) return { retryable: false };
-    return { retryable: true, retryAfterMs };
-  }
-  const retryable =
-    errorClass === 'Network' ||
-    errorClass === 'ProviderUnavailable' ||
-    status === 408 ||
-    status === 409 ||
-    (status >= 500 && status <= 599);
-  if (!retryable) return { retryable: false };
-  if (retryAfterMs === null) return { retryable: false };
+  const decision = providerRetryDecision(errorClass, facts.responseHeaders ?? {});
   return {
-    retryable: true,
-    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    retryable: decision.reason !== null,
+    ...(decision.retryAfterMs === undefined ? {} : { retryAfterMs: decision.retryAfterMs }),
   };
 }
 
@@ -369,14 +326,7 @@ function normalizeProviderError(error: unknown): ProviderErrorFacts | undefined 
   return undefined;
 }
 
-/**
- * Retains only allowlisted provider failure fields. The provider value may also
- * contain request bodies, headers, or credentials, so it must never be copied
- * or serialized as diagnostic output wholesale.
- */
-export function providerFailureSummary(error: unknown): ProviderFailureSummary | undefined {
-  const facts = normalizeProviderError(error);
-  if (!facts) return undefined;
+function failureSummaryFromFacts(facts: ProviderErrorFacts): ProviderFailureSummary | undefined {
   const sources = facts.summarySources;
   const message = firstProviderMessage(facts);
   const code = firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
@@ -393,49 +343,30 @@ export function providerFailureSummary(error: unknown): ProviderFailureSummary |
   const suffix = metadata.length > 0 ? ` (${metadata.join(', ')})` : '';
   const messageBudget = Math.max(
     1,
-    PROVIDER_FAILURE_SUMMARY_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'),
+    MODEL_FAILURE_MESSAGE_MAX_BYTES - Buffer.byteLength(suffix, 'utf8'),
   );
   const summary = `${truncateUtf8(
-    redactSecrets(message ?? 'Provider request failed'),
+    message ?? 'Provider request failed',
     messageBudget,
     '…',
   )}${suffix}`;
   return {
-    message: truncateUtf8(summary, PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…'),
+    message: truncateUtf8(summary, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…'),
     ...(code || statusCode ? { code: code ?? statusCode } : {}),
   };
 }
 
-const DURABLE_PROVIDER_ERROR_CLASSES: ReadonlySet<string> = new Set([
-  'Abort',
-  'Auth',
-  'ContextLength',
-  'Network',
-  'ProviderCapacity',
-  'ProviderBilling',
-  'ProviderUnavailable',
-  'RateLimit',
-  'Timeout',
-]);
-
 /**
  * Projects provider errors into a small durable fingerprint. Unlike the
  * presentation summary, this intentionally excludes provider messages and
- * response bodies: even redacted free text can echo prompts or credentials.
+ * response bodies: free text can echo prompts or credentials.
  */
 export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagnostic {
-  const facts = providerFailureDiagnosticFacts(error);
-  if (!facts) return { errorClass: 'Other', retryable: false };
+  const facts = extractProviderErrorFacts(error);
+  if (!facts) return { errorClass: 'unknown', retryable: false };
   const sources = facts.summarySources;
-  const rawStatus =
-    facts.evidence.statusCode || firstProviderField(sources, ['statusCode', 'status']);
-  const numericStatus = Number(rawStatus);
-  const httpStatus =
-    Number.isInteger(numericStatus) && numericStatus >= 100 && numericStatus <= 599
-      ? numericStatus
-      : undefined;
-  const classified = classifyProviderFacts(facts);
-  const errorClass = durableProviderErrorClass(facts, classified, httpStatus);
+  const httpStatus = providerHttpStatus(facts);
+  const errorClass = classifyProviderFacts(facts);
   const providerCode =
     firstProviderField(sources, ['code']) ?? firstProviderField(sources, ['type']);
   const providerRequestId =
@@ -446,39 +377,15 @@ export function providerFailureDiagnostic(error: unknown): ProviderFailureDiagno
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     ...(providerCode !== undefined ? { providerCode } : {}),
     ...(providerRequestId !== undefined ? { providerRequestId } : {}),
-    retryable: providerRetryMetadata(facts.target).retryable,
+    retryable: retryMetadataFromFacts(facts, errorClass).retryable,
   };
 }
 
-function durableProviderErrorClass(
-  facts: ProviderErrorFacts,
-  classified: string,
-  httpStatus: number | undefined,
-): string {
-  // Structured context-overflow and capacity evidence can legitimately arrive
-  // behind a generic 4xx/5xx proxy response and remains stronger than the wrapper code.
-  if (
-    classified === 'ContextLength' ||
-    classified === 'ProviderCapacity' ||
-    (classified === 'ProviderUnavailable' && isTrustedCodexEdgeRejection(facts))
-  ) {
-    return classified;
+function extractProviderErrorFacts(error: unknown): ProviderErrorFacts | undefined {
+  if (RetryError.isInstance(error) && error.reason === 'abort') {
+    const facts = normalizeProviderError(error);
+    return facts ? { ...facts, aborted: true } : undefined;
   }
-  if (httpStatus === 401 || httpStatus === 403) return 'Auth';
-  if (httpStatus === 402) return 'ProviderBilling';
-  if (httpStatus === 408) return 'Timeout';
-  if (httpStatus === 413) return 'ContextLength';
-  if (httpStatus === 429) return 'RateLimit';
-  if (httpStatus !== undefined && httpStatus >= 400 && httpStatus <= 499) {
-    return 'RequestRejected';
-  }
-  if (httpStatus !== undefined && httpStatus >= 500 && httpStatus <= 599) {
-    return 'ProviderUnavailable';
-  }
-  return DURABLE_PROVIDER_ERROR_CLASSES.has(classified) ? classified : 'Other';
-}
-
-function providerFailureDiagnosticFacts(error: unknown): ProviderErrorFacts | undefined {
   let current = providerErrorTarget(error);
   let fallback: ProviderErrorFacts | undefined;
   let codedFallback: ProviderErrorFacts | undefined;
@@ -584,7 +491,7 @@ function boundedProviderField(value: unknown): string | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined;
   const normalized = String(value).trim();
   if (!normalized) return undefined;
-  return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
+  return truncateUtf8(normalized, PROVIDER_FAILURE_FIELD_MAX_BYTES, '…');
 }
 
 function boundedProviderMessage(value: unknown, parseJson = true): string | undefined {
@@ -609,7 +516,7 @@ function boundedProviderMessage(value: unknown, parseJson = true): string | unde
     }
   }
   if (!normalized) return undefined;
-  return truncateUtf8(redactSecrets(normalized), PROVIDER_FAILURE_SUMMARY_MAX_BYTES, '…');
+  return truncateUtf8(normalized, MODEL_FAILURE_MESSAGE_MAX_BYTES, '…');
 }
 
 /**
@@ -646,6 +553,7 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /greater than the context length/i, // LM Studio
   /context window exceeds limit/i, // MiniMax
   /exceeded model token limit/i, // Kimi For Coding
+  /exceeded [\w.-]+ model token limit:\s*[\d,]+/i, // Kimi model-qualified limit
   /too large for model with \d+ maximum context length/i, // Mistral
   /prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i, // DS4 server
   /model_context_window_exceeded/i, // z.ai non-standard finish_reason surfaced as error text
@@ -713,72 +621,114 @@ export function isContextOverflowErrorText(text: string): boolean {
  * wrap a provider failure in a misleading status or message; the weak
  * heuristics rank last so "generate" can never become a rate limit.
  */
-export function classifyError(error: unknown): string {
-  if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
-  const facts = normalizeProviderError(error);
-  return facts ? classifyProviderFacts(facts) : 'Other';
+export function providerModelFailure(error: unknown): ModelFailure {
+  const facts = extractProviderErrorFacts(error);
+  const kind = facts ? classifyProviderFacts(facts) : 'unknown';
+  const summary = facts ? failureSummaryFromFacts(facts) : undefined;
+  const retry = facts ? retryMetadataFromFacts(facts, kind) : { retryable: false };
+  return {
+    type: 'model_failure',
+    kind,
+    ...retry,
+    ...(summary?.code !== undefined ? { code: summary.code } : {}),
+    message: summary?.message ?? 'Model request failed',
+  };
 }
 
-function classifyProviderFacts(facts: ProviderErrorFacts): string {
-  const { target: classificationTarget, evidence } = facts;
+export function classifyError(error: unknown): ModelFailureKind {
+  const facts = extractProviderErrorFacts(error);
+  return facts ? classifyProviderFacts(facts) : 'unknown';
+}
+
+function classifyProviderFacts(facts: ProviderErrorFacts): ModelFailureKind {
+  if (facts.aborted) return 'abort';
+  const { evidence } = facts;
   const { text, statusCode, code, structuredCodes } = evidence;
   const normalizedCode = code.toLowerCase();
-  if (code === OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR) return 'Network';
+  if (OPENAI_RESPONSES_TRANSPORT_CODES.has(code)) return 'network';
+  if (code === 'MODEL_STREAM_TIMEOUT') return 'timeout';
+  if (structuredCodes.includes('gateway_stream_terminated')) return 'stream_truncated';
   if (
     PROVIDER_CAPACITY_CODES.has(normalizedCode) ||
     structuredCodes.some((c) => PROVIDER_CAPACITY_CODES.has(c))
   ) {
-    return 'ProviderCapacity';
+    return 'provider_capacity';
   }
   // Structured provider evidence: the parsed error JSON's code/type is the
   // only unconditional signal for a context overflow.
-  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
+  if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c)))
+    return 'context_overflow';
   if (
     PROVIDER_BILLING_PROVIDER_CODES.has(normalizedCode) ||
     structuredCodes.some((c) => PROVIDER_BILLING_PROVIDER_CODES.has(c))
   ) {
-    return 'ProviderBilling';
+    return 'provider_billing';
   }
-  if (text.includes('abort')) return 'Abort';
-  if (statusCode === '402' || code === '402') return 'ProviderBilling';
-  if (statusCode === '429' || code === '429') return 'RateLimit';
+  if (text.includes('abort')) return 'abort';
+  if (statusCode === '402' || code === '402') return 'provider_billing';
+  if (statusCode === '429' || code === '429') return 'rate_limit';
   if (
     structuredCodes.includes(OPENAI_CODEX_EDGE_REJECTION_CODE) &&
     isTrustedCodexEdgeRejection(facts)
   ) {
-    return 'ProviderUnavailable';
+    return 'provider_unavailable';
   }
   if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403') {
     // Credential-shaped statuses can still carry account-level usage
     // evidence: an exhausted plan/credit window for a validly signed-in
     // user must not tell them to re-authenticate (#2516).
     if (USAGE_LIMIT_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
-      return 'ProviderBilling';
+      return 'provider_billing';
     }
-    return 'Auth';
+    return 'auth';
   }
-  if (statusCode === '413' || code === '413') return 'ContextLength';
+  if (statusCode === '413' || code === '413') return 'context_overflow';
   // Free-text overflow relations on the composite text, veto-first inside.
-  if (isContextOverflowErrorText(text)) return 'ContextLength';
-  if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
+  if (isContextOverflowErrorText(text)) return 'context_overflow';
+  if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'provider_unavailable';
   if (structuredCodes.some((c) => PROVIDER_UNAVAILABLE_PROVIDER_CODES.has(c))) {
-    return 'ProviderUnavailable';
+    return 'provider_unavailable';
   }
-  if (evidence.transportFailure) return 'Network';
+  if (evidence.transportFailure) return 'network';
+  if (isTruncatedStreamText(text)) return 'stream_truncated';
+  const httpStatus = providerHttpStatus(facts);
+  if (httpStatus === 408) return 'timeout';
+  if (httpStatus !== undefined && httpStatus >= 500 && httpStatus <= 599) {
+    return 'provider_unavailable';
+  }
+  if (httpStatus !== undefined && httpStatus >= 400 && httpStatus <= 499) {
+    return 'request_rejected';
+  }
   // Weak word heuristics, last: they only catch errors that carried no
   // stronger evidence for any other class. `rate` must be word-shaped
   // ("generate"/"separate" are not rate limits) while still matching the
   // rate_limit/RateLimitError identifier spellings.
-  if (/\brate\b|rate[_-]?limit/.test(text)) return 'RateLimit';
-  if (isAuthenticationErrorText(text)) return 'Auth';
-  if (text.includes('timeout')) return 'Timeout';
+  if (/\brate\b|rate[_-]?limit/.test(text)) return 'rate_limit';
+  if (isAuthenticationErrorText(text)) return 'auth';
+  if (text.includes('timeout')) return 'timeout';
   if (
     text.includes('network') ||
     text.includes('fetch') ||
     /\btypeerror\b.*\bterminated\b/.test(text)
   )
-    return 'Network';
-  return classificationTarget instanceof Error ? classificationTarget.name || 'Other' : 'Other';
+    return 'network';
+  return 'unknown';
+}
+
+function isTruncatedStreamText(text: string): boolean {
+  return (
+    text.includes('response stream ended without a finish reason') ||
+    text.includes('model stream ended without a finish chunk') ||
+    (text.includes('stream disconnected before completion') &&
+      text.includes('stream closed before response.completed'))
+  );
+}
+
+function providerHttpStatus(facts: ProviderErrorFacts): number | undefined {
+  const raw =
+    facts.evidence.statusCode || firstProviderField(facts.summarySources, ['statusCode', 'status']);
+  const numeric = Number(raw);
+  return Number.isInteger(numeric) && numeric >= 100 && numeric <= 599 ? numeric : undefined;
 }
 
 function isTrustedCodexEdgeRejection(facts: ProviderErrorFacts): boolean {
@@ -786,37 +736,16 @@ function isTrustedCodexEdgeRejection(facts: ProviderErrorFacts): boolean {
   const seen = new Set<unknown>();
   for (let depth = 0; depth < 5 && current !== undefined && !seen.has(current); depth += 1) {
     seen.add(current);
-    if (current instanceof Error && current.name === 'OpenAiCodexEdgeRejectionError') return true;
+    if (
+      current instanceof Error &&
+      safeField(current as unknown as Record<string, unknown>, 'name') ===
+        'OpenAiCodexEdgeRejectionError'
+    )
+      return true;
     current =
       typeof current === 'object' && current !== null
-        ? (current as { cause?: unknown }).cause
+        ? safeField(current as Record<string, unknown>, 'cause')
         : undefined;
   }
   return false;
-}
-
-export function errorPresentationFromClass(errorClass: string): {
-  reason?: string;
-  message?: string;
-} {
-  switch (errorClass) {
-    case 'ContextLength':
-      return { reason: 'context_overflow', message: 'Context window exceeded' };
-    case 'Timeout':
-      return { reason: 'timeout', message: 'Request timed out' };
-    case 'Auth':
-      return { reason: 'auth', message: 'Authentication failed' };
-    case 'ProviderBilling':
-      return { reason: 'provider_billing', message: 'Provider billing required' };
-    case 'ProviderCapacity':
-      return { reason: 'provider_capacity', message: 'Model service is temporarily at capacity' };
-    case 'ProviderUnavailable':
-      return { reason: 'provider_unavailable', message: 'Provider returned an error' };
-    case 'RateLimit':
-      return { reason: 'rate_limit', message: 'Rate limit exceeded' };
-    case 'Network':
-      return { reason: 'network', message: 'Network error' };
-    default:
-      return {};
-  }
 }

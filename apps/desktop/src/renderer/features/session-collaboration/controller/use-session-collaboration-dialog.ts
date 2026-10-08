@@ -17,36 +17,33 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useUiLocale } from '@maka/ui';
 import { getSessionCollaborationCopy } from '../../../locales/session-collaboration-copy.js';
 
-export interface SessionCollaborationDialogTarget {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly requiresRemoteAccess: boolean;
-}
+import type {
+  SessionCollaborationDialogProjection,
+  SessionCollaborationDialogTarget,
+} from '../model/dialog-projection.js';
 
 export function useSessionCollaborationDialog() {
   const [target, setTarget] = useState<SessionCollaborationDialogTarget>();
   const shareActionLabel = getSessionCollaborationCopy(useUiLocale()).shareAction;
-
-  return {
-    target,
-    shareActionLabel,
-    isOpen: target !== undefined,
-    open: setTarget,
-    openSession(session: {
-      readonly id: string;
-      readonly name: string;
-      readonly profileKind: string;
-    }) {
+  const openSession = useCallback<SessionCollaborationDialogProjection['openSession']>(
+    (session) => {
       setTarget({
         sessionId: session.id,
         sessionName: session.name,
         requiresRemoteAccess: session.profileKind === 'local',
       });
     },
-    close: () => setTarget(undefined),
-  };
+    [],
+  );
+  const close = useCallback(() => setTarget(undefined), []);
+  const isOpen = target !== undefined;
+  const shell = useMemo<SessionCollaborationDialogProjection>(
+    () => ({ isOpen, shareActionLabel, openSession }),
+    [isOpen, shareActionLabel, openSession],
+  );
+  return { target, close, shell };
 }

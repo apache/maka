@@ -166,17 +166,11 @@ test('does not project or open remote Runtime Host file paths', async () => {
     path: string;
     backups: Array<{ path: string }>;
   };
-  const opened = (await handlers.get('memory:openFile')?.({})) as {
-    ok: boolean;
-    message: string;
-  };
+  const opened = (await handlers.get('memory:openFile')?.({})) as { ok: boolean; code: string };
 
   assert.equal(projected.path, '');
   assert.deepEqual(projected.backups.map(({ path }) => path), ['']);
-  assert.deepEqual(opened, {
-    ok: false,
-    message: 'Memory files are owned by the remote Runtime Host',
-  });
+  assert.deepEqual(opened, { ok: false, code: 'remote_host_owned' });
 });
 
 function revision(value: string): `sha256:${string}` {

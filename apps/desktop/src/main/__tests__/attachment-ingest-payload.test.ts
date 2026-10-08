@@ -24,7 +24,7 @@ import { encodeIngestItems } from '../../preload/attachment-ingest-payload.js';
 describe('encodeIngestItems', () => {
   test('rejects more than 8 items without reading any file bytes', async () => {
     const items = Array.from({ length: 9 }, (_, i) => ({ approvalId: `a${i}`, name: `f${i}.txt` }));
-    await assert.rejects(encodeIngestItems(items as never), /8/);
+    await assert.rejects(encodeIngestItems(items as never), { code: 'count_limit' });
   });
 
   test('rejects a File over 50MB without calling arrayBuffer', async () => {
@@ -38,7 +38,7 @@ describe('encodeIngestItems', () => {
         return new ArrayBuffer(0);
       },
     } as unknown as File;
-    await assert.rejects(encodeIngestItems([{ file: bigFile }]), /50/);
+    await assert.rejects(encodeIngestItems([{ file: bigFile }]), { code: 'item_too_large' });
     assert.equal(arrayBufferCalls, 0, 'arrayBuffer must not be called for an oversized file');
   });
 
@@ -64,10 +64,24 @@ describe('encodeIngestItems', () => {
     assert.equal(payload.base64, btoa(String.fromCharCode(...bytes)));
   });
 
+  test('names a File that cannot be read instead of failing the send generically (#5279)', async () => {
+    // What a folder copied in Finder becomes once pasted: a File whose bytes
+    // can never be read.
+    const folder = {
+      name: 'Project',
+      type: '',
+      size: 96,
+      arrayBuffer: async () => {
+        throw new DOMException('A requested file or directory could not be found', 'NotFoundError');
+      },
+    } as unknown as File;
+    await assert.rejects(encodeIngestItems([{ file: folder }]), { code: 'item_unreadable' });
+  });
+
   test('rejects a raw base64 item that is neither a File nor an approval token', async () => {
     await assert.rejects(
       encodeIngestItems([{ name: 'forged', base64: 'AAAA' }] as never),
-      /无效/,
+      { code: 'items_invalid' },
     );
   });
 });

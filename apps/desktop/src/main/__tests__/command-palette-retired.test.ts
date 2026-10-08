@@ -85,7 +85,26 @@ test('a stale in-memory default pointing at a retired connection is not testable
   assert.ok(!ids.includes('diag:test-default'));
 });
 
-for (const locale of ['en', 'zh'] as const) {
+test('the palette opens the Skills surface instead of an ambiguous Skills folder', () => {
+  const ids = buildCommandList({
+    locale: 'en',
+    activeSessionId: undefined,
+    themePref: 'auto',
+    connections: [],
+    defaultSlug: null,
+    onNewChat: () => {},
+    onOpenSettings: () => {},
+    onOpenSettingsSection: () => {},
+    onOpenShortcuts: () => {},
+    onSetTheme: () => {},
+    onSelectModule: () => {},
+  }).map((command) => command.id);
+
+  assert.ok(ids.includes('nav:skills'));
+  assert.ok(!ids.includes('diag:open-skills'));
+});
+
+for (const locale of ['en', 'zh-CN'] as const) {
   test(`${locale} static shortcut hints preserve both platform variants`, () => {
     const commands = buildCommandList({
       locale,
@@ -111,6 +130,6 @@ for (const locale of ['en', 'zh'] as const) {
       other: 'Ctrl+,',
     });
     assert.equal(byId.get('diag:copy-diagnostics')?.platformHint?.other, 'Ctrl+Shift+D · ' +
-      (locale === 'zh' ? '脱敏日志 · 仅写入剪贴板' : 'Redacted logs · clipboard only'));
+      (locale === 'zh-CN' ? '脱敏日志 · 仅写入剪贴板' : 'Redacted logs · clipboard only'));
   });
 }

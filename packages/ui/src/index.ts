@@ -17,8 +17,12 @@
  * under the License.
  */
 
+export * from './prompt-suggestion.js';
 export * from './artifact-preview-registry.js';
+export * from './progress-card.js';
 export * from './assistant-stream.js';
+export * from './client-plugin-slots.js';
+export * from './client-plugin-runtime.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';
 export * from './use-mounted-ref.js';
@@ -32,6 +36,7 @@ export type {
   SessionHistoryGroup,
   SessionRowActions,
 } from './session-history-list.js';
+export type { SessionMoveTarget } from './session-rail-context.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';
 export * from './conversation-copy.js';
@@ -52,9 +57,12 @@ export { MakaUriContext } from './markdown.js';
 export * from './maka-uri.js';
 export * from './materialize.js';
 export * from './live-turn-projection.js';
+export * from './live-turn-buffer.js';
 export * from './transcript-projection.js';
 export * from './use-transcript-projection.js';
 export * from './model-picker.js';
+export * from './model-wheel-picker.js';
+export * from './new-project-dialog.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
@@ -62,16 +70,17 @@ export * from './form-interaction-prompt.js';
 export * from './form-interaction-prompt-state.js';
 export * from './redact.js';
 export * from './thinking-stream.js';
-export * from './session-todo-panel.js';
 export * from './toast.js';
 export * from './tool-output-stream.js';
 export * from './ui.js';
 export * from './utils.js';
 export * from './platform-shortcut-text.js';
+export * from './transcript-viewport-navigation.js';
 
 // Maka-owned product assets and compositions remain public only where they do
 // not duplicate a published Astryx component authority.
 export * from './bot-brand.js';
+export type { ComposerMessageQueueHostProps } from './composer-message-queue.js';
 export * from './bot-brand-logo.js';
 export * from './maka-wordmark.js';
 // #1565 PR 3: Card is the Astryx primitive now (the thin data-slot recipe is
@@ -101,10 +110,11 @@ export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
 // ModulePage — the ONE shell every module page renders into (Astryx Layout,
 // incident-console archetype). Born in this package for 定时任务 / 每日回顾;
 // exported so the renderer-owned MCP page renders the same surface.
-export { ModulePage, type ModulePageProps } from './primitives/module-page.js';
+export { DETAIL_LABEL_WIDTH, ModulePage, ModulePageSection, ModuleRow, type ModulePageDetail, type ModulePageProps } from './primitives/module-page.js';
 // One vocabulary for what a state MEANS, and one place deciding what each
 // word looks like — see status-vocabulary.ts for why there is no `info`.
 export { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
+export { StatusLabel } from './status-label.js';
 // One tab stop per module-page row list; the MCP page (renderer-owned) uses
 // the same hook the skills and scheduled-task panels do.
 export { useRovingRowFocus, type RovingRowFocusProps } from './use-roving-row-focus.js';
@@ -188,3 +198,7 @@ export {
   type SearchSource,
   type SearchableItem,
 } from '@astryxdesign/core';
+
+export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
+export { ChoicePanel, type ChoicePanelOption } from './choice-panel.js';
+export { formatCompactTokenCount } from './compact-token-count.js';

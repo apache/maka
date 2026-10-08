@@ -199,6 +199,27 @@ export class RuntimeInteractionFailStopError extends Error {
   }
 }
 
+/**
+ * Whether shutdown, rather than the work itself, is what refused this admission.
+ *
+ * A draining authority turns anything it rejects into a cancellation: the run
+ * did not fail, it was never allowed to proceed. Callers use this to settle the
+ * run as cancelled and to keep the rejection from reading as a Host fault.
+ */
+export function isShutdownCancelledInteractionAdmission(error: unknown): boolean {
+  if (
+    error instanceof RuntimeInteractionAdmissionRejectedError &&
+    error.reason === 'authority_draining'
+  ) {
+    return true;
+  }
+  return (
+    error instanceof RuntimeInteractionFailStopError &&
+    error.authorityFailure instanceof RuntimeInteractionAdmissionRejectedError &&
+    error.authorityFailure.reason === 'authority_draining'
+  );
+}
+
 type LocalClosureFinalizer = () => void;
 
 type HostedInteractionRequestEvent =

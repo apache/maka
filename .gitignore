@@ -29,12 +29,16 @@ deepseek.key
 # Built only by the dedicated Gitoxide helper lane; normal workspace tests do not use Cargo.
 /native/gitoxide-helper/target/
 /native/runtime-host-peer/target/
+/native/runtime-host-windows-task-launcher/target/
 
 # Generated Computer Use executor binary; provenance metadata stays tracked.
 apps/desktop/resources/bin/
 # Rebuilt from experiments/windows-sandbox by scripts/package-windows-x64.mjs.
 apps/desktop/resources/windows-sandbox/
 apps/desktop/bundled-git.json
+# Scratch copy of the base commit's renderer architecture checker, written next
+# to the live script so its imports resolve; the check removes it after each run.
+apps/desktop/scripts/.tmp-base-checker-*.mjs
 
 # Generated desktop release inputs and outputs.
 apps/desktop/resources/tools/
@@ -47,3 +51,5 @@ release/asf/
 
 # Astro type generation
 .astro
+perf-results/
+artifacts/startup-correctness/

@@ -19,6 +19,7 @@
 
 import type { IpcMain } from 'electron';
 import type { WorkBoardItem, WorkBoardPage } from '@maka/core/work-board';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   createWorkBoardStore,
   WorkBoardStoreError,
@@ -47,9 +48,46 @@ export function registerWorkBoardIpc(input: {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly store?: WorkBoardStore;
+  /**
+   * Resolves the store lazily when its schema owner is ready.  Registration
+   * itself must stay synchronous so gated renderer IPC never races handler
+   * installation during startup.
+   */
+  readonly resolveStore?: () => WorkBoardStore | Promise<WorkBoardStore>;
+  /**
+   * Proves that a linked Session belongs to the live Host target and, when
+   * the board item is project-scoped, to that item's project.
+   */
+  readonly validateLinkedSession: (
+    link: unknown,
+    expectedProjectId?: string,
+  ) => Promise<boolean>;
   readonly now?: () => number;
 }): WorkBoardIpcRegistration {
-  const store = input.store ?? createWorkBoardStore(input.workspaceRoot);
+  let store = input.store;
+  let closed = false;
+  let storeResolution: Promise<WorkBoardStore> | undefined;
+  const resolveStore = async (): Promise<WorkBoardStore> => {
+    if (closed) throw new Error('Work Board IPC registration is closed');
+    if (store) return store;
+    storeResolution ??= (async () => {
+      const resolved = await (input.resolveStore ?? (() => createWorkBoardStore(input.workspaceRoot)))();
+      if (closed) {
+        resolved.close();
+        throw new Error('Work Board IPC registration is closed');
+      }
+      store = resolved;
+      return resolved;
+    })();
+    try {
+      return await storeResolution;
+    } catch (error) {
+      // A failed Host/schema attempt must be retryable after the Host
+      // reconnects; keep successful resolution cached for all later calls.
+      if (!store) storeResolution = undefined;
+      throw error;
+    }
+  };
   const now = input.now ?? Date.now;
   const emitChanged = (): void => {
     input.mainWindowController.send('workBoard:changed', {
@@ -62,6 +100,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:list',
     async (_event, query: unknown): Promise<WorkBoardIpcResult<WorkBoardPage>> => {
       try {
+        const store = await resolveStore();
         return { ok: true, value: await store.list(query) };
       } catch (error) {
         return { ok: false, ...workBoardFailure(error) };
@@ -73,6 +112,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:create',
     async (_event, item: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const created = await store.create(item);
         emitChanged();
         return { ok: true, value: created };
@@ -91,6 +131,7 @@ export function registerWorkBoardIpc(input: {
       options?: unknown,
     ): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const updated = await store.update(
           requireWorkBoardId(id),
           patch,
@@ -108,6 +149,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:archive',
     async (_event, id: unknown, options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const archived = await store.archive(
           requireWorkBoardId(id),
           options as WorkBoardMutationOptions | undefined,
@@ -124,6 +166,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:unarchive',
     async (_event, id: unknown, options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const unarchived = await store.unarchive(
           requireWorkBoardId(id),
           options as WorkBoardMutationOptions | undefined,
@@ -144,6 +187,7 @@ export function registerWorkBoardIpc(input: {
       options?: unknown,
     ): Promise<WorkBoardIpcResult<null>> => {
       try {
+        const store = await resolveStore();
         await store.remove(requireWorkBoardId(id), options as WorkBoardMutationOptions | undefined);
         emitChanged();
         return { ok: true, value: null };
@@ -153,8 +197,47 @@ export function registerWorkBoardIpc(input: {
     },
   );
 
+  input.ipcMain.handle(
+    'workBoard:linkSession',
+    async (_event, id: unknown, link: unknown, _options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
+      try {
+        const store = await resolveStore();
+        const itemId = requireWorkBoardId(id);
+        const item = await store.get(itemId);
+        if (!item || item.scope.kind !== 'project') {
+          throw new WorkBoardStoreError(
+            'invalid_input',
+            'Only project-scoped Work Board items can link a Session',
+          );
+        }
+        if (!(await input.validateLinkedSession(link, item.scope.projectId))) {
+          throw new WorkBoardStoreError(
+            'invalid_input',
+            'Work Board linked Session does not belong to an available Runtime Host project',
+          );
+        }
+        // CAS on the revision read above: the async Host validation must not
+        // race a concurrent mutation (e.g. the item being moved to another
+        // project), or a Session validated for project A could be written into
+        // the now-B item. The store enforces this inside its write transaction.
+        const linked = await store.linkSession(
+          itemId,
+          link,
+          { expectedRevision: item.revision } as WorkBoardMutationOptions | undefined,
+        );
+        emitChanged();
+        return { ok: true, value: linked };
+      } catch (error) {
+        return { ok: false, ...workBoardFailure(error) };
+      }
+    },
+  );
+
   return {
-    close: () => store.close(),
+    close: () => {
+      closed = true;
+      store?.close();
+    },
   };
 }
 
@@ -166,14 +249,12 @@ function requireWorkBoardId(id: unknown): string {
 }
 
 function workBoardFailure(error: unknown): {
-  readonly code: WorkBoardStoreErrorCode | 'unknown';
-  readonly message: string;
+  readonly error: { readonly code: WorkBoardStoreErrorCode | 'unknown' };
 } {
-  if (error instanceof WorkBoardStoreError) {
-    return { code: error.code, message: error.message };
+  if (error instanceof WorkBoardStoreError && error.code !== 'corrupt_record') {
+    return { error: { code: error.code } };
   }
-  return {
-    code: 'unknown',
-    message: error instanceof Error ? error.message : 'Work Board operation failed',
-  };
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error('[work-board] operation failed:', redactSecrets(detail));
+  return { error: { code: error instanceof WorkBoardStoreError ? error.code : 'unknown' } };
 }

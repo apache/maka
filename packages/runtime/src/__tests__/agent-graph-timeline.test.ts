@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import { type AgentGraphTimelineMetadataSnapshot } from '@maka/core/agent-graph-timeline';
-import { type AgentRunHeader } from '@maka/core/agent-run';
+import { type RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import {
@@ -31,6 +31,7 @@ import {
   readAgentGraphTimelinePage,
 } from '../agent-graph-timeline.js';
 import { readCommittedAgentGraphProjection } from '../stream-graph-projection.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 describe('agent graph replay timeline', () => {
   test('reconstructs control, child records, parent completion, and supervisor wake chronologically', async () => {
@@ -222,7 +223,7 @@ describe('agent graph replay timeline', () => {
 
   test('joins a transactionally read SQLite metadata snapshot with immutable run ledgers', async () => {
     const fixture = await timelineFixture();
-    const runsBySession = new Map<string, AgentRunHeader[]>([
+    const runsBySession = new Map<string, RuntimeInvocationRecord[]>([
       ['root-session', [...fixture.rootRuns]],
       ['child-session', [fixture.childRun]],
     ]);
@@ -237,12 +238,10 @@ describe('agent graph replay timeline', () => {
           return fixture.metadata;
         },
       },
-      runStore: {
-        async listSessionRuns(sessionId) {
+      runtimeEventStore: {
+        async listSessionInvocations(sessionId) {
           return runsBySession.get(sessionId) ?? [];
         },
-      },
-      runtimeEventStore: {
         async readImmutableRuntimeEvents(_sessionId, runId) {
           return eventsByRun.get(runId) ?? [];
         },
@@ -268,16 +267,15 @@ describe('agent graph replay timeline', () => {
           return fixture.metadata;
         },
       },
-      runStore: {
-        async listSessionRuns(sessionId) {
+      runtimeEventStore: {
+        async listSessionInvocations(sessionId) {
           if (sessionId === fixture.rootSessionId) return [...fixture.rootRuns];
           if (sessionId === fixture.childRun.sessionId) {
-            return [{ ...fixture.childRun, status: 'running', completedAt: undefined }];
+            const { terminalEvent: _terminalEvent, ...open } = fixture.childRun;
+            return [open];
           }
           return [];
         },
-      },
-      runtimeEventStore: {
         async readImmutableRuntimeEvents() {
           return [];
         },
@@ -287,7 +285,7 @@ describe('agent graph replay timeline', () => {
 
     const activation = requireEvent(page.events, 'activation_started');
     assert.equal(activation.kind, 'activation_started');
-    assert.equal(activation.eventTime, fixture.childRun.createdAt);
+    assert.equal(activation.eventTime, fixture.childRun.openedAt);
     assert.deepEqual(activation.activation, {
       sessionId: 'child-session',
       runId: 'child-run',
@@ -350,29 +348,25 @@ describe('agent graph replay timeline', () => {
 });
 
 async function timelineFixture() {
-  const rootRun1 = runHeader({
+  const rootRun1 = runInvocation({
     sessionId: 'root-session',
     runId: 'root-run-1',
     turnId: 'root-turn-1',
-    status: 'completed',
     createdAt: 90,
     completedAt: 115,
   });
-  const rootRun2 = runHeader({
+  const rootRun2 = runInvocation({
     sessionId: 'root-session',
     runId: 'root-run-2',
     turnId: 'root-turn-2',
-    status: 'completed',
     createdAt: 122,
     completedAt: 150,
-    agentGraphWakeId: 'wake-1',
-    agentGraphWakeAttemptId: 'attempt-1',
+    wake: { wakeId: 'wake-1', attemptId: 'attempt-1' },
   });
-  const childRun = runHeader({
+  const childRun = runInvocation({
     sessionId: 'child-session',
     runId: 'child-run',
     turnId: 'child-turn',
-    status: 'completed',
     createdAt: 102,
     completedAt: 120,
   });
@@ -425,12 +419,10 @@ async function timelineFixture() {
   const projection = await readCommittedAgentGraphProjection({
     graphId: 'graph-1',
     operators: [{ operatorId: 'operator-1', sessionId: 'child-session' }],
-    runStore: {
-      async listSessionRuns() {
+    runtimeEventStore: {
+      async listSessionInvocations() {
         return [childRun];
       },
-    },
-    runtimeEventStore: {
       async readImmutableRuntimeEvents() {
         return childEvents;
       },
@@ -563,37 +555,51 @@ async function timelineFixture() {
   };
 }
 
-function runHeader(
-  input: Pick<
-    AgentRunHeader,
-    | 'sessionId'
-    | 'runId'
-    | 'turnId'
-    | 'status'
-    | 'createdAt'
-    | 'completedAt'
-    | 'agentGraphWakeId'
-    | 'agentGraphWakeAttemptId'
-  >,
-): AgentRunHeader {
-  return {
-    ...input,
+/**
+ * One invocation as its own events describe it.
+ *
+ * A wake-rooted run says so in its opening's root authority, and a finished one
+ * says so with a terminal event. Neither is a field a writer could set apart
+ * from the ledger.
+ */
+function runInvocation(input: {
+  sessionId: string;
+  runId: string;
+  turnId: string;
+  createdAt: number;
+  completedAt?: number;
+  status?: 'completed' | 'failed' | 'aborted';
+  wake?: { wakeId: string; attemptId: string };
+}): RuntimeInvocationRecord {
+  return testInvocationRecord({
+    sessionId: input.sessionId,
     invocationId: `invocation-${input.runId}`,
-    backendKind: 'ai-sdk',
-    llmConnectionSlug: 'deepseek',
-    modelId: 'deepseek-chat',
-    cwd: '/workspace',
-    permissionMode: 'explore',
-    updatedAt: input.completedAt ?? input.createdAt,
-  };
+    runId: input.runId,
+    turnId: input.turnId,
+    openedAt: input.createdAt,
+    ...(input.wake
+      ? {
+          opening: {
+            root: {
+              kind: 'agent_graph_supervisor_wake',
+              wakeId: input.wake.wakeId,
+              attemptId: input.wake.attemptId,
+            },
+          },
+        }
+      : {}),
+    ...(input.completedAt !== undefined
+      ? { closedAt: input.completedAt, outcome: input.status ?? 'completed' }
+      : {}),
+  });
 }
 
 function runtimeEvent(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   overrides: Partial<RuntimeEvent> & Pick<RuntimeEvent, 'id' | 'ts'>,
 ): RuntimeEvent {
   return {
-    invocationId: run.invocationId!,
+    invocationId: run.invocationId,
     runId: run.runId,
     sessionId: run.sessionId,
     turnId: run.turnId,

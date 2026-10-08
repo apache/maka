@@ -17,8 +17,6 @@
  * under the License.
  */
 
-import { LOCAL_RUNTIME_HOST_PROFILE } from '@maka/runtime-host/client';
-
 export type RuntimeHostDefaultRecoveryDecision =
   | 'retry'
   | 'use_local'
@@ -62,11 +60,7 @@ export function createRuntimeHostDefaultRecovery(input: {
 
   return {
     offer(failure) {
-      if (
-        failure.profileId === LOCAL_RUNTIME_HOST_PROFILE.id ||
-        input.defaultProfileId() !== failure.profileId ||
-        pending
-      ) return;
+      if (input.defaultProfileId() !== failure.profileId || pending) return;
       pending = recover(failure)
         .catch(input.onError)
         .finally(() => {

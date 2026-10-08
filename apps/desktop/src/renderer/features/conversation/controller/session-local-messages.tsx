@@ -1,0 +1,129 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { useEffect } from 'react';
+import { useUiLocale, type TransientUserMessageProjection } from '@maka/ui';
+import { ICON_SIZE, Pencil, Search, Trash2 } from '@maka/ui/icons';
+import { getSessionLocalCopy } from '../../../locales/session-local-copy.js';
+import type { RestoredDraftContent } from '../../../application/contracts/transient-message-projection.js';
+import { useConversationServices } from '../services.js';
+
+export function SessionLocalMessages(props: {
+  readonly sessionId?: string;
+  readonly publish: (sessionId: string, message: TransientUserMessageProjection) => void;
+  readonly retire: (sessionId: string, messageId: string) => void;
+  readonly reportError: (message: string) => void;
+  /** Puts a never-dispatched message's content back into the composer for editing. */
+  readonly restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void;
+}): null {
+  const services = useConversationServices();
+  const locale = useUiLocale();
+  const { sessionId, publish, retire, reportError, restoreDraft } = props;
+  useEffect(() => {
+    if (!sessionId) return;
+    let disposed = false;
+    let revision = 0;
+    const copy = getSessionLocalCopy(locale);
+    const refresh = () => {
+      const admitted = ++revision;
+      void services
+        .listMessages(sessionId)
+        .then((messages) => {
+          if (disposed || revision !== admitted) return;
+          for (const message of messages) {
+            if (message.state === 'accepted' && !message.turnId) {
+              // The Host queue owns accepted steering and follow-ups. A local
+              // durable copy is not a second pending row after withdrawal.
+              retire(sessionId, message.messageId);
+              continue;
+            }
+            const status = message.state === 'accepted' || message.state === 'sending'
+              || (message.state === 'saved' && message.delivering && !message.error)
+              ? undefined : copy[message.state];
+            const action = (operation: () => Promise<void>) => () => {
+              void operation().catch(() => reportError(copy.updateError));
+            };
+            const remove = async () => {
+              await services.cancelMessage(sessionId, message.messageId);
+              retire(sessionId, message.messageId);
+            };
+            publish(sessionId, {
+              id: message.messageId,
+              text: message.text,
+              ts: message.createdAt,
+              // Only an ordinary send records `localDisplayPlacement`.
+              transientPlacement: message.turnId || message.localDisplayPlacement === 'current_turn'
+                || message.placement === 'current_turn' ? 'transcript' : 'follow_up',
+              attachments: message.attachments,
+              directoryReferences: message.directoryReferences,
+              quotes: message.quotes,
+              inlineReferences: message.inlineReferences,
+              hostTurnId: message.turnId,
+              deliveryStatus: status,
+              deliveryDetail: message.error,
+              deliveryActions: status === undefined
+                ? []
+                : message.state === 'unknown'
+                ? [
+                    {
+                      label: copy.check,
+                      icon: <Search size={ICON_SIZE.control} style={{ color: 'var(--warning-text)' }} aria-hidden="true" />,
+                      onClick: action(() =>
+                        services.reconcileMessage(sessionId, message.messageId),
+                      ),
+                    },
+                  ]
+                : message.canCancel
+                  ? [
+                      {
+                        label: copy.edit,
+                        icon: <Pencil size={ICON_SIZE.control} aria-hidden="true" />,
+                        onClick: action(async () => {
+                          await remove();
+                          restoreDraft(sessionId, {
+                            text: message.text,
+                            attachments: message.attachments,
+                            directoryReferences: message.directoryReferences,
+                            quotes: message.quotes,
+                          });
+                        }),
+                      },
+                      {
+                        label: copy.remove,
+                        icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
+                        onClick: action(remove),
+                      },
+                    ]
+                  : [],
+            });
+          }
+        })
+        .catch(() => undefined);
+    };
+    const unsubscribe = services.subscribeChanges((changedSessionId) => {
+      if (changedSessionId === sessionId) refresh();
+    });
+    refresh();
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [sessionId, services, publish, retire, reportError, restoreDraft, locale]);
+  return null;
+}

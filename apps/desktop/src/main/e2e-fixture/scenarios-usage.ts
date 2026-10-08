@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   type ModelCallAttempt,
@@ -229,11 +230,11 @@ export function usageStatsSessions(
 }
 
 export function usageStatsRecords(now: number): {
-  modelCalls: Array<{ header: AgentRunHeader; attempt: ModelCallAttempt }>;
+  modelCalls: Array<{ opening: RuntimeEvent; attempt: ModelCallAttempt }>;
   tools: PersistedToolInvocationRecord[];
 } {
   const sessions = usageStatsSessions(now);
-  const modelCalls: Array<{ header: AgentRunHeader; attempt: ModelCallAttempt }> = [];
+  const modelCalls: Array<{ opening: RuntimeEvent; attempt: ModelCallAttempt }> = [];
   const tools: PersistedToolInvocationRecord[] = [];
   for (const { header: session, messages } of sessions) {
     const modelByTurn = new Map(
@@ -257,19 +258,37 @@ export function usageStatsRecords(now: number): {
         // Run/attempt ids must match SAFE_ID_PATTERN ([A-Za-z0-9_-]); no colons.
         const runId = `run-${message.id}`;
         modelCalls.push({
-          header: {
-            runId,
-            sessionId: session.id,
-            turnId: message.turnId,
-            status: 'created',
-            backendKind: 'fake',
-            llmConnectionSlug: session.llmConnectionSlug,
-            modelId,
-            cwd: '/tmp/e2e-usage',
-            permissionMode: 'ask',
-            createdAt: message.ts - 2_000,
-            updatedAt: message.ts,
-          },
+          opening: buildInvocationOpenedEvent({
+            id: `${runId}-open`,
+            run: {
+              sessionId: session.id,
+              invocationId: runId,
+              runId,
+              turnId: message.turnId,
+            },
+            openedAt: message.ts - 2_000,
+            opening: {
+              kind: 'invocation_opened',
+              protocol: 'invocation_opened_v1',
+              route: {
+                provenance: 'runtime',
+                backendKind: 'fake',
+                llmConnectionId: session.llmConnectionSlug,
+                llmConnectionSlug: session.llmConnectionSlug,
+                modelId,
+              },
+              configuration: {
+                cwd: '/tmp/e2e-usage',
+                permissionMode: 'ask',
+                collaborationMode: 'agent',
+                orchestrationMode: 'default',
+                orchestrationSource: 'session',
+                toolMode: 'direct',
+              },
+              root: { kind: 'user' },
+              source: { kind: 'fresh' },
+            },
+          }),
           attempt: {
             schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
             logicalCallId: message.id,

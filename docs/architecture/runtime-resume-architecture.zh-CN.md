@@ -133,7 +133,7 @@ flowchart TD
 
 | 词 | 处理对象 | 结果 |
 |---|---|---|
-| Repair | 旧 Run 的持久化状态 | 补齐或对齐 terminal RuntimeEvent、Run header 和 Turn 状态 |
+| Repair | 旧 Run 的持久化状态 | 给被中断的 Run 补上 terminal RuntimeEvent，并对齐 Turn 状态 |
 | Resume / Continuation | 一段已经证明安全的历史边界 | 创建新身份，继续 provider loop |
 | Reconcile | T1 已派发但没有 T2 outcome 的工具操作 | 观察外部世界，提交 completed 或 parked recovery decision |
 
@@ -206,7 +206,8 @@ Resume 安全性的核心不是“数据都写进 SQLite”，而是每类数据
 | 数据 | 性质 | 用途 |
 |---|---|---|
 | Immutable `RuntimeEvent` | canonical semantic fact | 模型历史、工具 call/dispatch/outcome、recovery observation/decision、terminal fact |
-| `AgentRunHeader` 与 AgentRun events | durable operational envelope | 一次执行尝试的身份、状态、lineage、诊断 |
+| invocation 开场事实 | 一次执行尝试的不可变声明 | 身份、route、配置、root authority、lineage |
+| AgentRun events | durable operational record | Runtime 逐阶段做了什么，以及诊断 |
 | `tool_operations` | SQLite projection | 快速读取某个 operation 当前状态 |
 | `tool_journal_events` | SQLite projection | 快速查看 prepared/outcome/recovery 状态变化 |
 | Session messages / Turn state | 产品与 UI 投影 | 展示对话和 Turn 状态，不参与工具恢复裁决 |
@@ -407,14 +408,11 @@ sequenceDiagram
   participant UI as Renderer
 
   App->>SM: recoverInterruptedSessions()
-  SM->>RS: 列出非终态 / 可疑 AgentRun
+  SM->>ES: 列出没有 terminal event 的 invocation
   SM->>ES: 读取 immutable RuntimeEvents
-  SM->>SM: 检查 terminal ledger 与 run header
-  alt 已有 terminal RuntimeEvent，header 落后
-    SM->>RS: 修复 matching run header
-  else 没有 terminal RuntimeEvent
-    SM->>ES: 先提交 recovered terminal RuntimeEvent
-    SM->>RS: 再提交 matching failed/cancelled header
+  SM->>RS: 读取这次 Run 的 operational events
+  alt 没有 terminal RuntimeEvent
+    SM->>ES: 提交 recovered terminal RuntimeEvent
   else ledger ambiguous / unreadable
     SM-->>UI: 保留可检查状态，fail closed
   end
@@ -424,9 +422,9 @@ sequenceDiagram
 
 这里保护一个贯穿 Runtime 的不变量：
 
-> terminal RuntimeEvent 必须先于 terminal Run header 提交；header 不能凭自己宣布一次执行已经结束。
+> 一次执行结束，当且仅当它的 terminal RuntimeEvent 已经落盘；没有别的东西记录它结束了。
 
-如果在两次提交之间再次崩溃，下次启动仍能从 terminal RuntimeEvent 修好 header。反过来先写 header，就会出现一个没有语义事实支持的“完成”状态。
+因为不存在第二次提交，崩溃也就没有可以落进去的缝隙。
 
 Desktop 还会恢复 Graph coordinator 和 supervisor wake。只有这些 startup repair 完成，并且 safe-boundary flag 开启后，才会尝试自动 continuation。
 
@@ -437,7 +435,7 @@ Phase 1 不处理未知副作用。它只允许“所有工具都已经有 commi
 Planner 需要同时通过这些 gate：
 
 - source Run 与 RuntimeEvent ledger 可读；
-- Run header 与唯一 terminal RuntimeEvent 一致；
+- source invocation 有且只有一个 terminal event；
 - 所有事件属于同一个 source execution identity；
 - Phase 0 得到 `safe_replay`；
 - 没有 pending permission；
@@ -499,7 +497,34 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。启动恢复也会通过这条
+seam 重建已经 admission 的 continuation，但不会自动选择普通的 failed 或 cancelled Run。
+
+### 工具已派发但没有已提交结果：只在新用户 Turn 中临时投影
+
+工具副作用结果未知时，旧 Run 不能安全续跑。如果恢复时发现 T1 派发事实已经写入，但没有已提交的
+T2 结果，Runtime 会把旧 invocation 封存为 `outcome_unknown`；它不会伪造一条 durable tool response，
+也不会重试该工具。旧 Run 仍然是停止状态。
+
+之后用户显式发送新消息时，Runtime 会开启一个新的 Turn。只有这个新 Turn 中发给模型的请求会看到临时的
+历史投影：旧工具调用后面暂时附上一条 `outcome_unknown` 响应和 system 提醒，再接上新用户消息。这条临时响应
+和提醒不会写入 RuntimeEvent ledger 或 transcript。例如，`Bash("touch marker.txt")` 已派发、但结果来不及提交；
+用户新消息可以说“检查 `marker.txt` 是否存在”。模型可以先检查当前状态，再决定下一步；Maka 不会替模型
+判断文件是否写入，也不会自动重试命令。
+
+云端 activation、定时任务、Goal、WorkHub 结果和 Agent Graph 唤醒都不是用户显式消息。如果这类新 Turn
+遇到尚未确定结果的工具调用，Runtime 会在请求模型之前拒绝继续；需要用户检查当前状态并发送新消息。
+
+当对话确实在模型知情的情况下继续过之后，这个未知结果会退役：在崩溃封存之后开启并成功完成的一轮
+fresh 且无 lineage 标记的 invocation（显式用户消息——不是 retry、regenerate、branch、子 agent、continuation
+或自动化唤醒）。从下一轮开始，gate 不再触发，自动化入口恢复正常，这段历史也不再阻止压缩。如果显式那一轮
+失败或被中止，未知结果保持活跃，并在下一条显式消息时再次投影。退役判定完全从 ledger 已有的 invocation
+事实推导，永远不会写入伪造的工具结果。
+
+这个投影不能丢掉 T1 调用。如果已有 checkpoint 或当前 context budget 会把它隐藏，Runtime 会为这次请求
+退回完整的 effective history。这是有意的 fail-closed 取舍：未解决的历史很大时，可能超过 provider 的上下文
+限制；此时返回 provider 的真实错误，而不是删掉不确定事实或谎称工具成功。当前实现还不能在压缩其余历史的同时
+保留这份不确定性。
 
 ### 当前的 parked 原因边界
 
@@ -525,7 +550,7 @@ Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 f
 
 1. 不创建第二条相同的 user event；
 2. 先提交一个 system-owned、model-invisible 的 continuation-start RuntimeEvent；
-3. 在新 Run header 中记录 source identity 和 high-water；
+3. 在新 invocation 的开场事实里记录 source identity 和 high-water；
 4. 直接把验证过的 history 交给 provider。
 
 这样既避免模型看到重复请求，也避免 completed tool call 因为“新建了一轮”而再次执行。
@@ -819,7 +844,7 @@ Eval 不恢复或重建 Runtime execution，只请求 Runtime Host 执行 Maka s
 4. T1 原子提交 call、dispatch 和 projection。
 5. 执行外部副作用，不持有数据库长事务。
 6. T2 原子提交 outcome，再把结果交给模型。
-7. terminal RuntimeEvent 先提交，Run header 后提交。
+7. 一次执行只以提交唯一一个 terminal RuntimeEvent 来结束。
 8. 崩溃重启后先 repair 旧 Run。
 9. Resolver 只读 immutable facts，判定 completed / not-dispatched / indeterminate / parked / corruption。
 10. 有 production reconciler 时，对 indeterminate 提交一个原子 recovery bundle；没有时 park。
@@ -863,9 +888,16 @@ flowchart TD
 
 RuntimeEvent 迁移不再由开关控制；首次写入必然迁移。当前恢复行为开关如下：
 
-| 开关 | 作用 | 回滚含义 |
+| 设置 | 作用 | 回滚含义 |
 |---|---|---|
-| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 开启 Desktop 手动/自动 resume 与 CLI `/resume` | 可关闭用户可见 continuation，但不会删除或改写 durable facts |
+| 未设置 | 开启 Desktop 与 CLI/TUI 的显式 resume；保持 WorkHub 和 `maka activate` 自动 resume 关闭 | 默认产品行为 |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 额外开启 WorkHub 和 `maka activate` 自动 resume | 保留此前完整 opt-in 行为 |
+| `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=0` | 关闭显式和模型驱动 resume planning | 可能 park reconstruction，但不会删除 durable facts |
+
+未知的非空值与 `0` 一样 fail closed。所有已开启的入口仍使用同一个权威 planner；策略只决定
+新的 resume 尝试能否到达 planner。
+
+启用 `maka activate` 自动 resume 后，若有可续跑的 continuation，会续跑旧 Turn，而不提交本次 activation 的新 stimulus；若没有可续跑项，则正常提交 stimulus。需要确保每次 activation 的新内容都被处理时，不应启用这项旧式自动续跑行为。
 
 真正降级到不理解新 schema 的旧版本前，必须显式 export 并验证。Migration 失败不能删除 legacy JSONL；数据库版本比当前程序新时必须 fail closed。
 

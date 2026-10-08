@@ -1,5 +1,9 @@
 # Playwright E2E run artifacts: traces, videos, screenshots, last-run state.
 test-results/
+# Throwaway drivers written beside the suite while investigating a scenario by
+# hand. They resolve `@playwright/test` from here, which is why they live in the
+# tree at all, and they are nobody's to keep.
+e2e/.scratch/
 resources/workers/
 .maka-dev/
 .maka-dev.staging/

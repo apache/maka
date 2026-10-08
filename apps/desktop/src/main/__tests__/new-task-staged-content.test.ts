@@ -17,24 +17,24 @@
  * under the License.
  */
 
+import { useComposerAttachments, useComposerQuotes } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import { QUOTE_COMMENT_MAX_LENGTH } from '@maka/core/events';
 import { LocaleProvider } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
-import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
+import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import {
-  useComposerAttachments,
   type ComposerAttachmentService,
-} from '../../renderer/use-composer-attachments.js';
-import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer-quotes.js';
+} from '../../renderer/features/conversation/index.js';
 import {
   composerModelSupportsVision,
   type NewChatModel,
-} from '../../renderer/shell-chat-model-selection.js';
+} from '../../renderer/features/conversation/testing.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by
@@ -66,7 +66,7 @@ afterEach(async () => {
 
 async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Promise<{
   latest(): T;
-  render(draftKey: string, locale?: 'en' | 'zh'): Promise<void>;
+  render(draftKey: string, locale?: 'en' | 'zh-CN'): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
@@ -88,7 +88,7 @@ async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Pro
     return null;
   }
 
-  const render = async (draftKey: string, locale: 'en' | 'zh' = 'en') => {
+  const render = async (draftKey: string, locale: 'en' | 'zh-CN' = 'en') => {
     await act(async () => {
       root.render(
         createElement(LocaleProvider, {
@@ -182,7 +182,7 @@ function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
   return {
     connectionId: 'connection-test',
     connectionSlug: 'test',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Test',
     model,
     label: model,
@@ -193,7 +193,7 @@ function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
 }
 
 test('a Session keeps its own staged quotes, and the new-task bucket keeps its own', async () => {
-  const probe = await mountProbe(useAppShellComposerQuotes);
+  const probe = await mountProbe(useComposerQuotes);
 
   await probe.render(NEW_TASK_PENDING_KEY);
   await act(() => probe.latest().addQuote({ text: 'quoted for a new task' }));
@@ -206,11 +206,53 @@ test('a Session keeps its own staged quotes, and the new-task bucket keeps its o
     ['quoted for the Session'],
   );
 
+  await act(() => probe.latest().addQuote({
+    text: 'bounded session context',
+    label: 'Session: Research',
+    sourceSessionId: 'source-session',
+    sourceSessionName: 'Research',
+    sourceCapturedAt: 123,
+    sourceTruncated: true,
+  }));
+  assert.deepEqual(probe.latest().pendingQuotes.at(-1), {
+    text: 'bounded session context',
+    label: 'Session: Research',
+    sourceSessionId: 'source-session',
+    sourceSessionName: 'Research',
+    sourceCapturedAt: 123,
+    sourceTruncated: true,
+  });
+
   await probe.render(NEW_TASK_PENDING_KEY);
   assert.deepEqual(
     probe.latest().pendingQuotes.map((quote) => quote.text),
     ['quoted for a new task'],
   );
+});
+
+test('a staged quote carries its note, and editing the note leaves the quote in place', async () => {
+  const probe = await mountProbe(useComposerQuotes);
+  await probe.render('session-1');
+  await act(() => probe.latest().addQuote({ text: 'first excerpt' }));
+  await act(() => probe.latest().addQuote({ text: 'second excerpt', comment: '  why this one  ' }));
+  assert.deepEqual(
+    probe.latest().pendingQuotes.map((quote) => quote.comment),
+    [undefined, 'why this one'],
+  );
+
+  // The note is why the excerpt is staged, so emptying it must not reorder or
+  // drop the excerpt itself.
+  await act(() => probe.latest().updateQuoteComment(1, '   '));
+  assert.equal(probe.latest().pendingQuotes[1]?.comment, undefined);
+  assert.deepEqual(
+    probe.latest().pendingQuotes.map((quote) => quote.text),
+    ['first excerpt', 'second excerpt'],
+  );
+
+  await act(() =>
+    probe.latest().updateQuoteComment(0, 'y'.repeat(QUOTE_COMMENT_MAX_LENGTH + 5)),
+  );
+  assert.equal(probe.latest().pendingQuotes[0]?.comment?.length, QUOTE_COMMENT_MAX_LENGTH);
 });
 
 test('a completing send clears the attachments it submitted', async () => {
@@ -275,16 +317,16 @@ test('AppShell composition shows the localized non-vision image notice once per 
     description: en.imageAttachmentNotDirectDescription,
   }]);
 
-  await probe.render('session-zh', 'zh');
+  await probe.render('session-zh', 'zh-CN');
   await act(() => probe.latest().attachFilePaths([image]));
-  const zh = getDesktopConversationCopy('zh').actions;
+  const zh = getDesktopConversationCopy('zh-CN').actions;
   assert.deepEqual(calls[1], {
     title: zh.imageAttachmentNotDirectTitle,
     description: zh.imageAttachmentNotDirectDescription,
   });
 
   probe.latest().imageNoticeLifecycle.transfer('session-zh', 'session-transferred');
-  await probe.render('session-transferred', 'zh');
+  await probe.render('session-transferred', 'zh-CN');
   await act(() => probe.latest().attachFilePaths([image]));
   assert.equal(calls.length, 2);
 
@@ -322,8 +364,7 @@ test('retracted queue attachments can be restored and submitted without re-inges
   );
 
   await probe.render('session-1');
-  await act(() =>
-    probe.latest().restoreAttachments('session-1', [
+  const retained = [
       {
         kind: 'other',
         name: 'notes.txt',
@@ -335,8 +376,8 @@ test('retracted queue attachments can be restored and submitted without re-inges
           relativePath: 'attachments/notes.txt',
         },
       },
-    ]),
-  );
+    ] as const;
+  await act(() => probe.latest().restoreAttachments('session-1', retained));
 
   assert.equal(probe.latest().pendingAttachments[0]?.source.type, 'retained');
 });

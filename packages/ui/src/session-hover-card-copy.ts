@@ -33,7 +33,7 @@ interface SessionHoverCardCopy {
 }
 
 const COPY: Record<UiLocale, SessionHoverCardCopy> = {
-  zh: {
+  'zh-CN': {
     sessionDetailsLabel: (name) => `${name} 任务详情`,
     projectDetailsLabel: (name) => `${name} 项目详情`,
     groupDetailsLabel: (name) => `${name} 分组详情`,
@@ -44,6 +44,18 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
     locationCount: (count) => `${count} 个位置`,
     projectAvailable: '目录可用',
     projectUnavailable: '目录不可用',
+  },
+  'zh-TW': {
+    sessionDetailsLabel: (name) => `${name} 任務詳細資料`,
+    projectDetailsLabel: (name) => `${name} 專案詳細資料`,
+    groupDetailsLabel: (name) => `${name} 群組詳細資料`,
+    noMessages: '尚無訊息',
+    updated: '更新於',
+    taskCount: (count) => `${count} 個任務`,
+    runningTaskCount: (count) => `${count} 個進行中`,
+    locationCount: (count) => `${count} 個位置`,
+    projectAvailable: '目錄可用',
+    projectUnavailable: '目錄不可用',
   },
   en: {
     sessionDetailsLabel: (name) => `${name} task details`,

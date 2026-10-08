@@ -21,14 +21,16 @@ import type { ProviderType } from '@maka/core/llm-connections';
 
 export const OPENCODE_SESSION_HEADER = 'x-opencode-session';
 
-/** Adds OpenCode Go's session identity without overriding an explicit header. */
+/** Adds OpenCode Go session identity without overriding an explicit header. */
 export function withOpenCodeSessionHeader(
   providerType: ProviderType,
   sessionId: string | undefined,
   headers?: Readonly<Record<string, string>>,
 ): Readonly<Record<string, string>> | undefined {
   const normalizedSessionId = sessionId?.trim();
-  if (providerType !== 'opencode-go' || !normalizedSessionId) return headers;
+  if (providerType !== 'opencode-go' || !normalizedSessionId) {
+    return headers;
+  }
   if (Object.keys(headers ?? {}).some((name) => name.toLowerCase() === OPENCODE_SESSION_HEADER)) {
     return headers;
   }

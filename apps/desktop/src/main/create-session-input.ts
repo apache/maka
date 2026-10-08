@@ -54,12 +54,7 @@ import { isOrchestrationMode } from '@maka/core/orchestration';
 
 import { isSessionStartMode } from '@maka/core/session-start-mode';
 
-/**
- * `unknown`, because this is an IPC boundary and the renderer's type is a
- * promise, not a guarantee. An unrecognized value confers nothing — it is not
- * a mode — and the caller falls through to an ordinary session, which is the
- * same session it would have got by not naming one.
- */
+/** Reject the retired workflow explicitly; other unknown modes still fall back to ordinary chat. */
 export interface CreateSessionRequest {
   mode?: SessionStartMode;
   permissionMode?: PermissionMode;
@@ -81,6 +76,9 @@ export interface ResolvedCreateSessionRequest {
 export function resolveCreateSessionRequest(
   input: CreateSessionRequest | undefined,
 ): ResolvedCreateSessionRequest {
+  if ((input?.mode as unknown) === 'deep_research') {
+    throw new TypeError('Invalid session start mode.');
+  }
   const collaborationMode = input?.collaborationMode ?? 'agent';
   if (!isCollaborationMode(collaborationMode)) {
     throw new TypeError('Invalid collaboration mode.');

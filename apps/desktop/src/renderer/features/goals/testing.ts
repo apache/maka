@@ -30,7 +30,7 @@ export {
   type GoalController,
   type UseGoalControllerInput,
 } from './controller/use-goal-controller.js';
-export type { GoalServices } from './ports.js';
+export type { GoalArmInput, GoalServices } from './ports.js';
 
 const noopSubscription = (): (() => void) => () => undefined;
 

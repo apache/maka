@@ -36,7 +36,6 @@ import {
   manageChildProcessLifecycle,
   type ChildProcessLifecycleResult,
 } from './child-process-lifecycle.js';
-import { OUTPUT_RECOVERY_HINT } from './tool-output.js';
 import {
   buildSpawnStdio,
   closeChildFdSources,
@@ -45,8 +44,9 @@ import {
 } from './child-fd-input.js';
 
 // Per-stream cap on the output RETAINED for the result (~1MB). This only bounds
-// what is kept to return. The tool layer (truncateToolOutput) trims this further
-// to the model's budget. Shared so both Bash paths retain identically.
+// what is kept to return. The tool layer preserves this result for durable
+// storage; unified result pruning bounds its model projection.
+// Shared so both Bash paths retain identically.
 export const BASH_MAX_RETAINED_CHARS = 1024 * 1024;
 
 // Per-stream cap on output forwarded LIVE via emitOutput (~1MB). The command is
@@ -62,22 +62,6 @@ export const BASH_MAX_LIVE_EMIT_CHARS = 1024 * 1024;
 export const LIVE_OUTPUT_SUPPRESSED_MARKER =
   '[live output suppressed: too much output to stream live; the command keeps ' +
   'running and its result still contains the most recent output]';
-
-// Appended to a stream when BashTailBuffer dropped an oversized line that had no
-// newline to truncate at (dropped whole for redaction safety). Without it, a
-// command whose only output was one giant line would look like it produced
-// nothing. Carries no dropped content — just a recoverable notice.
-const UNSAFE_DROP_MARKER =
-  '[a single line larger than the output limit was omitted for safety. ' +
-  OUTPUT_RECOVERY_HINT +
-  ']';
-
-export function shellTailValueWithUnsafeDropMarker(buf: BashTailBuffer): string {
-  const text = buf.value(); // value() trims first, so the drop flag is current after it
-  if (!buf.hasDroppedUnsafe()) return text;
-  // Append (not prepend) so a later tail-keeping truncateToolOutput retains it.
-  return text ? `${text}\n${UNSAFE_DROP_MARKER}` : UNSAFE_DROP_MARKER;
-}
 
 export interface BoundedShellOptions {
   cwd: string;
@@ -105,7 +89,7 @@ export interface BoundedShellOptions {
 
 export interface BoundedShellResult {
   exitCode: number;
-  /** Last `maxRetainedChars` of stdout (line-aligned; see BashTailBuffer). */
+  /** Last `maxRetainedChars` of stdout. */
   stdout: string;
   /** Last `maxRetainedChars` of stderr. */
   stderr: string;
@@ -296,8 +280,8 @@ function runSpawnedProcessWithBoundedTail(
       if (settled) return;
       settled = true;
       cleanup();
-      const stdout = shellTailValueWithUnsafeDropMarker(stdoutBuf);
-      const stderr = shellTailValueWithUnsafeDropMarker(stderrBuf);
+      const stdout = stdoutBuf.value();
+      const stderr = stderrBuf.value();
       resolvePromise({
         exitCode: termination
           ? termination.timedOut
@@ -306,14 +290,8 @@ function runSpawnedProcessWithBoundedTail(
           : (outcome.exitCode ?? (outcome.signal ? 128 : 1)),
         stdout,
         stderr,
-        stdoutTruncated:
-          outcome.incompleteOutputs.has('stdout') ||
-          stdoutChars > stdout.length ||
-          stdoutBuf.hasDroppedUnsafe(),
-        stderrTruncated:
-          outcome.incompleteOutputs.has('stderr') ||
-          stderrChars > stderr.length ||
-          stderrBuf.hasDroppedUnsafe(),
+        stdoutTruncated: outcome.incompleteOutputs.has('stdout') || stdoutChars > stdout.length,
+        stderrTruncated: outcome.incompleteOutputs.has('stderr') || stderrChars > stderr.length,
         timedOut: !!termination?.timedOut,
         aborted: !!termination?.aborted,
       });

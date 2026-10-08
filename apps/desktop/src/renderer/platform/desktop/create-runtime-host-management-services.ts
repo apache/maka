@@ -25,7 +25,7 @@ import {
 
 export type DesktopRuntimeHostManagementBridge = Pick<
   MakaBridge,
-  'runtimeHostManagement' | 'runtimeHostPeerMesh' | 'runtimeHostProfiles'
+  'runtimeHostManagement' | 'runtimeHostPeerMesh' | 'runtimeHostProfiles' | 'runtimeHostHandoff'
 >;
 
 export function createDesktopRuntimeHostManagementServices(
@@ -38,6 +38,13 @@ export function createDesktopRuntimeHostManagementServices(
       importCode: (code) => bridge.runtimeHostProfiles.importConnectionCode(code),
       readClipboardText: () => navigator.clipboard.readText(),
       writeClipboardText: (value) => navigator.clipboard.writeText(value),
+    },
+    resources: {
+      query: (profileId) => bridge.runtimeHostManagement.getResources(profileId),
+      schedule: (callback, delayMs) => {
+        const timer = window.setTimeout(callback, delayMs);
+        return () => window.clearTimeout(timer);
+      },
     },
     peerMesh: {
       getConnectivityPolicy: () => bridge.runtimeHostPeerMesh.getConnectivityPolicy(),
@@ -71,6 +78,12 @@ export function createDesktopRuntimeHostManagementServices(
         bridge.runtimeHostProfiles.resolvePairingRecovery(profileId).then(() => undefined),
       discard: (profileId) =>
         bridge.runtimeHostProfiles.discardPairing(profileId).then(() => undefined),
+    },
+    handoff: {
+      current: () => bridge.runtimeHostHandoff.current(),
+      subscribe: (handler) => bridge.runtimeHostHandoff.subscribe(handler),
+      decide: (revision, action) => bridge.runtimeHostHandoff.decide(revision, action),
+      copyText: (value) => navigator.clipboard.writeText(value),
     },
   };
 }

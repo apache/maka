@@ -51,18 +51,31 @@ class Environment:
 
 
 def load_relay(framework="harbor"):
-    from eval_framework import install
+    import eval_framework as framework_authority
 
-    install(framework)
-    package = types.ModuleType(framework)
-    agents = types.ModuleType(f"{framework}.agents")
-    base = types.ModuleType(f"{framework}.agents.base")
-    base.BaseAgent = BaseAgent
-    sys.modules[framework] = package
-    sys.modules[f"{framework}.agents"] = agents
-    sys.modules[f"{framework}.agents.base"] = base
+    framework_authority.install(framework)
+    names = (framework, f"{framework}.agents", f"{framework}.agents.base")
+    modules = {name: types.ModuleType(name) for name in names}
+    modules[names[-1]].BaseAgent = BaseAgent
+    sys.modules.update(modules)
     sys.modules.pop("relay_agent", None)
     return importlib.import_module("relay_agent")
+
+
+def stage_fake_setsid(root: Path) -> dict[str, str]:
+    """Stands in for GNU `setsid --wait`, which macOS does not ship: a new session
+    so the launcher is the group leader, and exec so the caller waits on it."""
+    fake_bin = root / "bin"
+    fake_bin.mkdir()
+    fake_setsid = fake_bin / "setsid"
+    fake_setsid.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = --wait ]; then shift; fi\n'
+        f"exec {shlex.quote(sys.executable)} -c "
+        "'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \"$@\"\n"
+    )
+    fake_setsid.chmod(0o755)
+    return {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
 
 
 class RelayContractTest(unittest.TestCase):
@@ -173,15 +186,7 @@ class RelayContractTest(unittest.TestCase):
         environment = Environment(stage_upload=True)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            fake_bin = root / "bin"
-            fake_bin.mkdir()
-            fake_setsid = fake_bin / "setsid"
-            fake_setsid.write_text(
-                "#!/bin/sh\n"
-                "if [ \"$1\" = --wait ]; then shift; fi\n"
-                "exec \"$@\"\n"
-            )
-            fake_setsid.chmod(0o755)
+            subject_env = stage_fake_setsid(root)
             marker = root / "subject-started"
             scope_path = root / "missing" / "scope.pid"
             command = asyncio.run(
@@ -206,7 +211,7 @@ class RelayContractTest(unittest.TestCase):
                     check=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                    env=subject_env,
                 )
                 self.assertFalse(marker.exists())
             finally:
@@ -220,6 +225,91 @@ class RelayContractTest(unittest.TestCase):
         )
         self.assertEqual(stdout, "")
         self.assertEqual(diagnostic["category"], "execution-scope-unavailable")
+
+    def _run_subject(self, relay, script, root, caller_umask):
+        environment = Environment(stage_upload=True)
+        scope_path = root / "scope.pid"
+        command = asyncio.run(
+            relay._prepare_command(
+                environment,
+                {
+                    "command": "/bin/sh",
+                    "args": ["-c", script],
+                    "environment": {},
+                    "credentials": {},
+                    "captureStdout": True,
+                    "resultToken": "0" * 32,
+                },
+                f"contract-{uuid.uuid4().hex}",
+                str(scope_path),
+            )
+        )
+        subject_env = stage_fake_setsid(root)
+        previous = os.umask(caller_umask)
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=subject_env,
+            )
+        finally:
+            os.umask(previous)
+            if environment.uploaded_target is not None:
+                environment.uploaded_target.unlink(missing_ok=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed, scope_path
+
+    def test_subject_inherits_the_caller_umask(self):
+        relay = load_relay()
+        for caller_umask, reported, mode in ((0o027, "0027", 0o640), (0o022, "0022", 0o644)):
+            with self.subTest(umask=reported):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    created = root / "artifact"
+                    completed, _ = self._run_subject(
+                        relay,
+                        f"umask; touch {shlex.quote(str(created))}",
+                        root,
+                        caller_umask,
+                    )
+                    self.assertEqual(completed.stdout.strip(), reported)
+                    self.assertEqual(created.stat().st_mode & 0o777, mode)
+
+    def test_subject_writes_do_not_change_existing_file_modes(self):
+        relay = load_relay()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / "private"
+            private.write_text("")
+            private.chmod(0o600)
+            shared = root / "shared"
+            shared.write_text("")
+            shared.chmod(0o755)
+            self._run_subject(
+                relay,
+                f"printf x >> {shlex.quote(str(private))}; "
+                f"printf x >> {shlex.quote(str(shared))}",
+                root,
+                0o022,
+            )
+            self.assertEqual(private.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(shared.stat().st_mode & 0o777, 0o755)
+
+    def test_scope_pid_file_stays_private_and_names_the_process_group(self):
+        relay = load_relay()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # The subject execs over the launcher, so its pgid is what the
+            # scope file must name.
+            completed, scope_path = self._run_subject(
+                relay, 'ps -o pgid= -p $$ | tr -d " "', root, 0o000
+            )
+            self.assertEqual(scope_path.stat().st_mode & 0o777, 0o600)
+            self.assertRegex(completed.stdout.strip(), r"^[0-9]+$")
+            self.assertEqual(scope_path.read_text().strip(), completed.stdout.strip())
 
     def test_stages_environment_and_discards_unstructured_stdout(self):
         relay = load_relay()
@@ -671,18 +761,22 @@ class SubjectCapabilityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pin the Eval egress proxy hostname", str(raised.exception))
 
 
-class FrameworkSelectionTest(unittest.TestCase):
-    def test_relay_loads_harbor_and_pier_from_the_installed_selection(self):
-        for framework in ("harbor", "pier"):
-            with self.subTest(framework):
-                relay = load_relay(framework)
-                self.assertEqual(relay.framework, framework)
+class RelayFrameworkAuthorityTest(unittest.TestCase):
+    def test_relay_import_uses_only_the_context_selection(self):
+        cases = (
+            ("harbor", None),
+            ("pier", None),
+            ("harbor", "pier"),
+        )
 
-    def test_relay_does_not_select_a_framework_from_the_environment(self):
-        os.environ["MAKA_EVAL_FRAMEWORK"] = "pier"
-        relay = load_relay("harbor")
-        self.assertEqual(relay.framework, "harbor")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        for selected, environment_value in cases:
+            with self.subTest(selected=selected, environment=environment_value):
+                environment = (
+                    {"MAKA_EVAL_FRAMEWORK": environment_value}
+                    if environment_value is not None
+                    else {}
+                )
+                with patch.dict(os.environ, environment, clear=True):
+                    relay = load_relay(selected)
+                self.assertEqual(relay.framework, selected)
+unittest.main(verbosity=2) if __name__ == "__main__" else None

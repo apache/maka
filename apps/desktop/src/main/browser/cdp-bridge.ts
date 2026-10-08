@@ -76,13 +76,10 @@ export class CdpBridge {
   // debugger) never re-serves an old path.
   private secret = '';
   private path = '';
-  // Outstanding client command ids, each keyed to the connection that issued
-  // it (and the CDP sessionId it was sent on): teardown can fail them
-  // immediately (instead of leaving the client to wait out its own ~30s CDP
-  // timeout) with a response the client can route, and a completion is only
-  // delivered to its own connection — a reconnecting client reusing the same
-  // ids must never receive a stale result from the previous connection.
-  private readonly pending = new Map<number, { ws: WebSocket; sessionId?: string }>();
+  // Commands are keyed by [sessionId, id] and owned by their issuing connection.
+  // Teardown fails them immediately with a response the client can route. Late
+  // results must never reach a reconnecting client reusing the same session/id.
+  private readonly pending = new Map<string, { id: number; ws: WebSocket; sessionId?: string }>();
 
   constructor(private readonly wc: WebContents) {}
 
@@ -145,10 +142,10 @@ export class CdpBridge {
     // (opencli has no remote-close handler) fails fast instead of hanging until
     // its own ~30s timeout.
     if (this.socket?.readyState === WebSocket.OPEN) {
-      for (const [id, entry] of this.pending) {
+      for (const entry of this.pending.values()) {
         this.socket.send(
           JSON.stringify({
-            id,
+            id: entry.id,
             error: { code: -32000, message: 'bridge closed' },
             ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
           }),
@@ -271,7 +268,7 @@ export class CdpBridge {
       // This connection's commands can no longer be answered; drop them so
       // their late completions are discarded instead of being delivered to a
       // future connection that happens to reuse the same ids.
-      for (const [id, entry] of this.pending) if (entry.ws === ws) this.pending.delete(id);
+      for (const [key, entry] of this.pending) if (entry.ws === ws) this.pending.delete(key);
     });
   }
 
@@ -284,12 +281,25 @@ export class CdpBridge {
     }
     if (typeof cmd.id !== 'number' || typeof cmd.method !== 'string') return;
     const { id, sessionId } = cmd;
-    this.pending.set(id, { ws, sessionId });
+    // Flattened CDP sessions have independent command-id namespaces. Reject a
+    // duplicate only within its session, preserving the original pending entry.
+    // An omitted or empty sessionId addresses the root session.
+    const key = JSON.stringify([sessionId ?? '', id]);
+    const existing = this.pending.get(key);
+    if (existing?.ws === ws) {
+      this.send({
+        id,
+        error: { code: -32600, message: `duplicate in-flight command id: ${id}` },
+        ...(sessionId ? { sessionId } : {}),
+      });
+      return;
+    }
+    this.pending.set(key, { id, ws, sessionId });
     try {
       const result = await this.wc.debugger.sendCommand(cmd.method, cmd.params ?? {}, sessionId);
-      if (this.takePending(id, ws)) this.send({ id, result, ...(sessionId ? { sessionId } : {}) });
+      if (this.takePending(key, ws)) this.send({ id, result, ...(sessionId ? { sessionId } : {}) });
     } catch (err) {
-      if (this.takePending(id, ws))
+      if (this.takePending(key, ws))
         this.send({
           id,
           error: { code: -32000, message: err instanceof Error ? err.message : String(err) },
@@ -298,12 +308,12 @@ export class CdpBridge {
     }
   }
 
-  // True only while `id` is still pending AND still owned by `ws` — false after
-  // teardown already failed it (don't double-send) or after the issuing
+  // True only while the session/id pair is pending AND still owned by `ws` —
+  // false after teardown already failed it (don't double-send) or the issuing
   // connection went away (don't leak a stale result to its successor).
-  private takePending(id: number, ws: WebSocket): boolean {
-    if (this.pending.get(id)?.ws !== ws) return false;
-    this.pending.delete(id);
+  private takePending(key: string, ws: WebSocket): boolean {
+    if (this.pending.get(key)?.ws !== ws) return false;
+    this.pending.delete(key);
     return true;
   }
 

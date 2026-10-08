@@ -21,7 +21,7 @@ import type { DailyReviewArchive } from '@maka/core/daily-review';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { dailyReviewArchiveId } from '@maka/core/daily-review';
 
-import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 
 export function dailyReviewExportDefaultName(
   input: Pick<DailyReviewArchive, 'day' | 'range'>,
@@ -30,5 +30,5 @@ export function dailyReviewExportDefaultName(
 }
 
 export function dailyReviewActionErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
-  return locale === 'zh' ? generalizedErrorMessageChinese(error, fallback) : generalizedErrorMessage(error, fallback);
+  return generalizedErrorMessageForLocale(error, fallback, locale);
 }

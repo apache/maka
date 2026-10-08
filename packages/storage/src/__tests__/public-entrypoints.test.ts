@@ -49,8 +49,6 @@ const SQLITE_BACKED_ENTRYPOINTS = [
   './agent-run-store',
   './artifact-stores',
   './daily-review-authority',
-  './deep-research-authority',
-  './deep-research-store',
   './execution-stores',
   './git-worktree-child-executor',
   './goal-authority',

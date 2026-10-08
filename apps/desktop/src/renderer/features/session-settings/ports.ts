@@ -17,16 +17,23 @@
  * under the License.
  */
 
+import type { PlanSessionState } from '@maka/core/plan';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { DesktopSessionSummary } from '../../../shared/desktop-session-projection.js';
 import type { SessionModelTarget } from './session-model-configuration-intent.js';
 
 export interface SessionSettingsServices {
+  getPlanState(sessionId: string): Promise<PlanSessionState>;
   setModelConfiguration(
     sessionId: string,
     input: SessionModelTarget & { thinkingLevel: ThinkingLevel | null },
+  ): Promise<DesktopSessionSummary>;
+  setExecutorConfiguration?(
+    sessionId: string,
+    input: { executorId: string; model?: string; thinkingLevel: ThinkingLevel | null },
   ): Promise<DesktopSessionSummary>;
   setPermissionMode(
     sessionId: string,
@@ -36,4 +43,6 @@ export interface SessionSettingsServices {
     sessionId: string,
     mode: OrchestrationMode,
   ): Promise<DesktopSessionSummary>;
+  setCollaborationMode(sessionId: string, mode: CollaborationMode): Promise<DesktopSessionSummary>;
+  abandonPlanProposal(sessionId: string, proposalId: string): Promise<void>;
 }

@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import type { SessionHeader } from '@maka/core/session';
 import {
   AGENT_RUN_INSPECT_DOCUMENT_VERSION,
@@ -39,7 +40,6 @@ import {
   type AgentRunInspectDiagnostic as SourceDiagnostic,
   type InspectAgentRunOptions,
   type RuntimeEventInspectReader,
-  type SessionAgentRunInspectReader,
 } from './agent-run-inspect.js';
 import {
   isSupersededHistoryCompactCheckpoint,
@@ -53,7 +53,7 @@ export interface SessionHeaderReader {
 
 export interface InspectSessionDocumentOptions {
   header?: SessionHeader;
-  runHeaders?: readonly AgentRunHeader[];
+  invocations?: readonly RuntimeInvocationRecord[];
   isFatalReadError?: InspectAgentRunOptions['isFatalReadError'];
 }
 
@@ -63,30 +63,30 @@ export async function inspectAgentRunDocument(
   input: {
     sessionId: string;
     agentRunId: string;
-    header?: AgentRunHeader;
+    invocation?: RuntimeInvocationRecord;
     isFatalReadError?: InspectAgentRunOptions['isFatalReadError'];
   },
 ): Promise<AgentRunInspectDocument> {
   const model = await inspectAgentRunReadModel(runStore, runtimeEventStore, {
     sessionId: input.sessionId,
     runId: input.agentRunId,
-    ...(input.header ? { header: input.header } : {}),
+    ...(input.invocation ? { invocation: input.invocation } : {}),
     ...(input.isFatalReadError ? { isFatalReadError: input.isFatalReadError } : {}),
     includeModelReplay: false,
   });
-  const diagnostics = model.diagnostics.map((item) => sourceDiagnostic(model.header, item));
-  const tools = inspectTools(model.header, model.runtimeEvents, diagnostics);
+  const diagnostics = model.diagnostics.map((item) => sourceDiagnostic(model.invocation, item));
+  const tools = inspectTools(model.invocation, model.runtimeEvents, diagnostics);
   const compactionCheckpoints = inspectCompactionCheckpoints(
-    model.header,
+    model.invocation,
     model.events,
     diagnostics,
   );
-  const runtimeCoverage = coverageFor(model.header.runId, model.runtimeEvents);
+  const runtimeCoverage = coverageFor(model.invocation.runId, model.runtimeEvents);
 
   return {
     schemaVersion: AGENT_RUN_INSPECT_DOCUMENT_VERSION,
     kind: 'agent_run',
-    agentRun: inspectIdentity(model.header),
+    agentRun: inspectIdentity(model.invocation),
     sources: {
       operationalEventCount: model.events.length,
       runtimeEventCount: model.runtimeEvents.length,
@@ -101,20 +101,21 @@ export async function inspectAgentRunDocument(
 
 export async function inspectSessionDocument(
   sessionStore: SessionHeaderReader,
-  runStore: SessionAgentRunInspectReader,
+  runStore: AgentRunInspectReader,
   runtimeEventStore: RuntimeEventInspectReader,
   sessionId: string,
   options: InspectSessionDocumentOptions = {},
 ): Promise<SessionInspectDocument> {
   const resolvedHeader = options.header ?? (await sessionStore.readHeader(sessionId));
-  const runHeaders = options.runHeaders ?? (await runStore.listSessionRuns(sessionId));
+  const invocations =
+    options.invocations ?? (await runtimeEventStore.listSessionInvocations(sessionId));
   const agentRuns: AgentRunInspectDocument[] = [];
-  for (const runHeader of runHeaders) {
+  for (const invocation of invocations) {
     agentRuns.push(
       await inspectAgentRunDocument(runStore, runtimeEventStore, {
         sessionId,
-        agentRunId: runHeader.runId,
-        header: runHeader,
+        agentRunId: invocation.runId,
+        invocation,
         ...(options.isFatalReadError ? { isFatalReadError: options.isFatalReadError } : {}),
       }),
     );
@@ -162,7 +163,7 @@ export function renderAgentRunInspectTree(document: AgentRunInspectDocument): st
     `├─ Turn ${run.turnId}`,
     `├─ Runtime Events ${formatCoverage(document.sources.runtimeCoverage)} (${document.sources.runtimeEventCount})`,
     `├─ Operational Events ${document.sources.operationalEventCount}`,
-    `├─ Source Health [${document.sources.health.statusConsistency}]`,
+    `├─ Source Health [runtime ledger ${document.sources.health.runtimeLedger}]`,
     `├─ Tools ${document.tools.callCount} calls / ${document.tools.responseCount} responses`,
   ];
   for (const checkpoint of document.compactionCheckpoints) {
@@ -198,28 +199,34 @@ export function renderSessionInspectTree(document: SessionInspectDocument): stri
   return `${lines.join('\n')}\n`;
 }
 
-function inspectIdentity(header: AgentRunHeader): AgentRunInspectIdentity {
+function inspectIdentity(invocation: RuntimeInvocationRecord): AgentRunInspectIdentity {
+  const lineage = invocation.opening.lineage;
+  const terminal = invocation.terminalEvent;
+  const stateDelta = terminal?.actions?.stateDelta;
+  const failureClass =
+    typeof stateDelta?.failureClass === 'string' ? stateDelta.failureClass : undefined;
+  const abortSource =
+    typeof stateDelta?.abortSource === 'string' ? stateDelta.abortSource : undefined;
   return {
-    sessionId: header.sessionId,
-    agentRunId: header.runId,
-    ...(header.invocationId ? { invocationId: header.invocationId } : {}),
-    turnId: header.turnId,
-    ...(header.parentRunId ? { parentRunId: header.parentRunId } : {}),
-    ...(header.resumedFromRunId ? { resumedFromRunId: header.resumedFromRunId } : {}),
-    ...(header.retriedFromRunId ? { retriedFromRunId: header.retriedFromRunId } : {}),
-    ...(header.parentTurnId ? { parentTurnId: header.parentTurnId } : {}),
-    ...(header.agentId ? { agentId: header.agentId } : {}),
-    status: header.status,
-    createdAt: header.createdAt,
-    updatedAt: header.updatedAt,
-    ...(header.completedAt !== undefined ? { completedAt: header.completedAt } : {}),
-    ...(header.failureClass ? { failureClass: header.failureClass } : {}),
-    ...(header.abortSource ? { abortSource: header.abortSource } : {}),
+    sessionId: invocation.sessionId,
+    agentRunId: invocation.runId,
+    invocationId: invocation.invocationId,
+    turnId: invocation.turnId,
+    ...(lineage?.parentRunId ? { parentRunId: lineage.parentRunId } : {}),
+    ...(lineage?.resumedFromRunId ? { resumedFromRunId: lineage.resumedFromRunId } : {}),
+    ...(lineage?.retriedFromRunId ? { retriedFromRunId: lineage.retriedFromRunId } : {}),
+    ...(lineage?.parentTurnId ? { parentTurnId: lineage.parentTurnId } : {}),
+    ...(lineage?.agentId ? { agentId: lineage.agentId } : {}),
+    status: runtimeInvocationOutcome(invocation) ?? 'running',
+    openedAt: invocation.openedAt,
+    ...(terminal ? { endedAt: terminal.ts } : {}),
+    ...(failureClass ? { failureClass } : {}),
+    ...(abortSource ? { abortSource } : {}),
   };
 }
 
 function inspectTools(
-  header: AgentRunHeader,
+  invocation: RuntimeInvocationRecord,
   events: readonly RuntimeEvent[],
   diagnostics: ExecutionInspectDiagnostic[],
 ): AgentRunInspectToolSummary {
@@ -250,7 +257,7 @@ function inspectTools(
   for (const call of callsWithoutResponse) {
     diagnostics.push(
       diagnostic(
-        header,
+        invocation,
         'tool_response_missing',
         'warning',
         `Tool Call ${call.toolCallId} has no committed Runtime response; its outcome and external side effects are unknown.`,
@@ -261,7 +268,7 @@ function inspectTools(
   for (const response of responsesWithoutCall) {
     diagnostics.push(
       diagnostic(
-        header,
+        invocation,
         'tool_call_missing',
         'warning',
         `Tool response ${response.toolCallId} has no matching Runtime call fact.`,
@@ -279,7 +286,7 @@ function inspectTools(
 }
 
 function inspectCompactionCheckpoints(
-  header: AgentRunHeader,
+  invocation: RuntimeInvocationRecord,
   events: readonly { type: string; id: string; data?: Record<string, unknown> }[],
   diagnostics: ExecutionInspectDiagnostic[],
 ): AgentRunInspectCompactionCheckpoint[] {
@@ -287,7 +294,7 @@ function inspectCompactionCheckpoints(
   for (const event of events) {
     if (event.type !== 'history_compact_checkpoint_recorded') continue;
     const checkpoint = event.data?.checkpoint;
-    if (!validateHistoryCompactCheckpointShape(checkpoint, header.sessionId)) {
+    if (!validateHistoryCompactCheckpointShape(checkpoint, invocation.sessionId)) {
       // A checkpoint recorded under an older source policy is expected history,
       // not corruption: the ledger keeps every checkpoint it ever wrote, and
       // every consumer fails open on it. Reporting it as an error would drown
@@ -295,7 +302,7 @@ function inspectCompactionCheckpoints(
       const superseded = isSupersededHistoryCompactCheckpoint(checkpoint);
       diagnostics.push(
         diagnostic(
-          header,
+          invocation,
           superseded ? 'compaction_checkpoint_superseded' : 'compaction_checkpoint_invalid',
           superseded ? 'info' : 'error',
           superseded
@@ -323,7 +330,7 @@ function inspectCompactionCheckpoints(
 }
 
 function sourceDiagnostic(
-  header: AgentRunHeader,
+  invocation: RuntimeInvocationRecord,
   source: SourceDiagnostic,
 ): ExecutionInspectDiagnostic {
   const severity: ExecutionInspectSeverity = /read_failed|corrupt|mismatch/.test(source.code)
@@ -331,11 +338,11 @@ function sourceDiagnostic(
     : source.code.includes('missing')
       ? 'warning'
       : 'info';
-  return diagnostic(header, source.code, severity, source.message, source.eventId);
+  return diagnostic(invocation, source.code, severity, source.message, source.eventId);
 }
 
 function diagnostic(
-  header: AgentRunHeader,
+  invocation: RuntimeInvocationRecord,
   code: string,
   severity: ExecutionInspectSeverity,
   message: string,
@@ -345,9 +352,9 @@ function diagnostic(
     severity,
     code,
     message,
-    sessionId: header.sessionId,
-    agentRunId: header.runId,
-    turnId: header.turnId,
+    sessionId: invocation.sessionId,
+    agentRunId: invocation.runId,
+    turnId: invocation.turnId,
     ...(eventId ? { eventId } : {}),
   };
 }

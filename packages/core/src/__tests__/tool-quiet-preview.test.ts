@@ -23,6 +23,7 @@ import {
   formatAsKeyValueLines,
   formatQuietJsonValue,
   formatToolInvocationLine,
+  formatUserQuestionResult,
   projectToolArgsPreview,
 } from '../tool-quiet-preview.js';
 import { projectToolActivityArgs } from '../tool-activity-args.js';
@@ -35,6 +36,36 @@ describe('tool quiet preview', () => {
     const key = formatAsKeyValueLines({ 'password=secret': true }, 0, 'en');
     assert.doesNotMatch(key, /secret/);
     assert.match(key, /redacted/i);
+  });
+
+  it('lists AskUserQuestion answers against the offered options', () => {
+    const args = {
+      questions: [
+        { question: 'Which client?', options: [{ label: 'claude' }, { label: 'maka' }] },
+        { question: 'Which scope?', options: [{ label: 'user' }, { label: 'project' }] },
+        { question: 'Anything else?', options: [{ label: 'no' }, { label: 'yes' }] },
+      ],
+    };
+    const value = {
+      answers: [
+        { question: 'Which client?', answer: 'maka' },
+        { question: 'Which scope?', answer: null },
+        { question: 'Anything else?', answer: 'typed reply' },
+      ],
+    };
+    assert.equal(
+      formatUserQuestionResult(projectToolActivityArgs('AskUserQuestion', args), value, 'zh-CN'),
+      'Which client?\n  claude\n✓ maka\n\nWhich scope?\n  user\n  project\n  未回答\n\nAnything else?\n  no\n  yes\n✓ typed reply',
+    );
+    // Live rows carry only the question-text args preview.
+    assert.equal(
+      formatUserQuestionResult(projectToolArgsPreview('AskUserQuestion', args), value, 'en'),
+      'Which client?\n✓ maka\n\nWhich scope?\n  Not answered\n\nAnything else?\n✓ typed reply',
+    );
+    assert.equal(
+      formatUserQuestionResult(args, { answers: [{ question: 'Which client?' }] }, 'en'),
+      undefined,
+    );
   });
 });
 
@@ -66,9 +97,19 @@ describe('formatToolInvocationLine', () => {
           ],
         },
       },
-      'zh',
+      'zh-CN',
     );
     assert.equal(line, '选哪个方案? 等 2 问');
+    assert.equal(
+      formatToolInvocationLine(
+        {
+          toolName: 'AskUserQuestion',
+          args: { questions: [{ question: '選哪個方案？' }, { question: '繼續嗎？' }] },
+        },
+        'zh-TW',
+      ),
+      '選哪個方案？ 等 2 問',
+    );
   });
 
   it('keeps the ScheduledTask title headline', () => {
@@ -77,7 +118,7 @@ describe('formatToolInvocationLine', () => {
         toolName: 'ScheduledTask',
         args: { title: '每天 9:00 生成日报', schedule: { kind: 'cron' } },
       },
-      'zh',
+      'zh-CN',
     );
     assert.equal(line, '每天 9:00 生成日报');
   });
@@ -121,22 +162,6 @@ describe('projectToolArgsPreview', () => {
     );
   });
 
-  it('names deep research starts from their bounded objective preview', () => {
-    const preview = projectToolArgsPreview('deep_research_start', {
-      objective: 'Inspect the runtime host boundary',
-      scope_level: 'standard',
-      artifact_content: 'must not reach the live wire',
-    });
-    assert.deepEqual(preview, {
-      objective: 'Inspect the runtime host boundary',
-      scope_level: 'standard',
-    });
-    assert.equal(
-      formatToolInvocationLine({ toolName: 'deep_research_start', args: preview }, 'en'),
-      'Inspect the runtime host boundary (standard)',
-    );
-  });
-
   it('bounds long values and whole-preview size', () => {
     const preview = projectToolArgsPreview('Bash', { command: 'x'.repeat(5000) });
     const command = (preview as { command: string }).command;
@@ -170,7 +195,7 @@ describe('projectToolArgsPreview', () => {
       size: { cols: 80, rows: 24 },
     });
     const preview = projectToolArgsPreview('WriteStdin', projected);
-    const line = formatToolInvocationLine({ toolName: 'WriteStdin', args: preview }, 'zh');
+    const line = formatToolInvocationLine({ toolName: 'WriteStdin', args: preview }, 'zh-CN');
     assert.ok(line !== undefined);
     assert.match(line, /后台终端交互/);
     assert.match(line, /80x24/);

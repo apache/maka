@@ -1,0 +1,77 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.desktopAssistantCursor {
+  position: fixed;
+  z-index: 1300;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  color: var(--accent-solid);
+  filter: drop-shadow(0 2px 4px #0005) drop-shadow(0 0 6px #0002);
+  will-change: transform;
+}
+.desktopAssistantCursorHeading {
+  position: absolute;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.desktopAssistantCursorArrow {
+  position: absolute;
+  left: -25.5px;
+  top: -15px;
+  width: 36px;
+  height: 30px;
+  overflow: visible;
+  transform-origin: 25.5px 15px;
+}
+.desktopAssistantCursor.isClicking::before {
+  content: "";
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  left: -12px;
+  top: -12px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-solid);
+  animation: assistantClick 0.4s ease-out both;
+}
+.desktopAssistantCursor.isClicking .desktopAssistantCursorArrow {
+  animation: assistantTap 0.28s ease-out both;
+}
+@keyframes assistantClick {
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+@keyframes assistantTap {
+  40% {
+    transform: scale(0.88, 1.08);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .desktopAssistantCursor.isClicking::before,
+  .desktopAssistantCursor.isClicking .desktopAssistantCursorArrow {
+    animation: none;
+  }
+}

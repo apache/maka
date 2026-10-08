@@ -17,14 +17,13 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import {
   ChatView,
   ChatSurfaceLayout,
   Composer,
   ClientCapabilityPrompt,
-  finalAssistantReplyText,
   FormInteractionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
@@ -34,17 +33,15 @@ import {
   type ComposerHandle,
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
-import {
-  generalizedErrorMessage,
-  generalizedErrorMessageChinese,
-} from '@maka/core/redaction';
+import type { QuoteRef } from '@maka/core/events';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
-import { useComposerAttachments } from '../../../../use-composer-attachments';
+import { useComposerAttachments } from '@maka/ui/use-composer-attachments';
+import { localizedShellErrorMessage } from '../../../../locales/shell-copy.js';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
-import { preflightAttachmentItems } from '../../../../attachment-preflight';
-import { toComposerIngestItems } from '../../../../composer-attachments';
-import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
-import { deriveTurnFooterActions } from '../../../../turn-footer-actions';
+import { preflightAttachmentItems } from '../../../../application/contracts/attachment-preflight.js';
+import { getDesktopConversationCopy } from '../../../../application/contracts/conversation-copy.js';
+import { useAppShellTurnPresentation } from '../../../../application/contracts/turn-presentation.js';
 import {
   createQuoteCompanionCompactionPresentation,
   dispatchQuoteCompanionInput,
@@ -80,6 +77,8 @@ export function QuoteCompanionPanel(props: {
   modelChoices: readonly ChatModelChoice[];
   confirmBypass: () => Promise<boolean>;
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
+  /** Re-stages quotes a retracted send carried, so an edit restores them. */
+  onRestoreQuotes?: (panelId: string, quotes: readonly QuoteRef[]) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
@@ -115,15 +114,19 @@ export function QuoteCompanionPanel(props: {
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
   } = useComposerAttachments({
+    copy: getDesktopConversationCopy(locale).actions,
+    formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
     draftKey,
     toastApi: toast,
     service: attachments,
   });
   const companion = useQuoteCompanion({
     panelId: props.panelId,
+    active: props.active,
     pendingQuotes: props.quotes,
     sourceSession: props.sourceSession,
     modelChoices: props.modelChoices,
@@ -160,28 +163,28 @@ export function QuoteCompanionPanel(props: {
       const compactCopy = getDesktopConversationCopy(locale).quoteCompanion;
       toast.error(
         compactCopy.compactErrorTitle,
-        locale === 'zh'
-          ? generalizedErrorMessageChinese(error, compactCopy.compactErrorFallback)
-          : generalizedErrorMessage(error, compactCopy.compactErrorFallback),
+        generalizedErrorMessageForLocale(error, compactCopy.compactErrorFallback, locale),
         undefined,
         { sessionId },
       );
+    },
+    restoreDraft: (_sessionId, draft) => {
+      if (draft.attachments?.length) restoreAttachments(draftKey, draft.attachments);
+      if (draft.quotes?.length) props.onRestoreQuotes?.(props.panelId, draft.quotes);
+      const input = composerRef.current;
+      if (!input || !draft.text.trim()) return;
+      if (input.getText().trim()) input.appendText(draft.text);
+      else input.setText(draft.text);
+      input.focus();
     },
   });
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);
+  const active = Boolean(companion.activeTurn) || companion.processing;
   useEffect(() => {
-    props.onActivityStateChange?.(
-      props.panelId,
-      companion.streaming || companion.processing,
-    );
-  }, [
-    companion.processing,
-    companion.streaming,
-    props.onActivityStateChange,
-    props.panelId,
-  ]);
+    props.onActivityStateChange?.(props.panelId, active);
+  }, [active, props.onActivityStateChange, props.panelId]);
   useEffect(() => {
     if (!props.active) return;
     const frame = window.requestAnimationFrame(() => composerRef.current?.focus());
@@ -240,35 +243,11 @@ export function QuoteCompanionPanel(props: {
     companion.activeClientCapability ??
     companion.activeQuestion ??
     companion.activeForm;
-  const deriveTurnPresentation = useCallback<
-    NonNullable<ComponentProps<typeof ChatView>['deriveTurnPresentation']>
-  >(
-    (turns) => ({
-      footerActionsByTurn: Object.fromEntries(
-        turns.map((turn) => [
-          turn.turnId,
-          deriveTurnFooterActions({
-            status: turn.status,
-            locale,
-            hasContent: finalAssistantReplyText(turn).trim().length > 0,
-            ...(companion.regeneratePendingTurnId === turn.turnId
-              ? { pendingActions: new Set(['regenerate'] as const) }
-              : {}),
-          }).filter((action) => action.id !== 'branch'),
-        ]),
-      ),
-      failedReasonLabels: {},
-      failedSeverities: {},
-      failedExecutionStateLabels: {},
-      lineageBadgesByTurn: {},
-    }),
-    [companion.regeneratePendingTurnId, locale],
-  );
 
+  const deriveTurnPresentation = useAppShellTurnPresentation({ uiLocale: locale, allowBranch: false });
   return (
     <div className="maka-quote-companion">
       <ChatSurfaceLayout
-        scrollOwner="host"
         scrollToBottomLabel={copy.scrollToBottom}
         composer={
           <>
@@ -302,6 +281,7 @@ export function QuoteCompanionPanel(props: {
                 {companion.activeForm && (
                   <FormInteractionPrompt
                     request={companion.activeForm}
+                    modelChoices={props.modelChoices}
                     onRespond={companion.respondToUserForm}
                   />
                 )}
@@ -309,32 +289,60 @@ export function QuoteCompanionPanel(props: {
             )}
             <Composer
               ref={composerRef}
-              onSend={(text) =>
+              onSend={(text, metadata) =>
                 dispatchQuoteCompanionInput({
                   text,
                   streaming: companion.streaming,
+                  followUpMode: metadata?.followUpMode,
                   compact: companion.compact,
-                  steer: companion.steer,
-                  send: async () => {
+                  queue: companion.queue,
+                  steer: async (text) => {
+                    // Same staged-attachment validation as `send`: an unusable
+                    // attachment rejects here with the localized toast instead
+                    // of dying later on the steer path.
                     try {
-                      preflightAttachmentItems(pendingAttachments, locale);
+                      preflightAttachmentItems(pendingAttachments);
                     } catch (error) {
                       toast.error(
                         copy.errors.sendRejected,
-                        error instanceof Error ? error.message : String(error),
+                        localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
                       );
                       return false;
                     }
+                    // Submitted attachments retire on the confirmed-admission
+                    // boundary, not on the hook's optimistic return: an unknown
+                    // outcome keeps them staged for retry (#4804).
+                    const submitted = pendingAttachments;
+                    return companion.steer(
+                      text,
+                      submitted,
+                      submitted.length > 0
+                        ? () => clearSubmittedAttachments(submitted)
+                        : undefined,
+                    );
+                  },
+                  send: async () => {
+                    try {
+                      preflightAttachmentItems(pendingAttachments);
+                    } catch (error) {
+                      toast.error(
+                        copy.errors.sendRejected,
+                        localizedShellErrorMessage(error, copy.errors.sendRejected, locale),
+                      );
+                      return false;
+                    }
+                    // Same admission-boundary retirement as `steer` above.
+                    const submitted = pendingAttachments;
                     const accepted = await companion.send(
                       text,
-                      pendingAttachments.length > 0
-                        ? toComposerIngestItems(pendingAttachments)
+                      submitted,
+                      submitted.length > 0
+                        ? () => clearSubmittedAttachments(submitted)
                         : undefined,
                     );
                     if (accepted) {
                       props.onPromptAccepted?.(props.panelId, text);
                     }
-                    if (accepted) clearSubmittedAttachments(pendingAttachments);
                     return accepted;
                   },
                 })
@@ -343,10 +351,19 @@ export function QuoteCompanionPanel(props: {
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
+              queuedMessages={companion.queuedMessages}
+              queuedMessageRevision={companion.queuedMessageRevision}
+              pendingMessages={companion.transientMessages}
+              onPromoteQueuedEntry={companion.promoteQueuedEntry}
+              onEditQueuedEntry={companion.editQueuedEntry}
+              onDeleteQueuedEntry={companion.deleteQueuedEntry}
+              onReorderQueuedEntries={companion.reorderQueuedEntries}
               draftKey={draftKey}
               disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}
               onAttachFilePaths={attachFilePaths}
+              // The side chat submits staged context without a prompt (#4804).
+              allowAttachmentOnlySend
               pendingAttachments={pendingAttachments}
               onRemoveAttachment={removeAttachment}
               mentionSkills={mentions?.mentionSkills}
@@ -381,16 +398,20 @@ export function QuoteCompanionPanel(props: {
       >
         <ChatView
           messages={companion.messages}
+          transientMessages={companion.transientMessages}
           scrollBehavior={readScrollMotionBehavior()}
-          liveTurn={companion.liveTurn}
-          runningStatus={companion.processing}
+          liveTurns={companion.liveTurns}
+          activeTurn={companion.activeTurn}
           activeSession={companion.companionSession}
           onReadAttachmentBytes={attachments.readBytes}
           deriveTurnPresentation={deriveTurnPresentation}
-          onTurnFooterAction={(turnId, actionId) => {
-            if (actionId === 'regenerate') {
-              void companion.regenerate(turnId);
-            }
+          onEditUserMessage={(turnId) => {
+            const message = companion.messages.find(
+              (candidate) => candidate.type === 'user' && candidate.turnId === turnId,
+            );
+            if (message?.type !== 'user') return;
+            composerRef.current?.setText(message.text);
+            composerRef.current?.focus();
           }}
           emptyOverride={<div className="maka-quote-companion-empty" aria-hidden="true" />}
           onNew={() => {}}

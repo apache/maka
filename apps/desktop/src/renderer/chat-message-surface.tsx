@@ -18,11 +18,9 @@
  */
 
 import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
-import { isDeepResearchSession } from '@maka/core/deep-research';
 import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
-import { Skeleton } from '@astryxdesign/core';
 import {
   ChatView,
   ChatViewGoalProjectionConsumer,
@@ -30,19 +28,12 @@ import {
   type LiveTurnProjection,
 } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
-import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state';
-import type { SessionHealthNoticeView } from './use-shell-chat-model';
+import type { SessionHealthNoticeView, SessionUiReads } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
-import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { getDesktopConversationCopy } from './locales/conversation-copy';
-import { selectLiveTurn } from './use-app-shell-session-ui-reads';
-import { useExternalStoreSelector } from './use-external-store-selector';
-import { useDeepResearchRun } from './use-deep-research-run';
+import { StagedQuoteChatView, TaskReadinessNoticeConsumer } from './features/conversation/index.js';
+import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
-
-const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
-  sessionId ? state.shellRunUpdatesBySession[sessionId] : undefined;
 
 /**
  * The sessions-section message surface (issue #1043): ChatView plus the
@@ -54,14 +45,19 @@ const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string |
  * is conditionally mounted - the always-mounted Composer lives in a separate
  * region and is not affected by this surface mounting or unmounting.
  */
+
 interface ChatMessageSurfaceProps extends Omit<
   ComponentProps<typeof ChatView>,
-  | 'deepResearchRun'
   | 'emptyOverride'
   | 'initialLiveContentSnapshot'
-  | 'liveTurn'
+  | 'liveTurns'
   | 'shellRunUpdates'
   | 'goalIndicator'
+  | 'conversationItems'
+  | 'handleRef'
+  | 'pendingQuotes'
+  | 'onQuoteAnnotationSubmit'
+  | 'onReadAttachmentBytes'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -69,19 +65,16 @@ interface ChatMessageSurfaceProps extends Omit<
    * renderer. It subscribes to them here rather than taking them as props, so
    * a delta never reaches AppShell and re-renders the sidebar and composer.
    */
-  sessionUiController: AppShellSessionUiStateController;
+  sessionUiReads: Pick<SessionUiReads, 'liveTurns' | 'shellRuns'>;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
-  /** Advances after the active session's current observation generation finishes seeding. */
-  liveContentSeedRevision: number;
+  /** Identifies the active session observation whose seed is visible. */
+  liveContentSeedGeneration: number;
   sessionHealthNotice?: SessionHealthNoticeView;
   sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
-  taskReadinessNotice?: TaskReadinessNotice;
-  onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
-  isOnboardingLoading: boolean;
   onOpenSettings: (section?: SettingsSection) => void;
   onOpenConnectionDetail: (connectionSlug: string) => void;
   onAddProvider: (providerType: ProviderType) => void;
@@ -89,11 +82,6 @@ interface ChatMessageSurfaceProps extends Omit<
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
-  hasOlderHistory: boolean;
-  hasNewerHistory: boolean;
-  historyLoadPending: boolean;
-  onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
-  onReturnToLatestHistory: () => Promise<void> | void;
 }
 
 function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
@@ -108,17 +96,14 @@ function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
 }
 
 export function ChatMessageSurface({
-  sessionUiController,
+  sessionUiReads,
   activeSessionId,
-  liveContentSeedRevision,
+  liveContentSeedGeneration,
   sessionHealthNotice,
   sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
-  taskReadinessNotice,
-  onTaskReadinessAction,
   showOnboardingHero,
   onboardingState,
-  isOnboardingLoading,
   onOpenSettings,
   onOpenConnectionDetail,
   onAddProvider,
@@ -126,16 +111,10 @@ export function ChatMessageSurface({
   connections,
   onRefreshConnections,
   onSkip,
-  hasOlderHistory,
-  hasNewerHistory,
-  historyLoadPending,
-  onLoadEarlierHistory,
-  onReturnToLatestHistory,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
-  const transcriptCopy = getDesktopConversationCopy(locale).actions;
   // Configuration notices share the Settings label; identity recovery supplies
   // its own label because it opens the composer's connection-and-model picker.
   const goToModelsLabel = copy.goToModels;
@@ -154,38 +133,32 @@ export function ChatMessageSurface({
         return;
     }
   };
-  const activeSession = chatViewRest.activeSession;
-  const deepResearchRun = useDeepResearchRun(
-    activeSession?.id,
-    isDeepResearchSession(activeSession?.labels),
-  );
-  const liveTurn = useExternalStoreSelector(sessionUiController, selectLiveTurn, activeSessionId);
-  const seededLiveTurn = liveContentSeedRevision > 0 ? liveTurn : undefined;
+  const liveTurns = useExternalStoreSelector(sessionUiReads.liveTurns, activeSessionId);
+  const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
+  const seededLiveTurns = liveContentSeedGeneration > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
     sessionId: activeSessionId,
-    seedRevision: liveContentSeedRevision,
-    initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
+    seedGeneration: liveContentSeedGeneration,
+    initialLiveContent: liveContentSeedGeneration > 0 ? captureLiveContent(liveTurn) : undefined,
   }));
   if (
     activation.sessionId !== activeSessionId
-    || activation.seedRevision !== liveContentSeedRevision
+    || activation.seedGeneration !== liveContentSeedGeneration
   ) {
     setActivation({
       sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
-      initialLiveContent: liveContentSeedRevision > 0 ? captureLiveContent(liveTurn) : undefined,
+      seedGeneration: liveContentSeedGeneration,
+      initialLiveContent: liveContentSeedGeneration > 0 ? captureLiveContent(liveTurn) : undefined,
     });
   } else if (
     activation.initialLiveContent
     && (
-      !seededLiveTurn
-      || seededLiveTurn.terminal
-      || seededLiveTurn.turnId !== activation.initialLiveContent.turnId
+      !seededLiveTurns?.some((turn) => turn.turnId === activation.initialLiveContent?.turnId && !turn.terminal)
     )
   ) {
     setActivation({
       sessionId: activeSessionId,
-      seedRevision: liveContentSeedRevision,
+      seedGeneration: liveContentSeedGeneration,
       initialLiveContent: undefined,
     });
   }
@@ -194,8 +167,7 @@ export function ChatMessageSurface({
   // selector would need a comparator to say the same thing, and would still
   // recompute once per store change.
   const shellRunUpdateRecord = useExternalStoreSelector(
-    sessionUiController,
-    selectShellRunRecord,
+    sessionUiReads.shellRuns,
     activeSessionId,
   );
   const shellRunUpdates = useMemo(
@@ -216,57 +188,26 @@ export function ChatMessageSurface({
           onSkip={onSkip}
         />
       </div>
-    ) : isOnboardingLoading ? (
-      // Blocks EmptyChatHero from flashing while the first snapshot resolves.
-      // Astryx Skeleton bars (DESIGN.md §10) in the ready card's own frame —
-      // the hand-drawn static ::before/::after bars this replaces never pulsed,
-      // so the first screen a new user saw read as frozen.
-      (<div
-        className="maka-onboarding-loading"
-        role="status"
-        aria-busy="true"
-        aria-label={copy.loading}
-      >
-        <Skeleton width="52%" height={16} radius="rounded" index={0} />
-        <Skeleton width="78%" height={12} radius="rounded" index={1} />
-      </div>)
     ) : undefined;
 
   return (
     <>
       <ChatViewGoalProjectionConsumer>
         {(goalProjection) => (
-          <ChatView
+          <StagedQuoteChatView
             {...chatViewRest}
-            liveTurn={seededLiveTurn}
-            // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+            liveTurns={seededLiveTurns}
+              // Every branch above reseeds `sessionId` to `activeSessionId`, and a
             // render-phase setState re-runs this body before anything commits, so
             // the activation reaching the DOM is always this session's.
             initialLiveContentSnapshot={activation.initialLiveContent}
             shellRunUpdates={shellRunUpdates}
-            deepResearchRun={deepResearchRun}
             emptyOverride={emptyOverride}
             goalIndicator={goalProjection.goalIndicator}
-            hasOlderHistory={hasOlderHistory}
-            onLoadEarlierHistory={onLoadEarlierHistory}
-            returnToLatest={hasNewerHistory ? {
-              title: transcriptCopy.partialHistoryTitle,
-              label: transcriptCopy.returnLatest,
-              isPending: historyLoadPending,
-              onClick: onReturnToLatestHistory,
-            } : undefined}
           />
         )}
       </ChatViewGoalProjectionConsumer>
-      {taskReadinessNotice && (
-        <ChatRecoveryNotice
-          status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
-          title={taskReadinessNotice.title}
-          description={taskReadinessNotice.description}
-          actionLabel={taskReadinessNotice.actionLabel}
-          onAction={onTaskReadinessAction}
-        />
-      )}
+      <TaskReadinessNoticeConsumer surface={ChatRecoveryNotice} />
       {workspaceReadinessRecovery && (
         <ChatRecoveryNotice
           status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}

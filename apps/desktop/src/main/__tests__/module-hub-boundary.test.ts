@@ -116,8 +116,17 @@ describe('Module Hub feature boundary', () => {
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(appShell.includes('useModuleHubController({'), true);
-    assert.equal(appShell.includes('<ModuleHubHost model={moduleHub.host} />'), true);
+    for (const forbidden of [
+      'useModuleHubController(',
+      'moduleHub.commands',
+      'moduleHub.selectors',
+      'moduleHub.host',
+      '<ModuleHubHost model=',
+    ]) {
+      assert.equal(appShell.includes(forbidden), false, forbidden);
+    }
+    assert.equal(appShell.includes('<ModuleHub.ModuleHubProvider'), true);
+    assert.equal(appShell.includes('<ModuleHub.ModuleHubHost />'), true);
 
     const effects = readFileSync(
       join(desktopRoot, 'src', 'renderer', 'app-shell-effects.ts'),

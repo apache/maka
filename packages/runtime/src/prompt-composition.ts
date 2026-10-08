@@ -17,11 +17,12 @@
  * under the License.
  */
 
-import type {
-  ContextDiagnosticsComposition,
-  ContextDiagnosticsSegment,
-} from './context-diagnostics.js';
-import type { PreparedRequestObservationSegmentKind } from '@maka/core/model-call-attempt';
+import {
+  PROMPT_COMPOSITION_MAX_TOOLS,
+  type PreparedRequestObservationSegmentKind,
+  type PromptComposition,
+  type PromptCompositionSegment,
+} from '@maka/core/model-call-attempt';
 
 /**
  * The three fields a fold needs, and no more.
@@ -56,7 +57,7 @@ export interface SizedRequestSegment {
  */
 export function foldPromptComposition(
   segments: readonly SizedRequestSegment[],
-): ContextDiagnosticsComposition | undefined {
+): PromptComposition | undefined {
   if (segments.length === 0) return undefined;
 
   const byKind = new Map<PreparedRequestObservationSegmentKind, number>();
@@ -80,7 +81,7 @@ export function foldPromptComposition(
 
   // A zero-byte kind is dropped rather than shown as `≈0`, the same way
   // `/context` folds it — a part nothing contributed to is not a part.
-  const folded: ContextDiagnosticsSegment[] = KIND_ORDER.flatMap((kind) => {
+  const folded: PromptCompositionSegment[] = KIND_ORDER.flatMap((kind) => {
     const bytes = byKind.get(kind) ?? 0;
     return bytes > 0 ? [{ kind: PART_KINDS[kind], bytes }] : [];
   });
@@ -97,8 +98,8 @@ export function foldPromptComposition(
   // downstream only moves the cliff: the 257th tool would fail the whole query
   // instead of being summarised. What falls below the cut is carried as a
   // remainder, so the rows still account for every tool byte.
-  const tools = ranked.slice(0, MAX_TOOL_ROWS);
-  const remainder = ranked.slice(MAX_TOOL_ROWS);
+  const tools = ranked.slice(0, PROMPT_COMPOSITION_MAX_TOOLS);
+  const remainder = ranked.slice(PROMPT_COMPOSITION_MAX_TOOLS);
   const remainingToolCount = remainder.length + boundedToolCount;
   const remainingToolBytes =
     remainder.reduce((carry, tool) => carry + tool.bytes, 0) + boundedToolBytes;
@@ -127,7 +128,7 @@ export const PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE = 'provider_request_attempt_rec
 export function readPromptCompositionEvent(event: {
   readonly type: string;
   readonly data?: unknown;
-}): { attemptId: string; composition: ContextDiagnosticsComposition } | undefined {
+}): { attemptId: string; composition: PromptComposition } | undefined {
   if (event.type !== PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE) return undefined;
   const data = event.data;
   if (!isRecord(data)) return undefined;
@@ -178,15 +179,6 @@ function isNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-/**
- * How many tools the fold names individually.
- *
- * Generous enough that a normal registry is listed whole, small enough that a
- * pathological one cannot make this record unbounded. The panel shows fewer
- * still; this is the bound on what crosses a wire and sits in a projection.
- */
-const MAX_TOOL_ROWS = 64;
-
 const KIND_ORDER: readonly PreparedRequestObservationSegmentKind[] = [
   'system_prompt',
   'tool_schema',
@@ -199,7 +191,7 @@ const KIND_ORDER: readonly PreparedRequestObservationSegmentKind[] = [
  * four buckets already fold the same segments for `readLatestContextDiagnostics`
  * (#1580), and two names for one fact is how two surfaces start disagreeing.
  */
-const PART_KINDS: Record<PreparedRequestObservationSegmentKind, ContextDiagnosticsSegment['kind']> =
+const PART_KINDS: Record<PreparedRequestObservationSegmentKind, PromptCompositionSegment['kind']> =
   {
     system_prompt: 'system_instructions',
     tool_schema: 'tool_definitions',

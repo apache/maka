@@ -26,13 +26,19 @@ import {
   type RuntimeEventFunctionCallContent,
   type RuntimeEventFunctionResponseContent,
 } from '@maka/core/runtime-event';
+import {
+  buildImmutableRuntimePrefix,
+  continuationStartEventMatchesClaim,
+  invocationMatchesClaimTarget,
+} from '@maka/core/runtime-boundary';
 import type {
   ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
-  RuntimeBoundaryCursorV1,
+  RuntimeBoundaryCursor,
   RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { ContinuationClaimStateV1 } from '@maka/core/runtime-event-store';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -46,7 +52,11 @@ import {
 } from './model-history.js';
 import { resolveRuntimeRecovery, type RuntimeRecoveryResolution } from './recovery-resolver.js';
 import { classifyRuntimeEventTerminalFact } from './runtime-event-read-model.js';
-import { terminalRunHeaderMatchesFact } from './terminal-run-commit.js';
+import {
+  assertHandoffClaimSource,
+  runtimeHandoffPause,
+  type RuntimeHandoffPause,
+} from '@maka/core/runtime-handoff';
 
 export type ToolOperationStatus =
   | 'succeeded'
@@ -281,6 +291,7 @@ export interface ContinuationIdentity {
 }
 
 export interface SafeBoundaryContinuationFacts {
+  handoffPause?: RuntimeHandoffPause;
   ledgerReadable: boolean;
   terminalRepairSucceeded: boolean;
   sourceCwd: string;
@@ -304,6 +315,9 @@ export interface SafeBoundaryContinuationFacts {
 }
 
 export interface RuntimeContinuation {
+  /** Present only for a sealed physical handoff, never a manual resume. */
+  handoffRootRunId?: string;
+  handoffRemainingSteps?: number | null;
   sessionId: string;
   invocationId: string;
   runId: string;
@@ -319,7 +333,7 @@ export interface RuntimeContinuation {
   /** Full user-anchored provider history, including continuation ancestors. */
   runtimeContext: RuntimeEvent[];
   /** Composite immutable ledger boundary used to build runtimeContext. */
-  boundary?: RuntimeBoundaryCursorV1;
+  boundary?: RuntimeBoundaryCursor;
   /** Identity of the exact provider-facing replay projection. */
   providerReplayDigest?: RuntimeBoundaryDigest;
   providerProjectionVersion?: typeof PROVIDER_REPLAY_PROJECTION_VERSION;
@@ -333,6 +347,44 @@ export interface RuntimeContinuationSafetySnapshot {
   workspaceCheckpoint?: {
     ref: string;
     runtimeEventHighWater: number;
+  };
+}
+
+/** Keep logical ownership while independently checking the execution's current configuration. */
+export function preserveHandoffOpening(
+  continuation: RuntimeContinuation,
+  computed: RuntimeEventInvocationOpenedContent,
+  source: RuntimeEventInvocationOpenedContent | undefined,
+): RuntimeEventInvocationOpenedContent {
+  if (continuation.handoffRootRunId === undefined) return computed;
+  if (
+    source?.kind !== 'invocation_opened' ||
+    !continuation.claimId ||
+    !continuation.boundary ||
+    !isDeepStrictEqual(source.configuration, computed.configuration) ||
+    continuation.handoffRootRunId !==
+      (source.source.kind === 'handoff' ? source.source.rootRunId : continuation.sourceRunId)
+  ) {
+    throw new RuntimeContinuationRevalidationError(
+      'source_identity_changed',
+      'Handoff execution cannot preserve its source configuration and logical authority',
+    );
+  }
+  const { lineage: _computedLineage, ...opening } = computed;
+  return {
+    ...opening,
+    root: source.root,
+    ...(source.lineage ? { lineage: source.lineage } : {}),
+    source: {
+      kind: 'handoff',
+      rootRunId: continuation.handoffRootRunId,
+      sourceInvocationId: continuation.sourceInvocationId,
+      sourceRunId: continuation.sourceRunId,
+      sourceTurnId: continuation.sourceTurnId,
+      sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+      claimId: continuation.claimId,
+      boundaryDigest: continuation.boundary.manifestDigest,
+    },
   };
 }
 
@@ -357,6 +409,7 @@ export interface SafeBoundaryContinuationPlan {
 }
 
 export interface RuntimeContinuationPlannerInput {
+  purpose?: 'handoff';
   sessionId: string;
   sourceRunId: string;
   admissionRoute: ContinuationReplayAdmissionRoute;
@@ -370,7 +423,7 @@ export interface RuntimeContinuationPlannerInput {
 }
 
 export interface RuntimeContinuationPlannerDeps {
-  readSourceRun(sessionId: string, runId: string): Promise<AgentRunHeader>;
+  readSourceInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord>;
   readImmutableRuntimePrefix(input: {
     sessionId: string;
     runId: string;
@@ -391,9 +444,28 @@ export class RuntimeContinuationPlanner {
   constructor(private readonly deps: RuntimeContinuationPlannerDeps) {}
 
   async plan(input: RuntimeContinuationPlannerInput): Promise<SafeBoundaryContinuationPlan> {
-    let sourceRun: Awaited<ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>>;
+    return this.planBoundary(input);
+  }
+
+  /** A candidate is never execution authority and never escapes as a continuation. */
+  async previewHandoff(
+    input: RuntimeContinuationPlannerInput,
+    seal: RuntimeEvent,
+  ): Promise<SafeBoundaryContinuationPlan> {
+    const { continuation: _continuation, ...assessment } = await this.planBoundary(
+      { ...input, purpose: 'handoff' },
+      seal,
+    );
+    return assessment;
+  }
+
+  private async planBoundary(
+    input: RuntimeContinuationPlannerInput,
+    preview?: RuntimeEvent,
+  ): Promise<SafeBoundaryContinuationPlan> {
+    let sourceInvocation: RuntimeInvocationRecord;
     try {
-      sourceRun = await this.deps.readSourceRun(input.sessionId, input.sourceRunId);
+      sourceInvocation = await this.deps.readSourceInvocation(input.sessionId, input.sourceRunId);
     } catch {
       return parkedPlan('source_run_unreadable', 'source AgentRun could not be read');
     }
@@ -403,8 +475,8 @@ export class RuntimeContinuationPlanner {
       prefixes = await this.readLineagePrefixes(
         input.sessionId,
         input.sourceRunId,
-        sourceRun,
-        input.admissionRoute.runHeaders,
+        sourceInvocation.opening,
+        input.admissionRoute.invocations,
       );
     } catch (error) {
       if (error instanceof RuntimeLineageError) {
@@ -415,8 +487,30 @@ export class RuntimeContinuationPlanner {
         'RuntimeEvent ledger could not be read reliably',
       );
     }
+    if (preview) {
+      const source = prefixes.at(-1)!;
+      if (!runtimeHandoffPause(preview) || source.events.some(isTerminalRuntimeEvent)) {
+        return parkedPlan(
+          'runtime_identity_mismatch',
+          'Handoff preview requires an unsealed live source',
+        );
+      }
+      prefixes[prefixes.length - 1] = buildImmutableRuntimePrefix(
+        source.identity,
+        [...source.events, preview].map((event, index) => ({ eventSeq: index + 1, event })),
+      );
+    }
     const sourcePrefix = prefixes.at(-1)!;
     const events = [...sourcePrefix.events];
+    const pause = events.at(-1) && runtimeHandoffPause(events.at(-1)!);
+    if ((input.purpose === 'handoff') !== Boolean(pause)) {
+      return parkedPlan(
+        'runtime_identity_mismatch',
+        pause
+          ? 'This source is reserved for its sealed handoff successor'
+          : 'A physical handoff requires a durable pause seal',
+      );
+    }
     if (
       sourcePrefix.identity.sessionId !== input.sessionId ||
       sourcePrefix.identity.runId !== input.sourceRunId
@@ -488,19 +582,28 @@ export class RuntimeContinuationPlanner {
 
     return buildSafeBoundaryContinuationPlan(events, {
       ledgerReadable: true,
-      terminalRepairSucceeded: hasConsistentTerminalBoundary(sourceRun, events),
-      sourceCwd: sourceRun.cwd,
+      terminalRepairSucceeded: hasConsistentTerminalBoundary(events),
+      sourceCwd: sourceInvocation.opening.configuration.cwd,
       currentCwd: input.currentCwd,
       sourceWorkspaceIdentity: input.sourceWorkspaceIdentity,
       currentWorkspaceIdentity: input.currentWorkspaceIdentity,
       backgroundOperationsSettled: input.backgroundOperationsSettled,
       availableToolNames: input.availableToolNames,
-      continuationIdentity: {
-        invocationId: this.deps.newId(),
-        runId: this.deps.newId(),
-        turnId: this.deps.newId(),
-      },
-      continuationClaimId: this.deps.newId(),
+      // One physical execution attempt, one identity. Run and invocation are
+      // the same value at every mint site so the opening fact can be joined
+      // either way while the two names are still being retired.
+      continuationIdentity: (() => {
+        if (pause)
+          return {
+            invocationId: pause.successorInvocationId,
+            runId: pause.successorRunId,
+            turnId: sourcePrefix.identity.turnId,
+          };
+        const invocationId = this.deps.newId();
+        return { invocationId, runId: invocationId, turnId: this.deps.newId() };
+      })(),
+      continuationClaimId: pause?.claimId ?? this.deps.newId(),
+      ...(pause ? { handoffPause: pause } : {}),
       continuationReplayPlan: replay.plan,
       ...(input.expectedRuntimeEventHighWater !== undefined
         ? { expectedRuntimeEventHighWater: input.expectedRuntimeEventHighWater }
@@ -520,9 +623,9 @@ export class RuntimeContinuationPlanner {
       continuationClaimId: claim.claimId,
       continuationRunId: claim.target.runId,
     };
-    let run: Awaited<ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>>;
+    let targetInvocation: RuntimeInvocationRecord;
     try {
-      run = await this.deps.readSourceRun(sessionId, claim.target.runId);
+      targetInvocation = await this.deps.readSourceInvocation(sessionId, claim.target.runId);
     } catch {
       return parkedPlan(
         'continuation_claim_repair_required',
@@ -530,8 +633,7 @@ export class RuntimeContinuationPlanner {
         detail,
       );
     }
-    const targetRun = run;
-    if (!claimTargetRunHeaderMatches(targetRun, claim)) {
+    if (!invocationMatchesClaimTarget(targetInvocation, claim)) {
       return parkedPlan(
         'continuation_claim_repair_required',
         'durable continuation claim target Run identity does not match its claim',
@@ -555,7 +657,7 @@ export class RuntimeContinuationPlanner {
     if (
       !state.startEventId ||
       prefix.events[0]?.id !== state.startEventId ||
-      !continuationStartMatchesClaim(prefix.events[0], claim, state.startKind)
+      !continuationStartEventMatchesClaim(prefix.events[0], claim, state.startKind)
     ) {
       return parkedPlan(
         'continuation_claim_repair_required',
@@ -563,7 +665,10 @@ export class RuntimeContinuationPlanner {
         detail,
       );
     }
-    const terminalClassification = classifyRuntimeEventTerminalFact(targetRun, prefix.events);
+    const terminalClassification = classifyRuntimeEventTerminalFact(
+      targetInvocation,
+      prefix.events,
+    );
     const terminal = prefix.events.find(isTerminalRuntimeEvent);
     if (terminal && prefix.events.at(-1)?.id !== terminal.id) {
       return parkedPlan(
@@ -579,28 +684,10 @@ export class RuntimeContinuationPlanner {
         detail,
       );
     }
-    if (terminalClassification.fact && !isTerminalRunStatus(targetRun.status)) {
-      return parkedPlan(
-        'continuation_claim_repair_required',
-        'continuation target has a terminal fact whose Run header requires repair',
-        detail,
-      );
-    }
-    if (
-      terminalClassification.fact &&
-      isTerminalRunStatus(targetRun.status) &&
-      terminalRunHeaderMatchesFact(targetRun, terminalClassification.fact)
-    ) {
+    if (terminalClassification.fact) {
       return parkedPlan(
         'continuation_already_exists',
         'source boundary already has a terminal continuation',
-        detail,
-      );
-    }
-    if (terminalClassification.fact || isTerminalRunStatus(targetRun.status)) {
-      return parkedPlan(
-        'continuation_claim_repair_required',
-        'continuation target terminal Run header does not match its RuntimeEvent fact',
         detail,
       );
     }
@@ -621,8 +708,8 @@ export class RuntimeContinuationPlanner {
   private async readLineagePrefixes(
     sessionId: string,
     sourceRunId: string,
-    sourceRun: Awaited<ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>>,
-    runHeaders: readonly AgentRunHeader[],
+    sourceOpening: RuntimeEventInvocationOpenedContent,
+    invocations: readonly RuntimeInvocationRecord[],
   ): Promise<[ImmutableRuntimePrefixV1, ...ImmutableRuntimePrefixV1[]]> {
     const immediate = await this.deps.readImmutableRuntimePrefix({
       sessionId,
@@ -630,9 +717,9 @@ export class RuntimeContinuationPlanner {
     });
     const segments: ImmutableRuntimePrefixV1[] = [immediate];
     const seen = new Set<string>([sourceRunId]);
-    const v2Edges: Array<{
+    const claimedEdges: Array<{
       childRunId: string;
-      childRunHeader: AgentRunHeader;
+      childInvocation: RuntimeInvocationRecord;
       startEvent: RuntimeEvent;
       startKind: 'runtime_admission' | 'claim_repair';
       claimId: string;
@@ -640,48 +727,56 @@ export class RuntimeContinuationPlanner {
       providerProjectionVersion: 1 | typeof PROVIDER_REPLAY_PROJECTION_VERSION;
       providerReplayDigest: RuntimeBoundaryDigest;
     }> = [];
-    let childRun = sourceRun;
+    let childInvocation: RuntimeInvocationRecord = {
+      sessionId,
+      invocationId: immediate.identity.invocationId,
+      runId: sourceRunId,
+      turnId: immediate.identity.turnId,
+      openedAt: 0,
+      opening: sourceOpening,
+    };
     let childRunId = sourceRunId;
     let childPrefix = immediate;
     let depth = 1;
     while (true) {
-      const current = childRun.continuationSource;
+      const opened = childInvocation.opening.source;
+      const current = opened.kind !== 'fresh' ? opened : undefined;
       const start = childPrefix.events[0]?.actions?.continuationStart;
-      const currentV2 =
-        current && 'protocol' in current && current.protocol === 'continuation_source_v2'
-          ? current
+      // A migrated opening keeps the lineage edge but names no claim, so only
+      // an edge that names one can be authenticated against a durable claim.
+      const claimed =
+        current?.claimId !== undefined && current.boundaryDigest !== undefined
+          ? { ...current, claimId: current.claimId, boundaryDigest: current.boundaryDigest }
           : undefined;
-      if (start && !currentV2) {
+      if (start && !claimed) {
         throw new RuntimeLineageError(
           'runtime_lineage_start_mismatch',
           `canonical continuation-start cannot be downgraded to legacy lineage for ${childRunId}`,
         );
       }
-      if (currentV2) {
+      if (claimed) {
         if (
           !start ||
-          start.claimId !== currentV2.claimId ||
-          start.boundaryDigest !== currentV2.boundaryDigest ||
-          start.replayManifestDigest !== currentV2.replayManifestDigest ||
+          start.claimId !== claimed.claimId ||
+          start.boundaryDigest !== claimed.boundaryDigest ||
           start.immediateSource.sessionId !== sessionId ||
-          start.immediateSource.invocationId !== currentV2.sourceInvocationId ||
-          start.immediateSource.runId !== currentV2.sourceRunId ||
-          start.immediateSource.turnId !== currentV2.sourceTurnId ||
-          start.immediateSource.highWater !== currentV2.sourceRuntimeEventHighWater ||
-          start.immediateSource.prefixDigest !== currentV2.sourcePrefixDigest
+          start.immediateSource.invocationId !== claimed.sourceInvocationId ||
+          start.immediateSource.runId !== claimed.sourceRunId ||
+          start.immediateSource.turnId !== claimed.sourceTurnId ||
+          start.immediateSource.highWater !== claimed.sourceRuntimeEventHighWater
         ) {
           throw new RuntimeLineageError(
             'runtime_lineage_start_mismatch',
             `continuation-start does not authenticate lineage edge for ${childRunId}`,
           );
         }
-        v2Edges.push({
+        claimedEdges.push({
           childRunId,
-          childRunHeader: childRun,
+          childInvocation,
           startEvent: childPrefix.events[0]!,
           startKind: start.provenance,
           claimId: start.claimId,
-          boundaryDigest: currentV2.boundaryDigest,
+          boundaryDigest: claimed.boundaryDigest,
           providerProjectionVersion: start.providerProjectionVersion,
           providerReplayDigest: start.providerReplayDigest,
         });
@@ -700,11 +795,11 @@ export class RuntimeContinuationPlanner {
         );
       }
       seen.add(current.sourceRunId);
-      let run: Awaited<ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>>;
+      let invocation: RuntimeInvocationRecord;
       let prefix: ImmutableRuntimePrefixV1;
       try {
-        [run, prefix] = await Promise.all([
-          this.deps.readSourceRun(sessionId, current.sourceRunId),
+        [invocation, prefix] = await Promise.all([
+          this.deps.readSourceInvocation(sessionId, current.sourceRunId),
           this.deps.readImmutableRuntimePrefix({
             sessionId,
             runId: current.sourceRunId,
@@ -729,11 +824,9 @@ export class RuntimeContinuationPlanner {
           `continuation ancestor ${current.sourceRunId} identity does not match its lineage edge`,
         );
       }
-      if (
-        'protocol' in current &&
-        current.protocol === 'continuation_source_v2' &&
-        current.sourcePrefixDigest !== prefix.prefixDigest
-      ) {
+      // The child's continuation-start is what froze the ancestor's prefix, so
+      // it is also the only record that can say the prefix has since changed.
+      if (start && start.immediateSource.prefixDigest !== prefix.prefixDigest) {
         throw new RuntimeLineageError(
           'source_prefix_digest_mismatch',
           `continuation ancestor ${current.sourceRunId} prefix digest changed`,
@@ -741,11 +834,11 @@ export class RuntimeContinuationPlanner {
       }
       segments.unshift(prefix);
       childPrefix = prefix;
-      childRun = run;
+      childInvocation = invocation;
       childRunId = current.sourceRunId;
       depth += 1;
     }
-    for (const edge of v2Edges) {
+    for (const edge of claimedEdges) {
       const childIndex = segments.findIndex((prefix) => prefix.identity.runId === edge.childRunId);
       if (childIndex <= 0) {
         throw new RuntimeLineageError(
@@ -774,12 +867,20 @@ export class RuntimeContinuationPlanner {
         state.claim.boundaryDigest !== edge.boundaryDigest ||
         state.startEventId !== edge.startEvent.id ||
         state.startKind !== edge.startKind ||
-        !claimTargetRunHeaderMatches(edge.childRunHeader, state.claim) ||
-        !continuationStartMatchesClaim(edge.startEvent, state.claim, state.startKind)
+        !invocationMatchesClaimTarget(edge.childInvocation, state.claim) ||
+        !continuationStartEventMatchesClaim(edge.startEvent, state.claim, state.startKind)
       ) {
         throw new RuntimeLineageError(
           'runtime_lineage_claim_mismatch',
           `durable continuation claim does not authenticate ${edge.childRunId}`,
+        );
+      }
+      try {
+        assertHandoffClaimSource(state.claim, segments[childIndex - 1]!);
+      } catch {
+        throw new RuntimeLineageError(
+          'runtime_lineage_claim_mismatch',
+          `handoff source does not authenticate ${edge.childRunId}`,
         );
       }
       if (edge.providerProjectionVersion !== PROVIDER_REPLAY_PROJECTION_VERSION) {
@@ -795,9 +896,12 @@ export class RuntimeContinuationPlanner {
         ],
         providerProjectionVersion: edge.providerProjectionVersion,
         admissionRoute: {
-          runHeaders,
-          targetProviderStateIdentity: state.claim.targetRunHeader.providerStateIdentity,
-          targetModelId: state.claim.targetRunHeader.modelId,
+          invocations,
+          targetProviderStateIdentity:
+            state.claim.targetOpening.route.provenance === 'runtime'
+              ? state.claim.targetOpening.route.providerStateIdentity
+              : undefined,
+          targetModelId: state.claim.targetOpening.route.modelId,
         },
       });
       if (
@@ -834,21 +938,13 @@ class RuntimeLineageError extends Error {
   }
 }
 
-function isTerminalRunStatus(status: string): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
-}
-
-function hasConsistentTerminalBoundary(
-  run: AgentRunHeader,
-  events: readonly RuntimeEvent[],
-): boolean {
-  if (!isTerminalRunStatus(run.status)) return false;
-  const classification = classifyRuntimeEventTerminalFact(run, events);
-  return (
-    classification.fact !== undefined &&
-    events.at(-1)?.id === classification.fact.terminalEvent.id &&
-    terminalRunHeaderMatchesFact(run, classification.fact)
-  );
+/**
+ * Has this run ended, with the terminal event last where a sealed run must
+ * leave it? There is nothing else to agree with: the events are the run.
+ */
+function hasConsistentTerminalBoundary(events: readonly RuntimeEvent[]): boolean {
+  const last = events.at(-1);
+  return last !== undefined && isTerminalRuntimeEvent(last);
 }
 
 export const INDETERMINATE_TOOL_RESULT_DIRECTIVE = [
@@ -1021,7 +1117,13 @@ export function buildSafeBoundaryContinuationPlan(
     if (
       facts.continuationIdentity.invocationId === source.invocationId ||
       facts.continuationIdentity.runId === source.runId ||
-      facts.continuationIdentity.turnId === source.turnId
+      (facts.handoffPause
+        ? facts.continuationIdentity.turnId !== source.turnId ||
+          facts.continuationIdentity.runId !== facts.handoffPause.successorRunId ||
+          facts.continuationIdentity.invocationId !== facts.handoffPause.successorInvocationId ||
+          facts.continuationClaimId !== facts.handoffPause.claimId ||
+          !isDeepStrictEqual(events.at(-1)?.actions?.handoffPause, facts.handoffPause)
+        : facts.continuationIdentity.turnId === source.turnId)
     ) {
       phaseOneDiagnostics.push({
         code: 'continuation_identity_reused',
@@ -1188,6 +1290,12 @@ export function buildSafeBoundaryContinuationPlan(
           ? { sourceRuntimeContext: legacyReplayPlan!.replayRuntimeEvents }
           : {}),
       runtimeContext: [...modelRuntimeContext],
+      ...(facts.handoffPause
+        ? {
+            handoffRootRunId: facts.handoffPause.rootRunId,
+            handoffRemainingSteps: facts.handoffPause.remainingSteps,
+          }
+        : {}),
       ...(facts.continuationClaimId ? { claimId: facts.continuationClaimId } : {}),
       ...(compositeReplay
         ? {
@@ -1484,72 +1592,4 @@ function hasMatchingCall(
   response: RuntimeEventFunctionResponseContent,
 ): boolean {
   return call !== undefined && call.name === response.name;
-}
-
-function claimTargetRunHeaderMatches(actual: AgentRunHeader, claim: ContinuationClaimV1): boolean {
-  const candidate = actual as unknown as Record<string, unknown>;
-  const expected = claim.targetRunHeader as unknown as Record<string, unknown>;
-  const immutable = (header: Record<string, unknown>) => {
-    const {
-      status: _status,
-      updatedAt: _updatedAt,
-      completedAt: _completedAt,
-      failureClass: _failureClass,
-      failureMessage: _failureMessage,
-      abortSource: _abortSource,
-      traceWriteError: _traceWriteError,
-      ...rest
-    } = header;
-    return rest;
-  };
-  return isDeepStrictEqual(immutable(candidate), immutable(expected));
-}
-
-function continuationStartMatchesClaim(
-  event: RuntimeEvent | undefined,
-  claim: ContinuationClaimV1,
-  startKind: ContinuationClaimStateV1['startKind'],
-): boolean {
-  const start = event?.actions?.continuationStart;
-  const runtimeProtocol = event?.actions?.runtimeProtocol;
-  const actionKeys = event?.actions ? Object.keys(event.actions) : [];
-  const actionShapeMatches =
-    actionKeys.includes('continuationStart') &&
-    actionKeys.every((key) => key === 'continuationStart' || key === 'runtimeProtocol') &&
-    actionKeys.length === (runtimeProtocol === undefined ? 1 : 2);
-  const runtimeProtocolMatches =
-    runtimeProtocol === undefined ||
-    (startKind === 'runtime_admission' &&
-      runtimeProtocol.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1);
-  const source = claim.boundary.segments.at(-1)!;
-  return Boolean(
-    event &&
-      event.sessionId === claim.target.sessionId &&
-      event.invocationId === claim.target.invocationId &&
-      event.runId === claim.target.runId &&
-      event.turnId === claim.target.turnId &&
-      event.partial !== true &&
-      event.role === 'system' &&
-      event.author === 'system' &&
-      event.status === undefined &&
-      event.content === undefined &&
-      event.actions &&
-      actionShapeMatches &&
-      runtimeProtocolMatches &&
-      start?.protocol === 'continuation_start_v2' &&
-      start.provenance === startKind &&
-      start.claimId === claim.claimId &&
-      start.boundaryDigest === claim.boundaryDigest &&
-      start.replayManifestDigest === claim.boundary.manifestDigest &&
-      start.providerProjectionVersion === claim.providerProjectionVersion &&
-      start.providerReplayDigest === claim.providerReplayDigest &&
-      isDeepStrictEqual(start.immediateSource, {
-        sessionId: source.identity.sessionId,
-        invocationId: source.identity.invocationId,
-        runId: source.identity.runId,
-        turnId: source.identity.turnId,
-        highWater: source.position.lastEventSeq,
-        prefixDigest: source.prefixDigest,
-      }),
-  );
 }

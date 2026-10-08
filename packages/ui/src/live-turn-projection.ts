@@ -19,6 +19,7 @@
 
 import {
   decodeToolStepProgress,
+  foldAssistantDelta,
   type MessageContent,
   type ProviderRetryEvent,
   type SessionEvent,
@@ -63,9 +64,15 @@ export interface LiveThinkingProjection {
 
 export interface LiveTurnStepProjection {
   stepId: string;
+  /** Event ts of the first word that opened this step. */
+  startedAt?: number;
   contentOrder?: LiveTurnStepContentKind[];
-  /** Steering drained immediately before this provider step began. */
-  leadingSteering?: LiveSteeringProjection[];
+  /**
+   * A durable steering row, placed where the runtime stream delivered it; it
+   * holds no content. Content events never resolve to it (`steering:`-prefixed
+   * stepIds collide with no real stepId).
+   */
+  steering?: LiveSteeringProjection;
   thinking?: LiveThinkingProjection;
   text?: LiveTextProjection;
   tools: ToolActivityItem[];
@@ -74,6 +81,7 @@ export interface LiveTurnStepProjection {
 export type LiveTurnStepContentKind = 'thinking' | 'text' | 'tools';
 
 export interface LiveTextProjection {
+  interrupted?: true;
   text: string;
   truncated: boolean;
   complete: boolean;
@@ -91,13 +99,20 @@ export interface LiveSteeringProjection {
 
 export interface LiveTurnProjection {
   turnId: string;
-  phase: 'waiting' | 'streamed';
   terminal?: true;
-  /** Steering acknowledged after the current content and awaiting its next provider step. */
-  pendingSteering?: LiveSteeringProjection[];
+  /**
+   * Set when this live Turn is a host-owned explicit context-compaction run.
+   * A `context_compact` Turn emits no assistant content, so `overlayLiveTurn`
+   * renders a single "compacting" system row from this flag while the Turn is in
+   * flight; the row disappears when the Turn settles (no durable turn state).
+   */
+  rootExecutionKind?: 'context_compact';
+  /** Event ts of the first authority word about this Turn, so a Turn the
+   *  transcript has not reached yet still has a stable start. */
+  startedAt?: number;
   /**
    * Set by `armLiveTurn` and cleared by the first word the authority says about
-   * this turn (`confirmLiveTurn`, or any event carrying the same turnId).
+   * this turn (any event carrying the same turnId).
    *
    * A client that just sent cannot tell "the authority has not reached my turn
    * yet" from "my turn is over" by reading session status: it reads the same
@@ -166,7 +181,7 @@ function appendContentKind(
 }
 
 export function armLiveTurn(turnId: string): LiveTurnProjection {
-  return { turnId, phase: 'waiting', steps: [], unconfirmed: true };
+  return { turnId, steps: [], unconfirmed: true };
 }
 
 /** Drop the `unconfirmed` claim; identity-preserving when there is none. */
@@ -176,49 +191,52 @@ function confirmed(projection: LiveTurnProjection): LiveTurnProjection {
   return rest;
 }
 
-/**
- * The authority answered about `turnId`: clear the arm's pending claim so a
- * later snapshot may retire it. A different turn's answer says nothing about
- * this one, so the projection is returned unchanged (same reference).
- */
-export function confirmLiveTurn(
-  current: LiveTurnProjection | undefined,
-  turnId: string,
-): LiveTurnProjection | undefined {
-  if (!current || current.turnId !== turnId) return current;
-  return confirmed(current);
-}
-
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: LiveTurnContentEvent,
-  locale?: UiLocale,
+  locale: UiLocale,
 ): LiveTurnProjection;
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
-  locale?: UiLocale,
+  locale: UiLocale,
 ): LiveTurnProjection | undefined;
 export function applyLiveTurnEvent(
   current: LiveTurnProjection | undefined,
   event: SessionEvent,
-  locale: UiLocale = 'zh',
+  locale: UiLocale,
+): LiveTurnProjection | undefined {
+  const next = projectLiveTurnEvent(current, event, locale);
+  if (!next || next === current || next.startedAt !== undefined) return next;
+  const startedAt = current?.turnId === next.turnId ? current.startedAt : undefined;
+  return { ...next, startedAt: startedAt ?? event.ts };
+}
+
+function projectLiveTurnEvent(
+  current: LiveTurnProjection | undefined,
+  event: SessionEvent,
+  locale: UiLocale,
 ): LiveTurnProjection | undefined {
   if (event.type === 'steering_message') {
     const prior = current?.turnId === event.turnId
       ? current
-      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
-    if (liveSteeringMessages(prior).some((message) => message.id === event.messageId)) {
+      : { turnId: event.turnId, steps: [] };
+    if (prior.steps.some((step) => step.steering?.id === event.messageId)) {
       return confirmed(prior);
     }
     return {
       ...confirmed(prior),
-      pendingSteering: [
-        ...(prior.pendingSteering ?? []),
+      steps: [
+        ...prior.steps,
         {
-          id: event.messageId,
-          content: structuredClone(event.content),
-          ts: event.ts,
+          stepId: `steering:${event.messageId}`,
+          startedAt: event.ts,
+          tools: [],
+          steering: {
+            id: event.messageId,
+            content: structuredClone(event.content),
+            ts: event.ts,
+          },
         },
       ],
     };
@@ -226,27 +244,32 @@ export function applyLiveTurnEvent(
   if (event.type === 'provider_retry') {
     const prior = current?.turnId === event.turnId
       ? current
-      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+      : { turnId: event.turnId, steps: [] };
     return { ...confirmed(prior), providerRetry: { event, receivedAtMs: Date.now() } };
   }
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
     const steps = terminalizeLiveSteps(current.steps);
-    if (steps.length === 0 && liveSteeringMessages(current).length === 0) return undefined;
+    if (steps.length === 0) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
     if (!current || current.turnId !== event.turnId) return current;
-    if (current.steps.length === 0 && liveSteeringMessages(current).length === 0) {
-      return undefined;
-    }
+    if (current.steps.length === 0) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
     return {
       ...withoutRetry,
       terminal: true,
       steps: terminalizeLiveSteps(current.steps),
     };
+  }
+  if (event.type === 'context_compaction_started') {
+    const prior =
+      current?.turnId === event.turnId
+        ? current
+        : { turnId: event.turnId, steps: [] };
+    return { ...confirmed(prior), rootExecutionKind: 'context_compact', startedAt: event.ts };
   }
   if (
     event.type !== 'thinking_delta'
@@ -263,7 +286,7 @@ export function applyLiveTurnEvent(
   }
   const prior = current?.turnId === event.turnId
     ? current
-    : { turnId: event.turnId, phase: 'streamed' as const, steps: [] };
+    : { turnId: event.turnId, steps: [] };
   const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
@@ -281,24 +304,18 @@ export function applyLiveTurnEvent(
     : event.type === 'tool_start'
       ? event.stepId ?? existingToolStep?.stepId ?? `tool:${event.toolUseId}`
       : existingToolStep?.stepId ?? `tool:${event.toolUseId}`;
-  const stepIndex = prior.steps.findIndex((step) => step.stepId === stepId);
-  const isNewStep = stepIndex < 0;
-  const claimsPendingSteering = isNewStep
-    && existingToolStep === undefined
-    && (prior.pendingSteering?.length ?? 0) > 0;
-  const step: LiveTurnStepProjection = isNewStep
-    ? {
-        stepId,
-        tools: [],
-        ...(claimsPendingSteering
-          ? { leadingSteering: prior.pendingSteering }
-          : {}),
-      }
+  const stepIndex = existingToolStep === undefined
+    || (event.type === 'tool_start' && event.stepId !== undefined && event.stepId !== existingToolStep.stepId)
+    ? prior.steps.findIndex((candidate) => candidate.stepId === stepId)
+    : prior.steps.indexOf(existingToolStep);
+  const step: LiveTurnStepProjection = stepIndex < 0
+    ? { stepId, startedAt: event.ts, tools: [] }
     : prior.steps[stepIndex]!;
   let nextStep: LiveTurnStepProjection;
   if (event.type === 'thinking_delta') {
-    const delta = replaySafeDelta(step.thinking?.sourceEndOffset, event);
-    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.text, {
+    const delta = foldAssistantDelta(step.thinking?.sourceEndOffset ?? 0, event);
+    if (!delta) return confirmed(prior);
+    const applied = applyThinkingDelta(step.thinking?.text ?? '', delta.tail, {
       locale,
       ...(step.thinking?.redactionState === undefined
         ? {}
@@ -310,9 +327,7 @@ export function applyLiveTurnEvent(
         text: applied.text,
         truncated: (step.thinking?.truncated ?? false) || applied.truncated,
         complete: false,
-        ...(delta.sourceEndOffset === undefined
-          ? {}
-          : { sourceEndOffset: delta.sourceEndOffset }),
+        sourceEndOffset: delta.endOffset,
         ...(applied.redactionState === undefined
           ? {}
           : { redactionState: applied.redactionState }),
@@ -326,14 +341,13 @@ export function applyLiveTurnEvent(
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
-        ...(step.thinking?.sourceEndOffset === undefined
-          ? {}
-          : { sourceEndOffset: event.text.length }),
+        sourceEndOffset: event.text.length,
       },
     };
   } else if (event.type === 'text_delta') {
-    const delta = replaySafeDelta(step.text?.sourceEndOffset, event);
-    const applied = applyAssistantDelta(step.text?.text ?? '', delta.text, {
+    const delta = foldAssistantDelta(step.text?.sourceEndOffset ?? 0, event);
+    if (!delta) return confirmed(prior);
+    const applied = applyAssistantDelta(step.text?.text ?? '', delta.tail, {
       locale,
       ...(step.text?.redactionState === undefined
         ? {}
@@ -345,9 +359,7 @@ export function applyLiveTurnEvent(
         text: applied.text,
         truncated: (step.text?.truncated ?? false) || applied.truncated,
         complete: false,
-        ...(delta.sourceEndOffset === undefined
-          ? {}
-          : { sourceEndOffset: delta.sourceEndOffset }),
+        sourceEndOffset: delta.endOffset,
         ...(applied.redactionState === undefined
           ? {}
           : { redactionState: applied.redactionState }),
@@ -358,12 +370,11 @@ export function applyLiveTurnEvent(
     nextStep = {
       ...step,
       text: {
+        ...(event.interrupted ? { interrupted: true } : {}),
         text: applied.text,
         truncated: applied.truncated,
         complete: true,
-        ...(step.text?.sourceEndOffset === undefined
-          ? {}
-          : { sourceEndOffset: event.text.length }),
+        sourceEndOffset: event.text.length,
       },
     };
   } else if (event.type === 'tool_start') {
@@ -480,7 +491,7 @@ export function applyLiveTurnEvent(
   };
   let steps: LiveTurnStepProjection[];
   if (existingToolStep && existingToolStep.stepId !== stepId && !messageEvent) {
-    const sourceIndex = prior.steps.findIndex((candidate) => candidate.stepId === existingToolStep.stepId);
+    const sourceIndex = prior.steps.indexOf(existingToolStep);
     const sourceWithoutTool = {
       ...existingToolStep,
       tools: existingToolStep.tools.filter((tool) => tool.toolUseId !== event.toolUseId),
@@ -491,7 +502,7 @@ export function applyLiveTurnEvent(
     const sourceIsEmpty = !sourceWithoutTool.thinking
       && !sourceWithoutTool.text
       && sourceWithoutTool.tools.length === 0
-      && (sourceWithoutTool.leadingSteering?.length ?? 0) === 0;
+      && sourceWithoutTool.steering === undefined;
     steps = [];
     for (let index = 0; index < prior.steps.length; index += 1) {
       const candidate = prior.steps[index]!;
@@ -510,42 +521,7 @@ export function applyLiveTurnEvent(
       ? prior.steps.map((candidate, index) => index === stepIndex ? nextStep : candidate)
       : [...prior.steps, nextStep];
   }
-  const { pendingSteering: _pendingSteering, ...withoutPendingSteering } = priorWithoutRetry;
-  return {
-    ...(claimsPendingSteering ? withoutPendingSteering : priorWithoutRetry),
-    phase: 'streamed',
-    steps,
-  };
-}
-
-function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjection[] {
-  return [
-    ...(current.pendingSteering ?? []),
-    ...current.steps.flatMap((step) => step.leadingSteering ?? []),
-  ];
-}
-
-function replaySafeDelta(
-  currentEndOffset: number | undefined,
-  event: Extract<SessionEvent, { type: 'text_delta' | 'thinking_delta' }>,
-): { text: string; sourceEndOffset?: number } {
-  if (event.startOffset === undefined) {
-    return {
-      text: event.text,
-      ...(currentEndOffset === undefined
-        ? {}
-        : { sourceEndOffset: currentEndOffset + event.text.length }),
-    };
-  }
-  const endOffset = event.startOffset + event.text.length;
-  if (currentEndOffset === undefined || event.startOffset > currentEndOffset) {
-    return { text: event.text, sourceEndOffset: endOffset };
-  }
-  const overlapLength = Math.min(currentEndOffset - event.startOffset, event.text.length);
-  return {
-    text: event.text.slice(overlapLength),
-    sourceEndOffset: Math.max(currentEndOffset, endOffset),
-  };
+  return { ...priorWithoutRetry, steps };
 }
 
 /**
@@ -558,22 +534,22 @@ export function settleLiveTurnStep(
   current: LiveTurnProjection,
   stepId: string,
 ): LiveTurnProjection | undefined {
-  const stepIndex = current.steps.findIndex((step) => step.stepId === stepId);
-  if (stepIndex < 0) return current;
-  const step = current.steps[stepIndex]!;
-  const retainedTools = step.tools.filter((tool) => (tool.outputChunks?.length ?? 0) > 0);
-  const steps = retainedTools.length > 0
-    ? current.steps.map((candidate, index) => (
-      index === stepIndex
-        ? {
-            stepId: candidate.stepId,
-            tools: retainedTools,
-            contentOrder: ['tools' as const],
-          }
-        : candidate
-    ))
-    : current.steps.filter((candidate) => candidate.stepId !== stepId);
-  if (steps.length === current.steps.length && retainedTools.length === 0) return current;
+  let found = false;
+  const steps = current.steps.flatMap((step) => {
+    if (step.stepId !== stepId) return [step];
+    found = true;
+    const retainedTools = step.tools.filter((tool) => (tool.outputChunks?.length ?? 0) > 0);
+    if (retainedTools.length === 0) {
+      return [];
+    }
+    return [{
+      stepId,
+      tools: retainedTools,
+      ...(retainedTools.length > 0 ? { contentOrder: ['tools' as const] } : {}),
+      ...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
+    }];
+  });
+  if (!found) return current;
   if (steps.length === 0 && current.terminal) return undefined;
   return { ...current, steps };
 }
@@ -631,15 +607,12 @@ export function reconcileTerminalLiveTurn(
       steps: terminalizeLiveSteps(current.steps),
     };
   }
-  if (
-    projection.terminal === true
-    && liveSteeringMessages(projection).length > 0
-    && !transcriptReachedTerminal
-  ) return projection;
+  const userIds = new Set(turnMessages.flatMap((message) => message.type === 'user' ? [message.id] : []));
   const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
   const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
   const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
-  let steps = projection.steps.filter((step) => {
+  const steps = projection.steps.filter((step) => {
+    if (step.steering !== undefined) return !transcriptReachedTerminal && !userIds.has(step.steering.id);
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
     const toolsCovered = step.tools.every((tool) => {
@@ -654,22 +627,15 @@ export function reconcileTerminalLiveTurn(
     });
     return !toolsCovered;
   });
-  // Once persisted turn_state records the terminal handoff, the transcript is
-  // authoritative for accepted steering; retaining the live copy would leave
-  // a duplicate or a nacked ghost instruction on screen.
-  const steeringSettled = projection.terminal === true
-    && transcriptReachedTerminal
-    && liveSteeringMessages(projection).length > 0;
-  if (steeringSettled) {
-    steps = steps.map((step) => {
-      if (!step.leadingSteering) return step;
-      const { leadingSteering: _leadingSteering, ...withoutSteering } = step;
-      return withoutSteering;
-    });
-  }
-  if (steps.length === projection.steps.length && !steeringSettled) return projection;
-  if (steps.length === 0 && projection.terminal) return undefined;
-  if (!steeringSettled) return { ...projection, steps };
-  const { pendingSteering: _pendingSteering, ...withoutSteering } = projection;
-  return { ...withoutSteering, steps };
+  if (
+    steps.length === 0
+    && projection.terminal
+    && (
+      projection.rootExecutionKind === 'context_compact'
+      || transcriptReachedTerminal
+      || steps.length !== projection.steps.length
+    )
+  ) return undefined;
+  if (steps.length === projection.steps.length) return projection;
+  return { ...projection, steps };
 }

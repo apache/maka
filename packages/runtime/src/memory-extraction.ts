@@ -63,6 +63,7 @@ import {
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 import type { ModelMessage, ModelToolSet } from './model-protocol.js';
+import { applyRuntimeEventProviderHistoryBoundary } from './model-history.js';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export const MEMORY_REMEMBER_TOOL_NAME = 'memory_remember';
@@ -239,7 +240,13 @@ export function buildMemoryCompactionSourceContext(
       content: [{ type: 'text', text: renderHistoryCompactCheckpoint(options.previousCheckpoint) }],
     });
   }
-  for (const event of events.slice(afterIndex + 1, boundaryIndex + 1)) {
+  const sourceEvents = events.slice(afterIndex + 1, boundaryIndex + 1);
+  const providerEvents = applyRuntimeEventProviderHistoryBoundary(sourceEvents, {
+    allowRepairedAssistantPrefix:
+      options.previousCheckpoint !== undefined &&
+      isTextHistoryCompactCheckpoint(options.previousCheckpoint),
+  }).events;
+  for (const event of providerEvents) {
     if (event.partial || event.content?.kind !== 'text') continue;
     if (event.role === 'user' && event.author === 'user') {
       push(event.id, { role: 'user', content: [{ type: 'text', text: event.content.text }] });
@@ -625,30 +632,28 @@ export class MemoryExtractionEngine {
         if (requestedTurnStart <= 0) return undefined;
         maximumSplitIndex = requestedTurnStart;
       }
-      const split = memoryRangeSplitCandidates(pendingEntries, maximumSplitIndex).find(
-        ({ first, second }) => {
-          const firstThroughOrdinal = first.at(-1)!.ordinal;
-          const firstTrigger: MemoryExtractionTrigger = 'extract';
-          const firstPrepared = this.prepareRange({
-            ...input,
-            trigger: firstTrigger,
-            targetBoundaryOrdinal: firstThroughOrdinal,
-            prioritizeCurrentTurn: false,
-            pendingEntries: first,
-            coverageHash: memoryCoverageHash(first),
-          });
-          const secondPrepared = this.prepareRange({
-            ...input,
-            expectedCursorOrdinal: firstThroughOrdinal,
-            pendingEntries: second,
-            coverageHash: memoryCoverageHash(second),
-          });
-          return (
-            preparedMemoryRangeFits(firstPrepared, firstTrigger) &&
-            preparedMemoryRangeFits(secondPrepared, input.trigger)
-          );
-        },
-      );
+      const split = findMemoryRangeSplit(pendingEntries, maximumSplitIndex, ({ first, second }) => {
+        const firstThroughOrdinal = first.at(-1)!.ordinal;
+        const firstTrigger: MemoryExtractionTrigger = 'extract';
+        const firstPrepared = this.prepareRange({
+          ...input,
+          trigger: firstTrigger,
+          targetBoundaryOrdinal: firstThroughOrdinal,
+          prioritizeCurrentTurn: false,
+          pendingEntries: first,
+          coverageHash: memoryCoverageHash(first),
+        });
+        const secondPrepared = this.prepareRange({
+          ...input,
+          expectedCursorOrdinal: firstThroughOrdinal,
+          pendingEntries: second,
+          coverageHash: memoryCoverageHash(second),
+        });
+        return (
+          preparedMemoryRangeFits(firstPrepared, firstTrigger) &&
+          preparedMemoryRangeFits(secondPrepared, input.trigger)
+        );
+      });
       if (!split) {
         return undefined;
       }
@@ -1347,14 +1352,20 @@ function memorySegmentOperationId(
     .digest('hex')}`;
 }
 
-function memoryRangeSplitCandidates(
+function findMemoryRangeSplit(
   entries: readonly MemoryExtractionEventEntry[],
   maximumSplitIndex = entries.length - 1,
-): readonly {
-  readonly first: readonly MemoryExtractionEventEntry[];
-  readonly second: readonly MemoryExtractionEventEntry[];
-}[] {
-  if (entries.length < 2) return [];
+  accepts: (split: {
+    readonly first: readonly MemoryExtractionEventEntry[];
+    readonly second: readonly MemoryExtractionEventEntry[];
+  }) => boolean,
+):
+  | {
+      readonly first: readonly MemoryExtractionEventEntry[];
+      readonly second: readonly MemoryExtractionEventEntry[];
+    }
+  | undefined {
+  if (entries.length < 2) return undefined;
   const weights = entries.map(memoryRangeEventWeight);
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   let prefix = 0;
@@ -1370,14 +1381,18 @@ function memoryRangeSplitCandidates(
       };
     })
     .filter(({ index }) => index <= maximumSplitIndex);
-  return candidates
-    .sort(
-      (left, right) =>
-        Number(right.turnBoundary) - Number(left.turnBoundary) ||
-        left.distance - right.distance ||
-        left.index - right.index,
-    )
-    .map(({ index }) => ({ first: entries.slice(0, index), second: entries.slice(index) }));
+  candidates.sort(
+    (left, right) =>
+      Number(right.turnBoundary) - Number(left.turnBoundary) ||
+      left.distance - right.distance ||
+      left.index - right.index,
+  );
+  // Keep only the candidate being checked; each pair copies the entire range.
+  for (const { index } of candidates) {
+    const split = { first: entries.slice(0, index), second: entries.slice(index) };
+    if (accepts(split)) return split;
+  }
+  return undefined;
 }
 
 function preparedMemoryRangeFits(

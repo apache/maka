@@ -63,10 +63,14 @@ const QUERY_ERRORS = [
 ] as const;
 const CONTROL_ERRORS = [
   ...QUERY_ERRORS,
+  'unauthorized',
   'session_busy',
   'operation_conflict',
   'persistence_failed',
 ] as const;
+
+/** Failure codes `plan.control` / `plan.turn.start` reject with. */
+export type PlanControlErrorCode = (typeof CONTROL_ERRORS)[number];
 
 export type PlanQueryInput =
   | { readonly kind: 'list_start'; readonly sessionId: string }

@@ -21,14 +21,16 @@ import type { ShellRunUpdate } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { LiveTurnProjection } from './live-turn-projection.js';
+import { createIncrementalTurnMaterializer } from './incremental-turn-materializer.js';
 import {
   applyShellRunOverlayEntry,
   foldShellRunUpdates,
-  materializeTurns,
   overlayLiveTurn,
   projectTurnTools,
+  timelineItemKey,
   type ShellRunOverlayEntry,
   type ToolActivityItem,
+  type TurnTimelineItem,
   type TurnViewModel,
 } from './materialize.js';
 
@@ -43,9 +45,9 @@ import {
  * any session with background-command history.
  *
  * This layer owns the derived state instead of re-deriving it: it remembers the
- * settled turns and hands the previous object back for any turn a message
- * refresh did not actually change, so "what changed" is decided by value here
- * rather than guessed downstream from reference equality.
+ * settled turns, indexes their immutable messages and only rematerializes the
+ * affected turns on append. Value reconciliation preserves identity even when
+ * a changed input or a replacement snapshot projects to the same view.
  *
  * Contract (mirrors `parseMarkdownIncremental`'s in `@astryxdesign/core`):
  * a turn keeps its object identity unless its projected value changed, and
@@ -60,9 +62,9 @@ export interface TranscriptProjectionInput {
    * turn is only reused when its value matches.
    */
   sessionId?: string;
-  locale?: UiLocale;
+  locale: UiLocale;
   messages: readonly StoredMessage[];
-  liveTurn?: LiveTurnProjection;
+  liveTurns?: readonly LiveTurnProjection[];
   shellRunUpdates?: readonly ShellRunUpdate[];
 }
 
@@ -76,11 +78,12 @@ const NO_TURNS: readonly TurnViewModel[] = [];
 export function createTranscriptProjection(): TranscriptProjection {
   let sessionId: string | undefined;
   let hasProjected = false;
+  let materializer = createIncrementalTurnMaterializer();
 
   // Stage inputs, remembered so a stage only reruns when its own input moved.
   let lastMessages: readonly StoredMessage[] | undefined;
   let lastLocale: UiLocale | undefined;
-  let lastLiveTurn: LiveTurnProjection | undefined;
+  let lastLiveTurn: readonly LiveTurnProjection[] | undefined;
   let lastUpdates: readonly ShellRunUpdate[] | undefined;
 
   // Stage outputs.
@@ -89,11 +92,16 @@ export function createTranscriptProjection(): TranscriptProjection {
   // Tracked separately from `lastMessages` because a refresh can leave the
   // settled projection untouched, which must not force the live overlay to run.
   let liveTurnsFrom: readonly TurnViewModel[] | undefined;
+  // The locale the overlay last ran with. The live "compacting" row is localized
+  // inside overlayLiveTurn, so a locale switch that leaves the settled turns
+  // reference unchanged (identity reconciliation) must still re-run the overlay.
+  let lastOverlayLocale: UiLocale | undefined;
   let overlayEntries: ReadonlyMap<string, ShellRunOverlayEntry> = new Map();
   let lastTurns: readonly TurnViewModel[] = NO_TURNS;
 
   function reset(): void {
     hasProjected = false;
+    materializer = createIncrementalTurnMaterializer();
     lastMessages = undefined;
     lastLocale = undefined;
     lastLiveTurn = undefined;
@@ -101,6 +109,7 @@ export function createTranscriptProjection(): TranscriptProjection {
     settledTurns = NO_TURNS;
     liveTurns = NO_TURNS;
     liveTurnsFrom = undefined;
+    lastOverlayLocale = undefined;
     overlayEntries = new Map();
     lastTurns = NO_TURNS;
   }
@@ -116,6 +125,10 @@ export function createTranscriptProjection(): TranscriptProjection {
     const updatesMoved = lastUpdates === undefined
       || lastUpdates.length !== updates.length
       || updates.some((update, index) => update !== lastUpdates![index]);
+    const buffersMoved = input.liveTurns !== lastLiveTurn && (
+      input.liveTurns?.length !== lastLiveTurn?.length
+      || input.liveTurns?.some((turn, index) => turn !== lastLiveTurn?.[index]) === true
+    );
 
     // Same inputs, same answer, without advancing any owned state — which is
     // what makes projecting during render safe under double invocation.
@@ -123,7 +136,7 @@ export function createTranscriptProjection(): TranscriptProjection {
       hasProjected
       && input.messages === lastMessages
       && input.locale === lastLocale
-      && input.liveTurn === lastLiveTurn
+      && !buffersMoved
       && !updatesMoved
     ) {
       return lastTurns;
@@ -132,15 +145,20 @@ export function createTranscriptProjection(): TranscriptProjection {
     if (input.messages !== lastMessages || input.locale !== lastLocale) {
       settledTurns = reconcileTurnIdentities(
         settledTurns,
-        materializeTurns(input.messages, input.locale),
+        materializer.materialize(input.messages, input.locale, settledTurns),
       );
       lastMessages = input.messages;
       lastLocale = input.locale;
     }
-    if (liveTurnsFrom !== settledTurns || input.liveTurn !== lastLiveTurn) {
-      liveTurns = overlayLiveTurn(settledTurns, input.liveTurn);
+    if (
+      liveTurnsFrom !== settledTurns ||
+      buffersMoved ||
+      input.locale !== lastOverlayLocale
+    ) {
+      liveTurns = (input.liveTurns ?? []).reduce<readonly TurnViewModel[]>((turns, live) => overlayLiveTurn(turns, live, input.locale), settledTurns);
       liveTurnsFrom = settledTurns;
-      lastLiveTurn = input.liveTurn;
+      lastLiveTurn = input.liveTurns;
+      lastOverlayLocale = input.locale;
     }
     if (updatesMoved) {
       overlayEntries = foldShellRunUpdates(updates);
@@ -190,21 +208,61 @@ export function createTranscriptProjection(): TranscriptProjection {
 
 /**
  * Keep the previous object for every turn whose projected value is unchanged.
- * A message refresh rebuilds the whole snapshot from freshly deserialized IPC
- * rows, so nothing upstream can carry identity — the equality check here is
- * what narrows a refresh to the turns whose messages actually changed.
+ * Appends already preserve unrelated candidates by reference. Replacement
+ * snapshots and touched turns still need value comparison: changed messages
+ * need not change the view, and a reconnect can replace every message object.
  */
 export function reconcileTurnIdentities(
   previous: readonly TurnViewModel[],
   next: readonly TurnViewModel[],
 ): readonly TurnViewModel[] {
+  if (previous === next) return previous;
   if (previous.length === 0) return next;
-  const previousById = new Map(previous.map((turn) => [turn.turnId, turn]));
-  const reconciled = next.map((turn) => {
-    const prior = previousById.get(turn.turnId);
-    return prior && valuesEqual(prior, turn) ? prior : turn;
+  // Appends keep positions, so the usual pass needs no transcript-wide index.
+  // Build it lazily when deletion, insertion or reordering actually moves IDs.
+  let previousById: Map<string, TurnViewModel> | undefined;
+  let changed = next.length !== previous.length;
+  const reconciled = next.map((turn, index) => {
+    const atIndex = previous[index];
+    if (turn === atIndex) return turn;
+    let prior: TurnViewModel | undefined = atIndex;
+    if (prior?.turnId !== turn.turnId) {
+      if (index < previous.length) {
+        previousById ??= new Map(previous.map((item) => [item.turnId, item]));
+      }
+      prior = previousById?.get(turn.turnId);
+    }
+    let value = prior && valuesEqual(prior, turn) ? prior : turn;
+    if (prior && value !== prior) {
+      // The turn moved, but usually only its tail did: hand the previous
+      // timeline entry back for every item whose value did not change, so the
+      // entry-level memo boundaries downstream see what actually moved.
+      value = { ...turn, timeline: reconcileTimelineItems(prior.timeline, turn.timeline) };
+    }
+    if (value !== atIndex) changed = true;
+    return value;
   });
-  return reconciled.length === previous.length && reconciled.every((turn, index) => turn === previous[index])
+  return changed ? reconciled : previous;
+}
+
+/**
+ * Keep the previous object for every timeline item whose projected value is
+ * unchanged. `overlayLiveTurn` rebuilds a live turn's whole timeline from its
+ * steps on every event, so nothing upstream carries item identity — matching
+ * by `timelineItemKey` survives mid-timeline inserts (steering messages),
+ * which a positional compare would report as a change of everything after.
+ */
+export function reconcileTimelineItems(
+  previous: TurnTimelineItem[],
+  next: TurnTimelineItem[],
+): TurnTimelineItem[] {
+  if (previous.length === 0) return next;
+  const previousByKey = new Map(previous.map((item) => [timelineItemKey(item), item]));
+  const reconciled = next.map((item) => {
+    const prior = previousByKey.get(timelineItemKey(item));
+    return prior !== undefined && valuesEqual(prior, item) ? prior : item;
+  });
+  return reconciled.length === previous.length && reconciled.every((item, index) => item === previous[index])
     ? previous
     : reconciled;
 }

@@ -121,6 +121,15 @@
   font: var(--maka-text-body);
 }
 
+.settingsRuntimeHostResources {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostResources dd {
+  white-space: pre-line;
+}
+
 .settingsRuntimeHostManagementDirectoryRoots {
   display: grid;
   gap: var(--space-2);
@@ -469,6 +478,7 @@
   display: grid;
   flex: 0 0 auto;
   place-items: center;
+  border-radius: var(--radius-plate);
   color: var(--accent);
   background: oklch(from var(--accent) l c h / 0.1);
 }
@@ -476,7 +486,6 @@
 .settingsPeerMeshIdentityIcon {
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-control);
 }
 
 .settingsPeerMeshIdentity code {
@@ -509,7 +518,6 @@
   width: 56px;
   height: 56px;
   margin-bottom: var(--space-2);
-  border-radius: 18px;
 }
 
 .settingsPeerMeshList {
@@ -767,7 +775,6 @@
 .settingsPeerMeshFocusedIcon {
   width: 36px;
   height: 36px;
-  border-radius: 13px;
 }
 
 .settingsPeerMeshInvitation {

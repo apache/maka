@@ -19,7 +19,7 @@
 
 import type { ReactNode } from 'react';
 import { Banner, Button } from '@maka/ui';
-import type { SessionHealthNoticeView } from './use-shell-chat-model';
+import type { SessionHealthNoticeView } from './features/conversation/index.js';
 
 /** One composer-adjacent recovery surface: shared placement and action hierarchy. */
 export function ChatRecoveryNotice(props: {

@@ -297,11 +297,8 @@ function prepareWireRequest(
   const { previous_response_id: _previousResponseId, ...currentProperties } = body;
   const fullBody = {
     ...currentProperties,
-    input: [
-      ...structuredClone(baseline.fullBody.input),
-      ...structuredClone(baseline.responseOutput),
-      ...structuredClone(body.input),
-    ],
+    // These JSON values are privately owned; only the combined input array needs to be new.
+    input: [...baseline.fullBody.input, ...baseline.responseOutput, ...body.input],
   };
   const sameProperties = isDeepStrictEqual(
     requestProperties(baseline.fullBody),

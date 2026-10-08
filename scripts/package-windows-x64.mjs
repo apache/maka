@@ -66,12 +66,19 @@ export function runCommand(
   { spawnProcess = spawn, platform = process.platform } = {},
 ) {
   return new Promise((resolve, reject) => {
+    // The release does not ship PDBs. Remove their random IDs and paths from
+    // native binaries, and let the linker derive timestamps from the content.
+    // _LINK_ is appended after command-line flags, including node-gyp's /DEBUG.
+    const env = {
+      ...process.env,
+      _LINK_: [process.env._LINK_, '/Brepro /DEBUG:NONE'].filter(Boolean).join(' '),
+    };
     // Every command here is a repository constant, so the shell that Windows
     // needs to reach npm.cmd introduces no quoting concern.
     const child = spawnProcess(
       command,
       args,
-      npmSpawnOptions({ cwd: repoRoot, env: process.env, stdio: 'inherit' }, platform),
+      npmSpawnOptions({ cwd: repoRoot, env, stdio: 'inherit' }, platform),
     );
     child.once('error', reject);
     child.once('exit', (code, signal) => {

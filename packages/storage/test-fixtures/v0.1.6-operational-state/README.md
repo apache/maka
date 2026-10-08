@@ -20,3 +20,5 @@
 # v0.1.6 operational state
 
 `runtime.sqlite` was created through the public storage APIs at tag `v0.1.6` (`2e4c1aabf1f562e0aa0f817201e60ee22e84c3f8`). It contains one Session and user message, one Plan Reminder, and one durable cron Automation. SHA-256: `634d514c07df704b7f30794e5fd5aa53221b20e2833e036cdb166dfe663221e5`.
+
+The source distribution stores this database as `runtime.sql`, a SQLite SQL dump of that exact historical fixture, including its `user_version=10`. Tests restore the dump into a temporary database before exercising current migration code. Foreign keys are disabled during import so table creation order does not matter, then enabled again. Keep the historical schema, version and rows intact; do not regenerate it through current storage APIs. The original binary SHA-256 above records provenance, not the byte layout of a restored database.

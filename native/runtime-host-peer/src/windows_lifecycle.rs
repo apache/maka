@@ -26,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use napi::bindgen_prelude::{Error as NapiError, Result, Status};
 use napi_derive::napi;
 use windows::{
@@ -93,13 +94,33 @@ pub fn windows_task_converge(
     runner_path: String,
     command: Vec<String>,
 ) -> Result<()> {
+    let launcher_path = launcher_for_legacy_runner(&runner_path).map_err(native_error)?;
+    converge_launcher_task(root_id, target, launcher_path, command)
+}
+
+#[napi]
+pub fn windows_task_converge_launcher(
+    root_id: String,
+    target: String,
+    launcher_path: String,
+    command: Vec<String>,
+) -> Result<()> {
+    converge_launcher_task(root_id, target, launcher_path, command)
+}
+
+fn converge_launcher_task(
+    root_id: String,
+    target: String,
+    launcher_path: String,
+    command: Vec<String>,
+) -> Result<()> {
     let target = require_target(&root_id, &target)?;
     validate_command(&command).map_err(|_| invalid("Windows lifecycle command is invalid"))?;
     converge_task(
         &scheduler().map_err(native_error)?,
         &root_id,
         target,
-        &runner_path,
+        &launcher_path,
         &command,
     )
     .map_err(native_error)
@@ -112,13 +133,33 @@ pub fn windows_task_verify(
     runner_path: String,
     command: Vec<String>,
 ) -> Result<()> {
+    let launcher_path = launcher_for_legacy_runner(&runner_path).map_err(native_error)?;
+    verify_launcher_task(root_id, target, launcher_path, command)
+}
+
+#[napi]
+pub fn windows_task_verify_launcher(
+    root_id: String,
+    target: String,
+    launcher_path: String,
+    command: Vec<String>,
+) -> Result<()> {
+    verify_launcher_task(root_id, target, launcher_path, command)
+}
+
+fn verify_launcher_task(
+    root_id: String,
+    target: String,
+    launcher_path: String,
+    command: Vec<String>,
+) -> Result<()> {
     let target = require_target(&root_id, &target)?;
     validate_command(&command).map_err(|_| invalid("Windows lifecycle command is invalid"))?;
     let context = scheduler().map_err(native_error)?;
     let name = task_name(&root_id, target);
     let task =
         required_owned_task(&context.folder, &name, &root_id, target).map_err(native_error)?;
-    verify_registered_definition(&task, target, &runner_path, &command, &context.user)
+    verify_registered_definition(&task, target, &launcher_path, &command, &context.user)
         .map_err(native_error)
 }
 
@@ -244,7 +285,7 @@ fn converge_task(
     context: &Scheduler,
     root_id: &str,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
 ) -> windows::core::Result<()> {
     let name = task_name(root_id, target);
@@ -257,7 +298,7 @@ fn converge_task(
         &context.service,
         root_id,
         target,
-        runner_path,
+        launcher_path,
         command,
         &context.user,
     )?;
@@ -282,7 +323,7 @@ fn normalized_definition(
     service: &ITaskService,
     root_id: &str,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
     user: &str,
 ) -> windows::core::Result<windows::Win32::System::TaskScheduler::ITaskDefinition> {
@@ -292,7 +333,7 @@ fn normalized_definition(
         definition.SetXmlText(&BSTR::from(render_task_xml(
             root_id,
             target,
-            runner_path,
+            launcher_path,
             command,
             user,
         )?))?;
@@ -322,14 +363,14 @@ fn owned_task(
 fn verify_registered_definition(
     task: &IRegisteredTask,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
     user: &str,
 ) -> windows::core::Result<()> {
     // SAFETY: every interface is obtained from this thread's live registered-task definition;
     // all out pointers refer to initialized local values for the duration of each call.
     unsafe {
-        let expected_command = task_action_command(target, runner_path, command)?;
+        let expected_command = task_action_command(target, launcher_path, command)?;
         let definition = task.Definition()?;
 
         let actions = definition.Actions()?;
@@ -590,20 +631,18 @@ fn direct_child_pid_in_snapshot(
     parent_pid: u32,
     processes: &[PROCESSENTRY32W],
 ) -> windows::core::Result<Option<u32>> {
-    let parent_name = processes
+    if !processes
         .iter()
-        .find(|process| process.th32ProcessID == parent_pid)
-        .map(|process| process_name(&process.szExeFile))
-        .ok_or_else(|| {
-            windows::core::Error::new(
-                windows::core::HRESULT(0x80070002_u32 as i32),
-                "The Windows Runtime Host supervisor process is not available",
-            )
-        })?;
+        .any(|process| process.th32ProcessID == parent_pid)
+    {
+        return Err(windows::core::Error::new(
+            windows::core::HRESULT(0x80070002_u32 as i32),
+            "The Windows Runtime Host supervisor process is not available",
+        ));
+    }
     let mut child = None;
     for process in processes {
         if process.th32ParentProcessID == parent_pid
-            && process_name(&process.szExeFile).eq_ignore_ascii_case(&parent_name)
             && child.replace(process.th32ProcessID).is_some()
         {
             return Err(windows::core::Error::new(
@@ -613,15 +652,6 @@ fn direct_child_pid_in_snapshot(
         }
     }
     Ok(child)
-}
-
-fn process_name(value: &[u16]) -> String {
-    String::from_utf16_lossy(
-        &value[..value
-            .iter()
-            .position(|part| *part == 0)
-            .unwrap_or(value.len())],
-    )
 }
 
 fn wait_until_task_stopped(task: &IRegisteredTask) -> windows::core::Result<()> {
@@ -695,7 +725,7 @@ fn stop_task(task: &IRegisteredTask) -> windows::core::Result<()> {
 fn render_task_xml(
     root_id: &str,
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
     user: &str,
 ) -> windows::core::Result<String> {
@@ -713,7 +743,7 @@ fn render_task_xml(
         )
         .to_owned(),
     };
-    let action_command = task_action_command(target, runner_path, command)?;
+    let action_command = task_action_command(target, launcher_path, command)?;
     let arguments = command_line(&action_command[1..]);
     Ok(format!(
         concat!(
@@ -745,11 +775,11 @@ fn render_task_xml(
 
 fn task_action_command(
     target: Target,
-    runner_path: &str,
+    launcher_path: &str,
     command: &[String],
 ) -> windows::core::Result<Vec<String>> {
-    if !Path::new(runner_path).is_absolute()
-        || runner_path.contains('%')
+    if !Path::new(launcher_path).is_absolute()
+        || launcher_path.contains('%')
         || command[0].contains('%')
         || (matches!(target, Target::Host)
             && (command.len() < 4 || command[2] != "runtime-host" || command[3] != "serve"))
@@ -760,11 +790,11 @@ fn task_action_command(
         Target::Host => "--supervise",
         Target::Reconciliation => "--once",
     };
-    let mut projected = vec![command[0].clone(), runner_path.to_owned(), mode.to_owned()];
+    let mut projected = vec![launcher_path.to_owned(), mode.to_owned()];
     projected.extend(
         command
             .iter()
-            .map(|argument| base64_url(argument.as_bytes())),
+            .map(|argument| URL_SAFE_NO_PAD.encode(argument.as_bytes())),
     );
     if command_line(&projected[1..]).encode_utf16().count() >= 32_767 {
         return Err(invalid_windows_request());
@@ -772,23 +802,42 @@ fn task_action_command(
     Ok(projected)
 }
 
-fn base64_url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        encoded.push(ALPHABET[(first >> 2) as usize] as char);
-        encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            encoded.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-        }
-        if chunk.len() > 2 {
-            encoded.push(ALPHABET[(third & 0x3f) as usize] as char);
-        }
+fn launcher_for_legacy_runner(runner_path: &str) -> windows::core::Result<String> {
+    let runner = Path::new(runner_path);
+    let valid_runner = runner.is_absolute()
+        && runner
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("runtime-host-windows-task-runner.js"))
+        && runner
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("dist"));
+    let package_root = valid_runner
+        .then_some(runner)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(invalid_windows_request)?;
+    let launcher = package_root
+        .join("native")
+        .join("runtime-host-windows-task-launcher")
+        .join("prebuilds")
+        .join("win32-x64")
+        .join("maka-runtime-host-task-launcher.exe");
+    let launcher = std::fs::canonicalize(launcher).map_err(|_| invalid_windows_request())?;
+    if !launcher.is_file() {
+        return Err(invalid_windows_request());
     }
-    encoded
+    canonical_windows_path(&launcher).ok_or_else(invalid_windows_request)
+}
+
+fn canonical_windows_path(path: &Path) -> Option<String> {
+    let path = path.to_str()?;
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{path}"));
+    }
+    Some(path.strip_prefix(r"\\?\").unwrap_or(path).to_owned())
 }
 
 fn ownership_marker(root_id: &str, target: Target) -> String {

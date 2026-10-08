@@ -158,9 +158,9 @@ try {
   # The fixture prints readiness only once the endpoint ACL has been applied, so
   # this deadline has to outlast WINDOWS_PIPE_ACL_TIMEOUT_MS in
   # packages/runtime-host/src/control/endpoint.ts -- otherwise this throws first
-  # and the fixture's own diagnostic is never read. 45s matches the client
-  # readiness budget in packages/runtime-host/src/client/wait-for-ready.ts.
-  $ready = Read-ProcessLine -Process $fixture -TimeoutMilliseconds 45000 | ConvertFrom-Json
+  # and the fixture's own diagnostic is never read. 75s matches the client
+  # election budget in packages/runtime-host/src/client/connect-or-spawn.ts.
+  $ready = Read-ProcessLine -Process $fixture -TimeoutMilliseconds 75000 | ConvertFrom-Json
   if ($ready.type -ne 'ready' -or $ready.endpoint -notmatch '^\\\\\.\\pipe\\(.+)$') {
     throw "Invalid Runtime Host trust fixture readiness: $($ready | ConvertTo-Json -Compress)"
   }

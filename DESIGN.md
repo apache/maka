@@ -121,12 +121,21 @@ Prose uses exactly two tiers — `--foreground` and `--muted-foreground` — whi
 
 Three strengths, each a job, spaced at ~1.6× like the ink ladder:
 
-- `--border-soft` (6% ink): quiet separation inside a plate — rails, row dividers that fills can't carry.
+- `--border-soft` (6% ink): quiet separation inside a plate — rails, and the dividers between records in a record list that fills can't carry.
 - `--border` (10% ink): structural boundaries between regions.
 - `--border-strong` (16% ink): emphasis chrome — selected and active outlines, emphasized region boundaries, and the scrollbar thumb (§9). It is not "the border for when you're unsure," and it is not the general-purpose strong neutral: anything wanting a neutral *tint* at that weight takes `--foreground-alpha-16`. A hairline drawn with `background` is still a border and keeps it.
 - `--ring-soft` is a 1px ring drawn with box-shadow (`0 0 0 1px`) at the soft tier's own 6% alpha. It belongs to this chapter, not §5: a token is filed by the job it does, not by the CSS property it happens to use, and a shadow-shaped name on a border attracts call sites that wanted lift.
 
 **The One Means Rule.** Each boundary picks one separator: a fill step, a line, or a shadow — never stacked on the same edge.
+
+**The Group Rule.** A settings section draws one line: the divider under its header. Rows are sorted by what a press does, not by what they list:
+
+- *Setting rows* (`SettingsRow`: a name, a helper line, one control) and *entry rows* (`SettingsEntryRow`: the whole row opens a detail or setup page, marked by a chevron — model connections, external agents, remote-access channels) carry no row dividers. The header divider, the gap between sections and the rows' own padding group them; a line under every row made a section's start read as one more row break. An entry row leads with a 32px icon tile — a full-bleed app icon as is, a bare brand mark on the neutral `.providerLogo` plate — and states status inline after its name as `StatusDot` + text.
+- *Record lists* — rows that carry their own actions or selection (archived tasks, projects, imported conversations, capability details) — keep `List hasDividers`. Several controls share each row, and the line is what bounds one record's actions from the next.
+
+The provider catalog (`provider-catalog-page.tsx`) is an entry list that still renders `List hasDividers`: it sits in the legacy app-shell closure, which the renderer architecture check closes to new dependencies, so it moves to `SettingsEntryRow` when it leaves that closure.
+
+(Maintainer decision, #5888.)
 
 ## 5. Elevation
 
@@ -148,7 +157,7 @@ Nothing interactive is square. One ladder, assigned monotonically by box height:
 | 6px | control | inner | chips, keycaps, nested inlays, and product-drawn compact controls |
 | 10px | surface | element | cards, rows-as-cards, list containers; Astryx `Button`, `Input`, `SegmentedControl` |
 | 12px | modal | container | modals, panels, portal surfaces; Astryx `Card`, `Dialog`, `DropdownMenu` |
-| 28px | chat | chat | the conversation surface as one shape: user bubble, assistant bubble, composer dock. Sourced from Astryx's `--radius-chat` by `ChatMessageBubble` and `ChatComposer` themselves; product CSS never restates it |
+| 28px | chat | chat | the conversation surface as one shape: user bubble, composer dock. Sourced from Astryx's `--radius-chat` by `ChatMessageBubble` and `ChatComposer` themselves; product CSS never restates it. The assistant bubble is `ghost` and full-bleed, so it paints no corners and is squared under the Full-Bleed Rule: as a paint-containment boundary its radius would clip glyphs |
 | pill | pill | full | badges, pills, circular controls |
 
 - **The Two-Name Rule.** These are one ladder under two vocabularies, and the names never line up: Maka's `control` is Astryx's `inner`, Maka's `surface` is Astryx's `element`, Maka's `modal` is Astryx's `container`, Maka's `pill` is Astryx's `full`. Resolve a tier from the box, never from the token name that sounds right. **The px side is the authority and the Astryx name is an alias to it** — `makaTheme.ts` emits `--radius-element: var(--radius-surface)` and its three siblings, so an upstream rung change cannot move one name out from under the other, and the ladder cannot be half in px and half in rem (which the 16px-root note in that file is the reason to avoid). Both vocabularies are live in product CSS and both are correct to read; they resolve to the same number by construction rather than by coincidence. The chat rung is the one tier the product does not assign: `ChatMessageBubble` and `ChatComposer` both resolve `--radius-chat` on their own, which is why the bubble and the dock round together, and why setting a bubble radius or a non-default `density` in product code silently breaks the pair. Astryx's `--radius-page` carries the same 28px literal but is a different token with no Maka tier and no product consumer; reaching for it to match the chat surface is inventing a rung. It is emitted in px like the rest — it shipped as `1.75rem`, which is the same number at a 16px root and a different one the moment anything touches the root, and a ladder cannot have one rung that moves with the type scale.

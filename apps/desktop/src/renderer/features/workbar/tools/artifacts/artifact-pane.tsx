@@ -39,7 +39,9 @@
  *  5. **Copy/export policy**: only the text-based kinds (`file`, `diff`,
  *     `html`) expose a Copy button. `image` / `pdf` rows do NOT — those are
  *     binary, and silently base64-stuffing a multi-MB PDF into the clipboard
- *     is a footgun. Both kinds still get「在 Finder 中打开」and「另存为」.
+ *     is a footgun. HTML rows explicitly offer View in Maka; their preview
+ *     menu offers Open in Default App and Show in Finder separately.
+ *     All kinds still get Save As.
  *
  * Layout: fills the Generated files tab and switches between a list and one
  * full-panel preview while reporting its authoritative filtered count.
@@ -59,13 +61,14 @@ import {
   FolderOpen,
   Copy,
   Trash2,
+  Maximize2,
+  Minimize2,
 } from '@maka/ui/icons';
-import type { ArtifactDescriptor, ArtifactKind } from '@maka/core/artifacts';
+import { canUserDeleteArtifact, type ArtifactDescriptor, type ArtifactKind } from '@maka/core/artifacts';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { formatRelativeTimestamp } from '@maka/core/relative-time';
-import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale, redactSecrets } from '@maka/core/redaction';
 import {
-  Badge,
   Banner,
   Button,
   MoreMenu,
@@ -73,9 +76,10 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  valuesEqual,
 } from '@maka/ui';
 import { EmptyState as AstryxEmptyState } from '@astryxdesign/core';
-import { ArtifactPreview } from './artifact-preview';
+import { ArtifactPreview, isUnsupportedOfficeFile } from './artifact-preview';
 import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
 import { openPathFailureCopy } from '../../../../open-path';
@@ -84,8 +88,12 @@ import { useWorkbarServices } from '../../services-context.js';
 
 export function ArtifactPane(props: {
   sessionId: string;
+  refreshEnabled: boolean;
   onCountChange?: (count: number) => void;
   onDismiss?: () => void;
+  focused?: boolean;
+  onToggleFocus?: () => void;
+  onPreviewExit?: () => void;
 }) {
   const { sessionId } = props;
   const { artifacts } = useWorkbarServices();
@@ -133,7 +141,7 @@ export function ArtifactPane(props: {
     setSelectedId(null);
   }, [sessionId]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (showFailureToast = true) => {
     const requestSeq = ++artifactListRequestSeqRef.current;
     if (!sessionId) {
       recordsSessionIdRef.current = undefined;
@@ -143,13 +151,13 @@ export function ArtifactPane(props: {
       return;
     }
     try {
-      const next = await artifacts.list(sessionId, {
-        includeDeleted: true,
-      });
+      const next = await artifacts.list(sessionId);
       if (artifactPaneMountedRef.current && requestSeq === artifactListRequestSeqRef.current) {
         recordsSessionIdRef.current = sessionId;
         setRecordsSessionId(sessionId);
-        setRecords(next);
+        // The 2s poll re-reads an unchanged list almost every tick; keep the
+        // published identity so a no-change answer does not re-render the pane.
+        setRecords((previous) => (valuesEqual(previous, next) ? previous : next));
         setListError(null);
       }
     } catch (error) {
@@ -160,7 +168,7 @@ export function ArtifactPane(props: {
           recordsSessionIdRef.current = undefined;
           setRecordsSessionId(undefined);
           setRecords([]);
-        } else {
+        } else if (showFailureToast) {
           toast.error(copy.pane.refreshFailed, message, undefined, { sessionId });
         }
       }
@@ -168,22 +176,22 @@ export function ArtifactPane(props: {
   }, [artifacts, copy, locale, sessionId, toast]);
 
   useEffect(() => {
-    void refresh();
-    if (!sessionId) return;
-    // Keep the list in sync without polling. The
-    // backend emits `{ reason: 'created' | 'deleted' | 'purged' }` on the
-    // `artifacts:changed` channel; we just re-list since the list is bounded
-    // (one session's worth) and the metadata is already in memory on main.
-    const unsubscribe = artifacts.subscribeChanges((event) => {
-      if (event.sessionId === sessionId) {
-        void refresh();
-      }
-    });
-    return () => {
-      artifactListRequestSeqRef.current += 1;
-      unsubscribe();
+    if (!props.refreshEnabled) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Writeback can commit after the terminal Session event. Read the existing
+    // catalog while the workbar is visible, including its background file tab's count.
+    const poll = async () => {
+      await refresh(false);
+      if (!stopped) timer = setTimeout(() => void poll(), 2_000);
     };
-  }, [artifacts, sessionId, refresh]);
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      artifactListRequestSeqRef.current += 1;
+    };
+  }, [props.refreshEnabled, sessionId, refresh]);
 
   const activeRecords = useMemo(
     () => (recordsSessionId === sessionId ? filterUserVisibleArtifacts(records) : []),
@@ -194,7 +202,6 @@ export function ArtifactPane(props: {
     props.onCountChange?.(activeRecords.length);
   }, [activeRecords.length, props.onCountChange]);
 
-  // 已删除墓碑记录保持可选，用于展示明确失败态；只有选中 id 彻底消失时才回退到最新 live artifact。
   useEffect(() => {
     if (activeRecords.length === 0) {
       if (selectedId !== null) setSelectedId(null);
@@ -217,10 +224,11 @@ export function ArtifactPane(props: {
 
   useEffect(() => {
     if (view.kind === 'preview' && recordsSessionId === sessionId && !previewRecord) {
+      props.onPreviewExit?.();
       setView({ kind: 'list' });
       requestAnimationFrame(() => listRef.current?.focus());
     }
-  }, [previewRecord, recordsSessionId, sessionId, view]);
+  }, [previewRecord, recordsSessionId, sessionId, view, props.onPreviewExit]);
 
   // ---- actions -----------------------------------------------------------
 
@@ -261,10 +269,34 @@ export function ArtifactPane(props: {
     }
   }
 
-  async function openInFinder(artifactId: string) {
+  async function openArtifact(artifactId: string) {
     const actionSessionId = sessionId;
     try {
       const result = await artifacts.openPath(sessionId, artifactId);
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      if (!result.ok) {
+        toast.error(
+          copy.pane.openFailed,
+          openPathFailureCopy(result.reason, locale),
+          undefined,
+          { sessionId: actionSessionId },
+        );
+      }
+    } catch (error) {
+      if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+      toast.error(
+        copy.pane.openFailed,
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
+    }
+  }
+
+  async function showInFinder(artifactId: string) {
+    const actionSessionId = sessionId;
+    try {
+      const result = await artifacts.showInFolder(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
         toast.error(
@@ -290,7 +322,7 @@ export function ArtifactPane(props: {
     // a copy button (review gate #5). We still defensively guard so a stray
     // call doesn't leak base64 into the clipboard.
     const record = activeRecords.find((entry) => entry.id === artifactId);
-    if (!record || !isTextKind(record.kind)) return;
+    if (!record || !isTextKind(record)) return;
     const actionSessionId = sessionId;
     let result: Awaited<ReturnType<typeof artifacts.readText>>;
     try {
@@ -356,6 +388,7 @@ export function ArtifactPane(props: {
   async function deleteArtifact(artifactId: string) {
     const actionSessionId = sessionId;
     const record = activeRecords.find((entry) => entry.id === artifactId);
+    if (!record || !canUserDeleteArtifact(record)) return;
     const name = record?.name ?? copy.pane.fallbackName;
     const ok = await toast.confirm({
       title: copy.pane.deleteTitle(name),
@@ -407,6 +440,7 @@ export function ArtifactPane(props: {
   }
 
   function returnToList() {
+    props.onPreviewExit?.();
     setMoreMenuOpen(false);
     setView({ kind: 'list' });
     requestAnimationFrame(() => listRef.current?.focus());
@@ -441,6 +475,10 @@ export function ArtifactPane(props: {
     if (!(target instanceof Node) || !event.currentTarget.contains(target)) return;
     event.preventDefault();
     event.stopPropagation();
+    if (props.focused) {
+      props.onToggleFocus?.();
+      return;
+    }
     if (view.kind === 'preview') {
       returnToList();
     } else {
@@ -449,7 +487,16 @@ export function ArtifactPane(props: {
   }
 
   return (
-    <div className="maka-artifact-pane" role="region" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
+    <div className="maka-artifact-pane" role="region" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}
+      onDragOver={(event) => {
+        if (view.kind === 'preview' && event.dataTransfer.types.includes('application/x-maka-composer')) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        if (view.kind !== 'preview' || !props.onToggleFocus || props.focused ||
+            event.dataTransfer.getData('application/x-maka-composer') !== sessionId) return;
+        event.preventDefault();
+        props.onToggleFocus();
+      }}>
       {activeListError && (
         <Banner
           status="error"
@@ -494,9 +541,8 @@ export function ArtifactPane(props: {
                   // ArrowUp/Down.
                   tabIndex={-1}
                   data-selected={record.id === selectedId ? 'true' : 'false'}
-                  data-deleted={record.status === 'deleted' ? 'true' : 'false'}
                   onClick={() => openPreview(record.id)}
-                  label={record.name}
+                  label={record.kind === 'html' ? `${record.name} · ${copy.pane.viewInMaka}` : record.name}
                   icon={(
                     <span className="maka-artifact-row-icon" aria-hidden="true">
                       <KindIcon kind={record.kind} />
@@ -504,13 +550,11 @@ export function ArtifactPane(props: {
                   )}
                   endContent={(
                     <span className="maka-artifact-row-meta">
+                      {record.kind === 'html' && <span>{copy.pane.viewInMaka}</span>}
                       <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
                       <span className="maka-artifact-row-time">
                         {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
                       </span>
-                      {record.status === 'deleted' && (
-                        <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
-                      )}
                     </span>
                   )}
                 />
@@ -538,9 +582,21 @@ export function ArtifactPane(props: {
             <div className="maka-artifact-preview-heading">
               <strong title={previewRecord.name}>{previewRecord.name}</strong>
               <span>
+                {previewRecord.kind === 'html' && `${copy.pane.viewInMaka} · `}
                 {formatBytes(previewRecord.sizeBytes)} · {formatRelativeTimestamp(previewRecord.createdAt, Date.now(), locale)}
               </span>
             </div>
+            {props.onToggleFocus && (
+              <Button
+                variant="ghost"
+                size="sm"
+                isIconOnly
+                icon={props.focused ? <Minimize2 size={ICON_SIZE.chrome} aria-hidden="true" /> : <Maximize2 size={ICON_SIZE.chrome} aria-hidden="true" />}
+                label={props.focused ? copy.pane.restorePreview : copy.pane.focusPreview}
+                aria-pressed={Boolean(props.focused)}
+                onClick={props.onToggleFocus}
+              />
+            )}
             <MoreMenu
               className="maka-artifact-preview-more"
               size="sm"
@@ -550,38 +606,43 @@ export function ArtifactPane(props: {
               onOpenChange={setMoreMenuOpen}
               items={[
                 {
+                  label: previewRecord.kind === 'html' ? copy.pane.openInDefaultApp : copy.pane.openInFinder,
+                  icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:open`,
+                    () => previewRecord.kind === 'html'
+                      ? openArtifact(previewRecord.id)
+                      : showInFinder(previewRecord.id),
+                  ),
+                },
+                ...(previewRecord.kind === 'html' || isUnsupportedOfficeFile(previewRecord) ? [{
                   label: copy.pane.openInFinder,
                   icon: <FolderOpen size={ICON_SIZE.control} aria-hidden="true" />,
-                  onClick: () => void runArtifactAction(`${previewRecord.id}:open`, () => openInFinder(previewRecord.id)),
-                },
+                  onClick: () => void runArtifactAction(
+                    `${previewRecord.id}:reveal`,
+                    () => showInFinder(previewRecord.id),
+                  ),
+                }] : []),
                 {
                   label: copy.pane.saveAs,
                   icon: <Save size={ICON_SIZE.control} aria-hidden="true" />,
                   onClick: () => void runArtifactAction(`${previewRecord.id}:save`, () => saveAs(previewRecord.id)),
                 },
-                ...(isTextKind(previewRecord.kind)
+                ...(isTextKind(previewRecord)
                   ? [{
                       label: copy.pane.copy,
                       icon: <Copy size={ICON_SIZE.control} aria-hidden="true" />,
                       onClick: () => void runArtifactAction(`${previewRecord.id}:copy`, () => copyText(previewRecord.id)),
                     }]
                   : []),
-                { type: 'divider' as const },
-                {
-                  label:
-                    previewRecord.source === 'deep_research' ||
-                    previewRecord.source === 'tool_result_archive'
-                      ? copy.pane.deleteReadOnly
-                      : copy.pane.delete,
+                ...(canUserDeleteArtifact(previewRecord) ? [{ type: 'divider' as const }, {
+                  label: copy.pane.delete,
                   icon: <Trash2 size={ICON_SIZE.control} aria-hidden="true" />,
-                  isDisabled:
-                    previewRecord.source === 'deep_research' ||
-                    previewRecord.source === 'tool_result_archive',
                   onClick: () => void runArtifactAction(
                     `${previewRecord.id}:delete`,
                     () => deleteArtifact(previewRecord.id),
                   ),
-                },
+                }] : []),
               ]}
             />
           </header>
@@ -596,8 +657,8 @@ export function ArtifactPane(props: {
               key={previewRecord.id}
               record={previewRecord}
               onShowInFolder={() => void runArtifactAction(
-                `${previewRecord.id}:open`,
-                () => openInFinder(previewRecord.id),
+                `${previewRecord.id}:reveal`,
+                () => showInFinder(previewRecord.id),
               )}
             />
           </div>
@@ -609,8 +670,8 @@ export function ArtifactPane(props: {
 
 // ---- helpers ---------------------------------------------------------------
 
-function isTextKind(kind: ArtifactKind): boolean {
-  return kind === 'file' || kind === 'diff' || kind === 'html';
+function isTextKind(record: ArtifactDescriptor): boolean {
+  return (record.kind === 'file' && !isUnsupportedOfficeFile(record)) || record.kind === 'diff' || record.kind === 'html';
 }
 
 function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
@@ -619,10 +680,17 @@ function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
       return copy.pane.saveFailures.not_found;
     case 'not_allowed':
       return copy.pane.saveFailures.not_allowed;
+    case 'write_failed':
+    case 'target_write_failed':
+      return copy.pane.saveFailures.target_write_failed;
     case 'deleted':
       return copy.pane.saveFailures.deleted;
-    case 'write_failed':
-      return copy.pane.saveFailures.write_failed;
+    case 'source_failed':
+      return copy.pane.saveFailures.source_failed;
+    case 'size_mismatch':
+      return copy.pane.saveFailures.size_mismatch;
+    case 'replace_failed':
+      return copy.pane.saveFailures.replace_failed;
     default:
       return copy.pane.saveFailures.default;
   }
@@ -631,11 +699,8 @@ function saveArtifactFailureCopy(reason: string, copy: ArtifactCopy): string {
 function artifactActionErrorMessage(error: unknown, locale: UiLocale, copy: ArtifactCopy): string {
   const raw = redactSecrets(error instanceof Error ? error.message : String(error ?? '')).trim();
   if (!raw) return copy.pane.actionFailed;
-  const classified = locale === 'zh'
-    ? generalizedErrorMessageChinese(new Error(raw), '')
-    : generalizedErrorMessage(new Error(raw), '');
-  if (classified) return classified;
-  return locale === 'zh' && /[\u4e00-\u9fff]/.test(raw) ? raw : copy.pane.actionFailed;
+  const classified = generalizedErrorMessageForLocale(new Error(raw), '', locale);
+  return classified || copy.pane.actionFailed;
 }
 
 function KindIcon(props: { kind: ArtifactKind }) {
@@ -664,5 +729,5 @@ function KindIcon(props: { kind: ArtifactKind }) {
    formatter cache. Removed; we import the shared helper. */
 
 function preferredArtifactSelectionId(records: readonly ArtifactDescriptor[]): string | null {
-  return (records.find((record) => record.status !== 'deleted') ?? records[0])?.id ?? null;
+  return records[0]?.id ?? null;
 }

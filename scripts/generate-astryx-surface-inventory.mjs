@@ -385,6 +385,8 @@ const RAW_BUTTON_RE = /<\s*button\b/;
 const RAW_INPUT_RE = /<\s*input\b/;
 const RAW_SELECT_RE = /<\s*select\b/;
 const RAW_TEXTAREA_RE = /<\s*textarea\b/;
+const RAW_ACTION_ELEMENT_RE =
+  /<\s*(span|div)\b(?=[^>]*(?:onClick\s*=|role\s*=\s*['"]button['"]))[^>]*>/g;
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/;
 const OFF_HEIGHT_RE = /(?:min-)?height:\s*(\d+)px/g;
 const ALLOWED_H = new Set([28, 32, 36]);
@@ -528,11 +530,22 @@ export function analyzeTsx(rel, text, ctx) {
   const rawInput = RAW_INPUT_RE.test(code);
   const rawSelect = RAW_SELECT_RE.test(code);
   const rawTextarea = RAW_TEXTAREA_RE.test(code);
+  const rawActionElements = [...code.matchAll(RAW_ACTION_ELEMENT_RE)].map((match) => match[1]);
+  const rawActionElementCounts = new Map();
+  for (const element of rawActionElements) {
+    rawActionElementCounts.set(element, (rawActionElementCounts.get(element) || 0) + 1);
+  }
   const gaps = [];
+  const admissionGaps = [];
   if (rawButton) gaps.push('raw `<button` (API Use-the-System)');
   if (rawInput) gaps.push('raw `<input` (API Use-the-System)');
   if (rawSelect) gaps.push('raw `<select` (API Use-the-System)');
   if (rawTextarea) gaps.push('raw `<textarea` (API Use-the-System)');
+  for (const [element, count] of rawActionElementCounts) {
+    admissionGaps.push(
+      `hand-written interactive \`<${element}>\` (${count} ${count === 1 ? 'occurrence' : 'occurrences'}); use Astryx \`Button\`; do not hand-write controls from raw elements or custom control CSS (API Use-the-System)`,
+    );
+  }
   for (const name of shadows) {
     gaps.push(`public export \`${name}\` shadows Astryx component (not a re-export)`);
   }
@@ -552,6 +565,7 @@ export function analyzeTsx(rel, text, ctx) {
         : 'aligned — no raw controls; no Astryx JSX usage';
   return {
     astryx: named.size > 0 ? [...named].sort().join(', ') : 'none',
+    admissionGaps,
     gaps: note,
     severity,
   };
@@ -597,8 +611,8 @@ function analyzeCss(rel, text) {
 }
 
 function analyze(repoRoot, rel, ctx) {
-  const full = join(repoRoot, rel);
-  const text = readFileSync(full, 'utf8');
+  const absolutePath = join(repoRoot, rel);
+  const text = readFileSync(absolutePath, 'utf8');
   const role = roleFor(rel);
   if (rel.endsWith('.css')) {
     const a = analyzeCss(rel, text);
@@ -612,12 +626,38 @@ function analyze(repoRoot, rel, ctx) {
   return { path: rel, role, ...a };
 }
 
-export function renderAstryxSurfaceInventory(repoRoot = root) {
+function withFinalNewline(text) {
+  return text.endsWith('\n') ? text : `${text}\n`;
+}
+
+function buildInventoryArtifacts({
+  bySeverity,
+  excluded: excludedFiles,
+  files,
+  lines,
+  rows,
+  version,
+}) {
+  return {
+    blockers: rows.flatMap((row) => [
+      ...(row.severity === 'blocker' ? [{ path: row.path, gaps: row.gaps }] : []),
+      ...(row.admissionGaps || []).map((gaps) => ({ path: row.path, gaps })),
+    ]),
+    excluded: excludedFiles,
+    files,
+    markdown: withFinalNewline(lines.join('\n')),
+    paths: withFinalNewline(files.join('\n')),
+    totals: bySeverity,
+    version,
+  };
+}
+
+function renderSurfaceInventory(repoRoot = root) {
   const { version, components } = loadAstryxComponents();
   const { reexports, shadowsByFile } = loadMakaUiBarrel(repoRoot);
   const ctx = { astryxComponents: components, makaUiReexports: reexports, shadowsByFile };
 
-  const { files, excluded } = listProductSurfaceFiles(repoRoot);
+  const { files, excluded: excludedFiles } = listProductSurfaceFiles(repoRoot);
   const rows = files.map((rel) => analyze(repoRoot, rel, ctx));
 
   const bySev = { blocker: 0, reimplementation: 0, polish: 0, aligned: 0 };
@@ -659,10 +699,10 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
   lines.push('');
   lines.push('| Path | Why |');
   lines.push('|------|-----|');
-  for (const e of excluded) {
+  for (const e of excludedFiles) {
     lines.push(`| \`${e.path}\` | ${e.reason} |`);
   }
-  if (excluded.length === 0) lines.push('| — | — |');
+  if (excludedFiles.length === 0) lines.push('| — | — |');
   lines.push('');
 
   lines.push('## Files');
@@ -689,31 +729,54 @@ export function renderAstryxSurfaceInventory(repoRoot = root) {
   lines.push('- **aligned** — no blocker smell found; Astryx usage noted when present.');
   lines.push('');
 
-  const markdown = lines.join('\n');
-  return {
-    markdown: markdown.endsWith('\n') ? markdown : `${markdown}\n`,
-    paths: `${files.join('\n')}\n`,
+  return buildInventoryArtifacts({
+    bySeverity: bySev,
+    excluded: excludedFiles,
     files,
-    excluded,
-    totals: bySev,
+    lines,
+    rows,
     version,
-  };
+  });
 }
 
-function main() {
-  const rendered = renderAstryxSurfaceInventory(root);
-  const mdPath = join(root, 'docs/astryx-surface-file-inventory.md');
-  const pathsPath = join(root, 'docs/astryx-surface-file-inventory.paths');
-  writeFileSync(mdPath, rendered.markdown);
-  writeFileSync(pathsPath, rendered.paths);
-  console.log(`wrote ${relative(root, mdPath)} (${rendered.files.length} files)`);
-  console.log(`wrote ${relative(root, pathsPath)}`);
-  console.log(
+export const renderAstryxSurfaceInventory = renderSurfaceInventory;
+
+export function assertNoAstryxBlockers(rendered, legacyBaseline = new Map()) {
+  const blockers = rendered.blockers.filter(
+    (blocker) => legacyBaseline.get(blocker.path) !== blocker.gaps,
+  );
+  if (blockers.length === 0) return;
+  const details = blockers.map((blocker) => `- ${blocker.path}: ${blocker.gaps}`).join('\n');
+  throw new Error(
+    `Astryx surface blocker: hand-written controls are not allowed when Astryx owns the component. Use Astryx \`Button\` or the matching Astryx primitive; do not hand-write controls from raw elements or custom control CSS.\n${details}`,
+  );
+}
+
+export function writeAstryxSurfaceInventory(repoRoot = root, output = console) {
+  const rendered = renderAstryxSurfaceInventory(repoRoot);
+  const artifacts = [
+    {
+      contents: rendered.markdown,
+      path: join(repoRoot, 'docs/astryx-surface-file-inventory.md'),
+      suffix: ` (${rendered.files.length} files)`,
+    },
+    {
+      contents: rendered.paths,
+      path: join(repoRoot, 'docs/astryx-surface-file-inventory.paths'),
+      suffix: '',
+    },
+  ];
+  for (const artifact of artifacts) {
+    writeFileSync(artifact.path, artifact.contents);
+    output.log(`wrote ${relative(repoRoot, artifact.path)}${artifact.suffix}`);
+  }
+  output.log(
     `astryx @${rendered.version}: blocker=${rendered.totals.blocker} reimplementation=${rendered.totals.reimplementation} polish=${rendered.totals.polish} aligned=${rendered.totals.aligned}`,
   );
+  return rendered;
 }
 
 const isDirect = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirect || process.argv[1]?.endsWith('generate-astryx-surface-inventory.mjs')) {
-  main();
+  writeAstryxSurfaceInventory();
 }

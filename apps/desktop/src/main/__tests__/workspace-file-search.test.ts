@@ -20,10 +20,13 @@
 import { strict as assert } from 'node:assert';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ExecFileException } from 'node:child_process';
-import { searchWorkspaceFiles } from '../workspace-file-search.js';
+import {
+  createWorkspaceFileSearcher,
+  searchWorkspaceFiles,
+} from '../workspace-file-search.js';
 
 type ExecFileCallback = (
   file: string,
@@ -61,6 +64,332 @@ async function withPlainDir(run: (root: string) => Promise<void>): Promise<void>
 }
 
 describe('searchWorkspaceFiles', () => {
+  it('reuses one workspace enumeration across consecutive queries', async () => {
+    await withGitRepo(async (root) => {
+      let enumerations = 0;
+      const hundredThousandFiles = `${Array.from(
+        { length: 100_000 },
+        (_value, index) => `src/generated/file-${String(index).padStart(5, '0')}.ts`,
+      ).join('\0')}\0`;
+      const listed = fakeGit(hundredThousandFiles);
+      const searcher = createWorkspaceFileSearcher({
+        execFileImpl(file, args, options, callback) {
+          enumerations += 1;
+          listed(file, args, options, callback);
+        },
+      });
+
+      for (const query of Array.from(
+        { length: 20 },
+        (_value, index) => `file-${String(index).padStart(5, '0')}`,
+      )) {
+        const result = await searcher.search(root, { query });
+        assert.ok(result.ok);
+        assert.equal(result.ok ? result.files.length : 0, 1);
+      }
+
+      assert.equal(enumerations, 1);
+    });
+  });
+
+  it('shares an in-flight enumeration between concurrent queries', async () => {
+    await withGitRepo(async (root) => {
+      let enumerations = 0;
+      let finishEnumeration!: () => void;
+      const enumerationReady = new Promise<void>((resolve) => {
+        finishEnumeration = resolve;
+      });
+      const searcher = createWorkspaceFileSearcher({
+        canonicalizeRoot: async (projectRoot) => projectRoot,
+        execFileImpl(_file, _args, _options, callback) {
+          enumerations += 1;
+          void enumerationReady.then(() => callback(null, 'src/app.tsx\0docs/readme.md\0', ''));
+        },
+      });
+
+      const sourceSearch = searcher.search(root, { query: 'src' });
+      const docsSearch = searcher.search(root, { query: 'docs' });
+      while (enumerations === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      assert.equal(enumerations, 1);
+
+      finishEnumeration();
+      const [sourceResult, docsResult] = await Promise.all([sourceSearch, docsSearch]);
+      assert.deepEqual(sourceResult, {
+        ok: true,
+        files: [{ relativePath: 'src/app.tsx' }],
+      });
+      assert.deepEqual(docsResult, {
+        ok: true,
+        files: [{ relativePath: 'docs/readme.md' }],
+      });
+    });
+  });
+
+  it('refreshes the workspace after the cache TTL expires', async () => {
+    await withGitRepo(async (root) => {
+      let now = 1_000;
+      let enumerations = 0;
+      const searcher = createWorkspaceFileSearcher({
+        now: () => now,
+        ttlMs: 100,
+        execFileImpl(_file, _args, _options, callback) {
+          enumerations += 1;
+          const files = enumerations === 1
+            ? 'src/app.tsx\0'
+            : 'src/app.tsx\0src/new-file.ts\0';
+          callback(null, files, '');
+        },
+      });
+
+      assert.deepEqual(await searcher.search(root, { query: 'new-file' }), {
+        ok: true,
+        files: [],
+      });
+      now += 99;
+      assert.deepEqual(await searcher.search(root, { query: 'new-file' }), {
+        ok: true,
+        files: [],
+      });
+      assert.equal(enumerations, 1);
+
+      now += 1;
+      assert.deepEqual(await searcher.search(root, { query: 'new-file' }), {
+        ok: true,
+        files: [{ relativePath: 'src/new-file.ts' }],
+      });
+      assert.equal(enumerations, 2);
+    });
+  });
+
+  it('refreshes a non-git directory after the cache TTL expires', async () => {
+    await withPlainDir(async (root) => {
+      let now = 1_000;
+      await writeFile(join(root, 'existing.ts'), '', 'utf8');
+      const searcher = createWorkspaceFileSearcher({ now: () => now, ttlMs: 100 });
+
+      await searcher.search(root);
+      await writeFile(join(root, 'new-file.ts'), '', 'utf8');
+      assert.deepEqual(await searcher.search(root, { query: 'new-file' }), {
+        ok: true,
+        files: [],
+      });
+
+      now += 100;
+      assert.deepEqual(await searcher.search(root, { query: 'new-file' }), {
+        ok: true,
+        files: [{ relativePath: 'new-file.ts' }],
+      });
+    });
+  });
+
+  it('does not cache a fallback result after git enumeration fails', async () => {
+    await withGitRepo(async (root) => {
+      await writeFile(join(root, 'walked.ts'), '', 'utf8');
+      let enumerations = 0;
+      const searcher = createWorkspaceFileSearcher({
+        execFileImpl(_file, _args, _options, callback) {
+          enumerations += 1;
+          if (enumerations === 1) {
+            callback(new Error('temporary failure') as ExecFileException, '', 'fatal');
+            return;
+          }
+          callback(null, 'from-git.ts\0', '');
+        },
+      });
+
+      assert.deepEqual(await searcher.search(root, { query: 'walked' }), {
+        ok: true,
+        files: [{ relativePath: 'walked.ts' }],
+      });
+      assert.deepEqual(await searcher.search(root, { query: 'from-git' }), {
+        ok: true,
+        files: [{ relativePath: 'from-git.ts' }],
+      });
+      assert.equal(enumerations, 2);
+    });
+  });
+
+  it('keeps cached file lists isolated by canonical project root', async () => {
+    await withGitRepo(async (firstRoot) => {
+      await withGitRepo(async (secondRoot) => {
+        const enumerations = new Map<string, number>();
+        const searcher = createWorkspaceFileSearcher({
+          canonicalizeRoot: async (projectRoot) => projectRoot,
+          execFileImpl(_file, _args, options, callback) {
+            enumerations.set(options.cwd, (enumerations.get(options.cwd) ?? 0) + 1);
+            callback(
+              null,
+              options.cwd === firstRoot ? 'first-only.ts\0' : 'second-only.ts\0',
+              '',
+            );
+          },
+        });
+
+        assert.deepEqual(await searcher.search(firstRoot, { query: 'first' }), {
+          ok: true,
+          files: [{ relativePath: 'first-only.ts' }],
+        });
+        assert.deepEqual(await searcher.search(secondRoot, { query: 'second' }), {
+          ok: true,
+          files: [{ relativePath: 'second-only.ts' }],
+        });
+        assert.deepEqual(await searcher.search(firstRoot, { query: 'second' }), {
+          ok: true,
+          files: [],
+        });
+        assert.equal(enumerations.get(firstRoot), 1);
+        assert.equal(enumerations.get(secondRoot), 1);
+      });
+    });
+  });
+
+  it('shares a cache entry for equivalent project-root paths', async () => {
+    await withGitRepo(async (root) => {
+      let enumerations = 0;
+      let canonicalizations = 0;
+      const searcher = createWorkspaceFileSearcher({
+        async canonicalizeRoot(projectRoot) {
+          canonicalizations += 1;
+          return projectRoot;
+        },
+        execFileImpl(_file, _args, _options, callback) {
+          enumerations += 1;
+          callback(null, 'src/app.tsx\0', '');
+        },
+      });
+
+      await searcher.search(root);
+      await searcher.search(join(root, '.'));
+      await searcher.search(join(root, 'src', '..'));
+
+      assert.equal(resolve(join(root, 'src', '..')), root);
+      assert.equal(canonicalizations, 1);
+      assert.equal(enumerations, 1);
+    });
+  });
+
+  it('shares an in-flight canonical-root lookup', async () => {
+    await withGitRepo(async (root) => {
+      let canonicalizations = 0;
+      let finishCanonicalization!: () => void;
+      const canonicalizationReady = new Promise<void>((resolve) => {
+        finishCanonicalization = resolve;
+      });
+      const searcher = createWorkspaceFileSearcher({
+        async canonicalizeRoot(projectRoot) {
+          canonicalizations += 1;
+          await canonicalizationReady;
+          return projectRoot;
+        },
+        execFileImpl: fakeGit('src/app.tsx\0'),
+      });
+
+      const firstSearch = searcher.search(root);
+      const secondSearch = searcher.search(root);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(canonicalizations, 1);
+
+      finishCanonicalization();
+      await Promise.all([firstSearch, secondSearch]);
+    });
+  });
+
+  it('refreshes the canonical-root mapping after the cache TTL expires', async () => {
+    await withGitRepo(async (root) => {
+      let now = 1_000;
+      let canonicalizations = 0;
+      const searcher = createWorkspaceFileSearcher({
+        now: () => now,
+        ttlMs: 100,
+        async canonicalizeRoot(projectRoot) {
+          canonicalizations += 1;
+          return projectRoot;
+        },
+        execFileImpl: fakeGit('src/app.tsx\0'),
+      });
+
+      await searcher.search(root);
+      now += 99;
+      await searcher.search(root);
+      assert.equal(canonicalizations, 1);
+
+      now += 1;
+      await searcher.search(root);
+      assert.equal(canonicalizations, 2);
+    });
+  });
+
+  it('keeps caches isolated between workspace searcher instances', async () => {
+    await withGitRepo(async (root) => {
+      let enumerations = 0;
+      const createSearcher = () => createWorkspaceFileSearcher({
+        execFileImpl(_file, _args, _options, callback) {
+          enumerations += 1;
+          callback(null, 'shared-path.ts\0', '');
+        },
+      });
+
+      await createSearcher().search(root);
+      await createSearcher().search(root);
+
+      assert.equal(enumerations, 2);
+    });
+  });
+
+  it('evicts the least recently used ready workspace', async () => {
+    await withGitRepo(async (firstRoot) => {
+      await withGitRepo(async (secondRoot) => {
+        await withGitRepo(async (thirdRoot) => {
+          const enumerations = new Map<string, number>();
+          const searcher = createWorkspaceFileSearcher({
+            maxEntries: 2,
+            canonicalizeRoot: async (projectRoot) => projectRoot,
+            execFileImpl(_file, _args, options, callback) {
+              enumerations.set(options.cwd, (enumerations.get(options.cwd) ?? 0) + 1);
+              callback(null, `${options.cwd}.ts\0`, '');
+            },
+          });
+
+          await searcher.search(firstRoot);
+          await searcher.search(secondRoot);
+          await searcher.search(firstRoot);
+          await searcher.search(thirdRoot);
+          await searcher.search(secondRoot);
+
+          assert.equal(enumerations.get(firstRoot), 1);
+          assert.equal(enumerations.get(secondRoot), 2);
+          assert.equal(enumerations.get(thirdRoot), 1);
+        });
+      });
+    });
+  });
+
+  it('evicts ready workspaces when the cached path-byte budget is exceeded', async () => {
+    await withGitRepo(async (firstRoot) => {
+      await withGitRepo(async (secondRoot) => {
+        const enumerations = new Map<string, number>();
+        const searcher = createWorkspaceFileSearcher({
+          maxEntries: 10,
+          maxPathBytes: 30,
+          canonicalizeRoot: async (projectRoot) => projectRoot,
+          execFileImpl(_file, _args, options, callback) {
+            enumerations.set(options.cwd, (enumerations.get(options.cwd) ?? 0) + 1);
+            callback(null, '1234567890.ts\0', '');
+          },
+        });
+
+        await searcher.search(firstRoot);
+        await searcher.search(secondRoot);
+        await searcher.search(firstRoot);
+
+        assert.equal(enumerations.get(firstRoot), 2);
+        assert.equal(enumerations.get(secondRoot), 1);
+      });
+    });
+  });
+
   it('filters with AND-of-substring tokens, case-insensitively', async () => {
     await withGitRepo(async (root) => {
       const execFileImpl = fakeGit('src/app.tsx\0src/main.tsx\0docs/app.md\0');

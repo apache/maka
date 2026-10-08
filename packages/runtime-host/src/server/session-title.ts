@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { firstGeneratedLine, unquoteGeneratedText } from './generated-text.js';
 import { normalizeUserSessionName } from '@maka/core/session-name';
 
 const MAX_SOURCE_BYTES = 8 * 1024;
@@ -55,27 +56,11 @@ export function buildSessionTitlePrompt(sourceText: string): string {
 }
 
 export function cleanGeneratedSessionTitle(text: string): string | undefined {
-  const firstLine = text
-    .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean)
+  const firstLine = firstGeneratedLine(text)
     ?.replace(/^(?:title|标题)\s*[:：]\s*/i, '')
     .trim();
   if (!firstLine) return undefined;
-  const pairs: ReadonlyArray<readonly [string, string]> = [
-    ['"', '"'],
-    ["'", "'"],
-    ['`', '`'],
-    ['“', '”'],
-    ['「', '」'],
-    ['『', '』'],
-  ];
-  const unquoted = pairs.find(
-    ([left, right]) => firstLine.startsWith(left) && firstLine.endsWith(right),
-  )
-    ? firstLine.slice(1, -1).trim()
-    : firstLine;
+  const unquoted = unquoteGeneratedText(firstLine);
   const normalized = normalizeUserSessionName(unquoted);
   return normalized.ok ? normalized.value : undefined;
 }

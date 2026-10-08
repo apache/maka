@@ -17,6 +17,7 @@
  * under the License.
  */
 
+export { RUNTIME_HOST_OPERATOR_RETIREMENT_CANCELLATION_ENV } from './retirement-cancellation.js';
 export {
   RUNTIME_HOST_ACTIVATION_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_ACTIVATION_ERROR_MESSAGE_MAX_BYTES,
@@ -75,6 +76,7 @@ export {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
+  type RuntimeHostServiceErrorCode,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
@@ -123,6 +125,7 @@ export {
   applyLocalHostDeploymentTransition,
   LocalHostDeploymentAuthorityError,
   readLocalHostDeploymentRecord,
+  withLocalHostDeploymentAuthority,
   resolveLocalHostDeploymentAuthorityRoot,
   type LocalHostDeploymentAuthorityOptions,
   type LocalHostDeploymentRecord,

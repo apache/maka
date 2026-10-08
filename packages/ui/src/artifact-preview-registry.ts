@@ -81,7 +81,7 @@ function exceedsImagePayloadCap(base64: string): boolean {
   return base64.length > IMAGE_PAYLOAD_MAX_BASE64_LENGTH;
 }
 
-export function formatPreviewSize(sizeBytes: number | undefined, locale: UiLocale = 'zh'): string {
+export function formatPreviewSize(sizeBytes: number | undefined, locale: UiLocale): string {
   if (sizeBytes === undefined || sizeBytes < 0 || !Number.isFinite(sizeBytes)) return getSharedUiCopy(locale).artifact.unknownSize;
   if (sizeBytes < 1024) return `${sizeBytes} B`;
   if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;

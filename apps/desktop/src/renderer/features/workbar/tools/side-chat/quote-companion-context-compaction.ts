@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ContextCompactionOutcome } from '@maka/core/events';
+import type { ContextCompactionOutcome, FollowUpMode } from '@maka/core/events';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 
@@ -47,12 +47,18 @@ export function isExactCompactCommand(input: string): boolean {
 export function dispatchQuoteCompanionInput(input: {
   text: string;
   streaming: boolean;
+  followUpMode?: FollowUpMode;
   compact(): Promise<boolean>;
+  queue(text: string): Promise<boolean>;
   steer(text: string): Promise<boolean>;
   send(): Promise<boolean>;
 }): Promise<boolean> {
   if (isExactCompactCommand(input.text)) return input.compact();
-  if (input.streaming) return input.steer(input.text);
+  if (input.streaming) {
+    return input.followUpMode === 'steer'
+      ? input.steer(input.text)
+      : input.queue(input.text);
+  }
   return input.send();
 }
 

@@ -63,11 +63,8 @@ const REQUIRED_ASSET_NOTICE_MARKERS = [
   '## Simple Icons brand marks',
   '## TDesign Icons WeCom mark',
   '## MingCute DingTalk mark',
-  '## Allogo Feishu mark',
-  '## Ant Design Icons DingTalk mark',
-  '## Semi Design Feishu mark',
+  '## Allogo service marks',
   'packages/ui/src/bot-brand-logo.tsx',
-  'apps/desktop/src/renderer/mcp-brand-marks.tsx',
   'apps/desktop/src/renderer/settings/provider-brand-marks.tsx',
 ];
 const REQUIRED_ASSET_LICENSE_FILES = [
@@ -75,10 +72,8 @@ const REQUIRED_ASSET_LICENSE_FILES = [
   // hoists to different node_modules depths across majors, so the notice
   // generator and the packager read the static copy instead.
   'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
-  'apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
   'apps/desktop/resources/licenses/renderer/ALLOGO_LICENSE.txt',
-  'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
 ];
 
 const ALLOWED_LICENSES = new Set([
@@ -105,15 +100,14 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
 const APACHE_TEXT_OVERRIDE_KEYS = new Set([
-  '@ai-sdk/provider-utils@5.0.28',
-  '@ai-sdk/provider-utils@5.0.32',
+  '@ai-sdk/provider-utils@5.0.51',
   '@sigstore/verify@4.1.2',
 ]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',
     {
-      version: '1.0.27',
+      version: '1.0.79',
       components: [
         {
           name: 'quickjs-emscripten (embedded runtime)',
@@ -134,8 +128,9 @@ const EMBEDDED_COMPONENT_LICENSES = new Map([
 ]);
 const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the monorepo-root LICENSE.
-  ['@earendil-works/pi-tui@0.83.0', 'Copyright (c) 2025 Mario Zechner'],
-  ['@earendil-works/pi-tui@0.84.2', 'Copyright (c) 2025 Mario Zechner'],
+  ['@earendil-works/pi-tui@0.84.4', 'Copyright (c) 2025 Mario Zechner'],
+  ['@earendil-works/pi-tui@0.85.1', 'Copyright (c) 2025 Mario Zechner'],
+  ['@earendil-works/pi-tui@0.87.1', 'Copyright (c) 2025 Mario Zechner'],
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
@@ -145,6 +140,9 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ['@astryxdesign/core@0.4.5', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.5.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.5.2', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.6.1', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.6.2', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.6.3', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [
@@ -155,9 +153,6 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
       'Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)',
     ].join('\n'),
   ],
-  // The published tarball ships no license file; the repository LICENSE is
-  // vendored at apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt.
-  ['@ant-design/icons-svg@4.5.0', 'Copyright (c) 2018-present Ant UED, https://xtech.antfin.com/'],
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the

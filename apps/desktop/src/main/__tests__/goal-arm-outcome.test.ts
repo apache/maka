@@ -83,7 +83,7 @@ test('successful Goal arming closes while every reconciliation result locks the 
 });
 
 test('Goal reconciliation copy explains authoritative state in Chinese and English', () => {
-  const zh = getShellCopy('zh').goalDialog;
+  const zh = getShellCopy('zh-CN').goalDialog;
   assert.match(
     zh.reconciledMatching('所有测试通过', zh.statusLabels.active),
     /所有测试通过.*进行中.*无法确认.*提交/,

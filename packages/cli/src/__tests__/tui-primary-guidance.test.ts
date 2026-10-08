@@ -28,35 +28,42 @@ describe('TUI primary guidance catalog', () => {
       .map((command) => command.id)
       .sort();
 
-    for (const locale of ['zh', 'en'] as const) {
+    for (const locale of ['zh-CN', 'en'] as const) {
       assert.deepEqual(Object.keys(getTuiPrimaryGuidance(locale).commands).sort(), expected);
     }
   });
 
+  test('describes /todo as the current session Todo list in every primary locale', () => {
+    assert.equal(getTuiPrimaryGuidance('en').commands.todo, 'Show the current session Todo list');
+    assert.equal(getTuiPrimaryGuidance('zh-CN').commands.todo, '查看当前会话待办清单');
+    assert.equal(getTuiPrimaryGuidance('zh-TW').commands.todo, '檢視目前會話待辦清單');
+  });
+
   test('keeps keybinding tokens identical across locales', () => {
-    const tokens = (locale: 'zh' | 'en') =>
+    const tokens = (locale: 'zh-CN' | 'en') =>
       getTuiPrimaryGuidance(locale).help.keybindings.flatMap((line) => {
         const match = /^\s*(.*?)\s*—/u.exec(line);
         return match ? [match[1]!.replace(/\s*[（(].*$/u, '')] : [];
       });
 
-    assert.deepEqual(tokens('zh'), tokens('en'));
+    assert.deepEqual(tokens('zh-CN'), tokens('en'));
   });
 
   test('renders Option shortcut labels on macOS and Alt labels elsewhere', () => {
-    const guidanceFor = (locale: 'zh' | 'en', platform: NodeJS.Platform) =>
+    const guidanceFor = (locale: 'zh-CN' | 'en', platform: NodeJS.Platform) =>
       getTuiPrimaryGuidance(locale, platform);
 
-    for (const locale of ['zh', 'en'] as const) {
+    for (const locale of ['zh-CN', 'en'] as const) {
+      // Queue and retract moved off the Alt chords to Tab and Shift+←, so no
+      // platform needs Option/Alt label rewriting in the keybinding list.
       const macKeybindings = guidanceFor(locale, 'darwin').help.keybindings.join('\n');
-      assert.match(macKeybindings, /⌥\+Enter/u);
-      assert.match(macKeybindings, /⌥\+↑/u);
+      assert.match(macKeybindings, /Tab/u);
+      assert.match(macKeybindings, /Shift\+←/u);
       assert.doesNotMatch(macKeybindings, /\bAlt\+/u);
+      assert.doesNotMatch(macKeybindings, /⌥\+/u);
 
       const linuxKeybindings = guidanceFor(locale, 'linux').help.keybindings.join('\n');
-      assert.match(linuxKeybindings, /Alt\+Enter/u);
-      assert.match(linuxKeybindings, /Alt\+↑/u);
-      assert.doesNotMatch(linuxKeybindings, /⌥\+/u);
+      assert.equal(linuxKeybindings, macKeybindings);
     }
   });
 });

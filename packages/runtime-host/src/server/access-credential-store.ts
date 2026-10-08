@@ -27,6 +27,7 @@ import {
   operationAllowsRemoteOwner,
   type SessionCollaborationGrant,
   decodeSessionTurnAccessRequest,
+  decodeCollaborationDisplayName,
   type SessionTurnAccessRequest,
   type OperationKey,
 } from '../protocol/index.js';
@@ -57,18 +58,18 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   string,
   PersistedGrantMigration
 >([
-  // The transcript query split into paging and its overlay release.
-  [
-    'session.transcript.query',
-    {
-      kind: 'replace',
-      successors: ['session.transcript.page', 'session.transcript.overlay.release'],
-    },
-  ],
+  ['session.transcript.query', { kind: 'replace', successors: ['session.transcript.page'] }],
+  // Retired with the active transcript overlay; pages alone carry a running Turn.
+  ['session.transcript.overlay.release', { kind: 'release' }],
   // The Turn query kept its name and gained a separate landmark query beside it.
   [
     'session.turns.query',
     { kind: 'replace', successors: ['session.turns.query', 'session.turn_landmarks.query'] },
+  ],
+  // Resource inventory is a dedicated facet of the existing Host diagnostics authority.
+  [
+    'host.diagnostics.query',
+    { kind: 'replace', successors: ['host.diagnostics.query', 'host.resources.query'] },
   ],
   // TaskLedger became SessionTodo; the query carried its authority over.
   ['task.ledger.query', { kind: 'replace', successors: ['session.todo.query'] }],
@@ -78,6 +79,16 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   // Retired with the second execution-inspection contract; no shipped surface
   // called execution.inspect.resolve.
   ['execution.inspect.resolve', { kind: 'release' }],
+  // Retired with the Command Code GO provider, whose private transport the
+  // usage read required.
+  ['connection.usage.read', { kind: 'release' }],
+  // Retired in favor of editing and resending the original user message.
+  ['turn.regenerate', { kind: 'release' }],
+  ['deep-research.query', { kind: 'release' }],
+  // Direct WorkHub actions and record writes were retired. Their grants do not
+  // authorize actFromTurn, which requires the active coordination Turn.
+  ['workhub.coordination.act', { kind: 'release' }],
+  ['workhub.coordination.record', { kind: 'release' }],
 ]);
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
@@ -93,8 +104,9 @@ export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'session.shared.query',
   'subscription.open',
   'subscription.close',
+  'subscription.pty_interest.set',
+  'subscription.ready',
   'session.transcript.page',
-  'session.transcript.overlay.release',
 ] as const satisfies readonly OperationKey[]);
 
 // A Client Capability provider serves exactly this much and nothing else. It
@@ -108,6 +120,7 @@ export const CAPABILITY_PROVIDER_OPERATION_GRANTS = Object.freeze([
 ] as const satisfies readonly OperationKey[]);
 
 export interface StoredAccessCredential {
+  readonly displayName?: string;
   readonly credentialId: string;
   readonly credentialHash: string;
   readonly principalId: string;
@@ -308,6 +321,7 @@ function encodeAccessCredentialFile(file: AccessCredentialFile): unknown {
     schemaVersion: file.schemaVersion,
     credentials: file.credentials.map((credential) => ({
       credentialId: credential.credentialId,
+      ...(credential.displayName === undefined ? {} : { displayName: credential.displayName }),
       credentialHash: credential.credentialHash,
       principalId: credential.principalId,
       principalKind: credential.principalKind,
@@ -491,6 +505,9 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     ...(typeof clientInstanceId === 'string' ? { clientInstanceId } : {}),
     ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
     ...(revokedAt === undefined ? {} : { revokedAt }),
+    ...(value.displayName === undefined
+      ? {}
+      : { displayName: decodeCollaborationDisplayName(value.displayName) }),
   };
 }
 

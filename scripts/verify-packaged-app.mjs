@@ -173,9 +173,18 @@ export async function findRendererTarget(port, child, { timeoutMs = 90_000 } = {
       });
       if (response.ok) {
         const targets = await response.json();
-        const page = targets.find(
-          (target) => target.type === 'page' && target.webSocketDebuggerUrl,
-        );
+        // Startup and recovery windows can appear before the application.
+        // Only the packaged main entry owns the bridge and app-shell contract;
+        // selecting the first page pins subsequent probes to a temporary window.
+        const page = targets.find((target) => {
+          if (target.type !== 'page' || !target.webSocketDebuggerUrl) return false;
+          try {
+            const url = new URL(target.url);
+            return url.protocol === 'file:' && url.pathname.endsWith('/dist-renderer/index.html');
+          } catch {
+            return false;
+          }
+        });
         if (page) return page;
       }
     } catch (error) {
@@ -616,14 +625,38 @@ export async function exercisePackagedRendererMaximizeRestore(rendererTarget, ch
 }
 
 export async function stopChild(child) {
-  if (child.exitCode !== null) return;
-  child.kill('SIGTERM');
-  const exited = await Promise.race([
-    new Promise((resolvePromise) => child.once('exit', () => resolvePromise(true))),
-    delay(5_000).then(() => false),
-  ]);
-  if (!exited && child.exitCode === null) {
-    child.kill('SIGKILL');
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  let onExit;
+  const exited = new Promise((resolvePromise) => {
+    onExit = resolvePromise;
+    child.once('exit', onExit);
+  });
+  let timeout;
+  try {
+    child.kill('SIGTERM');
+    await Promise.race([
+      exited,
+      new Promise((resolvePromise) => {
+        timeout = setTimeout(resolvePromise, 5_000);
+      }),
+    ]);
+    clearTimeout(timeout);
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      // Sending a signal does not mean the process has stopped writing to its
+      // profile. Reap it before callers remove the temporary verification tree.
+      await Promise.race([
+        exited,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => {
+            reject(new Error(`Process ${child.pid} did not exit within 10000ms after SIGKILL`));
+          }, 10_000);
+        }),
+      ]);
+    }
+  } finally {
+    clearTimeout(timeout);
+    child.removeListener('exit', onExit);
   }
 }
 
@@ -1052,11 +1085,9 @@ export async function assertPackagedResources(
     join('licenses', 'renderer', 'THIRD_PARTY_LICENSES.txt'),
     join('licenses', 'renderer', 'GEIST_LICENSE.txt'),
     join('licenses', 'renderer', 'GEIST_MONO_LICENSE.txt'),
-    join('licenses', 'renderer', 'ANT_DESIGN_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'SIMPLE_ICONS_LICENSE.md'),
     join('licenses', 'renderer', 'TDESIGN_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'ALLOGO_LICENSE.txt'),
-    join('licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'),
     ...(requireWindowsSandbox
       ? [

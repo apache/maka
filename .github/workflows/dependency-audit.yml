@@ -70,11 +70,10 @@ jobs:
         # the renderer roots, which npm labels dev even though they ship.
         run: npm ci --ignore-scripts
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
-
-      - name: Audit shipped desktop closure
-        run: node scripts/audit-shipped-dependencies.mjs
+      - name: Audit shipped product closure
+        # A valid moderate+ advisory still fails. Registry availability must
+        # not lock every pull request out of the repository.
+        run: node scripts/audit-shipped-dependencies.mjs --allow-unavailable
 
       - name: Verify registry signatures
         # The full tree, not `--omit=dev`. Two reasons it has to be both:

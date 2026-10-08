@@ -22,6 +22,7 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
+import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeTaskEntryServices,
@@ -29,6 +30,7 @@ import {
   useTaskEntryController,
   type TaskEntryCatalog,
   type TaskEntryController,
+  type TaskEntryFolderOpenResult,
   type TaskEntryHost,
   type TaskEntryServices,
 } from '../../renderer/features/task-entry/testing.js';
@@ -135,12 +137,12 @@ afterEach(() => {
 });
 
 describe('useTaskEntryController', () => {
-  it('projects the canonical target, draft identity, Host defaults, and Workspace Picker', async () => {
+  it('projects the target and keeps draft identity in sync with Workspace Picker selections', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({
       catalog: {
         ...createFakeTaskEntryServices().catalog,
-        getCatalog: async () => catalog(),
+        getCatalog: async () => catalog(readyHost({ selectNoProject: true })),
       },
     });
 
@@ -158,6 +160,72 @@ describe('useTaskEntryController', () => {
     assert.equal(controller().selectors.workspacePicker.branch, 'main');
     assert.equal(controller().selectors.workspacePicker.groups[0]?.selectedProjectId, 'project-a');
     assert.match(controller().selectors.draftKey, /host-local.*project-a/);
+    const projectDraftKey = controller().selectors.draftKey;
+
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.onSelectNoProject!());
+    assert.equal(controller().selectors.target?.projectId, null);
+    assert.notEqual(controller().selectors.draftKey, projectDraftKey);
+    assert.equal(controller().selectors.workspacePicker.groups[0]?.selectedProjectId, null);
+
+    await act(async () => controller().selectors.workspacePicker.groups[0]!.onSelectProject!('project-a'));
+    assert.equal(controller().selectors.target?.projectId, 'project-a');
+    assert.equal(controller().selectors.draftKey, projectDraftKey);
+    assert.equal(controller().selectors.workspacePicker.label, 'project-a');
+  });
+
+  it('keeps same-id Projects scoped to their owning Runtime Host', async () => {
+    const { root } = installReactRenderer();
+    const local = readyHost();
+    const remote = readyRemoteHost('host-remote');
+    const calls: Array<{ action: string; profileId: string; hostId: string }> =
+      [];
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => ({
+          defaultProfileId: 'local',
+          hosts: [local, remote],
+        }),
+        renameProject: async (host) => {
+          calls.push({ action: 'rename', ...host });
+        },
+        archiveProject: async (host) => {
+          calls.push({ action: 'archive', ...host });
+        },
+        restoreProject: async (host) => {
+          calls.push({ action: 'restore', ...host });
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services));
+    const remoteScope = controller().selectors.projectScopes.find(
+      (scope) => scope.hostId === 'host-remote',
+    );
+    assert.ok(remoteScope);
+    await act(async () => {
+      assert.equal(controller().commands.selectProject(remoteScope.key), true);
+    });
+    assert.deepEqual(controller().selectors.target, {
+      profileId: 'remote',
+      hostId: 'host-remote',
+      projectId: 'project-a',
+    });
+
+    await act(async () =>
+      controller().commands.renameProject(remoteScope.key, 'Renamed'),
+    );
+    await act(async () =>
+      controller().commands.archiveProject(remoteScope.key),
+    );
+    await act(async () =>
+      controller().commands.restoreProject(remoteScope.key),
+    );
+    assert.deepEqual(calls, [
+      { action: 'rename', profileId: 'remote', hostId: 'host-remote' },
+      { action: 'archive', profileId: 'remote', hostId: 'host-remote' },
+      { action: 'restore', profileId: 'remote', hostId: 'host-remote' },
+    ]);
   });
 
   it('drains a queued catalog refresh and releases its subscription', async () => {
@@ -250,8 +318,8 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
     });
     assert.equal(addCalls, 1);
     assert.equal(controller().selectors.workspacePicker.pending, true);
@@ -659,7 +727,7 @@ describe('useTaskEntryController', () => {
 
     await act(async () => renderController(root, services, errors));
     await act(async () => {
-      controller().selectors.workspacePicker.groups[0]?.onAdd?.();
+      controller().selectors.workspacePicker.groups[0]?.onAdd?.('New project');
       await Promise.resolve();
     });
     assert.equal(controller().selectors.workspacePicker.pending, true);
@@ -672,5 +740,130 @@ describe('useTaskEntryController', () => {
       description: 'The project could not be updated. Try again later.',
       profileId: 'local',
     }]);
+  });
+
+  it('explains that a running Session must settle before workspace recovery', async () => {
+    const { root } = installReactRenderer();
+    const errors: unknown[] = [];
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => catalog(),
+      },
+      sessions: {
+        relocateWorkspace: async () => ({ ok: false, reason: 'session_busy' }),
+      },
+    });
+
+    await act(async () => renderController(root, services, errors));
+    await act(async () => {
+      await controller().commands.relocateSessionWorkspace({
+        sessionId: 'session-1',
+        profileId: 'local',
+        projectId: 'project-a',
+      });
+    });
+
+    assert.deepEqual(errors, [{
+      title: 'Could not move task',
+      description: 'A task is running. Wait for it to finish before moving this one.',
+      profileId: 'local',
+    }]);
+  });
+
+  describe('folders', () => {
+    const copy = getShellCopy('en');
+    const projectTitle = copy.projectActions.openFailedTitle(copy.projectActions.openPathLabels.project);
+    const workspaceTitle = copy.projectActions.openFailedTitle(copy.projectActions.openPathLabels.workspace);
+
+    async function openFolders(
+      results: { project?: TaskEntryFolderOpenResult; workspace?: TaskEntryFolderOpenResult },
+      run: (commands: TaskEntryController['commands']) => Promise<void>,
+    ) {
+      const { root } = installReactRenderer();
+      const errors: unknown[] = [];
+      const requests: Array<string | undefined> = [];
+      const services = createFakeTaskEntryServices({
+        folders: {
+          openProjectFolder: async (sessionId) => {
+            requests.push(sessionId);
+            return results.project ?? { kind: 'opened' };
+          },
+          openWorkspaceFolder: async () => {
+            requests.push('workspace');
+            return results.workspace ?? { kind: 'opened' };
+          },
+        },
+      });
+      await act(async () => renderController(root, services, errors));
+      await act(async () => run(controller().commands));
+      return { errors, requests };
+    }
+
+    it('reports nothing when the folder opens', async () => {
+      const { errors, requests } = await openFolders({}, async (commands) => {
+        await commands.openProjectFolder('session-1');
+        await commands.openProjectFolder();
+        await commands.openWorkspaceFolder();
+      });
+
+      assert.deepEqual(requests, ['session-1', undefined, 'workspace']);
+      assert.deepEqual(errors, []);
+    });
+
+    it('reports a refusal with its closed reason and the target the adapter named', async () => {
+      const { errors } = await openFolders({
+        project: { kind: 'refused', reason: 'missing', diagnosticTarget: { sessionId: 'session-1' } },
+        workspace: { kind: 'refused', reason: 'raw-host-text', diagnosticTarget: { profileId: 'local' } },
+      }, async (commands) => {
+        await commands.openProjectFolder('session-1');
+        await commands.openWorkspaceFolder();
+      });
+
+      assert.deepEqual(errors, [
+        {
+          title: projectTitle,
+          description: copy.projectActions.openPathFailures.missing,
+          sessionId: 'session-1',
+        },
+        {
+          title: workspaceTitle,
+          description: copy.projectActions.openPathFailures.unknown,
+          profileId: 'local',
+        },
+      ]);
+    });
+
+    it('turns a vanished task workspace into the workspace-unavailable notice', async () => {
+      const unavailable = Object.assign(new Error('gone'), { code: 'SESSION_WORKSPACE_UNAVAILABLE' });
+      const { errors } = await openFolders({
+        project: { kind: 'failed', error: unavailable, diagnosticTarget: { sessionId: 'session-1' } },
+      }, async (commands) => {
+        await commands.openProjectFolder('session-1');
+      });
+
+      assert.deepEqual(errors, [{
+        title: copy.errors.workspaceUnavailableTitle,
+        description: copy.errors.workspaceUnavailableDescription,
+        sessionId: 'session-1',
+      }]);
+    });
+
+    it('classifies other failures and keeps the Host authority, or none when it was never resolved', async (t) => {
+      t.mock.method(console, 'error', () => undefined);
+      const timeout = new Error('request timeout');
+      const { errors } = await openFolders({
+        project: { kind: 'failed', error: timeout },
+        workspace: { kind: 'failed', error: timeout, diagnosticTarget: { profileId: 'local' } },
+      }, async (commands) => {
+        await commands.openProjectFolder();
+        await commands.openWorkspaceFolder();
+      });
+
+      assert.deepEqual(errors, [
+        { title: projectTitle, description: 'Request timed out' },
+        { title: workspaceTitle, description: 'Request timed out', profileId: 'local' },
+      ]);
+    });
   });
 });

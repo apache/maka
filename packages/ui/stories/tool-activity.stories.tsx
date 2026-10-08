@@ -19,13 +19,14 @@
 
 import { useEffect, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToolCallDetail, ToolTrow } from '../src/tool-activity.js';
 import type { ToolActivityItem } from '../src/materialize.js';
 import {
   denseMixedResultItems,
   editWriteDiffItems,
   errorsAndPermissionDeniedItems,
+  fileDiffAndWebSearchItems,
   shellCommandSurfaceItems,
 } from './tool-activity.fixtures.js';
 
@@ -207,6 +208,23 @@ export const EditWriteDiffDetails: Story = {
   render: (args) => <ToolDetailBoard items={args.items} width={860} />,
 };
 
+// Real path: a web search settles in a turn and the user opens its row. The
+// result's query and titles title what is under them, and still read at the
+// row's own size.
+export const ExpandedWebSearchRow: Story = {
+  args: { items: [fileDiffAndWebSearchItems[1]!] },
+  render: (args) => <ToolRowBoard items={args.items} width={860} />,
+  play: async ({ canvasElement }) => {
+    const row = canvasElement.querySelector<HTMLElement>('.astryx-chat-tool-calls [role="button"]')!;
+    const rowSize = getComputedStyle(row.children[1]!).fontSize;
+    await userEvent.click(row);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-chat-tool-detail .maka-web-result-list a')).not.toBeNull());
+    const detailText = [...canvasElement.querySelectorAll<HTMLElement>('.maka-chat-tool-detail *')]
+      .filter((element) => [...element.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent!.trim()));
+    await expect(new Set(detailText.map((element) => getComputedStyle(element).fontSize))).toEqual(new Set([rowSize]));
+  },
+};
+
 // Real path: a contiguous run of tool calls in one turn — the grouped surface the
 // state boards above never show, since they render one row per trow. Astryx's
 // collapsed header projects the last call alone, so this is where to look at what a
@@ -276,6 +294,15 @@ export const LongIntentGroupNarrow: Story = {
     );
     expect(disclosure).not.toBeNull();
     await userEvent.click(disclosure!);
+    await waitFor(() => expect(disclosure).toHaveAttribute('aria-expanded', 'true'));
+    expect(getComputedStyle(disclosure!).position).toBe('static');
+    const callRow = group!.querySelector<HTMLElement>(
+      ':scope > [role="button"] + div [role="button"][aria-expanded="false"]',
+    );
+    expect(callRow).not.toBeNull();
+    await userEvent.click(callRow!);
+    await waitFor(() => expect(callRow).toHaveAttribute('aria-expanded', 'true'));
+    expect(getComputedStyle(callRow!).position).toBe('static');
     const rows = Array.from(group!.querySelectorAll<HTMLElement>('[role="button"]'));
     expect(Math.max(...rows.map((row) => row.getBoundingClientRect().width))).toBeLessThanOrEqual(
       turn.clientWidth + 8,

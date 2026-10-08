@@ -25,12 +25,16 @@ import { parseHTML } from 'linkedom';
 import {
   SessionSettingsServicesProvider,
   type SessionSettingsServices,
-  useSessionSettingIntent,
 } from '../../renderer/features/session-settings/index.js';
+import { useSessionSettingsController } from '../../renderer/features/session-settings/testing.js';
 import { reconcileRuntimeHostSessionCatalog } from '../../preload/runtime-host-session-catalog.js';
+import {
+  createSessionCatalogController,
+  type SessionCatalogController,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
-type Controller = ReturnType<typeof useSessionSettingIntent<{ sessionId?: string }>>;
+type Controller = ReturnType<typeof useSessionSettingsController<{ sessionId?: string }>>;
 
 const originalGlobals = {
   document: globalThis.document,
@@ -51,7 +55,6 @@ afterEach(async () => {
 
 test('rejects non-chat permission modes before confirmation or persistence', async () => {
   let permissionWrites = 0;
-  let draftWrites = 0;
   let confirmations = 0;
   const { controller } = await mountController({
     services: createServices({
@@ -60,9 +63,6 @@ test('rejects non-chat permission modes before confirmation or persistence', asy
         return {} as DesktopSessionSummary;
       },
     }),
-    setNewTaskPermissionMode: () => {
-      draftWrites += 1;
-    },
     confirmBypass: async () => {
       confirmations += 1;
       return true;
@@ -76,7 +76,7 @@ test('rejects non-chat permission modes before confirmation or persistence', asy
 
   assert.equal(accepted, false);
   assert.equal(permissionWrites, 0);
-  assert.equal(draftWrites, 0);
+  assert.equal(controller().newTask.permissionChoice, undefined);
   assert.equal(confirmations, 0);
 });
 
@@ -228,8 +228,10 @@ test('retains the Model overlay while a partial Host catalog still has the prior
     model: 'model-c',
   };
   let controller: Controller | undefined;
-  const render = async (catalogRevision: number, sessions: readonly DesktopSessionSummary[]) => {
+  const catalog = createSessionCatalogController();
+  const render = async (sessions: readonly DesktopSessionSummary[]) => {
     await act(async () => {
+      catalog.commitSessions(sessions);
       root.render(createElement(
         SessionSettingsServicesProvider,
         {
@@ -241,14 +243,13 @@ test('retains the Model overlay while a partial Host catalog still has the prior
           capture: (next) => {
             controller = next;
           },
-          catalogRevision,
-          sessions,
+          catalog,
         }),
       ));
     });
   };
 
-  await render(0, [targetBeforeWrite, otherHostSession]);
+  await render([targetBeforeWrite, otherHostSession]);
   await act(async () => {
     assert.equal(await controller!.setSessionModel('session-a', {
       llmConnectionId: 'connection-c',
@@ -270,7 +271,7 @@ test('retains the Model overlay while a partial Host catalog still has the prior
   );
   assert.equal(partialCatalog.find((session) => session.id === 'session-a')?.revision, 1);
   assert.equal(partialCatalog.find((session) => session.id === 'session-b')?.revision, 2);
-  await render(1, partialCatalog);
+  await render(partialCatalog);
   assert.equal(controller!.overlays.modelConfiguration['session-a']?.modelTarget.model, 'model-c');
 
   const caughtUpCatalog = reconcileRuntimeHostSessionCatalog(partialCatalog, {
@@ -282,7 +283,7 @@ test('retains the Model overlay while a partial Host catalog still has the prior
     knownOwnerProfileIds: ['profile-a', 'profile-b'],
   });
   assert.equal(caughtUpCatalog.find((session) => session.id === 'session-a')?.revision, 2);
-  await render(2, caughtUpCatalog);
+  await render(caughtUpCatalog);
   assert.equal(controller!.overlays.modelConfiguration['session-a'], undefined);
 });
 
@@ -331,8 +332,10 @@ test('retires Permission and Orchestration overlays by their committed Session r
     orchestrationMode: 'swarm' as const,
   };
   let controller: Controller | undefined;
-  const render = async (catalogRevision: number, sessions: readonly DesktopSessionSummary[]) => {
+  const catalog = createSessionCatalogController();
+  const render = async (sessions: readonly DesktopSessionSummary[]) => {
     await act(async () => {
+      catalog.commitSessions(sessions);
       root.render(createElement(
         SessionSettingsServicesProvider,
         {
@@ -345,14 +348,13 @@ test('retires Permission and Orchestration overlays by their committed Session r
           capture: (next) => {
             controller = next;
           },
-          catalogRevision,
-          sessions,
+          catalog,
         }),
       ));
     });
   };
 
-  await render(0, [targetBeforeWrite, otherHostSession]);
+  await render([targetBeforeWrite, otherHostSession]);
   await act(async () => {
     assert.equal(await controller!.setPermissionMode('bypass'), true);
     assert.equal(await controller!.setOrchestrationMode('session-a', 'swarm'), true);
@@ -368,15 +370,15 @@ test('retires Permission and Orchestration overlays by their committed Session r
       knownOwnerProfileIds: ['profile-a', 'profile-b'],
     },
   );
-  await render(1, partialCatalog);
+  await render(partialCatalog);
   assert.equal(controller!.overlays.permissionMode['session-a'], 'bypass');
   assert.equal(controller!.overlays.orchestrationMode['session-a'], 'swarm');
 
-  await render(2, [targetAfterPermission, otherHostSession]);
+  await render([targetAfterPermission, otherHostSession]);
   assert.equal(controller!.overlays.permissionMode['session-a'], undefined);
   assert.equal(controller!.overlays.orchestrationMode['session-a'], 'swarm');
 
-  await render(3, [targetAfterOrchestration, otherHostSession]);
+  await render([targetAfterOrchestration, otherHostSession]);
   assert.equal(controller!.overlays.orchestrationMode['session-a'], undefined);
 });
 
@@ -412,7 +414,6 @@ async function mountController(overrides: {
   services?: SessionSettingsServices;
   owner?: { sessionId?: string };
   sessions?: readonly DesktopSessionSummary[];
-  setNewTaskPermissionMode?(mode: 'ask' | 'bypass'): void;
   confirmBypass?(): Promise<boolean>;
   saveComposerDefaults?(model: {
     llmConnectionId: string;
@@ -433,6 +434,8 @@ async function mountController(overrides: {
   const root = createRoot(container);
   mountedRoot = root;
   let captured: Controller | undefined;
+  const catalog = createSessionCatalogController();
+  catalog.commitSessions(overrides.sessions ?? []);
 
   await act(async () => {
     root.render(createElement(
@@ -443,8 +446,7 @@ async function mountController(overrides: {
           captured = controller;
         },
         owner: overrides.owner ?? {},
-        sessions: overrides.sessions ?? [],
-        setNewTaskPermissionMode: overrides.setNewTaskPermissionMode ?? (() => {}),
+        catalog,
         confirmBypass: overrides.confirmBypass ?? (async () => true),
         saveComposerDefaults: overrides.saveComposerDefaults ?? (() => {}),
       }),
@@ -462,8 +464,7 @@ async function mountController(overrides: {
 function Harness(props: {
   capture(controller: Controller): void;
   owner: { sessionId?: string };
-  sessions: readonly DesktopSessionSummary[];
-  setNewTaskPermissionMode(mode: 'ask' | 'bypass'): void;
+  catalog: SessionCatalogController;
   confirmBypass(): Promise<boolean>;
   saveComposerDefaults(model: {
     llmConnectionId: string;
@@ -471,19 +472,18 @@ function Harness(props: {
     model: string;
   }): void;
 }) {
-  const controller = useSessionSettingIntent({
-    catalogRevision: 0,
+  const controller = useSessionSettingsController({
+    catalog: props.catalog,
     isActiveSession: () => true,
-    sessions: props.sessions,
-    newTaskPermissionMode: 'ask',
+    newTaskChoiceKey: 'new-task:test',
+    newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: props.saveComposerDefaults,
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
     showSessionError: () => {},
-    planMode: { write: async () => true },
+    planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => props.owner,
     isOwnerActive: () => true,
-    setNewTaskPermissionMode: props.setNewTaskPermissionMode,
     confirmBypass: props.confirmBypass,
   });
   props.capture(controller);
@@ -492,22 +492,20 @@ function Harness(props: {
 
 function CausalRetirementHarness(props: {
   capture(controller: Controller): void;
-  catalogRevision: number;
-  sessions: readonly DesktopSessionSummary[];
+  catalog: SessionCatalogController;
 }) {
-  const controller = useSessionSettingIntent({
-    catalogRevision: props.catalogRevision,
+  const controller = useSessionSettingsController({
+    catalog: props.catalog,
     isActiveSession: () => true,
-    sessions: props.sessions,
-    newTaskPermissionMode: 'ask',
+    newTaskChoiceKey: 'new-task:test',
+    newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: () => {},
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
     showSessionError: () => {},
-    planMode: { write: async () => true },
+    planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => ({ sessionId: 'session-a' }),
     isOwnerActive: () => true,
-    setNewTaskPermissionMode: () => {},
     confirmBypass: async () => true,
   });
   props.capture(controller);
@@ -540,9 +538,12 @@ function createServices(
   overrides: Partial<SessionSettingsServices> = {},
 ): SessionSettingsServices {
   return {
+    getPlanState: async (sessionId) => ({ schemaVersion: 1, sessionId, storeVersion: 0, proposals: [], executions: [] }),
     setModelConfiguration: async () => ({} as DesktopSessionSummary),
     setPermissionMode: async () => ({} as DesktopSessionSummary),
     setOrchestrationMode: async () => ({} as DesktopSessionSummary),
+    setCollaborationMode: async () => ({} as DesktopSessionSummary),
+    abandonPlanProposal: async () => {},
     ...overrides,
   };
 }

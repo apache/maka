@@ -84,6 +84,7 @@ describe('managed Runtime Host selected update', () => {
     let output = '';
     let managedReads = 0;
     let pruned = false;
+    const projection: string[] = [];
     const exitCode = await runManagedRuntimeHostUpdateCli(
       {
         ...OPTIONS,
@@ -106,7 +107,13 @@ describe('managed Runtime Host selected update', () => {
             assert.deepEqual(options?.expectedOwner, expectedHost);
             return { kind: 'active', config: current } as never;
           },
-          verifyProjection: async () => {},
+          convergeControlProjection: async (config) => {
+            assert.equal(config, current);
+            projection.push('converge');
+          },
+          verifyProjection: async () => {
+            projection.push('verify');
+          },
           assertOperatorConfig: () => {},
           manageLifecycle: async () => {
             managedReads += 1;
@@ -130,6 +137,7 @@ describe('managed Runtime Host selected update', () => {
     assert.equal(exitCode, 0);
     assert.equal(managedReads, 2);
     assert.equal(pruned, true);
+    assert.deepEqual(projection, ['converge', 'verify']);
     assert.doesNotMatch(output, /"phase":"staging"/u);
     const result = decodeRuntimeHostServiceManagementFrame(output.trim().split('\n').at(-1) ?? '');
     assert.equal(
@@ -423,3 +431,127 @@ function updateSelection(
     },
   };
 }
+
+describe('canonical WSL update fences', () => {
+  const current = {
+    configRevision: 7,
+    deploymentRoot: '/managed',
+    root: { id: TARGET.rootId, path: TARGET.rootPath },
+    lifecycle: { mode: 'on_demand', availability: 'activation' },
+    launch: {
+      nodePath: '/source/node',
+      package: { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
+    },
+  };
+  const status = {
+    schemaVersion: 1,
+    action: 'status',
+    service: {
+      manager: 'on_demand',
+      installed: true,
+      enabled: true,
+      active: true,
+      state: 'running',
+      pid: 42,
+      lastExitCode: 0,
+      installedVersion: '2.0.0',
+      config: {
+        schemaVersion: 1,
+        managedDeploymentRoot: '/managed',
+        rootPath: TARGET.rootPath,
+        projectDirectoryRoots: [],
+        websocket: { host: '127.0.0.1', port: 7400, path: '/runtime-host' },
+        launch: { nodePath: '/source/node', cliPath: '/managed/current/dist/cli.js' },
+      },
+    },
+  };
+  const canonical = {
+    createLifecycleDeps: () => ({}) as never,
+    assertOperatorDeployment: async () => {},
+    recoverDeployment: async () => ({ kind: 'active', config: current }) as never,
+    convergeControlProjection: async () => {},
+    verifyProjection: async () => {},
+    assertOperatorConfig: () => {},
+    manageLifecycle: async () => status as never,
+    replaceLifecycle: async () => assert.fail('rejected selections must not retire a Host'),
+  };
+
+  for (const selection of [
+    { version: '1.0.0' },
+    { version: '3.0.0', expectedSourceVersion: '1.9.0' },
+    { version: '3.0.0', expectedConfigFingerprint: `sha256:${'f'.repeat(64)}` },
+  ])
+    it(`rejects a downgrade or stale consent before staging: ${selection.version}`, async () => {
+      let output = '';
+      const code = await runManagedRuntimeHostUpdateCli(
+        {
+          ...OPTIONS,
+          ...selection,
+          sourcePackageRoot: '/candidate',
+          managedRootId: TARGET.rootId,
+        },
+        {
+          canonical,
+          withDeploymentLock: async (_root, operation) => operation(88),
+          prepareDeployment: async () => assert.fail('rejection must precede staging'),
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      );
+      assert.equal(code, 1);
+      const terminal = decodeRuntimeHostServiceManagementFrame(output.trim());
+      assert.equal(terminal?.kind === 'error' ? terminal.error.code : undefined, 'target_mismatch');
+    });
+
+  it('runs the source package under the inherited lease and preserves a refused Host', async () => {
+    let retired = false;
+    let output = '';
+    const code = await runManagedRuntimeHostUpdateCli(
+      {
+        ...OPTIONS,
+        version: '2.0.0',
+        sourcePackageRoot: '/candidate',
+        managedRootId: TARGET.rootId,
+        expectedHost: { hostEpoch: 'observed-host', pid: 42 },
+      },
+      {
+        withDeploymentLock: async (_root, operation) => operation(88),
+        prepareDeployment: async () => assert.fail('same exact package does not need staging'),
+        retireSource: async (input) => {
+          assert.equal(input.sourceNodePath, '/source/node');
+          assert.match(input.sourceCliPath, /\/versions\/registry-[a-f0-9]+\/dist\/cli\.js$/u);
+          assert.equal(input.inheritableAuthorityLeaseFd, 88);
+          assert.equal(input.expectedHostEpoch, 'observed-host');
+          assert.equal(input.activeWorkPolicy, 'refuse_active_work');
+          retired = true;
+          return 'active_work';
+        },
+        canonical: {
+          ...canonical,
+          replaceLifecycle: async (input) => {
+            assert.equal(await input.prepareSourceRetirement?.(), 'active_work');
+            return { kind: 'active_tasks' };
+          },
+        },
+        writeOutput: (value) => {
+          output += value;
+        },
+      },
+    );
+    assert.equal(code, 1);
+    assert.equal(retired, true);
+    const frames = output.trim().split('\n').map(decodeRuntimeHostServiceManagementFrame);
+    const terminal = frames.at(-1);
+    assert.equal(
+      terminal?.kind === 'result' && terminal.action === 'update'
+        ? terminal.update.kind
+        : undefined,
+      'active_tasks',
+    );
+    assert.equal(
+      frames.some((frame) => frame?.kind === 'progress' && frame.phase === 'replacing'),
+      false,
+    );
+  });
+});

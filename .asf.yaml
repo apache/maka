@@ -19,9 +19,8 @@
 
 github:
   description: >-
-    Apache Maka (Incubating) is a local-first AI agent workspace.
-    Model messages, tool calls, tool results, permission decisions,
-    and termination events are recorded as an append-only log.
+    Apache Maka (Incubating) is a high-performance agent workspace
+    that keeps a complete record of everything it did.
   labels:
     - ai
     - ai-agent

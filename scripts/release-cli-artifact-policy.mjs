@@ -22,7 +22,9 @@
 // These ceilings retain deliberate headroom while keeping later content spikes
 // reviewable.
 export const CLI_RELEASE_ARTIFACT_LIMITS = Object.freeze({
-  compressedBytes: 32 * 1024 * 1024,
+  // Reviewed Grep/Glob release closure: 33,585,405 bytes (#5246). Retain
+  // about 1 MiB of headroom for this dependency set and the native addons.
+  compressedBytes: 33 * 1024 * 1024,
   unpackedBytes: 128 * 1024 * 1024,
   entryCount: 9_000,
 });

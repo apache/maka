@@ -24,15 +24,15 @@ import { createDesktopLocaleAuthority } from '../desktop-locale-authority.js';
 
 test('resolves explicit preferences and observes a mid-session settings change', async () => {
   let settings = mergeSettings(createDefaultSettings(), {
-    personalization: { uiLocale: 'zh' },
+    personalization: { uiLocale: 'zh-CN' },
   });
   const authority = createDesktopLocaleAuthority({
     readSettings: async () => settings,
     preferredSystemLanguages: () => ['en-US'],
   });
 
-  assert.equal(await authority.resolve(), 'zh');
-  assert.equal(authority.current(), 'zh');
+  assert.equal(await authority.resolve(), 'zh-CN');
+  assert.equal(authority.current(), 'zh-CN');
   settings = mergeSettings(settings, { personalization: { uiLocale: 'en' } });
   authority.observe(settings);
   assert.equal(authority.current(), 'en');
@@ -50,14 +50,14 @@ test('publishes only resolved-locale changes and allows listeners to detach', ()
     personalization: { uiLocale: 'en' },
   }));
   authority.observe(mergeSettings(createDefaultSettings(), {
-    personalization: { uiLocale: 'zh' },
+    personalization: { uiLocale: 'zh-CN' },
   }));
   unsubscribe();
   authority.observe(mergeSettings(createDefaultSettings(), {
     personalization: { uiLocale: 'en' },
   }));
 
-  assert.deepEqual(observed, ['zh']);
+  assert.deepEqual(observed, ['zh-CN']);
 });
 
 test('keeps automatic preference live against the current system fallback', async () => {
@@ -68,8 +68,10 @@ test('keeps automatic preference live against the current system fallback', asyn
   });
 
   assert.equal(await authority.resolve(), 'en');
+  languages = ['zh-TW'];
+  assert.equal(authority.current(), 'zh-TW');
   languages = ['zh-CN'];
-  assert.equal(authority.current(), 'zh');
+  assert.equal(authority.current(), 'zh-CN');
 });
 
 test('does not let a stale read replace a newer observed preference', async () => {
@@ -86,13 +88,13 @@ test('does not let a stale read replace a newer observed preference', async () =
 
   const read = authority.resolve();
   authority.observe(mergeSettings(createDefaultSettings(), {
-    personalization: { uiLocale: 'zh' },
+    personalization: { uiLocale: 'zh-CN' },
   }));
   release(createDefaultSettings());
 
-  assert.equal(await read, 'zh');
-  assert.equal(authority.current(), 'zh');
-  assert.deepEqual(observed, ['zh']);
+  assert.equal(await read, 'zh-CN');
+  assert.equal(authority.current(), 'zh-CN');
+  assert.deepEqual(observed, ['zh-CN']);
 });
 
 test('falls back to its current projection when settings cannot be read', async () => {
@@ -100,5 +102,38 @@ test('falls back to its current projection when settings cannot be read', async 
     readSettings: async () => { throw new Error('unreadable'); },
     preferredSystemLanguages: () => ['zh-CN'],
   });
-  assert.equal(await authority.resolve(), 'zh');
+  assert.equal(await authority.resolve(), 'zh-CN');
+});
+
+test('resolves a delayed persisted preference before startup native copy is selected', async () => {
+  let release!: (settings: ReturnType<typeof createDefaultSettings>) => void;
+  const pending = new Promise<ReturnType<typeof createDefaultSettings>>((resolve) => {
+    release = resolve;
+  });
+  const authority = createDesktopLocaleAuthority({
+    readSettings: () => pending,
+    preferredSystemLanguages: () => ['en-US'],
+  });
+
+  const startupLocale = authority.resolve();
+  release(mergeSettings(createDefaultSettings(), {
+    personalization: { uiLocale: 'zh-TW' },
+  }));
+
+  assert.equal(await startupLocale, 'zh-TW');
+});
+
+test('never projects the legacy zh preference into native copy lookups', async () => {
+  const legacy = mergeSettings(createDefaultSettings(), {
+    personalization: { uiLocale: 'zh-CN' },
+  });
+  (legacy.personalization as { uiLocale: string }).uiLocale = 'zh';
+  const authority = createDesktopLocaleAuthority({
+    readSettings: async () => legacy,
+    preferredSystemLanguages: () => ['en-US'],
+  });
+
+  assert.equal(authority.observe(legacy), 'zh-CN');
+  assert.equal(authority.current(), 'zh-CN');
+  assert.equal(await authority.resolve(), 'zh-CN');
 });

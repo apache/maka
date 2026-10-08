@@ -22,7 +22,7 @@ import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
@@ -47,7 +47,7 @@ export interface HistoryCompactSummaryInput {
   runId?: string;
   source: {
     foldedRuntimeEvents: RuntimeEvent[];
-    runHeaders?: readonly AgentRunHeader[];
+    invocations?: readonly RuntimeInvocationRecord[];
   };
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
@@ -111,11 +111,8 @@ export interface AiSdkCompactionCapabilities {
   /** Optional model-visible context budget and compaction policy. */
   contextBudget?: ContextBudgetPolicy;
   /**
-   * The whole tool-result archive authority (#2026): the writer that durably
-   * stores a pruned body, the replay reader that hydrates it back, the
-   * ref-addressed reader, and the `ArchiveRead` decoder the placeholder names.
-   * Absent means this session archives nothing, which is a valid state — but
-   * it can no longer mean "archives without a way back".
+   * Host-owned archive preparation and Session-scoped resource reads.
+   * The backend binds resource access into Read whenever this is present.
    */
   toolResultArchive?: ToolResultArchiveCapability;
   /** Latest checkpoint loader. */

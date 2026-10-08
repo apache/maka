@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { TUI } from '@earendil-works/pi-tui';
 import type { McpTestResult } from '@maka/core/mcp';
+import { AtomicFileWriteCommitUnknownError } from '@maka/storage/mcp-config-store';
 import { McpManagementOverlay } from '../pi-tui-mcp-status.js';
 import type {
   TuiMcpAction,
@@ -64,7 +65,7 @@ describe('MCP management overlay', () => {
 
   test('states the remote limitation instead of implying an empty local config', () => {
     const overlay = new McpManagementOverlay({
-      locale: 'zh',
+      locale: 'zh-CN',
       viewportRows: () => 6,
       onClose: () => undefined,
       onChange: () => undefined,
@@ -137,7 +138,7 @@ describe('MCP management overlay', () => {
 
   test('localizes manager states without changing their source values', () => {
     const overlay = new McpManagementOverlay({
-      locale: 'zh',
+      locale: 'zh-CN',
       surface: surface({
         initialization: 'ready',
         configuration: 'ready',
@@ -162,6 +163,39 @@ describe('MCP management overlay', () => {
     const text = overlay.render(100).map(stripAnsi).join('\n');
     assert.match(text, /oauth  需要登录 · streamable-http/u);
     assert.doesNotMatch(text, /needs-auth/u);
+  });
+
+  test('renders Traditional Chinese without Simplified fallbacks', () => {
+    const overlay = new McpManagementOverlay({
+      locale: 'zh-TW',
+      surface: surface({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [
+          {
+            serverId: 'oauth',
+            configured: true,
+            synchronized: true,
+            state: 'disconnected',
+            transport: 'streamable-http',
+            toolCount: 0,
+            error: '连接失败。',
+          },
+        ],
+      }),
+      viewportRows: () => 7,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    const text = overlay.render(100).map(stripAnsi).join('\n');
+    assert.match(text, /MCP 伺服器/u);
+    assert.match(text, /未發佈 · 0 個工具/u);
+    assert.match(text, /oauth  未連線/u);
+    assert.match(text, /MCP 伺服器連線失敗/u);
+    assert.doesNotMatch(text, /连接|发布/u);
   });
 
   test('subscribes only for the overlay lifetime', () => {
@@ -251,73 +285,121 @@ describe('MCP management overlay', () => {
     assert.match(text, /› ○ s4/u);
   });
 
-  test('routes the guided add flow through catalog headings, labels, and hints', () => {
-    const locale = 'en';
-    const expected = TUI_COPY_RESOURCES['mcp-status'][locale].editor;
-    const overlay = new McpManagementOverlay({
-      locale,
-      tui: fakeTui(),
-      surface: surface(listSnapshot()),
-      viewportRows: () => 14,
-      onClose: () => undefined,
-      onChange: () => undefined,
+  const editorCopy = {
+    en: {
+      add: 'Add MCP server',
+      transport: 'Transport',
+      protocol: 'Protocol preference',
+      confirmAdd: 'Add this MCP server?',
+      confirmRemove: 'Remove filesystem?',
+      confirmHint: 'y Confirm · Esc cancel',
+      serverId: 'Server ID',
+      command: 'Command',
+      args: 'Arguments',
+      argsHint: 'JSON string array, optional',
+      cwd: 'Working directory',
+      optionalHint: 'optional',
+      env: 'Environment',
+      mapHint: 'JSON string map, optional',
+      submitHint: 'Enter submit · Esc back',
+      testing: 'Testing MCP server…',
+      reconnecting: 'Reconnecting MCP server…',
+      applying: 'Applying MCP configuration…',
+      published: 'Configuration saved and tools refreshed.',
+      managerFailed: 'The MCP connection action failed.',
+    },
+    'zh-CN': {
+      add: '添加 MCP 服务器',
+      transport: '传输方式',
+      protocol: '协议偏好',
+      confirmAdd: '添加该 MCP 服务器？',
+      confirmRemove: '删除 filesystem？',
+      confirmHint: 'y 确认 · Esc 取消',
+      serverId: '服务器 ID',
+      command: '命令',
+      args: '参数',
+      argsHint: 'JSON string array, 可留空',
+      cwd: '工作目录',
+      optionalHint: '可留空',
+      env: '环境变量',
+      mapHint: 'JSON string map, 可留空',
+      submitHint: 'Enter 提交 · Esc 返回',
+      testing: '正在测试 MCP 服务器…',
+      reconnecting: '正在重连 MCP 服务器…',
+      applying: '正在应用 MCP 配置…',
+      published: '配置已保存，工具已刷新。',
+      managerFailed: 'MCP 连接操作失败。',
+    },
+  } as const;
+
+  for (const locale of ['en', 'zh-CN'] as const) {
+    const expected = editorCopy[locale];
+
+    for (const protocolKey of ['2', '\r']) {
+      test(`walks the guided add flow with ${locale}, protocol key ${JSON.stringify(protocolKey)}, headings, labels, and hints`, () => {
+        const overlay = new McpManagementOverlay({
+          locale,
+          tui: fakeTui(),
+          surface: surface(listSnapshot()),
+          viewportRows: () => 14,
+          onClose: () => undefined,
+          onChange: () => undefined,
+        });
+        const rendered = () => overlay.render(100).map(stripAnsi).join('\n');
+
+        overlay.handleInput('a');
+        assert.ok(rendered().includes(expected.add));
+        overlay.handleInput('g');
+        let text = rendered();
+        assert.ok(text.includes(expected.serverId));
+        assert.ok(text.includes(expected.submitHint));
+        for (const char of 'demo') overlay.handleInput(char);
+        overlay.handleInput('\r');
+        assert.ok(rendered().includes(expected.transport));
+        overlay.handleInput('1');
+        text = rendered();
+        assert.ok(text.includes(expected.command));
+        for (const char of 'echo') overlay.handleInput(char);
+        overlay.handleInput('\r');
+        text = rendered();
+        assert.ok(text.includes(expected.args));
+        assert.ok(text.includes(expected.argsHint));
+        overlay.handleInput('\r');
+        assert.ok(rendered().includes(expected.protocol));
+        assert.ok(rendered().includes('auto (Enter)'));
+        overlay.handleInput(protocolKey);
+        text = rendered();
+        assert.ok(text.includes(expected.cwd));
+        assert.ok(text.includes(expected.optionalHint));
+        overlay.handleInput('\r');
+        text = rendered();
+        assert.ok(text.includes(expected.env));
+        assert.ok(text.includes(expected.mapHint));
+        overlay.handleInput('\r');
+        text = rendered();
+        assert.ok(text.includes(expected.confirmAdd));
+        assert.ok(text.includes('demo · stdio · auto'));
+        assert.ok(text.includes('echo'));
+        assert.ok(text.includes(expected.confirmHint));
+      });
+    }
+
+    test(`renders the ${locale} remove confirmation with the server id`, () => {
+      const overlay = new McpManagementOverlay({
+        locale,
+        surface: surface(listSnapshot()),
+        viewportRows: () => 8,
+        onClose: () => undefined,
+        onChange: () => undefined,
+      });
+      overlay.render(100);
+
+      overlay.handleInput('d');
+      const text = overlay.render(100).map(stripAnsi).join('\n');
+      assert.ok(text.includes(expected.confirmRemove));
+      assert.ok(text.includes(expected.confirmHint));
     });
-    const rendered = () => overlay.render(100).map(stripAnsi).join('\n');
 
-    overlay.handleInput('a');
-    assert.ok(rendered().includes(expected.addTitle));
-    overlay.handleInput('g');
-    let text = rendered();
-    assert.ok(text.includes(expected.inputLabels.server_id));
-    assert.ok(text.includes(expected.hints.submit));
-    for (const char of 'demo') overlay.handleInput(char);
-    overlay.handleInput('\r');
-    assert.ok(rendered().includes(expected.transportTitle));
-    overlay.handleInput('1');
-    text = rendered();
-    assert.ok(text.includes(expected.inputLabels.command));
-    for (const char of 'echo') overlay.handleInput(char);
-    overlay.handleInput('\r');
-    text = rendered();
-    assert.ok(text.includes(expected.inputLabels.args));
-    assert.ok(text.includes(expected.hints.args));
-    overlay.handleInput('\r');
-    assert.ok(rendered().includes(expected.protocolTitle));
-    overlay.handleInput('2');
-    text = rendered();
-    assert.ok(text.includes(expected.inputLabels.cwd));
-    assert.ok(text.includes(expected.hints.optional));
-    overlay.handleInput('\r');
-    text = rendered();
-    assert.ok(text.includes(expected.inputLabels.env));
-    assert.ok(text.includes(expected.hints.map));
-    overlay.handleInput('\r');
-    text = rendered();
-    assert.ok(text.includes(expected.confirmAddTitle));
-    assert.ok(text.includes('demo · stdio · auto'));
-    assert.ok(text.includes('echo'));
-    assert.ok(text.includes(expected.confirmHint));
-  });
-
-  test('routes remove confirmation copy and interpolates the server id', () => {
-    const locale = 'en';
-    const expected = TUI_COPY_RESOURCES['mcp-status'][locale].editor;
-    const overlay = new McpManagementOverlay({
-      locale,
-      surface: surface(listSnapshot()),
-      viewportRows: () => 8,
-      onClose: () => undefined,
-      onChange: () => undefined,
-    });
-    overlay.render(100);
-
-    overlay.handleInput('d');
-    const text = overlay.render(100).map(stripAnsi).join('\n');
-    assert.ok(text.includes(expected.confirmRemoveTitle.replace('{serverId}', 'filesystem')));
-    assert.ok(text.includes(expected.confirmHint));
-  });
-
-  for (const locale of ['en', 'zh'] as const) {
     test(`labels the busy phase per action kind in ${locale}`, () => {
       const expected = TUI_COPY_RESOURCES['mcp-status'][locale].editor;
       const mcp = surface(listSnapshot());
@@ -355,6 +437,14 @@ describe('MCP management overlay', () => {
     [{ status: 'failed', reason: 'invalid-config' }, 'invalid-config'],
     [{ status: 'failed', reason: 'credential-cleanup-failed' }, 'credential-cleanup-failed'],
     [{ status: 'failed', reason: 'persist-failed' }, 'persist-failed'],
+    [
+      {
+        status: 'failed',
+        reason: 'commit-unknown',
+        cause: new AtomicFileWriteCommitUnknownError({ cause: new Error('directory sync failed') }),
+      },
+      'commit-unknown',
+    ],
     [{ status: 'failed', reason: 'manager-failed' }, 'manager-failed'],
     [{ status: 'applied', effect: 'published' }, 'published'],
     [{ status: 'applied', effect: 'pending_host' }, 'pending_host'],
@@ -369,24 +459,52 @@ describe('MCP management overlay', () => {
     [{ status: 'tested', test: testResult(true), effect: 'pending_host' }, 'test_pending_host'],
   ];
 
-  test('routes every action result to its catalog notice', async () => {
-    for (const [result, code] of RESULT_CASES) {
-      const mcp = surface(listSnapshot());
-      mcp.execute = async () => result;
-      const overlay = new McpManagementOverlay({
-        locale: 'en',
-        surface: mcp,
-        viewportRows: () => 8,
-        onClose: () => undefined,
-        onChange: () => undefined,
-      });
-      overlay.render(100);
+  for (const locale of ['en', 'zh-CN'] as const) {
+    test(`routes every action result to its ${locale} catalog notice`, async () => {
+      const results = TUI_COPY_RESOURCES['mcp-status'][locale].editor.results;
+      for (const [result, code] of RESULT_CASES) {
+        const mcp = surface(listSnapshot());
+        mcp.execute = async () => result;
+        const overlay = new McpManagementOverlay({
+          locale,
+          surface: mcp,
+          viewportRows: () => 8,
+          onClose: () => undefined,
+          onChange: () => undefined,
+        });
+        overlay.render(100);
 
-      overlay.handleInput(' ');
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const text = overlay.render(100).map(stripAnsi).join('\n');
-      assert.ok(text.includes(resultCopy[code]), code);
-    }
+        overlay.handleInput(' ');
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const text = overlay.render(100).map(stripAnsi).join('\n');
+        assert.ok(text.includes(results[code as keyof typeof results]), `${code} (${locale})`);
+      }
+    });
+  }
+
+  test('renders an unknown runtime result code as the raw code', async () => {
+    const mcp = surface(listSnapshot());
+    mcp.execute = async () =>
+      ({ status: 'failed', reason: 'future-code' }) as unknown as TuiMcpActionResult;
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: mcp,
+      viewportRows: () => 8,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+    overlay.render(100);
+
+    overlay.handleInput(' ');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(overlay.render(100).map(stripAnsi).join('\n').includes('future-code'));
+  });
+
+  test('keeps punctuation-sensitive catalog strings byte-for-byte', () => {
+    const editor = (locale: 'en' | 'zh-CN') => TUI_COPY_RESOURCES['mcp-status'][locale].editor;
+    assert.equal(editor('zh-CN').results.stale_import, '导入项已变化，请重新预览。');
+    assert.equal(editor('en').confirmImportTitle, 'Import MCP servers?');
+    assert.equal(editor('zh-CN').confirmImportTitle, '导入 MCP 服务器？');
   });
 });
 
@@ -434,4 +552,321 @@ function surface(
     discardImportPreview: () => undefined,
     execute: async () => ({ status: 'failed', reason: 'manager-failed' }),
   };
+}
+
+test('invalid persisted MCP JSON renders its location and repair guidance in every locale', () => {
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const overlay = new McpManagementOverlay({
+      locale,
+      surface: surface({
+        initialization: 'error',
+        invalidConfigPath: '/profile/mcp.json',
+        configuration: 'synchronizing',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [],
+      }),
+      viewportRows: () => 20,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    const text = overlay.render(160).map(stripAnsi).join('\n');
+    assert.match(text, /\/profile\/mcp\.json/u);
+    assert.match(text, /back up and repair|备份并修复|備份並修復/u);
+    assert.match(text, /Quit maka|退出 maka/u);
+    assert.match(text, /unchanged|未被修改/u);
+  }
+});
+
+for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+  test(`runtime MCP file errors show ${locale} repair guidance and return to the live server list`, async () => {
+    const snapshot = listSnapshot();
+    const mcp = surface(snapshot);
+    mcp.execute = async () => ({
+      status: 'failed',
+      reason: 'invalid-config-file',
+      path: '/profile/\u0000mcp.json',
+    });
+    let closed = false;
+    const overlay = new McpManagementOverlay({
+      locale,
+      surface: mcp,
+      viewportRows: () => 20,
+      onClose: () => {
+        closed = true;
+      },
+      onChange: () => {},
+    });
+    const render = () => overlay.render(160).map(stripAnsi).join('\n');
+    render();
+    overlay.handleInput(' ');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const text = render();
+    assert.ok(text.includes('/profile/mcp.json'));
+    assert.match(text, /back up and repair|备份并修复|備份並修復/u);
+    assert.match(text, /Quit maka|退出 maka/u);
+    assert.ok(text.includes(TUI_COPY_RESOURCES['mcp-status'][locale].footer.diagnostic));
+    assert.doesNotMatch(text, /\u0000/u);
+    assert.equal(mcp.snapshot().initialization, 'ready');
+    overlay.handleInput('\u001b');
+    assert.equal(closed, false);
+    assert.ok(render().includes('filesystem'));
+    assert.equal(render().includes('/profile/mcp.json'), false);
+    mcp.execute = async () => ({ status: 'applied', effect: 'published' });
+    overlay.handleInput(' ');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(render().includes(TUI_COPY_RESOURCES['mcp-status'][locale].editor.results.published));
+  });
+}
+
+for (const phase of ['initialization', 'mutation'] as const) {
+  test(`MCP ${phase} repair details scroll in a small terminal and clamp after resizing`, async () => {
+    const path = '/Users/example/Library/Application Support/Maka/workspaces/default/mcp.json';
+    const mcp = surface(
+      phase === 'mutation'
+        ? listSnapshot()
+        : {
+            initialization: 'error',
+            configuration: 'synchronizing',
+            publication: 'not_published',
+            invalidConfigPath: path,
+            toolCount: 0,
+            servers: [],
+          },
+    );
+    mcp.execute = async () => ({ status: 'failed', reason: 'invalid-config-file', path });
+    let rows = 4;
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: mcp,
+      viewportRows: () => rows,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    const render = () => overlay.render(50).map(stripAnsi).join('\n');
+    render();
+    if (phase === 'mutation') {
+      overlay.handleInput(' ');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const first = render();
+    assert.equal(first.includes('retrying.'), false);
+    overlay.handleInput('\u001b[B');
+    assert.notEqual(render(), first);
+    overlay.handleInput('\u001b[A');
+    assert.equal(render(), first);
+    overlay.handleInput('\u001b[6~');
+    assert.notEqual(render(), first);
+    overlay.handleInput('\u001b[5~');
+    assert.equal(render(), first);
+    overlay.handleInput('\u001b[F');
+    const last = render();
+    assert.ok(last.includes('retrying.'));
+    overlay.handleInput('\u001b[6~');
+    assert.equal(render(), last);
+    overlay.handleInput('\u001b[H');
+    assert.equal(render(), first);
+    overlay.handleInput('\u001b[F');
+    render();
+    rows = 30;
+    const expanded = render();
+    assert.match(expanded, /1-\d+ \/ \d+/u);
+    assert.ok(expanded.includes('mcp.json'));
+    assert.ok(expanded.includes('retrying.'));
+  });
+}
+
+test('an initialization error permits scrolling and closing but rejects all management keys', async () => {
+  for (const exitKey of ['q', '\u001b']) {
+    const snapshot = {
+      ...listSnapshot(),
+      initialization: 'error' as const,
+      invalidConfigPath: '/profile/mcp.json',
+      canManagePublicationCredential: true,
+    };
+    const mcp = surface(snapshot);
+    const actions: TuiMcpAction[] = [];
+    let edits = 0;
+    mcp.execute = async (action) => {
+      actions.push(action);
+      return { status: 'applied', effect: 'published' };
+    };
+    mcp.configForEdit = () => {
+      edits += 1;
+      return undefined;
+    };
+    let closed = 0;
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      tui: fakeTui(),
+      surface: mcp,
+      viewportRows: () => 8,
+      onClose: () => {
+        closed += 1;
+      },
+      onChange: () => {},
+    });
+    const render = () => overlay.render(100).map(stripAnsi).join('\n');
+    const before = render();
+    for (const key of ['a', 'p', 'x', '\r', ' ', 't', 'r', 'd']) {
+      overlay.handleInput(key);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        render(),
+        before,
+        `management key ${JSON.stringify(key)} must leave the error view intact`,
+      );
+    }
+    assert.deepEqual(actions, []);
+    assert.equal(edits, 0);
+    assert.equal(closed, 0);
+    overlay.handleInput(exitKey);
+    assert.equal(closed, 1);
+  }
+});
+
+test('a ready empty list scrolls to its add guidance in a short terminal and remains manageable', () => {
+  const mcp = surface({ ...listSnapshot(), publication: 'not_published', servers: [] });
+  const overlay = new McpManagementOverlay({
+    locale: 'en',
+    surface: mcp,
+    viewportRows: () => 3,
+    onClose: () => {},
+    onChange: () => {},
+  });
+  const render = () => overlay.render(120).map(stripAnsi).join('\n');
+  assert.equal(render().includes('No MCP servers are configured.'), false);
+  overlay.handleInput('\u001b[F');
+  assert.match(render(), /No MCP servers are configured\. Press a to add one\./u);
+  overlay.handleInput('\u001b[H');
+  assert.match(render(), /not published/u);
+  overlay.handleInput('a');
+  assert.doesNotMatch(render(), /not published/u);
+});
+
+for (const destination of ['list', 'input', 'closed', 'newer-success', 'newer-error'] as const) {
+  test(`late MCP file diagnostics after Esc respect ${destination}`, async () => {
+    let resolve!: (value: TuiMcpActionResult) => void;
+    const pending = new Promise<TuiMcpActionResult>((done) => {
+      resolve = done;
+    });
+    const mcp = surface(listSnapshot());
+    mcp.execute = () => pending;
+    let changes = 0;
+    let closed = false;
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      tui: fakeTui(),
+      surface: mcp,
+      viewportRows: () => 20,
+      onClose: () => {
+        closed = true;
+      },
+      onChange: () => {
+        changes++;
+      },
+    });
+    const render = () => overlay.render(160).map(stripAnsi).join('\n');
+    render();
+    overlay.handleInput(' ');
+    overlay.handleInput('\u001b');
+    assert.match(render(), /filesystem/u);
+    if (destination === 'input') {
+      overlay.handleInput('a');
+      overlay.handleInput('j');
+      overlay.handleInput('{"draft":');
+    } else if (destination === 'closed') {
+      overlay.handleInput('q');
+    } else if (destination.startsWith('newer-')) {
+      mcp.execute = async () =>
+        destination === 'newer-success'
+          ? { status: 'applied', effect: 'published' }
+          : { status: 'failed', reason: 'invalid-config-file', path: '/newer/mcp.json' };
+      overlay.handleInput(' ');
+      await new Promise<void>((done) => setImmediate(done));
+    }
+    const before = render();
+    const priorChanges = changes;
+    resolve({ status: 'failed', reason: 'invalid-config-file', path: '/late/mcp.json' });
+    await new Promise<void>((done) => setImmediate(done));
+    if (destination === 'closed' || destination.startsWith('newer-')) {
+      assert.equal(changes, priorChanges);
+      assert.equal(render(), before);
+      assert.equal(closed, destination === 'closed');
+      assert.doesNotMatch(render(), /\/late\/mcp.json/u);
+    } else {
+      if (destination === 'input') {
+        assert.equal(render(), before, 'the draft must remain intact');
+        overlay.handleInput('\u001b');
+      }
+      assert.match(render(), /\/late\/mcp.json/u);
+      assert.match(render(), /back up and repair/u);
+      overlay.handleInput('\u001b');
+      assert.equal(closed, false);
+      assert.match(render(), /filesystem/u);
+      assert.doesNotMatch(render(), /\/late\/mcp.json/u);
+    }
+  });
+}
+
+test('Esc during busy still discards an ordinary late result without interrupting a draft', async () => {
+  let resolve!: (value: TuiMcpActionResult) => void;
+  const mcp = surface(listSnapshot());
+  mcp.execute = () =>
+    new Promise<TuiMcpActionResult>((done) => {
+      resolve = done;
+    });
+  const overlay = new McpManagementOverlay({
+    locale: 'en',
+    tui: fakeTui(),
+    surface: mcp,
+    viewportRows: () => 20,
+    onClose: () => {},
+    onChange: () => {},
+  });
+  const render = () => overlay.render(160).map(stripAnsi).join('\n');
+  render();
+  overlay.handleInput(' ');
+  overlay.handleInput('\u001b');
+  overlay.handleInput('a');
+  overlay.handleInput('j');
+  overlay.handleInput('unfinished draft');
+  const before = render();
+  resolve({ status: 'applied', effect: 'published' });
+  await new Promise<void>((done) => setImmediate(done));
+  assert.equal(render(), before);
+});
+
+for (const succeeds of [true, false]) {
+  test(`a deferred diagnostic is ${succeeds ? 'cleared by a successful write' : 'retained after another failure'}`, async () => {
+    let resolve!: (value: TuiMcpActionResult) => void;
+    const mcp = surface(listSnapshot());
+    mcp.execute = () =>
+      new Promise<TuiMcpActionResult>((done) => {
+        resolve = done;
+      });
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: mcp,
+      viewportRows: () => 20,
+      onClose: () => {},
+      onChange: () => {},
+    });
+    const render = () => overlay.render(160).map(stripAnsi).join('\n');
+    render();
+    overlay.handleInput(' ');
+    overlay.handleInput('\u001b');
+    overlay.handleInput('d');
+    const confirmation = render();
+    resolve({ status: 'failed', reason: 'invalid-config-file', path: '/late/mcp.json' });
+    await new Promise<void>((done) => setImmediate(done));
+    assert.equal(render(), confirmation);
+    mcp.execute = async () =>
+      succeeds
+        ? { status: 'applied', effect: 'published' }
+        : { status: 'failed', reason: 'manager-failed' };
+    overlay.handleInput('y');
+    await new Promise<void>((done) => setImmediate(done));
+    assert.equal(render().includes('/late/mcp.json'), !succeeds);
+  });
 }

@@ -34,12 +34,85 @@ import {
   MemoryMutateResult,
   MemoryQueryInput,
   MemoryQueryResult,
+  MEMORY_ENTRY_PAGE_MAX_ITEMS,
+  MEMORY_RESULT_MAX_BYTES,
+  type MemoryEntriesPage,
+  type MemoryEntryProjection,
 } from '../protocol/index.js';
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
 import { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 describe('Host Memory coordinator', () => {
+  test('entry queries preserve the maximal byte-limited prefix across continuations', async () => {
+    await withCoordinator(async ({ coordinator, memoryStore, context }) => {
+      await coordinator.recover();
+      const initial = await memoryStore.read();
+      const entries: MemoryEntryProjection[] = Array.from({ length: 70 }, (_, index) => ({
+        id: `entry-${index}`,
+        source: 'user_authored',
+        status: 'active',
+        title: '标题🙂 "quoted" \\path',
+        content: '文"\\\t🙂'.repeat(80),
+        scope: 'workspace',
+        tags: [],
+      }));
+      await memoryStore.commit({
+        expectedRevision: initial.revision,
+        memory: Buffer.from(
+          '# Maka Memory\n\n' +
+            entries
+              .map(
+                (entry) =>
+                  `## ${entry.title}\n<!-- maka-memory: id=${entry.id} source=user_authored status=active scope=workspace -->\n${entry.content}\n`,
+              )
+              .join('\n'),
+        ),
+        pending: null,
+      });
+      const pages: MemoryEntriesPage[] = [];
+      let input: MemoryQueryInput = { kind: 'entries_start', view: 'active' };
+      do {
+        const page = await query(coordinator, input, context);
+        assert.ok(page.kind === 'entries_page');
+        assert.ok(page.items.length > 0);
+        pages.push(page);
+        assert.ok(pages.length <= entries.length);
+        assert.deepEqual(
+          decodeHostFrame({
+            requestId: 'memory-page',
+            operation: 'memory.query',
+            ok: true,
+            result: page,
+          }),
+          { requestId: 'memory-page', operation: 'memory.query', ok: true, result: page },
+        );
+        const end = pages.reduce((count, current) => count + current.items.length, 0);
+        assert.equal(page.nextCursor, end < entries.length ? end : null);
+        if (page.nextCursor === null) break;
+        input = {
+          kind: 'entries_continue',
+          view: 'active',
+          revision: page.revision,
+          cursor: page.nextCursor,
+        };
+      } while (true);
+      assert.ok(pages.length > 1);
+      assert.ok(pages[0]!.items.length < MEMORY_ENTRY_PAGE_MAX_ITEMS);
+      assertMaximalJsonPages(pages, entries, {
+        maxBytes: MEMORY_RESULT_MAX_BYTES,
+        maxItems: MEMORY_ENTRY_PAGE_MAX_ITEMS,
+        items: (page) => page.items,
+        candidate: (page, items, end) => ({
+          ...page,
+          items,
+          nextCursor: end < entries.length ? end : null,
+        }),
+      });
+    });
+  });
+
   test('initializes only when current policy permits Memory access', async () => {
     await withCoordinator(async ({ coordinator, memoryStore, policyStores, context }) => {
       await setIncognito(policyStores, true);

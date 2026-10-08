@@ -23,13 +23,32 @@ import { resolveCliUiLocale } from '../cli-ui-locale.js';
 
 describe('CLI TUI locale authority', () => {
   test('an explicit MAKA_LOCALE wins over the POSIX locale', () => {
-    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'zh', LC_ALL: 'en_US.UTF-8' }), {
+    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'zh-CN', LC_ALL: 'en_US.UTF-8' }), {
       ok: true,
-      locale: 'zh',
+      locale: 'zh-CN',
+    });
+    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'ZH-TW', LC_ALL: 'zh_CN.UTF-8' }), {
+      ok: true,
+      locale: 'zh-TW',
     });
     assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'EN', LANG: 'zh_CN.UTF-8' }), {
       ok: true,
       locale: 'en',
+    });
+  });
+
+  test('preserves legacy and POSIX-style Chinese aliases', () => {
+    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'zh' }), {
+      ok: true,
+      locale: 'zh-CN',
+    });
+    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'zh_CN' }), {
+      ok: true,
+      locale: 'zh-CN',
+    });
+    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'zh_TW' }), {
+      ok: true,
+      locale: 'zh-TW',
     });
   });
 
@@ -45,19 +64,34 @@ describe('CLI TUI locale authority', () => {
     );
     assert.deepEqual(resolveCliUiLocale({ LC_MESSAGES: 'zh_CN.UTF-8', LANG: 'en_US.UTF-8' }), {
       ok: true,
-      locale: 'zh',
+      locale: 'zh-CN',
     });
     assert.deepEqual(resolveCliUiLocale({ LANG: 'en_US.UTF-8' }), {
       ok: true,
       locale: 'en',
     });
+    assert.deepEqual(resolveCliUiLocale({ LANG: 'zh_TW.UTF-8' }), {
+      ok: true,
+      locale: 'zh-TW',
+    });
     assert.deepEqual(resolveCliUiLocale({}), { ok: true, locale: 'en' });
+  });
+
+  test('treats empty and whitespace-only MAKA_LOCALE as auto', () => {
+    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: '', LANG: 'zh_TW.UTF-8' }), {
+      ok: true,
+      locale: 'zh-TW',
+    });
+    assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: '  \t ', LANG: 'zh_CN.UTF-8' }), {
+      ok: true,
+      locale: 'zh-CN',
+    });
   });
 
   test('rejects an unsupported explicit preference with a configuration error', () => {
     assert.deepEqual(resolveCliUiLocale({ MAKA_LOCALE: 'fr' }), {
       ok: false,
-      message: 'Invalid MAKA_LOCALE "fr". Expected zh, en, or auto.',
+      message: 'Invalid MAKA_LOCALE "fr". Expected zh-CN, zh-TW, en, or auto.',
     });
   });
 });

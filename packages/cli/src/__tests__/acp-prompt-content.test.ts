@@ -1,0 +1,318 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtemp, realpath, rm, truncate, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { describe, test } from 'node:test';
+import { RequestError, type ContentBlock } from '@agentclientprotocol/sdk';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  ARTIFACT_INGEST_CHUNK_MAX_BYTES,
+  type ArtifactIngestInput,
+} from '@maka/runtime-host/protocol';
+import { mapAcpPromptContent, publishAcpPromptAttachments } from '../acp/prompt-content.js';
+
+describe('ACP prompt content', () => {
+  test('rejects a FIFO without blocking the process', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-acp-fifo-'));
+    const fifo = join(root, 'pipe');
+    execFileSync('mkfifo', [fifo]);
+    const child = spawn(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+      import assert from 'node:assert/strict';
+      import { mapAcpPromptContent } from ${JSON.stringify(new URL('../acp/prompt-content.js', import.meta.url).href)};
+      await assert.rejects(mapAcpPromptContent([{ type: 'resource_link', name: 'pipe', uri: process.argv[1] }]),
+        { data: { field: 'prompt', reason: 'resource_not_file' } });
+    `,
+        pathToFileURL(fifo).href,
+      ],
+      { stdio: 'pipe' },
+    );
+    let stderr = '';
+    child.stderr.on('data', (data) => {
+      stderr += data;
+    });
+    const timeout = setTimeout(() => child.kill('SIGKILL'), 3000);
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', resolve);
+      });
+      assert.equal(code, 0, `FIFO reader must reject and exit: ${stderr}`);
+    } finally {
+      clearTimeout(timeout);
+      child.kill();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('joins ordered text blocks with paragraph separators', async () => {
+    assert.deepEqual(
+      await mapAcpPromptContent([
+        { type: 'text', text: 'first' },
+        { type: 'text', text: 'second' },
+      ]),
+      { text: 'first\n\nsecond' },
+    );
+  });
+
+  test('maps an ordinary local resource link to an external-file attachment', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-acp-prompt-'));
+    const path = join(root, 'note.txt');
+    await writeFile(path, 'hello');
+    const uri = pathToFileURL(path).href;
+    try {
+      assert.deepEqual(
+        await mapAcpPromptContent([
+          { type: 'text', text: 'read this' },
+          { type: 'resource_link', uri, name: 'note.txt', mimeType: 'text/plain' },
+        ]),
+        {
+          text: `read this\n\n${uri}`,
+          displayText: 'read this',
+          attachments: [
+            {
+              kind: 'other',
+              name: 'note.txt',
+              mimeType: 'text/plain',
+              bytes: 5,
+              ref: { kind: 'external_file', absolutePath: await realpath(path) },
+            },
+          ],
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps a resource-only prompt model-visible while its display text is empty', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-acp-prompt-'));
+    const path = join(root, 'image.bin');
+    await writeFile(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const uri = pathToFileURL(path).href;
+    try {
+      const mapped = await mapAcpPromptContent([
+        { type: 'resource_link', uri, name: basename(path), mimeType: 'application/octet-stream' },
+      ]);
+      assert.equal(mapped.text, uri);
+      assert.equal(mapped.displayText, '');
+      assert.equal(mapped.attachments?.[0]?.kind, 'image');
+      assert.equal(mapped.attachments?.[0]?.mimeType, 'image/png');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects unadvertised content kinds and non-local or non-file resources', async () => {
+    for (const prompt of [
+      [{ type: 'image', data: '', mimeType: 'image/png' }],
+      [{ type: 'audio', data: '', mimeType: 'audio/wav' }],
+      [{ type: 'resource', resource: { uri: 'file:///tmp/x', text: 'x' } }],
+      [{ type: 'resource_link', uri: 'https://example.com/x', name: 'x' }],
+      [{ type: 'resource_link', uri: 'file:///tmp', name: 'tmp' }],
+    ] as ContentBlock[][]) {
+      await assert.rejects(mapAcpPromptContent(prompt), invalidPromptContent);
+    }
+  });
+
+  test('enforces the shared attachment count and size limits before admission', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-acp-prompt-'));
+    const path = join(root, 'small.txt');
+    await writeFile(path, 'x');
+    const resource = {
+      type: 'resource_link' as const,
+      uri: pathToFileURL(path).href,
+      name: 'small.txt',
+    };
+    try {
+      await assert.rejects(
+        mapAcpPromptContent(Array.from({ length: MAX_ATTACHMENT_COUNT + 1 }, () => resource)),
+        invalidPromptContent,
+      );
+      await assert.rejects(
+        mapAcpPromptContent([resource], {
+          openFile: async () => ({
+            size: MAX_ATTACHMENT_BYTES + 1,
+            isFile: true,
+            prefix: new Uint8Array(),
+            canonicalPath: path,
+          }),
+        }),
+        invalidPromptContent,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('publishes bounded chunks and uses canonical Host attachment metadata in input order', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-acp-publish-'));
+    const path = join(root, 'notes.txt');
+    const bytes = Buffer.alloc(ARTIFACT_INGEST_CHUNK_MAX_BYTES + 7, 'x');
+    await writeFile(path, bytes);
+    const prompt = [
+      { type: 'text' as const, text: 'first' },
+      { type: 'resource_link' as const, uri: pathToFileURL(path).href, name: 'notes.txt' },
+      { type: 'text' as const, text: 'last' },
+    ];
+    const operations: ArtifactIngestInput[] = [];
+    const attachment = {
+      kind: 'other' as const,
+      name: 'canonical-notes.txt',
+      mimeType: 'text/plain',
+      bytes: bytes.length,
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'artifact-1' },
+    };
+    const connection = {
+      request: async (operation: string, input: ArtifactIngestInput) => {
+        assert.equal(operation, 'artifact.ingest');
+        operations.push(input);
+        if (input.kind === 'begin') {
+          assert.equal(input.totalBytes, bytes.length);
+          assert.equal(
+            input.contentSha256,
+            `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          );
+          return { kind: 'upload_opened', uploadId: input.uploadId, nextOffset: 0 };
+        }
+        if (input.kind === 'chunk') {
+          const chunk = Buffer.from(input.chunkBase64, 'base64');
+          assert.ok(chunk.length <= ARTIFACT_INGEST_CHUNK_MAX_BYTES);
+          return {
+            kind: 'chunk_accepted',
+            uploadId: input.uploadId,
+            nextOffset: input.offset + chunk.length,
+          };
+        }
+        assert.equal(input.kind, 'commit');
+        return { kind: 'committed', uploadId: input.uploadId, attachment };
+      },
+    } as unknown as Pick<RuntimeHostConnection, 'request'>;
+    try {
+      const content = await mapAcpPromptContent(prompt);
+      const published = await publishAcpPromptAttachments(content, {
+        sessionId: 'session-1',
+        connection,
+        assertActive: () => undefined,
+      });
+      assert.deepEqual(published, { ...content, attachments: [attachment] });
+      assert.equal(published.text, `first\n\n${pathToFileURL(path).href}\n\nlast`);
+      assert.equal(published.displayText, 'first\n\nlast');
+      assert.deepEqual(
+        operations.map((input) => input.kind),
+        ['begin', 'chunk', 'chunk', 'commit'],
+      );
+      assert.equal(new Set(operations.map((input) => input.uploadId)).size, 1);
+      assert.deepEqual(
+        Buffer.concat(
+          operations.flatMap((input) =>
+            input.kind === 'chunk' ? [Buffer.from(input.chunkBase64, 'base64')] : [],
+          ),
+        ),
+        bytes,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const interruption of ['cancelled', 'failed'] as const) {
+    test(`aborts an open Artifact upload when a chunk is ${interruption}`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-acp-publish-'));
+      const path = join(root, 'notes.txt');
+      await writeFile(path, 'hello');
+      const failure = new Error(interruption);
+      let active = true;
+      const operations: ArtifactIngestInput['kind'][] = [];
+      const connection = {
+        request: async (_operation: string, input: ArtifactIngestInput) => {
+          operations.push(input.kind);
+          if (input.kind === 'begin')
+            return { kind: 'upload_opened', uploadId: input.uploadId, nextOffset: 0 };
+          if (input.kind === 'chunk') {
+            if (interruption === 'failed') throw failure;
+            active = false;
+            return { kind: 'chunk_accepted', uploadId: input.uploadId, nextOffset: 5 };
+          }
+          assert.equal(input.kind, 'abort');
+          return { kind: 'upload_aborted', uploadId: input.uploadId };
+        },
+      } as unknown as Pick<RuntimeHostConnection, 'request'>;
+      try {
+        const content = await mapAcpPromptContent([
+          { type: 'resource_link', uri: pathToFileURL(path).href, name: 'notes.txt' },
+        ]);
+        await assert.rejects(
+          publishAcpPromptAttachments(content, {
+            sessionId: 'session-1',
+            connection,
+            assertActive: () => {
+              if (!active) throw failure;
+            },
+          }),
+          (error: unknown) => error === failure,
+        );
+        assert.deepEqual(operations, ['begin', 'chunk', 'abort']);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test('rechecks the file size before opening an Artifact upload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-acp-publish-'));
+    const path = join(root, 'notes.txt');
+    await writeFile(path, 'hello');
+    try {
+      const content = await mapAcpPromptContent([
+        { type: 'resource_link', uri: pathToFileURL(path).href, name: 'notes.txt' },
+      ]);
+      await truncate(path, MAX_ATTACHMENT_BYTES + 1);
+      await assert.rejects(
+        publishAcpPromptAttachments(content, {
+          sessionId: 'session-1',
+          connection: {
+            request: async () => assert.fail('Oversized files must not open an upload'),
+          },
+          assertActive: () => undefined,
+        }),
+        { data: { field: 'prompt', reason: 'resource_too_large' } },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+function invalidPromptContent(error: unknown): boolean {
+  return error instanceof RequestError && error.code === -32602;
+}
