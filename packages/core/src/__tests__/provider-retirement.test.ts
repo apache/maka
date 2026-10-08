@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { isRetiredProvider, RETIRED_PROVIDER_TYPES } from '../provider-retirement.js';
 
@@ -44,12 +45,32 @@ describe('provider retirement', () => {
     assert.equal(isRetiredProvider('some-future-provider'), false);
   });
 
-  it('is a pure string predicate — no registry import at module load', () => {
-    // Retirement must stay answerable without pulling the generated models.dev
-    // tables; the Desktop first screen depends on this. The module imports only
-    // a type from provider-registry, which is erased, so its runtime import
-    // graph must be empty of registry symbols.
-    assert.equal(typeof isRetiredProvider, 'function');
-    assert.ok(Array.isArray(RETIRED_PROVIDER_TYPES));
+  it('loads without runtime imports', () => {
+    // Use a fresh process so an already-cached registry cannot hide a dependency.
+    // Run against emitted JavaScript: type-only imports must have been erased.
+    const moduleUrl = new URL('../provider-retirement.js', import.meta.url).href;
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `
+          import { registerHooks } from 'node:module';
+          const moduleUrl = process.argv[1];
+          registerHooks({
+            resolve(specifier, context, nextResolve) {
+              if (context.parentURL === moduleUrl) {
+                throw new Error('Unexpected retirement dependency: ' + specifier);
+              }
+              return nextResolve(specifier, context);
+            },
+          });
+          await import(moduleUrl);
+        `,
+        moduleUrl,
+      ],
+      { encoding: 'utf8', timeout: 10_000 },
+    );
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   });
 });
