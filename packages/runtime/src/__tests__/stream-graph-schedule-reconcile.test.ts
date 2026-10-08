@@ -1166,6 +1166,92 @@ describe('stream graph schedule reconciliation', () => {
       await wave.close();
     }
   });
+
+  test('reports a persistently failing stop once as stuck and clears it when the stop succeeds', async (t) => {
+    const wave = await gatedScheduleWave(1);
+    let failing = true;
+    let attempts = 0;
+    wave.beforeStop = async () => {
+      attempts += 1;
+      if (failing) throw new Error(`exact-stop failure ${attempts}`);
+    };
+    // Real backoff reaches its 5 s cap before the eighth failure; drive it with
+    // mocked timers and real setImmediate turns for the in-memory store.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const flush = async () => {
+      for (let turn = 0; turn < 3; turn += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
+    const advanceToAttempt = async (target: number) => {
+      await flush();
+      while (attempts < target) {
+        t.mock.timers.tick(5_000);
+        await flush();
+      }
+    };
+    try {
+      await wave.commit('stuck-stop', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Stop although cleanup keeps failing.' }],
+      });
+      await advanceToAttempt(7);
+      assert.equal(wave.failures.length, 1, 'retries before the threshold stay silent');
+      assert.doesNotMatch(String(wave.failures[0]!.error), /is stuck/);
+
+      await advanceToAttempt(8);
+      assert.equal(wave.failures.length, 2);
+      assert.equal(wave.failures[1]!.phase, 'stop');
+      assert.match(String(wave.failures[1]!.error), /is stuck after 8 consecutive failures/);
+
+      await advanceToAttempt(12);
+      assert.equal(wave.failures.length, 2, 'a stuck stop is reported once, not on every retry');
+      assert.equal(wave.settled, false, 'the stop is still retried, never dropped');
+
+      failing = false;
+      await advanceToAttempt(13);
+      await flush();
+      assert.equal(wave.settled, true);
+      const result = await wave.reconciliation;
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.failures.length, 0, 'a later success clears the stuck failure');
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+      assert.equal(wave.failures.length, 2);
+    } finally {
+      t.mock.timers.reset();
+      await wave.close();
+    }
+  });
+
+  test('a driver abort keeps retrying a failed stop until its parked wave settles', async () => {
+    const wave = await gatedScheduleWave(1);
+    let attempts = 0;
+    const failed = deferred();
+    wave.beforeStop = async () => {
+      attempts += 1;
+      if (attempts <= 2) {
+        failed.resolve();
+        throw new Error('transient exact-stop failure');
+      }
+    };
+    try {
+      await wave.commit('stop-then-abort', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Stop while the driver is aborting.' }],
+      });
+      await withTimeout(failed.promise, 1000, 'first stop attempt must fail');
+      wave.abortDriver();
+      const result = await withTimeout(
+        wave.reconciliation,
+        2000,
+        'an aborted driver must not stop retrying the stop that parks its wave',
+      );
+      assert.equal(attempts, 3);
+      assert.equal(result.status, 'cancelled');
+      assert.equal(result.failures.length, 0);
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+    } finally {
+      await wave.close();
+    }
+  });
 });
 
 const GRAPH_ID = 'graph-schedule';
@@ -1272,6 +1358,7 @@ async function gatedScheduleWave(count: number) {
     stopCalls: 0,
     // Models the runtime's retained cleanup owner after a failed exact stop.
     retainedStops: new Set<string>(),
+    driver: new AbortController(),
   };
   const added = await commitSchedule(store, 'initial-wave', {
     add_work: Array.from({ length: count }, (_, index) => ({
@@ -1343,6 +1430,7 @@ async function gatedScheduleWave(count: number) {
     },
     newId: nextId(),
     maxNewActivations: count,
+    abortSignal: state.driver.signal,
     observeGraph: async () => {
       state.observations += 1;
       return observation.read();
@@ -1393,6 +1481,9 @@ async function gatedScheduleWave(count: number) {
     },
     get stopCalls() {
       return state.stopCalls;
+    },
+    abortDriver() {
+      state.driver.abort();
     },
     get subscriptions() {
       return listeners.size;

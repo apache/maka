@@ -62,6 +62,11 @@ const SCHEDULE_INTENT_SCHEMA_VERSION = 1 as const;
 // wake it. Retry with a capped backoff while that wave is still running.
 const CONTROL_RETRY_INITIAL_DELAY_MS = 100;
 const CONTROL_RETRY_MAX_DELAY_MS = 5_000;
+// The eighth consecutive failure lands about 11 s after the first, once the
+// backoff has reached its cap: a fault that clears during the ramp is never
+// reported as stuck, while a persistent one is surfaced instead of leaving
+// the graph parked behind a single failure record.
+const STOP_CLEANUP_STUCK_FAILURES = 8;
 
 export interface AgentGraphScheduleStopController {
   stopAgentGraphActivation(
@@ -230,6 +235,8 @@ async function reconcileSchedule(
   // Exact stops that already succeeded in this reconciliation; later passes
   // and wakes do not stop the same activation again.
   const resolvedStops = new Set<string>();
+  // Consecutive stop failures per target, reset when the target resolves.
+  const stopFailureStreaks = new Map<string, number>();
   let newActivationCount = 0;
   let observedExistingActivationCount = 0;
   let snapshot = await readScheduleSnapshot(input, selectedResultCache);
@@ -249,7 +256,7 @@ async function reconcileSchedule(
     }
 
     const stopWave = await applyScheduleStops(input, snapshot, resolvedStops);
-    recordScheduleStops(input, stops, failures, stopWave);
+    recordScheduleStops(input, stops, failures, stopFailureStreaks, stopWave);
     if (failures.length > 0) {
       snapshot = await readScheduleSnapshot(input, selectedResultCache);
       return reconciliationResult(
@@ -482,25 +489,31 @@ async function reconcileSchedule(
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = CONTROL_RETRY_INITIAL_DELAY_MS;
     try {
+      // A driver abort does not end this loop: the wave still owns its
+      // dispatches, and a child parked behind a failed stop settles only
+      // after a retry succeeds.
       while (!waveSettled) {
         await wake.wait();
         clearTimeout(retryTimer);
         retryTimer = undefined;
-        if (waveSettled || input.abortSignal?.aborted) break;
+        if (waveSettled) break;
         let retry: boolean;
         try {
           const latest = await readScheduleSnapshot(input, selectedResultCache);
           const controls = await applyScheduleStops(input, latest, resolvedStops);
-          recordScheduleStops(input, stops, failures, controls);
+          recordScheduleStops(input, stops, failures, stopFailureStreaks, controls);
           if (controlReadFailure) {
             failures.splice(failures.indexOf(controlReadFailure), 1);
             controlReadFailure = undefined;
           }
           retry = controls.failures.length > 0;
         } catch (error) {
+          const repeated = controlReadFailure !== undefined;
           if (controlReadFailure) failures.splice(failures.indexOf(controlReadFailure), 1);
           controlReadFailure = { phase: 'schedule', error };
-          recordReconciliationFailure(input, failures, controlReadFailure);
+          // Notify once per streak of read failures, not on every retry.
+          if (repeated) failures.push(controlReadFailure);
+          else recordReconciliationFailure(input, failures, controlReadFailure);
           retry = true;
         }
         // A failed stop can keep its child, and so this wave, parked until a
@@ -729,6 +742,7 @@ function recordScheduleStops(
   input: ReconcileAgentGraphScheduleInput,
   stops: AgentGraphScheduleStopResult[],
   failures: AgentGraphScheduleReconciliationFailure[],
+  streaks: Map<string, number>,
   controls: {
     stops: AgentGraphScheduleStopResult[];
     failures: AgentGraphScheduleReconciliationFailure[];
@@ -736,6 +750,7 @@ function recordScheduleStops(
 ): void {
   stops.push(...controls.stops);
   const resolvedTargets = new Set(controls.stops.map((stop) => stop.targetId));
+  for (const targetId of resolvedTargets) streaks.delete(targetId);
   for (let index = failures.length - 1; index >= 0; index -= 1) {
     const failure = failures[index]!;
     if (failure.phase === 'stop' && failure.targetId && resolvedTargets.has(failure.targetId)) {
@@ -743,13 +758,32 @@ function recordScheduleStops(
     }
   }
   for (const failure of controls.failures) {
-    // A retried stop that fails again replaces its earlier failure without
-    // notifying the supervisor on every backoff attempt.
+    const targetId = failure.targetId ?? '';
+    const streak = (streaks.get(targetId) ?? 0) + 1;
+    streaks.set(targetId, streak);
+    // The stuck state travels in the message: supervisor notifications are
+    // structured clones and the durable client failure keeps only the reason.
+    const recorded: AgentGraphScheduleReconciliationFailure =
+      streak < STOP_CLEANUP_STUCK_FAILURES
+        ? failure
+        : {
+            ...failure,
+            error: new Error(
+              `Stop for graph target ${targetId} is stuck after ${streak} consecutive failures and is still retrying`,
+              { cause: failure.error },
+            ),
+          };
+    // A retried stop that fails again replaces its earlier failure. The
+    // supervisor hears about the first failure and, once, about a stuck stop,
+    // not about every backoff attempt.
     const previous = failures.findIndex(
       (existing) => existing.phase === 'stop' && existing.targetId === failure.targetId,
     );
-    if (previous >= 0) failures[previous] = failure;
-    else recordReconciliationFailure(input, failures, failure);
+    if (previous >= 0) failures[previous] = recorded;
+    else failures.push(recorded);
+    if (streak === 1 || streak === STOP_CLEANUP_STUCK_FAILURES) {
+      notifySupervisor(input.supervisor?.onReconciliationFailure, recorded);
+    }
   }
 }
 
