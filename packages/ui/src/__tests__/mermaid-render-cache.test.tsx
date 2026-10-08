@@ -187,12 +187,22 @@ test('reuses a rendered Mermaid result across remounts and isolates themes', asy
     renderCalls += 1;
     return {
       diagramType: 'flowchart-v2',
-      svg: `<svg id="${id}" viewBox="0 0 100 50"><text>${code}</text></svg>`,
+      svg: `<svg id="${id}" data-theme="${themes.at(-1)}" viewBox="0 0 100 50"><text>${code}</text></svg>`,
     };
   };
 
   const code = 'flowchart LR\ncache_a --> cache_b';
-  const view = () => diagram(code);
+  const cachedThemeCommits: boolean[] = [];
+  let trackCachedTheme = false;
+  const view = () => (
+    <Profiler id="cached-theme" onRender={() => {
+      if (trackCachedTheme) {
+        cachedThemeCommits.push(Boolean(dom.document.querySelector('.maka-mermaid-svg > svg')));
+      }
+    }}>
+      {diagram(code)}
+    </Profiler>
+  );
   let root = createRoot(dom.document.querySelector('#root')!);
 
   try {
@@ -211,10 +221,23 @@ test('reuses a rendered Mermaid result across remounts and isolates themes', asy
     dom.document.documentElement.classList.add('dark');
     await settleEffects();
     assert.equal(renderCalls, 2, 'dark theme must use a distinct render result');
+    assert.equal(
+      dom.document.querySelector('.maka-mermaid-svg > svg')?.getAttribute('data-theme'),
+      'dark',
+      'the dark render should be mounted',
+    );
 
+    trackCachedTheme = true;
     dom.document.documentElement.classList.remove('dark');
     await settleEffects();
     assert.equal(renderCalls, 2, 'switching back should reuse the cached default-theme result');
+    assert.ok(cachedThemeCommits.length > 0, 'the cached theme switch should commit');
+    assert.ok(cachedThemeCommits.every(Boolean), 'a cached theme switch must never commit loading');
+    assert.equal(
+      dom.document.querySelector('.maka-mermaid-svg > svg')?.getAttribute('data-theme'),
+      'default',
+      'a cached theme switch should restore the default-theme SVG',
+    );
     assert.deepEqual(themes, ['default', 'dark']);
   } finally {
     await act(async () => root.unmount());

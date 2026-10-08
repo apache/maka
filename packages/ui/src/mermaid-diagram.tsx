@@ -475,8 +475,15 @@ export function MermaidDiagram(props: {
     }
     if (state.status === 'rendered' && state.cacheKey === cacheKey) return;
 
-    let cancelled = false;
     setZoom(1);
+    const template = mermaidRenderCache.get(cacheKey);
+    if (template) {
+      touchMermaidRenderCacheEntry(cacheKey, template);
+      setState(renderedMermaidState(template, cacheKey));
+      return;
+    }
+
+    let cancelled = false;
     setState({ status: 'loading' });
     void renderMermaid(props.code, theme, () => !cancelled).then(
       (template) => {
