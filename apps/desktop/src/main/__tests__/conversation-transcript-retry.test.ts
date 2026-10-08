@@ -28,6 +28,7 @@ import type { DesktopSessionSummary } from '../../shared/desktop-session-project
 import { parseDesktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
+import { transcriptRefreshTitle } from '../../renderer/application/contracts/transcript-copy.js';
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, useAppShellSessionUiState } from '../../renderer/features/conversation/index.js';
 import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
@@ -48,7 +49,8 @@ type TranscriptRead = {
   sessionId: string;
   cancelled: boolean;
   closed: boolean;
-  succeed(text: string): void;
+  /** A `cached` answer is the snapshot Main serves while the Host reconnects. */
+  succeed(text: string, source?: 'live' | 'cached'): void;
   fail(): void;
 };
 type TranscriptView = {
@@ -73,10 +75,11 @@ function harness() {
       openDesktopTranscriptHistory((_sessionKey, accept, registerCancellation) => {
         const result = deferred<DesktopTranscriptHandle>();
         const { sessionId } = parseDesktopSessionKey(sessionKey);
-        const generation = `read-${reads.length}`;
+        const index = reads.length;
         const read: TranscriptRead = {
           sessionId: sessionKey, cancelled: false, closed: false,
-          succeed(text) {
+          succeed(text, source = 'live') {
+            const generation = `${source === 'cached' ? 'cached:' : ''}read-${index}`;
             let deliverySequence = 0;
             for (const batch of encodeDesktopTranscriptSnapshot({
               sessionId, generation, hostEpoch: 'epoch', durableThrough: 1,
@@ -194,6 +197,34 @@ describe('Conversation transcript retry', () => {
     assert.deepEqual(h.transcript.messages.map((message) => message.type === 'user' ? message.text : undefined), ['manual recovery']);
     assert.equal(h.transcript.messageLoadError, undefined);
     assert.equal(h.toastErrors.length, reported + 1, 'a successful Retry reports nothing');
+  });
+
+  it('reports a failed Retry once while the cached transcript is shown', async () => {
+    const h = harness();
+    await act(async () => h.target.setActiveId(A));
+    await act(async () => h.reads[0]!.succeed('cached A', 'cached'));
+    assert.equal(h.reads.length, 2, 'a cached answer still asks for the live transcript');
+    await act(async () => h.reads[1]!.fail());
+    assert.deepEqual(h.toastErrors, [], 'the controller withholds failures over the cached transcript');
+    let refreshed: boolean | undefined;
+    await act(async () => { refreshed = await h.owner.commands.refreshMessages(A); });
+    assert.equal(refreshed, false, 'a later refresh meets the failed live read');
+    const refreshError = h.transcript.messageLoadError;
+    assert.ok(refreshError);
+    const reported = h.toastErrors.length;
+    await act(async () => h.transcript.onRetryMessages?.());
+    assert.equal(h.reads.length, 3);
+    await act(async () => h.reads[2]!.fail());
+    assert.deepEqual(h.toastErrors.slice(reported), [[transcriptRefreshTitle('en'), refreshError]],
+      'a failed Retry over the cached transcript is reported once');
+    assert.equal(h.transcript.messageLoadError, refreshError);
+    assert.equal(h.transcript.messageLoadRetryPending, false);
+    assert.deepEqual(h.transcript.messages.map((message) => message.type === 'user' ? message.text : undefined), ['cached A']);
+    await act(async () => h.transcript.onRetryMessages?.());
+    await act(async () => h.reads[3]!.succeed('live A'));
+    assert.deepEqual(h.transcript.messages.map((message) => message.type === 'user' ? message.text : undefined), ['live A']);
+    assert.equal(h.transcript.messageLoadError, undefined);
+    assert.equal(h.toastErrors.length, reported + 1);
   });
 
   it('does not retry the published Session after another Session is requested', async () => {

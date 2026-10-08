@@ -74,7 +74,7 @@ function harness(options: {
         hasDurableMessage: (id) => messages.some((message) => message.id === id),
       },
       ready: async () => {}, waitForDurableMessage: async () => true,
-      reload: async () => {}, loadEarlier: async () => {}, observationChanged: () => {},
+      reload: async () => {}, holdsCachedTranscript: () => false, loadEarlier: async () => {}, observationChanged: () => {},
       close: async () => { resource.closed = true; },
     };
   };
