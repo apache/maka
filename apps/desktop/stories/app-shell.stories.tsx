@@ -46,6 +46,7 @@ import type { ChatModelChoice, ComposerHandle, SessionViewMode, TurnViewModel, L
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { deriveMessageQueueProjection } from '../src/renderer/application/contracts/message-queue-projection';
 import { retractQueuedEntryToDraft, withQueuedSteeringTransients } from '../src/renderer/application/contracts/transient-message-projection';
+import { createDefaultSettings } from '@maka/core/settings';
 import { AppShellTitlebar } from '../src/renderer/app-shell-chrome-actions';
 import { appShellFrameStyle } from '../src/renderer/shell/frame-style';
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
@@ -60,7 +61,7 @@ import {
   SESSION_WORKBAR_DEFAULT_WIDTH,
   type WorkbarLayoutState,
 } from '../src/renderer/features/workbar/testing';
-import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
+import { AppShellDetailPanel } from '../src/renderer/shell/detail-panel';
 import { deriveChatTurnPresentation } from '../src/renderer/application/contracts/turn-presentation';
 import {
   deriveSessionRail,
@@ -218,10 +219,6 @@ const baseChatProps: ChatViewProps = {
   messages: conversation,
   scrollBehavior: 'smooth',
   activeSession,
-  activeConnectionLabel: 'Anthropic',
-  activeModel: 'claude-sonnet-4-5',
-  activeModelLabel: 'Claude Sonnet 4.5',
-  modelChoices,
   userLabel: '你',
   onNew: noop,
   onPromptSuggestion: noop,
@@ -580,6 +577,49 @@ export const DefaultLayout: Story = {
 // anything about an update at all.
 export const UpdateDownloaded: Story = {
   render: () => <ComposedShell updateReminder={{ state: 'downloaded', latestVersion: '0.1.7' }} />,
+};
+
+const onLineageNavigation = fn();
+
+// Real path: open a session retaining an original reply and its regenerated
+// reply. Stored turn_state lineage is projected by ChatView and the production
+// deriveChatTurnPresentation, including the forward and reverse navigation.
+export const RegeneratedConversation: Story = {
+  render: () => <ComposedShell chat={{
+    scrollBehavior: 'auto',
+    onLineageBadgeClick: onLineageNavigation,
+    messages: [
+      user('lineage-original-user', 'lineage-original', 5, '解释一下这个方案。'),
+      assistant('lineage-original-answer', 'lineage-original', 4, '旧回答保留在原来的轮次中。'),
+      { type: 'turn_state', id: 'lineage-original-state', turnId: 'lineage-original', ts: NOW - 4 * 60_000, status: 'completed' },
+      user('lineage-new-user', 'lineage-new', 3, '解释一下这个方案。'),
+      assistant('lineage-new-answer', 'lineage-new', 2, '重新生成的回答与旧回答通过来源标记相连。'),
+      { type: 'turn_state', id: 'lineage-new-state', turnId: 'lineage-new', ts: NOW - 2 * 60_000, status: 'completed', regeneratedFromTurnId: 'lineage-original' },
+    ],
+  }} />,
+  play: async ({ canvasElement }) => {
+    onLineageNavigation.mockClear();
+    const canvas = within(canvasElement);
+    const forward = await canvas.findByRole('button', { name: '重新生成自旧回答' });
+    const reverse = await canvas.findByRole('button', { name: '已重新生成 → 新回答' });
+    const original = canvasElement.querySelector<HTMLElement>('[data-turn-id="lineage-original"]')!;
+    const regenerated = canvasElement.querySelector<HTMLElement>('[data-turn-id="lineage-new"]')!;
+    const sourceRow = forward.closest('.maka-turn-lineage-row')!;
+    const derivativeRow = reverse.closest('.maka-turn-lineage-row')!;
+    await document.fonts.ready;
+    expect(sourceRow.getBoundingClientRect().bottom).toBeLessThanOrEqual(regenerated.querySelector('.maka-user-message')!.getBoundingClientRect().top);
+    expect(derivativeRow.getBoundingClientRect().bottom).toBeLessThanOrEqual(original.querySelector('.maka-turn-footer')!.getBoundingClientRect().top);
+    for (const [button, row] of [[forward, sourceRow], [reverse, derivativeRow]] as const) {
+      expect(button.getBoundingClientRect().left).toBeCloseTo(row.getBoundingClientRect().left, 1);
+      expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(row.getBoundingClientRect().right + 1);
+    }
+    forward.focus();
+    await expect(forward).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    await expect(onLineageNavigation).toHaveBeenLastCalledWith('lineage-original');
+    await userEvent.click(reverse);
+    await expect(onLineageNavigation).toHaveBeenLastCalledWith('lineage-new');
+  },
 };
 
 // Real path: the same download fails → same slot, muted variant, retry.
@@ -1677,7 +1717,7 @@ export const NewChatComposerEmptyLocalHost: Story = {
 };
 
 // Real path: 新任务 → 切换项目 → 项目 picker 处于 pending（切换中）。
-// Production passes `pending: projectPickerPending` while a project switch is
+// Task Entry marks the Workspace Picker `pending` while a project mutation is
 // in flight; the trigger locks with a spinner and every menu row disables,
 // matching the model switcher's mid-switch treatment.
 export const NewChatComposerProjectPending: Story = {
@@ -3963,6 +4003,7 @@ function WorkbarInShell(props: {
   togglePosition?: 'titlebar' | 'edge';
   composer?: Partial<ComposerProps>;
 } = {}) {
+  const togglePosition = props.togglePosition ?? createDefaultSettings().appearance.workbarTogglePosition;
   const [layout, dispatch] = useReducer(reduceWorkbarLayout, workbarLayoutWithOneFace);
   const resizable = useResizable({
     defaultSize: props.workbarWidth ?? layout.rightWidth,
@@ -3979,7 +4020,7 @@ function WorkbarInShell(props: {
         <ComposedShell
           motionEnabled
           workbarWidth={workbarWidth}
-          workbarToggle={props.togglePosition === 'titlebar' ? { collapsed: rightCollapsed, onToggle: () => collapseRight(!rightCollapsed) } : undefined}
+          workbarToggle={togglePosition === 'titlebar' ? { collapsed: rightCollapsed, onToggle: () => collapseRight(!rightCollapsed) } : undefined}
           session={props.longTitle ? { name: '主对话标题与右侧工作栏的宽度和信息层级验证 Long conversation title' } : undefined}
           onShare={props.onShare}
           detailChildren={
@@ -3998,7 +4039,7 @@ function WorkbarInShell(props: {
               {!rightCollapsed && <ResizeHandle className="maka-workbar-resize-handle maka-workbar-resize-handle-right" resizable={resizable.props}
                 direction="horizontal" isReversed isAlwaysVisible={false} pillPlacement="center" label="调整工作栏宽度" />}
               <WorkbarSurface
-                togglePosition={props.togglePosition ?? 'edge'}
+                togglePosition={togglePosition}
                 sessionId="session-active"
                 hidden={false}
                 onDismissPanel={() => collapseRight(true)}
@@ -4105,10 +4146,10 @@ export const TitlebarWithWideWorkbar: Story = {
   },
 };
 
-// Real path: hover the conversation/Workbar edge → collapse → restore from the
+// Real path: select the edge control in Appearance, then collapse → restore from the
 // window edge. The full curved edge stays inside the toggle's activation area.
 export const WorkbarEdgeRevealAndCollapse: Story = {
-  render: () => <WorkbarInShell withConversation />,
+  render: () => <WorkbarInShell togglePosition="edge" withConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const frame = canvasElement.querySelector<HTMLElement>('[data-maka-contract="session-workbar-right"]')!;
@@ -4199,10 +4240,10 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
   },
 };
 
-// Real path: Appearance → Show Workbar toggle in titlebar → open a task,
+// Real path: open a task with the default appearance settings,
 // then collapse the Workbar. The same panel and tabs survive a restore.
 export const WorkbarTitlebarRestore: Story = {
-  render: () => <WorkbarInShell togglePosition="titlebar" withConversation />,
+  render: () => <WorkbarInShell withConversation />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const frame = canvasElement.querySelector<HTMLElement>('[data-maka-contract="session-workbar-right"]')!;
@@ -4218,6 +4259,9 @@ export const WorkbarTitlebarRestore: Story = {
     expect(panel).not.toBeVisible();
     const restore = canvas.getByRole('button', { name: '展开任务工作栏' });
     expect(restore.closest('.maka-window-titlebar')).not.toBeNull();
+    expect(restore).toBeVisible();
+    const restoreBox = restore.getBoundingClientRect();
+    expect(document.elementFromPoint(restoreBox.x + restoreBox.width / 2, restoreBox.y + restoreBox.height / 2)?.closest('button')).toBe(restore);
     expect(restore).toHaveAttribute('aria-expanded', 'false');
     restore.focus();
     await userEvent.keyboard('{Enter}');

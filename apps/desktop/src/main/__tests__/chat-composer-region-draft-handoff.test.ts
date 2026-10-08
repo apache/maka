@@ -17,12 +17,13 @@
  * under the License.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider } from '@maka/ui';
+import { type ComposerHandle, LocaleProvider } from '@maka/ui';
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
   markNewTaskReloadIntent,
@@ -138,11 +139,13 @@ async function mountRegion(): Promise<{
           LocaleProvider,
           {
             locale: 'en',
-            children: createElement(AstryxLocaleProvider, {
+            children: createElement(ComposerStagingFixture, {
+              draftKey: activeId ?? 'new-task',
               children: createElement(ChatComposerRegion, {
               composerRef: composer,
               onOpenContextUsage: () => undefined,
-              directoryComposerProps: {},
+              canStageContext: true,
+              contextPickEnabled: true,
               directoryPickerEnabled: false,
 
               active: true,

@@ -22,6 +22,7 @@ import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-even
 import type {
   RuntimeContinuationAuthorityStore,
   RuntimeInvocationRecoveryInventoryEntry,
+  RuntimeSessionEventSnapshot,
 } from '@maka/core/runtime-event-store';
 import type { ImmutableRuntimePrefixProofV1 } from '@maka/core/runtime-boundary';
 import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
@@ -258,6 +259,7 @@ export interface ExecutionAgentRunReader {
 }
 
 export interface ExecutionRuntimeEventReader {
+  readSessionRuntimeSnapshot?(sessionId: string): Promise<RuntimeSessionEventSnapshot>;
   /**
    * A Session's run inventory, read from its canonical events. This is the
    * definition of the inventory, not a cache of it, so nothing writes or
@@ -756,6 +758,12 @@ async function createExecutionStoresForWrite(
         ),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      ...(runtimeEventStore.readSessionRuntimeSnapshot
+        ? {
+            readSessionRuntimeSnapshot: (sessionId: string) =>
+              run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
+          }
+        : {}),
       scanRuntimeEvents: (sessionId, runId, budget, visit) =>
         run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, budget, visit)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
@@ -921,6 +929,12 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
     runtimeEventStore: {
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      ...(runtimeEventStore.readSessionRuntimeSnapshot
+        ? {
+            readSessionRuntimeSnapshot: (sessionId: string) =>
+              run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
+          }
+        : {}),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>

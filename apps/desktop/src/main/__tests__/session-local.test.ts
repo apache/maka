@@ -900,14 +900,28 @@ test('local creation preserves a plugin executor in the pending Session projecti
   const summary = (await create(
     {} as IpcMainInvokeEvent,
     target.scope,
-    { executorId: 'codex.app-server' },
+    { executorId: 'codex.app-server', executorConfig: { model: 'picked-model', mode: 'default' } },
   )) as DesktopSessionSummaryInput;
   assert.equal(summary.backend, 'plugin-executor');
   assert.equal(summary.executorId, 'codex.app-server');
   assert.equal(summary.llmConnectionId, undefined);
   assert.equal(summary.llmConnectionSlug, 'executor:codex.app-server');
-  assert.equal(summary.model, 'codex.app-server');
+  assert.equal(summary.model, 'picked-model');
+  assert.deepEqual(summary.executorConfig, { model: 'picked-model', mode: 'default' });
+  assert.deepEqual(store.sessions(target.partition)[0]?.executorConfig, summary.executorConfig);
   assert.equal(store.creation(target.partition, summary.id)?.executorId, 'codex.app-server');
+  const legacy = (await create(
+    {} as IpcMainInvokeEvent,
+    target.scope,
+    { executorId: 'codex.app-server', model: 'legacy-model' },
+  )) as DesktopSessionSummaryInput;
+  assert.equal(legacy.model, 'legacy-model');
+  const defaultModel = (await create(
+    {} as IpcMainInvokeEvent,
+    target.scope,
+    { executorId: 'codex.app-server' },
+  )) as DesktopSessionSummaryInput;
+  assert.equal(defaultModel.model, 'codex.app-server');
 });
 
 test('local submit preserves picked-file approvals until durable admission succeeds', async (t) => {

@@ -33,6 +33,7 @@ export function projectSessionCatalogSummary(
     name: session.name,
     isFlagged: session.isFlagged,
     isArchived: session.isArchived,
+    ...(session.archivedAt === undefined ? {} : { archivedAt: session.archivedAt }),
     labels: [...session.labels],
     hasUnread: session.hasUnread,
     ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),

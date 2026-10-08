@@ -986,6 +986,132 @@ index 0c81fd3..51e9632 100644
          }
        })]
      })
+diff --git a/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js b/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js
+index bcc42ce..1ad2ef6 100644
+--- a/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js
++++ b/node_modules/@astryxdesign/core/dist/Toast/ToastViewport.js
+@@ -14,6 +14,7 @@
+  *   changes, update ToastViewport.test.tsx, Toast.doc.mjs, and Toast.stories.tsx.
+  */
+ import { isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
++import {createPortal} from 'react-dom';
+ import * as stylex from '@stylexjs/stylex';
+ import "../theme/tokens.stylex.js";
+ import { spacingVars, durationVars, easeVars } from "../theme/tokens.stylex.js";
+@@ -239,8 +240,9 @@ export function ToastViewport({
+   const toastsRef = useRef(toasts);
+   toastsRef.current = toasts;
+ 
+-  // Show the popover on mount so it enters the top layer.
+   const viewportRef = useRef(null);
++  const anchorRef = useRef(null);
++  const [portalHost, setPortalHost] = useState(null);
+   // Toast ids whose exit has begun — guards onHide from double-firing (see
+   // removeToast). Mirrors exitingIds state, readable synchronously.
+   const exitingIdsRef = useRef(new Set());
+@@ -424,20 +426,64 @@ export function ToastViewport({
+     insetStyle.insetInlineEnd = inset.end;
+   }
+ 
+-  // Show the popover on mount so it enters the top layer
+-  useEffect(() => {
+-    if (!isTopLayer) {
+-      return;
+-    }
++  // Keep one portal host when dialogs open/close: moving the host preserves
++  // toast timers, exit transitions, focus and React's delegated event handlers.
++  useLayoutEffect(() => {
++    const anchor = anchorRef.current;
++    if (!isTopLayer || !anchor) return;
++    const view = anchor.ownerDocument.defaultView;
++    // DOM shims and older browsers have no native top layer. Keep their
++    // inline viewport instead of querying unsupported pseudo-classes.
++    if (typeof viewportRef.current?.showPopover !== 'function' ||
++        !view?.CSS?.supports('selector(:modal)') ||
++        !view.CSS.supports('selector(:popover-open)')) return;
++    const host = anchor.ownerDocument.createElement('div');
++    host.style.display = 'contents';
++    setPortalHost(host);
++    return () => host.remove();
++  }, [isTopLayer]);
++
++  useLayoutEffect(() => {
+     const el = viewportRef.current;
+-    if (el && typeof el.showPopover === 'function') {
+-      try {
+-        el.showPopover();
+-      } catch {
+-        /* already showing */
++    const anchor = anchorRef.current;
++    if (!isTopLayer || !portalHost || !el || !anchor) return;
++    const doc = anchor.ownerDocument;
++    const sync = () => {
++      // A popover outside the active modal is inert even if it paints above
++      // the backdrop. Keep the viewport inside the modal AND reopen it after
++      // the modal enters the top layer (top-layer order ignores z-index).
++      const modal = doc.activeElement?.closest('dialog:modal') ??
++        Array.from(doc.querySelectorAll('dialog:modal')).at(-1);
++      const parent = modal ?? anchor.parentElement;
++      if (!parent) return;
++      const moved = portalHost.parentElement !== parent;
++      const focused = el.contains(doc.activeElement) ? doc.activeElement : null;
++      if (moved) {
++        el.hidePopover?.();
++        parent.appendChild(portalHost);
+       }
+-    }
+-  }, [isTopLayer]);
++      if (toasts.length > 0 && !el.matches(':popover-open')) {
++        el.showPopover?.();
++      } else if (toasts.length === 0 && el.matches(':popover-open')) {
++        el.hidePopover?.();
++      }
++      if (moved && focused instanceof HTMLElement) focused.focus();
++    };
++    sync();
++    const observer = new MutationObserver(records => {
++      if (records.some(record => record.type === 'attributes'
++        ? record.target instanceof HTMLDialogElement
++        : [...record.addedNodes, ...record.removedNodes].some(node =>
++            node instanceof Element &&
++            (node.matches('dialog') || node.querySelector('dialog'))))) {
++        sync();
++      }
++    });
++    observer.observe(doc.documentElement, {
++      subtree: true, childList: true, attributes: true, attributeFilter: ['open'],
++    });
++    return () => observer.disconnect();
++  }, [isTopLayer, portalHost, toasts]);
+ 
+   // F6 jumps focus into the toast viewport — the standard "go to
+   // notifications" affordance. Focus the first control in the newest toast,
+@@ -479,9 +525,7 @@ export function ToastViewport({
+   }, [hasToasts, getFocusable]);
+   const posStyle = position === 'topEnd' ? styles.topEnd : position === 'topStart' ? styles.topStart : position === 'bottomStart' ? styles.bottomStart : styles.bottomEnd;
+   const isReversed = position === 'topEnd' || position === 'topStart';
+-  return /*#__PURE__*/_jsxs(ToastContext, {
+-    value: contextValue,
+-    children: [children, /*#__PURE__*/_jsx("div", {
++  const viewport = /*#__PURE__*/_jsx("div", {
+       ref: viewportRef,
+       role: hasToasts ? 'region' : undefined,
+       "aria-label": hasToasts ? t('@astryx.toast.viewport') : undefined,
+@@ -500,7 +544,12 @@ export function ToastViewport({
+         onExited: handleExited,
+         onDismiss: removeToast
+       }, entry.id))
+-    })]
++    });
++  return /*#__PURE__*/_jsxs(ToastContext, {
++    value: contextValue,
++    children: [children,
++      isTopLayer ? /*#__PURE__*/_jsx("span", {hidden: true, ref: anchorRef}) : null,
++      isTopLayer && portalHost ? createPortal(viewport, portalHost) : viewport]
+   });
+ }
+ ToastViewport.displayName = 'ToastViewport';
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
 index 69573c6..a32e7a4 100644
 --- a/node_modules/@astryxdesign/core/dist/astryx.css
@@ -2246,6 +2372,130 @@ index 7f7dedd..0a8720a 100644
      stroke: 'var(--spinner-color)',
      transform: 'rotate(-90deg)',
      strokeDasharray: `calc(var(${RESOLVED_DIAMETER}) * ${PI} * var(--spinner-arc-fraction)) calc(var(${RESOLVED_DIAMETER}) * ${PI} * (1 - var(--spinner-arc-fraction)))`,
+diff --git a/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx b/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx
+index 62dbde6..012d6de 100644
+--- a/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx
++++ b/node_modules/@astryxdesign/core/src/Toast/ToastViewport.tsx
+@@ -24,6 +24,7 @@ import {
+   useState,
+ } from 'react';
+ import type {ReactNode} from 'react';
++import {createPortal} from 'react-dom';
+ import * as stylex from '@stylexjs/stylex';
+ import {spacingVars, durationVars, easeVars} from '../theme/tokens.stylex';
+ import {mergeProps} from '../utils';
+@@ -314,8 +315,9 @@ export function ToastViewport({
+   const toastsRef = useRef(toasts);
+   toastsRef.current = toasts;
+ 
+-  // Show the popover on mount so it enters the top layer.
+   const viewportRef = useRef<HTMLDivElement>(null);
++  const anchorRef = useRef<HTMLSpanElement>(null);
++  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
+   // Toast ids whose exit has begun — guards onHide from double-firing (see
+   // removeToast). Mirrors exitingIds state, readable synchronously.
+   const exitingIdsRef = useRef<Set<string>>(new Set());
+@@ -527,20 +529,64 @@ export function ToastViewport({
+     insetStyle.insetInlineEnd = inset.end;
+   }
+ 
+-  // Show the popover on mount so it enters the top layer
+-  useEffect(() => {
+-    if (!isTopLayer) {
+-      return;
+-    }
++  // Keep one portal host when dialogs open/close: moving the host preserves
++  // toast timers, exit transitions, focus and React's delegated event handlers.
++  useLayoutEffect(() => {
++    const anchor = anchorRef.current;
++    if (!isTopLayer || !anchor) return;
++    const view = anchor.ownerDocument.defaultView;
++    // DOM shims and older browsers have no native top layer. Keep their
++    // inline viewport instead of querying unsupported pseudo-classes.
++    if (typeof viewportRef.current?.showPopover !== 'function' ||
++        !view?.CSS?.supports('selector(:modal)') ||
++        !view.CSS.supports('selector(:popover-open)')) return;
++    const host = anchor.ownerDocument.createElement('div');
++    host.style.display = 'contents';
++    setPortalHost(host);
++    return () => host.remove();
++  }, [isTopLayer]);
++
++  useLayoutEffect(() => {
+     const el = viewportRef.current;
+-    if (el && typeof el.showPopover === 'function') {
+-      try {
+-        el.showPopover();
+-      } catch {
+-        /* already showing */
++    const anchor = anchorRef.current;
++    if (!isTopLayer || !portalHost || !el || !anchor) return;
++    const doc = anchor.ownerDocument;
++    const sync = () => {
++      // A popover outside the active modal is inert even if it paints above
++      // the backdrop. Keep the viewport inside the modal AND reopen it after
++      // the modal enters the top layer (top-layer order ignores z-index).
++      const modal = doc.activeElement?.closest('dialog:modal') ??
++        Array.from(doc.querySelectorAll('dialog:modal')).at(-1);
++      const parent = modal ?? anchor.parentElement;
++      if (!parent) return;
++      const moved = portalHost.parentElement !== parent;
++      const focused = el.contains(doc.activeElement) ? doc.activeElement : null;
++      if (moved) {
++        el.hidePopover?.();
++        parent.appendChild(portalHost);
+       }
+-    }
+-  }, [isTopLayer]);
++      if (toasts.length > 0 && !el.matches(':popover-open')) {
++        el.showPopover?.();
++      } else if (toasts.length === 0 && el.matches(':popover-open')) {
++        el.hidePopover?.();
++      }
++      if (moved && focused instanceof HTMLElement) focused.focus();
++    };
++    sync();
++    const observer = new MutationObserver(records => {
++      if (records.some(record => record.type === 'attributes'
++        ? record.target instanceof HTMLDialogElement
++        : [...record.addedNodes, ...record.removedNodes].some(node =>
++            node instanceof Element &&
++            (node.matches('dialog') || node.querySelector('dialog'))))) {
++        sync();
++      }
++    });
++    observer.observe(doc.documentElement, {
++      subtree: true, childList: true, attributes: true, attributeFilter: ['open'],
++    });
++    return () => observer.disconnect();
++  }, [isTopLayer, portalHost, toasts]);
+ 
+   // F6 jumps focus into the toast viewport — the standard "go to
+   // notifications" affordance. Focus the first control in the newest toast,
+@@ -591,9 +637,7 @@ export function ToastViewport({
+           : styles.bottomEnd;
+   const isReversed = position === 'topEnd' || position === 'topStart';
+ 
+-  return (
+-    <ToastContext value={contextValue}>
+-      {children}
++  const viewport = (
+       <div
+         ref={viewportRef}
+         role={hasToasts ? 'region' : undefined}
+@@ -619,6 +663,12 @@ export function ToastViewport({
+           />
+         ))}
+       </div>
++  );
++  return (
++    <ToastContext value={contextValue}>
++      {children}
++      {isTopLayer ? <span hidden ref={anchorRef} /> : null}
++      {isTopLayer && portalHost ? createPortal(viewport, portalHost) : viewport}
+     </ToastContext>
+   );
+ }
 diff --git a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts b/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts
 index 55b441e..7aa4174 100644
 --- a/node_modules/@astryxdesign/core/src/hooks/useStreamingText.ts

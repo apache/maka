@@ -21,7 +21,7 @@ import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 import {
   createActionsDeps,
@@ -54,7 +54,7 @@ test('a nine-attachment new-task send shows the count reason, creates no session
   try {
     for (const locale of ['zh-CN', 'en'] as const) {
       toasts.length = 0;
-      const actions = createAppShellChatActions({
+      const actions = createChatActions({
         ...createActionsDeps(),
         uiLocale: locale,
         toastApi: {
@@ -104,7 +104,7 @@ test('a main-side attachment rejection refuses the send instead of leaving it un
     },
   });
   try {
-    const actions = createAppShellChatActions({
+    const actions = createChatActions({
       ...createActionsDeps(),
       uiLocale: 'zh-CN',
       toastApi: {
@@ -132,7 +132,7 @@ test('unsupported executor attachments preserve the pending draft before any Ses
   const pending = [fileAttachment(10, 0)];
   const errors: string[] = [];
   try {
-    const actions = createAppShellChatActions({
+    const actions = createChatActions({
       ...createActionsDeps(),
       executorSelection: { executorId: 'external', configuration: { model: 'chosen' } },
       executorEntry: { readiness: 'ready', supportsAttachments: false },

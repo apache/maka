@@ -388,6 +388,8 @@ export interface RemoveCatalogConnectionInput {
 export interface SetDefaultConnectionTargetInput {
   readonly expectedCatalogRevision: Revision;
   readonly target: ConnectionTarget | null;
+  /** Explicit consent to enable the chosen catalog model in the same commit. */
+  readonly enableModel?: boolean;
 }
 
 export type ConnectionCatalogConflict =

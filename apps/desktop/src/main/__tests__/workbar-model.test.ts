@@ -19,6 +19,7 @@
 
 import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { sessionIdSetsEqual } from '../../renderer/features/conversation/index.js';
+import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
@@ -384,6 +385,38 @@ describe('Workbar topology', () => {
     assert.equal(sessionIdSetsEqual(empty, pending), false);
     assert.equal(sessionIdSetsEqual(pending, pending), true);
     assert.equal(sessionIdSetsEqual(empty, new Set()), true);
+  });
+
+  it('keeps other Sessions\' visibility when a row patch lands before the first list', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ owner: false, running: false }),
+    }));
+    const row = (id: string) =>
+      ({ id, name: id, activityAt: 1, isArchived: false, revision: 1 }) as DesktopSessionSummary;
+    const catalog = createSessionCatalogController();
+    let state = loadWorkbarLayout(undefined);
+    // Mirrors useWorkbarLayoutState: retain whenever the catalog is authoritative.
+    const retain = () => {
+      const sessionIds = selectAuthoritativeSessionIds(catalog.getState());
+      if (sessionIds) state = reduceWorkbarLayout(state, { type: 'retain-sessions', sessionIds });
+    };
+    // After a reload, a still-running Session's change event can be read
+    // before the startup list; that row alone says nothing about the others.
+    catalog.commitPatch('running', row('running'));
+    retain();
+    assert.equal(selectAuthoritativeSessionIds(catalog.getState()), undefined);
+    catalog.commitSessions([row('owner'), row('running')]);
+    retain();
+    persistWorkbarLayout(state, 'right-visibility');
+    assert.equal(isSessionWorkbarCollapsed(loadWorkbarLayout('owner')), false);
+  });
+
+  it('treats a first list that matches the patched rows as authoritative', () => {
+    const row = { id: 'a', name: 'a', activityAt: 1, isArchived: false, revision: 1 } as DesktopSessionSummary;
+    const catalog = createSessionCatalogController();
+    catalog.commitPatch('a', row);
+    catalog.commitSessions([row]);
+    assert.deepEqual(selectAuthoritativeSessionIds(catalog.getState()), new Set(['a']));
   });
 
   it('evicts deleted Sessions without dropping an active Session awaiting catalog hydration', () => {
