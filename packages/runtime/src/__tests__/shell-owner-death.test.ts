@@ -25,9 +25,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-for (const mode of ['bounded', 'pipes']) {
+// `wrapped` runs the script as the child of a shell root. Its child is outside
+// the root's own libuv job on Windows, so only the supervisor's tree stop
+// reaches it there.
+for (const mode of ['bounded', 'pipes', 'wrapped']) {
   for (const beginStop of [false, true]) {
+    if (mode === 'wrapped' && beginStop) continue;
     test(`${mode} (stop already requested: ${beginStop}): owner SIGKILL terminates an admitted command before its delayed write`, {
+      // A Windows stop is an immediate forced kill, so there is no window in
+      // which a stopping command still runs when its owner dies.
+      skip:
+        beginStop && process.platform === 'win32'
+          ? 'POSIX graceful SIGTERM window required'
+          : false,
       timeout: 15_000,
     }, async () => {
       const directory = await mkdtemp(join(tmpdir(), 'maka-owner-death-'));

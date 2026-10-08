@@ -184,7 +184,7 @@ for (const signal of ['SIGPIPE', 'SIGUSR1'] as const) {
   });
 }
 
-test('a supervisor that loses its lease stops the command and never reports a command status', {
+test('a supervisor that loses its lease stops the command', {
   timeout: 10_000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-owned-lost-lease-'));
@@ -212,19 +212,10 @@ test('a supervisor that loses its lease stops the command and never reports a co
     child.disconnect();
     const exit = await exited;
     await delay(50);
-    if (process.platform === 'win32') {
-      // taskkill ends the supervisor with an ordinary exit code, which must
-      // surface as a lost result rather than as the command's status.
-      assert.deepEqual(
-        errors.map((error) => error.message),
-        ['Command supervisor lost its result'],
-      );
-    } else {
-      // The supervisor ends with its own group's SIGKILL, which the Host
-      // already reports as a forced termination.
-      assert.deepEqual(exit, { code: null, signal: 'SIGKILL' });
-      assert.deepEqual(errors, []);
-    }
+    // The supervisor stops its tree and ends by a forced kill (POSIX group
+    // SIGKILL, Windows taskkill), never with the command's own clean status.
+    assert.ok(exit.signal !== null || exit.code !== 0, JSON.stringify(exit));
+    assert.deepEqual(errors, []);
     await delay(1200);
     await assert.rejects(readFile(late), { code: 'ENOENT' });
   } finally {

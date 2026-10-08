@@ -98,7 +98,6 @@ on:
       - 'packages/runtime/src/__tests__/pipe-process-driver.test.ts'
       - 'packages/runtime/src/__tests__/runtime-continuation-crash.test.ts'
       - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
-      - 'packages/runtime/src/__tests__/shell-exec.test.ts'
       - 'packages/runtime/src/__tests__/shell-owner-death.test.ts'
       - 'packages/runtime/src/builtin-tools.ts'
       - 'packages/runtime/src/file-stable-write.ts'
@@ -252,15 +251,15 @@ jobs:
             packages/runtime/dist/__tests__/runtime-continuation-crash.test.js
 
       # Every Windows Bash command runs under the owning supervisor. Run its
-      # owner-death, lifecycle and bounded-shell suites on a real Windows host.
+      # owner-death and lifecycle suites on a real Windows host. shell-exec's
+      # suite is written in POSIX shell syntax and is not portable yet.
       - name: Verify shell command ownership
         shell: pwsh
         run: |
           node.exe --test --test-concurrency=1 `
             packages/runtime/dist/__tests__/owned-child-process.test.js `
             packages/runtime/dist/__tests__/shell-owner-death.test.js `
-            packages/runtime/dist/__tests__/pipe-process-driver.test.js `
-            packages/runtime/dist/__tests__/shell-exec.test.js
+            packages/runtime/dist/__tests__/pipe-process-driver.test.js
 
       - name: Verify Runtime Host owner-death recovery
         shell: pwsh

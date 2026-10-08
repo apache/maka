@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 53 |
-| platform-contract | 45 |
+| platform-contract | 46 |
 
-Total Windows-excluded declarations: **125**
+Total Windows-excluded declarations: **126**
 
 ## Inventory
 
@@ -93,6 +93,7 @@ Total Windows-excluded declarations: **125**
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` unexpected POSIX supervisor death terminates its command and cannot report success | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-owner-death.test.ts` ${mode} (stop already requested: ${beginStop}): owner SIGKILL terminates an admitted command before its delayed write | `beginStop && process.platform === 'win32' ? 'POSIX graceful SIGTERM window required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-owner-death.test.ts` owner SIGKILL also terminates a descendant that left the command group with setsid | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |

@@ -73,8 +73,11 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
       // POSIX: the supervisor leads a new process group that the command joins.
       // Termination signals the group and removes descendants visible outside
       // it at each process-table snapshot. Windows has no process groups;
-      // taskkill /T owns the equivalent cleanup.
-      detached: process.platform !== 'win32',
+      // taskkill /T owns the equivalent cleanup. There, detaching also keeps
+      // the supervisor out of the Host's libuv job, which would kill it with
+      // the Host before it could stop the command's descendants; the command
+      // itself stays in the supervisor's job.
+      detached: true,
       windowsHide: true,
     },
   );
@@ -177,9 +180,10 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
     // The group can outlive its leader. An unexpected supervisor exit must
     // not leave an admitted command running while the Host is still alive.
     terminateOrphanedGroup();
-    // A signal exit is the Host's own forced termination. A normal exit without
-    // `completed` lost the command's result and must not pass as its status.
-    if (code !== null && !failureReported) {
+    // A clean exit without `completed` lost the command's result. Any other
+    // exit may be the Host's own forced termination, which on Windows
+    // (taskkill) also ends with an ordinary exit code.
+    if (code === 0 && !failureReported) {
       child.emit('error', new Error('Command supervisor lost its result'));
     }
   }

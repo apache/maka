@@ -63,7 +63,11 @@ test('reports a partial stdin delivery failure before the child exit', async () 
     const exit = await exited;
     assert.equal(exit.exitCode, 0);
     assert.equal(failures.length, 1);
-    assert.match(String((failures[0] as NodeJS.ErrnoException).code), /EPIPE|ERR_STREAM_DESTROYED/);
+    // Windows reports a pipe whose last reader exited as EOF.
+    assert.match(
+      String((failures[0] as NodeJS.ErrnoException).code),
+      /EPIPE|EOF|ERR_STREAM_DESTROYED/,
+    );
     assert.deepEqual(events, ['failure', 'exit']);
   } finally {
     driver.dispose();

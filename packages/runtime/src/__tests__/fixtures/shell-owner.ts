@@ -31,6 +31,13 @@ if (mode === 'bounded') {
   });
   process.send?.(result);
   process.disconnect?.();
+} else if (mode === 'wrapped') {
+  // A shell root whose child runs the script, as `sh -c` or `cmd /c` commands do.
+  const [program, args]: [string, string[]] =
+    process.platform === 'win32'
+      ? [process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', process.execPath, script]]
+      : ['/bin/sh', ['-c', '"$0" "$1"; exit $?', process.execPath, script]];
+  await runProcessWithBoundedTail(program, args, { cwd: directory, timeoutMs: 30_000 });
 } else {
   const driver = new PipeProcessDriver({
     plan: { file: process.execPath, args: [script], useShellOption: false },
