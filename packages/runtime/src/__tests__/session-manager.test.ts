@@ -2342,6 +2342,71 @@ describe('SessionManager claimed graph intent execution', () => {
     });
   }
 
+  test('a retained graph stop quarantines an unrelated Turn until its cleanup succeeds', {
+    timeout: 2_000,
+  }, async () => {
+    const store = new MemorySessionStore();
+    let rejectAbort = true;
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: (_sessionId, _runId, event) => {
+        if (rejectAbort && event.status === 'aborted') throw new Error('stop cleanup unavailable');
+      },
+    });
+    const backends = new BackendRegistry();
+    const sendGate = makeGate();
+    const ready = makeGate();
+    backends.register('ai-sdk', (ctx) => new CountingStopBackend(ctx, sendGate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(97),
+    });
+    const parent = await manager.createSession(makeInput());
+    const child = await createGraphOperatorSession(store, parent.id);
+    const claim = graphIntentClaim({ targetSessionId: child.id }, 'retained stop');
+    // The stopped Run's own finalization reports the same persistence fault.
+    const running = manager
+      .runClaimedAgentGraphIntent({
+        ...graphExecutionInput(claim, 'retained stop'),
+        onReady: () => ready.release(),
+      })
+      .catch((error: unknown) => error);
+    await ready.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const identity = {
+      sessionId: child.id,
+      runId: claim.targetRunId,
+      turnId: claim.targetTurnId,
+    };
+    await assert.rejects(manager.stopAgentGraphActivation(identity), /stop cleanup unavailable/);
+    sendGate.release();
+    assert.strictEqual(manager.hasPendingAgentGraphActivationStop(identity), true);
+    // A Turn that holds no stop intent of the retained operation cannot use
+    // the stop owner's quarantine bypass.
+    await assert.rejects(
+      drain(manager.sendMessage(child.id, { turnId: 'unrelated-turn', text: 'must wait' })),
+      /quarantined by a retained stop operation/,
+    );
+    rejectAbort = false;
+    await manager.stopAgentGraphActivation(identity);
+    assert.strictEqual(manager.hasPendingAgentGraphActivationStop(identity), false);
+    await running;
+    await drain(manager.sendMessage(child.id, { turnId: 'after-cleanup', text: 'runs now' }));
+    const runs = await runStore.listSessionInvocations(child.id);
+    assert.strictEqual(
+      runtimeInvocationOutcome(runs.find((run) => run.turnId === claim.targetTurnId)!),
+      'cancelled',
+    );
+    assert.strictEqual(
+      runtimeInvocationOutcome(runs.find((run) => run.turnId === 'after-cleanup')!),
+      'completed',
+    );
+  });
+
   test('scoped graph stop for a completed identity leaves its active successor intact', {
     timeout: 2_000,
   }, async () => {

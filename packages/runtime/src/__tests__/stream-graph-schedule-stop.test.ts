@@ -56,6 +56,10 @@ class GatedGraphBackend implements AgentBackend {
   readonly kind = 'ai-sdk' as const;
   readonly started = deferred();
   readonly sends: GatedSend[] = [];
+  // A non-cooperative provider: stop is delivered, but neither stop nor the
+  // send returns before the provider finishes on its own.
+  ignoreStop = false;
+  stopCalls = 0;
   private active: GatedSend | undefined;
 
   constructor(
@@ -109,7 +113,12 @@ class GatedGraphBackend implements AgentBackend {
     }
   }
   async stop(): Promise<void> {
+    this.stopCalls += 1;
     if (!this.active) return;
+    if (this.ignoreStop) {
+      await this.active.naturalCompletion.promise;
+      return;
+    }
     this.active.wasStopped = true;
     this.active.stopped.resolve();
   }
@@ -436,6 +445,50 @@ test('a fresh graph coordinator recovers stopped and completed work without repl
       completedFacts,
     );
     assert.equal(fixture.children.size, 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('a stop that one backend ignores does not hold back its sibling stop in the same pass', async () => {
+  const fixture = await graphFixture();
+  try {
+    const [ignored, cooperative] = await fixture.start(2);
+    ignored!.child.ignoreStop = true;
+    await fixture.update({
+      operation: 'stop',
+      stop: [
+        { target_id: ignored!.workId, reason: 'This provider ignores the stop.' },
+        { target_id: cooperative!.workId, reason: 'This provider honors the stop.' },
+      ],
+    });
+    await waitFor(
+      async () => {
+        const runs = await fixture.runtimeEventStore.listSessionInvocations(
+          cooperative!.child.sessionId,
+        );
+        return runs[0]?.terminalEvent?.status === 'aborted';
+      },
+      {
+        timeoutMs: 1000,
+        message: 'the cooperative stop must settle while its sibling still ignores its own',
+      },
+    );
+    assert.ok(ignored!.child.stopCalls >= 1, 'both stops are delivered in the same pass');
+    const ignoredRuns = await fixture.runtimeEventStore.listSessionInvocations(
+      ignored!.child.sessionId,
+    );
+    assert.equal(ignoredRuns[0]!.terminalEvent, undefined);
+    await assertDurableTerminal(fixture, cooperative!.child, 'aborted');
+
+    ignored!.child.naturalCompletion.resolve();
+    await withTimeout(
+      fixture.coordinator.waitForIdle(fixture.session.id),
+      3000,
+      'the ignored stop settles once its provider finishes',
+    );
+    await assertDurableTerminal(fixture, ignored!.child, 'either');
+    await assertDurableTerminal(fixture, cooperative!.child, 'aborted');
   } finally {
     await fixture.close();
   }
