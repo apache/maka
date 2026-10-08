@@ -61,7 +61,11 @@ export const LIVE_OUTPUT_SUPPRESSED_MARKER =
 
 export interface BoundedShellOptions {
   cwd: string;
-  /** Hard wall-clock cap; the child is SIGTERM'd and `timedOut` is set. */
+  /**
+   * Hard wall-clock cap on the command, counted from its admission so the
+   * owning supervisor's startup does not consume it; the child is SIGTERM'd
+   * and `timedOut` is set.
+   */
   timeoutMs: number;
   /** Per-stream retained-tail cap in characters. Defaults to BASH_MAX_RETAINED_CHARS. */
   maxRetainedChars?: number;
@@ -162,8 +166,9 @@ function runSpawnedProcessWithBoundedTail(
   }
   return new Promise<BoundedShellResult>((resolvePromise, reject) => {
     let child: ChildProcess;
+    let admitted: Promise<unknown>;
     try {
-      ({ child } = spawnOwnedProcess({
+      ({ child, ready: admitted } = spawnOwnedProcess({
         program,
         args,
         cwd: options.cwd,
@@ -204,7 +209,17 @@ function runSpawnedProcessWithBoundedTail(
     );
     void lifecycle.completion.then(resolveOnce, rejectOnce);
 
-    const timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
+    // The budget is the command's, as with a direct spawn: start it once the
+    // supervisor has admitted the command. A supervisor that never admits it
+    // fails through its own startup timeout.
+    let timer: NodeJS.Timeout | undefined;
+    void admitted.then(
+      () => {
+        if (settled || termination) return;
+        timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
+      },
+      () => {},
+    );
     const abort = () => beginTermination({ aborted: true });
     if (options.abortSignal) {
       if (options.abortSignal.aborted) abort();
