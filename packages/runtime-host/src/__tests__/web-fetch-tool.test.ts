@@ -67,9 +67,10 @@ test('real health probe falls back to GET and bounds stalled responses', async (
     networkProxy: createDefaultRuntimePolicy().networkProxy,
     secretMaterial: {},
   });
-  const service = createHostWebFetchService({ policy });
   // Test the short timeout against the stalled endpoint. Normal HEAD/GET
-  // fallback must not depend on the runner scheduling two requests in 100 ms.
+  // fallback must not depend on the runner scheduling two requests in 100 ms,
+  // but a hung fallback should still fail promptly rather than after 30 s.
+  const service = createHostWebFetchService({ policy, probeTimeoutMs: 5_000 });
   const boundedService = createHostWebFetchService({ policy, probeTimeoutMs: 100 });
   const input = { sessionId: 'session-1', abortSignal: new AbortController().signal };
   try {
