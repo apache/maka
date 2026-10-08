@@ -43,12 +43,18 @@ import { buildAbortableConnector } from '../abortable-connector.js';
 describe('connection effect network transport', () => {
   for (const type of ['direct', 'http', 'socks5'] as const) {
     test(`closed successful connections do not accumulate abort listeners (${type})`, async () => {
+      let targetHits = 0;
       const server = createServer((_request, response) => {
+        targetHits += 1;
         response.writeHead(200, { connection: 'close' });
         response.end('proxy-ok');
       });
       const port = await listen(server);
       const socks = type === 'socks5' ? await startStalledProxy('socks-http') : undefined;
+      // Since undici 8 (#1247), plain-HTTP targets are forwarded to the proxy
+      // in absolute form instead of tunneled via CONNECT. Relay the bytes to a
+      // real target so the success path is proven end to end.
+      const forward = type === 'http' ? await startForwardProxy(port) : undefined;
       const controller = new AbortController();
       const dispatcher =
         type === 'direct'
@@ -59,7 +65,8 @@ describe('connection effect network transport', () => {
                 enabled: true,
                 type,
                 host: '127.0.0.1',
-                port: socks?.port ?? port,
+                port: socks?.port ?? forward?.port ?? port,
+                ...(type === 'http' ? { username: 'proxy-user', password: 'proxy-password' } : {}),
                 bypassList: [],
               },
               controller.signal,
@@ -67,12 +74,29 @@ describe('connection effect network transport', () => {
       try {
         for (let index = 0; index < 25; index++) {
           const response = await undiciFetch(
-            type === 'direct'
-              ? `http://127.0.0.1:${port}/models`
-              : 'http://provider.invalid/models',
+            type === 'socks5'
+              ? 'http://provider.invalid/models'
+              : `http://127.0.0.1:${port}/models`,
             { dispatcher },
           );
           assert.equal(await response.text(), 'proxy-ok');
+          if (forward) {
+            assert.equal(
+              forward.requestLines[index],
+              `GET http://127.0.0.1:${port}/models HTTP/1.1`,
+              'plain-HTTP targets must reach the proxy as an absolute-form forward',
+            );
+            assert.equal(
+              forward.requestHeaders[index]?.['proxy-authorization'],
+              `Basic ${Buffer.from('proxy-user:proxy-password').toString('base64')}`,
+              'configured proxy credentials must ride the forward request',
+            );
+            assert.equal(
+              targetHits,
+              index + 1,
+              'the proxy must relay the forward request to the real target',
+            );
+          }
           // Socket close is delivered after the body. Wait for I/O, not GC.
           await waitFor(() => getEventListeners(controller.signal, 'abort').length === 0, {
             timeoutMs: 1_000,
@@ -83,6 +107,7 @@ describe('connection effect network transport', () => {
         controller.abort();
         await dispatcher.destroy();
         await socks?.close();
+        await forward?.close();
         await closeServer(server);
       }
     });
@@ -949,6 +974,60 @@ async function startConnectProxy(
       for (const socket of sockets) socket.destroy();
       await closeServer(server);
     },
+  };
+}
+
+interface ForwardProxy {
+  readonly port: number;
+  readonly requestLines: string[];
+  readonly requestHeaders: Record<string, string>[];
+  close(): Promise<void>;
+}
+
+// A real forwarding proxy for plain-HTTP targets: since undici 8 (#1247) the
+// dispatcher sends the request in absolute form, and this helper records the
+// request line and headers as the bytes flow through, then relays everything
+// to the target over a raw TCP pipe. It never answers on its own, so a
+// response can only have come from the target.
+async function startForwardProxy(targetPort: number): Promise<ForwardProxy> {
+  const requestLines: string[] = [];
+  const requestHeaders: Record<string, string>[] = [];
+  let pending = '';
+  const server = net.createServer((clientSocket) => {
+    const upstream = net.connect(targetPort, '127.0.0.1');
+    clientSocket.pipe(upstream);
+    upstream.pipe(clientSocket);
+    clientSocket.on('data', (chunk) => {
+      pending += chunk.toString('latin1');
+      while (true) {
+        const headerEnd = pending.indexOf('\r\n\r\n');
+        if (headerEnd < 0) return;
+        const requestHead = pending.slice(0, headerEnd);
+        pending = pending.slice(headerEnd + 4);
+        const [line = '', ...headerLines] = requestHead.split('\r\n');
+        requestLines.push(line);
+        const headers: Record<string, string> = {};
+        for (const headerLine of headerLines) {
+          const separator = headerLine.indexOf(':');
+          if (separator !== -1) {
+            headers[headerLine.slice(0, separator).trim().toLowerCase()] = headerLine
+              .slice(separator + 1)
+              .trim();
+          }
+        }
+        requestHeaders.push(headers);
+      }
+    });
+    clientSocket.on('error', () => upstream.destroy());
+    upstream.on('error', () => clientSocket.destroy());
+    clientSocket.on('close', () => upstream.destroy());
+    upstream.on('close', () => clientSocket.destroy());
+  });
+  return {
+    port: await listen(server),
+    requestLines,
+    requestHeaders,
+    close: () => closeServer(server),
   };
 }
 
