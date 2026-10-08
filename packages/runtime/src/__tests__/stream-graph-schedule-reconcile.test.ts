@@ -580,6 +580,61 @@ describe('stream graph schedule reconciliation', () => {
     }
   });
 
+  test('a historical terminal stop target neither reaches the runtime nor blocks new work', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(250) });
+    const observation = new MemoryGraphObservation();
+    const executor = new MemoryScheduleExecutor(store, observation, 'running');
+    const stopController = new MemoryStopController(observation);
+    try {
+      const added = await commitSchedule(store, 'tool-add', {
+        add_work: [{ operator_id: 'writer', instruction: 'Draft until stopped.', input_ids: [] }],
+      });
+      const stoppedWorkId = added.addWork[0]!.workId;
+      const newId = nextId();
+      const reconcile = (controller: AgentGraphScheduleStopController) =>
+        reconcileAgentGraphSchedule({
+          topology: topology(),
+          controlStore: store,
+          executor,
+          stopController: controller,
+          newId,
+          maxNewActivations: 1,
+          observeGraph: () => observation.read(),
+          renderPrompt: ({ work }) => work.instruction,
+        });
+      await reconcile(stopController);
+      await commitSchedule(store, 'tool-stop', {
+        stop: [{ target_id: stoppedWorkId, reason: 'The draft is obsolete.' }],
+      });
+      assert.equal((await reconcile(stopController)).stops[0]?.status, 'stopped');
+      assert.equal(stopController.calls.length, 1);
+
+      const next = await commitSchedule(store, 'tool-add-next', {
+        add_work: [{ operator_id: 'writer', instruction: 'Draft the replacement.', input_ids: [] }],
+      });
+      let runtimeStops = 0;
+      const result = await reconcile({
+        async stopAgentGraphActivation() {
+          runtimeStops += 1;
+          throw new Error('a settled historical stop must not reach the runtime again');
+        },
+      });
+
+      assert.equal(runtimeStops, 0);
+      assert.equal(result.status, 'reconciled');
+      assert.deepEqual(
+        result.stops.map((stop) => [stop.targetId, stop.status]),
+        [[stoppedWorkId, 'already_terminal']],
+      );
+      assert.deepEqual(
+        result.dispatches.map((dispatch) => dispatch.intent.readinessId),
+        [next.addWork[0]!.workId],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test('does not admit stale work when a stop wins the SQLite revision race', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(300) });
     const observation = new MemoryGraphObservation();
@@ -1054,6 +1109,63 @@ describe('stream graph schedule reconciliation', () => {
       await wave.close();
     }
   });
+
+  test('mid-wave wakes do not stop an activation this reconciliation already stopped', async () => {
+    const wave = await gatedScheduleWave(2);
+    try {
+      await wave.commit('stop-first', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Only the first branch is obsolete.' }],
+      });
+      await waitFor(() => wave.stopCalls === 1, { timeoutMs: 1000 });
+      for (let index = 0; index < 3; index += 1) {
+        const observed = wave.observations;
+        await wave.commit(`unrelated-wake-${index}`, {
+          stop: [{ target_id: `unknown-target-${index}`, reason: 'An unrelated target.' }],
+        });
+        await waitFor(() => wave.observations > observed, { timeoutMs: 1000 });
+      }
+      assert.equal(wave.stopCalls, 1, 'a settled stop target must not be stopped on every wake');
+      await wave.commit('stop-second', {
+        stop: [{ target_id: wave.workIds[1]!, reason: 'Now the second branch is obsolete.' }],
+      });
+      const result = await withTimeout(wave.reconciliation, 1000, 'second stop must settle');
+      assert.equal(wave.stopCalls, 2);
+      assert.equal(result.status, 'reconciled');
+      assert.deepEqual(
+        result.dispatches.map((dispatch) => dispatch.result.status),
+        ['cancelled', 'cancelled'],
+      );
+    } finally {
+      await wave.close();
+    }
+  });
+
+  test('retries a failed stop while its wave is parked without another schedule wake', async () => {
+    const wave = await gatedScheduleWave(1);
+    let attempts = 0;
+    wave.beforeStop = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('transient exact-stop failure');
+    };
+    try {
+      await wave.commit('stop-once', {
+        stop: [{ target_id: wave.workIds[0]!, reason: 'Stop despite one cleanup failure.' }],
+      });
+      const result = await withTimeout(
+        wave.reconciliation,
+        2000,
+        'a failed stop must be retried while it parks the only running wave',
+      );
+      assert.equal(attempts, 2);
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.failures.length, 0);
+      assert.equal(result.dispatches[0]!.result.status, 'cancelled');
+      assert.equal(wave.failures.length, 1);
+      assert.equal(wave.subscriptions, 0);
+    } finally {
+      await wave.close();
+    }
+  });
 });
 
 const GRAPH_ID = 'graph-schedule';
@@ -1157,6 +1269,9 @@ async function gatedScheduleWave(count: number) {
     observations: 0,
     settled: false,
     readFailure: undefined as Error | undefined,
+    stopCalls: 0,
+    // Models the runtime's retained cleanup owner after a failed exact stop.
+    retainedStops: new Set<string>(),
   };
   const added = await commitSchedule(store, 'initial-wave', {
     add_work: Array.from({ length: count }, (_, index) => ({
@@ -1207,13 +1322,23 @@ async function gatedScheduleWave(count: number) {
     },
     stopController: {
       async stopAgentGraphActivation(identity: Identity) {
-        await state.beforeStop?.();
+        state.stopCalls += 1;
+        try {
+          await state.beforeStop?.();
+        } catch (error) {
+          state.retainedStops.add(identity.runId);
+          throw error;
+        }
+        state.retainedStops.delete(identity.runId);
         const current = active.get(identity.runId);
         assert.ok(current, 'stop must address an existing exact activation');
         assert.deepEqual(identity, current.identity);
         observation.stopActivation(identity);
         current.cancelled = true;
         current.gate.resolve();
+      },
+      hasPendingAgentGraphActivationStop(identity: Identity) {
+        return state.retainedStops.has(identity.runId);
       },
     },
     newId: nextId(),
@@ -1265,6 +1390,9 @@ async function gatedScheduleWave(count: number) {
     },
     get settled() {
       return state.settled;
+    },
+    get stopCalls() {
+      return state.stopCalls;
     },
     get subscriptions() {
       return listeners.size;

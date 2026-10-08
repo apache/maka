@@ -60,10 +60,23 @@ export interface RuntimeHostedRootExecutionInput extends RuntimeMessageRunIdenti
   readonly onReady?: () => void | Promise<void>;
 }
 
+/**
+ * `run` delivers the Runtime stop to this exact Run's owner only, for an
+ * activation-scoped graph stop. The default stops the Session's live
+ * execution, including a claim that has not attached its Run yet.
+ */
+export interface RuntimeHostedRootStopOptions {
+  readonly scope?: 'session' | 'run';
+}
+
 /** Host-only root lifecycle capability. Embedded compositions must omit it. */
 export interface RuntimeHostedRootAuthority extends RuntimeMessageAuthority {
   executeRoot(input: RuntimeHostedRootExecutionInput): Promise<void>;
-  stopRoot(identity: RuntimeMessageRunIdentity, input?: StopSessionInput): Promise<void>;
+  stopRoot(
+    identity: RuntimeMessageRunIdentity,
+    input?: StopSessionInput,
+    options?: RuntimeHostedRootStopOptions,
+  ): Promise<void>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
 }
 

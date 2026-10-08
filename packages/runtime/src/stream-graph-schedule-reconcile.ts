@@ -58,12 +58,21 @@ import { stableHash } from './request-shape.js';
 
 const MAX_RECONCILIATION_ATTEMPTS = 8;
 const SCHEDULE_INTENT_SCHEMA_VERSION = 1 as const;
+// A failed control pass can park the wave it is stopping, and nothing else may
+// wake it. Retry with a capped backoff while that wave is still running.
+const CONTROL_RETRY_INITIAL_DELAY_MS = 100;
+const CONTROL_RETRY_MAX_DELAY_MS = 5_000;
 
 export interface AgentGraphScheduleStopController {
   stopAgentGraphActivation(
     identity: RuntimeMessageRunIdentity,
     input: { source: 'graph_supervisor' },
   ): Promise<void>;
+  /**
+   * Whether a failed stop left cleanup retained for this exact activation. A
+   * terminal activation without it resolves without another runtime stop.
+   */
+  hasPendingAgentGraphActivationStop?(identity: RuntimeMessageRunIdentity): boolean;
 }
 
 export interface RenderAgentGraphScheduledWorkPromptInput {
@@ -218,6 +227,9 @@ async function reconcileSchedule(
   // reconciliation; cache them per source graph so repeated snapshot reads do
   // not replay the full committed projection of a closed epoch.
   const selectedResultCache: SelectedResultCache = new Map();
+  // Exact stops that already succeeded in this reconciliation; later passes
+  // and wakes do not stop the same activation again.
+  const resolvedStops = new Set<string>();
   let newActivationCount = 0;
   let observedExistingActivationCount = 0;
   let snapshot = await readScheduleSnapshot(input, selectedResultCache);
@@ -236,7 +248,7 @@ async function reconcileSchedule(
       );
     }
 
-    const stopWave = await applyScheduleStops(input, snapshot);
+    const stopWave = await applyScheduleStops(input, snapshot, resolvedStops);
     recordScheduleStops(input, stops, failures, stopWave);
     if (failures.length > 0) {
       snapshot = await readScheduleSnapshot(input, selectedResultCache);
@@ -467,27 +479,41 @@ async function reconcileSchedule(
       wake.notify();
     });
     let controlReadFailure: AgentGraphScheduleReconciliationFailure | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = CONTROL_RETRY_INITIAL_DELAY_MS;
     try {
       while (!waveSettled) {
         await wake.wait();
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
         if (waveSettled || input.abortSignal?.aborted) break;
+        let retry: boolean;
         try {
           const latest = await readScheduleSnapshot(input, selectedResultCache);
-          const controls = await applyScheduleStops(input, latest);
+          const controls = await applyScheduleStops(input, latest, resolvedStops);
           recordScheduleStops(input, stops, failures, controls);
           if (controlReadFailure) {
             failures.splice(failures.indexOf(controlReadFailure), 1);
             controlReadFailure = undefined;
           }
+          retry = controls.failures.length > 0;
         } catch (error) {
           if (controlReadFailure) failures.splice(failures.indexOf(controlReadFailure), 1);
           controlReadFailure = { phase: 'schedule', error };
           recordReconciliationFailure(input, failures, controlReadFailure);
-          // Keep consuming future control wakes while this wave still owns
-          // running work. Retry only after another wake, never in a busy loop.
+          retry = true;
+        }
+        // A failed stop can keep its child, and so this wave, parked until a
+        // retry succeeds. Back off instead of waiting for another commit.
+        if (retry) {
+          retryTimer = setTimeout(wake.notify, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, CONTROL_RETRY_MAX_DELAY_MS);
+        } else {
+          retryDelay = CONTROL_RETRY_INITIAL_DELAY_MS;
         }
       }
     } finally {
+      clearTimeout(retryTimer);
       // This wave remains the sole owner of all dispatched executions, even
       // if a control-store read fails while processing a schedule wake.
       await wave;
@@ -716,12 +742,21 @@ function recordScheduleStops(
       failures.splice(index, 1);
     }
   }
-  for (const failure of controls.failures) recordReconciliationFailure(input, failures, failure);
+  for (const failure of controls.failures) {
+    // A retried stop that fails again replaces its earlier failure without
+    // notifying the supervisor on every backoff attempt.
+    const previous = failures.findIndex(
+      (existing) => existing.phase === 'stop' && existing.targetId === failure.targetId,
+    );
+    if (previous >= 0) failures[previous] = failure;
+    else recordReconciliationFailure(input, failures, failure);
+  }
 }
 
 async function applyScheduleStops(
   input: ReconcileAgentGraphScheduleInput,
   snapshot: ScheduleSnapshot,
+  resolvedStops: Set<string>,
 ): Promise<{
   stops: AgentGraphScheduleStopResult[];
   failures: AgentGraphScheduleReconciliationFailure[];
@@ -758,19 +793,28 @@ async function applyScheduleStops(
       ? activationTargets.get(claim.targetRunId)
       : activationTargets.get(targetId);
     if (activation && isTerminalActivationStatus(activation.status)) {
+      const identity = {
+        sessionId: activation.sessionId,
+        runId: activation.activationId,
+        turnId: activation.turnId,
+      };
       // A durable terminal does not prove that backend cleanup succeeded.
-      // Exact stop is a no-op without a retained owner, and otherwise releases
-      // the same cleanup barrier before later work may use this operator.
-      targets.push({
-        targetId,
-        reason,
-        status: 'already_terminal',
-        identity: {
+      // Retry the exact stop only while a failed stop retains cleanup for this
+      // Run; a settled historical target resolves without a runtime call.
+      if (
+        resolvedStops.has(stopTargetKey(targetId, identity)) ||
+        !input.stopController.hasPendingAgentGraphActivationStop?.(identity)
+      ) {
+        immediate.push({
+          targetId,
+          reason,
+          status: 'already_terminal',
           sessionId: activation.sessionId,
-          runId: activation.activationId,
-          turnId: activation.turnId,
-        },
-      });
+          activationId: activation.activationId,
+        });
+        continue;
+      }
+      targets.push({ targetId, reason, status: 'already_terminal', identity });
       continue;
     }
     if (work && claim) {
@@ -804,12 +848,12 @@ async function applyScheduleStops(
     const sessionId = activation?.sessionId ?? claim!.targetSessionId;
     const activationId = activation?.activationId ?? claim!.targetRunId;
     const turnId = activation?.turnId ?? claim!.targetTurnId;
-    targets.push({
-      targetId,
-      reason,
-      status: 'stopped',
-      identity: { sessionId, runId: activationId, turnId },
-    });
+    const identity = { sessionId, runId: activationId, turnId };
+    if (resolvedStops.has(stopTargetKey(targetId, identity))) {
+      immediate.push({ targetId, reason, status: 'stopped', sessionId, activationId });
+      continue;
+    }
+    targets.push({ targetId, reason, status: 'stopped', identity });
   }
 
   const settled = await Promise.allSettled(
@@ -827,11 +871,12 @@ async function applyScheduleStops(
     }),
   );
   settled.forEach((result, index) => {
+    const target = targets[index]!;
     if (result.status === 'fulfilled') {
+      resolvedStops.add(stopTargetKey(target.targetId, target.identity));
       immediate.push(result.value);
       return;
     }
-    const target = targets[index]!;
     failures.push({
       phase: 'stop',
       targetId: target.targetId,
@@ -845,6 +890,10 @@ async function applyScheduleStops(
     stops: immediate.sort((a, b) => compareIdentity(a.targetId, b.targetId)),
     failures,
   };
+}
+
+function stopTargetKey(targetId: string, identity: RuntimeMessageRunIdentity): string {
+  return [targetId, identity.sessionId, identity.runId, identity.turnId].join('\u0000');
 }
 
 async function dispatchScheduledWork(

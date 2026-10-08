@@ -186,6 +186,7 @@ export interface RuntimeKernelLike {
   stopExecution?(claim: RuntimeExecutionClaim, input?: StopSessionInput): Promise<void>;
   waitForExecutionStop?(claim: RuntimeExecutionClaim): Promise<void>;
   stopRun?(identity: RuntimeMessageRunIdentity, input?: StopSessionInput): Promise<void>;
+  hasPendingRunStop?(identity: RuntimeMessageRunIdentity): boolean;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
@@ -1980,18 +1981,30 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   /** A failed cleanup attempt keeps its captured owner parked until a successful retry. */
   waitForExecutionStop(claim: RuntimeExecutionClaim): Promise<void> {
-    const execution = this.executionClaimStates.get(claim);
-    const run = execution?.run;
-    const operation = this.stopOperations.get(claim.sessionId);
-    if (
-      !run ||
-      !operation ||
-      ![...operation.targets.values()].some(
-        (target) => target.runs.get(run.runId)?.turnId === run.turnId,
+    const run = this.executionClaimStates.get(claim)?.run;
+    const operation =
+      run &&
+      this.retainedRunStopOperation({
+        sessionId: claim.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+      });
+    return operation ? operation.completion : Promise.resolve();
+  }
+
+  /** Whether a retained stop operation still owns cleanup for this exact Run. */
+  hasPendingRunStop(identity: RuntimeMessageRunIdentity): boolean {
+    return this.retainedRunStopOperation(identity) !== undefined;
+  }
+
+  private retainedRunStopOperation(identity: RuntimeMessageRunIdentity): StopOperation | undefined {
+    const operation = this.stopOperations.get(identity.sessionId);
+    return operation &&
+      [...operation.targets.values()].some(
+        (target) => target.runs.get(identity.runId)?.turnId === identity.turnId,
       )
-    )
-      return Promise.resolve();
-    return operation.completion;
+      ? operation
+      : undefined;
   }
 
   /** Exact identity lookup never redirects a completed Run's stop to its successor. */
@@ -2048,16 +2061,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     identity: RuntimeMessageRunIdentity,
     input: StopSessionInput,
   ): Promise<void> {
-    const operation = this.stopOperations.get(identity.sessionId);
-    if (
-      !operation ||
-      ![...operation.targets.values()].some((target) => {
-        const run = target.runs.get(identity.runId);
-        return run?.turnId === identity.turnId;
-      })
-    )
-      return;
-    await this.enqueueStopOperation(identity.sessionId, operation, input, true);
+    const operation = this.retainedRunStopOperation(identity);
+    if (operation) await this.enqueueStopOperation(identity.sessionId, operation, input, true);
   }
 
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {

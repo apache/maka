@@ -409,7 +409,7 @@ type ResolvedClaimedAgentGraphIntentInput = Omit<
 > & {
   claim: AgentGraphIntentClaim;
   hostedGraphExecution?: RuntimeHostedAgentGraphExecutionCapability;
-  onHostSubmission?: () => void;
+  onHostAdmission?: () => void;
 };
 
 const CHILD_AGENT_SUMMARY_MAX_CHARS = 4_000;
@@ -909,7 +909,7 @@ export class SessionManager {
       owner: {
         identity: RuntimeMessageRunIdentity;
         execution: RuntimeExecutionClaim;
-        hostSubmitted: boolean;
+        hostAdmitted: boolean;
         stopTask?: Promise<void>;
       };
       promise: Promise<ClaimedAgentGraphIntentResult>;
@@ -2961,7 +2961,7 @@ export class SessionManager {
     const owner: {
       identity: RuntimeMessageRunIdentity;
       execution: RuntimeExecutionClaim;
-      hostSubmitted: boolean;
+      hostAdmitted: boolean;
       stopTask?: Promise<void>;
     } = {
       identity: {
@@ -2970,10 +2970,10 @@ export class SessionManager {
         turnId: claim.targetTurnId,
       },
       execution: runtimeExecution,
-      hostSubmitted: false,
+      hostAdmitted: false,
     };
-    resolved.onHostSubmission = () => {
-      owner.hostSubmitted = true;
+    resolved.onHostAdmission = () => {
+      owner.hostAdmitted = true;
     };
     const promise = this.enqueueClaimedAgentGraphIntent(resolved, runtimeExecution, async () => {
       runtimeExecution.release();
@@ -3113,7 +3113,7 @@ export class SessionManager {
         );
         if (input.hostedGraphExecution && runtimeExecution.stopSignal.aborted)
           throw runtimeExecution.stopSignal.reason;
-        input.onHostSubmission?.();
+        input.onHostAdmission?.();
         await this.consumeLinkedRootExecution({
           sessionId: child.id,
           turnId: claim.targetTurnId,
@@ -3163,9 +3163,8 @@ export class SessionManager {
 
     // An invocation is what makes a Turn exist on the ledger, so the run listing
     // is the whole occupancy check: a Turn with durable content has one.
-    const turnOwner = (await this.listInvocations(child.id)).find(
-      (candidate) => candidate.turnId === claim.targetTurnId,
-    );
+    const invocations = await this.listInvocations(child.id);
+    const turnOwner = invocations.find((candidate) => candidate.turnId === claim.targetTurnId);
     if (turnOwner) {
       throw new Error(
         `Claimed graph turn ${claim.targetTurnId} is already owned by run ${turnOwner.runId}`,
@@ -3175,9 +3174,7 @@ export class SessionManager {
       throw new Error('Claimed graph execution target child session is terminated');
     }
     if (child.status === 'aborted') {
-      const latest = (await this.listInvocations(child.id)).sort(
-        (left, right) => right.openedAt - left.openedAt,
-      )[0];
+      const latest = [...invocations].sort((left, right) => right.openedAt - left.openedAt)[0];
       // A graph stop ends one activation, not the reusable operator. Only a
       // durable graph-supervisor stop permits a new claim on an aborted child.
       if (latest?.terminalEvent?.actions?.stateDelta?.abortSource !== 'graph.supervisor') {
@@ -3201,12 +3198,24 @@ export class SessionManager {
     const userMessageId = await this.claimedGraphUserMessageId(claim, input.hostedGraphExecution);
     if (input.hostedGraphExecution && runtimeExecution.stopSignal.aborted)
       throw runtimeExecution.stopSignal.reason;
-    input.onHostSubmission?.();
+    // Host runs this gate in its Session admission lease immediately before
+    // the durable admission. Until it passes, a graph stop only cancels the
+    // local capability and the gate refuses the Turn; after it passes, the
+    // stop must go through the Host fence.
+    const hostedAdmitExecution = input.hostedGraphExecution
+      ? async (): Promise<'executing' | 'cancelled'> => {
+          if (runtimeExecution.stopSignal.aborted) return 'cancelled';
+          const admission = admitExecution ? await admitExecution() : 'executing';
+          if (admission === 'cancelled' || runtimeExecution.stopSignal.aborted) return 'cancelled';
+          input.onHostAdmission?.();
+          return 'executing';
+        }
+      : admitExecution;
     const execution = this.consumeLinkedRootExecution({
       ...identity,
       userMessageId,
       execution: rootExecution,
-      ...(admitExecution ? { admitExecution } : {}),
+      ...(hostedAdmitExecution ? { admitExecution: hostedAdmitExecution } : {}),
       content: { text: input.prompt },
       start: ({ runId, userMessageId, onRunStarted }) =>
         this.sendMessage(
@@ -3956,9 +3965,10 @@ export class SessionManager {
     const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
-    // Before submission the capability is only local queue ownership: cancel
-    // it synchronously and the admission path checks it before executeRoot.
-    // Once submitted, Host must commit its durable fence before Runtime stop.
+    // Until the Host admission gate passes, the capability is only local
+    // ownership: cancel it synchronously, and both the pre-submission check
+    // and that gate refuse the Turn. Once admitted, Host must commit its
+    // durable fence before Runtime stop.
     if (authority) {
       const admission = await this.deps.hostedAgentGraphExecution?.readRootTurnAdmissionIdentity(
         identity.sessionId,
@@ -3968,13 +3978,18 @@ export class SessionManager {
         throw new Error('Graph stop identity does not match its durable admission');
       }
       // A recovered local claim can be new while the Host already owns its Run.
-      // Recheck submission after the durable read closes that lookup race.
-      if (admission || this.findGraphRuntimeActivation(identity)?.hostSubmitted) {
-        await authority.stopRoot(identity, input);
+      // Recheck the gate after the durable read closes that lookup race.
+      if (admission || this.findGraphRuntimeActivation(identity)?.hostAdmitted) {
+        await authority.stopRoot(identity, input, { scope: 'run' });
         return;
       }
     }
     await this.stopGraphRuntimeActivation(identity, input);
+  }
+
+  /** Whether a failed stop left cleanup retained for this exact graph activation. */
+  hasPendingAgentGraphActivationStop(identity: RuntimeMessageRunIdentity): boolean {
+    return this.runtimeKernel.hasPendingRunStop?.(identity) ?? false;
   }
 
   private findGraphRuntimeActivation(identity: RuntimeMessageRunIdentity) {

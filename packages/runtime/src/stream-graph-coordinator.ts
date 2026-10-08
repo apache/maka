@@ -105,6 +105,7 @@ export interface AgentGraphCoordinatorRuntime {
   runClaimedAgentGraphIntent: SessionManager['runClaimedAgentGraphIntent'];
   stopSession: SessionManager['stopSession'];
   stopAgentGraphActivation: SessionManager['stopAgentGraphActivation'];
+  hasPendingAgentGraphActivationStop?: SessionManager['hasPendingAgentGraphActivationStop'];
 }
 
 export interface AgentGraphCoordinatorInput {

@@ -1240,8 +1240,8 @@ export async function createExecutionRuntimeHostComposition(
       bindRun: (identity) => messages.bindRun(identity),
       executeRoot: (input) =>
         executeHostedExecutionToSettlement(requireRootCoordinator(rootCoordinator), input),
-      stopRoot: (identity, input) =>
-        requireRootCoordinator(rootCoordinator).stopRoot(identity, input),
+      stopRoot: (identity, input, options) =>
+        requireRootCoordinator(rootCoordinator).stopRoot(identity, input, options),
       stopSession: (sessionId, input) =>
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };

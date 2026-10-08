@@ -2210,6 +2210,61 @@ describe('SessionManager claimed graph intent execution', () => {
     );
   });
 
+  test('a scoped graph stop whose backend delivery fails keeps the child result authoritative', {
+    timeout: 2_000,
+  }, async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const sendGate = makeGate();
+    const ready = makeGate();
+    backends.register(
+      'ai-sdk',
+      (ctx) =>
+        new (class extends TestBackend {
+          override async stop(): Promise<void> {
+            this.stopCalls += 1;
+            sendGate.release();
+            throw new Error('backend stop delivery failed');
+          }
+        })(ctx, sendGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(85),
+    });
+    const parent = await manager.createSession(makeInput());
+    const child = await createGraphOperatorSession(store, parent.id);
+    const claim = graphIntentClaim({ targetSessionId: child.id }, 'failed stop delivery');
+    const running = manager.runClaimedAgentGraphIntent({
+      ...graphExecutionInput(claim, 'failed stop delivery'),
+      onReady: () => ready.release(),
+    });
+    void running.catch(() => undefined);
+    await ready.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const identity = {
+      sessionId: child.id,
+      runId: claim.targetRunId,
+      turnId: claim.targetTurnId,
+    };
+    // The stopper owns the cleanup failure; a retry settles the retained
+    // operation as failed without delivering to the backend again.
+    await assert.rejects(manager.stopAgentGraphActivation(identity), /stop delivery failed/);
+    await assert.rejects(manager.stopAgentGraphActivation(identity), /stop delivery failed/);
+    const result = await running;
+    assert.strictEqual(result.status, 'cancelled');
+    assert.strictEqual(
+      runtimeInvocationOutcome(await readInvocation(runStore, child.id, claim.targetRunId)),
+      'cancelled',
+    );
+  });
+
   for (const recovery of ['retry', 'session_stop'] as const) {
     test(`scoped graph stop cleanup failure keeps the Session queue fenced until ${recovery}`, {
       timeout: 2_000,
@@ -2333,6 +2388,58 @@ describe('SessionManager claimed graph intent execution', () => {
       ],
     );
   });
+
+  for (const source of ['graph_supervisor', 'stop_button'] as const) {
+    test(`a graph operator stopped by a ${source} Session stop ${source === 'graph_supervisor' ? 'accepts' : 'refuses'} its next claim`, {
+      timeout: 2_000,
+    }, async () => {
+      const store = new MemorySessionStore();
+      const runStore = new MemoryAgentRunStore();
+      const backends = new BackendRegistry();
+      const sendGate = makeGate();
+      const ready = makeGate();
+      backends.register('ai-sdk', (ctx) => new TestBackend(ctx, sendGate));
+      const manager = new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: runStore,
+        backends,
+        childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+        newId: nextId(),
+        now: nextNow(95),
+      });
+      const parent = await manager.createSession(makeInput());
+      const child = await createGraphOperatorSession(store, parent.id);
+      const stoppedClaim = graphIntentClaim({ targetSessionId: child.id }, 'stopped activation');
+      const stopped = manager.runClaimedAgentGraphIntent({
+        ...graphExecutionInput(stoppedClaim, 'stopped activation'),
+        onReady: () => ready.release(),
+      });
+      await ready.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await manager.stopSession(child.id, { source });
+      sendGate.release();
+      assert.strictEqual((await stopped).status, 'cancelled');
+      assert.strictEqual((await store.readHeader(child.id)).status, 'aborted');
+      // A whole-graph stop keeps durable schedule facts so the supervisor can
+      // wake the same graph again; a user stop still terminates the operator.
+      const nextClaim = graphIntentClaim(
+        {
+          targetSessionId: child.id,
+          claimId: `graph_claim_${'e'.repeat(32)}`,
+          intentId: `graph_intent_${'f'.repeat(32)}`,
+          targetRunId: 'resumed-run',
+          targetTurnId: 'resumed-turn',
+        },
+        'resumed activation',
+      );
+      const next = manager.runClaimedAgentGraphIntent(
+        graphExecutionInput(nextClaim, 'resumed activation'),
+      );
+      if (source === 'graph_supervisor') assert.strictEqual((await next).status, 'completed');
+      else await assert.rejects(next, /target child session is terminated/);
+    });
+  }
 
   test('evaluates execution admission only after a claimed child-session slot is available', async () => {
     const store = new MemorySessionStore();

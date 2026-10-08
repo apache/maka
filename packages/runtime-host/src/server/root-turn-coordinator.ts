@@ -56,6 +56,7 @@ import {
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
   RuntimeMessageAuthorityInvariantError,
+  type RuntimeHostedRootStopOptions,
   type RuntimeMessageRunIdentity,
 } from '@maka/runtime/message-authority';
 import {
@@ -1240,8 +1241,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     );
   }
 
-  stopRoot(identity: RuntimeMessageRunIdentity, input: StopSessionInput = {}): Promise<void> {
+  stopRoot(
+    identity: RuntimeMessageRunIdentity,
+    input: StopSessionInput = {},
+    options: RuntimeHostedRootStopOptions = {},
+  ): Promise<void> {
     normalizeStopSessionSource(input.source, input.workHubActionId);
+    // Only an activation-scoped graph stop targets one Run. Public turn.stop,
+    // shutdown and supervisor stops keep the Session-level Runtime stop, which
+    // also reaches a claim whose Run has not attached yet.
+    const scoped = options.scope === 'run';
     return this.runCommand(async () => {
       const declared = await this.sessionAdmission.run(identity.sessionId, (lease) =>
         this.declareStopFence(
@@ -1249,7 +1258,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           () => this.messages.commitStopFence(identity),
           lease,
           input,
-          true,
+          scoped,
         ),
       );
       await declared?.deliverStop();
@@ -1259,6 +1268,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       );
       if (disposition.kind === 'complete') {
         if (!disposition.outcome.ok) throwHostedStopError(identity.sessionId, disposition.outcome);
+        if (!scoped) return;
         const logical = await readLogicalRuntimeExecutionForRun(
           this.stores.runtimeEventStore,
           identity,
@@ -1270,10 +1280,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         return;
       }
       if (disposition.kind === 'request_stop') {
-        await this.deliverRuntimeStopIntent(identity.sessionId, input, {
-          ...identity,
-          runId: disposition.active.continuation?.runId ?? identity.runId,
-        });
+        await this.deliverRuntimeStopIntent(
+          identity.sessionId,
+          input,
+          scoped
+            ? {
+                ...identity,
+                runId: disposition.active.continuation?.runId ?? identity.runId,
+              }
+            : undefined,
+        );
       }
       await disposition.active.done;
     });
