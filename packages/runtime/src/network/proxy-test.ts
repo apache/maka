@@ -113,13 +113,26 @@ export async function testProxyConnection(
     const teardown = disposeDispatcher(timedOut);
     controller.abort();
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      teardown,
-      new Promise<void>((resolve) => {
-        graceTimer = setTimeout(resolve, DISPATCHER_CLOSE_GRACE_MS);
+    const graceExpired = await Promise.race([
+      teardown.then(() => false),
+      new Promise<boolean>((resolve) => {
+        graceTimer = setTimeout(() => resolve(true), DISPATCHER_CLOSE_GRACE_MS);
       }),
     ]);
     if (graceTimer) clearTimeout(graceTimer);
+    if (graceExpired) {
+      // The graceful close never settled within the grace, so destroy the
+      // dispatcher instead of leaking it. Fire-and-forget with the error
+      // swallowed: teardown must never replace the result this call owes.
+      const disposable = dispatcher as {
+        destroy?: (error?: Error) => void | Promise<void>;
+      };
+      if (typeof disposable.destroy === 'function') {
+        void Promise.resolve(
+          disposable.destroy.call(dispatcher, new Error('Dispatcher close grace expired')),
+        ).catch(() => {});
+      }
+    }
   }
 }
 

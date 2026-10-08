@@ -161,6 +161,28 @@ describe('testProxyConnection', () => {
     }
   });
 
+  test('destroys the dispatcher when a stalled close outlives the teardown grace', async (t) => {
+    // Reproduce the dispatcher completion failure independently of
+    // Undici/Node version: once the bounded teardown grace expires with the
+    // graceful close still pending, the abandoned dispatcher must be
+    // destroyed instead of leaking.
+    t.mock.method(ProxyAgent.prototype, 'close', () => new Promise<void>(() => {}));
+    const destroyMock = t.mock.method(ProxyAgent.prototype, 'destroy', () => {});
+
+    const result = await withTimeout(
+      testProxyConnection({
+        proxy: { ...PROXY_DEFAULTS, enabled: true, type: 'http', host: '127.0.0.1', port: 1 },
+        url: 'http://example.com',
+        timeoutMs: 1_000,
+      }),
+      5_000,
+      'testProxyConnection never settled after the teardown grace expired',
+    );
+
+    assert.strictEqual(result.ok, false);
+    assert.ok(destroyMock.mock.callCount() > 0);
+  });
+
   test('times out when the proxy accepts TCP but never responds', async () => {
     const sockets = new Set<net.Socket>();
     const server = net.createServer((socket) => {

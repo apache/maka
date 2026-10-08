@@ -290,6 +290,55 @@ describe('proxiedFetch', () => {
     }
   });
 
+  test('destroys the dispatcher when a stalled close outlives the teardown grace', async (t) => {
+    const sockets = new Set<net.Socket>();
+    const proxy = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('error', () => sockets.delete(socket));
+      // Accept the proxy TCP connection, then reset it immediately so the
+      // fetch itself fails (with timeoutMs 0 the internal timeout is off and
+      // the graceful close branch of the teardown runs).
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      proxy.once('error', reject);
+      proxy.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = proxy.address();
+    assert.ok(address && typeof address === 'object');
+    setActiveProxy({
+      ...PROXY_DEFAULTS,
+      enabled: true,
+      type: 'http',
+      host: '127.0.0.1',
+      port: address.port,
+      bypassList: [],
+    });
+    // Reproduce the dispatcher completion failure independently of
+    // Undici/Node version: once the bounded teardown grace expires with the
+    // graceful close still pending, the abandoned dispatcher must be
+    // destroyed instead of leaking.
+    t.mock.method(ProxyAgent.prototype, 'close', () => new Promise<void>(() => {}));
+    const destroyMock = t.mock.method(ProxyAgent.prototype, 'destroy', () => {});
+
+    try {
+      await withTimeout(
+        assert.rejects(
+          () => proxiedFetch('http://example.com', { timeoutMs: 0 }),
+          /fetch failed|other side closed|ECONNRESET|network/i,
+        ),
+        5_000,
+        'proxiedFetch rejection was delayed past the teardown grace',
+      );
+      assert.ok(destroyMock.mock.callCount() > 0);
+    } finally {
+      setActiveProxy(null);
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    }
+  });
+
   test('timeoutMs 0 disables the internal timeout for streaming callers', async () => {
     const server = createServer((_req, res) => {
       setTimeout(() => {
