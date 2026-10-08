@@ -94,17 +94,31 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
   const terminate = () => {
     if (child.pid) void terminateProcessTree({ pid: child.pid, signal: 'SIGKILL' }).catch(() => {});
   };
+  // Command output reaches these pipes directly, racing the IPC admission
+  // message. Hold it until callers have observed `ready`, so output never
+  // precedes admission, as with a direct spawn. Callers attach 'data'
+  // listeners synchronously; an explicit pause keeps those from resuming.
+  const outputs = [child.stdout, child.stderr].filter((stream) => stream !== null);
+  for (const stream of outputs) stream.pause();
+  let outputReleased = false;
+  const releaseOutput = () => {
+    if (outputReleased) return;
+    outputReleased = true;
+    for (const stream of outputs) stream.resume();
+  };
   function fail(error: Error): void {
     if (failureReported) return;
     failureReported = true;
     clearTimeout(timer);
     rejectReady(error);
+    releaseOutput();
     terminate();
     child.emit('error', error);
   }
   child.once('error', (error) => {
     clearTimeout(timer);
     rejectReady(error);
+    releaseOutput();
   });
   child.once('spawn', () => {
     const request: OwnedProcessLaunch = {
@@ -126,6 +140,9 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
       started = true;
       clearTimeout(timer);
       resolveReady(message.pid);
+      // Promise continuations of `ready` run before the check phase; a
+      // nextTick resume would deliver output ahead of them.
+      setImmediate(releaseOutput);
     } else if (message.kind === 'completed') {
       completed = true;
     } else if (message.kind === 'failed') {
@@ -136,6 +153,7 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
   });
   child.once('exit', (code) => {
     clearTimeout(timer);
+    releaseOutput();
     if (!started) rejectReady(new Error('Command supervisor exited before admission'));
     if (!completed) {
       // The group can outlive its leader. An unexpected supervisor exit must

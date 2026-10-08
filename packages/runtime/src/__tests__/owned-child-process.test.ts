@@ -127,6 +127,36 @@ test('POSIX cancellation delivers SIGTERM exactly once to the owned command', {
   assert.equal(result.stdout, 'ready\nsignals=1\n');
 });
 
+test('command output never reaches the caller before admission', async () => {
+  const { child, ready } = spawnOwnedProcess({
+    program: process.execPath,
+    args: ['-e', "process.stdout.write('out'); process.stderr.write('err')"],
+    cwd: tmpdir(),
+    shell: false,
+    stdin: 'ignore',
+  });
+  let admitted = false;
+  void ready.then(() => {
+    admitted = true;
+  });
+  const seen: Array<{ stream: string; admitted: boolean }> = [];
+  child.stdout?.on('data', () => seen.push({ stream: 'stdout', admitted }));
+  child.stderr?.on('data', () => seen.push({ stream: 'stderr', admitted }));
+  // Output travels on inherited pipes and admission on the IPC channel. Keep
+  // the loop busy after the launch request is written, so both are pending
+  // when it resumes; without the hold, output is delivered first.
+  child.once('spawn', () => {
+    const until = Date.now() + 250;
+    while (Date.now() < until) {}
+  });
+  await new Promise((resolve) => child.once('close', resolve));
+  assert.deepEqual([...new Set(seen.map(({ stream }) => stream))].sort(), ['stderr', 'stdout']);
+  assert.ok(
+    seen.every((entry) => entry.admitted),
+    JSON.stringify(seen),
+  );
+});
+
 for (const signal of ['SIGPIPE', 'SIGUSR1'] as const) {
   // Node ignores SIGPIPE and reserves SIGUSR1 for its inspector, so a supervisor
   // that merely re-raised these would outlive its command.
