@@ -121,13 +121,16 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
     outputReleased = true;
     for (const stream of outputs) stream.resume();
   };
-  function fail(error: Error): void {
+  /** `supervisorExiting`: the supervisor reported and is exiting on its own,
+   * so its PID may be reaped before a tree walk could start. */
+  function fail(error: Error, supervisorExiting = false): void {
     if (failureReported) return;
     failureReported = true;
     clearTimeout(timer);
     rejectReady(error);
     releaseOutput();
-    terminate();
+    if (supervisorExiting) terminateOrphanedGroup();
+    else terminate();
     child.emit('error', error);
   }
   child.once('error', (error) => {
@@ -163,7 +166,7 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
     } else if (message.kind === 'failed') {
       completed = true;
       const error = Object.assign(new Error(message.message), { code: message.code });
-      fail(error);
+      fail(error, true);
     }
   });
   child.once('exit', (code) => {
@@ -180,10 +183,12 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
     // The group can outlive its leader. An unexpected supervisor exit must
     // not leave an admitted command running while the Host is still alive.
     terminateOrphanedGroup();
-    // A clean exit without `completed` lost the command's result. Any other
-    // exit may be the Host's own forced termination, which on Windows
-    // (taskkill) also ends with an ordinary exit code.
-    if (code === 0 && !failureReported) {
+    // A clean exit without `completed` lost the command's result. On POSIX the
+    // Host's own stops end the supervisor by signal, so any exit code there is
+    // a supervisor fault too. On Windows taskkill, the Host's forced stop, also
+    // ends with an ordinary code.
+    const lost = code === 0 || (code !== null && process.platform !== 'win32');
+    if (lost && !failureReported) {
       child.emit('error', new Error('Command supervisor lost its result'));
     }
   }
