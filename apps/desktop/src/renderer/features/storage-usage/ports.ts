@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import type { SessionStorageUsage, StorageUsageQueryResult } from '@maka/runtime-host/protocol';
+import type {
+  SessionStorageUsage,
+  StorageRetentionQueryResult,
+  StorageRetentionSetInput,
+  StorageRetentionSetResult,
+  StorageUsageQueryResult,
+} from '@maka/runtime-host/protocol';
 
 /** The Runtime Host a Settings page is pointed at, stated structurally. */
 export interface StorageUsageHostTarget {
@@ -27,7 +33,8 @@ export interface StorageUsageHostTarget {
 
 /**
  * What the storage usage feature needs from the Desktop: two read-only
- * measurements. Nothing here reclaims or deletes data.
+ * measurements, and one Host's archived-task retention setting. Nothing here
+ * deletes data itself; a Host with retention enabled does that on its own.
  */
 export interface StorageUsageServices {
   /** One Runtime Host's State Root footprint. */
@@ -39,4 +46,11 @@ export interface StorageUsageServices {
   loadSessionUsage(
     sessionIds: readonly string[],
   ): Promise<Readonly<Record<string, SessionStorageUsage>>>;
+  /** One Host's retention setting, its preview and its latest results. */
+  loadRetention(host: StorageUsageHostTarget): Promise<StorageRetentionQueryResult>;
+  /** The Desktop's only way to change that setting. */
+  setRetention(
+    host: StorageUsageHostTarget,
+    input: StorageRetentionSetInput,
+  ): Promise<StorageRetentionSetResult>;
 }

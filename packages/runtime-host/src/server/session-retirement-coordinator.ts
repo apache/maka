@@ -182,6 +182,37 @@ class SessionRetirementBusyError extends Error {
   readonly name = 'SessionRetirementBusyError';
 }
 
+/** What an archive-retention sweep's guard sees of a removal plan, read under its admission. */
+export interface RetentionRemovalPlan {
+  /** Every Session the removal deletes, as admitted. */
+  readonly remove: readonly SessionHeaderSnapshot[];
+  /** Still-active subtasks the removal would move to the archive. */
+  readonly archiveSessionIds: readonly string[];
+  /** Worktrees cleanup would retire, counted exactly as the removal preview counts them. */
+  readonly worktreeCount: number;
+}
+
+/** Why a sweep's guard kept a task: not (or no longer) eligible, or left for manual review. */
+export type RetentionHoldReason = 'ineligible' | 'needs_review';
+
+export type RetentionRemovalOutcome =
+  | { readonly kind: 'removed'; readonly bytes?: number }
+  | { readonly kind: 'held'; readonly reason: RetentionHoldReason }
+  | { readonly kind: 'busy' }
+  /** The task changed or went away after the sweep read it. */
+  | { readonly kind: 'skipped' }
+  | { readonly kind: 'failed' };
+
+class RetentionHold extends Error {
+  readonly name = 'RetentionHold';
+
+  constructor(readonly reason: RetentionHoldReason) {
+    super(`Archive retention kept the task: ${reason}`);
+  }
+}
+
+type RemovalAdmissionGuard = (plan: StableRemovalPlan) => Promise<void>;
+
 /** Host-owned archive, unarchive, remove, and revision-family commit authority. */
 export class HostSessionRetirementCoordinator {
   readonly handlers: SessionRetirementOperationHandlerMap = {
@@ -316,7 +347,61 @@ export class HostSessionRetirementCoordinator {
     }
   }
 
-  async #remove(input: SessionRemoveInput): Promise<OperationOutcome<'session.remove'>> {
+  /**
+   * Archive retention's removal: `session.remove` for the task the sweep read,
+   * with `guard` run inside the removal admission — after the plan is stable,
+   * before any retirement work — so a task whose policy, archive or pin state,
+   * age or plan changed since the sweep read it is kept rather than deleted.
+   * The size is measured once the guard admits the plan, as the batch preview
+   * measures it.
+   */
+  async removeForRetention(
+    target: { readonly sessionId: string; readonly expectedRevision: number },
+    guard: (plan: RetentionRemovalPlan) => Promise<RetentionHoldReason | undefined>,
+  ): Promise<RetentionRemovalOutcome> {
+    let admitted = false;
+    let bytes: number | undefined;
+    let outcome: OperationOutcome<'session.remove'>;
+    try {
+      outcome = await this.#removeUnder(target, async (plan) => {
+        const remove = plan.remove.sessionIds.map((id) => requireFamilyRecord(plan.remove, id));
+        const reason = await guard({
+          remove,
+          archiveSessionIds: plan.archive.sessionIds,
+          worktreeCount: this.#reclaimedWorktreeCount(remove.map(({ header }) => header)),
+        });
+        if (reason) throw new RetentionHold(reason);
+        admitted = true;
+        bytes = await this.#measureRemoved(plan.remove.sessionIds);
+      });
+    } catch (error) {
+      if (error instanceof RetentionHold) return { kind: 'held', reason: error.reason };
+      return { kind: 'failed' };
+    }
+    if (outcome.ok) {
+      // Removed without this guard admitting it — already gone — is not this sweep's deletion.
+      if (outcome.result.kind !== 'removed' || !admitted) return { kind: 'skipped' };
+      return { kind: 'removed', ...(bytes === undefined ? {} : { bytes }) };
+    }
+    switch (outcome.error.code) {
+      case 'session_busy':
+        return { kind: 'busy' };
+      case 'not_found':
+      case 'operation_conflict':
+        return { kind: 'skipped' };
+      default:
+        return { kind: 'failed' };
+    }
+  }
+
+  #remove(input: SessionRemoveInput): Promise<OperationOutcome<'session.remove'>> {
+    return this.#removeUnder(input);
+  }
+
+  async #removeUnder(
+    input: SessionRemoveInput,
+    guard?: RemovalAdmissionGuard,
+  ): Promise<OperationOutcome<'session.remove'>> {
     let probe;
     try {
       probe = await this.#stores.probeSessionRemoval(input.sessionId);
@@ -353,6 +438,7 @@ export class HostSessionRetirementCoordinator {
             return removeOutcome({ kind: 'too_recent', sessionId: input.sessionId });
           }
         }
+        await guard?.(plan);
 
         let removeHandles: RetirementHandles | undefined;
         let archiveHandles: RetirementHandles | undefined;
@@ -402,6 +488,7 @@ export class HostSessionRetirementCoordinator {
         }
       });
     } catch (error) {
+      if (error instanceof RetentionHold) throw error;
       return this.#removeFailure(error, input);
     }
   }
@@ -460,15 +547,21 @@ export class HostSessionRetirementCoordinator {
             .filter((header) => header.subagentParent?.graph !== undefined)
             .map(sessionRevisionFamilyId),
         ).size,
-        // What cleanup retires: one binding per removed Session, and only
-        // through a worktree executor. A subagent Session carrying a binding
-        // cannot be a revision, so no two removed Sessions share one.
-        worktreeCount: this.#worktrees
-          ? removedHeaders.filter((header) => header.subagentWorkspace !== undefined).length
-          : 0,
+        worktreeCount: this.#reclaimedWorktreeCount(removedHeaders),
         ...(bytes === undefined ? {} : { bytes }),
       },
     };
+  }
+
+  /**
+   * What cleanup retires: one binding per removed Session, and only through a
+   * worktree executor. A subagent Session carrying a binding cannot be a
+   * revision, so no two removed Sessions share one.
+   */
+  #reclaimedWorktreeCount(removed: readonly SessionHeader[]): number {
+    return this.#worktrees
+      ? removed.filter((header) => header.subagentWorkspace !== undefined).length
+      : 0;
   }
 
   /**
