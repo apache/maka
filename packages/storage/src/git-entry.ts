@@ -17,106 +17,155 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
 import { constants as fsConstants, type Stats } from 'node:fs';
-import { access, lstat, readFile } from 'node:fs/promises';
-import { dirname, join, parse, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { access, lstat, open } from 'node:fs/promises';
+import { join, parse } from 'node:path';
 
-const execFileAsync = promisify(execFile);
+import { execGitText } from './git-exec.js';
 
+/**
+ * True means Git recognized an entry, not that every repository operation will
+ * succeed. False requires exhausting the ancestors; ambiguous failures throw.
+ */
 export async function hasEnclosingGitEntry(path: string): Promise<boolean> {
   let current = path;
   while (true) {
     const gitPath = join(current, '.git');
-    let present: boolean;
+    let entryStat: Stats | undefined;
     try {
-      await lstat(gitPath);
-      present = true;
+      entryStat = await lstat(gitPath);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
-      present = false;
     }
-    if (present) {
-      // Keep failures in the selected directory's own metadata visible.
-      if (current === path) return true;
-      if (await isGitEntry(gitPath)) return true;
+    if (entryStat && (await isGitEntry(gitPath, entryStat, current !== path))) {
+      return true;
     }
-    // An ancestor Git rejected despite readable metadata is confirmed invalid;
-    // Git itself skips it and keeps searching outward, so continue the walk.
+    // Git skips invalid ancestor directories, but gitfiles can stop discovery.
     const parent = parse(current).dir;
     if (parent === current) return false;
     current = parent;
   }
 }
 
-async function isGitEntry(gitPath: string): Promise<boolean> {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_COMMON_DIR;
+async function isGitEntry(gitPath: string, before: Stats, ancestor: boolean): Promise<boolean> {
   try {
-    // Let Git validate directories and gitfiles, including linked worktrees.
-    await execFileAsync('git', ['rev-parse', '--resolve-git-dir', gitPath], {
-      env,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024,
-      timeout: 3_000,
-      windowsHide: true,
-    });
+    // Validate the exact entry: discovery could hide a broken own marker by
+    // finding an outer repository instead.
+    await assertGitEntry(gitPath);
     return true;
   } catch (error) {
-    // Exit 128 is Git rejecting the entry, but it conflates an invalid format
-    // with unreadable metadata; execution failures must still surface so a
-    // missing Git executable cannot downgrade a repository.
-    if ((error as { code?: unknown }).code === 128) {
-      await assertGitMetadataReadable(gitPath);
-      return false;
+    if (!ancestor || !before.isDirectory() || (error as { code?: unknown }).code !== 128) {
+      throw error;
     }
-    throw error;
   }
+
+  // Preserve Git's format verdict, but only after auditing its recognition
+  // inputs. Repeat the probe inside the snapshot checks rather than applying
+  // a stale rejection to metadata that may have been repaired or replaced.
+  const snapshot = await assertGitDirectoryReadable(gitPath, before);
+  let recognized = true;
+  try {
+    await assertGitEntry(gitPath);
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 128) throw error;
+    recognized = false;
+  }
+  for (const [path, stat] of snapshot) {
+    assertUnchanged(path, stat, await statIfPresent(path));
+  }
+  return recognized;
+}
+
+async function assertGitEntry(gitPath: string): Promise<void> {
+  // Let Git interpret directories and gitfiles, including linked worktrees.
+  await execGitText(process.cwd(), ['rev-parse', '--resolve-git-dir', gitPath], {
+    maxBuffer: 64 * 1024,
+    timeoutMs: 3_000,
+  });
 }
 
 /**
- * Git's 128 verdict is trusted format interpretation only when Git could read
- * the metadata: an unreadable repository is not evidence of an ordinary
- * directory, so permission and I/O failures surface instead of taking the
- * no-repository path.
+ * Audit the ordinary directory layout recognized by Git's is_git_directory:
+ * HEAD is read (at most 255 bytes), and objects/refs require search permission.
+ * Missing members and wrong ordinary-file/directory types are format failures;
+ * permission, read and unexpected filesystem errors must still surface.
+ * Failed probes involving indirection remain unclassified: success for valid
+ * worktrees/symlinks is handled by Git above, not by this fallback.
  */
-async function assertGitMetadataReadable(gitPath: string): Promise<void> {
-  let entryStat: Stats;
+async function assertGitDirectoryReadable(
+  gitPath: string,
+  before: Stats,
+): Promise<Map<string, Stats | undefined>> {
+  await access(gitPath, fsConstants.R_OK | fsConstants.X_OK);
+  const snapshot = new Map<string, Stats | undefined>([[gitPath, before]]);
+  const commonPath = join(gitPath, 'commondir');
+  const commonStat = await statIfPresent(commonPath);
+  if (commonStat || process.env.GIT_OBJECT_DIRECTORY !== undefined) {
+    throw new Error(`Cannot classify Git metadata with redirected storage: ${gitPath}`);
+  }
+  snapshot.set(commonPath, commonStat);
+  for (const name of ['HEAD', 'objects', 'refs']) {
+    const path = join(gitPath, name);
+    const stat = await statIfPresent(path);
+    snapshot.set(path, stat);
+    if (!stat) continue;
+    if (stat.isDirectory()) {
+      await access(path, fsConstants.R_OK | fsConstants.X_OK);
+    } else if (stat.isFile()) {
+      await access(path, fsConstants.R_OK);
+      if (name === 'HEAD') await assertHeadReadable(path, stat);
+    } else {
+      throw new Error(`Cannot classify Git metadata with special file: ${path}`);
+    }
+  }
+  return snapshot;
+}
+
+async function assertHeadReadable(path: string, before: Stats): Promise<void> {
+  // Do not follow a replacement symlink or block opening a replacement FIFO.
+  const file = await open(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+  );
   try {
-    entryStat = await lstat(gitPath);
-    await access(
-      gitPath,
-      entryStat.isDirectory() ? fsConstants.R_OK | fsConstants.X_OK : fsConstants.R_OK,
-    );
-  } catch (error) {
-    throw new Error(`Git metadata is not readable: ${gitPath}`, { cause: error });
-  }
-  if (entryStat.isDirectory()) {
-    await assertGitDirectoryReadable(gitPath);
-    return;
-  }
-  // A gitfile's target is the directory Git actually validated.
-  const pointer = /^gitdir: (.+)$/m.exec(await readFile(gitPath, 'utf8'));
-  if (pointer) {
-    await assertGitDirectoryReadable(resolve(dirname(gitPath), pointer[1].trim()));
+    assertUnchanged(path, before, await file.stat());
+    const buffer = Buffer.alloc(255);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    assertUnchanged(path, before, await file.stat());
+  } finally {
+    await file.close();
   }
 }
 
-async function assertGitDirectoryReadable(gitDir: string): Promise<void> {
-  for (const name of ['HEAD', 'objects', 'refs']) {
-    const path = join(gitDir, name);
-    try {
-      await access(path, fsConstants.R_OK);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      // Missing members are Git's format call; unreadable ones are ours.
-      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
-      throw new Error(`Git metadata is not readable: ${path}`, { cause: error });
-    }
+async function statIfPresent(path: string): Promise<Stats | undefined> {
+  try {
+    // lstat distinguishes a dangling symlink from a missing member. ENOTDIR
+    // here means a parent changed, not that the member was simply absent.
+    return await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return undefined;
+  }
+}
+
+function assertUnchanged(path: string, before: Stats | undefined, after: Stats | undefined): void {
+  if (!before && !after) return;
+  if (
+    !before ||
+    !after ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.mode !== after.mode ||
+    before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs ||
+    before.ctimeMs !== after.ctimeMs
+  ) {
+    throw new Error(`Git metadata changed during discovery: ${path}`);
   }
 }

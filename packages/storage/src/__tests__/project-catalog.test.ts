@@ -36,7 +36,7 @@ import {
 } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
 import {
-  BROKEN_GIT_SHAPES,
+  BROKEN_GIT_DIRECTORY_SHAPES,
   createBrokenGitMetadata,
   createGitRepositoryWithWorktree,
 } from './fixtures/git-repository.js';
@@ -188,15 +188,21 @@ test('an incomplete enclosing .git directory does not turn a nested folder into 
       identity: `folder:${await realpath(folder)}`,
       kind: 'folder',
     });
+    const catalog = createProjectCatalog(join(base, 'state'));
+    const project = await catalog.register(folder);
+    assert.deepEqual(project.locations, [{ path: await realpath(folder), isWorktree: false }]);
+    assert.deepEqual(await catalog.list(), [project]);
+    // Missing Git is a probe failure, even for an otherwise ignorable shape.
+    await assert.rejects(resolveProjectLocationWithoutGit(folder));
   } finally {
     await rm(base, { recursive: true, force: true });
   }
 });
 
-test('broken ancestor Git metadata does not turn a nested folder into a repository', async () => {
+test('broken ancestor Git directories do not turn a nested folder into a repository', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-invalid-ancestor-'));
   try {
-    for (const shape of BROKEN_GIT_SHAPES) {
+    for (const shape of BROKEN_GIT_DIRECTORY_SHAPES) {
       const root = join(base, shape);
       const folder = join(root, 'folder');
       await mkdir(folder, { recursive: true });
@@ -212,13 +218,17 @@ test('broken ancestor Git metadata does not turn a nested folder into a reposito
         shape,
       );
       const catalog = createProjectCatalog(join(root, 'state'));
-      const project = await catalog.register(folder);
-      assert.deepEqual(
-        project.locations,
-        [{ path: await realpath(folder), isWorktree: false }],
-        shape,
-      );
-      assert.deepEqual(await catalog.list(), [project]);
+      try {
+        const project = await catalog.register(folder);
+        assert.deepEqual(
+          project.locations,
+          [{ path: await realpath(folder), isWorktree: false }],
+          shape,
+        );
+        assert.deepEqual(await catalog.list(), [project]);
+      } finally {
+        catalog.close();
+      }
     }
   } finally {
     await rm(base, { recursive: true, force: true });

@@ -24,13 +24,19 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-export const BROKEN_GIT_SHAPES = [
+export const BROKEN_GIT_DIRECTORY_SHAPES = [
+  'missing-head',
   'head-directory',
   'head-garbage',
   'head-symref-no-refs-prefix',
-  'gitfile-garbage-head',
   'missing-objects-and-refs',
+  'missing-objects',
+  'missing-refs',
+  'objects-file',
+  'refs-file',
 ] as const;
+
+export const BROKEN_GIT_SHAPES = [...BROKEN_GIT_DIRECTORY_SHAPES, 'gitfile-garbage-head'] as const;
 
 export type BrokenGitShape = (typeof BROKEN_GIT_SHAPES)[number];
 
@@ -38,6 +44,9 @@ export type BrokenGitShape = (typeof BROKEN_GIT_SHAPES)[number];
 export async function createBrokenGitMetadata(root: string, shape: BrokenGitShape): Promise<void> {
   await execFileAsync('git', ['init', '--quiet'], { cwd: root });
   switch (shape) {
+    case 'missing-head':
+      await rm(join(root, '.git', 'HEAD'));
+      return;
     case 'head-directory':
       await rm(join(root, '.git', 'HEAD'));
       await mkdir(join(root, '.git', 'HEAD'));
@@ -58,6 +67,19 @@ export async function createBrokenGitMetadata(root: string, shape: BrokenGitShap
     case 'missing-objects-and-refs':
       await rm(join(root, '.git', 'objects'), { recursive: true });
       await rm(join(root, '.git', 'refs'), { recursive: true });
+      return;
+    case 'missing-objects':
+    case 'missing-refs':
+      await rm(join(root, '.git', shape === 'missing-objects' ? 'objects' : 'refs'), {
+        recursive: true,
+      });
+      return;
+    case 'objects-file':
+    case 'refs-file': {
+      const path = join(root, '.git', shape === 'objects-file' ? 'objects' : 'refs');
+      await rm(path, { recursive: true });
+      await writeFile(path, 'not a directory\n');
+    }
   }
 }
 

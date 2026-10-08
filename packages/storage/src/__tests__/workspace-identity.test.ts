@@ -41,7 +41,7 @@ import {
   WORKSPACE_MARKER_FILE,
   WorkspaceIdentityError,
 } from '../workspace-identity.js';
-import { BROKEN_GIT_SHAPES, createBrokenGitMetadata } from './fixtures/git-repository.js';
+import { BROKEN_GIT_DIRECTORY_SHAPES, createBrokenGitMetadata } from './fixtures/git-repository.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -226,10 +226,10 @@ test('a malformed ancestor .git directory does not block a workspace marker', as
   }
 });
 
-test('broken ancestor Git metadata does not block a workspace marker', async () => {
+test('broken ancestor Git directories do not block a workspace marker', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-workspace-invalid-ancestor-'));
   try {
-    for (const shape of BROKEN_GIT_SHAPES) {
+    for (const shape of BROKEN_GIT_DIRECTORY_SHAPES) {
       const root = join(base, shape);
       const workspace = join(root, 'workspace');
       await mkdir(workspace, { recursive: true });
