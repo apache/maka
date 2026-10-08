@@ -77,6 +77,49 @@ describe('Session catalog protocol', () => {
     assert.deepEqual(decodeSessionCatalogItem(catalog), catalog);
   });
 
+  test('validates activity observation versions in Owner and Guest catalogs', () => {
+    const shared = {
+      kind: 'shared_session',
+      id: 'shared',
+      revision: 1,
+      createdAt: 1,
+      activityAt: 1,
+      name: 'Shared',
+      status: 'active',
+    };
+    for (const [decode, row] of [
+      [decodeSessionCatalogItem, projection()],
+      [decodeSharedSessionCatalogProjection, shared],
+    ] as const) {
+      const versioned = {
+        ...row,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: 'host-1', revision: 0 },
+      };
+      assert.deepEqual(decode(versioned), versioned);
+      assert.throws(
+        () => decode({ ...row, backgroundActivityVersion: versioned.backgroundActivityVersion }),
+        isProtocolError,
+      );
+      for (const version of [
+        null,
+        {},
+        { revision: 1 },
+        { hostGeneration: 'host-1' },
+        { hostGeneration: '', revision: 1 },
+        { hostGeneration: 'host-1', revision: -1 },
+        { hostGeneration: 'host-1', revision: 1.5 },
+        { hostGeneration: 'host-1', revision: Number.MAX_SAFE_INTEGER + 1 },
+        { hostGeneration: 'host-1', revision: 1, extra: true },
+      ]) {
+        assert.throws(
+          () => decode({ ...versioned, backgroundActivityVersion: version }),
+          isProtocolError,
+        );
+      }
+    }
+  });
+
   test('decodes versioned live run state without collapsing absent and known-empty', () => {
     const unknown = projection();
     const knownEmpty = {

@@ -28,6 +28,7 @@ import {
   SESSION_MODEL_ID_MAX_BYTES,
   type PersistedBackendKind,
   type SessionBackgroundActivity,
+  type SessionBackgroundActivityVersion,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
@@ -135,6 +136,7 @@ const PROJECTION_FIELDS = [
   'lastReadMessageId',
   'liveRunState',
   'backgroundActivity',
+  'backgroundActivityVersion',
 ] as const;
 
 export type SessionCatalogRevision = `sha256:${string}`;
@@ -271,6 +273,7 @@ export interface SessionCatalogProjection {
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
   readonly backgroundActivity?: SessionBackgroundActivity;
+  readonly backgroundActivityVersion?: SessionBackgroundActivityVersion;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
   readonly parentSessionId?: string;
@@ -313,6 +316,7 @@ export interface SharedSessionCatalogProjection {
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
   readonly backgroundActivity?: SessionBackgroundActivity;
+  readonly backgroundActivityVersion?: SessionBackgroundActivityVersion;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
 }
@@ -481,6 +485,7 @@ export function decodeSharedSessionCatalogProjection(
       'lastMessagePreview',
       'liveRunState',
       'backgroundActivity',
+      'backgroundActivityVersion',
       'blockedReason',
       'statusUpdatedAt',
     ],
@@ -1052,9 +1057,13 @@ function optionalBlockedReason(
 
 function optionalBackgroundActivity(
   record: Record<string, unknown>,
-): Pick<SessionCatalogProjection, 'backgroundActivity'> {
+): Pick<SessionCatalogProjection, 'backgroundActivity' | 'backgroundActivityVersion'> {
   const activity = record.backgroundActivity;
-  if (activity === undefined) return {};
+  if (activity === undefined) {
+    if (record.backgroundActivityVersion !== undefined)
+      throw invalidProtocolFrame('Session background activity version requires activity');
+    return {};
+  }
   if (
     activity !== 'idle' &&
     activity !== 'running' &&
@@ -1062,7 +1071,19 @@ function optionalBackgroundActivity(
     activity !== 'blocked'
   )
     throw invalidProtocolFrame('Invalid Session background activity');
-  return { backgroundActivity: activity };
+  if (record.backgroundActivityVersion === undefined) return { backgroundActivity: activity };
+  const version = requireExactRecord(
+    record.backgroundActivityVersion,
+    'Session background activity version',
+    ['hostGeneration', 'revision'],
+  );
+  return {
+    backgroundActivity: activity,
+    backgroundActivityVersion: {
+      hostGeneration: decodeHostGeneration(version.hostGeneration),
+      revision: requireCount(version.revision, 'Session background activity revision'),
+    },
+  };
 }
 
 function optionalLiveRunState(
@@ -1103,15 +1124,6 @@ function optionalLiveRunState(
   ) {
     throw invalidProtocolFrame('Invalid Session catalog run epoch');
   }
-  if (
-    liveRunState.hostGeneration !== undefined &&
-    (typeof liveRunState.hostGeneration !== 'string' ||
-      liveRunState.hostGeneration.length === 0 ||
-      liveRunState.hostGeneration.length > SESSION_CATALOG_HOST_GENERATION_MAX_CHARS ||
-      /[\u0000-\u001f\u007f]/.test(liveRunState.hostGeneration))
-  ) {
-    throw invalidProtocolFrame('Invalid Session catalog host generation');
-  }
   return {
     liveRunState: {
       schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
@@ -1119,9 +1131,21 @@ function optionalLiveRunState(
       ...(liveRunState.runEpoch === undefined ? {} : { runEpoch: liveRunState.runEpoch }),
       ...(liveRunState.hostGeneration === undefined
         ? {}
-        : { hostGeneration: liveRunState.hostGeneration }),
+        : { hostGeneration: decodeHostGeneration(liveRunState.hostGeneration) }),
     },
   };
+}
+
+function decodeHostGeneration(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > SESSION_CATALOG_HOST_GENERATION_MAX_CHARS ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog host generation');
+  }
+  return value;
 }
 
 function optionalSubagent(

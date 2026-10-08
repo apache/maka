@@ -328,7 +328,12 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     assert.deepEqual(sharedKnownEmpty, KNOWN_EMPTY_LIVE_RUN_STATE);
     assert.deepEqual(
       { ...sharedSession, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
-      { ...created, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE, backgroundActivity: 'idle' },
+      {
+        ...created,
+        liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: local.hostEpoch, revision: 0 },
+      },
     );
 
     const catalogChanged = new Promise<string>((resolve) => {
@@ -361,6 +366,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
             ...renamed.session,
             liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
             backgroundActivity: 'idle',
+            backgroundActivityVersion: { hostGeneration: local.hostEpoch, revision: 0 },
           }
         : assert.fail('Remote Session rename did not commit'),
     );
@@ -654,10 +660,19 @@ test('an authenticated WebSocket Client reconnects after service restart to cano
     // clients tell the restarted Host's reads apart from its predecessor's
     // (#5713).
     assert.notEqual(afterLive.hostGeneration, beforeLive.hostGeneration);
+    assert.deepEqual(beforeSession.backgroundActivityVersion, {
+      hostGeneration: firstHostEpoch,
+      revision: 0,
+    });
+    assert.deepEqual(afterSession.backgroundActivityVersion, {
+      hostGeneration: remote.hostEpoch,
+      revision: 0,
+    });
     assert.deepEqual(
       {
         ...afterSession,
         liveRunState: { ...afterLive, hostGeneration: beforeLive.hostGeneration },
+        backgroundActivityVersion: beforeSession.backgroundActivityVersion,
       },
       beforeSession,
     );

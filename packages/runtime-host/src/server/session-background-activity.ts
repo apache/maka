@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import type { SessionBackgroundActivity } from '@maka/core/session';
+import type {
+  SessionBackgroundActivity,
+  SessionBackgroundActivitySnapshot,
+} from '@maka/core/session';
 
 /**
  * One read projection for initial catalog queries and subsequent invalidations.
@@ -27,9 +30,11 @@ import type { SessionBackgroundActivity } from '@maka/core/session';
  */
 export class SessionBackgroundActivityProjection {
   readonly #published = new Map<string, SessionBackgroundActivity>();
+  #revision = 0;
 
   constructor(
     private readonly sources: {
+      hostGeneration: string;
       graph(sessionId: string): SessionBackgroundActivity;
       supervisor(sessionId: string): SessionBackgroundActivity;
       publish(sessionId: string): void;
@@ -47,10 +52,23 @@ export class SessionBackgroundActivityProjection {
     return 'idle';
   }
 
+  snapshot(sessionId: string): SessionBackgroundActivitySnapshot {
+    return {
+      backgroundActivity: this.read(sessionId),
+      backgroundActivityVersion: {
+        hostGeneration: this.sources.hostGeneration,
+        revision: this.#revision,
+      },
+    };
+  }
+
   changed(sessionId: string): void {
     const next = this.read(sessionId);
     const previous = this.#published.get(sessionId) ?? 'idle';
     if (previous === next) return;
+    // One Host-wide clock orders observations even after an idle Session is
+    // removed from the deduplication map, without retaining per-Session clocks.
+    this.#revision += 1;
     if (next === 'idle') this.#published.delete(sessionId);
     else this.#published.set(sessionId, next);
     this.sources.publish(sessionId);

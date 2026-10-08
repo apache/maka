@@ -48,6 +48,7 @@ export function projectDesktopSharedSessionSummary(
     status: session.status,
     ...(options.cached ? { localState: 'cached' as const } : {}),
     ...(options.cached || session.backgroundActivity === undefined ? {} : { backgroundActivity: session.backgroundActivity }),
+    ...(options.cached || session.backgroundActivityVersion === undefined ? {} : { backgroundActivityVersion: session.backgroundActivityVersion }),
     ...(options.cached || session.liveRunState === undefined
       ? {}
       : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),

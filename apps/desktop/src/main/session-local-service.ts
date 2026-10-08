@@ -112,6 +112,10 @@ export class DesktopSessionLocalService {
     { target: DesktopSessionLocalTarget; snapshot: DesktopTranscriptReplicaSnapshot }
   >();
   readonly #catalogTasks = new Map<string, Promise<void>>();
+  readonly #catalogPending = new Map<string, {
+    target: DesktopSessionLocalTarget;
+    connection: SessionCatalogConnection;
+  }>();
   readonly #catalogConnections = new Map<string, SessionCatalogConnection>();
   readonly #catalogFresh = new Map<string, {
     connection: SessionCatalogConnection;
@@ -178,6 +182,7 @@ export class DesktopSessionLocalService {
     // Record outages even when no renderer reads the catalog before recovery.
     // Reusing the same Host process or client cannot revive its old snapshot.
     this.#observeCatalogConnection(target);
+    this.#drainCatalogRefreshes();
   }
 
   wake(): void {
@@ -291,7 +296,7 @@ export class DesktopSessionLocalService {
               ? { ...session, localState: 'pending' as const }
               : authoritative
                 ? session
-                : { ...session, runningTurnIds: undefined, backgroundActivity: undefined, localState: 'cached' as const },
+                : { ...session, runningTurnIds: undefined, backgroundActivity: undefined, backgroundActivityVersion: undefined, localState: 'cached' as const },
           );
         if (
           target.client &&
@@ -321,6 +326,7 @@ export class DesktopSessionLocalService {
     // A retired read must not occupy a current connection's catalog slot.
     // Its finally handler also checks task identity before releasing that slot.
     this.#catalogTasks.delete(target.partition);
+    this.#catalogPending.delete(target.partition);
     previous?.controller.abort(new Error('Owner Session catalog connection changed'));
     return connection;
   }
@@ -333,22 +339,37 @@ export class DesktopSessionLocalService {
   }
 
   #refreshCatalog(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): void {
-    if (
-      !target.client ||
-      this.#catalogTasks.has(target.partition) ||
-      this.#catalogTasks.size >= 2 ||
-      this.#closed
-    )
-      return;
-    const client = target.client;
+    if (!target.client || this.#closed || this.#catalogTasks.has(target.partition)) return;
+    // Map insertion order gives waiting partitions a turn before a busy
+    // partition's next trailing read. Repeated requests share one queue entry.
+    this.#catalogPending.set(target.partition, { target, connection });
+    this.#drainCatalogRefreshes();
+  }
+
+  #drainCatalogRefreshes(): void {
+    for (const [partition, { target, connection }] of this.#catalogPending) {
+      if (this.#closed || this.#catalogTasks.size >= 2) return;
+      this.#catalogPending.delete(partition);
+      if (!this.#currentCatalogConnection(target, connection) || this.#catalogTasks.has(partition))
+        continue;
+      this.#startCatalogRefresh(target, connection);
+    }
+  }
+
+  #startCatalogRefresh(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): void {
+    const client = target.client!;
     const revision = this.store.revision;
     const invalidationVersion = connection.invalidationVersion;
     let freshnessRevoked = false;
+    let locallyInvalidated = false;
     const task = abortable(() => client.listSessions(), connection.controller.signal)
       .then((sessions) => {
         if (!this.#currentCatalogConnection(target, connection)) return;
         // A late catalog cannot erase a Session created/removed while it read.
-        if (this.store.revision !== revision) return;
+        if (this.store.revision !== revision) {
+          locallyInvalidated = true;
+          return;
+        }
         this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
         // Publish successful observations even under continuous Host events.
         // The captured version keeps this observation dirty if another change
@@ -371,16 +392,16 @@ export class DesktopSessionLocalService {
       .finally(() => {
         if (this.#catalogTasks.get(target.partition) === task)
           this.#catalogTasks.delete(target.partition);
-        if (!this.#currentCatalogConnection(target, connection)) return;
-        if (
-          freshnessRevoked ||
-          (!this.#catalogFresh.has(target.partition) && this.store.revision !== revision)
-        )
-          this.deps.changed(target.scope);
-        if (connection.invalidationVersion !== invalidationVersion) {
-          // Consume all changes received during this read with one request.
-          this.#refreshCatalog(target, connection);
+        if (this.#currentCatalogConnection(target, connection)) {
+          if (freshnessRevoked || (!this.#catalogFresh.has(target.partition) && locallyInvalidated))
+            this.deps.changed(target.scope);
+          if (locallyInvalidated || connection.invalidationVersion !== invalidationVersion) {
+            // Retry a fenced read too: another partition's successful save
+            // advances the local store revision without a Host invalidation.
+            this.#catalogPending.set(target.partition, { target, connection });
+          }
         }
+        this.#drainCatalogRefreshes();
       });
     this.#catalogTasks.set(target.partition, task);
   }
@@ -396,8 +417,10 @@ export class DesktopSessionLocalService {
     this.#catalogConnections.get(target.partition)?.controller.abort(new Error('Owner Session authority was removed'));
     this.#catalogConnections.delete(target.partition);
     this.#catalogTasks.delete(target.partition);
+    this.#catalogPending.delete(target.partition);
     this.#catalogFresh.delete(target.partition);
     this.deps.changed(target.scope);
+    this.#drainCatalogRefreshes();
   }
 
   cacheTranscript(scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot): void {
@@ -442,6 +465,7 @@ export class DesktopSessionLocalService {
       connection.controller.abort(new Error('Owner Session catalog service is closed'));
     this.#catalogConnections.clear();
     this.#catalogTasks.clear();
+    this.#catalogPending.clear();
     this.#catalogFresh.clear();
     this.#snapshots.clear();
     for (const timer of this.#retries.values()) clearTimeout(timer);

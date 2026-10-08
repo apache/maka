@@ -371,7 +371,10 @@ test('catalog get and list retain Graph activity after the parent Turn completes
     manager: { runningTurnIds: () => [] },
     readBackgroundActivity: (sessionId) => {
       assert.equal(sessionId, 'session-1');
-      return backgroundActivity;
+      return {
+        backgroundActivity,
+        backgroundActivityVersion: { hostGeneration: 'host-1', revision: 3 },
+      };
     },
   });
   for (const activity of ['running', 'waiting_for_user', 'blocked', 'idle'] as const) {
@@ -391,6 +394,10 @@ test('catalog get and list retain Graph activity after the parent Turn completes
             : undefined;
       assert.ok(session && !('kind' in session));
       assert.equal(session.backgroundActivity, activity);
+      assert.deepEqual(session.backgroundActivityVersion, {
+        hostGeneration: 'host-1',
+        revision: 3,
+      });
       assert.deepEqual(
         session.liveRunState?.runningTurnIds,
         [],

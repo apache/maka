@@ -1144,7 +1144,7 @@ function decodeMount(value: unknown): GuestSessionMount {
 }
 
 function retainedSession(session: SharedSessionCatalogProjection): SharedSessionCatalogProjection {
-  const { liveRunState: _liveRunState, backgroundActivity: _backgroundActivity, ...retained } = session;
+  const { liveRunState: _liveRunState, backgroundActivity: _backgroundActivity, backgroundActivityVersion: _backgroundActivityVersion, ...retained } = session;
   return retained;
 }
 

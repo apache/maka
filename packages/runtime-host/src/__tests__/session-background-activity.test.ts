@@ -36,6 +36,7 @@ test('background work updates catalog-only clients and stays running across the 
     },
   );
   const projection = new SessionBackgroundActivityProjection({
+    hostGeneration: 'host-1',
     graph: (id) => graph.get(id) ?? 'idle',
     supervisor: (id) => supervisor.get(id) ?? 'idle',
     publish: (id) => feed.publishSessionCatalog(id),
@@ -66,6 +67,7 @@ test('permission needs attention while automatic failure handling remains runnin
   let graph: SessionBackgroundActivity = 'blocked';
   let supervisor: SessionBackgroundActivity = 'running';
   const projection = new SessionBackgroundActivityProjection({
+    hostGeneration: 'host-1',
     graph: () => graph,
     supervisor: () => supervisor,
     publish: () => undefined,
@@ -77,4 +79,49 @@ test('permission needs attention while automatic failure handling remains runnin
   assert.equal(projection.read('parent'), 'blocked', 'exhausted recovery must not pulse forever');
   graph = 'idle';
   assert.equal(projection.read('parent'), 'idle');
+});
+
+test('activity versions advance across idle transitions and reset only with a new Host generation', () => {
+  let activity: SessionBackgroundActivity = 'idle';
+  const published: number[] = [];
+  const projection = new SessionBackgroundActivityProjection({
+    hostGeneration: 'host-1',
+    graph: () => activity,
+    supervisor: () => 'idle',
+    publish: (id) => published.push(projection.snapshot(id).backgroundActivityVersion.revision),
+  });
+  const initial = projection.snapshot('root');
+  activity = 'running';
+  projection.changed('root');
+  const running = projection.snapshot('root');
+  projection.changed('root');
+  assert.deepEqual(
+    projection.snapshot('root'),
+    running,
+    'duplicate notifications do not advance the clock',
+  );
+  activity = 'idle';
+  projection.changed('root');
+  const idle = projection.snapshot('root');
+  assert.ok(idle.backgroundActivityVersion.revision > running.backgroundActivityVersion.revision);
+  assert.ok(
+    running.backgroundActivityVersion.revision > initial.backgroundActivityVersion.revision,
+  );
+  assert.deepEqual(published, [1, 2], 'the version advances before publishing');
+  activity = 'waiting_for_user';
+  projection.changed('root');
+  assert.ok(
+    projection.snapshot('root').backgroundActivityVersion.revision >
+      idle.backgroundActivityVersion.revision,
+  );
+  const restarted = new SessionBackgroundActivityProjection({
+    hostGeneration: 'host-2',
+    graph: () => 'idle',
+    supervisor: () => 'idle',
+    publish() {},
+  });
+  assert.deepEqual(restarted.snapshot('root'), {
+    backgroundActivity: 'idle',
+    backgroundActivityVersion: { hostGeneration: 'host-2', revision: 0 },
+  });
 });

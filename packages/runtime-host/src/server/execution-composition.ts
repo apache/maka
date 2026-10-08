@@ -815,6 +815,7 @@ export async function createExecutionRuntimeHostComposition(
       | undefined;
     const hostChanges = new HostChangeFeed();
     const backgroundActivity = new SessionBackgroundActivityProjection({
+      hostGeneration: context.hostEpoch,
       graph: (sessionId) => graphCoordinator?.readSessionActivity(sessionId) ?? 'idle',
       supervisor: (sessionId) => graphSupervisorWake?.readSessionActivity(sessionId) ?? 'idle',
       publish: (sessionId) => hostChanges.publishSessionCatalog(sessionId),
@@ -2256,7 +2257,7 @@ export async function createExecutionRuntimeHostComposition(
       turnIndex: requireTranscriptReader(transcriptReader),
       runtimePolicy: runtimePolicyStores,
       manager,
-      readBackgroundActivity: (sessionId) => backgroundActivity.read(sessionId),
+      readBackgroundActivity: (sessionId) => backgroundActivity.snapshot(sessionId),
       admission: sessionAdmission,
       continuity: continuityCoordinator,
       workspaceResolver,
