@@ -120,6 +120,10 @@ Each actual write uses the pinned node-pty patch's synchronous writer and its
 own write-stream/socket close fence. Runtime never retains a raw fd for writes:
 Linux PTY masters can share the same `fstat` identity even after fd reuse.
 Expected input closure drops pending bytes without reporting an integrity fault.
+The first write that discovers closure fails synchronously instead of returning a
+queued receipt; later writes and protocol replies preserve that classification.
+Resize uses the same owned socket/write-stream close fence, so a reused PTY fd
+cannot receive a resize from the retired terminal.
 
 Each private submission has a monotonically increasing sequence and an identity
 scoped to the original live request and authenticated connection. Duplicate
@@ -143,9 +147,11 @@ renew it. Losing only the Desktop surface does not imply that SSH disconnected.
 Hiding a resumed card releases only its controller. Returning, including after
 reload, can still display the same private output to the user. Only closed
 tombstones have a 128-entry retention cap; live resumed terminals remain tied to
-their resource lifetime. Resume rechecks delivery certainty inside the resource
-queue. A failed terminal side effect rejects that handoff without poisoning the
-Host's Interaction authority for other tasks.
+their resource lifetime. The resource queue now covers Resume's readiness check,
+durable decision and transfer together. Earlier uncertain input or controller
+release is refused before persistence; a release/disconnect after admission
+cannot invalidate the committed transfer. A failed terminal side effect rejects
+that handoff without poisoning the Host's Interaction authority for other tasks.
 An already-open terminal tab refreshes its request from the canonical handoff
 event if the same process needs human input again.
 
@@ -171,7 +177,10 @@ inability to observe the result rather than claim success or ask the user to
 copy private output into the conversation.
 Terminal device/status queries are answered by the private parser directly to
 the PTY, so interactive programs still work after Resume; replies and screen
-contents are not published to the model.
+contents are not published to the model. Historical replay is admitted with
+protocol replies disabled, and it cannot coalesce with fresh output. This keeps
+old cursor/status queries from injecting a second reply into the current private
+prompt while allowing newly arriving queries to be answered.
 
 Private buffers stay in the live process and visible renderer. Drafts clear on
 submit, hide, refresh and completion. Desktop computer-use calls are fenced

@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 54 |
+| portable-candidate | 57 |
 | platform-contract | 40 |
 
-Total Windows-excluded declarations: **121**
+Total Windows-excluded declarations: **124**
 
 ## Inventory
 
@@ -27,6 +27,7 @@ Total Windows-excluded declarations: **121**
 |---|---|---|
 | platform-contract | `apps/desktop/scripts/check-renderer-architecture.test.mjs` handles read-only POSIX permissions on the checker directory according to --strict-base | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | portable-candidate | `apps/desktop/scripts/dev-worktree.test.mjs` a symlink to a worktree uses the same data directory | `process.platform === 'win32'` |
+| portable-candidate | `apps/desktop/src/main/__tests__/external-agent-executable-selection.test.ts` macOS rejects ${invalid} before returning a path to save | `process.platform === 'win32' && invalid.startsWith('non-executable')` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP remove reconciles a live manager after the real store publishes then fails directory sync | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP update reconciles the reread authority including an intervening writer without replaying its mutation | `process.platform === 'win32'` |
 | portable-candidate | `apps/desktop/src/main/__tests__/mcp-ipc-commit-unknown.test.ts` MCP published write explicitly reports out-of-sync when reconciliation ${phase} fails | `process.platform === 'win32'` |
@@ -90,6 +91,7 @@ Total Windows-excluded declarations: **121**
 | portable-candidate | `packages/runtime/src/__tests__/pty-process-driver.test.ts` a real PTY input fence drains backpressure before the next owner writes | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` handoff replay does not inject an old DSR response into a private prompt | `process.platform === 'win32'` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-run-manager.test.ts` private handoff preserves a real shell and excludes immediate and delayed echoes from durable projections | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
@@ -146,3 +148,4 @@ Total Windows-excluded declarations: **121**
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after the real Runtime Host is ready | `process.platform === 'win32'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` rejects a Runtime Host that fails verifier shutdown | `process.platform === 'win32'` |
 | portable-candidate | `scripts/release-cli-eval-support.test.mjs` preserves the primary process failure when diagnostics cannot be read | `process.platform === 'win32'` |
+| portable-candidate | `scripts/verify-packaged-app.test.mjs` stopChild waits for a process that ignores SIGTERM to exit before returning | `process.platform === 'win32'` |

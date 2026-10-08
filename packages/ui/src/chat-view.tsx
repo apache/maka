@@ -56,7 +56,7 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, VStack } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { finalAssistantReplyText } from './materialize.js';
@@ -185,20 +185,6 @@ export function ChatView(props: {
    */
   activeTurn?: { readonly turnId: string; readonly awaitingInput?: boolean; readonly compacting?: boolean };
   activeSession?: SessionSummary;
-  activeConnectionLabel?: string;
-  activeModel?: string;
-  activeModelLabel?: string;
-  /** Renders a provider brand mark next to the model name in the chat tab. */
-  activeProviderType?: ProviderType;
-  /** Optional renderer for the provider mark; supplied by the desktop app to
-   *  avoid bringing the full provider SVG library into @maka/ui. */
-  renderProviderMark?(type: ProviderType): ReactNode;
-  modelChoices?: ChatModelChoice[];
-  onModelChange?(input: {
-    llmConnectionId: string;
-    llmConnectionSlug: string;
-    model: string;
-  }): void | Promise<void>;
   /** Personalized user label shown on user messages. Falls back to "你". */
   userLabel?: string;
   /**
@@ -319,12 +305,12 @@ export function ChatView(props: {
   onPromptSuggestion?(prompt: string): void;
   /**
    * Codex/Cursor-style "quote this": when set, selecting text in the transcript
-   * surfaces 引用 (open a note panel under the selection) and 直接引用 (stage it
-   * with no note). Either hands the excerpt, its turn and any note to the
-   * host, which stages it on the composer; an excerpt already in
-   * `pendingQuotes` is never handed over again. Omitted by hosts that don't
-   * compose quotes. Only selections that resolve to a turn are offered, so
-   * `turnId` always arrives.
+   * surfaces 引用, which opens a note panel under the selection; submitting
+   * hands the excerpt, its turn and any note to the host, which stages it on
+   * the composer (an empty note stages the bare quote). An excerpt already in
+   * `pendingQuotes` is never handed over again — 引用 reopens its note instead.
+   * Omitted by hosts that don't compose quotes. Only selections that resolve
+   * to a turn are offered, so `turnId` always arrives.
    */
   onQuoteSelection?(input: { text: string; turnId: string; comment?: string }): void;
   /**
@@ -539,7 +525,10 @@ export function ChatView(props: {
   // Tail rows have no Turn ancestor, so the reading measure that `.maka-turn`
   // owns would not reach them: without it the bubble spans the full window.
   const tail = hasPendingAnswer || tailTransientMessages.length > 0 ? (
-    <section
+    <VStack
+      as="section"
+      gap={3}
+      width="100%"
       className={hasPendingAnswer ? 'maka-turn maka-pending-turn' : 'maka-turn'}
       data-awaiting-host={awaitingHost || undefined}
     >
@@ -557,7 +546,7 @@ export function ChatView(props: {
           providerRetry={activeContent?.providerRetry}
         />
       )}
-    </section>
+    </VStack>
   ) : null;
   const { startMargin, listRef, measureStartMargin } = useTranscriptStartMargin(scrollRef);
   const { highlightedTurnId, placed, commandTurnId, revealTurnAtStart, measurement } = useChatScroll({
@@ -682,7 +671,6 @@ export function ChatView(props: {
   }, [props.activeSession?.id]);
   const selectionActionsLabel = [
     props.onQuoteSelection ? copy.quoteSelection : null,
-    props.onQuoteSelection ? copy.quoteCommentSkip : null,
     props.onAskAboutSelection ? copy.askInSidePanel : null,
   ].filter((label): label is string => label !== null).join(' / ');
   const hasConversationHeaderActions = useMakaClientSlotOccupied(
@@ -1116,38 +1104,23 @@ export function ChatView(props: {
                   elevation="med"
                 >
                   {props.onQuoteSelection ? (
-                    <>
-                      <Button
-                        type="button"
-                        label={copy.quoteSelection}
-                        onClick={() => {
-                          const selection = window.getSelection();
-                          setQuoteAnnotation({
-                            kind: selectionStaged ? 'edit' : 'annotate',
-                            text: selectionQuote.text,
-                            turnId: selectionQuote.turnId,
-                            anchor: excerptAnchor(
-                              selection?.rangeCount
-                                ? selection.getRangeAt(0).getBoundingClientRect()
-                                : new DOMRect(selectionQuote.anchor.x, selectionQuote.anchor.y),
-                            ),
-                          });
-                        }}
-                      />
-                      <Button
-                        type="button"
-                        label={copy.quoteCommentSkip}
-                        onClick={() => {
-                          if (!selectionStaged) {
-                            props.onQuoteSelection?.({
-                              text: selectionQuote.text,
-                              turnId: selectionQuote.turnId,
-                            });
-                          }
-                          dismissSelectionActions();
-                        }}
-                      />
-                    </>
+                    <Button
+                      type="button"
+                      label={copy.quoteSelection}
+                      onClick={() => {
+                        const selection = window.getSelection();
+                        setQuoteAnnotation({
+                          kind: selectionStaged ? 'edit' : 'annotate',
+                          text: selectionQuote.text,
+                          turnId: selectionQuote.turnId,
+                          anchor: excerptAnchor(
+                            selection?.rangeCount
+                              ? selection.getRangeAt(0).getBoundingClientRect()
+                              : new DOMRect(selectionQuote.anchor.x, selectionQuote.anchor.y),
+                          ),
+                        });
+                      }}
+                    />
                   ) : null}
                   {props.onAskAboutSelection ? (
                     <Button

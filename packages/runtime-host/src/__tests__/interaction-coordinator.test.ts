@@ -79,6 +79,7 @@ describe('HostInteractionCoordinator', () => {
       const owner = coordinator.bindRun(RUN);
       let ready = false;
       const applied: string[] = [];
+      let admissionActive = false;
       const pending = coordinator.requestTerminalHandoff({
         ...RUN,
         requestId: 'private-terminal',
@@ -88,8 +89,25 @@ describe('HostInteractionCoordinator', () => {
           ref: 'maka://runtime/background-tasks/shell-1',
           message: 'Enter credentials in the original terminal',
         },
-        canAnswer: (action, id) => action === 'cancel' || (ready && id === 'connection_1'),
+        withAnswerAdmission: async (answer) => {
+          admissionActive = true;
+          try {
+            return await answer();
+          } finally {
+            admissionActive = false;
+          }
+        },
+        canAnswer: (action, id) => {
+          assert.equal(admissionActive, true, 'readiness is checked inside resource admission');
+          return action === 'cancel' || (ready && id === 'connection_1');
+        },
         apply: async (action) => {
+          assert.equal(admissionActive, true, 'admission spans persistence and apply');
+          assert.equal(
+            (await store.listPending(RUN)).length,
+            0,
+            'apply follows the durable decision',
+          );
           applied.push(action);
         },
       });

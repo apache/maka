@@ -61,6 +61,7 @@ export class HostExternalAgentSetupCoordinator {
     private readonly deps: {
       readPolicy(): Promise<RuntimePolicySnapshot>;
       onCleanupFailure(): void;
+      onSucceeded?(): void;
       acquireResidency(): OperationResidency;
       capabilities: Pick<HostClientCapabilityCoordinator, 'callService'>;
       install?(input: {
@@ -172,6 +173,7 @@ export class HostExternalAgentSetupCoordinator {
         });
         attempt.abort.signal.throwIfAborted();
         attempt.projection = { ...attempt.projection, phase: 'succeeded', installedExecutable };
+        this.deps.onSucceeded?.();
         return;
       }
       await (this.deps.run ?? runAntigravitySetup)({
@@ -196,6 +198,7 @@ export class HostExternalAgentSetupCoordinator {
           }
         },
       });
+      if (!attempt.abort.signal.aborted) this.deps.onSucceeded?.();
       attempt.projection = {
         ...attempt.projection,
         phase: attempt.abort.signal.aborted ? 'cancelled' : 'succeeded',

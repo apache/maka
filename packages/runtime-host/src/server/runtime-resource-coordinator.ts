@@ -383,6 +383,7 @@ export class HostRuntimeResourceCoordinator
       if (!this.isHandoffAvailable(ctx.sessionId) || ctx.abortSignal.aborted)
         throw new Error('Interactive terminal surface disappeared before handoff');
       let resumeController: { connectionId: string; controllerId: string } | undefined;
+      let answerAdmissionActive = false;
       const outcome = await authority.requestTerminalHandoff({
         signal: state.lifetime.signal,
         sessionId: ctx.sessionId,
@@ -395,6 +396,17 @@ export class HostRuntimeResourceCoordinator
           ref,
           message,
         },
+        // Keep queued input/release and the durable decision in one admission.
+        // A stale controller or uncertain receipt is refused before persistence.
+        withAnswerAdmission: (answer) =>
+          this.#resourceQueue.run(key, async () => {
+            answerAdmissionActive = true;
+            try {
+              return await answer();
+            } finally {
+              answerAdmissionActive = false;
+            }
+          }),
         canAnswer: (action, connectionId, controllerId) => {
           if (action === 'cancel') return true;
           const allowed =
@@ -406,18 +418,19 @@ export class HostRuntimeResourceCoordinator
           return allowed;
         },
         apply: async (action) => {
-          await this.#resourceQueue.run(key, async () => {
+          const apply = async () => {
             if (this.#handoffs.get(key) !== state || state.phase === 'closed') return;
             if (action === 'resume') {
-              // Admission precedes this queue: an earlier input can still finish
-              // with an unknown receipt. Recheck at the actual transfer boundary.
+              // Durable answers hold this queue through transfer. Retain the
+              // fence for direct lifecycle calls that do not own answer admission.
               if (state.phase !== 'human' || state.lastReceipt?.status === 'outcome_unknown') {
                 throw new Error('Terminal cannot resume after uncertain input delivery');
               }
               if (
-                !resumeController ||
-                state.connectionId !== resumeController.connectionId ||
-                state.controllerId !== resumeController.controllerId
+                !answerAdmissionActive &&
+                (!resumeController ||
+                  state.connectionId !== resumeController.connectionId ||
+                  state.controllerId !== resumeController.controllerId)
               ) {
                 throw new Error('Terminal handoff controller expired before Resume');
               }
@@ -451,7 +464,10 @@ export class HostRuntimeResourceCoordinator
                 'client',
               );
             }
-          });
+          };
+          // Answer admission already owns this queue through commit and apply.
+          if (answerAdmissionActive) await apply();
+          else await this.#resourceQueue.run(key, apply);
         },
       });
       return JSON.stringify({

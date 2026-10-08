@@ -39,6 +39,13 @@ export interface PtyProcessDriverOptions {
   onInvariantFailure: (error: Error) => void;
 }
 
+export class PtyInputClosedError extends Error {
+  constructor() {
+    super('PTY input is closed');
+    this.name = 'PtyInputClosedError';
+  }
+}
+
 export class PtyProcessDriver {
   private readonly pty: IPty;
   private readonly subscriptions: IDisposable[];
@@ -120,7 +127,7 @@ export class PtyProcessDriver {
 
   write(data: string): void {
     if (this.writeFailure) throw this.writeFailure;
-    if (this.exited || this.disposed) throw new Error('PTY input is closed');
+    if (this.exited || this.disposed) throw new PtyInputClosedError();
     if (!this.supportsInputFence) {
       this.pty.write(data);
       return;
@@ -132,6 +139,7 @@ export class PtyProcessDriver {
     this.writes.push({ buffer, offset: 0 });
     this.queuedBytes += buffer.length;
     this.flushWrites();
+    if (this.writeFailure) throw this.writeFailure;
   }
 
   get supportsInputFence(): boolean {
@@ -144,7 +152,7 @@ export class PtyProcessDriver {
     if (!this.supportsInputFence)
       throw new Error('PTY input fencing is unavailable on this platform');
     if (signal.aborted) throw new Error('PTY input fence cancelled');
-    if (this.exited || this.disposed) throw new Error('PTY input is closed');
+    if (this.exited || this.disposed) throw new PtyInputClosedError();
     if (this.writes.length === 0) return;
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: Error) => {
@@ -185,7 +193,7 @@ export class PtyProcessDriver {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'EPIPE' || code === 'EIO' || code === 'EBADF') {
-        this.writeFailure = new Error('PTY input is closed');
+        this.writeFailure = new PtyInputClosedError();
         this.closeWrites();
         return;
       }
@@ -216,11 +224,16 @@ export class PtyProcessDriver {
     this.writes.length = 0;
     this.queuedBytes = 0;
     for (const waiter of [...this.drains])
-      waiter.reject(new Error('PTY input closed before delivery'));
+      waiter.reject(this.writeFailure ?? new PtyInputClosedError());
   }
 
   resize(cols: number, rows: number): void {
-    this.pty.resize(cols, rows);
+    try {
+      this.pty.resize(cols, rows);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPIPE') throw new PtyInputClosedError();
+      throw error;
+    }
   }
 
   kill(signal: 'SIGTERM' | 'SIGKILL'): void {

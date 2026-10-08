@@ -95,6 +95,7 @@ import { createHash } from 'node:crypto';
 import {
   createSqliteSessionMetadataStore,
   type SessionCatalogRevisionState,
+  type SessionMetadataCatalogRecord,
   type SessionMetadataRecord,
   type SessionRemovalProbe,
   type SqliteSessionMetadataStore,
@@ -607,7 +608,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return (await this.metadata.list(filter, 'ordinary'))
       .filter((record) => record.header.transcriptLedgerVersion !== 0)
       .filter((record) => record.header.conversationCopy?.state !== 'preparing')
-      .map((record) => toCatalogSummary(record.header, record.lastMessagePreview));
+      .map(toCatalogRecordSummary);
   }
 
   async listCatalogPage(
@@ -633,7 +634,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       records: page.records.map((record) => ({
         ...projectHeaderSnapshot(record),
         activityAt: record.activityAt,
-        summary: toCatalogSummary(record.header, record.lastMessagePreview),
+        summary: toCatalogRecordSummary(record),
       })),
       hasMore: page.hasMore,
     };
@@ -671,7 +672,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return {
       ...projectHeaderSnapshot(record),
       activityAt: record.activityAt,
-      summary: toCatalogSummary(record.header, record.lastMessagePreview),
+      summary: toCatalogRecordSummary(record),
     };
   }
 
@@ -1007,12 +1008,12 @@ function projectStableSessionCreateProbe(
     : probe;
 }
 
-function toCatalogSummary(
-  header: SessionHeader,
-  lastMessagePreview: string | undefined,
-): SessionSummary {
+function toCatalogRecordSummary(record: SessionMetadataCatalogRecord): SessionSummary {
   return {
-    ...toSummary(header),
-    ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+    ...toSummary(record.header),
+    ...(record.lastMessagePreview === undefined
+      ? {}
+      : { lastMessagePreview: record.lastMessagePreview }),
+    ...(record.archivedAt === undefined ? {} : { archivedAt: record.archivedAt }),
   };
 }

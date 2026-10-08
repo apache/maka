@@ -343,14 +343,37 @@ describe('Host Agent Graph coordinator', () => {
   test('projects only allowlisted Runtime fields onto the wire', () => {
     const source = graphSnapshot();
     Object.assign(source.operators[0]!, { privatePrompt: 'operator-secret' });
-    Object.assign(source.operators[0]!.readiness[0]!, {
-      policyKind: 'map',
-      privatePolicy: 'readiness-secret',
-    });
+    source.operators[0]!.output = {
+      activationId: 'activation-0',
+      preview: 'Bounded output',
+      previewTruncated: false,
+      phase: 'streaming',
+      previewUpdatedAt: 10,
+      sourceEventId: 'event-0',
+      sampleStartedAt: 1,
+      outputTokens: 18,
+      sampleDurationMs: 9,
+      tokensPerSecond: 2_000,
+    };
+    Object.assign(source.operators[0]!.output, { privateOutput: 'output-secret' });
+    const hiddenReadinessFields = { policyKind: 'map', privatePolicy: 'readiness-secret' };
+    Object.assign(source.operators[0]!.readiness[0]!, hiddenReadinessFields);
     Object.assign(source.recentActivity[0]!, { privatePayload: 'activity-secret' });
 
     const projected = projectAgentGraphClientSnapshot(source);
     assert.equal(JSON.stringify(projected).includes('secret'), false);
+    assert.deepEqual(projected.operators[0]?.output, {
+      activationId: 'activation-0',
+      preview: 'Bounded output',
+      previewTruncated: false,
+      phase: 'streaming',
+      previewUpdatedAt: 10,
+      sourceEventId: 'event-0',
+      sampleStartedAt: 1,
+      outputTokens: 18,
+      sampleDurationMs: 9,
+      tokensPerSecond: 2_000,
+    });
     assert.doesNotThrow(() => decodeAgentGraphClientSnapshot(projected));
   });
 

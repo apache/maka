@@ -3831,11 +3831,7 @@ function throwIfAborted(signal: AbortSignal): void {
 function isTerminalSnapshot(
   snapshot: TurnSnapshot,
 ): snapshot is Extract<TurnSnapshot, { status: 'completed' | 'failed' | 'cancelled' }> {
-  return (
-    snapshot.status === 'completed' ||
-    snapshot.status === 'failed' ||
-    snapshot.status === 'cancelled'
-  );
+  return (['completed', 'failed', 'cancelled'] as const).includes(snapshot.status as never);
 }
 
 function isContainableRunFailure(error: unknown): error is Error {

@@ -24,6 +24,13 @@ loads the Runtime Host/Project catalog, preserves a selection per Host, derives
 the new-task target and draft identity, projects the Workspace Picker, and owns
 add/relink plus remote-directory handoff lifecycles.
 
+It also reveals folders in the system file manager: a task's project folder
+through that task, otherwise the default Runtime Host's project or workspace
+folder. The Desktop adapter resolves the default Host and names the task or
+Host profile each failure belongs to; the controller reports it in the shell's
+open-folder copy, and a task whose workspace is gone gets the
+workspace-unavailable notice instead.
+
 ## Dependency direction
 
 - Consumers import production APIs from `features/task-entry`.

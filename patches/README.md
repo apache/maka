@@ -44,7 +44,7 @@ withdrawn candidate is never offered or downloaded. Remove the patch when
 electron-updater ships equivalent missing-metadata candidate selection. The
 provider regression is in `scripts/desktop-nightly.test.mjs`.
 
-## `run@2.1.4` and `@ai-sdk/code-mode@1.0.56`
+## `run@2.1.4` and `@ai-sdk/code-mode@1.0.79`
 
 Code Mode awaits normal Runtime tools, including user interactions. The upstream
 wall deadline aborts those waits. The opt-in `timeoutMode: 'execution'` instead
@@ -102,7 +102,7 @@ painted on resume without another write. It fails against the unpatched bundle.
 Delete when upstream routes selection changes through its paused-render
 contract and both bundle regressions pass without the patch.
 
-## `@earendil-works/pi-tui@0.85.1`
+## `@earendil-works/pi-tui@0.87.1`
 
 
 Editor undo snapshots deep-clone all stored paste strings for each typed word,
@@ -130,7 +130,7 @@ Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle
 identity against the new memoizer and container implementations.
 The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
-## `@modelcontextprotocol/client@2.0.0`
+## `@modelcontextprotocol/client@2.1.0`
 
 Pending transport sends retain settled request arguments and results through
 error observers, even after response, abort, timeout, or connection close.
@@ -168,18 +168,31 @@ Runtime must not write directly to a cached fd: unrelated Linux PTY masters can
 have identical `fstat` fields. The real two-PTY regression forces EIO before exit
 and fd reuse on Linux; the macOS variant closes the read stream before exit.
 An unpatched dependency does not advertise support for fenced private input.
+The resize method also rejects a closed socket/write stream before using its fd;
+the lifecycle regression checks both first-write rejection and stale resize.
 
 Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 
-## `@ai-sdk/provider-utils@5.0.40`
+## `@ai-sdk/provider-utils@5.0.51`
 
-Streaming tool-call association for gateways that reuse or omit `index` / `id`
-(Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and
+Upstream now associates streamed calls across reused or omitted `index` / `id`.
+Maka still fails closed when a delta ambiguously addresses multiple calls or
+starts a new call with a blank name; the published tracker silently drops those
+deltas. See #1967 / #1976 and
 `packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts`.
 
-Delete when that guard passes against an unpatched package.
+Delete when the ambiguity and blank-name tests pass against an unpatched package.
 
-## `@astryxdesign/core@0.6.2`
+## `@astryxdesign/core@0.6.3`
+
+`ToastViewport` keeps its portal host inside the active native modal and opens
+its popover after that modal. Opening the empty viewport only once leaves it
+below later dialog backdrops; reopening alone still leaves it inert outside
+the modal. Moving a stable portal host preserves toast timers and React event
+handling when the dialog closes. The public LayerProvider API cannot change
+the viewport's host. The MCP detail Storybook play checks hit testing, focus
+and dismissal after testing a connection. Remove this hunk when upstream
+provides equivalent modal-aware toast placement.
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short

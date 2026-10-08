@@ -673,7 +673,8 @@ export function registerDesktopSessionLocalIpc(deps: {
           ? {
               executorId: creation.executorId,
               llmConnectionSlug: `executor:${creation.executorId}`,
-              model: creation.executorId,
+              model: creation.executorConfig?.model ?? creation.executorModel ?? creation.executorId,
+              ...(creation.executorConfig ? { executorConfig: creation.executorConfig } : {}),
             }
           : {
               llmConnectionSlug: input.llmConnectionSlug ?? '',

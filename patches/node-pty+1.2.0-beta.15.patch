@@ -46,7 +46,18 @@ index af2d24c..b38396e 100644
      Object.defineProperty(UnixTerminal.prototype, "fd", {
          /* Accessors */
          get: function () { return this._fd; },
-@@ -288,12 +304,19 @@ var CustomWriteStream = /** @class */ (function () {
+@@ -251,5 +267,10 @@ var UnixTerminal = /** @class */ (function (_super) {
+     UnixTerminal.prototype.resize = function (cols, rows, pixelSize) {
+         var _a, _b;
++        if (!this._writeStream || this._writeStream._disposed || this._socket.destroyed) {
++            var error = new Error('PTY input is closed');
++            error.code = 'EPIPE';
++            throw error;
++        }
+         if (cols <= 0 || rows <= 0 || isNaN(cols) || isNaN(rows) || cols === Infinity || rows === Infinity) {
+             throw new Error('resizing must be done using positive cols and rows');
+         }
+@@ -288,12 +309,19 @@ var CustomWriteStream = /** @class */ (function () {
          this._fd = _fd;
          this._encoding = _encoding;
          this._writeQueue = [];
@@ -66,7 +77,7 @@ index af2d24c..b38396e 100644
          // Writes are put in a queue and processed asynchronously in order to handle
          // backpressure from the kernel buffer.
          var buffer = typeof data === 'string'
-@@ -309,42 +332,53 @@ var CustomWriteStream = /** @class */ (function () {
+@@ -309,42 +337,53 @@ var CustomWriteStream = /** @class */ (function () {
      CustomWriteStream.prototype._processWriteQueue = function () {
          var _this = this;
          this._writeImmediate = undefined;

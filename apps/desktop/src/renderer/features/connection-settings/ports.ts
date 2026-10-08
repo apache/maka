@@ -87,12 +87,12 @@ export interface ConnectionsBridge {
   /** Host-bound account operations; every adapter and fixture must provide them. */
   readonly oauth: ConnectionOAuthBridge;
   getSnapshot(): Promise<DesktopConnectionSnapshot>;
-  setDefault(connection: DesktopConnectionIdentity | null): Promise<void>;
+  setDefault(connection: DesktopConnectionIdentity | null, modelId?: string): Promise<void>;
   create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;
   update(connection: DesktopConnectionIdentity, patch: UpdateConnectionInput): Promise<LlmConnection>;
   delete(connection: DesktopConnectionIdentity): Promise<void>;
   test(connection: DesktopConnectionIdentity, opts?: { model?: string }): Promise<ConnectionTestResult>;
-  fetchModels(connection: DesktopConnectionIdentity): Promise<
+  fetchModels(connection: DesktopConnectionIdentity, options?: { preserveSelection?: boolean }): Promise<
     Pick<ModelDiscoveryResult, 'models' | 'source'>
   >;
   hasSecret(connection: DesktopConnectionIdentity): Promise<boolean>;

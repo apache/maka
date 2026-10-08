@@ -372,6 +372,17 @@ export interface SessionSummary {
   name: string;
   isFlagged: boolean;
   isArchived: boolean;
+  /**
+   * When the Session last entered the archive — display metadata, never the
+   * archive state. Whether a Session is archived is `isArchived` and nothing
+   * else: this field is also absent for a Session archived before the Host
+   * recorded the time, so `archivedAt === undefined` must never be read as
+   * "not archived". (Projects do use `archivedAt` presence as their archive
+   * state; Sessions deliberately do not, after #3074 removed a session
+   * `archivedAt` that competed with `isArchived` as a second authority.)
+   * An unknown time is unknown, not derivable from any other timestamp.
+   */
+  archivedAt?: number;
   labels: string[];
   hasUnread: boolean;
   /** Host-owned recency, including creation before the first message; present on catalog rows. */

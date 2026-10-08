@@ -60,6 +60,44 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       return conversation.left >= 0 && conversation.right <= innerWidth + 1;
     })).toBe(true);
   }
+  const shellFloor = await page.locator('.maka-shell-astryx').evaluate((element) =>
+    Math.round(parseFloat(getComputedStyle(element).minWidth)));
+  const nativeMinWidth = await mainWindow.evaluate((window) => window.getMinimumSize()[0]);
+  // The renderer's shell floor can be below the native safety floor when both
+  // panels are hidden. Requests below the native floor must clamp the whole
+  // host and its docked WorkHub together instead of reducing the main window
+  // to an unusable titlebar sliver.
+  expect(nativeMinWidth).toBe(600);
+  const desktopConversationFloor = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  const workhubConversationFloor = await workhub.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--maka-conversation-min-width').trim());
+  expect(workhubConversationFloor).toBe(desktopConversationFloor);
+  await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+    getComputedStyle(element).minWidth)).toBe(desktopConversationFloor);
+  const dockLeft = await page.locator('.workHubDock').evaluate((element) =>
+    Math.round(element.getBoundingClientRect().left));
+  let frozenDockWidth: number | undefined;
+  for (const width of [shellFloor - 10, shellFloor - 40]) {
+    const contentWidth = await mainWindow.evaluate((window, nextWidth) => {
+      window.setBounds({ width: nextWidth });
+      return window.getContentSize()[0];
+    }, width);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(contentWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(nativeMinWidth);
+    expect(contentWidth).toBeGreaterThanOrEqual(shellFloor);
+    const dockWidth = await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width));
+    expect(await page.locator('.workHubDock').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(dockLeft);
+    frozenDockWidth ??= dockWidth;
+    expect(dockWidth).toBe(frozenDockWidth);
+    await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().width))).toBe(dockWidth);
+    await expect.poll(() => workhub.locator('.workHubLive').evaluate((element) =>
+      Math.round(element.getBoundingClientRect().left))).toBe(0);
+  }
   const restoredContentWidth = await mainWindow.evaluate((window, bounds) => {
     window.setBounds(bounds);
     return window.getContentSize()[0];
@@ -67,6 +105,13 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => page.evaluate(() => innerWidth)).toBe(restoredContentWidth);
   const restoredDockWidth = await page.locator('.workHubDock').evaluate((element) => Math.round(element.getBoundingClientRect().width));
   await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(restoredDockWidth);
+  // Main's titlebar controls the sibling WorkHub WebContentsView through IPC.
+  const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
+  await page.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
+  await expect(workbar).toBeVisible();
+  await page.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
+  await expect(workbar).toBeHidden();
+  await page.evaluate(() => window.maka.settings.updateClient({ appearance: { workbarTogglePosition: 'edge' } }));
   // The edge belongs to the native conversation renderer. A Main DOM overlay
   // would be covered by this WebContentsView and never receive native clicks.
   await workhub.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
@@ -76,7 +121,14 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await app.evaluate(({ Menu }) => {
     const original = Menu.prototype.popup;
     Menu.prototype.popup = function (options) {
-      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu = this;
+      const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
+      probe.workbarMenu = this;
+      probe.workbarMenuOpen = true;
+      // Track the popup's own lifetime in the main process: Linux may
+      // auto-dismiss it (e.g. after a resize) at any moment.
+      this.once('menu-will-close', () => {
+        probe.workbarMenuOpen = false;
+      });
       Menu.prototype.popup = original;
       return original.call(this, options);
     };
@@ -90,15 +142,17 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
     return container?.getVisible();
   })).toBe(true);
-  // aria-expanded tracks the popup IPC resolution, so a menu that already
-  // auto-dismissed (Linux closes popups after window resizes) must not be
-  // closed again — closePopup on a dead popup crashes the main process.
-  if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
+  // A menu that already auto-dismissed (Linux closes popups after window
+  // resizes) must not be closed again: closePopup on a dead popup crashes the
+  // main process. Decide inside the main process, in the same task as the
+  // close, so the dismissal cannot land between the check and the call;
+  // checking the renderer's aria-expanded first left exactly that window.
+  await mainWindow.evaluate((window) => {
+    const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
     // Close on the same owner passed to popup(). The no-window overload takes
     // Electron's close-all MenuRunner path on Linux, even for this single menu.
-    await mainWindow.evaluate((window) =>
-      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup(window));
-  }
+    if (probe.workbarMenuOpen) probe.workbarMenu.closePopup(window);
+  });
   await expect(addPanel).not.toHaveAttribute('aria-expanded', 'true');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();

@@ -175,6 +175,7 @@ interface LiveTerminalHandoffEntry extends LiveEntryBase {
   readonly kind: 'terminal_handoff';
   readonly request: StoredInteractionRequest;
   readonly apply: (action: 'resume' | 'cancel') => Promise<void>;
+  readonly withAnswerAdmission?: <T>(answer: () => Promise<T>) => Promise<T>;
   readonly canAnswer: (
     action: 'resume' | 'cancel',
     connectionId: string,
@@ -318,6 +319,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       requestId: string;
       request: InteractionTerminalHandoffRequest;
       apply: (action: 'resume' | 'cancel') => Promise<void>;
+      withAnswerAdmission?: <T>(answer: () => Promise<T>) => Promise<T>;
       canAnswer: (
         action: 'resume' | 'cancel',
         connectionId: string,
@@ -359,6 +361,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         },
         apply: input.apply,
         canAnswer: input.canAnswer,
+        withAnswerAdmission: input.withAnswerAdmission,
         resolve,
         reject,
       });
@@ -1006,19 +1009,19 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
             if (record.request.sessionId !== input.sessionId) return interactionNotFound();
             if (!record.outcome && input.answer.kind === 'terminal_handoff') {
               const entry = this.#live.get(input.interactionId);
-              if (
-                !entry ||
-                entry.kind !== 'terminal_handoff' ||
-                !entry.canAnswer(
-                  input.answer.action,
-                  context.connectionId,
-                  input.answer.controllerId,
-                )
-              ) {
-                return operationConflict(
-                  'Terminal handoff is not ready or this controller has expired',
-                );
+              if (!entry || entry.kind !== 'terminal_handoff') {
+                return operationConflict('Terminal handoff is no longer live');
               }
+              const answer = input.answer;
+              const commit = async () => {
+                if (!entry.canAnswer(answer.action, context.connectionId, answer.controllerId)) {
+                  return operationConflict(
+                    'Terminal handoff is not ready or this controller has expired',
+                  );
+                }
+                return this.#answerStoredInteraction(record, answer, admission);
+              };
+              return entry.withAnswerAdmission ? entry.withAnswerAdmission(commit) : commit();
             }
             return record.request.request.kind === 'client_capability'
               ? this.#answerClientCapability(record, input.answer, admission)

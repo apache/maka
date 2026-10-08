@@ -29,6 +29,7 @@ import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { StoredMessage } from '@maka/core/session';
 import { createSessionStore } from '@maka/storage/session-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import { openRuntimeEventReadPersistence } from '@maka/storage/runtime-event-persistence';
 import {
   countRecallSearchableMessages,
   listRecallCandidateSessions,
@@ -185,7 +186,174 @@ function anchors(result: Awaited<ReturnType<typeof runRecall>>): string[] {
   return result.passages.map((passage) => passage.anchorMessageId).sort();
 }
 
+function unbatchedReadModel(workspace: Workspace): RuntimeReadModel {
+  return new RuntimeReadModel({
+    runtimeEventStore: new Proxy(workspace.runtime, {
+      get(target, key) {
+        if (key === 'readSessionRuntimeSnapshot') return undefined;
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }),
+  });
+}
+
 describe('recall over the corpus a live workspace actually has', () => {
+  test('reading Recall messages uses bounded SQL and decodes each durable event once', async (t) => {
+    await withWorkspace(async (workspace) => {
+      const session = await workspace.sessions.create(makeInput('long history'));
+      const turns = 12;
+      for (let index = 0; index < turns; index += 1) {
+        await seedLedgerTurn(
+          workspace,
+          session.id,
+          `run-${index}`,
+          index < 10 ? 'deploy target' : 'unrelated',
+          'ordinary response',
+        );
+      }
+      const before = await runRecall(
+        { terms: ['deploy'], limit: 10 },
+        narrowedDeps({ ...workspace, readModel: unbatchedReadModel(workspace) }),
+      );
+      assert.ok(before.ok);
+      assert.equal(before.passages.length, 10);
+
+      const db = (workspace.runtime as unknown as { db: DatabaseSync }).db;
+      const prepare = db.prepare.bind(db);
+      let statements = 0;
+      let parses = 0;
+      t.mock.method(db, 'prepare', (sql: string) => {
+        const statement = prepare(sql);
+        return new Proxy(statement, {
+          get(target, key) {
+            const value = Reflect.get(target, key, target);
+            if (typeof value !== 'function') return value;
+            return (...args: unknown[]) => {
+              if (key === 'get' || key === 'all' || key === 'iterate') statements += 1;
+              return Reflect.apply(value, target, args);
+            };
+          },
+        });
+      });
+      const parse = JSON.parse;
+      t.mock.method(JSON, 'parse', (...args: Parameters<typeof JSON.parse>) => {
+        parses += 1;
+        return parse(...args);
+      });
+      try {
+        const messages = await workspace.readModel.getSessionMessages(session.id);
+        assert.equal(messages.filter((message) => message.type === 'user').length, turns);
+      } finally {
+        t.mock.restoreAll();
+      }
+      assert.ok(statements <= 6, `${turns} Turns issued ${statements} SQL reads`);
+      assert.equal(parses, turns * 4, 'each opening, user, assistant and terminal decoded once');
+      assert.deepEqual(
+        await runRecall({ terms: ['deploy'], limit: 10 }, narrowedDeps(workspace)),
+        before,
+      );
+    });
+  });
+
+  test('batch projection preserves active partials, child exclusion and Recall navigation', async () => {
+    await withWorkspace(async (workspace) => {
+      const session = await workspace.sessions.create(makeInput('mixed history'));
+      await seedLedgerTurn(workspace, session.id, 'settled', 'deploy target', 'deployment notes');
+      for (const runId of ['active-a', 'active-b', 'child']) {
+        const identity = {
+          sessionId: session.id,
+          invocationId: runId,
+          runId,
+          turnId: `turn-${runId}`,
+        };
+        await workspace.runtime.appendRuntimeEvent(
+          session.id,
+          runId,
+          testInvocationOpenedEvent({
+            ...identity,
+            openedAt: 200,
+            ...(runId === 'child' ? { opening: { lineage: { parentRunId: 'active-a' } } } : {}),
+          }),
+        );
+        await workspace.runtime.appendRuntimeEvent(session.id, runId, {
+          ...identity,
+          id: `${runId}-prompt`,
+          ts: 199,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'deploy target' },
+        });
+        await workspace.runtime.appendRuntimePartialBatch(session.id, runId, [
+          {
+            ...identity,
+            id: `${runId}-p1`,
+            ts: 201,
+            partial: true,
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'stream' },
+            content: { kind: 'text', text: 'deploy ' },
+          },
+          {
+            ...identity,
+            id: `${runId}-p2`,
+            ts: 202,
+            partial: true,
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'stream' },
+            content: { kind: 'text', text: 'in progress' },
+          },
+        ]);
+      }
+      const fallback = unbatchedReadModel(workspace);
+      const expected = await fallback.getSessionView(session.id);
+      const actual = await workspace.readModel.getSessionView(session.id);
+      assert.deepEqual(actual, expected);
+      assert.ok(
+        actual.messages.some(
+          (m) => m.type === 'assistant' && m.text.includes('deploy in progress'),
+        ),
+      );
+      assert.ok(actual.events.every((event) => event.runId !== 'child'));
+      for (const terms of [['deploy'], ['progress'], ['nothing-here']]) {
+        assert.deepEqual(
+          await runRecall({ terms, limit: 10 }, narrowedDeps(workspace)),
+          await runRecall(
+            { terms, limit: 10 },
+            narrowedDeps({ ...workspace, readModel: fallback }),
+          ),
+        );
+      }
+      const reader = await openRuntimeEventReadPersistence({ workspaceRoot: workspace.root });
+      try {
+        assert.ok(reader.runtimeEventStore.readSessionRuntimeSnapshot);
+        assert.deepEqual(
+          await reader.runtimeEventStore.readSessionRuntimeSnapshot(session.id),
+          await workspace.runtime.readSessionRuntimeSnapshot(session.id),
+        );
+      } finally {
+        reader.close();
+      }
+    });
+  });
+
+  test('a failed batch snapshot is reported instead of retried as separate reads', async (t) => {
+    await withWorkspace(async (workspace) => {
+      t.mock.method(workspace.runtime, 'readSessionRuntimeSnapshot', async () => {
+        throw new Error('snapshot unavailable');
+      });
+      const list = t.mock.method(workspace.runtime, 'listSessionInvocations');
+      await assert.rejects(
+        workspace.readModel.getSessionMessages('session'),
+        /snapshot read failed/,
+      );
+      assert.equal(list.mock.callCount(), 0);
+    });
+  });
+
   test('a Session born on the ledger is reachable, and narrowing matches the full scan', async () => {
     await withWorkspace(async (workspace) => {
       const live = await workspace.sessions.create(makeInput('live'));

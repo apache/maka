@@ -257,7 +257,17 @@ describe('Host Runtime Resource coordinator', () => {
       { ...reattached, action: 'input', sequence: 2, input: 'second-factor' },
       connection('reconnected'),
     );
-    await request.apply('resume');
+    assert.ok(request.withAnswerAdmission);
+    let releaseAfterCommit!: Promise<unknown>;
+    await request.withAnswerAdmission(async () => {
+      assert.equal(request.canAnswer('resume', 'reconnected', 'card-2'), true);
+      // The decision is admitted: unmount and disconnect during persistence
+      // cannot invalidate the transfer and kill the authenticated terminal.
+      releaseAfterCommit = control({ ...reattached, action: 'release' }, connection('reconnected'));
+      host.releaseConnection('reconnected');
+      await request.apply('resume');
+    });
+    await releaseAfterCommit;
     decision.resolve({
       kind: 'terminal_handoff_answer',
       action: 'resume',
@@ -277,6 +287,10 @@ describe('Host Runtime Resource coordinator', () => {
       connection('reconnected'),
     );
     assert.equal(afterSwitch.ok && afterSwitch.result.phase, 'resumed');
+    await control(
+      { action: 'surface', sessionId: SESSION_ID, available: true },
+      connection('reconnected'),
+    );
     await control({ ...reattached, action: 'ready' }, connection('reconnected'));
     const returned = await control({ ...reattached, action: 'observe' }, connection('reconnected'));
     assert.equal(returned.ok && returned.result.display?.text, 'private');
@@ -363,10 +377,21 @@ describe('Host Runtime Resource coordinator', () => {
       connection('desktop'),
     );
     await inputStarted.promise;
-    const racedResume = assert.rejects(request.apply('resume'), /uncertain input delivery/);
+    assert.ok(request.withAnswerAdmission);
+    let committedResume = false;
+    const racedResume = request.withAnswerAdmission(async () => {
+      if (!request.canAnswer('resume', 'desktop', 'card-1')) return;
+      committedResume = true;
+      await request.apply('resume');
+    });
     inputFinished.resolve();
     const receipt = await receiptPending;
     await racedResume;
+    assert.equal(
+      committedResume,
+      false,
+      'unknown delivery refuses Resume before its decision is committed',
+    );
     assert.equal(receipt.ok && receipt.result.status, 'outcome_unknown');
     await control(
       { ...identity, action: 'input', sequence: 1, input: 'secret' },

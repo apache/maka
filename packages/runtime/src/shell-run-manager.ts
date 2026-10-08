@@ -48,7 +48,11 @@ import {
 import { buildPtyShellSpawnPlan, buildShellSpawnPlan, defaultShellPlan } from './shell-detect.js';
 import { PipeProcessDriver, type PipeProcessExit } from './pipe-process-driver.js';
 import { PipeTailCollector } from './pipe-tail-collector.js';
-import { PtyProcessDriver, type PtyProcessExit } from './pty-process-driver.js';
+import {
+  PtyInputClosedError,
+  PtyProcessDriver,
+  type PtyProcessExit,
+} from './pty-process-driver.js';
 import {
   PTY_INITIAL_COLS,
   PTY_INITIAL_ROWS,
@@ -415,7 +419,12 @@ export class ShellRunProcessManager
         if (currentSize.cols === input.size.cols && currentSize.rows === input.size.rows) {
           resizeApplied = true;
         } else {
-          live.driver.resize(input.size.cols, input.size.rows);
+          try {
+            live.driver.resize(input.size.cols, input.size.rows);
+          } catch (error) {
+            if (error instanceof PtyInputClosedError) throw new ShellRunPtyControlClosedError();
+            throw error;
+          }
           resizeApplied = true;
           resizeChanged = true;
           try {
@@ -433,6 +442,7 @@ export class ShellRunProcessManager
           live.driver.write(terminalInput);
           inputQueued = true;
         } catch (error) {
+          if (error instanceof PtyInputClosedError) throw new ShellRunPtyControlClosedError();
           operationFailed = true;
           this.handleIntegrityFailure(live, asError(error, 'PTY input write failed'));
         }
@@ -652,17 +662,21 @@ export class ShellRunProcessManager
         stack,
         ...size,
         onProtocolReply: (data) => {
-          // Ignore replay while constructing the private parser. Subsequent
-          // device/status replies stay within the PTY, never in model output.
+          // Only fresh queries receive replies; historical replay is marked
+          // when admitted to the parser, before asynchronous parsing begins.
           if (!live.privateTerminal || live.driverExit || live.termination || live.integrityFailure)
             return;
-          live.driver.write(data);
+          try {
+            live.driver.write(data);
+          } catch (error) {
+            if (!(error instanceof PtyInputClosedError)) throw error;
+          }
         },
         onDirty: () => {},
         onFailure: () =>
           this.handleIntegrityFailure(live, new Error('Private terminal display failed')),
       });
-      collector.accept(live.rawBuffer);
+      collector.accept(live.rawBuffer, false);
       live.privateTerminal = { collector, inputOpen: true };
       if (live.rawPublishTimer) clearTimeout(live.rawPublishTimer);
       live.rawPublishTimer = undefined;
@@ -959,7 +973,11 @@ export class ShellRunProcessManager
             throw new Error('PTY protocol reply arrived before driver admission');
           if (live.driverExit || live.termination || live.integrityFailure || live.privateTerminal)
             return;
-          driver.write(data);
+          try {
+            driver.write(data);
+          } catch (error) {
+            if (!(error instanceof PtyInputClosedError)) throw error;
+          }
         },
         onDirty: () => dispatch((target) => this.scheduleAutomaticFlush(target)),
         onFailure: (error) => dispatch((target) => this.handleIntegrityFailure(target, error)),

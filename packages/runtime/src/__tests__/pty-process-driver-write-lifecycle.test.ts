@@ -79,9 +79,9 @@ const CHILD_SOURCE = String.raw`
       if (ms === 1) { retry = () => fn(...args); return originalSetTimeout(() => {}, 1000); }
       return originalSetTimeout(fn, ms, ...args);
     };
-    driver.write('SECRET-PASSWORD\r');
+    if (process.env.FIRST_WRITE !== '1') driver.write('SECRET-PASSWORD\r');
     globalThis.setTimeout = originalSetTimeout;
-    assert.ok(retry, 'secret must be queued under backpressure');
+    if (process.env.FIRST_WRITE !== '1') assert.ok(retry, 'secret must be queued under backpressure');
     const closed = new Promise(resolve => terminal._socket.once('close', resolve));
     writeFileSync(closeFlag, 'close');
     // Linux reads EIO immediately; macOS may defer it until process exit.
@@ -103,7 +103,12 @@ const CHILD_SOURCE = String.raw`
     while (!output.includes('B-READY')) await new Promise(resolve => setTimeout(resolve, 5));
     fs.writeSync = originalWriteSync;
     syncBuiltinESMExports();
-    retry();
+    if (process.env.FIRST_WRITE === '1') {
+      assert.throws(() => driver.write('FIRST-SECRET\r'), /input is closed/);
+    } else {
+      retry();
+    }
+    assert.throws(() => driver.resize(132, 43), /input is closed/);
     sentinel.write('SAFE\r');
     while (!output.includes('B-GOT:SAFE')) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(output.includes('SECRET'), false, 'private input reached the other PTY');
@@ -121,14 +126,16 @@ const CHILD_SOURCE = String.raw`
 test('closed PTY input cannot reach a replacement PTY (same fd on Linux) before child exit', {
   skip: process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false,
 }, () => {
-  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', CHILD_SOURCE], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    timeout: 10_000,
-    env: { ...process.env, DRIVER_MODULE_URL },
-  });
+  for (const firstWrite of ['0', '1']) {
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', CHILD_SOURCE], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: { ...process.env, DRIVER_MODULE_URL, FIRST_WRITE: firstWrite },
+    });
 
-  assert.ifError(result.error);
-  assert.equal(result.signal, null, result.stderr);
-  assert.equal(result.status, 0, result.stderr);
+    assert.ifError(result.error);
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.status, 0, result.stderr);
+  }
 });
