@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 328 files — blocker 0, reimplementation 0, polish 4, aligned 324.
+**Totals:** 331 files — blocker 0, reimplementation 0, polish 4, aligned 327.
 
 ## Exclusions (explicit)
 
@@ -55,6 +55,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/app-update/ui/app-update-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/client-plugins/client-plugin-root.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/client-plugins/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/connection-settings/connection-default-action.tsx` | other | Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, Selector, Text, VStack | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/generic-provider-mark.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/onboarding-step-form.tsx` | dialog-overlay | VStack | aligned — uses Astryx (VStack) | aligned |
 | `apps/desktop/src/renderer/features/connection-settings/provider-add-model-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, LayoutFooter, TextInput) | aligned |
@@ -124,6 +125,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/session-settings/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-settings/ui/session-settings-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/storage-usage/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-notices.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-section.tsx` | other | Banner, Selector, Switch, Text | aligned — uses Astryx (Banner, Selector, Switch, Text) | aligned |
 | `apps/desktop/src/renderer/features/storage-usage/ui/storage-usage-section.tsx` | other | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/features/storage-usage/ui/task-storage-size.tsx` | other | Text | aligned — uses Astryx (Text) | aligned |
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |

@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import type { SessionStorageUsage, StorageUsageQueryResult } from '@maka/runtime-host/protocol';
+import type {
+  SessionStorageUsage,
+  StorageRetentionQueryResult,
+  StorageRetentionSetInput,
+  StorageRetentionSetResult,
+  StorageUsageQueryResult,
+} from '@maka/runtime-host/protocol';
 
 /** The Runtime Host a Settings page is pointed at, stated structurally. */
 export interface StorageUsageHostTarget {
@@ -27,9 +33,12 @@ export interface StorageUsageHostTarget {
 
 /**
  * What the storage usage feature needs from the Desktop: two read-only
- * measurements. Nothing here reclaims or deletes data.
+ * measurements, and one Host's archived-task retention setting. Nothing here
+ * deletes data itself; a Host with retention enabled does that on its own.
  */
 export interface StorageUsageServices {
+  /** Available in the application shell; isolated Settings fixtures need no observer. */
+  readonly notices?: RetentionNoticeServices;
   /** One Runtime Host's State Root footprint. */
   loadUsage(host: StorageUsageHostTarget): Promise<StorageUsageQueryResult>;
   /**
@@ -39,4 +48,33 @@ export interface StorageUsageServices {
   loadSessionUsage(
     sessionIds: readonly string[],
   ): Promise<Readonly<Record<string, SessionStorageUsage>>>;
+  /** One Host's retention setting, its preview and its latest results. */
+  loadRetention(host: StorageUsageHostTarget): Promise<StorageRetentionQueryResult>;
+  /** The Desktop's only way to change that setting. */
+  setRetention(
+    host: StorageUsageHostTarget,
+    input: StorageRetentionSetInput,
+  ): Promise<StorageRetentionSetResult>;
+}
+
+export interface RetentionNoticeHost extends StorageUsageHostTarget {
+  readonly name: string;
+}
+
+export interface RetentionNoticeState {
+  readonly deletionAt?: number;
+  readonly warning?: string;
+  /** Unlike announcement, viewing the warning in Settings retires its toast. */
+  readonly acknowledgedWarning?: string;
+  /** Client time, used only to limit reminders during a long cleanup backlog. */
+  readonly notifiedAt?: number;
+}
+
+export interface RetentionNoticeServices {
+  /** Already-connected Hosts only; observing never starts or enables a Host. */
+  loadHosts(): Promise<readonly RetentionNoticeHost[]>;
+  subscribeChanges(handler: () => void): () => void;
+  isVisible(): boolean;
+  readSeen(hostId: string): unknown;
+  writeSeen(hostId: string, state: RetentionNoticeState): void;
 }

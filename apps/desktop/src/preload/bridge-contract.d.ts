@@ -158,6 +158,9 @@ import type {
   ContextDiagnosticsResult,
   SessionRemovePreviewResult,
   SessionStorageUsage,
+  StorageRetentionQueryResult,
+  StorageRetentionSetInput,
+  StorageRetentionSetResult,
   StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
@@ -1566,7 +1569,7 @@ export interface MakaBridge {
   };
   connections: {
     getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<DesktopConnectionSnapshot>;
-    setDefault(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void>;
+    setDefault(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef, modelId?: string): Promise<void>;
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void>;
     create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').IdentifiedLlmConnection>;
     verifyOnboarding(
@@ -1580,7 +1583,7 @@ export interface MakaBridge {
     update(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
     delete(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<void>;
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
-    fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
+    fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef, options?: { preserveSelection?: boolean }): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
     hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
@@ -1846,6 +1849,13 @@ export interface MakaBridge {
      * Runtime Host is unavailable or fails, or when that Host no longer holds it.
      */
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
+    /** One Runtime Host's archived-task retention setting, its preview and its latest results. */
+    retention(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult>;
+    /** Changes that setting, fenced by the revision the caller read. The Host stamps the time. */
+    setRetention(
+      input: StorageRetentionSetInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionSetResult>;
   };
   dailyReview: {
     day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;

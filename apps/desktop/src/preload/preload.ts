@@ -259,6 +259,9 @@ import {
   type SessionTurnAccessRequest,
   type SessionRemovePreviewResult,
   type SessionStorageUsage,
+  type StorageRetentionQueryResult,
+  type StorageRetentionSetInput,
+  type StorageRetentionSetResult,
   type StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
@@ -3180,11 +3183,12 @@ const makaBridge = {
         ? invokeRuntimeHostForSession('connections:getSnapshot', sessionId)
         : invokeSelectedRuntimeHost(host, 'connections:getSnapshot');
     },
-    setDefault(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void> {
+    setDefault(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef, modelId?: string): Promise<void> {
       return invokeSelectedRuntimeHost(
         host,
         typeof connection === 'string' ? 'connections:setDefaultBySlug' : 'connections:setDefault',
         connection,
+        modelId,
       );
     },
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void> {
@@ -3213,8 +3217,8 @@ const makaBridge = {
         opts,
       );
     },
-    fetchModels(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>> {
-      return invokeSelectedRuntimeHost(host, 'connections:fetchModels', connection);
+    fetchModels(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef, options?: { preserveSelection?: boolean }): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>> {
+      return invokeSelectedRuntimeHost(host, 'connections:fetchModels', connection, options);
     },
     hasSecret(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'connections:hasSecret', connection);
@@ -3745,6 +3749,15 @@ const makaBridge = {
     },
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>> {
       return loadDesktopSessionStorageUsage(sessionIds);
+    },
+    async retention(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.retention.query', {});
+    },
+    async setRetention(
+      input: StorageRetentionSetInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionSetResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).command('storage.retention.set', input);
     },
   },
   dailyReview: {

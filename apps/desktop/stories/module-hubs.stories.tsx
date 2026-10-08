@@ -954,6 +954,36 @@ async function chooseFromAddMenu(canvasElement: HTMLElement, item: string): Prom
   throw new Error(`添加 menu item did not render: ${item}`);
 }
 
+async function expectScheduledTaskSettingsMenuWithinViewport(canvasElement: HTMLElement): Promise<void> {
+  const settings = await waitForStoryButton(
+    canvasElement,
+    (button) => button.getAttribute('aria-label') === '定时任务页面设置',
+  );
+  await userEvent.click(settings);
+  const doc = canvasElement.ownerDocument;
+  const menu = await waitForStorySelector<HTMLElement>(doc.body, '.maka-scheduled-task-page-menu');
+  // Native popovers animate into place; assert the settled geometry, not the
+  // first frame. Check the content as well as the surface to catch clipping.
+  await waitFor(() => {
+    const bounds = menu.getBoundingClientRect();
+    expect(bounds.width).toBeGreaterThan(0);
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(doc.documentElement.clientWidth);
+    expect(bounds.top).toBeGreaterThanOrEqual(0);
+    expect(bounds.bottom).toBeLessThanOrEqual(doc.documentElement.clientHeight);
+    for (const item of menu.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemcheckbox"]')) {
+      const range = doc.createRange();
+      range.selectNodeContents(item);
+      const content = range.getBoundingClientRect();
+      expect(content.left).toBeGreaterThanOrEqual(bounds.left);
+      expect(content.right).toBeLessThanOrEqual(bounds.right);
+      expect(item.scrollWidth).toBeLessThanOrEqual(item.clientWidth);
+    }
+  });
+  await userEvent.keyboard('{Escape}');
+  await waitFor(() => expect(settings.getAttribute('aria-expanded')).toBe('false'));
+}
+
 function expectModuleBodyAlignedWithHeader(canvasElement: HTMLElement): void {
   const heading = canvasElement.querySelector<HTMLElement>('.astryx-layout-header h1');
   const body = canvasElement.querySelector<HTMLElement>(
@@ -1444,6 +1474,7 @@ export const ScheduledTasksConfigured: Story = {
   play: async ({ canvasElement }) => {
     await waitForStoryText(canvasElement, '每周发布风险复盘');
     expectModuleBodyAlignedWithHeader(canvasElement);
+    await expectScheduledTaskSettingsMenuWithinViewport(canvasElement);
   },
 };
 
@@ -1538,7 +1569,7 @@ export const ScheduledTasksDetail: Story = {
 
 // Real path: narrow desktop → sidebar → 定时任务.
 export const ScheduledTasksNarrow: Story = {
-  render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
+  ...ScheduledTasksConfigured,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 

@@ -20,6 +20,7 @@
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation } from './features/workhub';
 import { WorkHubEnablementWatch } from './application/contracts/workhub-workspace/workhub-enablement.js';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
+import { ArchiveRetentionNotices } from './features/storage-usage/index.js';
 import {
   useCallback,
   useLayoutEffect,
@@ -251,7 +252,7 @@ function AppShellContent({
     recordSessionChange,
     sessionCatalogController,
     commitSession,
-    activeCatalogSession,
+    activeCatalogSession: activeSession,
     activeHostSession,
     sharedSessionActive,
     ownerActiveId,
@@ -288,8 +289,8 @@ function AppShellContent({
   // that cannot move under it. See NEW_TASK_PENDING_KEY.
   const attachmentDraftKey = activeId ?? NEW_TASK_PENDING_KEY;
   const directoryHostId = activeId
-    ? (activeCatalogSession?.profileKind === 'local'
-        ? activeCatalogSession.runtimeHostId
+    ? (activeSession?.profileKind === 'local'
+        ? activeSession.runtimeHostId
         : undefined)
     : (taskEntry.selectors.selectedHost?.kind === 'local'
         ? taskEntry.selectors.target?.hostId
@@ -355,9 +356,7 @@ function AppShellContent({
   const activeConnectionSnapshot = workHubActive || activeId
     ? sessionHostConnections.snapshot
     : newTaskConnectionSnapshot;
-  const connections = activeConnectionSnapshot.connections;
-  const defaultConnection = activeConnectionSnapshot.defaultConnection;
-  const connectionModelChoices = activeConnectionSnapshot.chatModelChoices;
+  const { connections, defaultConnection, chatModelChoices: connectionModelChoices } = activeConnectionSnapshot;
   const refreshConnections = activeId
     ? sessionHostConnections.refreshConnections
     : newTaskConnections.refreshConnections;
@@ -423,7 +422,6 @@ function AppShellContent({
   // Named Composer edits; the editor handle stays with Conversation.
   const composerEditing = queueSurface.editing;
   const rendererMountedRef = useRef(true);
-  const activeSession = activeCatalogSession;
   const { setPermissionMode, setSessionModel, setSessionThinkingLevel, setSessionExecutor } = sessionSettingIntent.commands;
   const modelConfigurationOverlay = sessionSettingIntent.overlay.modelConfiguration;
   const activeSessionForModelControls = activeSession
@@ -810,20 +808,17 @@ function AppShellContent({
   const {
     revisionNavigation,
     activeParentSession,
-    layout: railLayout,
+    layout: { collapsed: sessionListCollapsed, width: sessionListWidth },
   } = useSessionNavigationReads({
     catalog: sessionCatalogController,
     activeSessionId: activeId,
   });
-  const sessionListCollapsed = railLayout.collapsed;
-  const sessionListWidth = railLayout.width;
   const sessionSideNavHandleRef = sessionRailLayoutStore.collapseHandleRef;
   const titlebarParentSession = useMemo(() => {
     if (!activeParentSession) return undefined;
-    const parentId = activeParentSession.id;
     return {
       name: activeParentSession.name,
-      onOpen: () => openSessionInChatRef.current(parentId),
+      onOpen: () => openSessionInChatRef.current(activeParentSession.id),
     };
   }, [activeParentSession]);
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
@@ -1213,6 +1208,7 @@ function AppShellContent({
         sessionListWidth,
       })}
     >
+      <ArchiveRetentionNotices navigation={overlays.commands} />
       <Diagnostics.PreviousMainProcessInterruptionNotice ready={appearanceHydrated} />
       <ShellLifecycleSubscriptions {...shellLifecycle} />
       <OnboardingConnectionSeed seed={defaultHostConnections.seedSnapshot} refresh={() => void defaultHostConnections.refreshConnections()} />

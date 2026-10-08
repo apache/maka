@@ -36,30 +36,29 @@
  *
  * Layout itself now rides Astryx primitives (`VStack` / `HStack` own the
  * column, rows and chips); this recipe only maps each chrome slot to the
- * semantic classes its remaining surface styling still selects on. The
- * lineage badge + footer action — which render as `UiButton` and can't be
- * wrapped — apply the shell via `className`; `Button` runs it through
- * `cn` last so consumers can append their own product hook.
+ * semantic classes its remaining surface styling still selects on, and
+ * each consumer applies its shell through `className`.
  * It is intentionally kept OFF the `@maka/ui` package barrel (see `index.ts`):
  * the only consumers import it by relative path, so the variant table stays an
  * internal, freely-removable styling detail rather than public API.
  *
+ * The Buttons living inside these markers (lineage badges, footer actions)
+ * carry no marker class of their own: product CSS reaches them through the
+ * published `.astryx-button` theme target scoped by the row, and shape/focus
+ * deltas go through the component's own derived tokens (`--_button-radius`,
+ * `--focus-outline-offset`) rather than a parallel product hook (#5793 P3.1).
  */
 export type MarkerVariant =
   | "host-origin"
   | "lineage-row"
   | "lineage-row-reverse"
-  | "lineage-badge"
-  | "footer"
-  | "footer-action";
+  | "footer";
 
 const MARKER_CLASSES: Record<MarkerVariant, string> = {
   "host-origin": "maka-turn-host-origin",
   "lineage-row": "maka-turn-lineage-row",
   "lineage-row-reverse": "maka-turn-lineage-row maka-turn-lineage-row-reverse",
-  "lineage-badge": "maka-turn-lineage-badge",
   footer: "maka-turn-footer",
-  "footer-action": "maka-turn-footer-action",
 };
 
 function markerVariants({ variant }: { variant: MarkerVariant }): string {
