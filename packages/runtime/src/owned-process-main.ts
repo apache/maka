@@ -46,6 +46,15 @@ function loseOwner(): void {
 process.on('disconnect', loseOwner);
 process.on('uncaughtException', loseOwner);
 process.on('unhandledRejection', loseOwner);
+// The command shares this process group, so a group-wide signal its own script
+// sends (`kill -HUP 0`) reaches the supervisor too. Ignore the ones whose
+// default action would end it, or for SIGUSR1 start the inspector, so the
+// command alone decides how to handle them. Windows cannot listen for these.
+if (process.platform !== 'win32') {
+  for (const signal of ['SIGHUP', 'SIGUSR1', 'SIGUSR2', 'SIGQUIT', 'SIGALRM'] as const) {
+    process.on(signal, () => {});
+  }
+}
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     stopping = true;
@@ -93,15 +102,31 @@ function exitWithSignal(signal: NodeJS.Signals): void {
 
 if (!process.connected) process.exit(1);
 process.once('message', (message) => {
-  if (stopping || !process.connected) {
+  if (!process.connected) {
     loseOwner();
     return;
   }
+  // A stop that arrived before the launch is already finishing.
+  if (stopping) return;
   const input = message as OwnedProcessLaunch;
   if (input.kind !== 'launch') {
     loseOwner();
     return;
   }
+  // A group signal can be pending in this loop turn alongside the launch.
+  // Spawn in the check phase, after its handler has run, so a stop that
+  // arrived first ends the supervisor without starting the command.
+  setImmediate(() => {
+    if (stopping) return;
+    if (!process.connected) {
+      loseOwner();
+      return;
+    }
+    launch(input);
+  });
+});
+
+function launch(input: OwnedProcessLaunch): void {
   const stdio: Array<number | 'ignore'> = [0, 1, 2];
   for (const fd of input.inheritedFds) {
     while (stdio.length <= fd) stdio.push('ignore');
@@ -122,7 +147,7 @@ process.once('message', (message) => {
   } catch (error) {
     failed(error as Error);
   }
-});
+}
 
 function failed(error: Error): void {
   send(

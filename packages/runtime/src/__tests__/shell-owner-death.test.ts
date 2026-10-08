@@ -88,3 +88,64 @@ for (const mode of ['bounded', 'pipes']) {
     });
   }
 }
+
+test('owner SIGKILL also terminates a descendant that left the command group with setsid', {
+  skip: process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false,
+  timeout: 15_000,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-owner-death-setsid-'));
+  const marker = join(directory, 'escaped.json');
+  const late = join(directory, 'late.txt');
+  const script = join(directory, 'escaper.cjs');
+  const escapee = `const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,pgid:process.pid}));setTimeout(()=>fs.writeFileSync(${JSON.stringify(late)},'late'),1500);setInterval(()=>{},1000);`;
+  // The command stays alive while its child leads a new session, outside the
+  // supervisor's process group but still inside its process tree.
+  await writeFile(
+    script,
+    `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(escapee)}],{detached:true,stdio:'ignore'}).unref();\nsetInterval(()=>{},1000);`,
+  );
+  const owner = fork(
+    new URL('./fixtures/shell-owner.js', import.meta.url),
+    ['bounded', directory, script],
+    {
+      silent: true,
+      execArgv: [],
+    },
+  );
+  let escaped: { pid: number } | undefined;
+  let diagnostic = '';
+  owner.stderr?.on('data', (chunk) => {
+    diagnostic += String(chunk);
+  });
+  const exited = new Promise((resolve) => owner.once('exit', resolve));
+  try {
+    const deadline = Date.now() + 8_000;
+    while (!escaped) {
+      try {
+        escaped = JSON.parse(await readFile(marker, 'utf8'));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      assert.ok(Date.now() < deadline, diagnostic || 'Escaped descendant did not start');
+      await delay(10);
+    }
+    assert.equal(owner.kill('SIGKILL'), true);
+    await exited;
+    await delay(1800);
+    await assert.rejects(
+      readFile(late, 'utf8'),
+      { code: 'ENOENT' },
+      'An escaped descendant wrote after its owner was killed',
+    );
+  } finally {
+    owner.kill('SIGKILL');
+    if (escaped) {
+      try {
+        process.kill(escaped.pid, 'SIGKILL');
+      } catch {
+        /* already exited */
+      }
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});

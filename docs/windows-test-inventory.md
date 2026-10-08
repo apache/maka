@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 27 |
 | portable-candidate | 53 |
-| platform-contract | 43 |
+| platform-contract | 45 |
 
-Total Windows-excluded declarations: **123**
+Total Windows-excluded declarations: **125**
 
 ## Inventory
 
@@ -89,9 +89,11 @@ Total Windows-excluded declarations: **123**
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` POSIX cancellation delivers SIGTERM exactly once to the owned command | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` supervisor mirrors a command that dies from ${signal} | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` group-wide signals from the command do not end its supervisor | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` unexpected POSIX supervisor death terminates its command and cannot report success | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-owner-death.test.ts` owner SIGKILL also terminates a descendant that left the command group with setsid | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |

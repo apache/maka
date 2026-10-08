@@ -184,6 +184,80 @@ for (const signal of ['SIGPIPE', 'SIGUSR1'] as const) {
   });
 }
 
+test('a supervisor that loses its lease stops the command and never reports a command status', {
+  timeout: 10_000,
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-owned-lost-lease-'));
+  const late = join(directory, 'late');
+  const { child, ready } = spawnOwnedProcess({
+    program: process.execPath,
+    args: [
+      '-e',
+      `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 1000);
+      setInterval(() => {}, 1000);`,
+    ],
+    cwd: directory,
+    shell: false,
+    stdin: 'ignore',
+  });
+  const errors: Error[] = [];
+  child.on('error', (error) => errors.push(error));
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    child.once('exit', (code, signal) => resolve({ code, signal })),
+  );
+  try {
+    await ready;
+    // Losing the lease channel makes the supervisor stop its whole tree
+    // without reporting the command's own status.
+    child.disconnect();
+    const exit = await exited;
+    await delay(50);
+    if (process.platform === 'win32') {
+      // taskkill ends the supervisor with an ordinary exit code, which must
+      // surface as a lost result rather than as the command's status.
+      assert.deepEqual(
+        errors.map((error) => error.message),
+        ['Command supervisor lost its result'],
+      );
+    } else {
+      // The supervisor ends with its own group's SIGKILL, which the Host
+      // already reports as a forced termination.
+      assert.deepEqual(exit, { code: null, signal: 'SIGKILL' });
+      assert.deepEqual(errors, []);
+    }
+    await delay(1200);
+    await assert.rejects(readFile(late), { code: 'ENOENT' });
+  } finally {
+    if (child.pid && process.platform !== 'win32') {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* already exited */
+      }
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('group-wide signals from the command do not end its supervisor', {
+  skip: process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false,
+  timeout: 10_000,
+}, async () => {
+  // A script may signal its own process group and trap the signal; the
+  // supervisor shares that group and must not die or start an inspector.
+  const result = await runProcessWithBoundedTail(
+    '/bin/sh',
+    [
+      '-c',
+      "trap '' HUP USR1 USR2 QUIT ALRM; kill -HUP 0; kill -USR2 0; kill -QUIT 0; kill -ALRM 0; kill -USR1 0; sleep 0.3; echo survived",
+    ],
+    { cwd: tmpdir(), timeoutMs: 5000 },
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, 'survived\n');
+  assert.doesNotMatch(result.stderr, /Debugger listening/u);
+});
+
 test('unexpected POSIX supervisor death terminates its command and cannot report success', {
   skip: process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false,
   timeout: 10_000,

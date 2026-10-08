@@ -94,6 +94,18 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
   const terminate = () => {
     if (child.pid) void terminateProcessTree({ pid: child.pid, signal: 'SIGKILL' }).catch(() => {});
   };
+  // Once the supervisor is reaped its PID can be reused, so a tree walk from it
+  // could reach unrelated processes. Its POSIX process group cannot be
+  // reallocated while members remain, so it alone still names the command.
+  // Windows has no such handle; taskkill /T on a reaped PID is skipped.
+  const terminateOrphanedGroup = () => {
+    if (process.platform === 'win32' || !child.pid) return;
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // The group is already empty.
+    }
+  };
   // Command output reaches these pipes directly, racing the IPC admission
   // message. Hold it until callers have observed `ready`, so output never
   // precedes admission, as with a direct spawn. Callers attach 'data'
@@ -154,14 +166,23 @@ export function spawnOwnedProcess(input: OwnedProcessInput): {
   child.once('exit', (code) => {
     clearTimeout(timer);
     releaseOutput();
-    if (!started) rejectReady(new Error('Command supervisor exited before admission'));
-    if (!completed) {
-      // The group can outlive its leader. An unexpected supervisor exit must
-      // not leave an admitted command running while the Host is still alive.
-      terminate();
-      if (code === 0) child.emit('error', new Error('Command supervisor lost its result'));
-    }
+    // `exit` is not ordered after IPC messages still being read; the channel's
+    // close is. Decide a missing result only once the channel has drained.
+    if (completed || !child.connected) settleExit(code);
+    else child.once('disconnect', () => settleExit(code));
   });
+  function settleExit(code: number | null): void {
+    if (!started) rejectReady(new Error('Command supervisor exited before admission'));
+    if (completed) return;
+    // The group can outlive its leader. An unexpected supervisor exit must
+    // not leave an admitted command running while the Host is still alive.
+    terminateOrphanedGroup();
+    // A signal exit is the Host's own forced termination. A normal exit without
+    // `completed` lost the command's result and must not pass as its status.
+    if (code !== null && !failureReported) {
+      child.emit('error', new Error('Command supervisor lost its result'));
+    }
+  }
   return { child, ready };
 }
 
