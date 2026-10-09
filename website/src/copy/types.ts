@@ -102,9 +102,9 @@ export interface Copy {
     copied: string;
     status: {
       h3: string;
-      release: { label: string; value: string; note: string };
+      release: { label: string };
     };
-    releases: { h2: string; note: string; p: string; distNote: string };
+    releases: { h2: string; p: string; checksum: string; signature: string; archiveNote: string };
     verify: { h2: string; p: string; keys: string; signature: string; checksum: string };
     development: { h2: string; p: string; contribute: string; discuss: string };
   };

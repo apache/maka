@@ -71,6 +71,7 @@ export interface SessionCollaborationJoinCopy {
   readonly mountConnecting: string;
   readonly mountReconnecting: string;
   readonly mountUnavailable: string;
+  readonly mountCached: string;
   readonly directConnection: string;
   readonly memberTransitConnection: string;
   readonly disconnect: string;
@@ -352,7 +353,10 @@ export function SessionCollaborationJoinDialog(props: {
                               label={mountReadinessLabel(props.copy, mount.readiness)}
                             />
                           ) : null}
-                          {mount.readiness !== 'ready' && !mountAccessLost(mount) ? (
+                          {mount.sessionState === 'cached' && !mountAccessLost(mount) ? (
+                            <Badge variant="warning" label={props.copy.mountCached} />
+                          ) : null}
+                          {(mount.readiness !== 'ready' || mount.sessionState === 'cached') && !mountAccessLost(mount) ? (
                             <Button variant="secondary" size="sm" label={props.copy.retryConnection}
                               isDisabled={working || removingMountId !== undefined}
                               onClick={() => void services.retryMount(mount.mountId).catch((error) => {

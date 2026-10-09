@@ -1301,6 +1301,17 @@ function mergeAttachedBundle(target: DatabaseSync): string[] {
         const quoted = quoteIdentifier(name);
         target.exec(`INSERT INTO main.${quoted} SELECT * FROM bundle.${quoted}`);
       }
+      // An archived Session arrives with the archive time (or no time) of the
+      // machine it left. Archive retention counts from that time, so an import
+      // could be deleted at once; its clock starts at the import instead.
+      target
+        .prepare(
+          `UPDATE main.session_metadata
+           SET archived_at = ?
+           WHERE is_archived = 1
+             AND session_id IN (SELECT session_id FROM bundle.session_metadata)`,
+        )
+        .run(Date.now());
       const violation = target.prepare('PRAGMA foreign_key_check').get();
       if (violation) {
         throw new SessionBundleImportError(

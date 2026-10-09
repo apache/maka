@@ -392,6 +392,9 @@ export interface ConversationCopy {
     renameSubmit: string;
     respondingAriaLabel: string;
     respondingTitle: string;
+    backgroundRunning: string;
+    backgroundWaitingForUser: string;
+    backgroundBlocked: string;
     staleTitle: string;
     staleAriaLabel: string;
     stale: string;
@@ -537,10 +540,9 @@ const CONVERSATION_COPY = {
           '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `上下文窗口：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
-        contextUsageNoWindow: (used) =>
-          `已用 ${formatCompactTokenCount(used)} token；上下文窗口上限未知`,
-        contextUsageUnavailable: '暂无用量数据',
+          `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
+        contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
+        contextUsageUnavailable: '暂无上下文用量数据',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
@@ -560,7 +562,7 @@ const CONVERSATION_COPY = {
       untitled: '新建任务',
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
-      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', delete: '删除', moveToProject: '移动到项目', moveToNoProject: '移出项目', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', groupingHeading: '任务', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
+      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', backgroundRunning: '子任务执行中', backgroundWaitingForUser: '子任务等待你的回应', backgroundBlocked: '子任务需要处理', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', delete: '删除', moveToProject: '移动到项目', moveToNoProject: '移出项目', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', groupingHeading: '任务', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
     },
   },
   'zh-TW': {
@@ -662,10 +664,9 @@ const CONVERSATION_COPY = {
           '已經壓縮過歷史，供應商仍然說這次請求太大。剩下的部分還包含系統提示、工具定義、摘要和最近的原文，縮短這則訊息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `上下文視窗：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
-        contextUsageNoWindow: (used) =>
-          `已用 ${formatCompactTokenCount(used)} token；上下文視窗上限未知`,
-        contextUsageUnavailable: '暫無用量資料',
+          `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
+        contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
+        contextUsageUnavailable: '暫無上下文用量資料',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
       },
@@ -685,7 +686,7 @@ const CONVERSATION_COPY = {
       untitled: '建立任務',
       status: { active: '可繼續', running: '進行中', waiting_for_user: '等你確認', blocked: '需要處理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待設定可用模型連線', auth: '需要重新登入', permission_required: '等待權限確認', tool_failed: '工具呼叫失敗', unknown: '執行中斷，可重試' },
-      listAriaLabel: '任務列表', showMore: '顯示更多', showMoreAriaLabel: (count) => `顯示 ${count} 條更多工`, renameAriaLabel: '重新命名任務', renameProjectTitle: '重新命名專案', renameSubmit: '儲存', respondingAriaLabel: '正在響應', respondingTitle: '任務正在流式響應中', staleTitle: '此任務使用的模型連線已不可用，傳送時會切換到預設連線', staleAriaLabel: '任務已過期', stale: '已過期', unreadAriaLabel: '未讀訊息', actionsAriaLabel: (name) => `${name} 任務操作`, pin: '置頂', unpin: '取消置頂', rename: '重新命名', archive: '歸檔', delete: '刪除', moveToProject: '移動到專案', moveToNoProject: '移出專案', pinned: '置頂', recent: '最近', projects: '專案', groupByTime: '按時間', groupByProject: '按專案', groupingAriaLabel: '任務分組方式', groupingHeading: '任務', projectActionsAriaLabel: (name) => `${name} 專案操作`, projectNewTask: '建立任務', projectRename: '重新命名', projectArchive: '歸檔', projectRestore: '恢復', projectRelink: '重新定位', projectUnavailable: '專案目錄不可用', archivedProjects: '已歸檔專案', archivedProjectsAriaLabel: '展開已歸檔專案', worktreeAriaLabel: 'Git 工作樹', promptRailAriaLabel: '按提問跳轉', emptyPrompt: '（空提問）', jumpToPrompt: (preview) => `跳到提問：${preview}`, pickedAriaLabel: '已選取', pinCount: (count) => `置頂 ${count} 項`, unpinCount: (count) => `取消置頂 ${count} 項`, archiveCount: (count) => `歸檔 ${count} 項`,
+      listAriaLabel: '任務列表', showMore: '顯示更多', showMoreAriaLabel: (count) => `顯示 ${count} 條更多工`, renameAriaLabel: '重新命名任務', renameProjectTitle: '重新命名專案', renameSubmit: '儲存', respondingAriaLabel: '正在響應', respondingTitle: '任務正在流式響應中', backgroundRunning: '子任務執行中', backgroundWaitingForUser: '子任務等待你的回應', backgroundBlocked: '子任務需要處理', staleTitle: '此任務使用的模型連線已不可用，傳送時會切換到預設連線', staleAriaLabel: '任務已過期', stale: '已過期', unreadAriaLabel: '未讀訊息', actionsAriaLabel: (name) => `${name} 任務操作`, pin: '置頂', unpin: '取消置頂', rename: '重新命名', archive: '歸檔', delete: '刪除', moveToProject: '移動到專案', moveToNoProject: '移出專案', pinned: '置頂', recent: '最近', projects: '專案', groupByTime: '按時間', groupByProject: '按專案', groupingAriaLabel: '任務分組方式', groupingHeading: '任務', projectActionsAriaLabel: (name) => `${name} 專案操作`, projectNewTask: '建立任務', projectRename: '重新命名', projectArchive: '歸檔', projectRestore: '恢復', projectRelink: '重新定位', projectUnavailable: '專案目錄不可用', archivedProjects: '已歸檔專案', archivedProjectsAriaLabel: '展開已歸檔專案', worktreeAriaLabel: 'Git 工作樹', promptRailAriaLabel: '按提問跳轉', emptyPrompt: '（空提問）', jumpToPrompt: (preview) => `跳到提問：${preview}`, pickedAriaLabel: '已選取', pinCount: (count) => `置頂 ${count} 項`, unpinCount: (count) => `取消置頂 ${count} 項`, archiveCount: (count) => `歸檔 ${count} 項`,
     },
   },
   en: {
@@ -784,10 +785,9 @@ const CONVERSATION_COPY = {
           'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.',
         contextUsageLabel: 'Usage',
         contextUsageShare: (used, window) =>
-          `Context window: ${Math.round((used / window) * 100)}% used (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens).`,
-        contextUsageNoWindow: (used) =>
-          `This request used ${formatCompactTokenCount(used)} tokens; no context limit is available for this model.`,
-        contextUsageUnavailable: 'No usage data is available for this request.',
+          `Context: ${Math.round((used / window) * 100)}% (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens)`,
+        contextUsageNoWindow: (used) => `Context: ${formatCompactTokenCount(used)} tokens`,
+        contextUsageUnavailable: 'No context usage data',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
@@ -807,7 +807,7 @@ const CONVERSATION_COPY = {
       untitled: 'New task',
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
-      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', delete: 'Delete', moveToProject: 'Move to project', moveToNoProject: 'Remove from project', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', groupingHeading: 'Tasks', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
+      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', backgroundRunning: 'Subtasks running', backgroundWaitingForUser: 'Subtasks waiting for you', backgroundBlocked: 'Subtasks need attention', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', delete: 'Delete', moveToProject: 'Move to project', moveToNoProject: 'Remove from project', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', groupingHeading: 'Tasks', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
     },
   },
 } satisfies UiCatalog<ConversationCopy>;

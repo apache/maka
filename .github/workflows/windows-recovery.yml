@@ -164,6 +164,7 @@ permissions:
 jobs:
   windows_recovery:
     name: windows_recovery
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:

@@ -92,6 +92,7 @@ import type {
   AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import { loadSessionUsageSummaryVia } from './usage-summary.js';
 import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
 import {
   projectDesktopExternalSessionCatalogItem,
@@ -259,6 +260,9 @@ import {
   type SessionTurnAccessRequest,
   type SessionRemovePreviewResult,
   type SessionStorageUsage,
+  type StorageRetentionQueryResult,
+  type StorageRetentionSetInput,
+  type StorageRetentionSetResult,
   type StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { PlanControlIpcResult } from '../shared/plan-mode-ipc.js';
@@ -1168,7 +1172,10 @@ async function listGuestSessionMountCatalog(): Promise<DesktopSessionSummary[]> 
     }
     if (!('session' in mount) || mount.session === undefined) continue;
     const session = decodeSharedSessionCatalogProjection(mount.session);
-    const summary = projectDesktopSharedSessionSummary(session);
+    const summary = projectDesktopSharedSessionSummary(session, {
+      cached: !('readiness' in mount) || mount.readiness !== 'ready' ||
+        !('sessionState' in mount) || mount.sessionState !== 'live',
+    });
     const projected = projectDesktopSessionSummary(
       {
         hostId: mount.hostId,
@@ -1359,12 +1366,7 @@ async function loadSessionTracePage(
 async function loadSessionUsageSummary(
   sessionId: string,
 ): Promise<Result<DesktopSessionUsageSummary>> {
-  const session = await runtimeHostSessionRef(sessionId);
-  return invokeWhenReady(
-    'usage:summary',
-    session.scope,
-    { range: 'all', sessionId: session.sessionId },
-  ) as Promise<Result<DesktopSessionUsageSummary>>;
+  return loadSessionUsageSummaryVia(invokeWhenReady, await runtimeHostSessionRef(sessionId));
 }
 
 async function updateDailyReviewConfig(
@@ -3746,6 +3748,15 @@ const makaBridge = {
     },
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>> {
       return loadDesktopSessionStorageUsage(sessionIds);
+    },
+    async retention(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).query('storage.retention.query', {});
+    },
+    async setRetention(
+      input: StorageRetentionSetInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionSetResult> {
+      return scopedRuntimeHost(await selectedRuntimeHostScope(host)).command('storage.retention.set', input);
     },
   },
   dailyReview: {
