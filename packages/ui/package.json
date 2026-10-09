@@ -27,15 +27,15 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@astryxdesign/core": "0.6.3",
+    "@astryxdesign/core": "0.6.5",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
-    "katex": "0.18.9",
-    "lucide-react": "^1.48.0",
+    "katex": "0.19.0",
+    "lucide-react": "^1.52.0",
     "mermaid": "^11.17.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "virtua": "0.52.7"
+    "virtua": "0.53.3"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
