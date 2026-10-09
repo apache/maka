@@ -32,7 +32,7 @@ try {
   for (const targetMiB of sizes) {
     const source = join(root, `runtime-${targetMiB}.sqlite`);
     const db = new DatabaseSync(source);
-    db.exec('PRAGMA page_size=4096; PRAGMA auto_vacuum=NONE; PRAGMA journal_mode=DELETE;');
+    db.exec('PRAGMA page_size=4096; PRAGMA auto_vacuum=NONE; PRAGMA journal_mode=WAL;');
     db.exec('CREATE TABLE runtime_events (event_id INTEGER PRIMARY KEY, event_json BLOB NOT NULL)');
     const insert = db.prepare('INSERT INTO runtime_events(event_json) VALUES (?)');
     const payload = Buffer.alloc(32 * 1024);
@@ -56,18 +56,9 @@ try {
     const conversion = new DatabaseSync(copy);
     conversion.exec('PRAGMA busy_timeout=5000; PRAGMA auto_vacuum=INCREMENTAL;');
 
-    let timerFired = false;
-    let lag = 0;
-    const tickStart = performance.now();
-    const timer = setTimeout(() => {
-      timerFired = true;
-      lag = Math.max(0, performance.now() - tickStart - 50);
-    }, 50);
     const vacuumStart = performance.now();
     conversion.exec('VACUUM');
     const vacuumMs = performance.now() - vacuumStart;
-    clearTimeout(timer);
-    if (!timerFired) lag = Math.max(0, vacuumMs - 50);
     conversion.close();
     console.log(JSON.stringify({
       platform: `${process.platform}-${process.arch}`,
@@ -78,7 +69,6 @@ try {
       insertedRows: inserted,
       populationMs: Math.round(populatedMs),
       conversionVacuumMs: Math.round(vacuumMs),
-      mainThreadTimerDelayMs: Math.round(lag),
     }));
   }
 } finally {
