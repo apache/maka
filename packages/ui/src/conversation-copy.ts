@@ -537,10 +537,9 @@ const CONVERSATION_COPY = {
           '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `上下文窗口：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
-        contextUsageNoWindow: (used) =>
-          `已用 ${formatCompactTokenCount(used)} token；上下文窗口上限未知`,
-        contextUsageUnavailable: '暂无用量数据',
+          `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
+        contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
+        contextUsageUnavailable: '暂无上下文用量数据',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
@@ -662,10 +661,9 @@ const CONVERSATION_COPY = {
           '已經壓縮過歷史，供應商仍然說這次請求太大。剩下的部分還包含系統提示、工具定義、摘要和最近的原文，縮短這則訊息是你能控制的那一半。',
         contextUsageLabel: '用量',
         contextUsageShare: (used, window) =>
-          `上下文視窗：已用 ${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
-        contextUsageNoWindow: (used) =>
-          `已用 ${formatCompactTokenCount(used)} token；上下文視窗上限未知`,
-        contextUsageUnavailable: '暫無用量資料',
+          `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
+        contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
+        contextUsageUnavailable: '暫無上下文用量資料',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
       },
@@ -784,10 +782,9 @@ const CONVERSATION_COPY = {
           'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.',
         contextUsageLabel: 'Usage',
         contextUsageShare: (used, window) =>
-          `Context window: ${Math.round((used / window) * 100)}% used (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens).`,
-        contextUsageNoWindow: (used) =>
-          `This request used ${formatCompactTokenCount(used)} tokens; no context limit is available for this model.`,
-        contextUsageUnavailable: 'No usage data is available for this request.',
+          `Context: ${Math.round((used / window) * 100)}% (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens)`,
+        contextUsageNoWindow: (used) => `Context: ${formatCompactTokenCount(used)} tokens`,
+        contextUsageUnavailable: 'No context usage data',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
