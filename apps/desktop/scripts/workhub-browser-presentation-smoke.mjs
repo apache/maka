@@ -181,6 +181,18 @@ async function run() {
     await closedMainLease.ready;
     await controller.navigate(`${url}/page?main-closed`);
     const page = ownerParent.children.find((child) => 'webContents' in child && child.webContents !== owner).webContents;
+    // The view was just reparented into the floating window and navigated.
+    // Under Xvfb it may not have committed a frame (and hit-test data) in its
+    // new window yet, and Chromium drops input it cannot route. Wait for the
+    // page to load and render two frames before the single click. The timer
+    // only bounds the wait; it never adds a second click.
+    const readiness = await page.executeJavaScript(`new Promise((resolve) => {
+      const done = (via) => resolve({ via, visibility: document.visibilityState });
+      const frames = () => requestAnimationFrame(() => requestAnimationFrame(() => done('frames')));
+      setTimeout(() => done('timeout'), 2000);
+      if (document.readyState === 'complete') frames(); else addEventListener('load', frames, { once: true });
+    })`);
+    console.log(`Background page input readiness: ${readiness.via}, ${readiness.visibility}`);
     const point = await page.executeJavaScript(`(() => { const r = document.querySelector('button').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });

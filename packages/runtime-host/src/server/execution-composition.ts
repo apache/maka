@@ -239,10 +239,13 @@ import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import { SessionBackgroundActivityProjection } from './session-background-activity.js';
+import { SessionInteractionActivityProjection } from './session-interaction-activity.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
 import { HostStorageUsageCoordinator } from './storage-usage-coordinator.js';
+import { HostArchiveRetentionCoordinator } from './archive-retention-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { HostSessionEffectCoordinator } from './session-effect-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
@@ -811,6 +814,12 @@ export async function createExecutionRuntimeHostComposition(
         ) => Promise<string[]>)
       | undefined;
     const hostChanges = new HostChangeFeed();
+    const backgroundActivity = new SessionBackgroundActivityProjection({
+      hostGeneration: context.hostEpoch,
+      graph: (sessionId) => graphCoordinator?.readSessionActivity(sessionId) ?? 'idle',
+      supervisor: (sessionId) => graphSupervisorWake?.readSessionActivity(sessionId) ?? 'idle',
+      publish: (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+    });
     // Startup, once, in the background: the Host owns the model catalog, so it
     // is the one process that gets to ask models.dev what is true today. On any
     // failure the build's committed snapshot stands.
@@ -1061,6 +1070,17 @@ export async function createExecutionRuntimeHostComposition(
       domainModuleDrainBegun = true;
       beginRuntimeHostDomainModuleDrain(domainModules);
     };
+    const interactionActivity = new SessionInteractionActivityProjection({
+      interactions: stores.interactionStore,
+      sandboxBoundaries: stores.sessionStore,
+      onChanged: (sessionId) => graphCoordinator?.refreshSessionInteractionActivity(sessionId),
+      onError: (sessionId, error) =>
+        console.warn(
+          '[runtime-host] Could not refresh Session interaction activity',
+          sessionId,
+          error,
+        ),
+    });
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
       sandboxBoundaries: stores.sessionStore,
@@ -1071,6 +1091,10 @@ export async function createExecutionRuntimeHostComposition(
           interactions: interactionProjection,
         }),
       refreshCanonicalContinuity: async (sessionId, admission, attention) => {
+        // This also runs without an open Session subscription; sidebar activity
+        // must observe every canonical answer, withdrawal, and Run closure.
+        // The presentation refresh isolates failures so canonical work still runs.
+        await interactionActivity.refresh(sessionId);
         await continuityCoordinator.refreshCanonical(sessionId, admission, attention);
         sessionAdmission.detach(() => workHubResults?.notify(sessionId));
       },
@@ -1622,6 +1646,9 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       newId: randomUUID,
       acquireResidency: () => context.acquireResidency('agent-graph'),
+      readTurnPendingInteractionCount: (sessionId, turnId) =>
+        interactionActivity.readTurnPendingInteractionCount(sessionId, turnId),
+      onSessionActivityChanged: (sessionId) => backgroundActivity.changed(sessionId),
       onReconciliation: (rootSessionId, result) => {
         void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
       },
@@ -2153,6 +2180,7 @@ export async function createExecutionRuntimeHostComposition(
         }
       },
       acquireResidency: () => context.acquireResidency('agent-graph-supervisor'),
+      onSessionActivityChanged: (sessionId) => backgroundActivity.changed(sessionId),
       onError: () => context.requestDrain(),
     });
     const goalExecutionCoordinator = new HostGoalExecutionCoordinator({
@@ -2231,6 +2259,7 @@ export async function createExecutionRuntimeHostComposition(
       turnIndex: requireTranscriptReader(transcriptReader),
       runtimePolicy: runtimePolicyStores,
       manager,
+      readBackgroundActivity: (sessionId) => backgroundActivity.snapshot(sessionId),
       admission: sessionAdmission,
       continuity: continuityCoordinator,
       workspaceResolver,
@@ -2834,6 +2863,7 @@ export async function createExecutionRuntimeHostComposition(
         'turn.stop': turnControl.handlers['turn.stop'],
         'usage.query': usagePricing.handlers['usage.query'],
       },
+      runSettlementCoverage: (from, to) => usagePricing.runSettlementCoverage(from, to),
       context: {
         hostEpoch: context.hostEpoch,
         connectionId: 'hosted-execution',
@@ -2860,9 +2890,15 @@ export async function createExecutionRuntimeHostComposition(
     );
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     const storageUsage = new HostStorageUsageCoordinator({ footprint: storage.footprint });
+    const archiveRetention = new HostArchiveRetentionCoordinator({
+      document: storage.archiveRetention,
+      catalog: stores.sessionStore,
+      retirement: sessionRetirement,
+    });
     const storageMaintenance = new HostStorageMaintenance({
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
+      retention: archiveRetention,
       onError: (name, error) =>
         console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
     });
@@ -2876,6 +2912,11 @@ export async function createExecutionRuntimeHostComposition(
         id: 'storage-usage',
         handlers: [storageUsage.handlers],
         drain: [() => storageUsage.beginDrain()],
+      }),
+      createRuntimeHostDomainModule({
+        id: 'archive-retention',
+        handlers: [archiveRetention.handlers],
+        drain: [() => archiveRetention.beginDrain()],
       }),
       createRuntimeHostDomainModule({
         id: 'plugin-platform',

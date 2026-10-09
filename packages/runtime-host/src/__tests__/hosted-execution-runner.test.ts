@@ -33,6 +33,7 @@ test('hosted execution reads usage only after execution residencies settle', asy
         return usageSummary();
       },
     }),
+    runSettlementCoverage: settlementCoverage(),
     context: context(),
     requestDrain: () => {},
     waitForExecutionResidencies: () => residency.promise,
@@ -62,11 +63,10 @@ test('hosted execution reads usage only after execution residencies settle', asy
   assert.equal(usageRead, true);
 });
 
-test('incomplete usage preserves its fixed safe cause', async () => {
-  const usage = usageSummary();
-  usage.provenance.coverage.usageMissingAttempts = 1;
+test('a run-owned unsettled attempt refuses settlement with its fixed safe cause', async () => {
   const runner = new HostHostedExecutionRunner({
-    handlers: handlers({ usage: () => usage }),
+    handlers: handlers({}),
+    runSettlementCoverage: settlementCoverage({ usageMissingAttempts: 1 }),
     context: context(),
     requestDrain: () => {},
     waitForExecutionResidencies: async () => {},
@@ -76,6 +76,42 @@ test('incomplete usage preserves its fixed safe cause', async () => {
   const result = await runner.run(input(), new AbortController().signal);
 
   assert.equal(result.failureReason, 'Runtime Host usage did not settle: missing_attempt_usage');
+});
+
+test('a run-owned partial attempt refuses settlement with its fixed safe cause', async () => {
+  const runner = new HostHostedExecutionRunner({
+    handlers: handlers({}),
+    runSettlementCoverage: settlementCoverage({ usagePartialAttempts: 1 }),
+    context: context(),
+    requestDrain: () => {},
+    waitForExecutionResidencies: async () => {},
+    waitForAllResidencies: async () => {},
+  });
+
+  const result = await runner.run(input(), new AbortController().signal);
+
+  assert.equal(result.failureReason, 'Runtime Host usage did not settle: partial_attempt_usage');
+});
+
+test('a usage-unknown row outside any run does not block settlement', async () => {
+  // The failed auxiliary call (#5691) is real accounting: the ledger-wide
+  // coverage — the public provenance every client reads — counts it as
+  // usage-missing. Settlement must not read that field: it holds the run to
+  // its own rows, and the run left none unsettled.
+  const usage = usageSummary();
+  usage.provenance.coverage.usageMissingAttempts = 1;
+  const runner = new HostHostedExecutionRunner({
+    handlers: handlers({ usage: () => usage }),
+    runSettlementCoverage: settlementCoverage(),
+    context: context(),
+    requestDrain: () => {},
+    waitForExecutionResidencies: async () => {},
+    waitForAllResidencies: async () => {},
+  });
+
+  const result = await runner.run(input(), new AbortController().signal);
+
+  assert.equal(result.kind, 'settled');
 });
 
 test('abort after terminal completion preserves the completed result', async () => {
@@ -98,6 +134,7 @@ async function runWithAbortAfterTerminal(query?: () => unknown) {
   const settling = deferred();
   const runner = new HostHostedExecutionRunner({
     handlers: handlers(query ? { query } : {}),
+    runSettlementCoverage: settlementCoverage(),
     context: context(),
     requestDrain: () => {},
     waitForExecutionResidencies: () => {
@@ -132,6 +169,7 @@ test('hosted execution cancellation drains the Host and waits for canonical stop
         return terminalTurn('cancelled');
       },
     }),
+    runSettlementCoverage: settlementCoverage(),
     context: context(),
     requestDrain: () => {
       drains += 1;
@@ -167,6 +205,7 @@ test('hosted execution cancellation before Turn admission starts no Turn', async
         turnStarts += 1;
       },
     }),
+    runSettlementCoverage: settlementCoverage(),
     context: context(),
     requestDrain: () => {},
     waitForExecutionResidencies: async () => {},
@@ -195,6 +234,7 @@ test('hosted execution cancellation remains active while Runtime continuations s
         return runningTurn();
       },
     }),
+    runSettlementCoverage: settlementCoverage(),
     context: context(),
     requestDrain: () => {
       drains += 1;
@@ -332,6 +372,20 @@ function usageSummary() {
       pendingRepairs: 0,
     },
   };
+}
+
+/**
+ * The run-scoped incompleteness check's stub: a hosted execution owns no
+ * usage-unknown rows unless the test says otherwise.
+ */
+function settlementCoverage(
+  overrides: { usageMissingAttempts?: number; usagePartialAttempts?: number } = {},
+) {
+  return async (_from: number, _to: number) => ({
+    usageMissingAttempts: 0,
+    usagePartialAttempts: 0,
+    ...overrides,
+  });
 }
 
 function emptySkillInvocation() {

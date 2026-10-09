@@ -146,9 +146,9 @@ export function createSessionCatalogController(source: SessionCatalogSource = DE
       const previousById = new Map(current.sessions.map((s) => [s.id, s]));
       const reconciled = next.map((s) => {
         const prior = previousById.get(s.id);
-        return prior !== undefined && (isStaleSummary(prior, s) || valuesEqual(prior, s))
-          ? prior
-          : s;
+        if (prior === undefined) return s;
+        const row = reconcileSummary(prior, s);
+        return valuesEqual(prior, row) ? prior : row;
       });
       // A row whose existence a patch confirmed after this list was observed
       // is newer than anything the list can claim about it — keep it. This is
@@ -209,8 +209,9 @@ export function createSessionCatalogController(source: SessionCatalogSource = DE
         });
         return;
       }
-      if (prior !== undefined && isStaleSummary(prior, summary)) return;
-      const row = prior !== undefined && valuesEqual(prior, summary) ? prior : summary;
+      const reconciled = prior === undefined ? summary : reconcileSummary(prior, summary);
+      if (prior !== undefined && reconciled === prior && isStaleSummary(prior, summary)) return;
+      const row = prior !== undefined && valuesEqual(prior, reconciled) ? prior : reconciled;
       const sessions = [...current.sessions];
       if (index < 0) sessions.push(row); else sessions[index] = row;
       sessions.sort(compareDesktopSessionCatalogSummaries);
@@ -272,6 +273,23 @@ export function waitForCatalogSession(
  * (client/connection.ts), so a lagging predecessor read never delivers after
  * the successor's row has landed.
  */
+function reconcileSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): DesktopSessionSummary {
+  const row = isStaleSummary(prior, next) ? prior : next;
+  const previousVersion = prior.backgroundActivityVersion;
+  const nextVersion = next.backgroundActivityVersion;
+  if (prior.localState === 'cached' || next.localState === 'cached' ||
+    previousVersion === undefined || nextVersion === undefined ||
+    previousVersion.hostGeneration !== nextVersion.hostGeneration) return row;
+  // Activity and durable/run state advance independently. Keep the newer
+  // activity without dropping a rename or a Turn update from the other read.
+  const activity = previousVersion.revision > nextVersion.revision ? prior : next;
+  return activity === row ? row : {
+    ...row,
+    backgroundActivity: activity.backgroundActivity,
+    backgroundActivityVersion: activity.backgroundActivityVersion,
+  };
+}
+
 function isStaleSummary(prior: DesktopSessionSummary, next: DesktopSessionSummary): boolean {
   if (prior.revision !== next.revision) return prior.revision > next.revision;
   const priorGeneration = prior.runHostGeneration;

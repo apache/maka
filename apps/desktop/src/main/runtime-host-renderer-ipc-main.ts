@@ -100,6 +100,10 @@ function request(
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'scheduled-task.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'storage.retention.query':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
+    case 'storage.retention.set':
+      return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'storage.usage.query':
       return client.request(operation, HOST_OPERATION_SPECS[operation].decodeInput(value));
     case 'storage.usage.sessions.query':

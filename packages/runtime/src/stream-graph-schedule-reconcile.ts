@@ -94,6 +94,8 @@ export interface ReconcileAgentGraphScheduleInput {
   newId: () => string;
   maxNewActivations: number;
   observeGraph(topology: AgentGraphTraceTopology): Promise<AgentGraphSupervisorObservation>;
+  /** Read-only presentation observation of the complete schedule used by each wave. */
+  onScheduleObserved?(schedule: AgentGraphScheduleProjection): void | Promise<void>;
   provisionOperator?(
     input: ProvisionAgentGraphOperatorInput,
   ): Promise<ProvisionAgentGraphOperatorResult>;
@@ -637,6 +639,7 @@ async function readScheduleSnapshot(
   assertGraphObservation(input.topology.graphId, observation);
   notifySupervisor(input.supervisor?.onObservation, observation);
   const schedule = projectAgentGraphSchedule(input.topology.graphId, updates);
+  notifySupervisor(input.onScheduleObserved, schedule);
   const selectedInputs = schedule.work
     .filter((work) => work.status === 'requested')
     .flatMap((work) => work.selectedResultInputs ?? []);
@@ -1099,7 +1102,7 @@ function scheduledWorkIntent(
   };
 }
 
-function scheduledWorkIntentId(graphId: string, workId: string): string {
+export function scheduledWorkIntentId(graphId: string, workId: string): string {
   const hash = stableHash({
     schemaVersion: SCHEDULE_INTENT_SCHEMA_VERSION,
     graphId,

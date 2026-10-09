@@ -113,7 +113,8 @@ const SETTINGS_SECTION_SCOPES: Record<
   'bot-chat': 'client',
   search: 'runtime-host',
   usage: 'runtime-host',
-  'archived-tasks': 'client',
+  // The list spans every Host; automatic cleanup is the selected Host's.
+  'archived-tasks': 'mixed',
   'import-tasks': 'runtime-host',
   'daily-review': 'runtime-host',
   data: 'mixed',
