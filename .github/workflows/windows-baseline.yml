@@ -36,6 +36,7 @@ permissions:
 jobs:
   windows_baseline:
     name: windows_baseline (non-blocking)
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: windows-latest
     timeout-minutes: 45
     continue-on-error: true
