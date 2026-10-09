@@ -46,6 +46,10 @@ import type {
   RetentionRemovalOutcome,
   RetentionRemovalPlan,
 } from './session-retirement-coordinator.js';
+import {
+  ArchiveRetentionClockGuard,
+  ArchiveRetentionTickGate,
+} from './archive-retention-coordination.js';
 
 /** Revision families a sweep tick may delete. */
 export const ARCHIVE_RETENTION_FAMILIES_PER_TICK = 8;
@@ -125,18 +129,8 @@ export class HostArchiveRetentionCoordinator {
   #loading: Promise<ArchiveRetentionDocument> | undefined;
   /** Serializes every read-modify-write of the document. */
   #writes: Promise<unknown> = Promise.resolve();
-  /** Setting changes in flight; while one is pending a sweep admits and starts nothing. */
-  #changing = 0;
-  /** The sweep step running now, which a setting change waits for. */
-  #ticking: Promise<boolean> | undefined;
-  /**
-   * The latest Host time observed, in memory only. After a restart the floor
-   * is `enabledAt`, the last sweep's time and, on every sweep, the newest time
-   * Session metadata recorded.
-   */
-  #observedAt = 0;
-  /** Whether `#observedAt` is a time this process saw, rather than the persisted floor. */
-  #observedThisRun = false;
+  readonly #clock = new ArchiveRetentionClockGuard();
+  readonly #tickGate = new ArchiveRetentionTickGate();
   #pass: SweepPass | undefined;
   #draining = false;
 
@@ -156,14 +150,8 @@ export class HostArchiveRetentionCoordinator {
   async sweep(): Promise<boolean> {
     if (this.#draining) return false;
     // A setting change is waiting for this lane; look again shortly.
-    if (this.#changing > 0) return true;
-    const tick = this.#tick();
-    this.#ticking = tick;
-    try {
-      return await tick;
-    } finally {
-      if (this.#ticking === tick) this.#ticking = undefined;
-    }
+    if (this.#tickGate.changePending) return true;
+    return this.#tickGate.runTick(() => this.#tick());
   }
 
   async #tick(): Promise<boolean> {
@@ -178,10 +166,7 @@ export class HostArchiveRetentionCoordinator {
       enabledAt: document.enabledAt,
     };
     const now = this.#now();
-    const previous = this.#observedAt;
-    const observedThisRun = this.#observedThisRun;
-    this.#observedAt = Math.max(previous, now);
-    this.#observedThisRun = true;
+    const { previous, observedThisRun } = this.#clock.observe(now);
     const deadline = archiveRetentionDeadline(setting.enabledAt, setting.days);
     const gap = archiveRetentionGapThreshold(setting.days);
     // A hold ends when its day is over, before or after the deadline alike.
@@ -199,7 +184,7 @@ export class HostArchiveRetentionCoordinator {
     const since = observedThisRun
       ? previous
       : Math.max(previous, (await this.#catalog.readLatestSessionMetadataTime()) ?? 0);
-    if (now - since > gap) return this.#hold(since, now);
+    if (this.#clock.hasForwardJump(now, since, gap)) return this.#hold(since, now);
     // A Host can run for weeks without writing session metadata. Persist a
     // coarse heartbeat so a later restart can tell that idle time was spent
     // while the Host was running, rather than treating it as a clock jump.
@@ -238,7 +223,7 @@ export class HostArchiveRetentionCoordinator {
     let stopped = false;
     for (const row of page) {
       // Draining or a pending setting change: stop before the next family.
-      if (this.#draining || this.#changing > 0) {
+      if (this.#draining || this.#tickGate.changePending) {
         stopped = true;
         break;
       }
@@ -291,7 +276,7 @@ export class HostArchiveRetentionCoordinator {
     plan: RetentionRemovalPlan,
     setting: EnabledSetting,
   ): Promise<RetentionHoldReason | undefined> {
-    if (this.#changing > 0 || this.#document?.revision !== setting.revision) {
+    if (this.#tickGate.changePending || this.#document?.revision !== setting.revision) {
       return 'ineligible';
     }
     if (plan.remove.some(({ header }) => !header.isArchived || header.isFlagged)) {
@@ -304,7 +289,7 @@ export class HostArchiveRetentionCoordinator {
       ),
     );
     const now = this.#now();
-    if (now < this.#observedAt) return 'ineligible';
+    if (this.#clock.isBehind(now)) return 'ineligible';
     // A family is as young as its most recently archived member.
     const start = Math.max(
       ...archivedAt.map((time) => archiveRetentionClockStart(time, setting.enabledAt)),
@@ -470,72 +455,72 @@ export class HostArchiveRetentionCoordinator {
 
   async #set(input: StorageRetentionSetInput): Promise<OperationOutcome<'storage.retention.set'>> {
     if (this.#draining) return draining();
-    this.#changing += 1;
-    try {
-      // A family admitted under the current setting finishes, and is recorded,
-      // before the setting changes; nothing new is admitted meanwhile.
-      await this.#ticking?.catch(() => undefined);
-      return await this.#serialized(async () => {
-        const current = await this.#load();
-        if (current.revision !== input.expectedRevision) {
+    return this.#tickGate.runSettingChange(async () => {
+      try {
+        // A family admitted under the current setting finishes, and is recorded,
+        // before the setting changes; nothing new is admitted meanwhile.
+        return await this.#serialized(async () => {
+          const current = await this.#load();
+          if (current.revision !== input.expectedRevision) {
+            return {
+              ok: true,
+              result: {
+                kind: 'revision_conflict',
+                expectedRevision: input.expectedRevision,
+                actualRevision: current.revision,
+              },
+            } as const;
+          }
+          if (current.enabled === input.enabled && current.days === input.days) {
+            return {
+              ok: true,
+              result: { kind: 'committed', setting: settingOf(current) },
+            } as const;
+          }
+          // Any change restarts the clock: enabling, or new days while enabled.
+          // A clock behind a time already recorded never backdates the deadline.
+          const newest = input.enabled
+            ? await this.#catalog.readLatestSessionMetadataTime()
+            : undefined;
+          const now = this.#now();
+          const enabledAt = Math.max(now, this.#clock.observedAt, newest ?? 0);
+          this.#clock.recordSettingTime(now);
+          const { enabledAt: _previous, latest, ...rest } = current;
+          const lastSweep = latest?.lastSweep && withoutPause(latest.lastSweep);
+          const nextLatest = {
+            ...(input.enabled ? { observedAt: now } : {}),
+            ...(lastSweep ? { lastSweep } : {}),
+            ...(latest?.lastDeletion ? { lastDeletion: latest.lastDeletion } : {}),
+          };
+          const next: ArchiveRetentionDocument = {
+            ...rest,
+            revision: current.revision + 1,
+            enabled: input.enabled,
+            days: input.days,
+            ...(input.enabled ? { enabledAt } : {}),
+            ...(Object.keys(nextLatest).length > 0 ? { latest: nextLatest } : {}),
+          };
+          await this.#write(next);
+          this.#pass = undefined;
+          return { ok: true, result: { kind: 'committed', setting: settingOf(next) } } as const;
+        });
+      } catch (error) {
+        if (error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown') {
           return {
-            ok: true,
-            result: {
-              kind: 'revision_conflict',
-              expectedRevision: input.expectedRevision,
-              actualRevision: current.revision,
+            ok: false,
+            error: {
+              code: 'commit_outcome_unknown',
+              message: 'Retention setting commit outcome is unknown',
             },
-          } as const;
+          };
         }
-        if (current.enabled === input.enabled && current.days === input.days) {
-          return { ok: true, result: { kind: 'committed', setting: settingOf(current) } } as const;
-        }
-        // Any change restarts the clock: enabling, or new days while enabled.
-        // A clock behind a time already recorded never backdates the deadline.
-        const newest = input.enabled
-          ? await this.#catalog.readLatestSessionMetadataTime()
-          : undefined;
-        const now = this.#now();
-        const enabledAt = Math.max(now, this.#observedAt, newest ?? 0);
-        this.#observedAt = Math.max(this.#observedAt, now);
-        this.#observedThisRun = true;
-        const { enabledAt: _previous, latest, ...rest } = current;
-        const lastSweep = latest?.lastSweep && withoutPause(latest.lastSweep);
-        const nextLatest = {
-          ...(input.enabled ? { observedAt: now } : {}),
-          ...(lastSweep ? { lastSweep } : {}),
-          ...(latest?.lastDeletion ? { lastDeletion: latest.lastDeletion } : {}),
-        };
-        const next: ArchiveRetentionDocument = {
-          ...rest,
-          revision: current.revision + 1,
-          enabled: input.enabled,
-          days: input.days,
-          ...(input.enabled ? { enabledAt } : {}),
-          ...(Object.keys(nextLatest).length > 0 ? { latest: nextLatest } : {}),
-        };
-        await this.#write(next);
-        this.#pass = undefined;
-        return { ok: true, result: { kind: 'committed', setting: settingOf(next) } } as const;
-      });
-    } catch (error) {
-      if (error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown') {
+        reportFailure('save', error);
         return {
           ok: false,
-          error: {
-            code: 'commit_outcome_unknown',
-            message: 'Retention setting commit outcome is unknown',
-          },
+          error: { code: 'persistence_failed', message: 'Retention setting could not be saved' },
         };
       }
-      reportFailure('save', error);
-      return {
-        ok: false,
-        error: { code: 'persistence_failed', message: 'Retention setting could not be saved' },
-      };
-    } finally {
-      this.#changing -= 1;
-    }
+    });
   }
 
   #update(change: (document: ArchiveRetentionDocument) => ArchiveRetentionDocument): Promise<void> {
@@ -580,8 +565,7 @@ export class HostArchiveRetentionCoordinator {
       }
       document = DISABLED;
     }
-    this.#observedAt = Math.max(
-      this.#observedAt,
+    this.#clock.seed(
       document.enabledAt ?? 0,
       document.latest?.observedAt ?? 0,
       document.latest?.lastSweep?.at ?? 0,
