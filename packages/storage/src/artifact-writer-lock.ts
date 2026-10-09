@@ -25,12 +25,15 @@ import { join } from 'node:path';
 import { unlock, waitForLock } from 'fs-native-extensions';
 import { withArtifactWriterBootstrapLock } from './artifact-writer-bootstrap-lock.js';
 import {
+  ARTIFACT_WRITER_LOCK_FILE,
   prepareArtifactWriterBootstrapAuthority,
   prepareArtifactWriterLockAuthorityForMarkedRoot,
+  StorageRootAuthorityError,
   type ArtifactWriterLockAuthority,
 } from './root-authority.js';
 
 const lockGates = new Map<string, Promise<void>>();
+class ReclaimedArtifactControlPath extends Error {}
 
 // Operation-scoped and intentionally non-reentrant for the same workspace root.
 export async function withArtifactWriterLock<T>(
@@ -41,15 +44,32 @@ export async function withArtifactWriterLock<T>(
   const requestedCanonicalRoot = await realpath(workspaceRoot);
   const bootstrap = await prepareArtifactWriterBootstrapAuthority(requestedCanonicalRoot);
   return withArtifactWriterBootstrapLock(bootstrap.lockPath, async () => {
-    await bootstrap.assertCurrentRoot();
-    const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(
-      bootstrap.canonicalPath,
-    );
-    if (!authority) return operation(bootstrap.canonicalPath);
-    if (authority.bootstrapLockPath !== bootstrap.lockPath) {
-      throw new Error('Storage root identity changed while acquiring its Artifact writer lock');
+    for (let attempt = 0; ; attempt += 1) {
+      await bootstrap.assertCurrentRoot();
+      let enteredOperation = false;
+      try {
+        const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(
+          bootstrap.canonicalPath,
+        );
+        const run = () => {
+          enteredOperation = true;
+          return operation(bootstrap.canonicalPath);
+        };
+        if (!authority) return await run();
+        if (authority.bootstrapLockPath !== bootstrap.lockPath) {
+          throw new Error('Storage root identity changed while acquiring its Artifact writer lock');
+        }
+        return await withAuthorityArtifactWriterLock(authority, run);
+      } catch (error) {
+        const reclaimed =
+          error instanceof ReclaimedArtifactControlPath ||
+          (error instanceof StorageRootAuthorityError &&
+            error.code === 'control_io_failed' &&
+            isMissingPath(error.cause));
+        // Rebuild only acquisition state. Never replay an admitted mutation.
+        if (enteredOperation || !reclaimed || attempt >= 2) throw error;
+      }
     }
-    return withAuthorityArtifactWriterLock(authority, () => operation(bootstrap.canonicalPath));
   });
 }
 
@@ -80,17 +100,29 @@ async function withArtifactWriterLockPath<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   return runWithLockGate(lockPath, async () => {
-    const handle = await openArtifactWriterLock(lockPath);
+    let handle: FileHandle | undefined;
     let acquired = false;
+    let admitted = false;
     try {
+      handle = await openArtifactWriterLock(lockPath);
       await assertStableRegularFile(handle, lockPath);
       await waitForLock(handle.fd);
       acquired = true;
       await assertStableRegularFile(handle, lockPath);
+      admitted = true;
       return await operation();
+    } catch (error) {
+      if (!admitted && isMissingPath(error)) {
+        throw new ReclaimedArtifactControlPath('Artifact control path was reclaimed', {
+          cause: error,
+        });
+      }
+      throw error;
     } finally {
-      if (acquired) releaseLock(handle);
-      await handle.close();
+      if (handle) {
+        if (acquired) releaseLock(handle);
+        await handle.close();
+      }
     }
   });
 }
@@ -137,8 +169,15 @@ async function assertStableRegularFile(handle: FileHandle, lockPath: string): Pr
     handleStat.dev !== pathStat.dev ||
     handleStat.ino !== pathStat.ino
   ) {
+    if (handleStat.isFile() && pathStat.isFile()) {
+      throw new ReclaimedArtifactControlPath('Artifact writer lock identity changed');
+    }
     throw new Error(`Artifact writer lock path is not one stable regular file: ${lockPath}`);
   }
+}
+
+function isMissingPath(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
 function releaseLock(handle: FileHandle): void {
@@ -148,4 +187,4 @@ function releaseLock(handle: FileHandle): void {
     // Closing the handle is the final OS-level release path.
   }
 }
-export const ARTIFACT_WRITER_LOCK_FILE = '.maka-artifact-writer.lock';
+export { ARTIFACT_WRITER_LOCK_FILE };

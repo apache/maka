@@ -22,7 +22,10 @@ import { chmod, lstat, open, readFile, readdir, rename, unlink } from 'node:fs/p
 import { dirname, join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
-import { resolveRootControlNamespace } from '@maka/storage/root-authority';
+import {
+  prepareRootControlDirectoryForDiagnostic,
+  resolveRootControlNamespace,
+} from '@maka/storage/root-authority';
 import { z } from 'zod';
 import {
   CANDIDATE_STARTUP_FAILURE_REASONS,
@@ -122,6 +125,7 @@ export async function writeCandidateStartupDiagnostic(input: {
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   let replaced = false;
   try {
+    await prepareRootControlDirectoryForDiagnostic(input.rootId);
     const handle = await open(temporaryPath, 'wx', 0o600);
     try {
       await handle.writeFile(contents, 'utf8');
