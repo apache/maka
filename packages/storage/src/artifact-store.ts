@@ -829,8 +829,22 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         );
       }
     }
-    const guardEntries = await this.resolveRemovalEntriesUnlocked(guardRecords);
-    for (const [index, record] of guardRecords.entries()) {
+    // Alias guard, bounded: resolving every remaining record's identity made
+    // each purge an O(all records) syscall sweep on large stores (#4038). The
+    // one alias class the write path's UNIQUE relative_path index cannot see
+    // is a case-insensitive filesystem, where two stored paths differing only
+    // in case address one physical file; only those guards need their
+    // resolved identity compared against the purge set. Every other remaining
+    // record is pairwise alias-free by construction of the write path, which
+    // refuses an aliasing candidate at ingress.
+    const casefoldedPurgePaths = new Map(
+      records.map((record) => [casefoldRelativeArtifactPath(record.relativePath), record] as const),
+    );
+    const flaggedGuardRecords = guardRecords.filter((record) =>
+      casefoldedPurgePaths.has(casefoldRelativeArtifactPath(record.relativePath)),
+    );
+    const guardEntries = await this.resolveRemovalEntriesUnlocked(flaggedGuardRecords);
+    for (const [index, record] of flaggedGuardRecords.entries()) {
       const entry = guardEntries[index];
       const target = entry ? entries.get(entry.comparisonIdentity)?.record : undefined;
       if (target) {
@@ -1240,6 +1254,15 @@ async function assertArtifactDirectory(artifactRoot: string, directory: string):
 async function ensureRealDirectory(path: string): Promise<string> {
   await access(path, fsConstants.R_OK);
   return realpath(path);
+}
+
+/**
+ * Case- and separator-insensitive view of a stored relative path: the identity
+ * a case-insensitive filesystem (Windows, default macOS) actually addresses a
+ * file by, regardless of the bytes recorded in metadata.
+ */
+function casefoldRelativeArtifactPath(relativePath: string): string {
+  return relativePath.replace(/\\/g, '/').normalize('NFC').toLowerCase();
 }
 
 async function resolveArtifactRemovalEntry(
