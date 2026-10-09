@@ -33,6 +33,7 @@ async function setup(t: any) {
     reads: 0,
     enumerations: 0,
     present: true,
+    unavailable: false,
   };
   const object = () => ({
     id: 'message-1',
@@ -48,6 +49,7 @@ async function setup(t: any) {
     scope: { chatId: 'chat-1' },
     enumerate: async () => {
       state.enumerations++;
+      if (state.unavailable) throw Error('Source enumeration temporarily unavailable');
       return { items: state.present ? [object()] : [] };
     },
     query: async () => ({ items: [object()] }),
@@ -291,4 +293,68 @@ test('native type filters skip remote body reads and account namespaces never sh
     .items[0];
   assert.notEqual(first.ref, second.ref);
   assert.equal(second.citation, `[source](memory-original:${second.ref})`);
+});
+
+
+test('every index read refreshes external metadata; failed scans preserve observation and retry without organizing', async (t) => {
+  const { f, state } = await setup(t);
+  let workers = 0;
+  f.setWorkerRunner(async (worker, prompt) => {
+    workers++;
+    const indexId = /Organize index ([^. ]+)/.exec(prompt)![1];
+    const info = await f.invokeAs(worker, 'MemoryIndexRead', { indexId });
+    assert.equal(info.freshness.coveredCursor, null);
+    assert.match(info.freshness.notice, /coveredCursor=null.*尚无已完成/);
+    await f.invokeAs(worker, 'MemoryIndexCheckpoint', {
+      indexId, rangeId: info.range.rangeId, expectedRevision: info.index.revision,
+      notes: 'Fixture deliberately produces no entries', complete: true,
+    });
+  });
+  const range = await f.invoke('MemoryRange', { sources: ['feishu.test'] });
+  const first = await f.invoke('MemoryIndexCreate', { name: 'External', instructions: 'Fixture index', cursor: range.to });
+  const indexId = first.index.id;
+  const readers = [
+    async () => (await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === indexId),
+    () => f.invoke('MemoryIndexRead', { indexId }),
+    () => f.invoke('MemoryIndexContent', { indexId, view: 'full' }),
+    () => f.invoke('MemoryIndexContent', { indexId, key: 'empty' }),
+  ];
+  for (const [i, read] of readers.entries()) {
+    state.revision = `v${i + 2}`; state.text = `Changed version ${i}`;
+    const beforeReads = state.reads;
+    const result = await read();
+    assert.equal(state.reads, beforeReads, 'observation enumerates metadata, not external bodies');
+    assert.equal(result.freshness.coveredCursor, first.freshness.coveredCursor);
+    assert.notEqual(result.freshness.observedCursor, result.freshness.coveredCursor);
+    assert.equal(result.freshness.lastOrganizedAt, first.freshness.lastOrganizedAt);
+    const request = { from: result.freshness.coveredCursor, to: result.freshness.observedCursor, mode: 'messages' };
+    const delta = await f.invoke('MemoryHistory', request);
+    assert.equal(delta.items.length, 1);
+    assert.deepEqual((await f.invoke('MemoryHistory', request)).items, delta.items);
+    assert.ok(JSON.stringify(delta).includes(state.text));
+    const repeated = await read();
+    assert.equal(repeated.freshness.observedCursor, result.freshness.observedCursor);
+    assert.deepEqual(repeated.freshness.knownPending, result.freshness.knownPending);
+    state.unavailable = true;
+    const failed = await read();
+    assert.equal(failed.freshness.knownPending, null);
+    assert.equal(failed.freshness.status, 'check_failed');
+    assert.equal(failed.freshness.observedCursor, repeated.freshness.observedCursor);
+    assert.equal(failed.freshness.lastCheckedAt, repeated.freshness.lastCheckedAt);
+    assert.match(failed.freshness.notice, /不能据此判断当前没有增量/);
+    state.unavailable = false;
+    const retry = await read();
+    assert.equal(retry.freshness.lastCheckError, null);
+    assert.ok(retry.freshness.knownPending);
+    assert.equal(retry.freshness.coveredCursor, first.freshness.coveredCursor);
+  }
+  assert.equal(workers, 1, 'reads must not launch indexing Agents');
+  assert.equal(f.llmCalls.length, 0);
+  const after = await f.invoke('MemoryIndexRead', { indexId });
+  assert.equal(after.index.revision, first.index.revision);
+  assert.equal(after.contents.total, 0);
+  state.allowed = false;
+  await assert.rejects(f.invoke('MemoryIndexRead', { indexId }), /visibility|accessible|permission|visible/i);
+  await assert.rejects(f.invoke('MemoryIndexContent', { indexId }), /visibility|accessible|permission|visible/i);
+  assert.equal((await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === indexId).unavailable, true);
 });

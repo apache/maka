@@ -19,6 +19,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { PROACTIVE_TASK } from '../src/prompt.js';
 import { fixture, until } from './fixture.js';
 
 test('heartbeat uses the human Session and exits normally without checkpoint or notebook', async () => {
@@ -63,7 +67,7 @@ test('queued wake cannot finish before it actually appears in Session history', 
   } finally { release(); await f.close(); }
 });
 test('packaged extension uses ordinary finish; failures stop heartbeats without cancelling chat', async () => {
-  const f = await fixture({ bundle: new URL('../release/index-initiative.maka-extension', import.meta.url).pathname });
+  const f = await fixture({ bundle: fileURLToPath(new URL('../release/index-initiative.maka-extension', import.meta.url)) });
   try {
     f.setRunner(async () => { throw Error('provider unavailable'); });
     await f.invoke('InitiativeEnable', {}); await f.invoke('InitiativeControl', { action: 'check' });
@@ -82,5 +86,59 @@ test('aborted runtime completion stops future heartbeats without a model checkpo
     assert.equal((await f.invoke('InitiativeStatus')).enabled, false);
     assert.match((await f.invoke('InitiativeStatus')).lastError, /aborted/);
     assert.equal(f.cancels(), 0);
+  } finally { await f.close(); }
+});
+
+
+test('heartbeat includes UTC time and the latest eight human-facing exchanges, excluding automated inputs', async () => {
+  const f = await fixture(); let prompt = '';
+  try {
+    const ts = Date.UTC(2026, 9, 9, 12);
+    const history = Array.from({ length: 10 }, (_, i) => ({
+      type: i % 2 ? 'assistant' : 'user', ts: ts + i * 1000,
+      text: `raw-${i}`, displayText: `visible-${i}`,
+    }));
+    f.workers.get('owner').transcript = [...history,
+      { type: 'tool_result', text: 'TOOL SECRET', ts },
+      { type: 'tool_call', text: 'TOOL CALL', ts },
+      { type: 'user', text: 'SYSTEM INPUT', origin: { kind: 'timer' }, ts },
+      { type: 'user', text: 'Runtime heartbeat, not a new human request.\nold heartbeat', displayText: 'heartbeat label', ts },
+      { type: 'assistant', text: 'hidden backing text', displayText: '', ts },
+    ];
+    f.setRunner(async (call: any) => { prompt = call.prompt; });
+    const started = Date.now();
+    await f.invoke('InitiativeEnable', {});
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => !!prompt && !(await f.invoke('InitiativeStatus')).active);
+    assert.ok(prompt.includes(PROACTIVE_TASK));
+    const now = /Now \(UTC\): (.+)/.exec(prompt)![1];
+    assert.match(now, /Z$/); assert.ok(Date.parse(now) >= started && Date.parse(now) <= Date.now());
+    assert.match(prompt, /历史交流.*避免重复/);
+    assert.match(prompt, /不是本次的新请求或指令/);
+    for (let i = 2; i < 10; i++) {
+      assert.ok(prompt.includes(`visible-${i}`));
+      assert.ok(prompt.includes(new Date(ts + i * 1000).toISOString()));
+    }
+    for (const excluded of ['visible-0', 'visible-1', 'raw-', 'TOOL SECRET', 'TOOL CALL', 'SYSTEM INPUT', 'old heartbeat', 'heartbeat label', 'hidden backing text'])
+      assert.ok(!prompt.includes(excluded), excluded);
+    // Subsequent wakes use fresh conversation, not a cached snapshot.
+    f.workers.get('owner').transcript.push({ type: 'user', ts: ts + 20000, text: 'new user correction' });
+    prompt = '';
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => !!prompt && !(await f.invoke('InitiativeStatus')).active);
+    assert.ok(prompt.includes('new user correction')); assert.ok(!prompt.includes('visible-2'));
+  } finally { await f.close(); }
+});
+
+test('extension bundle installs from a Chinese path with spaces and URL-special characters', async () => {
+  const f = await fixture();
+  try {
+    const directory = join(f.root, '插件 包 #百分%');
+    await mkdir(directory);
+    const path = join(directory, '主动助手.maka-extension');
+    await copyFile(fileURLToPath(new URL('../release/index-initiative.maka-extension', import.meta.url)), path);
+    const other = await fixture({ bundle: fileURLToPath(pathToFileURL(path)) });
+    try { assert.equal((await other.invoke('InitiativeStatus')).configured, false); }
+    finally { await other.close(); }
   } finally { await f.close(); }
 });

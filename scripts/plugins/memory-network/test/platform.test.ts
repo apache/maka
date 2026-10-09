@@ -98,7 +98,7 @@ for (const bundle of [false, true])
       text: 'Vendor contacted yesterday. No further contact needed.',
     });
     await f.invoke('MemoryIndexRead', { indexId: first.index.id });
-    assert.equal(f.reads.length, reads);
+    assert.equal(f.reads.length, reads + 1);
     const range = await f.invoke('MemoryRange', { indexId: first.index.id });
     assert.equal(pending(range), 1);
     assert.deepEqual(f.reads.slice(reads), ['chat-b']);

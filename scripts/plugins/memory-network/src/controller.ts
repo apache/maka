@@ -350,6 +350,20 @@ export class MemoryController {
       throw error;
     }
   }
+  /** Refresh observations only; never begin a work range or dispatch an indexing Agent. */
+  async observe(indexId: string) {
+    const index = this.store.index(indexId);
+    this.store.assertIndexVisible(indexId, await this.indexVisible(indexId));
+    try {
+      await this.capture(index.sources ?? ['maka'], index.sessions, indexId);
+    } catch {
+      // capture records the failure and preserves the last successful observation.
+      // Recheck visibility below: source failure must never bypass the caller's permissions.
+    }
+    const allowed = await this.indexVisible(indexId);
+    this.store.assertIndexVisible(indexId, allowed);
+    return allowed;
+  }
   interval(indexId: string) {
     return this.store.worker(indexId)?.intervalMs ?? this.config.intervalMs ?? 43200000;
   }
@@ -372,7 +386,7 @@ export class MemoryController {
     const coveredCursor = this.store.boundary(indexId);
     const observedCursor = w?.latestCursor ?? work?.to ?? coveredCursor;
     const checkedAt = w?.lastCheckedAt ?? this.store.checkedAt(observedCursor);
-    const knownPending = observedCursor
+    const knownPending = !w?.lastCheckError && observedCursor
       ? this.store.describe(coveredCursor, observedCursor, visible)
       : null;
     const pending = observedCursor
@@ -403,7 +417,13 @@ export class MemoryController {
       intervalMs: this.interval(indexId),
       nextCheckAt: this.nextCheck(indexId),
       notice:
-        'Index may lag behind sources. knownPending is only what the last successful scan observed; zero does not mean no changes now. During partialUpdate, some entries may be updated while coverage stays at the previous completed boundary. Use MemoryHistory from coveredCursor to observedCursor as needed; MemoryRange(indexId) explicitly refreshes observations without organizing the index.',
+        (coveredCursor === null
+          ? 'coveredCursor=null，索引尚无已完成的覆盖范围。'
+          : `索引只覆盖到 coveredCursor="${coveredCursor}"。之后的数据不在已完成的覆盖范围内，`) +
+        'knownPending 表示截至 lastCheckedAt 已检查到、尚未纳入索引的变化。索引读取会自动刷新来源范围，无需先调用 MemoryRange。按需使用 MemoryHistory，以 coveredCursor 为 from、observedCursor 为 to 读取未覆盖历史，或直接查询最新原文。刷新和读取原文不会整理索引或推进覆盖范围。' +
+        (w?.lastCheckError
+          ? ' 本次来源检查失败，knownPending=null；observedCursor 和 lastCheckedAt 保留上次成功观察，不能据此判断当前没有增量。'
+          : ''),
     };
   }
   control(indexId: string, action: 'pause' | 'resume' | 'configure', intervalMs?: number) {

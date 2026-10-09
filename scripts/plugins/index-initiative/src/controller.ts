@@ -56,7 +56,7 @@ export class InitiativeController {
   async run(agent: any, state: any) {
     const id = state.active.id; let timer: any;
     try {
-      const admitted = await agent.followup(wake(state));
+      const admitted = await agent.followup(wake(state, await agent.transcript()));
       if (!['turn_started', 'followup'].includes(admitted?.disposition)) throw Error('Host rejected proactive wake');
       const completion = async () => {
         // Queued admission is not completion; wait for its input to enter Session history.

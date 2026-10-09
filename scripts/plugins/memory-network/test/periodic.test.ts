@@ -55,43 +55,43 @@ async function setup(t: any, config: any = {}) {
   const read = () => f.invoke('MemoryIndexRead', { indexId: id });
   return { f, first, id, db, worker, patch, read };
 }
-test('12h default: ticks and reads do not scan early; all read forms expose delayed freshness and explicit refresh only observes', async (t) => {
+test('all index reads refresh observations without organizing or consuming incremental history', async (t) => {
   const { f, first, id, read } = await setup(t, { threshold: 1 });
   assert.equal(first.freshness.intervalMs, 43200000);
-  assert.equal(first.freshness.status, 'no_changes_at_last_check');
   const reads = f.reads.length;
-  f.sessions.get('chat-b')!.push({
-    id: 'c',
-    type: 'user',
-    text: 'Vendor contacted yesterday. No further contact needed.',
-  });
-  await sleep(70);
-  const old = await read();
-  assert.equal(f.reads.length, reads);
-  assert.equal(old.freshness.observedCursor, first.coverage.cursor);
-  for (const output of [
-    (await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === id),
-    await f.invoke('MemoryIndexContent', { indexId: id }),
-    await f.invoke('MemoryIndexContent', { indexId: id, key: 'vendor' }),
-  ]) {
-    assert.equal(output.freshness.coveredCursor, first.coverage.cursor);
-    assert.match(output.freshness.notice, /zero does not mean/);
+  let modelCalls = 0;
+  f.setBeforeWorker(async () => { modelCalls++; });
+  const entryPoints = [
+    read,
+    async () => (await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === id),
+    () => f.invoke('MemoryIndexContent', { indexId: id }),
+    () => f.invoke('MemoryIndexContent', { indexId: id, key: 'vendor' }),
+  ];
+  for (const [i, entryPoint] of entryPoints.entries()) {
+    const message = { id: `new-${i}`, type: 'user', text: `New update ${i}` };
+    if (i === 1) f.sessions.set('new-session', [message]);
+    else f.sessions.get('chat-b')!.push(message);
+    await sleep(30);
+    if (i === 0) assert.equal(f.reads.length, reads, 'scheduler does not scan before its due time');
+    const observed = await entryPoint();
+    assert.equal(observed.freshness.coveredCursor, first.coverage.cursor);
+    assert.notEqual(observed.freshness.observedCursor, first.coverage.cursor);
+    assert.equal(observed.freshness.lastOrganizedAt, first.freshness.lastOrganizedAt);
+    assert.equal(observed.freshness.status, 'pending');
+    assert.match(observed.freshness.notice, /索引读取会自动刷新来源范围/);
+    assert.ok(observed.freshness.notice.includes(`coveredCursor="${first.coverage.cursor}"`));
+    const request = { from: observed.freshness.coveredCursor, to: observed.freshness.observedCursor, mode: 'messages' };
+    const delta = await f.invoke('MemoryHistory', request);
+    assert.equal(delta.items.length, i + 1);
+    assert.deepEqual((await f.invoke('MemoryHistory', request)).items, delta.items);
+    const again = await entryPoint();
+    assert.deepEqual(again.freshness.knownPending, observed.freshness.knownPending);
+    assert.equal(again.freshness.observedCursor, observed.freshness.observedCursor);
+    assert.equal((await read()).index.revision, first.index.revision);
   }
-  const range = await f.invoke('MemoryRange', { indexId: id });
-  const seen = await read();
-  assert.equal(seen.freshness.status, 'pending');
-  assert.equal(seen.freshness.coveredCursor, first.coverage.cursor);
-  const delta = await f.invoke('MemoryHistory', {
-    from: range.from,
-    to: range.to,
-    mode: 'messages',
-  });
-  assert.equal(delta.items.length, 1);
-  assert.match(delta.items[0].message.text, /contacted/);
-  const done = await f.invoke('MemoryIndexMaintain', { indexId: id });
-  assert.equal(done.contents.total, 0);
-  assert.equal(done.freshness.coveredCursor, range.to);
-  assert.equal(done.maintenance.running, false);
+  assert.equal(modelCalls, 0);
+  const content = await f.invoke('MemoryIndexContent', { indexId: id, key: 'vendor' });
+  assert.ok(!content.text.includes('New update'));
 });
 test('no-change due check reuses cursor but updates checked time, never calls a model or rewrites organization time', async (t) => {
   const { f, first, id, patch, read } = await setup(t);
@@ -169,6 +169,9 @@ test('failed source scan preserves coverage and last observation; retry then org
   await until(async () => !!(await read()).freshness.lastCheckError);
   const failed = await read();
   assert.equal(failed.freshness.status, 'check_failed');
+  assert.equal(failed.freshness.knownPending, null);
+  assert.equal(failed.freshness.observedCursor, first.freshness.observedCursor);
+  assert.match(failed.freshness.notice, /不能据此判断当前没有增量/);
   assert.equal(failed.coverage.cursor, first.coverage.cursor);
   assert.equal(failed.freshness.lastCheckedAt, first.freshness.lastCheckedAt);
   f.setHistoryError(false);
