@@ -1705,9 +1705,7 @@ export const NewChatComposer: Story = {
       await waitFor(() => {
         const sendBox = send.getBoundingClientRect();
         const projectBox = projectPicker.getBoundingClientRect();
-        expect(card.getBoundingClientRect().width).toBeCloseTo(
-          Number.parseFloat(getComputedStyle(card).getPropertyValue('--maka-conversation-min-width')), 0,
-        );
+        expect(card.getBoundingClientRect().width).toBeCloseTo(Number.parseFloat(getComputedStyle(card).maxWidth), 0);
         expect(sendBox.right).toBeLessThanOrEqual(card.getBoundingClientRect().right);
         expect(projectBox.width).toBeGreaterThan(0);
         expect(modelPicker.getBoundingClientRect().right).toBeLessThanOrEqual(projectBox.left);
