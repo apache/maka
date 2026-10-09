@@ -54,7 +54,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 ## Get Maka
 
-**Apache Releases**: Maka has not made an Apache release yet. When one exists, the signed source archive will be the official release; packages distributed elsewhere are convenience artifacts. See the [downloads page](https://maka.apache.org/en/downloads/) and [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) for candidate criteria, signing procedures, and verification steps.
+**Apache Releases**: The latest Apache release is 0.2.0 (incubating). The signed source archive is the official release; packages distributed elsewhere are convenience artifacts. See the [downloads page](https://maka.apache.org/en/downloads/) and [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) for candidate criteria, signing procedures, and verification steps.
 
 **Development testing**: To contribute or help test unreleased changes, see [CONTRIBUTING](./CONTRIBUTING.md) and the [development mailing list](https://lists.apache.org/list.html?dev@maka.apache.org). Development builds are not approved Apache releases.
 
@@ -64,7 +64,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 ### Requirements
 
-- Node.js 22.19 or newer (CI uses Node.js 24);
+- Node.js 22.19 or newer on the 22 line, or Node.js 24 or newer (CI uses Node.js 24; Node.js 23 is not supported);
 - npm (the lockfile and scripts use npm; the current `packageManager` is npm 11);
 - Git;
 - `ripgrep`, used by Runtime's `Grep` tool.

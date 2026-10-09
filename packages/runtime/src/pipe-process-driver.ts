@@ -17,16 +17,12 @@
  * under the License.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 
+import { signalOwnedProcess, spawnOwnedProcess } from './owned-child-process.js';
 import type { ShellSpawnPlan } from './shell-detect.js';
-import {
-  buildSpawnStdio,
-  closeChildFdSources,
-  writeChildFdInputs,
-  type ChildFdInput,
-} from './child-fd-input.js';
+import { closeChildFdSources, writeChildFdInputs, type ChildFdInput } from './child-fd-input.js';
 import {
   trackCapturedOutputDrain,
   type CapturedOutputDrain,
@@ -55,6 +51,7 @@ export interface PipeProcessDriverOptions {
 }
 
 export class PipeProcessDriver {
+  /** Supervisor PID; it leads the command's process group, so signals target it. */
   readonly pid: number | undefined;
   readonly ready: Promise<void>;
 
@@ -69,19 +66,24 @@ export class PipeProcessDriver {
   private rootExit: Omit<PipeProcessExit, 'stdoutTruncated' | 'stderrTruncated'> | undefined;
   private stdinSettled: boolean;
   private stdinError: Error | undefined;
+  private admittedPid: number | undefined;
 
   constructor(private readonly options: PipeProcessDriverOptions) {
     try {
-      this.child = spawn(options.plan.file, options.plan.args, {
+      const spawned = spawnOwnedProcess({
+        program: options.plan.file,
+        args: options.plan.args,
         cwd: options.cwd,
         env: options.env,
         shell: options.plan.useShellOption,
-        stdio: buildSpawnStdio(
-          options.fdInputs,
-          options.plan.stdin === undefined ? 'ignore' : 'pipe',
-        ),
-        detached: process.platform !== 'win32',
+        stdin: options.plan.stdin === undefined ? 'ignore' : 'pipe',
+        fdInputs: options.fdInputs,
       });
+      this.child = spawned.child;
+      this.ready = spawned.ready.then((pid) => {
+        this.admittedPid = pid;
+      });
+      void this.ready.catch(() => {});
     } finally {
       closeChildFdSources(options.fdInputs);
     }
@@ -117,7 +119,11 @@ export class PipeProcessDriver {
     this.child.on('exit', this.onRootExit);
     this.child.on('close', this.onCloseFallback);
     this.child.on('error', this.onError);
-    this.ready = waitForSpawn(this.child);
+  }
+
+  /** The command's own PID, known once `ready` resolves; this is what users see. */
+  get commandPid(): number | undefined {
+    return this.admittedPid;
   }
 
   writeInputs(): void {
@@ -128,7 +134,7 @@ export class PipeProcessDriver {
   }
 
   kill(signal: 'SIGTERM' | 'SIGKILL'): boolean {
-    return this.child.kill(signal);
+    return signalOwnedProcess(this.child, signal);
   }
 
   dispose(): void {
@@ -199,23 +205,4 @@ export class PipeProcessDriver {
     this.stdinSettled = true;
     this.settleAfterDrain();
   };
-}
-
-function waitForSpawn(child: ChildProcess): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const onSpawn = () => {
-      cleanup();
-      resolve();
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    const cleanup = () => {
-      child.off('spawn', onSpawn);
-      child.off('error', onError);
-    };
-    child.once('spawn', onSpawn);
-    child.once('error', onError);
-  });
 }

@@ -80,9 +80,13 @@ function readOutboxRecord(row: Record<string, unknown>): LocalOutboxRecord {
 /** A Client-owned database, never the Host's operational database. */
 export class DesktopSessionLocalStore {
   readonly #db: DatabaseSync;
+  readonly #partitionRevisions = new Map<string, number>();
   #revision = 0;
   get revision(): number {
     return this.#revision;
+  }
+  partitionRevision(partition: string): number {
+    return this.#partitionRevisions.get(partition) ?? 0;
   }
   constructor(
     path: string,
@@ -228,7 +232,7 @@ export class DesktopSessionLocalStore {
         ),
       );
     });
-    this.#revision += 1;
+    this.#advanceRevision(partition);
     return record;
   }
 
@@ -320,7 +324,7 @@ export class DesktopSessionLocalStore {
         creation ? JSON.stringify(creation) : null,
         this.now(),
       );
-    this.#revision += 1;
+    this.#advanceRevision(partition);
   }
 
   sessions(partition: string): DesktopSessionSummaryInput[] {
@@ -470,7 +474,7 @@ export class DesktopSessionLocalStore {
       this.#db
         .prepare(`DELETE FROM ${table} WHERE partition = ? AND session_id = ?`)
         .run(partition, sessionId);
-    this.#revision += 1;
+    this.#advanceRevision(partition);
   }
 
   purge(partition: string): void {
@@ -478,7 +482,14 @@ export class DesktopSessionLocalStore {
       for (const table of ['outbox', 'sessions', 'transcripts'])
         this.#db.prepare(`DELETE FROM ${table} WHERE partition = ?`).run(partition);
     });
+    this.#advanceRevision(partition);
+  }
+
+  #advanceRevision(partition: string): void {
     this.#revision += 1;
+    // Retain the counter after purge so an in-flight read cannot match an
+    // authority partition's earlier revision when its local rows are removed.
+    this.#partitionRevisions.set(partition, this.partitionRevision(partition) + 1);
   }
 
   #transaction<T>(operation: () => T): T {

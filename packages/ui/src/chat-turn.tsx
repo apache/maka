@@ -801,7 +801,6 @@ export const TurnView = memo(function TurnView(props: {
               {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
                 <Banner
                   status={props.failedSeverity ?? 'error'}
-                  container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
                   description={

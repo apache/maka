@@ -46,6 +46,10 @@ export function createConversationWorkspace(catalog: SessionCatalogController, s
   const activeIdRef = { current: undefined as string | undefined };
   const messagesRef = { current: [] as StoredMessage[] };
   const transcriptRangeRef = { current: undefined as ConversationTranscriptController | undefined };
+  const observationRef = { current: undefined as {
+    readonly sessionId: string;
+    readonly controller: ConversationTranscriptController;
+  } | undefined };
   const transientMessagesBySessionRef = { current: new Map<string, Map<string, TransientUserMessageProjection>>() };
   const selectionRevisionRef = { current: 0 };
   let seed = INITIAL_LIVE_CONTENT_SEED;
@@ -121,7 +125,7 @@ export function createConversationWorkspace(catalog: SessionCatalogController, s
   });
   if (hasNewTaskReloadIntent()) bootstrapSelectionLease.release();
   return {
-    ui, activeIdRef, transcriptRangeRef, bootstrapSelectionLease, commands,
+    ui, activeIdRef, transcriptRangeRef, observationRef, bootstrapSelectionLease, commands,
     publishedSession: Object.freeze({ get current() { return activeIdRef.current; } }),
     messages: reader((value) => value.messages),
     usage: (model: string | undefined, connectionId: string | undefined) => reader((value) =>

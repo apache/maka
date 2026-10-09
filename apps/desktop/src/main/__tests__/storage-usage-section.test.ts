@@ -46,6 +46,11 @@ afterEach(() => {
   Object.assign(globalThis, originalGlobals);
 });
 
+const UNUSED_RETENTION = {
+  loadRetention: async () => assert.fail('retention is not read here'),
+  setRetention: async () => assert.fail('retention is not changed here'),
+};
+
 test('the Storage section reads the selected Host once and states its caveats', async () => {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
@@ -83,6 +88,7 @@ test('the Storage section reads the selected Host once and states its caveats', 
                   return usage;
                 },
                 loadSessionUsage: async () => ({}),
+                ...UNUSED_RETENTION,
               },
               children: createElement(RuntimeHostSettingsTarget, {
                 host,
@@ -142,6 +148,7 @@ test('a task row is measured only after it scrolls into view', async () => {
   });
   const requested: string[][] = [];
   const services = {
+    ...UNUSED_RETENTION,
     loadUsage: async (): Promise<StorageUsageQueryResult> => {
       throw new Error('not used');
     },

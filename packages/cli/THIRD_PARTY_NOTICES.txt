@@ -752,7 +752,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 
-Package: @modelcontextprotocol/client@2.1.0
+Package: @modelcontextprotocol/client@2.2.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git
@@ -977,7 +977,7 @@ the full license text.
 
 ================================================================================
 
-Package: @modelcontextprotocol/core@2.1.0
+Package: @modelcontextprotocol/core@2.2.0
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/modelcontextprotocol/typescript-sdk.git

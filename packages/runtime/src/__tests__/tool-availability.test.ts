@@ -192,6 +192,49 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     });
   });
 
+  test('an exact catalog name activates only that tool, not MiniSearch neighbors', async () => {
+    const active = new Map<string, string>();
+    const plan = new ToolAvailabilityRuntime(
+      [
+        tool('request_sandbox_boundary', 'Request a sandbox boundary change'),
+        tool('request_sandbox_boundary_status', 'Report sandbox boundary status'),
+        tool('mcp__memory__read_graph', 'Read the memory graph'),
+        tool('RecallMaterial', 'Recall stored material'),
+      ],
+      {},
+      invalid,
+    ).prepare(active);
+
+    assert.deepEqual(await searchTool(plan).impl({ query: 'request_sandbox_boundary' }, ctx), {
+      activated: ['request_sandbox_boundary'],
+    });
+    assert.deepEqual([...active.keys()], ['request_sandbox_boundary']);
+  });
+
+  test('a unique case-insensitive catalog name is treated as an exact match', async () => {
+    const active = new Map<string, string>();
+    const plan = new ToolAvailabilityRuntime(
+      [
+        tool('request_sandbox_boundary', 'Request a sandbox boundary change'),
+        tool('request_sandbox_boundary_status', 'Report sandbox boundary status'),
+        tool('mcp__memory__read_graph', 'Read the memory graph'),
+      ],
+      {},
+      invalid,
+    ).prepare(active);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'REQUEST_SANDBOX_BOUNDARY' }, ctx), {
+      activated: ['request_sandbox_boundary'],
+    });
+    assert.deepEqual([...active.keys()], ['request_sandbox_boundary']);
+  });
+
+  test('an exact direct tool name does not activate deferred neighbors', async () => {
+    const active = new Map<string, string>();
+    const plan = runtime().prepare(active);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'Read' }, ctx), { activated: [] });
+    assert.equal(active.size, 0);
+  });
+
   test('a successful search activates bounded matches for the next projection', async () => {
     const active = new Map<string, string>();
     const traces: Record<string, unknown>[] = [];

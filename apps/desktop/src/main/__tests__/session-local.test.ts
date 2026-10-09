@@ -32,7 +32,7 @@ import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
-import type { SessionCreateInput, TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
+import type { SessionCatalogProjection, SessionCreateInput, TurnMessageSubmitInput, TurnMessageSubmitResult } from '@maka/runtime-host/protocol';
 import { DesktopSessionLocalStore, type LocalMessageIntent } from '../session-local-store.js';
 import {
   createSessionLocalChangedEmitter,
@@ -116,6 +116,17 @@ function client(hostEpoch: string): NonNullable<DesktopSessionLocalTarget['clien
   };
 }
 
+function swarmCatalogSession(backgroundActivity: 'running' | 'idle' = 'running'): SessionCatalogProjection {
+  return {
+    id: 'root', revision: 1, workspace: { target: { kind: 'host_path', path: '/workspace' }, hostCwd: '/workspace' },
+    createdAt: 1, activityAt: 2, name: 'Swarm graph', isFlagged: false, isArchived: false,
+    labels: [], labelsTruncated: false, hasUnread: false, status: 'active',
+    liveRunState: { schemaVersion: 1, runningTurnIds: [] }, backgroundActivity,
+    backend: 'ai-sdk', llmConnectionId: 'connection', llmConnectionSlug: 'test',
+    connectionLocked: true, model: 'test', permissionMode: 'ask', collaborationMode: 'agent', orchestrationMode: 'swarm',
+  };
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
@@ -175,6 +186,664 @@ test('ordinary send presentation survives local outbox restart', async (t) => {
   assert.equal(restored?.placement, 'next_turn');
   assert.equal(restored.localDisplayPlacement, 'current_turn');
 });
+
+test('background activity is authoritative only in the Host epoch that supplied its catalog', async (t) => {
+  const db = await database(t);
+  const live = swarmCatalogSession();
+  let target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+    client: { ...client('old-epoch'), listSessions: async () => [live] },
+  };
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await waitFor(() => db.store.sessions('authority').length === 1);
+  assert.equal(service.catalog()[0]?.authoritative, true);
+  assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'running');
+
+  const nextCatalog = deferred<SessionCatalogProjection[]>();
+  target = { ...target, client: { ...client('new-epoch'), listSessions: () => nextCatalog.promise } };
+  const switched = service.catalog()[0]!;
+  assert.equal(switched.authoritative, false);
+  assert.equal(switched.sessions[0]?.localState, 'cached');
+  assert.equal(switched.sessions[0]?.backgroundActivity, undefined);
+  assert.equal(switched.sessions[0]?.runningTurnIds, undefined);
+  service.close();
+  nextCatalog.resolve([]);
+  await nextTurn();
+
+  db.reopen();
+  assert.equal(db.store.sessions('authority')[0]?.backgroundActivity, 'running', 'the disk cache retains history');
+  target = { ...target, client: undefined };
+  const restored = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => restored.close());
+  const cached = restored.catalog()[0]!;
+  assert.equal(cached.authoritative, false);
+  assert.equal(cached.sessions[0]?.backgroundActivity, undefined, 'cached history cannot restart the blue pulse');
+});
+
+test('closing local recovery aborts catalog work and expires approvals without deleting the paused original', async (t) => {
+  const db = await database(t);
+  const reads = [deferred<SessionCatalogProjection[]>(), deferred<SessionCatalogProjection[]>()];
+  const started: string[] = [];
+  const aborts = t.mock.method(AbortController.prototype, 'abort');
+  const targets = ['first', 'second', 'queued'].map((partition, index): DesktopSessionLocalTarget => ({
+    partition, profileId: partition, scope: { hostId: partition, targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => {
+      started.push(partition);
+      return reads[index]?.promise ?? Promise.resolve([]);
+    } },
+  }));
+  let notifications = 0;
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => targets, changed: () => { notifications++; }, onError: assert.fail,
+  });
+  db.beforeClose.push(() => service.close());
+  const target = targets[0]!;
+  const original = db.store.enqueue(target.partition, intent());
+  const draft = service.cancelUnsentToDraft(target, 'session-1', original.messageId, 7);
+  const owner = { senderId: 7, partition: target.partition, scope: target.scope, sessionId: 'session-1' };
+  const prepared = service.attachmentRecovery.prepare(owner, draft.stagedAttachments);
+  assert.deepEqual(prepared.items, intent().staged);
+  service.catalog();
+  assert.deepEqual(started, ['first', 'second'], 'the third partition waits for a catalog slot');
+  const revision = db.store.revision;
+
+  service.close();
+  service.close();
+  assert.ok(aborts.mock.calls.length >= reads.length, 'close cancels the pending catalog observations');
+  for (const call of aborts.mock.calls) {
+    assert.ok(call.this instanceof AbortController);
+    assert.equal(call.this.signal.aborted, true);
+  }
+  assert.throws(() => service.attachmentRecovery.prepare(owner, draft.stagedAttachments), AttachmentIngestBlockedError);
+  assert.throws(() => prepared.commit(() => assert.fail('a closed service cannot admit a leased recovery')), AttachmentIngestBlockedError);
+  prepared.dispose();
+  reads[0]!.resolve([swarmCatalogSession()]);
+  reads[1]!.reject(new Error('late catalog failure after close'));
+  await nextTurn();
+  await nextTurn();
+  assert.deepEqual(started, ['first', 'second'], 'closing cannot start the queued catalog request');
+  assert.equal(notifications, 0, 'late catalog settlement cannot notify a closed service');
+  assert.equal(db.store.revision, revision, 'late catalog settlement cannot mutate the local database');
+
+  db.reopen();
+  assert.equal(db.store.get(target.partition, original.messageId)?.state, 'paused');
+  assert.equal(db.store.get(target.partition, original.messageId)?.intent.command.content.text, 'hello');
+  assert.equal(Buffer.from(db.store.stagedAttachments(target.partition, original.messageId)[0]!.content).toString(), 'original bytes');
+  const restored = new DesktopSessionLocalService(db.store, {
+    targets: () => [], changed() {}, onError: assert.fail,
+  });
+  db.beforeClose.push(() => restored.close());
+  const renewed = restored.cancelUnsentToDraft(target, 'session-1', original.messageId, 7);
+  assert.equal(renewed.replacesLocalMessageId, original.messageId);
+  assert.notEqual(renewed.stagedAttachments[0]?.approvalId, draft.stagedAttachments[0]?.approvalId);
+});
+
+for (const elapsed of [1_000, 6_000]) {
+  for (const reuseClient of [false, true]) {
+    test(`Owner reconnect after ${elapsed} ms needs a new catalog (${reuseClient ? 'reused' : 'new'} client)`, async (t) => {
+      t.mock.timers.enable({ apis: ['Date'], now: 10_000 });
+      const db = await database(t);
+      const recovered = deferred<SessionCatalogProjection[]>();
+      let reads = 0;
+      const listSessions = () => ++reads === 1
+        ? Promise.resolve([swarmCatalogSession()]) : recovered.promise;
+      const firstClient = { ...client('same-host-epoch'), listSessions };
+      let target: DesktopSessionLocalTarget = {
+        partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+        client: firstClient,
+      };
+      const service = new DesktopSessionLocalService(db.store, {
+        targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+      });
+      db.beforeClose.push(() => service.close());
+      service.catalog();
+      await waitFor(() => db.store.sessions('authority').length === 1);
+      assert.equal(service.catalog()[0]?.authoritative, true);
+
+      t.mock.timers.tick(elapsed);
+      target = { ...target, client: undefined };
+      service.connectionChanged(target);
+      if (!reuseClient) {
+        const offline = service.catalog()[0]!;
+        assert.equal(offline.authoritative, false);
+        assert.equal(offline.sessions[0]?.localState, 'cached');
+        assert.equal(offline.sessions[0]?.backgroundActivity, undefined);
+      }
+      // The reused client case deliberately has no catalog read during the
+      // outage: the production connection callback must retain that transition.
+      target = { ...target, client: reuseClient ? firstClient : { ...client('same-host-epoch'), listSessions } };
+      service.connectionChanged(target);
+      const reconnecting = service.catalog()[0]!;
+      assert.equal(reconnecting.authoritative, false);
+      assert.equal(reconnecting.sessions[0]?.localState, 'cached');
+      assert.equal(reconnecting.sessions[0]?.backgroundActivity, undefined);
+      assert.equal(reconnecting.sessions[0]?.runningTurnIds, undefined);
+      assert.equal(reads, 2, 'recovery bypasses the previous connection TTL');
+      service.catalog();
+      assert.equal(reads, 2, 'one current connection read is enough');
+
+      recovered.resolve([swarmCatalogSession('idle')]);
+      await waitFor(() => db.store.sessions('authority')[0]?.backgroundActivity === 'idle');
+      service.connectionChanged(target);
+      const live = service.catalog()[0]!;
+      assert.equal(live.authoritative, true);
+      assert.equal(live.sessions[0]?.localState, undefined);
+      assert.equal(live.sessions[0]?.backgroundActivity, 'idle');
+      assert.equal(reads, 2, 'duplicate ready notifications keep the current snapshot');
+    });
+  }
+}
+
+test('a new Owner client invalidates the same Host epoch even before a connection notification', async (t) => {
+  const db = await database(t);
+  let reads = 0;
+  const recovered = deferred<SessionCatalogProjection[]>();
+  let target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+    client: { ...client('same-host-epoch'), listSessions: async () => [swarmCatalogSession()] },
+  };
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await waitFor(() => db.store.sessions('authority').length === 1);
+  target = { ...target, client: { ...client('same-host-epoch'), listSessions: () => {
+    reads++;
+    return recovered.promise;
+  } } };
+  const cached = service.catalog()[0]!;
+  assert.equal(cached.authoritative, false);
+  assert.equal(cached.sessions[0]?.backgroundActivity, undefined);
+  assert.equal(reads, 1);
+});
+
+for (const [lateResult, reuseClient] of [
+  ['running', false], ['removed', false], ['unauthorized', false], ['running', true],
+] as const) {
+  test(`a retired Owner catalog cannot apply late ${lateResult} (${reuseClient ? 'reused' : 'new'} client)`, async (t) => {
+    const db = await database(t);
+    const retired = deferred<SessionCatalogProjection[]>();
+    const recovered = deferred<SessionCatalogProjection[]>();
+    let oldReads = 0;
+    let newReads = 0;
+    let reconnected = false;
+    const readRecovered = () => {
+      newReads++;
+      return recovered.promise;
+    };
+    const firstClient = { ...client('same-host-epoch'), listSessions: () => reconnected
+      ? readRecovered() : ++oldReads === 1 ? Promise.resolve([swarmCatalogSession()]) : retired.promise };
+    let target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+      client: firstClient,
+    };
+    const service = new DesktopSessionLocalService(db.store, {
+      targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+    });
+    db.beforeClose.push(() => service.close());
+    service.catalog();
+    await waitFor(() => db.store.sessions('authority').length === 1);
+    service.changed(target.scope);
+    service.catalog();
+    assert.equal(oldReads, 2);
+
+    target = { ...target, client: undefined };
+    service.connectionChanged(target);
+    reconnected = true;
+    target = { ...target, client: reuseClient ? firstClient : { ...client('same-host-epoch'), listSessions: readRecovered } };
+    service.connectionChanged(target);
+    assert.equal(service.catalog()[0]?.authoritative, false);
+    assert.equal(newReads, 1, 'the unresolved old read releases its catalog slot immediately');
+    await nextTurn();
+    service.catalog();
+    assert.equal(newReads, 1, 'retired finally cannot remove the new read from deduplication');
+
+    recovered.resolve([swarmCatalogSession('idle')]);
+    await waitFor(() => db.store.sessions('authority')[0]?.backgroundActivity === 'idle');
+    if (lateResult === 'unauthorized') {
+      retired.reject(new RuntimeHostOperationError('session.catalog.query', 'unauthorized', 'old connection revoked'));
+    } else {
+      retired.resolve(lateResult === 'removed' ? [] : [swarmCatalogSession()]);
+    }
+    await nextTurn();
+    const live = service.catalog()[0]!;
+    assert.equal(live.authoritative, true);
+    assert.equal(live.sessions[0]?.backgroundActivity, 'idle');
+    assert.equal(db.store.sessions('authority').length, 1);
+    assert.equal(newReads, 1);
+  });
+}
+
+for (const staleResult of ['running', 'removed', 'failed'] as const) {
+  test(`a dirty Owner catalog publishes a ${staleResult} observation and coalesces another read`, async (t) => {
+    const db = await database(t);
+    const stale = deferred<SessionCatalogProjection[]>();
+    const current = deferred<SessionCatalogProjection[]>();
+    const failure = new Error('superseded catalog unavailable');
+    const errors: unknown[] = [];
+    let notifications = 0;
+    let reads = 0;
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+      client: { ...client('epoch'), listSessions: () => {
+        reads += 1;
+        if (reads === 1) return Promise.resolve([swarmCatalogSession()]);
+        return reads === 2 ? stale.promise : current.promise;
+      } },
+    };
+    const service = new DesktopSessionLocalService(db.store, {
+      targets: () => [target], changed() { notifications += 1; }, onError: (error) => errors.push(error),
+    });
+    db.beforeClose.push(() => service.close());
+    service.catalog();
+    await waitFor(() => db.store.sessions('authority').length === 1);
+    await nextTurn();
+    service.changed(target.scope);
+    assert.equal(service.catalog()[0]?.authoritative, true);
+    assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'running');
+    assert.equal(reads, 2);
+    const revision = db.store.revision;
+
+    // Further Host changes dirty the observation without revoking its authority.
+    service.changed(target.scope);
+    service.changed(target.scope);
+    service.catalog();
+    assert.equal(db.store.revision, revision, 'Host invalidations do not mutate the local store');
+    assert.equal(reads, 2, 'in-flight invalidations coalesce');
+    if (staleResult === 'failed') stale.reject(failure);
+    else stale.resolve(staleResult === 'removed' ? [] : [swarmCatalogSession()]);
+
+    // No renderer refresh or new Host event is needed to start the trailing read.
+    await waitFor(() => reads === 3);
+    assert.equal(notifications, 2, 'publish the successful observation or notify authority loss');
+    if (staleResult === 'failed') {
+      assert.equal(db.store.revision, revision);
+      assert.equal(service.catalog()[0]?.authoritative, false);
+      assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, undefined);
+    } else {
+      assert.ok(db.store.revision > revision, 'successful dirty reads must make progress');
+      assert.equal(service.catalog()[0]?.authoritative, true);
+      assert.equal(db.store.sessions('authority').length, staleResult === 'removed' ? 0 : 1);
+    }
+    current.resolve([swarmCatalogSession('idle')]);
+    await waitFor(() => db.store.sessions('authority')[0]?.backgroundActivity === 'idle');
+    await nextTurn();
+    const live = service.catalog()[0]!;
+    assert.equal(live.authoritative, true);
+    assert.equal(live.sessions[0]?.backgroundActivity, 'idle');
+    assert.equal(reads, 3, 'one trailing read consumes both invalidations');
+    assert.deepEqual(errors, staleResult === 'failed' ? [failure] : []);
+  });
+}
+
+test('continuous Owner invalidations cannot starve successful catalog observations', async (t) => {
+  const db = await database(t);
+  const pending: ReturnType<typeof deferred<SessionCatalogProjection[]>>[] = [];
+  let notifications = 0;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => {
+      const read = deferred<SessionCatalogProjection[]>();
+      pending.push(read);
+      return read.promise;
+    } },
+  };
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() { notifications += 1; },
+    onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  assert.equal(service.catalog()[0]?.authoritative, false);
+
+  for (let index = 0; index < 8; index += 1) {
+    const activity = index % 2 === 0 ? 'running' : 'idle';
+    service.changed(target.scope);
+    service.changed(target.scope);
+    service.catalog();
+    assert.equal(pending.length, index + 1, 'changes share the in-flight request');
+    pending[index]!.resolve([swarmCatalogSession(activity)]);
+    await waitFor(() => pending.length === index + 2);
+    const catalog = service.catalog()[0]!;
+    assert.equal(catalog.authoritative, true, 'publish before notifications become quiet');
+    assert.equal(catalog.sessions[0]?.backgroundActivity, activity);
+    assert.equal(notifications, index + 1);
+  }
+
+  pending[8]!.resolve([swarmCatalogSession('idle')]);
+  await waitFor(() => notifications === 9);
+  await nextTurn();
+  assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'idle');
+  assert.equal(pending.length, 9, 'stop refreshing after the final clean observation');
+});
+
+test('a queued Owner refresh clears stale activity as soon as a slot is free without another renderer read', async (t) => {
+  const db = await database(t);
+  const first = deferred<SessionCatalogProjection[]>();
+  const second = deferred<SessionCatalogProjection[]>();
+  let reads = 0;
+  const third: DesktopSessionLocalTarget = {
+    partition: 'third', profileId: 'profile', scope: { hostId: 'third', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: async () => [swarmCatalogSession(++reads === 1 ? 'running' : 'idle')] },
+  };
+  let targets = [third];
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => targets, changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await nextTurn();
+  targets = [first, second].map((read, index): DesktopSessionLocalTarget => ({
+    partition: `busy-${index}`, profileId: 'profile', scope: { hostId: `busy-${index}`, targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => read.promise },
+  })).concat(third);
+  service.changed(third.scope);
+  const queued = service.catalog()[2]!;
+  assert.equal(queued.authoritative, true);
+  assert.equal(queued.sessions[0]?.backgroundActivity, 'running');
+  assert.equal(reads, 1, 'the third partition must wait for a slot');
+  first.resolve([]);
+  await waitFor(() => db.store.sessions('third')[0]?.backgroundActivity === 'idle');
+  assert.equal(reads, 2, 'freeing a slot must admit the queued refresh automatically');
+});
+
+test('waiting Owner partitions precede a busy partition trailing read and share the two-read limit', async (t) => {
+  const db = await database(t);
+  const reads = new Map<string, ReturnType<typeof deferred<SessionCatalogProjection[]>>[]>();
+  const order: string[] = [];
+  const targets = ['a', 'b', 'c'].map((partition): DesktopSessionLocalTarget => ({
+    partition, profileId: 'profile', scope: { hostId: partition, targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => {
+      const read = deferred<SessionCatalogProjection[]>();
+      reads.set(partition, [...(reads.get(partition) ?? []), read]);
+      order.push(partition);
+      return read.promise;
+    } },
+  }));
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => targets, changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  service.catalog();
+  assert.deepEqual(order, ['a', 'b']);
+  service.changed(targets[0]!.scope);
+  reads.get('a')![0]!.resolve([swarmCatalogSession()]);
+  await nextTurn();
+  assert.deepEqual(order, ['a', 'b', 'c'], 'a trailing refresh joins behind waiting partitions');
+  reads.get('c')![0]!.resolve([]);
+  await nextTurn();
+  assert.deepEqual(order, ['a', 'b', 'c', 'a']);
+  reads.get('a')![1]!.resolve([swarmCatalogSession('idle')]);
+  await waitFor(() => db.store.sessions('a')[0]?.backgroundActivity === 'idle');
+});
+
+test('parallel Owner observations publish without fencing unrelated partitions', async (t) => {
+  const db = await database(t);
+  let active = 0;
+  let maximumActive = 0;
+  const targets = ['a', 'b', 'c', 'd'].map((partition): DesktopSessionLocalTarget => ({
+    partition, profileId: 'profile', scope: { hostId: partition, targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: async () => {
+      maximumActive = Math.max(maximumActive, ++active);
+      await nextTurn();
+      active -= 1;
+      return [swarmCatalogSession('idle')];
+    } },
+  }));
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => targets, changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await waitFor(() => targets.every(({ partition }) => db.store.sessions(partition)[0]?.backgroundActivity === 'idle'));
+  assert.equal(maximumActive, 2);
+  assert.ok(service.catalog().every((catalog) => catalog.authoritative));
+});
+
+test('continuous fast Owner invalidations cannot fence a slower partition catalog', async (t) => {
+  const db = await database(t);
+  const reads = new Map<string, ReturnType<typeof deferred<SessionCatalogProjection[]>>[]>();
+  const target = (partition: string): DesktopSessionLocalTarget => ({
+    partition, profileId: partition, scope: { hostId: partition, targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => {
+      const read = deferred<SessionCatalogProjection[]>();
+      reads.set(partition, [...(reads.get(partition) ?? []), read]);
+      return read.promise;
+    } },
+  });
+  const slow = target('slow');
+  const fast = target('fast');
+  let targets = [slow];
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => targets, changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  reads.get('slow')![0]!.resolve([swarmCatalogSession()]);
+  await nextTurn();
+  assert.equal(service.catalog()[0]?.authoritative, true);
+
+  targets = [slow, fast];
+  service.changed(slow.scope);
+  service.catalog();
+  for (let index = 0; index < 8; index += 1) {
+    const activity = index % 2 === 0 ? 'idle' : 'running';
+    service.changed(fast.scope);
+    service.changed(slow.scope);
+    // The fast authority commits while the slower authority's read is held.
+    // Both keep getting invalidations, so each success starts a trailing read.
+    reads.get('fast')![index]!.resolve([swarmCatalogSession(activity)]);
+    await waitFor(() => reads.get('fast')!.length === index + 2);
+    reads.get('slow')![index + 1]!.resolve([swarmCatalogSession(activity)]);
+    await waitFor(() => reads.get('slow')!.length === index + 3);
+    const catalog = service.catalog()[0]!;
+    assert.equal(catalog.authoritative, true);
+    assert.equal(catalog.sessions[0]?.backgroundActivity, activity,
+      'a successful slow observation must publish while another authority remains busy');
+  }
+
+  reads.get('slow')![9]!.resolve([swarmCatalogSession('idle')]);
+  await nextTurn();
+  assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'idle');
+  assert.equal(reads.get('slow')!.length, 10, 'the final clean observation stops trailing reads');
+});
+
+test('Owner mutation revisions advance only for their partition and survive purge', async (t) => {
+  const { store } = await database(t);
+  const summary = { id: 'draft', name: 'Pending task' } as DesktopSessionSummaryInput;
+  store.saveSession('other', { ...summary, id: 'other' });
+  const otherRevision = store.partitionRevision('other');
+  const mutate = (operation: () => void) => {
+    const globalRevision = store.revision;
+    const partitionRevision = store.partitionRevision('authority');
+    operation();
+    assert.ok(store.revision > globalRevision, 'existing global mutation fences still advance');
+    assert.ok(store.partitionRevision('authority') > partitionRevision);
+    assert.equal(store.partitionRevision('other'), otherRevision,
+      'another authority catalog must not be fenced by this mutation');
+  };
+  assert.equal(store.partitionRevision('authority'), 0);
+  store.bindAuthority('profile', 'authority');
+  mutate(() => store.saveSession('authority', summary, {
+    sessionId: 'draft', workspace: { kind: 'host_path', path: '/workspace' },
+  }));
+  assert.ok(store.creation('authority', 'draft'));
+  mutate(() => store.enqueue('authority', intent('draft-message', 'draft')));
+  mutate(() => store.saveSession('authority', { ...summary, name: 'Host admitted task' }));
+  assert.equal(store.creation('authority', 'draft'), undefined);
+  mutate(() => store.saveCatalog('authority', [summary, { ...summary, id: 'second' }]));
+  mutate(() => store.removeSession('authority', 'draft'));
+  mutate(() => store.saveCatalog('authority', []));
+  mutate(() => store.saveSession('authority', summary));
+  mutate(() => store.purge('authority'));
+  mutate(() => store.saveSession('authority', summary));
+  mutate(() => store.bindAuthority('profile', 'replacement'));
+  assert.equal(store.partitionRevision('replacement'), 0);
+});
+
+test('a retired queued Owner connection never starts a read', async (t) => {
+  const db = await database(t);
+  const held = deferred<SessionCatalogProjection[]>();
+  let staleReads = 0;
+  let currentReads = 0;
+  const target = (partition: string, read: () => Promise<SessionCatalogProjection[]>): DesktopSessionLocalTarget => ({
+    partition, profileId: 'profile', scope: { hostId: partition, targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: read },
+  });
+  const targets = [target('a', () => held.promise), target('b', () => held.promise),
+    target('c', async () => { staleReads += 1; return []; })];
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => targets, changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  targets[2] = target('c', async () => { currentReads += 1; return []; });
+  service.connectionChanged(targets[2]);
+  service.catalog();
+  held.resolve([]);
+  await waitFor(() => currentReads === 1);
+  assert.equal(staleReads, 0);
+});
+
+test('failed Owner recovery remains cached and retries without disturbing pending local work', async (t) => {
+  const db = await database(t);
+  const errors: unknown[] = [];
+  let target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+    client: { ...client('same-host-epoch'), listSessions: async () => [swarmCatalogSession()] },
+  };
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() {}, onError: (error) => errors.push(error),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await waitFor(() => db.store.sessions('authority').length === 1);
+  target = { ...target, client: undefined };
+  service.connectionChanged(target);
+  db.store.saveSession('authority', { id: 'draft', status: 'active', localState: 'pending' } as DesktopSessionSummaryInput, {
+    sessionId: 'draft', workspace: { kind: 'host_path', path: '/workspace' },
+  });
+  const message = db.store.enqueue('authority', intent('draft-message', 'draft'));
+  const recovered = deferred<SessionCatalogProjection[]>();
+  let reads = 0;
+  target = { ...target, client: { ...client('same-host-epoch'), listSessions: () => ++reads === 1
+    ? Promise.reject(new Error('catalog unavailable')) : recovered.promise } };
+  service.connectionChanged(target);
+  service.catalog();
+  await waitFor(() => errors.length === 1);
+  await nextTurn();
+  const cached = service.catalog()[0]!;
+  assert.equal(cached.authoritative, false);
+  assert.equal(cached.sessions.find(({ id }) => id === 'root')?.backgroundActivity, undefined);
+  assert.equal(cached.sessions.find(({ id }) => id === 'root')?.localState, 'cached');
+  assert.equal(cached.sessions.find(({ id }) => id === 'draft')?.localState, 'pending');
+  assert.equal(reads, 2, 'the next catalog read retries unknown state without a TTL delay');
+  assert.deepEqual(db.store.get('authority', message.messageId), message);
+
+  recovered.resolve([swarmCatalogSession('idle')]);
+  await waitFor(() => db.store.sessions('authority').some((session) => session.backgroundActivity === 'idle'));
+  const live = service.catalog()[0]!;
+  assert.equal(live.authoritative, true);
+  assert.equal(live.sessions.find(({ id }) => id === 'draft')?.localState, 'pending');
+  assert.deepEqual(db.store.get('authority', message.messageId), message);
+  assert.equal(reads, 2);
+});
+
+test('a current Owner connection keeps its catalog TTL across ordinary reads', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 10_000 });
+  const db = await database(t);
+  const refreshed = deferred<SessionCatalogProjection[]>();
+  let reads = 0;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => ++reads === 1
+      ? Promise.resolve([swarmCatalogSession()]) : refreshed.promise },
+  };
+  const service = new DesktopSessionLocalService(db.store, {
+    targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  db.beforeClose.push(() => service.close());
+  service.catalog();
+  await waitFor(() => db.store.sessions('authority').length === 1);
+  t.mock.timers.tick(4_999);
+  assert.equal(service.catalog()[0]?.authoritative, true);
+  assert.equal(reads, 1);
+  t.mock.timers.tick(2);
+  assert.equal(service.catalog()[0]?.authoritative, true);
+  assert.equal(reads, 2);
+  service.catalog();
+  assert.equal(reads, 2);
+  refreshed.resolve([swarmCatalogSession('idle')]);
+  await waitFor(() => db.store.sessions('authority')[0]?.backgroundActivity === 'idle');
+  assert.equal(service.catalog()[0]?.sessions[0]?.backgroundActivity, 'idle');
+});
+
+for (const backgroundActivity of ['running', 'waiting_for_user'] as const) {
+  test(`failed Owner TTL refresh clears ${backgroundActivity} until a successful retry`, async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: 10_000 });
+    const db = await database(t);
+    const failed = deferred<SessionCatalogProjection[]>();
+    const recovered = deferred<SessionCatalogProjection[]>();
+    const errors: unknown[] = [];
+    let reads = 0;
+    let changes = 0;
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root-host', targetEpoch: 'target' },
+      client: { ...client('epoch'), listSessions: () => {
+        reads += 1;
+        if (reads === 1) return Promise.resolve([{
+          ...swarmCatalogSession(), backgroundActivity,
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1'] },
+        }]);
+        return reads <= 3 ? failed.promise : recovered.promise;
+      } },
+    };
+    const service = new DesktopSessionLocalService(db.store, {
+      targets: () => [target], changed: () => { changes += 1; }, onError: (error) => errors.push(error),
+    });
+    db.beforeClose.push(() => service.close());
+    service.catalog();
+    await waitFor(() => changes === 1);
+    assert.equal(service.catalog()[0]?.authoritative, true);
+
+    t.mock.timers.tick(6_001);
+    assert.equal(service.catalog()[0]?.authoritative, true, 'keep live state while refresh is pending');
+    assert.equal(reads, 2);
+    failed.reject(new Error('catalog unavailable'));
+    await waitFor(() => errors.length === 1);
+    await nextTurn();
+    const cached = service.catalog()[0]!;
+    assert.equal(cached.authoritative, false);
+    assert.equal(cached.sessions[0]?.localState, 'cached');
+    assert.equal(cached.sessions[0]?.backgroundActivity, undefined);
+    assert.equal(cached.sessions[0]?.runningTurnIds, undefined);
+    assert.equal(changes, 2, 'notify consumers when live state becomes unknown');
+    assert.equal(reads, 3, 'retry cached state without another TTL delay');
+    assert.equal(db.store.sessions('authority')[0]?.backgroundActivity, backgroundActivity, 'retain disk history');
+
+    await waitFor(() => errors.length === 2);
+    await nextTurn();
+    assert.equal(changes, 2, 'repeated failures must not trigger a notification/retry loop');
+    assert.equal(reads, 3);
+    assert.equal(service.catalog()[0]?.authoritative, false);
+    assert.equal(reads, 4);
+    recovered.resolve([swarmCatalogSession('idle')]);
+    await waitFor(() => changes === 3);
+    const live = service.catalog()[0]!;
+    assert.equal(live.authoritative, true);
+    assert.equal(live.sessions[0]?.localState, undefined);
+    assert.equal(live.sessions[0]?.backgroundActivity, 'idle');
+    assert.deepEqual(live.sessions[0]?.runningTurnIds, []);
+    assert.equal(reads, 4);
+  });
+}
 
 test('local IDs bind content, retries are idempotent, and admission stays bounded', async (t) => {
   const { store } = await database(t);
@@ -248,6 +917,8 @@ test('normal application shutdown preserves intentions when the manager removes 
 
 test('a catalog read begun before local creation cannot erase that Session or its intent', async (t) => {
   const { store, beforeClose } = await database(t);
+  const fresh = deferred<SessionCatalogProjection[]>();
+  let reads = 0;
   const listed =
     deferred<
       Awaited<ReturnType<NonNullable<DesktopSessionLocalTarget['client']>['listSessions']>>
@@ -256,7 +927,7 @@ test('a catalog read begun before local creation cannot erase that Session or it
     partition: 'authority',
     profileId: 'profile',
     scope: { hostId: 'root', targetEpoch: 'target' },
-    client: { ...client('epoch'), listSessions: () => listed.promise },
+    client: { ...client('epoch'), listSessions: () => ++reads === 1 ? listed.promise : fresh.promise },
   };
   const service = new DesktopSessionLocalService(store, {
     targets: () => [target],
@@ -271,6 +942,37 @@ test('a catalog read begun before local creation cannot erase that Session or it
   await nextTurn();
   assert.equal(store.sessions('authority').length, 1);
   assert.equal(store.list('authority').length, 1);
+  assert.equal(reads, 2, 'the fenced read is retried without reusing its stale response');
+  fresh.resolve([{ ...swarmCatalogSession(), id: 'session-1', name: 'Canonical' }]);
+  await waitFor(() => store.sessions('authority')[0]?.name === 'Canonical');
+  assert.equal(store.list('authority').length, 1, 'refreshing cannot discard the local message intent');
+});
+
+test('a dirty catalog read cannot restore a locally removed Session', async (t) => {
+  const { store, beforeClose } = await database(t);
+  const listed = deferred<SessionCatalogProjection[]>();
+  const trailing = deferred<SessionCatalogProjection[]>();
+  let reads = 0;
+  const target: DesktopSessionLocalTarget = {
+    partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    client: { ...client('epoch'), listSessions: () => ++reads === 1 ? listed.promise : trailing.promise },
+  };
+  const service = new DesktopSessionLocalService(store, {
+    targets: () => [target], changed() {}, onError: (error) => assert.fail(String(error)),
+  });
+  beforeClose.push(() => service.close());
+  store.saveSession('authority', { id: 'root' } as DesktopSessionSummaryInput);
+  service.catalog();
+  service.changed(target.scope);
+  store.removeSession('authority', 'root');
+  listed.resolve([swarmCatalogSession()]);
+  await waitFor(() => reads === 2);
+  assert.equal(store.sessions('authority').length, 0);
+  assert.equal(service.catalog()[0]?.authoritative, false);
+  trailing.resolve([]);
+  await nextTurn();
+  assert.equal(service.catalog()[0]?.authoritative, true);
+  assert.equal(store.sessions('authority').length, 0);
 });
 
 test('a locally-owned Session change signals a list refresh, not a targeted row read', async (t) => {

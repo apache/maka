@@ -158,6 +158,9 @@ import type {
   ContextDiagnosticsResult,
   SessionRemovePreviewResult,
   SessionStorageUsage,
+  StorageRetentionQueryResult,
+  StorageRetentionSetInput,
+  StorageRetentionSetResult,
   StorageUsageQueryResult,
 } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
@@ -806,6 +809,14 @@ export interface DesktopSessionTracePage {
 
 export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
   readonly provenance: UsageProvenance;
+  /**
+   * The same Session scoped to the agent loop's own calls (`callKinds:
+   * ['main']`), when the narrower read succeeded. The overview's cache rate
+   * reads this: auxiliary prompts have their own cache prefix (#5691).
+   */
+  readonly mainSummary?: DesktopSessionUsageSummary;
+  /** The narrower read failed; the blended rate must not stand in for it. */
+  readonly mainSummaryUnavailable?: boolean;
 }
 
 export interface MakaBridge {
@@ -1847,6 +1858,13 @@ export interface MakaBridge {
      * Runtime Host is unavailable or fails, or when that Host no longer holds it.
      */
     sessionUsage(sessionIds: readonly string[]): Promise<Record<string, SessionStorageUsage>>;
+    /** One Runtime Host's archived-task retention setting, its preview and its latest results. */
+    retention(host?: DesktopRuntimeHostRef): Promise<StorageRetentionQueryResult>;
+    /** Changes that setting, fenced by the revision the caller read. The Host stamps the time. */
+    setRetention(
+      input: StorageRetentionSetInput,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<StorageRetentionSetResult>;
   };
   dailyReview: {
     day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;

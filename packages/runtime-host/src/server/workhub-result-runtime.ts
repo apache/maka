@@ -340,5 +340,7 @@ export function createWorkHubResultRuntime(options: {
       return { status: outcome.result.status, targetSessionId: assignment.targetSessionId };
     },
   };
-  return { coordinator, tool, notify };
+  // Exposed for the archive guard: the receipt read needs the same observation
+  // (and therefore the same event identity) delivery itself is keyed on.
+  return { coordinator, tool, notify, inspect };
 }

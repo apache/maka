@@ -37,6 +37,7 @@ import {
   type TaskEntryControllerSelectors,
 } from '../controller/use-task-entry-controller.js';
 import { taskEntryDraftKey } from '../model/task-entry-selection.js';
+import { SessionWorkspaceRecoveryContext } from '../../../application/contracts/session-workspace-recovery-authority.js';
 import type { TaskEntryError } from '../ports.js';
 import type { TaskEntryHostModel } from './task-entry-host.js';
 
@@ -337,7 +338,9 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   const frame = useMemo(() => children(taskEntry), [children, taskEntry]);
   return (
     <TaskEntryOwnerContext.Provider value={owner}>
-      {frame}
+      <SessionWorkspaceRecoveryContext.Provider value={owner.commands.openSessionWorkspaceRecovery}>
+        {frame}
+      </SessionWorkspaceRecoveryContext.Provider>
     </TaskEntryOwnerContext.Provider>
   );
 }

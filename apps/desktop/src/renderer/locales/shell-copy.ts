@@ -268,6 +268,10 @@ type ShellCopy = {
       'session_busy' | 'operation_conflict' | 'operation_unavailable' | 'not_found',
       string
     >;
+    /** Why the Host refused an archive, keyed by the guard's refusal token. */
+    archiveRefusedDelegation: string;
+    archiveRefusedResult: string;
+    archiveRefusedSubtasks: string;
     currentConversation: string;
     deleteTitle(name: string): string;
     deleteDescription: string;
@@ -886,6 +890,9 @@ const SHELL_COPY_BY_LOCALE = {
         operation_unavailable: '当前无法移动这个任务。',
         not_found: '找不到该项目或任务。',
       },
+      archiveRefusedDelegation: 'WorkHub 仍在向该任务委派工作。先停止或更换委派，再归档。',
+      archiveRefusedResult: '委派结果还没有送达 WorkHub。请打开 WorkHub 收取结果，或停止该委派。',
+      archiveRefusedSubtasks: '该任务还有进行中的子任务。请等子任务完成或停止它们，再归档该任务。',
       currentConversation: '当前任务',
       deleteTitle: (name: string) => `删除 "${name}"`,
       deleteDescription: '任务和全部消息会从磁盘上永久移除。该操作不可撤销。',
@@ -1410,6 +1417,9 @@ const SHELL_COPY_BY_LOCALE = {
         operation_unavailable: '目前無法移動這個任務。',
         not_found: '找不到該專案或任務。',
       },
+      archiveRefusedDelegation: 'WorkHub 仍在向該任務委派工作。先停止或更換委派，再歸檔。',
+      archiveRefusedResult: '委派結果還沒有送達 WorkHub。請開啟 WorkHub 收取結果，或停止該委派。',
+      archiveRefusedSubtasks: '該任務還有進行中的子任務。請等子任務完成或停止它們，再歸檔該任務。',
       currentConversation: '目前任務',
       deleteTitle: (name: string) => `刪除 "${name}"`,
       deleteDescription: '任務和全部訊息會從磁碟上永久移除。該操作不可撤銷。',
@@ -1936,6 +1946,12 @@ const SHELL_COPY_BY_LOCALE = {
         operation_unavailable: 'This task cannot be moved right now.',
         not_found: 'That project or task could not be found.',
       },
+      archiveRefusedDelegation:
+        'WorkHub still delegates work to this task. Stop or replace the delegation, then archive it.',
+      archiveRefusedResult:
+        "WorkHub has not received this task's result yet. Open WorkHub so it can collect it, or stop the delegation.",
+      archiveRefusedSubtasks:
+        'This task has subtasks still in flight. Wait for them to finish or stop them, then archive this task.',
       currentConversation: 'Current task',
       deleteTitle: (name: string) => `Delete "${name}"`,
       deleteDescription:
