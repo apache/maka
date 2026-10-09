@@ -1059,7 +1059,7 @@ export async function assertPackagedResources(
     'app.asar',
     'bundled-tools.json',
     ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
-    join('workers', 'filesystem-worker.js'),
+    join('workers', 'filesystem-worker.mjs'),
     ...(requireDirectPeerArtifact
       ? [
           join('runtime-host-peer', 'maka_runtime_host_peer.node'),
