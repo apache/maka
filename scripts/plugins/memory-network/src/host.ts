@@ -180,7 +180,7 @@ export default {
       );
       register(
         'MemoryIndexList',
-        'List ALL available indexes with their organizing criteria and covered cursors. Use MemoryIndexRead for the complete document directory, MemoryIndexContent for batch/full reading or search.',
+        'List ALL available indexes with their organizing criteria and covered cursors. Use MemoryIndexRead for the complete document directory, MemoryIndexContent for batch/full reading or search. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
         z.object({}),
         async () => {
           await ctx.sessionQuery.historyList();
@@ -227,7 +227,7 @@ export default {
       );
       register(
         'MemoryIndexRead',
-        'Read index criterion, exact covered/pending cursor ranges, progress notes, the COMPLETE document directory (titles, sizes and citation counts) and maintenance status. Refreshes source observations only; does not organize history or advance coverage.',
+        'Read index criterion, exact covered/pending cursor ranges, progress notes, the COMPLETE document directory (titles, sizes and citation counts) and maintenance status. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
         z.object({ indexId: id }),
         async (input: any) => controller.summary(input.indexId, await controller.observe(input.indexId)),
         false,
@@ -263,7 +263,7 @@ export default {
       );
       register(
         'MemoryIndexContent',
-        'Read index documents: key for one full document; keys for a batch; view=full for full texts across the index; default view=directory lists ALL matching keys/titles/sizes. Optional query is case-insensitive literal search in keys and bodies. after/limit select document pages; maxChars optionally budgets full documents, never silently truncates a document. No limit means all matches. Follow memory citations with MemoryOriginal.',
+        'Read index documents: key for one full document; keys for a batch; view=full for full texts across the index; default view=directory lists ALL matching keys/titles/sizes. Optional query is case-insensitive literal search in keys and bodies. after/limit select document pages; maxChars optionally budgets full documents, never silently truncates a document. No limit means all matches. Follow memory citations with MemoryOriginal. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
         z.object({
           indexId: id,
           key: id.optional(),
