@@ -301,3 +301,22 @@ test('an object-directory override cannot be mistaken for local metadata corrupt
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('an unreachable ambient cwd cannot veto an enclosing repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-git-ambient-cwd-'));
+  const originalCwd = process.cwd;
+  try {
+    const repository = join(base, 'repository');
+    const workspace = join(repository, 'workspace');
+    await mkdir(workspace, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+    // The probe once ran git -C process.cwd(); an ambient cwd that survives
+    // only as a stale string (deleted or unsearchable) makes -C fail with a
+    // generic 128 that was mistaken for Git's verdict on the entry itself.
+    process.cwd = () => join(base, 'removed');
+    assert.equal(await hasEnclosingGitEntry(workspace), true);
+  } finally {
+    process.cwd = originalCwd;
+    await rm(base, { recursive: true, force: true });
+  }
+});

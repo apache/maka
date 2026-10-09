@@ -19,7 +19,7 @@
 
 import { constants as fsConstants, type Stats } from 'node:fs';
 import { access, lstat, open } from 'node:fs/promises';
-import { join, parse } from 'node:path';
+import { join, parse, resolve } from 'node:path';
 
 import { execGitText } from './git-exec.js';
 
@@ -28,7 +28,10 @@ import { execGitText } from './git-exec.js';
  * succeed. False requires exhausting the ancestors; ambiguous failures throw.
  */
 export async function hasEnclosingGitEntry(path: string): Promise<boolean> {
-  let current = path;
+  // The git probes below anchor on entry directories, so the walk needs an
+  // absolute path: a relative parent would ask Git to resolve -C against the
+  // child's inherited cwd, which may be deleted or unsearchable.
+  let current = resolve(path);
   while (true) {
     const gitPath = join(current, '.git');
     let entryStat: Stats | undefined;
@@ -78,8 +81,12 @@ async function isGitEntry(gitPath: string, before: Stats, ancestor: boolean): Pr
 }
 
 async function assertGitEntry(gitPath: string): Promise<void> {
-  // Let Git interpret directories and gitfiles, including linked worktrees.
-  await execGitText(process.cwd(), ['rev-parse', '--resolve-git-dir', gitPath], {
+  // Let Git interpret directories and gitfiles, including linked worktrees. -C
+  // only chooses where Git starts; --resolve-git-dir judges gitPath itself.
+  // Anchor on the directory containing the entry (lstat proved it exists)
+  // instead of the host's ambient cwd, which may have been deleted or made
+  // unsearchable since the process started.
+  await execGitText(parse(gitPath).dir, ['rev-parse', '--resolve-git-dir', gitPath], {
     maxBuffer: 64 * 1024,
     timeoutMs: 3_000,
   });
