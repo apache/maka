@@ -190,7 +190,6 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/cua-driver/MPL-2.0.txt',
       'apps/desktop/resources/licenses/cua-driver/Inter-OFL.txt',
       'apps/desktop/resources/licenses/cua-driver/CDLA-Permissive-2.0.txt',
-      'apps/desktop/resources/licenses/cua-driver/NOTICE.txt',
       'apps/desktop/resources/licenses/cua-driver/THIRD_PARTY_NOTICES.txt',
       'apps/desktop/resources/licenses/cua-driver/upstream/objc2-legacy-LICENSE.txt',
       'apps/desktop/resources/licenses/cua-driver/upstream/objc2-current-LICENSE.md',

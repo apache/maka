@@ -98,8 +98,8 @@ for (const item of inventory) {
 const output = `Cua Driver 0.28.2 third-party dependency notices
 ================================================
 
-This conservative inventory includes normal and build dependencies for both
-macOS architectures. It can include crates absent from the published executable.
+These are the crates linked into the executable for either macOS architecture:
+normal dependencies of cua-driver, without build-only and proc-macro crates.
 The Cua Driver's own MIT license and the embedded Inter font's OFL license are
 separate files beside this notice. Source: docs/computer-use-cua-driver-dependencies.tsv.
 
