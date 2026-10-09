@@ -76,8 +76,8 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@astryxdesign/core": "0.6.3",
-    "@astryxdesign/theme-neutral": "0.6.3",
+    "@astryxdesign/core": "0.6.6",
+    "@astryxdesign/theme-neutral": "0.6.6",
     "@babel/parser": "7.29.9",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
