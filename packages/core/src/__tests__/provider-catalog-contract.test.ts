@@ -66,6 +66,16 @@ describe('Moonshot provider regions', () => {
 });
 
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
+  it('marks tenant- or region-scoped API providers as user-endpoint connections', () => {
+    for (const type of ['azure-foundry', 'amazon-bedrock'] as const) {
+      const definition = PROVIDER_REGISTRY[type];
+      assert.equal(definition.authKind, 'api_key');
+      assert.equal(definition.baseUrl, '');
+      assert.equal(definition.runtimeAdapter.requireBaseUrl, true);
+      assert.equal(definition.category, 'custom');
+    }
+  });
+
   it('exposes an endpoint source that passes the production baseUrl gate', () => {
     for (const type of CATALOG_PROVIDER_TYPES) {
       const def = PROVIDER_REGISTRY[type];

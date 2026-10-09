@@ -739,7 +739,8 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
-    category: 'overseas',
+    // Foundry endpoints are resource-specific and must be supplied by the user.
+    category: 'custom',
     catalogGroup: 'api',
     signupUrl: 'https://console.anthropic.com/settings/keys',
     catalogOrder: 9,
@@ -776,7 +777,8 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
-    category: 'overseas',
+    // Bedrock endpoint selection is region/account-specific and user supplied.
+    category: 'custom',
     catalogGroup: 'plans',
     signupUrl: 'https://platform.minimax.io/subscribe/coding-plan',
     catalogOrder: 2,
@@ -1533,7 +1535,8 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', requireBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
-    category: 'overseas',
+    // Foundry endpoints are resource-specific and must be supplied by the user.
+    category: 'custom',
     catalogGroup: 'api',
     signupUrl: 'https://ai.azure.com/',
     catalogOrder: 42,
@@ -1548,7 +1551,8 @@ const providerRegistry = {
     // Bedrock's OpenAI-compatible endpoint and model-list availability vary
     // by endpoint family and region. A custom endpoint remains user supplied.
     modelDiscovery: { kind: 'protocol' },
-    category: 'overseas',
+    // Bedrock endpoint selection is region/account-specific and user supplied.
+    category: 'custom',
     catalogGroup: 'api',
     signupUrl: 'https://console.aws.amazon.com/bedrock/',
     catalogOrder: 43,
