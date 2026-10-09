@@ -498,6 +498,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
     response: Response,
     submit: (sessionId: string, response: Response) => Promise<void>,
     onApplied?: (sessionId: string) => void,
+    propagateFailure = false,
   ) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
@@ -507,18 +508,21 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
       onApplied?.(sessionId);
       settleInteraction(sessionId, response.requestId);
     } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
-      } else {
-        toastApi.error(
-          copy.responseFailedTitle,
-          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
-          undefined,
-          { sessionId },
-        );
+      if (activeIdRef.current === sessionId) {
+        if (isSessionWorkspaceUnavailableError(error)) {
+          showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
+        } else {
+          toastApi.error(
+            copy.responseFailedTitle,
+            localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+            undefined,
+            { sessionId },
+          );
+        }
       }
-      throw error;
+      // A user-question prompt must retain its saved answer on a late Host
+      // rejection, even if the user switched Sessions while it was in flight.
+      if (propagateFailure) throw error;
     }
   }
 
@@ -542,7 +546,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
         onExecutionBoundaryChanged,
       ),
     respondToUserQuestion: (response) =>
-      respondToInteraction(response, services.respondToUserQuestion),
+      respondToInteraction(response, services.respondToUserQuestion, undefined, true),
     respondToUserForm: (response) => respondToInteraction(response, submitUserForm),
   };
 }
