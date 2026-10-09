@@ -2868,6 +2868,7 @@ export async function createExecutionRuntimeHostComposition(
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
       retention: archiveRetention,
+      sessionDiscards: { sweep: () => sessionRevisions.drainPendingDiscards() },
       onError: (name, error) =>
         console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
     });
