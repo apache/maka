@@ -768,6 +768,34 @@ export function useMakaClientSlotOccupied(
   return (core?.activeEntries(name).length ?? 0) > 0;
 }
 
+const EMPTY_SLOT_KEYS: ReadonlySet<string> = new Set();
+
+/**
+ * The contribution keys a keyed Slot currently renders — the same lookup the
+ * keyed outlet performs, including its session-scope guard, so a caller can
+ * ask "would this entryKey render?" without mounting the outlet (#5997).
+ */
+export function useMakaClientSlotEntryKeys(
+  name: keyof MakaClientSlotMap & string,
+): ReadonlySet<string> {
+  const host = useContext(MakaClientSlotHostContext);
+  const core = host?.core;
+  useSyncExternalStore(
+    (listener) => core?.subscribe(name, listener) ?? (() => {}),
+    () => core?.getVersion(name) ?? 0,
+    () => core?.getVersion(name) ?? 0,
+  );
+  const spec = core?.specDynamic(name);
+  if (!core || !spec || (spec.scope === 'session' && host?.sessionId === undefined)) {
+    return EMPTY_SLOT_KEYS;
+  }
+  const keys = new Set<string>();
+  for (const entry of core.activeEntries(name)) {
+    if (entry.options.key !== undefined) keys.add(entry.options.key);
+  }
+  return keys;
+}
+
 export function MakaClientSlotProvider(props: {
   readonly core: MakaClientSlotCore;
   readonly children?: ReactNode;

@@ -224,18 +224,24 @@ export function ToolResultPreview(props: {
     );
   }
 
-  if (content.kind === 'text') {
+  // A `summary` result carries its own prose (#5997): the runtime's summarized
+  // body renders through the same redaction and line-cap pipeline as `text`,
+  // instead of falling through to a bare `[summary]` token.
+  if (content.kind === 'text' || content.kind === 'summary') {
     const copy = getToolActivityCopy(locale).result;
-    const { body, capped } = capLines(formatUserVisibleToolText(redactSecrets(content.text), locale));
+    const { body, capped } = capLines(formatUserVisibleToolText(
+      redactSecrets(content.kind === 'text' ? content.text : content.summarized),
+      locale,
+    ));
     const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
     return (
-      <div data-kind="text">
+      <div data-kind={content.kind}>
         <ToolCodeBlock code={code} actionIdentity={props.actionIdentity} />
       </div>
     );
   }
 
-  // image / summary / unknown — show a compact descriptor so the user knows
+  // image / unknown — show a compact descriptor so the user knows
   // what kind landed without dumping binary or storage refs.
   if (content.kind === 'file_write') {
     const copy = getToolActivityCopy(locale).result;

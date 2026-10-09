@@ -26,6 +26,11 @@ import { UI_LOCALES, type UiCatalog, type UiLocale } from '@maka/core/ui-locale'
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
+import {
+  MakaClientSessionScope,
+  MakaClientSlotCore,
+  MakaClientSlotProvider,
+} from '../client-plugin-slots.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from '../tool-activity/copy.js';
 import { formatDuration } from '../tool-activity/preview-utils.js';
@@ -963,4 +968,181 @@ it('carries rounded tool durations into the next unit', () => {
   assert.equal(formatDuration(59_600), '1m 0s');
   assert.equal(formatDuration(119_600), '2m 0s');
   assert.equal(formatDuration(125_000), '2m 5s');
+});
+
+describe('tool row expandability (#5997)', () => {
+  const renderRow = (item: ToolActivityItem) =>
+    renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+
+  /** A single-call row is interactive exactly when Astryx got a resultDetail. */
+  function assertInteractive(markup: string, interactive: boolean, label: string): void {
+    const patterns = [/role="button"/, /tabindex="0"/, /aria-expanded/];
+    for (const pattern of patterns) {
+      if (interactive) assert.match(markup, pattern, label);
+      else assert.doesNotMatch(markup, pattern, label);
+    }
+  }
+
+  it('keeps a row with no evidence beyond its name collapsed', () => {
+    assertInteractive(renderRow({
+      toolUseId: 'tool-empty-detail',
+      toolName: 'MysteryTool',
+      status: 'completed',
+      args: undefined,
+    }), false, 'empty detail');
+  });
+
+  it('keeps a single-line invocation that repeats the collapsed target collapsed', () => {
+    const markup = renderRow({
+      toolUseId: 'tool-repeat-target',
+      toolName: 'Bash',
+      status: 'completed',
+      args: { command: 'git status --porcelain' },
+    });
+    assertInteractive(markup, false, 'repeated invocation line');
+    assert.match(markup, /git status --porcelain/);
+  });
+
+  it('keeps a multi-line invocation expandable even without a result', () => {
+    assertInteractive(renderRow({
+      toolUseId: 'tool-multi-line',
+      toolName: 'Bash',
+      status: 'completed',
+      args: { command: 'echo one\necho two' },
+    }), true, 'multi-line invocation line');
+  });
+
+  it('shows a summary result as its redacted summarized body', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'tool-summary',
+      toolName: 'WebFetch',
+      status: 'completed',
+      args: { url: 'https://example.com' },
+      result: {
+        kind: 'summary',
+        original: 'token sk-1234567890abcdefghi in original',
+        summarized: 'The page documents the makahub API.',
+        reason: 'too_large',
+      },
+    };
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(detail, /The page documents the makahub API\./);
+    assert.doesNotMatch(detail, /\[summary\]/);
+    assert.doesNotMatch(detail, /sk-1234567890abcdefghi/);
+    assertInteractive(renderRow(item), true, 'summary result');
+  });
+
+  it('keeps rows whose detail would only be a type token collapsed', () => {
+    const tokenResults = [
+      {
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: { kind: 'workspace_file', relativePath: 'shots/shot.png' },
+      },
+      {
+        kind: 'archived_tool_result',
+        status: 'not_loaded',
+        runtimeEventId: 'evt-1',
+        toolCallId: 'call-1',
+        toolName: 'Bash',
+        originalEstimatedTokens: 10,
+        originalBytes: 128,
+        rewriteVersion: 1,
+        reason: 'tool_result_pruned',
+      },
+    ] as unknown as Array<NonNullable<ToolActivityItem['result']>>;
+    for (const result of tokenResults) {
+      assertInteractive(renderRow({
+        toolUseId: 'tool-token',
+        toolName: 'Bash',
+        status: 'completed',
+        args: { command: 'ls' },
+        result,
+      }), false, `type-token detail: ${result.kind}`);
+    }
+  });
+
+  it('keeps a banner-only row expandable when its body would be none', () => {
+    assertInteractive(renderRow({
+      toolUseId: 'tool-bypass-none',
+      toolName: 'ClientCapability',
+      status: 'errored',
+      args: undefined,
+      result: {
+        kind: 'text',
+        text: 'This tool requires the Bypass execution boundary.',
+        sandboxFailure: { reason: 'requires_bypass' },
+      },
+    }), true, 'requires-bypass banner');
+  });
+
+  it('keeps a plugin contribution expandable for its tool name only', () => {
+    const core = new MakaClientSlotCore();
+    core.register(
+      { name: 'conversation.tool.detail', key: 'MysteryTool' },
+      () => createElement('p', null, 'plugin detail'),
+    );
+    const renderWithPlugin = (item: ToolActivityItem) =>
+      renderToStaticMarkup(
+        createElement(MakaClientSlotProvider, { core },
+          createElement(MakaClientSessionScope, { sessionId: 'session-1' },
+            createElement(ToolTrow, { items: [item] }),
+          ),
+        ),
+      );
+
+    const hit = renderWithPlugin({
+      toolUseId: 'tool-plugin-hit',
+      toolName: 'MysteryTool',
+      status: 'completed',
+      args: undefined,
+    });
+    assertInteractive(hit, true, 'plugin contribution for this tool');
+
+    const miss = renderWithPlugin({
+      toolUseId: 'tool-plugin-miss',
+      toolName: 'OtherTool',
+      status: 'completed',
+      args: undefined,
+    });
+    assertInteractive(miss, false, 'plugin keyed for another tool');
+
+    // A session-scoped slot without a bound session renders nothing.
+    const unscoped = renderToStaticMarkup(
+      createElement(MakaClientSlotProvider, { core },
+        createElement(ToolTrow, { items: [{
+          toolUseId: 'tool-plugin-hit',
+          toolName: 'MysteryTool',
+          status: 'completed',
+          args: undefined,
+        }] }),
+      ),
+    );
+    assertInteractive(unscoped, false, 'session slot without a session');
+  });
+
+  it('keeps rows with real evidence expandable', () => {
+    assertInteractive(renderRow({
+      toolUseId: 'tool-shell',
+      toolName: 'Bash',
+      activityKind: 'command',
+      status: 'completed',
+      args: { command: 'npm test' },
+      result: {
+        kind: 'terminal',
+        cwd: '/repo',
+        cmd: 'npm test',
+        status: 'completed',
+        exitCode: 0,
+        output: {
+          mode: 'pipes',
+          stdout: 'tests passed',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+    }), true, 'terminal output');
+  });
 });

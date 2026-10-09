@@ -98,7 +98,7 @@ import {
 import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 import { RunningIndicator } from './running-indicator.js';
-import { MakaClientSlotOutlet } from './client-plugin-slots.js';
+import { MakaClientSlotOutlet, useMakaClientSlotEntryKeys } from './client-plugin-slots.js';
 
 /** Friendly card for tool-search and historical loader results. */
 function LoadToolResultPreview(props: {
@@ -469,8 +469,9 @@ export function ToolTrow({
   onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
+  const detailSlotKeys = useMakaClientSlotEntryKeys('conversation.tool.detail');
   if (items.length === 0) return null;
-  const segments = toolTrowSegments(items, locale, activityObserved, onSwitchToBypassAndRetry);
+  const segments = toolTrowSegments(items, locale, activityObserved, detailSlotKeys, onSwitchToBypassAndRetry);
 
   // ChatToolCalls owns expandable tool evidence. Linked child sessions are
   // navigation targets instead, so they render through Astryx's compact List:
@@ -517,6 +518,7 @@ function toolTrowSegments(
   items: ToolActivityItem[],
   locale: UiLocale,
   activityObserved: boolean,
+  detailSlotKeys: ReadonlySet<string>,
   onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ToolTrowSegment[] {
   const segments: ToolTrowSegment[] = [];
@@ -539,6 +541,7 @@ function toolTrowSegments(
         ? computerTarget
         : undefined,
       onSwitchToBypassAndRetry,
+      detailSlotKeys,
     );
     if (previous?.kind === 'tools') previous.calls.push(call);
     else segments.push({ kind: 'tools', key: item.toolUseId, calls: [call] });
@@ -614,9 +617,12 @@ function standardToolCall(
   item: ToolActivityItem,
   locale: UiLocale,
   activityObserved: boolean,
-  inferredTarget?: string,
-  onSwitchToBypassAndRetry?: () => void | Promise<void>,
+  inferredTarget: string | undefined,
+  onSwitchToBypassAndRetry: (() => void | Promise<void>) | undefined,
+  detailSlotKeys: ReadonlySet<string>,
 ): ChatToolCallItem {
+  const target = collapsedToolTarget(item, locale, inferredTarget);
+  const decision = describeToolCall(item, locale, activityObserved);
   return {
     key: item.toolUseId,
     // The name is what a person reads to tell one call from the next, and for
@@ -625,36 +631,71 @@ function standardToolCall(
     // arguments says what happened instead.
     name: computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     status: astryxToolStatus(item),
-    target: collapsedToolTarget(item, locale, inferredTarget),
+    target,
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
     stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
       ? `${item.progress.current}/${item.progress.total}`
       : outcomeWord(item, locale),
     ...diffStats(itemDiffs(item)),
-    resultDetail: (
-      <ToolDetailReveal>
-        <ToolCallDetail
-          item={item}
-          activityObserved={activityObserved}
-          onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
-        />
-        <MakaClientSlotOutlet
-          name="conversation.tool.detail"
-          owner={{
-            callId: item.toolUseId,
-            toolName: item.toolName,
-            status: toolActivityPresentationStatus(item),
-            ...(item.args === undefined ? {} : { args: item.args }),
-            ...(item.result === undefined ? {} : { result: item.result }),
-          }}
-          options={{
-            entryKey: item.toolName,
-          }}
-        />
-      </ToolDetailReveal>
-    ),
+    // Astryx makes a row expandable whenever `resultDetail != null`, so a
+    // detail that would repeat the collapsed row, show a bare type token, or
+    // render nothing at all pays the reader a click for nothing (#5997).
+    // A plugin contribution for this tool name keeps the row expandable even
+    // when the built-in detail would not.
+    resultDetail: toolDetailAddsInformation(decision, target) || detailSlotKeys.has(item.toolName)
+      ? (
+        <ToolDetailReveal>
+          <ToolCallDetail
+            item={item}
+            activityObserved={activityObserved}
+            onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
+          />
+          <MakaClientSlotOutlet
+            name="conversation.tool.detail"
+            owner={{
+              callId: item.toolUseId,
+              toolName: item.toolName,
+              status: toolActivityPresentationStatus(item),
+              ...(item.args === undefined ? {} : { args: item.args }),
+              ...(item.result === undefined ? {} : { result: item.result }),
+            }}
+            options={{
+              entryKey: item.toolName,
+            }}
+          />
+        </ToolDetailReveal>
+      )
+      : undefined,
   };
+}
+
+/**
+ * Whether expanding a row tells the reader something the collapsed row did
+ * not (#5997). Banners live in the detail panel, so their presence always
+ * counts as information; a single-line quiet text equal to the collapsed
+ * target, and results whose preview would be a bare `[kind]` token, do not.
+ */
+function toolDetailAddsInformation(
+  decision: DetailDecision,
+  collapsedTarget: string | undefined,
+): boolean {
+  if (decision.decorations.sandboxBlockedResult || decision.decorations.requiresBypass) {
+    return true;
+  }
+  const { body } = decision;
+  if (body.kind === 'none') return false;
+  if (body.kind === 'quietText') {
+    if (body.title) return true;
+    const text = body.body.trim();
+    if (!text) return false;
+    if (text.includes('\n')) return true;
+    return text !== collapsedTarget;
+  }
+  if (body.kind === 'result') {
+    return body.result.kind !== 'image' && body.result.kind !== 'archived_tool_result';
+  }
+  return true;
 }
 
 /**
