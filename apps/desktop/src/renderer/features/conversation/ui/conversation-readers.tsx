@@ -144,6 +144,7 @@ type ComposerGateInputs = {
 };
 /** The shell's picker gates; an edit-and-resend draft narrows them here. */
 type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean };
+type OwnedComposerProps = ComposerProps & { canStageContext: boolean; allowAttachmentOnlySend?: boolean };
 /**
  * Lives in the persistent composer slot, outside the conditional transcript.
  * Submission state (send pending, Stop pending, the edit-and-resend draft) and
@@ -154,7 +155,7 @@ type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?
  */
 export function ConversationComposerRegion<P extends object>(
   props: { surface: ComponentType<P>; usageModel?: string; usageRoute?: { llmConnectionId?: string } }
-    & ComposerGateInputs & Omit<P, keyof ComposerProps>,
+    & ComposerGateInputs & Omit<P, keyof OwnedComposerProps>,
 ) {
   const { surface, usageModel, usageRoute, sessionState, executorComposer, ...presentation } = props;
   const { workspace } = useConversationOwner();
@@ -180,8 +181,11 @@ export function ConversationComposerRegion<P extends object>(
   const draft = submission.revisionDraft;
   const editing = draft !== null && activeId === draft.draftSessionId;
   const gates = presentation as ComposerPickGates;
-  const owned: ComposerProps & ComposerPickGates = {
+  const owned: OwnedComposerProps & ComposerPickGates = {
     composerRef,
+    // Picking and sending staged context share the shell's single availability input.
+    canStageContext: gates.contextPickEnabled ?? false,
+    allowAttachmentOnlySend: gates.contextPickEnabled,
     activeInteraction: interaction,
     queuedMessages: queue?.entries,
     queuedMessageRevision: queue?.queueRevision,

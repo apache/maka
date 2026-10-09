@@ -24,16 +24,18 @@ import { fileURLToPath } from 'node:url';
 import { act, createElement, createRef, Fragment, Profiler, StrictMode, useLayoutEffect, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { ChatSurfaceLayout, LocaleProvider, type ComposerHandle } from '@maka/ui';
+import { ChatSurfaceLayout, LocaleProvider, ToastProvider, type ComposerHandle, type ComposerSendMetadata } from '@maka/ui';
 import type { AttachmentRef, DirectoryReference } from '@maka/core/events';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   createComposerStagingCommands,
+  ConversationProvider, ConversationServicesProvider,
   StagedComposer, StagedQuoteChatView, PlanProvider, PlanServicesProvider,
   type PlanServices, type ComposerStagingServices, type ComposerStagingSubmission,
 } from '../../renderer/features/conversation/index.js';
 import {
   createRevisionAwareOnSend, createStagedFollowUp, useComposerStaging, type RevisionSendPorts,
+  StagedLocalMessages, stubConversationServices, useConversationOwner, useConversationQueue,
 } from '../../renderer/features/conversation/testing.js';
 import { createChatActions } from '../../renderer/features/conversation/testing.js';
 import { createRevisionActions, type TurnRevisionDraft } from '../../renderer/features/conversation/testing.js';
@@ -41,6 +43,7 @@ import { createDesktopComposerStagingServices } from '../../renderer/platform/de
 import { createActionsDeps, createTransientState, EMPTY_SKILL_INVOCATION, windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
+import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 const saved = Object.fromEntries([
   'window', 'document', 'Element', 'HTMLBRElement', 'sessionStorage', 'HTMLElement', 'HTMLIFrameElement', 'Event', 'Node', 'CSS',
@@ -68,7 +71,11 @@ const attachment: AttachmentRef = {
   ref: { kind: 'session_file', sessionId: 'source', relativePath: 'first.txt' },
 };
 
-async function mount() {
+async function mount(options: {
+  onSend?: (text: string, metadata?: ComposerSendMetadata, staging?: ComposerStagingSubmission) => Promise<boolean | void>;
+  waitForSessionReference?: () => Promise<boolean>;
+  releaseRecoveryAttachments?: (ids: readonly string[]) => Promise<void>;
+} = {}) {
   const { window, document } = parseHTML('<html><body><div id="root"></div></body></html>');
   const matchMedia = (media: string) => ({
     media, matches: false, onchange: null,
@@ -106,6 +113,9 @@ async function mount() {
   root = createRoot(container);
   const commands = createComposerStagingCommands();
   const composer = createRef<ComposerHandle>();
+  const conversationServices = stubConversationServices({
+    releaseRecoveryAttachments: options.releaseRecoveryAttachments ?? (async () => {}),
+  });
   let staging!: ReturnType<typeof useComposerStaging>;
   function StagingProbe() {
     const current = useComposerStaging();
@@ -124,7 +134,8 @@ async function mount() {
     return createElement(ChatSurfaceLayout, {
       scrollToBottomLabel: 'Scroll to bottom',
       composer: createElement(StagedComposer, {
-        ref: composer, draftKey, hidden: !visible, onSend: () => {}, onStop: () => {},
+        ref: composer, draftKey, hidden: !visible, onSend: options.onSend ?? (() => {}), onStop: () => {},
+        waitForSessionReference: options.waitForSessionReference,
         stagingEnabled: true, canStageContext: true, contextPickEnabled: true,
         directoryPickerEnabled: true, allowAttachmentOnlySend: true,
       }),
@@ -137,7 +148,7 @@ async function mount() {
   const render = async (draftKey = 'draft-a', hostId = 'host-a', visible = true) => {
     await act(async () => root!.render(createElement(StrictMode, {
       children: createElement(LocaleProvider, { locale: 'en', children:
-        createElement(ComposerStagingFixture, { commands, draftKey, directoryHostId: hostId, children:
+        createElement(ComposerStagingFixture, { commands, draftKey, directoryHostId: hostId, conversationServices, children:
           createElement(PlanServicesProvider, { services: planServices, children:
             createElement(PlanProvider, { session: undefined, children: createElement(Fragment, null,
               createElement(StagingProbe), createElement(Frame, { draftKey, visible }),
@@ -149,6 +160,13 @@ async function mount() {
   };
   await render();
   return { commands, composer, container, render,
+    restoreRecovery(approvalId: string) {
+      staging.restoreMessageContext(commands.captureSubmission().draftKey, 'host-a', {
+        attachments: [], directoryReferences: [],
+        stagedAttachments: [{ approvalId, name: 'recovered.txt', mimeType: 'text/plain', size: 3 }],
+      });
+    },
+    removeAttachment: () => staging.removeAttachment(0),
     stage(content: { attachments?: readonly AttachmentRef[]; directoryReferences?: readonly DirectoryReference[] }) {
       const key = commands.captureSubmission().draftKey;
       staging.restoreAttachments(key, content.attachments ?? []);
@@ -157,6 +175,176 @@ async function mount() {
     editQuote: (index: number, note: string) => staging.composerQuoteProps(true).onEditQuoteComment!(index, note),
     counts: () => [frameRenders, siblingRenders], transcriptCommits: () => transcriptCommits };
 }
+
+test('staged follow-up holds recovered attachments through removal and preserves replacement identity', async () => {
+  const released: string[][] = [];
+  const view = await mount({ releaseRecoveryAttachments: async (ids) => { released.push([...ids]); } });
+  await act(() => view.restoreRecovery('local-recovery:follow-up'));
+  let captures = 0;
+  let finish!: (accepted: boolean) => void;
+  const admission = new Promise<boolean>((resolve) => { finish = resolve; });
+  const enqueue = createStagedFollowUp({
+    captureStaging: () => { captures++; return view.commands.captureSubmission(); },
+    enqueueMessage: async (sessionId, text, placement, pending, context) => {
+      assert.equal(sessionId, 'draft-a');
+      assert.equal(text, 'edited original');
+      assert.equal(placement, 'current_turn');
+      assert.equal(context.replacesLocalMessageId, 'paused-original');
+      assert.deepEqual(pending?.map((item) => item.source), [{
+        type: 'approval', approvalId: 'local-recovery:follow-up', name: 'recovered.txt',
+      }]);
+      return admission;
+    },
+    onError: (_sessionId, error) => { assert.fail(String(error)); },
+  });
+  const sent = enqueue('draft-a', 'edited original', 'steer', { replacesLocalMessageId: 'paused-original' });
+  assert.equal(captures, 1);
+  await act(() => view.removeAttachment());
+  assert.deepEqual(released, [], 'the real staging owner retains the captured approval until admission settles');
+  await act(async () => { finish(false); assert.equal(await sent, false); });
+  assert.deepEqual(released, [['local-recovery:follow-up']], 'the removed attachment is released after the refused send');
+});
+
+test('StagedComposer keeps the submitted recovery attachment while waiting for Session references', async () => {
+  const released: string[][] = [];
+  let finishReference!: (ready: boolean) => void;
+  const reference = new Promise<boolean>((resolve) => { finishReference = resolve; });
+  let finishAdmission!: (accepted: boolean) => void;
+  const admission = new Promise<boolean>((resolve) => { finishAdmission = resolve; });
+  let onSend!: ReturnType<typeof createRevisionAwareOnSend>;
+  let sent: Promise<boolean | void> | undefined;
+  const view = await mount({
+    releaseRecoveryAttachments: async (ids) => { released.push([...ids]); },
+    waitForSessionReference: () => reference,
+    onSend: (text, metadata, staging) => { sent = onSend(text, metadata, staging); return sent; },
+  });
+  const submissions: Array<{ sources: unknown[]; replaces?: string }> = [];
+  onSend = createRevisionAwareOnSend({
+    shellCopy: {
+      sideChatUnavailableTitle: '', sideChatUnavailableDescription: '',
+      sideChatContextPendingTitle: '', sideChatContextPendingDescription: '',
+      swarmModeEnabledTitle: '', swarmModeDisabledTitle: '', swarmModeStatusDescription: '',
+      graphModeEnabledTitle: '', graphModeDisabledTitle: '', graphModeStatusDescription: '',
+      graphHistoryTitle: '', graphHistoryDescription: '',
+    },
+    toastApi: { info() {} }, activeIdRef: { current: 'draft-a' }, revisionDraftRef: { current: null },
+    composerRef: view.composer, retractedWorkspaceReferencesRef: { current: {} },
+    captureStaging: view.commands.captureSubmission,
+    send: async (_text, pending, context) => {
+      submissions.push({ sources: pending?.map((item) => item.source) ?? [], replaces: context?.replacesLocalMessageId });
+      return admission;
+    },
+    prepareRevisionSend: async () => true, enqueueFollowUp: async () => false,
+    settleNewTaskImageNoticeOwner() {}, commitRevisionDraft() {}, completeRevisionCopyAttempt() {},
+    parseSlashCommand: () => null, mergeWorkspaceReferences: () => [], rebaseWorkspaceFileReferences: () => [],
+    revisionUnavailableCopy: { revisionUnavailableTitle: '', revisionAttachmentsUnsupported: '', revisionCommandUnsupported: '' },
+    compactSession: async () => false, resolveNewTaskSessionHandler: () => () => {}, openSideChat() {},
+    getActiveOrchestrationMode: () => 'default', setOrchestrationModeActive: async () => false,
+    setNewTaskSendPending() {},
+  });
+  await act(() => {
+    view.restoreRecovery('local-recovery:waiting-reference');
+    view.composer.current!.appendDraft('draft-a', 'edited original', [], 'paused-original');
+  });
+  await act(() => {
+    const form = view.container.querySelector('form');
+    assert.ok(form);
+    form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  });
+  await act(() => view.removeAttachment());
+  assert.deepEqual(released, [], 'early Composer ownership protects the approval before onSend starts');
+  assert.deepEqual(submissions, []);
+  await act(async () => { finishReference(true); await Promise.resolve(); });
+  assert.deepEqual(submissions, [{
+    sources: [{ type: 'approval', approvalId: 'local-recovery:waiting-reference', name: 'recovered.txt' }],
+    replaces: 'paused-original',
+  }], 'the later factory must submit the content captured by the original send');
+  await act(async () => { finishAdmission(false); await sent; });
+  assert.deepEqual(released, [['local-recovery:waiting-reference']]);
+});
+
+test('StagedLocalMessages restores through the owner slot and guards the same staged attachment draft', async () => {
+  const view = await mount();
+  const recoveryCommands = createComposerStagingCommands();
+  const catalog = createSessionCatalogController();
+  let owner!: ReturnType<typeof useConversationOwner>;
+  let queue!: ReturnType<typeof useConversationQueue>;
+  let staging!: ReturnType<typeof useComposerStaging>;
+  let showRecovery = true;
+  let cancellations = 0;
+  const sent: Array<ComposerSendMetadata | undefined> = [];
+  const services = stubConversationServices({
+    listMessages: async () => [{
+      sessionId: 'draft-a', messageId: 'original', createdAt: 1, state: 'saved',
+      canCancel: true, placement: 'next_turn', text: '', attachments: [], inlineReferences: [],
+    }],
+    cancelMessage: async (_sessionId, _messageId, options) => {
+      cancellations++;
+      assert.equal(options?.restoreDraft, true, 'a paused original must not be deleted while its edit remains staged');
+      return {
+        messageId: 'original', replacesLocalMessageId: 'original', text: '', attachments: [],
+        stagedAttachments: [{ approvalId: 'local-recovery:owner-slot', name: 'restored.txt', mimeType: 'text/plain', size: 3 }],
+        quotes: [{ text: 'restored quote' }], directoryReferences: [], inlineReferences: [],
+      };
+    },
+  });
+  function RecoverySurface() {
+    owner = useConversationOwner();
+    queue = useConversationQueue();
+    staging = useComposerStaging();
+    return createElement(Fragment, null,
+      createElement(StagedComposer, {
+        ref: queue.composer, draftKey: 'draft-a', onSend: async (_text, metadata) => { sent.push(metadata); return false; },
+        onStop() {}, stagingEnabled: true, canStageContext: true, contextPickEnabled: true,
+        directoryPickerEnabled: true, allowAttachmentOnlySend: true,
+      }),
+      showRecovery && createElement(StagedLocalMessages, {
+        sessionId: 'draft-a', directoryHostId: 'host-a', enabled: true,
+        restoreContext: recoveryCommands.restoreContext,
+      }),
+    );
+  }
+  const render = () => act(async () => root!.render(createElement(LocaleProvider, { locale: 'en', children:
+    createElement(ToastProvider, { children:
+      createElement(SessionCatalogContext.Provider, { value: catalog, children:
+        createElement(ConversationServicesProvider, { services, children:
+          createElement(ConversationProvider, { children:
+            createElement(ComposerStagingFixture, {
+              draftKey: 'draft-a', directoryHostId: 'host-a', conversationServices: services,
+              commands: recoveryCommands,
+              children: createElement(RecoverySurface),
+            }),
+          }),
+        }),
+      }),
+    }),
+  })));
+  await render();
+  await act(() => owner.commands.setActiveId('draft-a'));
+  const message = () => owner.workspace.composer.getSnapshot().transientMessages.find((entry) => entry.id === 'original')!;
+  const action = (label: string) => message().deliveryActions!.find((entry) => entry.label === label)!;
+  await act(() => staging.restoreAttachments('draft-a', [attachment]));
+  await act(async () => { await action('Edit').onClick(); });
+  assert.equal(cancellations, 0, 'recovery reads context from the same staging owner as the Composer');
+  await act(() => staging.removeAttachment(0));
+  await act(async () => { await action('Edit').onClick(); });
+  assert.equal(cancellations, 1);
+  assert.equal(queue.composer.current!.getText(), '');
+  assert.deepEqual(staging.pendingAttachments.map((item) => item.displayName), ['restored.txt']);
+  assert.deepEqual(staging.pendingQuotes, [{ text: 'restored quote' }]);
+  await act(async () => { await action('Delete unsent message').onClick(); });
+  assert.equal(cancellations, 1);
+  assert.match(message().deliveryDetail!, /Unable to delete this paused message/);
+  await act(async () => {
+    view.container.querySelector('form')!.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+  });
+  assert.equal(sent[0]?.replacesLocalMessageId, 'original', 'bodyless recovery keeps replacement identity through the real composer');
+  assert.ok(queue.draftContextRestorer.current);
+  showRecovery = false;
+  await render();
+  assert.equal(queue.draftContextRestorer.current, undefined, 'unmount releases only the wrapper-owned restoration slot');
+});
 
 test('real staging readers update without rendering shell/frame; Composer survives section and Session switches', async () => {
   const view = await mount();

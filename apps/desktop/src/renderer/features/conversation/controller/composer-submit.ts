@@ -30,6 +30,8 @@ import type {
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
 import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
 
+import { composerSend, composerFollowUp } from './composer-follow-up.js';
+
 type RefBox<T> = { current: T };
 type WorkspaceFileReference = NonNullable<ComposerSendMetadata['workspaceFileReferences']>[number];
 
@@ -45,6 +47,7 @@ export interface RevisionDraftIdentity {
 }
 
 type SubmitOptions = {
+  replacesLocalMessageId?: string;
   directoryReferences?: NonNullable<TransientUserMessageProjection['directoryReferences']>;
   quotes?: readonly QuoteRef[];
   workspaceFileReferences?: readonly WorkspaceFileReference[];
@@ -92,6 +95,7 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
     text: string,
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
+    staging?: ComposerStagingSubmission,
   ) => Promise<boolean>;
   settleNewTaskImageNoticeOwner: (sourceSessionId?: string) => void;
   commitRevisionDraft: (draft: TDraft | null) => void;
@@ -137,26 +141,22 @@ export function createStagedFollowUp(ports: {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending: readonly PendingAttachment[] | undefined,
-    options: Pick<SubmitOptions, 'directoryReferences' | 'quotes' | 'workspaceFileReferences'>,
+    options: Pick<SubmitOptions, 'directoryReferences' | 'quotes' | 'workspaceFileReferences' | 'replacesLocalMessageId'>,
   ): Promise<boolean>;
   onError(sessionId: string, error: unknown): void;
 }): RevisionSendPorts<RevisionDraftIdentity>['enqueueFollowUp'] {
-  return async (sessionId, text, mode, metadata) => {
-    const staging = ports.captureStaging();
-    try {
-      const sent = await ports.enqueueMessage(sessionId, text,
-        mode === 'steer' ? 'current_turn' : 'next_turn', staging.submittableAttachments, {
-          ...staging.directoryOptions, quotes: staging.quotesForSend(),
-          workspaceFileReferences: metadata?.workspaceFileReferences,
-        });
-      if (!sent) return false;
-      staging.clearSubmittedContext(staging.submittableAttachments);
-      staging.clearQuotes();
-      return true;
-    } catch (error) {
-      ports.onError(sessionId, error);
-      return false;
-    }
+  return async (sessionId, text, mode, metadata, captured) => {
+    const staging = captured ?? ports.captureStaging();
+    return composerFollowUp({
+      pending: staging.submittableAttachments,
+      retainAttachments: staging.retainAttachments,
+      quotes: staging.quotesForSend() ?? [],
+      directoryOptions: staging.directoryOptions,
+      enqueueMessage: ports.enqueueMessage,
+      clearSubmittedContext: staging.clearSubmittedContext,
+      clearQuotes: staging.clearQuotes,
+      onError: ports.onError,
+    })(sessionId, text, mode, metadata);
   };
 }
 
@@ -172,17 +172,15 @@ export function createStagedFollowUp(ports: {
  */
 export function createRevisionAwareOnSend<TDraft extends RevisionDraftIdentity>(
   ports: RevisionAwareOnSendPorts<TDraft>,
-): (text: string, metadata?: ComposerSendMetadata) => Promise<boolean | void> {
-  return async function sendOwningItsTarget(
-    text: string,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean | void> {
-    ports.setNewTaskSendPending(true);
-    try {
-      return await revisionAwareSend(ports, text, metadata);
-    } finally {
-      ports.setNewTaskSendPending(false);
-    }
+): (text: string, metadata?: ComposerSendMetadata, captured?: ComposerStagingSubmission) => Promise<boolean | void> {
+  return (text, metadata, captured) => {
+    const staging = captured ?? ports.captureStaging();
+    return composerSend({
+      pending: staging.submittableAttachments,
+      retainAttachments: staging.retainAttachments,
+      setPending: ports.setNewTaskSendPending,
+      send: (value, context) => revisionAwareSend({ ...ports, captureStaging: () => staging }, value, context),
+    })(text, metadata);
   };
 }
 
@@ -218,7 +216,7 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     const queued = await ports.enqueueFollowUp(sessionId, text, followUpAtSubmit, {
       ...metadata,
       workspaceFileReferences,
-    });
+    }, staging);
     if (queued) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
     return queued;
   }
@@ -292,6 +290,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     const ok = await ports.send(swarmCommand.task, pending, {
       turnOrchestration: { mode: 'swarm', source: 'slash_command' },
       ...staging.directoryOptions,
+      ...(metadata?.replacesLocalMessageId
+        ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
+        : {}),
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
@@ -341,6 +342,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     const ok = await ports.send(graphCommand.task, pending, {
       turnOrchestration: { mode: 'graph', source: 'slash_command' },
       ...staging.directoryOptions,
+      ...(metadata?.replacesLocalMessageId
+        ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
+        : {}),
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
@@ -369,6 +373,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     targetSessionId: expectedRevisionDraft?.draftSessionId,
     onSessionResolved: ports.resolveNewTaskSessionHandler(),
     ...staging.directoryOptions,
+    ...(metadata?.replacesLocalMessageId
+      ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
+      : {}),
     ...(quotes ? { quotes } : {}),
     ...(workspaceFileReferences.length
       ? { workspaceFileReferences }

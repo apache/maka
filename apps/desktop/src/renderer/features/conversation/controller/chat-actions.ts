@@ -44,11 +44,8 @@ import type { NewChatExecutionTarget } from './use-shell-chat-model.js';
 import type { ConversationNewTaskTarget } from '../ports.js';
 import type { ComposerSubmissionServices, ConversationMessageCommand } from '../submission-services.js';
 import type { ComposerSurfaceOwner } from '../model/composer-submission-contract.js';
+import type { ComposerMessageContext } from './composer-follow-up.js';
 
-export interface WorkspaceFileReferencePosition {
-  value: string;
-  start: number;
-}
 import {
   isNoRealConnectionError,
   noRealConnectionReasonFromError,
@@ -72,12 +69,7 @@ type ToastApi = {
   info(title: string, description?: string): void;
 };
 
-type DirectoryReferences = NonNullable<TransientUserMessageProjection['directoryReferences']>;
-type MessageContextOptions = {
-  directoryReferences?: DirectoryReferences;
-  quotes?: readonly QuoteRef[];
-  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-};
+type MessageContextOptions = ComposerMessageContext;
 type SendOptions = MessageContextOptions & {
   waitForHostAdmission?: boolean;
   targetSessionId?: string;
@@ -320,6 +312,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+          replacesLocalMessageId: options.replacesLocalMessageId,
         };
         return submitAndProject({
           sessionId,
@@ -481,6 +474,7 @@ export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
           ...copiedArray('directoryReferences', directoryReferences),
           ...copiedArray('quotes', quotes),
           ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+          replacesLocalMessageId: options.replacesLocalMessageId,
         },
         ...copiedArray('quotes', quotes),
         isSurfaceVisible: () => activeIdRef.current === sessionId,

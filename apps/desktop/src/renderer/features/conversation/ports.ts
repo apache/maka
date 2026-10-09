@@ -54,7 +54,7 @@ export type ConversationFileSearchResult =
 
 export interface ConversationServices extends Pick<
   DesktopSessionLocalBridge,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
+  'listMessages' | 'readFailedMessage' | 'releaseRecoveryAttachments' | 'cancelMessage' | 'resumeMessage' | 'reconcileMessage' | 'subscribeChanges'
 > {
   readonly observation: import('./transcript-ports.js').ConversationObservationServices;
   readonly promptSuggestions?: {

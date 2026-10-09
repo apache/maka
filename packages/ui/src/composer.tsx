@@ -95,6 +95,7 @@ import {
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import type {
   AttachmentRef,
+  InlineReference,
   FollowUpMode,
   MessageQueueEntryProjection,
   QuoteRef,
@@ -258,7 +259,7 @@ function attachmentExtensionLabel(name: string): string | null {
  */
 export interface ComposerHandle {
   /** Replace the input text, leaving focus on the input with the caret at the end. */
-  setText(text: string): void;
+  setText(text: string, references?: readonly InlineReference[]): void;
   /** Append a prompt/context fragment after the existing draft instead of replacing it. */
   appendText(text: string): void;
   /** Read the current input text (inline tokens serialized to their values). */
@@ -270,7 +271,7 @@ export interface ComposerHandle {
   /** Read a specific draft without changing the active input. */
   getDraft(draftKey: string): string;
   /** Append to a specific session draft without replacing newer text. */
-  appendDraft?(draftKey: string, text: string): void;
+  appendDraft(draftKey: string, text: string, references?: readonly InlineReference[], replacesMessageId?: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
   /** Open the active Session's existing account-and-model picker. */
@@ -278,6 +279,7 @@ export interface ComposerHandle {
 }
 
 export interface ComposerSendMetadata {
+  replacesLocalMessageId?: string;
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
   followUpMode?: FollowUpMode;
 }
@@ -354,6 +356,8 @@ export const Composer = forwardRef<
       text: string,
       metadata?: ComposerSendMetadata,
     ): boolean | void | Promise<boolean | void>;
+    /** Retain this render's send context before any asynchronous preparation. */
+    retainSendContext?(): () => void;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onPickDirectory?(): void | Promise<void>;
@@ -669,18 +673,30 @@ export const Composer = forwardRef<
   /** A caret-to-end owed to an editor that was not focused when it came due. */
   const caretPendingRef = useRef(false);
   const redrawPendingRef = useRef(false);
+  const restoredReferencesRef = useRef<readonly InlineReference[]>([]);
   const textPortRef = useRef<ComposerTextPort>(null);
   if (!textPortRef.current) {
     textPortRef.current = {
       getValue: () => textRef.current,
       setValue: (value: string) => {
         applyText(value);
+        restoredReferencesRef.current = [];
         caretToEndRef.current = true;
         redrawPendingRef.current = true;
       },
     };
   }
   const textPort = textPortRef.current;
+  function readDraftReferences(): readonly InlineReference[] {
+    if (redrawPendingRef.current) return restoredReferencesRef.current;
+    const editable = editableNode();
+    if (!editable) return [];
+    const value = textRef.current;
+    const leading = value.length - value.trimStart().length;
+    return workspaceFileReferencePositions(editable).map((reference) => ({
+      ...reference, kind: 'workspace_file' as const, label: inlineReferenceFileBasename(reference.value.slice(1)), start: reference.start + leading,
+    }));
+  }
   /**
    * ChatComposerInput restores the caret to the end of the content when a
    * controlled update lands on a *focused* editor, so callers that want the old
@@ -833,25 +849,30 @@ export const Composer = forwardRef<
    */
   function redrawSkillTokens(): boolean {
     if (compositionActiveRef.current) return false;
-    const skills = props.mentionSkills;
-    if (!skills?.length) return false;
+    const skills = props.mentionSkills ?? [];
     const draft = textRef.current;
-    if (!draft.includes('/skill:')) return false;
+    const restored = restoredReferencesRef.current;
+    if (!draft.includes('/skill:') && restored.length === 0) return false;
     const editable = editableNode();
     const node = editable?.firstChild;
     if (!editable || editable.childNodes.length !== 1) return false;
     if (!(node instanceof Text) || node.data !== draft) return false;
     const byId = new Map(skills.map((skill) => [skill.id.toLowerCase(), skill]));
-    const matches = [...draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))];
+    const references: InlineReference[] = [
+      ...restored.filter((reference) => reference.kind !== 'skill'),
+      ...[...draft.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].flatMap((match) => {
+        const skill = byId.get(match[1].toLowerCase());
+        return skill ? [{ kind: 'skill' as const, value: match[0], label: skill.name, start: match.index }] : [];
+      }),
+    ].filter((reference) => draft.slice(reference.start, reference.start + reference.value.length) === reference.value)
+      .sort((a, b) => a.start - b.start);
     const selection = document.getSelection();
     if (!selection) return false;
     let redrew = false;
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const match = matches[i];
-      const skill = byId.get(match[1].toLowerCase());
-      if (!skill) continue;
-      const start = match.index;
-      let end = start + match[0].length;
+    for (let i = references.length - 1; i >= 0; i--) {
+      const reference = references[i];
+      const start = reference.start;
+      let end = start + reference.value.length;
       const next = draft[end];
       if (next === ' ' || next === '\u00A0') end += 1;
       const range = document.createRange();
@@ -860,10 +881,11 @@ export const Composer = forwardRef<
       selection.removeAllRanges();
       selection.addRange(range);
       inputHandleRef.current?.insertToken(
-        inlineReferenceToken({ kind: 'skill', value: match[0], label: skill.name }),
+        inlineReferenceToken(reference),
       );
       redrew = true;
     }
+    restoredReferencesRef.current = [];
     return redrew;
   }
   /**
@@ -912,11 +934,16 @@ export const Composer = forwardRef<
     getDraft,
     appendDraft,
     activeDraftKey,
+    replacementMessageId,
+    consumeReplacement,
   } = useComposerDraft({
     text: textPort,
     draftKey: props.draftKey,
     onDraftKeyChange: resetPromptHistoryNavigation,
     persistence: props.draftPersistence,
+    hasPendingContext: Boolean(props.pendingAttachments?.length || props.pendingQuotes?.length
+      || props.pendingDirectories?.length || props.pendingSessionReferences?.length),
+    references: { read: readDraftReferences, write: (references) => { restoredReferencesRef.current = references; } },
   });
   const { resetNavigation, rememberSentEntry, handleArrowKey } = useComposerHistory({
     text: textPort,
@@ -1358,13 +1385,12 @@ export const Composer = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
-      setText(nextText: string) {
+      setText(nextText: string, references?: readonly InlineReference[]) {
         resetPromptHistoryNavigation();
         // Focus first: the controlled update that follows restores the caret to
         // the end of the new content only when the editor already has focus.
         focusInput();
-        textPort.setValue(nextText);
-        saveCurrentDraft(nextText);
+        setDraft(activeDraftKey(), nextText, references);
       },
       appendText(nextText: string) {
         resetPromptHistoryNavigation();
@@ -1392,12 +1418,12 @@ export const Composer = forwardRef<
       getDraft(draftKey: string) {
         return getDraft(draftKey);
       },
-      appendDraft(draftKey: string, nextText: string) {
-        const next = appendDraft(draftKey, nextText);
-        if (activeDraftKey() !== draftKey) return;
-        resetPromptHistoryNavigation();
-        focusInput();
-        textPort.setValue(next);
+      appendDraft(draftKey: string, nextText: string, references?: readonly InlineReference[], replacesMessageId?: string) {
+        if (activeDraftKey() === draftKey) {
+          resetPromptHistoryNavigation();
+          focusInput();
+        }
+        appendDraft(draftKey, nextText, references, replacesMessageId);
       },
       focus() {
         focusInput();
@@ -1433,16 +1459,22 @@ export const Composer = forwardRef<
     const editable = editableNode();
     const workspaceFileReferences = editable ? workspaceFileReferencePositions(editable) : [];
     const submittedDraftKey = activeDraftKey();
+    const replacesLocalMessageId = replacementMessageId(submittedDraftKey);
     sendPendingRef.current = true;
     setSendPending(true);
     let sent: boolean | void;
+    let releaseSendContext: (() => void) | undefined;
     try {
+      // A picked Session can still be loading. Capture ownership before that
+      // wait so removing a chip cannot revoke this send's attachment snapshot.
+      releaseSendContext = props.retainSendContext?.();
       if (props.waitForSessionReference) {
         const referenceReady = await props.waitForSessionReference();
         if (!referenceReady) return;
       }
       if (!composerMountedRef.current || activeDraftKey() !== submittedDraftKey) return;
       const metadata: ComposerSendMetadata = {
+        ...(replacesLocalMessageId ? { replacesLocalMessageId } : {}),
         ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
         ...(followUpMode ? { followUpMode } : {}),
       };
@@ -1450,16 +1482,20 @@ export const Composer = forwardRef<
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);
+      releaseSendContext?.();
     }
     if (!composerMountedRef.current) return;
     if (sent === false) return;
+    // Admission already replaced the paused original. New text typed while
+    // awaiting it remains a fresh draft, even when it prevents text clearing.
+    consumeReplacement(submittedDraftKey, replacesLocalMessageId);
     // Save to both local ref and global persistence so the history
     // survives page reloads and is shared across all input surfaces.
     rememberSentEntry(text);
     // The owner may have changed while onSend awaited (new-session creation,
     // revision branch, or user navigation). Never erase a foreign draft.
     if (activeDraftKey() !== submittedDraftKey) {
-      clearDraft(submittedDraftKey);
+      if (composerWireText(getDraft(submittedDraftKey)) === text) clearDraft(submittedDraftKey);
       return;
     }
     // The user can begin the next message while the send IPC is still

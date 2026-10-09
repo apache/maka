@@ -65,6 +65,7 @@ export interface ComposerMentions {
   readonly sessionReferences: ReadonlyArray<SessionReferenceSession>;
   readonly onPickSessionReference?: (session: SessionReferenceSession) => Promise<void>;
   readonly pendingSessionReferences: ReadonlyArray<SessionReferenceSession>;
+  hasPendingSessionReferences(): boolean;
   onRemovePendingSessionReference(sessionId: string): void;
   readonly sessionReferenceError?: { title: string; detail: string };
   waitForSessionReference(): Promise<boolean>;
@@ -303,6 +304,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     onPickSessionReference:
       referenceEnabled ? reference.pick : undefined,
     pendingSessionReferences: reference.pendingReferences,
+    hasPendingSessionReferences: reference.hasPendingReferences,
     onRemovePendingSessionReference: reference.removePendingReference,
     sessionReferenceError: reference.error,
     waitForSessionReference: reference.waitForPending,
@@ -311,6 +313,7 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     liveCatalog.settled,
     liveCatalog.skills,
     reference.error,
+    reference.hasPendingReferences,
     reference.pick,
     reference.pendingReferences,
     reference.removePendingReference,

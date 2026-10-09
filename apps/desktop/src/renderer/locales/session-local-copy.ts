@@ -19,46 +19,69 @@
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
-interface SessionLocalCopy {
-  saved: string;
-  unknown: string;
-  failed: string;
-  edit: string;
-  remove: string;
-  check: string;
-  updateError: string;
-}
-
+const en = {
+  saved: 'Waiting to send',
+  paused: 'Sending paused', resume: 'Continue sending',
+  pausedDetail: 'The original is saved. Edit it again to recover it after a restart. Clear the draft to discard edits; sending stays paused until you choose Continue sending.',
+  restoreUnavailable: 'Unable to restore the draft. The original is saved and paused. Try editing it again.',
+  resumeBlocked: 'Clear the draft, attachments and quotes before continuing to send the original message.',
+  removeBlocked: 'Unable to delete this paused message right now. Try again when the composer is available and has no draft, attachments or references.',
+  unknown: 'Delivery not confirmed', failed: 'Message not sent', checking: 'Checking delivery',
+  offline: 'Waiting for a connection',
+  remove: 'Delete failed message', cancel: 'Cancel sending', check: 'Check delivery',
+  edit: 'Edit and resend', busy: 'Updating message', diagnostics: 'Delivery details',
+  editUnsent: 'Edit', removeUnsent: 'Delete unsent message',
+  failedDetail: 'Edit this message to send it again. Deleting it does not stop a running reply.',
+  unknownDetail: 'This message may have arrived. Check its delivery before sending it again.',
+  retryDetail: 'Delivery will be checked again automatically when connected.',
+  savedDetail: 'Saved on this device. It will send when delivery is available.',
+  updateError: 'Unable to update this message. Its saved copy is still available.',
+  draftBlocked: 'Finish or clear the current draft, attachments and quotes before editing this message.',
+  draftReady: 'Ready to edit. The failed message is kept until you delete it.',
+};
+type SessionLocalCopy = { [K in keyof typeof en]: string };
 const catalog = {
-  en: {
-    saved: 'Waiting to send',
-    unknown: 'Delivery unconfirmed. Do not send again.',
-    failed: 'Could not send · message kept',
-    edit: 'Edit',
-    remove: 'Delete unsent message',
-    check: 'Check delivery',
-    updateError: 'Unable to update the saved message',
-  },
+  en,
   'zh-CN': {
     saved: '等待发送',
-    unknown: '暂时无法确认是否送达，请勿重复发送',
-    failed: '未能发送 · 消息已保留',
-    edit: '编辑',
-    remove: '删除未发送的消息',
-    check: '检查是否送达',
-    updateError: '无法更新已保存的消息',
+    paused: '已暂停发送', resume: '继续发送',
+    pausedDetail: '原消息已保存，重启后可再次编辑恢复。清空草稿即可放弃修改；只有选择“继续发送”才会发送原消息。',
+    restoreUnavailable: '无法恢复到输入框，原消息已保存并暂停发送，请再次编辑。',
+    resumeBlocked: '请先清空草稿、附件和引用，再继续发送原消息。',
+    removeBlocked: '暂时无法删除这条暂停消息。请在输入框可用，且没有草稿、附件或引用时重试。',
+    unknown: '发送结果待确认', failed: '消息未发送', checking: '正在确认发送结果',
+    offline: '等待连接恢复',
+    remove: '删除失败消息', cancel: '取消发送', check: '确认发送结果',
+    edit: '编辑后重发', busy: '正在更新消息', diagnostics: '发送详情',
+    editUnsent: '编辑', removeUnsent: '删除未发送的消息',
+    failedDetail: '可以编辑后重新发送。删除这条消息不会停止正在进行的回复。',
+    unknownDetail: '这条消息可能已送达。再次发送前，请先确认发送结果。',
+    retryDetail: '连接可用时会自动再次确认发送结果。',
+    savedDetail: '已保存在此设备上，将在可以发送时继续发送。',
+    updateError: '无法更新这条消息，已保存的内容仍然保留。',
+    draftBlocked: '请先完成或清空输入框中的草稿、附件和引用，再编辑这条消息。',
+    draftReady: '已恢复到输入框，可编辑后发送。失败消息会保留，直到你删除它。',
   },
   'zh-TW': {
     saved: '等待傳送',
-    unknown: '暫時無法確認是否送達，請勿重複傳送',
-    failed: '無法傳送 · 訊息已保留',
-    edit: '編輯',
-    remove: '刪除未傳送的訊息',
-    check: '檢查是否送達',
-    updateError: '無法更新已儲存的訊息',
+    paused: '已暫停傳送', resume: '繼續傳送',
+    pausedDetail: '原訊息已儲存，重新啟動後可再次編輯恢復。清空草稿即可放棄修改；只有選擇「繼續傳送」才會傳送原訊息。',
+    restoreUnavailable: '無法恢復到輸入框，原訊息已儲存並暫停傳送，請再次編輯。',
+    resumeBlocked: '請先清空草稿、附件和引用，再繼續傳送原訊息。',
+    removeBlocked: '暫時無法刪除這則暫停訊息。請在輸入框可用，且沒有草稿、附件或引用時重試。',
+    unknown: '傳送結果待確認', failed: '訊息未傳送', checking: '正在確認傳送結果',
+    offline: '等待連線恢復',
+    remove: '刪除失敗訊息', cancel: '取消傳送', check: '確認傳送結果',
+    edit: '編輯後重送', busy: '正在更新訊息', diagnostics: '傳送詳情',
+    editUnsent: '編輯', removeUnsent: '刪除未傳送的訊息',
+    failedDetail: '可以編輯後重新傳送。刪除這則訊息不會停止正在進行的回覆。',
+    unknownDetail: '這則訊息可能已送達。再次傳送前，請先確認傳送結果。',
+    retryDetail: '連線可用時會自動再次確認傳送結果。',
+    savedDetail: '已儲存在此裝置上，將在可以傳送時繼續傳送。',
+    updateError: '無法更新這則訊息，已儲存的內容仍然保留。',
+    draftBlocked: '請先完成或清空輸入框中的草稿、附件和引用，再編輯這則訊息。',
+    draftReady: '已恢復到輸入框，可編輯後傳送。失敗訊息會保留，直到你刪除它。',
   },
 } satisfies UiCatalog<SessionLocalCopy>;
 
-export function getSessionLocalCopy(locale: UiLocale): SessionLocalCopy {
-  return catalog[locale];
-}
+export function getSessionLocalCopy(locale: UiLocale): SessionLocalCopy { return catalog[locale]; }

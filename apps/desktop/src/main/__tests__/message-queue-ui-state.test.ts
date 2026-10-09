@@ -18,8 +18,16 @@
  */
 
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { IpcMainInvokeEvent } from 'electron';
+import { DesktopSessionLocalStore } from '../session-local-store.js';
+import { DesktopSessionLocalService, registerDesktopSessionLocalIpc, type DesktopSessionLocalTarget } from '../session-local-service.js';
+import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
+import type { MessageQueueEntryProjection } from '@maka/core/events';
 import {
   LocaleProvider,
   ToastProvider,
@@ -37,7 +45,429 @@ import { createAppShellSessionUiStateController } from '../../renderer/features/
 
 afterEach(cleanupFakeDom);
 
-test('local delivery recovery cannot republish accepted Host queue rows', async () => {
+function localDeliveryHarness(initial: readonly DesktopLocalMessage[]) {
+  const { root } = installReactRenderer();
+  const snapshots = new Map<string, readonly DesktopLocalMessage[]>([['session-1', initial]]);
+  const transient = new Map<string, TransientUserMessageProjection>();
+  const published: string[] = [];
+  const retired: string[] = [];
+  const restored: Array<[string, RestoredDraftContent]> = [];
+  const draftState = { empty: true, available: true };
+  const released: string[] = [];
+  let changed: (sessionId: string) => void = () => {};
+  const services = stubConversationServices({
+    listMessages: async (sessionId) => snapshots.get(sessionId) ?? [],
+    readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
+    releaseRecoveryAttachments: async (ids) => { released.push(...ids); },
+    subscribeChanges: (handler) => { changed = handler; return () => {}; },
+    cancelMessage: async () => {}, reconcileMessage: async () => {},
+    sessions: {
+      readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
+      readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
+    },
+    runtimeHosts: { subscribeChanges: () => () => {} },
+    skills: { listInvocable: async () => [] },
+    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
+    newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
+    mcp: { subscribeChanges: () => () => {} },
+  });
+  const publish = (sessionId: string, message: TransientUserMessageProjection) => {
+    const key = `${sessionId}:${message.id}`;
+    published.push(key);
+    const current = transient.get(key);
+    transient.set(key, current ? mergeTransientMessageProjection(current, message) : message);
+  };
+  const update = (sessionId: string, message: TransientUserMessageProjection) => {
+    const key = `${sessionId}:${message.id}`;
+    const current = transient.get(key);
+    if (current) transient.set(key, mergeTransientMessageProjection(current, message));
+  };
+  const retire = (sessionId: string, messageId: string) => {
+    const key = `${sessionId}:${messageId}`;
+    retired.push(key);
+    transient.delete(key);
+  };
+  return {
+    snapshots, transient, published, retired, restored, services, retire, draftState, released,
+    refresh: async (sessionId: string) => act(async () => changed(sessionId)),
+    render: async (sessionId: string, queue: readonly MessageQueueEntryProjection[] = [], runningTurnIds: readonly string[] = []) => {
+      await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
+        createElement(ConversationServicesProvider, { services, children: createElement(SessionLocalMessages, {
+          sessionId, queue, session: { runningTurnIds }, publish, update, retire,
+          canRestoreDraft: () => draftState.empty,
+          restoreUnsentDraft: (id, draft) => {
+            if (!draftState.available) return false;
+            restored.push([id, draft]); return true;
+          },
+          restoreDraft: () => { throw new Error('Failed-message drafts are not used in this test'); },
+        }) }),
+      })));
+    },
+  };
+}
+
+test('navigation during unsent editing releases the unused approval without deleting the original', async () => {
+  const message: DesktopLocalMessage = {
+    sessionId: 'session-1', messageId: 'unsent', createdAt: 1, state: 'saved', canCancel: true,
+    placement: 'next_turn', text: 'display summary', attachments: [], inlineReferences: [],
+  };
+  const harness = localDeliveryHarness([message]);
+  let complete!: (draft: import('../../shared/session-local-contract.js').DesktopLocalMessageDraft) => void;
+  let calls = 0;
+  harness.services.cancelMessage = async (id, messageId, options) => {
+    assert.equal(id, 'session-1'); assert.equal(messageId, 'unsent');
+    assert.deepEqual(options, { restoreDraft: true }); calls++;
+    return new Promise((resolve) => { complete = resolve; });
+  };
+  await harness.render('session-1');
+  const edit = harness.transient.get('session-1:unsent')!.deliveryActions![0]!;
+  let pending: void | Promise<void>;
+  await act(async () => { pending = edit.onClick(); edit.onClick(); });
+  assert.equal(calls, 1, 'same-tick activation is guarded before React renders');
+  assert.deepEqual(harness.restored, [], 'nothing is restored until cancellation succeeds');
+  await harness.render('session-2');
+  const draft = {
+    messageId: 'unsent', text: 'full original input', attachments: [],
+    stagedAttachments: [{ approvalId: 'local-recovery:unsent', name: 'note.txt', size: 14 }],
+    directoryReferences: [], quotes: [], inlineReferences: [],
+  };
+  await act(async () => { complete(draft); await pending; });
+  assert.deepEqual(harness.restored, []);
+  assert.deepEqual(harness.released, ['local-recovery:unsent']);
+  assert.equal(harness.transient.has('session-1:unsent'), true);
+  harness.snapshots.set('session-1', [{ ...message, state: 'paused' }]);
+  await harness.render('session-1');
+  assert.equal(harness.transient.get('session-1:unsent')?.deliveryStatus, 'Sending paused');
+});
+
+for (const refusal of ['unmounted', 'new-draft'] as const) {
+  test(`unsent restoration refused by ${refusal} retains paused recovery actions`, async () => {
+    const harness = localDeliveryHarness([{
+      sessionId: 'session-1', messageId: 'unsent', createdAt: 1, state: 'saved', canCancel: true,
+      placement: 'next_turn', text: 'original', attachments: [], inlineReferences: [],
+    }]);
+    harness.services.cancelMessage = async () => {
+      if (refusal === 'unmounted') harness.draftState.available = false;
+      else harness.draftState.empty = false;
+      return { messageId: 'unsent', text: 'original', attachments: [], directoryReferences: [], quotes: [], inlineReferences: [],
+        stagedAttachments: [{ approvalId: 'local-recovery:unused', name: 'note.txt', size: 1 }] };
+    };
+    let resumes = 0;
+    harness.services.resumeMessage = async () => { resumes++; };
+    await harness.render('session-1');
+    await act(async () => { await harness.transient.get('session-1:unsent')!.deliveryActions![0]!.onClick(); });
+    const row = () => harness.transient.get('session-1:unsent')!;
+    assert.deepEqual(harness.restored, []);
+    assert.deepEqual(harness.released, ['local-recovery:unused']);
+    assert.equal(row().deliveryStatus, 'Sending paused');
+    assert.match(row().deliveryDetail!, refusal === 'unmounted' ? /Unable to restore/ : /current draft/);
+    assert.deepEqual(row().deliveryActions!.map((action) => action.label), ['Edit', 'Continue sending', 'Delete unsent message']);
+    assert.equal(resumes, 0, 'a refused restore never resumes automatically');
+    harness.draftState.empty = false;
+    await act(async () => { await row().deliveryActions![1]!.onClick(); });
+    assert.equal(resumes, 0, 'an edited draft must be discarded before sending the original');
+    harness.draftState.empty = true;
+    assert.equal(resumes, 0, 'discarding edits alone keeps sending paused');
+    await act(async () => { await row().deliveryActions![1]!.onClick(); });
+    assert.equal(resumes, 1);
+  });
+}
+
+for (const text of ['original text', '']) {
+  test(`deleting an edited paused original is blocked and its ${text ? 'text and attachment' : 'attachment-only'} replacement remains sendable`, async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-paused-delete-'));
+    const store = new DesktopSessionLocalStore(join(directory, 'client.sqlite'));
+    const target: DesktopSessionLocalTarget = {
+      partition: 'authority', profileId: 'profile', scope: { hostId: 'root', targetEpoch: 'target' },
+    };
+    const service = new DesktopSessionLocalService(store, { targets: () => [target], changed() {}, onError: assert.fail });
+    t.after(async () => { service.close(); store.close(); await rm(directory, { recursive: true, force: true }); });
+    const staged = [{ name: 'note.txt', mimeType: 'text/plain', base64: Buffer.from('retained bytes').toString('base64') }];
+    store.enqueue(target.partition, {
+      command: { sessionId: 'session-1', messageId: 'original', placement: 'next_turn', content: { text } }, staged,
+    });
+    type Ipc = Parameters<typeof registerDesktopSessionLocalIpc>[0]['ipcMain'];
+    const handlers = new Map<string, Parameters<Ipc['handle']>[1]>();
+    registerDesktopSessionLocalIpc({
+      ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler); } },
+      service, approvals: createAttachmentApprovalRegistry(), resizeImage: async (bytes) => bytes,
+      resolveWorkspace: async () => { throw new Error('Unexpected workspace request'); }, changed() {},
+    });
+    const event = { sender: { id: 7 } } as IpcMainInvokeEvent;
+    const harness = localDeliveryHarness(service.listMessages(target, 'session-1'));
+    let deletes = 0;
+    harness.services.cancelMessage = async (sessionId, messageId, options) => {
+      if (!options?.restoreDraft) deletes++;
+      return handlers.get('session-local:cancel')!(event, target.scope, sessionId, messageId, options);
+    };
+    await harness.render('session-1');
+    const action = (label: string) => harness.transient.get('session-1:original')!.deliveryActions!.find((item) => item.label === label)!;
+    await act(async () => { await action('Edit').onClick(); });
+    // The live context changes without a render, including a bodyless attachment edit.
+    harness.draftState.empty = false;
+    await act(async () => { await action('Delete unsent message').onClick(); });
+    assert.equal(deletes, 0);
+    assert.equal(store.get(target.partition, 'original')?.state, 'paused');
+    const storedBytes = (messageId: string) => store.stagedAttachments(target.partition, messageId)
+      .map(({ content, ...metadata }) => ({ ...metadata, base64: Buffer.from(content).toString('base64') }));
+    assert.deepEqual(storedBytes('original'), staged);
+    const blockedDetail = harness.transient.get('session-1:original')!.deliveryDetail!;
+    assert.match(blockedDetail, /Unable to delete this paused message/);
+    assert.match(blockedDetail, /composer is available and has no draft, attachments or references/);
+    const draft = harness.restored[0]![1];
+    const sent = await handlers.get('session-local:submit')!(event, target.scope, 'session-1', 'next_turn', {
+      messageId: 'edited', text, replacesLocalMessageId: draft.replacesLocalMessageId,
+      attachmentItems: draft.stagedAttachments,
+    });
+    assert.equal(sent.ok, true);
+    assert.equal(store.get(target.partition, 'original'), undefined);
+    assert.equal(store.get(target.partition, 'edited')?.state, 'saved');
+    assert.deepEqual(storedBytes('edited'), staged);
+  });
+}
+
+test('a paused original can be deleted after the draft and context are cleared', async () => {
+  const harness = localDeliveryHarness([{
+    sessionId: 'session-1', messageId: 'paused', createdAt: 1, state: 'paused', canCancel: true,
+    placement: 'next_turn', text: 'original', attachments: [], inlineReferences: [],
+  }]);
+  let deletes = 0;
+  harness.services.cancelMessage = async () => { deletes++; };
+  await harness.render('session-1');
+  const remove = () => harness.transient.get('session-1:paused')!.deliveryActions!.find((item) => item.label === 'Delete unsent message')!;
+  harness.draftState.empty = false;
+  await act(async () => { await remove().onClick(); });
+  assert.equal(deletes, 0);
+  harness.draftState.empty = true;
+  await act(async () => { await remove().onClick(); });
+  assert.equal(deletes, 1);
+  assert.equal(harness.transient.has('session-1:paused'), false);
+});
+
+test('a failed unsent withdrawal leaves the row and draft untouched', async () => {
+  const harness = localDeliveryHarness([{
+    sessionId: 'session-1', messageId: 'unsent', createdAt: 1, state: 'saved', canCancel: true,
+    placement: 'next_turn', text: 'keep', attachments: [], inlineReferences: [],
+  }]);
+  harness.services.cancelMessage = async () => { throw new Error('Host claimed the message'); };
+  await harness.render('session-1');
+  await act(async () => { await harness.transient.get('session-1:unsent')!.deliveryActions![0]!.onClick(); });
+  assert.deepEqual(harness.restored, []);
+  assert.equal(harness.transient.has('session-1:unsent'), true);
+  assert.match(harness.transient.get('session-1:unsent')!.deliveryDetail!, /Unable to update/);
+});
+
+for (const admission of ['followup', 'steering'] as const) {
+  test(`an accepted ${admission} first seen without its Host queue stays retired until a definite failure`, async () => {
+    const accepted: DesktopLocalMessage = {
+      sessionId: 'session-1', messageId: 'accepted', createdAt: 1,
+      state: 'accepted', admission, canCancel: false,
+      placement: admission === 'steering' ? 'current_turn' : 'next_turn',
+      text: 'Host owns this queued message', attachments: [], inlineReferences: [],
+    };
+    const root: DesktopLocalMessage = {
+      ...accepted, messageId: 'root', text: 'keep the started prompt',
+      turnId: 'root-turn', admission: 'turn_started', localDisplayPlacement: 'current_turn',
+    };
+    const harness = localDeliveryHarness([accepted, root]);
+    await harness.render('session-1', []);
+    assert.deepEqual([...harness.transient.keys()], ['session-1:root'], 'a durable queue receipt is not an actionable local queue row');
+    assert.deepEqual(harness.published, ['session-1:root'], 'never publish the orphan even on the first snapshot');
+    assert.equal(harness.transient.get('session-1:root')?.hostTurnId, 'root-turn');
+    assert.equal(harness.transient.get('session-1:root')?.transientPlacement, 'transcript');
+    await harness.refresh('session-1');
+    assert.deepEqual([...harness.transient.keys()], ['session-1:root']);
+    harness.snapshots.set('session-1', [{ ...accepted, state: 'failed', canCancel: true }, root]);
+    await harness.refresh('session-1');
+    const recovered = harness.transient.get('session-1:accepted');
+    assert.equal(recovered?.deliveryStatus, 'Message not sent');
+    assert.deepEqual(recovered?.deliveryActions?.map((action) => action.label), ['Edit and resend', 'Delete failed message']);
+    assert.equal(harness.transient.size, 2, 'handoff is not a durable deletion tombstone');
+  });
+}
+
+test('a durable cancellation without a Turn retires its local row on the next snapshot', async () => {
+  const message: DesktopLocalMessage = {
+    sessionId: 'session-1', messageId: 'cancelled-without-turn', createdAt: 1,
+    state: 'saved', canCancel: true, placement: 'next_turn',
+    text: 'cancel this saved message', attachments: [], inlineReferences: [],
+  };
+  const harness = localDeliveryHarness([message]);
+  await harness.render('session-1');
+  assert.equal(harness.transient.size, 1);
+  // Stop can remove the durable row without a rootTurnId, and therefore
+  // without any queue, transcript, or message_admission retirement event.
+  harness.snapshots.set('session-1', []);
+  await harness.refresh('session-1');
+  assert.equal(harness.transient.size, 0, 'an empty durable snapshot retires the local placeholder');
+  assert.deepEqual(harness.retired, ['session-1:cancelled-without-turn']);
+  await harness.refresh('session-1');
+  assert.deepEqual(harness.retired, ['session-1:cancelled-without-turn'], 'unchanged empty snapshots do not repeat retirement');
+  harness.snapshots.set('session-1', [message]);
+  await harness.refresh('session-1');
+  assert.equal(harness.transient.size, 0, 'a later stale row cannot recreate a retired message');
+  harness.snapshots.set('session-1', [{ ...message, state: 'failed' }]);
+  await harness.refresh('session-1');
+  assert.equal(harness.transient.size, 0, 'a stale failure is not a new recovery transition after durable deletion');
+  assert.deepEqual(harness.published, ['session-1:cancelled-without-turn']);
+});
+
+for (const initiallyQueued of [false, true]) {
+  test(`a queue handoff can recover a definite failure without duplicate rows (initially queued: ${initiallyQueued})`, async () => {
+    const message: DesktopLocalMessage = {
+      sessionId: 'session-1', messageId: 'not-admitted', createdAt: 1,
+      state: 'accepted', canCancel: false, placement: 'next_turn',
+      text: 'recover this message', attachments: [], inlineReferences: [],
+    };
+    const queue: MessageQueueEntryProjection[] = [{
+      entryId: 'entry-not-admitted', messageId: message.messageId,
+      content: { text: message.text }, placement: 'next_turn', state: 'queued',
+    }];
+    const harness = localDeliveryHarness([message]);
+    await harness.render('session-1', initiallyQueued ? queue : []);
+    await harness.render('session-1', queue);
+    assert.equal(harness.transient.size, 0, 'Host queue ownership retires the local placeholder');
+    await harness.render('session-1');
+    assert.equal(harness.transient.size, 0, 'queue removal alone does not recreate the local row');
+    if (initiallyQueued) await harness.render('session-2');
+    const failed: DesktopLocalMessage = { ...message, state: 'failed', canCancel: true };
+    harness.snapshots.set('session-1', [failed]);
+    if (initiallyQueued) await harness.render('session-1');
+    else await harness.refresh('session-1');
+    const recovered = harness.transient.get('session-1:not-admitted');
+    assert.equal(recovered?.deliveryStatus, 'Message not sent');
+    assert.deepEqual(recovered?.deliveryActions?.map((action) => action.label), ['Edit and resend', 'Delete failed message']);
+    assert.deepEqual([...harness.transient.keys()], ['session-1:not-admitted'], 'recovery owns exactly one row for this message identity');
+    await harness.refresh('session-1');
+    await harness.render('session-2');
+    await harness.render('session-1');
+    assert.deepEqual([...harness.transient.keys()], ['session-1:not-admitted'], 'refreshes and Session switching cannot duplicate the failure');
+    harness.services.cancelMessage = async () => { harness.snapshots.set('session-1', []); };
+    const remove = harness.transient.get('session-1:not-admitted')?.deliveryActions?.find((action) => action.label === 'Delete failed message');
+    assert.ok(remove);
+    await act(async () => remove.onClick());
+    assert.equal(harness.transient.size, 0, 'explicit deletion retires the recovered failure');
+    const publishedBeforeStaleSnapshot = harness.published.length;
+    harness.snapshots.set('session-1', [failed]);
+    await harness.refresh('session-1');
+    await harness.render('session-2');
+    await harness.render('session-1');
+    assert.equal(harness.transient.size, 0, 'a stale failure cannot undo deletion, including across Session switching');
+    assert.equal(harness.published.length, publishedBeforeStaleSnapshot, 'deleted failures never publish again');
+  });
+}
+
+test('a late Host retraction cannot hide a failed draft already settled by the local delivery worker', async () => {
+  const failed: DesktopLocalMessage = {
+    sessionId: 'session-1', messageId: 'already-not-admitted', createdAt: 1,
+    state: 'failed', canCancel: true, placement: 'next_turn',
+    text: 'keep this failed draft recoverable', attachments: [], inlineReferences: [],
+  };
+  const harness = localDeliveryHarness([failed]);
+  const controller = createAppShellSessionUiStateController();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'en', activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true, refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
+    removeTransientMessage: harness.retire,
+    showModelSetupToast() {}, toastApi: { error() {} },
+  });
+  // Cross-epoch recovery can settle the durable row before the independent
+  // observer resolves a removed queue entry for the same message identity.
+  await harness.render('session-1');
+  assert.equal(harness.transient.get('session-1:already-not-admitted')?.deliveryStatus, 'Message not sent');
+  handlers.handleEvent('session-1', {
+    type: 'message_admission', outcome: 'retracted', id: 'late-not-admitted',
+    messageId: failed.messageId, turnId: 'previous-turn', ts: 2,
+  });
+  await harness.refresh('session-1');
+  assert.equal(harness.transient.get('session-1:already-not-admitted')?.deliveryStatus, 'Message not sent',
+    'a current failed snapshot must still expose the recovery actions after a late retraction');
+});
+
+test('durable snapshot retirement preserves Host queue and live Turn handoffs', async () => {
+  const messages: DesktopLocalMessage[] = ['queued', 'started'].map((messageId) => ({
+    sessionId: 'session-1', messageId, createdAt: 1,
+    state: messageId === 'queued' ? 'unknown' : 'accepted', canCancel: false,
+    text: messageId, attachments: [], inlineReferences: [], placement: 'next_turn',
+    ...(messageId === 'started' ? { turnId: 'turn-1', admission: 'steering' as const } : {}),
+  }));
+  const harness = localDeliveryHarness(messages);
+  const controller = createAppShellSessionUiStateController();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'en', activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true, refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
+    removeTransientMessage: harness.retire,
+    showModelSetupToast() {}, toastApi: { error() {} },
+  });
+  await harness.render('session-1');
+  const queue: MessageQueueEntryProjection[] = [{
+    entryId: 'entry-queued', messageId: 'queued', content: { text: 'queued' }, placement: 'next_turn', state: 'queued',
+  }];
+  handlers.handleEvent('session-1', {
+    type: 'queue_update', id: 'queue-update', turnId: 'turn-1', ts: 2,
+    steering: [], followup: ['queued'], steeringEntries: [], followupEntries: queue,
+  });
+  await harness.render('session-1', controller.getState().messageQueueBySession['session-1']?.entries, ['turn-1']);
+  assert.deepEqual([...harness.transient.keys()], ['session-1:started']);
+  handlers.handleEvent('session-1', {
+    type: 'steering_message', id: 'steering-started', messageId: 'started',
+    turnId: 'turn-1', ts: 3, content: { text: 'started' },
+  });
+  const liveTurn = controller.getState().liveTurnBySession['session-1'];
+  assert.equal(liveTurn?.[0]?.steps[0]?.steering?.id, 'started');
+  harness.snapshots.set('session-1', []);
+  await harness.refresh('session-1');
+  assert.equal(harness.transient.size, 0);
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1']?.entries, queue, 'durable cleanup does not remove a live Host queue entry');
+  assert.equal(controller.getState().liveTurnBySession['session-1'], liveTurn, 'retirement only affects the transient layer');
+  harness.snapshots.set('session-1', messages);
+  await harness.refresh('session-1');
+  await harness.render('session-1', [], ['turn-1']);
+  assert.equal(harness.transient.size, 0, 'queue disappearance cannot recreate either handed-off row');
+  assert.deepEqual(harness.published, ['session-1:queued', 'session-1:started']);
+});
+
+test('durable snapshot retirement is isolated from another Session and stale requests', async () => {
+  const message: DesktopLocalMessage = {
+    sessionId: 'session-1', messageId: 'same-id', createdAt: 1,
+    state: 'saved', canCancel: true, placement: 'next_turn',
+    text: 'first Session', attachments: [], inlineReferences: [],
+  };
+  const harness = localDeliveryHarness([message]);
+  await harness.render('session-1');
+  const listMessages = harness.services.listMessages;
+  let completeOldSnapshot!: (messages: readonly DesktopLocalMessage[]) => void;
+  harness.services.listMessages = async () => new Promise((resolve) => { completeOldSnapshot = resolve; });
+  await harness.refresh('session-1');
+  harness.services.listMessages = listMessages;
+  harness.snapshots.set('session-2', [{ ...message, sessionId: 'session-2', text: 'second Session' }]);
+  await harness.render('session-2');
+  await act(async () => completeOldSnapshot([]));
+  assert.equal(harness.transient.get('session-2:same-id')?.text, 'second Session');
+  assert.deepEqual(harness.retired, [], 'a late snapshot from the old Session cannot retire either Session');
+  harness.snapshots.set('session-2', []);
+  await harness.refresh('session-2');
+  assert.deepEqual([...harness.transient.keys()], ['session-1:same-id']);
+  assert.deepEqual(harness.retired, ['session-2:same-id']);
+  harness.snapshots.set('session-1', []);
+  await harness.render('session-1');
+  assert.equal(harness.transient.size, 0, 'returning to a Session reconciles rows deleted while it was inactive');
+  assert.deepEqual(harness.retired, ['session-2:same-id', 'session-1:same-id']);
+  harness.snapshots.set('session-2', [{ ...message, sessionId: 'session-2' }]);
+  await harness.render('session-2');
+  assert.equal(harness.transient.size, 0, 'switching Sessions cannot recreate a retired row from a stale snapshot');
+  assert.deepEqual(harness.published, ['session-1:same-id', 'session-2:same-id']);
+});
+
+test('local delivery recovery respects started Turns without republishing accepted Host queue rows', async () => {
   const { root } = installReactRenderer();
   const transient = new Map<string, TransientUserMessageProjection>();
   let changed!: (sessionId: string) => void;
@@ -53,8 +483,16 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   await act(async () => root.render(createElement(LocaleProvider, { locale: 'en', children:
     createElement(ConversationServicesProvider, { services: stubConversationServices({
       listMessages: async () => messages,
+      readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
+      releaseRecoveryAttachments: async () => {},
       subscribeChanges: (handler) => { changed = handler; return () => {}; },
-      cancelMessage: async (sessionId, messageId) => { cancelled.push([sessionId, messageId]); },
+      cancelMessage: async (sessionId, messageId, options) => {
+        cancelled.push([sessionId, messageId]);
+        if (options?.restoreDraft) return {
+          messageId, text: messageId, attachments: [], stagedAttachments: [],
+          directoryReferences: [], quotes: [], inlineReferences: [],
+        };
+      },
       reconcileMessage: async (sessionId, messageId) => { reconciled.push([sessionId, messageId]); },
     }), children: createElement(SessionLocalMessages, {
       sessionId: 'session-1',
@@ -62,13 +500,18 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
         const current = transient.get(message.id);
         transient.set(message.id, current ? mergeTransientMessageProjection(current, message) : message);
       },
+      update: (_id, message) => {
+        const current = transient.get(message.id);
+        if (current) transient.set(message.id, mergeTransientMessageProjection(current, message));
+      },
       retire: (_id, messageId) => { transient.delete(messageId); },
-      reportError: (message) => { throw new Error(message); },
-      restoreDraft: (sessionId, draft) => { restored.push([sessionId, draft.text]); },
+      canRestoreDraft: () => true,
+      restoreDraft: () => { throw new Error('unexpected failed recovery'); },
+      restoreUnsentDraft: (sessionId, draft) => { restored.push([sessionId, draft.text]); },
     }) }),
   })));
   const steering = transient.get('steering');
-  assert.equal(steering?.deliveryStatus, 'Delivery unconfirmed. Do not send again.');
+  assert.equal(steering?.deliveryStatus, 'Delivery not confirmed');
   assert.deepEqual(steering?.deliveryActions?.map((action) => action.label), ['Check delivery'],
     'an unconfirmed send offers only its receipt check, never cancellation');
   const placements = () => Object.fromEntries([...transient].map(([id, message]) => [id, message.transientPlacement]));
@@ -85,16 +528,23 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   assert.deepEqual(cancelled, [['session-1', 'followup']]);
   assert.deepEqual(restored, [['session-1', 'followup']],
     'editing a never-dispatched message returns its text to the composer');
-  assert.equal(transient.has('followup'), false, 'edit retires the local row');
+  assert.equal(transient.get('followup')?.deliveryStatus, 'Sending paused', 'edit keeps the original recoverable');
   messages = messages.filter((message) => message.messageId !== 'followup')
     .map((message) => ({ ...message, delivering: true }));
   await act(async () => changed('session-1'));
-  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a message Main will deliver shows nothing');
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a healthy send clears its previous delivery warning');
+  assert.equal(transient.get('root')?.deliveryDetail, undefined);
   assert.deepEqual(transient.get('root')?.deliveryActions, []);
   messages = messages.map((message) => ({ ...message, error: 'Saved locally. Waiting for the Host to become available.' }));
   await act(async () => changed('session-1'));
   assert.equal(transient.get('root')?.deliveryStatus, 'Waiting to send');
   assert.equal(transient.get('root')?.deliveryActions?.length, 2, 'a Host outage keeps the copy editable and removable');
+  assert.equal(transient.get('root')?.deliveryDiagnostic, messages[0]?.error);
+  messages = messages.map((message) => ({ ...message, state: 'sending' }));
+  await act(async () => changed('session-1'));
+  assert.equal(transient.get('root')?.deliveryStatus, undefined);
+  assert.equal(transient.get('root')?.deliveryDiagnostic, undefined);
+  assert.deepEqual(transient.get('root')?.deliveryActions, []);
   messages = messages.map((message) => ({ ...message, state: 'failed' }));
   await act(async () => changed('session-1'));
   assert.deepEqual(placements(), { steering: 'transcript', root: 'transcript' }, 'failed delivery moves nothing');
@@ -102,9 +552,91 @@ test('local delivery recovery cannot republish accepted Host queue rows', async 
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root']);
   assert.equal(transient.get('root')?.transientPlacement, 'transcript');
-  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'an accepted send shows only its time');
+  assert.equal(transient.get('root')?.hostTurnId, 'started-turn');
+  assert.equal(transient.get('root')?.deliveryStatus, undefined, 'a cached receipt does not claim the Turn is still running');
+  assert.deepEqual(transient.get('root')?.deliveryActions, []);
   await act(async () => changed('session-1'));
   assert.deepEqual([...transient.keys()], ['root'], 'a retained local copy cannot resurrect a withdrawn queue entry');
+});
+
+test('a Host-started follow-up moves to the transcript without inheriting stale local feedback', async () => {
+  const message: DesktopLocalMessage = {
+    sessionId: 'session-1', messageId: 'follow-up', createdAt: 1,
+    state: 'unknown', canCancel: false, placement: 'next_turn',
+    text: 'start this later', attachments: [], inlineReferences: [], error: 'Previous delivery was uncertain',
+  };
+  const harness = localDeliveryHarness([message]);
+  await harness.render('session-1');
+  assert.equal(harness.transient.get('session-1:follow-up')?.transientPlacement, 'follow_up');
+  assert.equal(harness.transient.get('session-1:follow-up')?.deliveryStatus, 'Delivery not confirmed');
+  harness.snapshots.set('session-1', [{ ...message, state: 'accepted', turnId: 'own-turn', admission: 'turn_started' }]);
+  await harness.refresh('session-1');
+  const admitted = harness.transient.get('session-1:follow-up');
+  assert.equal(admitted?.transientPlacement, 'transcript');
+  assert.equal(admitted?.hostTurnId, 'own-turn');
+  assert.equal(admitted?.deliveryStatus, undefined);
+  assert.equal(admitted?.deliveryDetail, undefined);
+  assert.equal(admitted?.deliveryDiagnostic, undefined);
+  assert.deepEqual(admitted?.deliveryActions, []);
+  assert.equal(admitted?.ts, 1);
+});
+
+test('a Host queue seeded before the first local snapshot owns accepted and uncertain messages', async () => {
+  const { root } = installReactRenderer();
+  const transient = new Map<string, TransientUserMessageProjection>();
+  let changed!: (sessionId: string) => void;
+  let resolveInitial!: (messages: readonly DesktopLocalMessage[]) => void;
+  const initial = new Promise<readonly DesktopLocalMessage[]>((resolve) => { resolveInitial = resolve; });
+  let messages: DesktopLocalMessage[] = ['accepted', 'unknown', 'followup', 'failed'].map((messageId) => ({
+    sessionId: 'session-1', messageId, createdAt: 1,
+    state: messageId === 'unknown' ? 'unknown' : messageId === 'failed' ? 'failed' : 'accepted',
+    canCancel: messageId === 'failed', text: messageId, attachments: [], inlineReferences: [],
+    placement: messageId === 'followup' ? 'next_turn' : 'current_turn',
+  }));
+  let first = true;
+  const services = stubConversationServices({
+    listMessages: async () => {
+      if (!first) return messages;
+      first = false;
+      return initial;
+    },
+    readFailedMessage: async () => { throw new Error('Failed-message drafts are not used in this test'); },
+    releaseRecoveryAttachments: async () => {},
+    subscribeChanges: (handler: (sessionId: string) => void) => { changed = handler; return () => {}; },
+    cancelMessage: async () => {}, reconcileMessage: async () => {},
+    sessions: {
+      readSnapshot: async () => { throw new Error('unexpected snapshot read'); },
+      readExecutionBoundary: async () => { throw new Error('unexpected boundary read'); },
+    },
+    runtimeHosts: { subscribeChanges: () => () => {} },
+    skills: { listInvocable: async () => [] },
+    workspace: { searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+    newTasks: { subscribeChanges: () => () => {}, listInvocableSkills: async () => [], searchFiles: async () => ({ ok: false as const, reason: 'no_project' as const }) },
+    mcp: { subscribeChanges: () => () => {} },
+  });
+  const queue = messages.filter((message) => message.state !== 'failed').map((message) => ({
+    entryId: `entry-${message.messageId}`, messageId: message.messageId,
+    content: { text: message.text }, placement: message.placement, state: 'queued' as const,
+  }));
+  const render = (entries: typeof queue) => createElement(LocaleProvider, { locale: 'en', children:
+    createElement(ConversationServicesProvider, { services, children: createElement(SessionLocalMessages, {
+      sessionId: 'session-1', queue: entries,
+      publish: (_id, message) => { transient.set(message.id, message); },
+      update: (_id, message) => { if (transient.has(message.id)) transient.set(message.id, message); },
+      retire: (_id, messageId) => { transient.delete(messageId); },
+      canRestoreDraft: () => true,
+      restoreDraft: () => { throw new Error('Failed-message drafts are not used in this test'); },
+    }) }),
+  });
+  await act(async () => root.render(render([])));
+  await act(async () => root.render(render(queue)));
+  await act(async () => resolveInitial(messages));
+  assert.deepEqual([...transient.keys()], ['failed'], 'a late local snapshot cannot duplicate Host-owned queue entries');
+
+  messages = messages.map((message) => message.state === 'unknown' ? { ...message, state: 'accepted' } : message);
+  await act(async () => root.render(render([])));
+  await act(async () => changed('session-1'));
+  assert.deepEqual([...transient.keys()], ['failed'], 'queue disappearance cannot republish handed-off messages or remove a failed draft');
 });
 
 test('queue_update stores the snapshot and retires every listed local placeholder', async () => {

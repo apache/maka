@@ -28,6 +28,7 @@ export interface ComposerStagingSubmission {
   readonly hasStagedQuotes: boolean;
   readonly submittableAttachments: readonly PendingAttachment[] | undefined;
   readonly directoryOptions: { readonly directoryReferences?: readonly DirectoryReference[] };
+  retainAttachments(pending: readonly PendingAttachment[] | undefined): () => void;
   quotesForSend(): QuoteRef[] | undefined;
   clearSubmittedContext(submitted?: readonly PendingAttachment[]): void;
   clearQuotes(): void;

@@ -124,7 +124,7 @@ function harness(options: {
     createElement(ToastProvider, { children:
       createElement(SessionCatalogContext.Provider, { value: catalog, children:
         createElement(ConversationServicesProvider, { services, children:
-          createElement(ConversationProvider, { children: withComposerSubmission(createElement(Shell)) }),
+          createElement(ConversationProvider, { children: withComposerSubmission(createElement(Shell), { conversationServices: services }) }),
         }),
       }),
     }),

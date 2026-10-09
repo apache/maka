@@ -23,6 +23,7 @@ import { useComposerAttachments } from '../controller/use-composer-attachments.j
 import { stagingBindings } from '../model/composer-staging-binding.js';
 import type { ComposerStagingCommands } from '../model/composer-staging-contract.js';
 import { useComposerStagingServices } from '../staging-services.js';
+import { captureComposerStaging } from '../controller/capture-composer-staging.js';
 import { ComposerStagingContext } from './composer-staging-context.js';
 
 /** Persistent draft owner. Its children are composed by the shell, never keyed
@@ -46,32 +47,14 @@ export function ComposerStagingProvider(props: {
     const binding = stagingBindings.get(props.commands);
     if (!binding) throw new Error('Unknown Composer staging commands');
     const commands: ComposerStagingCommands = {
-      captureSubmission: () => {
-        // Copy the mutable quote bucket at invocation, including synchronous
-        // session-reference additions before React has rendered again.
-        const quotes = staging.quotesForSend()?.slice();
-        return {
-          draftKey: props.draftKey,
-          hasPendingContext: staging.hasPendingContext,
-          hasStagedQuotes: Boolean(quotes?.length),
-          submittableAttachments: staging.submittableAttachments,
-          directoryOptions: staging.directoryOptions,
-          quotesForSend: () => quotes,
-          clearSubmittedContext: staging.clearSubmittedContext,
-          clearQuotes: () => staging.clearSubmittedQuotes(quotes ?? []),
-        };
-      },
+      captureSubmission: () => captureComposerStaging(staging, props.draftKey),
       addQuote: staging.addQuote,
       resetImageNotice: (key) => staging.imageNoticeLifecycle.reset(key),
       transferImageNotice: (from, to) => staging.imageNoticeLifecycle.transfer(from, to),
-      restoreContext: (draftKey, context) => {
-        if (context.attachments?.length) staging.restoreAttachments(draftKey, context.attachments);
-        if (context.directoryReferences?.length) staging.restoreDirectories(draftKey, context.directoryReferences);
-        if (context.quotes?.length) staging.restoreQuotes(draftKey, context.quotes);
-      },
+      restoreContext: staging.restoreQueuedDraftContext,
     };
     binding.current = commands;
     return () => { if (binding.current === commands) binding.current = undefined; };
   }, [props.commands, props.draftKey, staging]);
-  return <ComposerStagingContext.Provider value={staging}>{props.children}</ComposerStagingContext.Provider>;
+  return <ComposerStagingContext.Provider value={{ ...staging, draftKey: props.draftKey }}>{props.children}</ComposerStagingContext.Provider>;
 }

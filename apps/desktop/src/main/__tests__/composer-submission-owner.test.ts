@@ -28,7 +28,7 @@ import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
   AstryxLocaleProvider, LocaleProvider, ToastProvider,
-  type ComposerHandle, type ComposerInteraction, type ComposerProps, type LiveTurnBuffer, type TurnPresentation, type TurnViewModel,
+  type ComposerHandle, type ComposerInteraction, type ComposerProps, type ComposerSendMetadata, type LiveTurnBuffer, type TurnPresentation, type TurnViewModel,
 } from '@maka/ui';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import {
@@ -45,11 +45,13 @@ import {
   ConversationHomeSurface,
   ConversationLifecycle,
   ConversationProvider,
+  ComposerMentionsProvider,
   ConversationServicesProvider,
   ConversationTranscriptRegion,
   createComposerStagingCommands,
   createComposerSubmissionCommands,
   useAppShellSessionUiState,
+  useComposerMentionsContext,
   type ComposerSubmissionServices,
   type ConversationActivity,
 } from '../../renderer/features/conversation/index.js';
@@ -78,10 +80,12 @@ type ProviderProps = Parameters<typeof ComposerSubmissionProvider<Owner>>[0];
 
 interface RegionProps {
   composerRef: { current: Partial<ComposerHandle> | null };
-  onSend(text: string, metadata?: { followUpMode?: 'steer' | 'queue' }): Promise<boolean | void>;
+  onSend(text: string, metadata?: ComposerSendMetadata): Promise<boolean | void>;
   newTaskSendPending: boolean;
   revisionNotice?: { title: string; detail: string; cancelLabel: string; onCancel(): void };
   contextPickEnabled: boolean;
+  canStageContext: boolean;
+  allowAttachmentOnlySend?: boolean;
   directoryPickerEnabled: boolean;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
@@ -147,6 +151,7 @@ function harness(options: {
   listMessages?: ReturnType<typeof stubConversationServices>['listMessages'];
   resume?: ReturnType<typeof stubConversationServices>['resume'];
   cancelMessage?: ReturnType<typeof stubConversationServices>['cancelMessage'];
+  releaseRecoveryAttachments?: ReturnType<typeof stubConversationServices>['releaseRecoveryAttachments'];
   reconcileMessage?: ReturnType<typeof stubConversationServices>['reconcileMessage'];
   retractQueueEntry?: ReturnType<typeof stubConversationServices>['sessions']['retractQueueEntry'];
   stagingDraftKey?: string;
@@ -162,6 +167,7 @@ function harness(options: {
     ...(options.listMessages ? { listMessages: options.listMessages } : {}),
     ...(options.resume ? { resume: options.resume } : {}),
     ...(options.cancelMessage ? { cancelMessage: options.cancelMessage } : {}),
+    ...(options.releaseRecoveryAttachments ? { releaseRecoveryAttachments: options.releaseRecoveryAttachments } : {}),
     ...(options.reconcileMessage ? { reconcileMessage: options.reconcileMessage } : {}),
     ...(options.retractQueueEntry ? { sessions: { retractQueueEntry: options.retractQueueEntry } } : {}),
   });
@@ -199,8 +205,9 @@ function harness(options: {
   let activity: ConversationActivity | undefined;
   let staged!: ReturnType<typeof useComposerStaging>;
   let queued!: ReturnType<typeof useConversationQueue>;
+  let mentions!: NonNullable<ReturnType<typeof useComposerMentionsContext>>;
   let shellRenders = 0;
-  function Probe() { staged = useComposerStaging(); queued = useConversationQueue(); return null; }
+  function Probe() { staged = useComposerStaging(); queued = useConversationQueue(); mentions = useComposerMentionsContext()!; return null; }
   function Composer(props: RegionProps) { region = props; return null; }
   let transcriptRenders = 0;
   function Transcript(props: TranscriptProps) { transcript = props; transcriptRenders += 1; return null; }
@@ -233,8 +240,10 @@ function harness(options: {
       createElement(ConversationServicesProvider, { services: conversationServices, children:
         createElement(ConversationProvider, { children:
           createElement(ComposerStagingFixture, {
-            draftKey: options.stagingDraftKey ?? 'staging', directoryHostId: 'local', commands: staging, children:
+            draftKey: options.stagingDraftKey ?? 'staging', directoryHostId: 'local', commands: staging,
+            conversationServices, children:
             createElement(ComposerSubmissionServicesProvider, { services, children:
+              createElement(ComposerMentionsProvider, { sessionId: options.stagingDraftKey, skillCatalogRevision: 0, children:
               createElement(ComposerSubmissionProvider<Owner>, {
                 commands,
                 staging,
@@ -242,7 +251,10 @@ function harness(options: {
                 newTask: stubNewTaskSubmission(options.newTask),
                 sharedSessionActive: options.sharedSessionActive ?? false,
                 ownerSessionId: options.ownerSessionId,
+                recoveryEnabled: true,
+                directoryHostId: 'local',
                 children: createElement(Shell),
+              }),
               }),
             }),
           }),
@@ -262,6 +274,7 @@ function harness(options: {
     get transcriptRenders() { return transcriptRenders; },
     get staged() { return staged; },
     get queued() { return queued; },
+    get mentions() { return mentions; },
     homeSurface() {
       const column = container.childNodes.find((node): node is FakeElement => 'getAttribute' in node && node.getAttribute('id') === 'column');
       assert.ok(column, 'the column rendered');
@@ -289,6 +302,8 @@ describe('ComposerSubmissionProvider', () => {
     assert.equal(h.region.newTaskSendPending, false);
     assert.equal(h.region.executorPicker?.disabled, false);
     assert.equal(h.region.sendBlocked, false);
+    assert.equal(h.region.canStageContext, true);
+    assert.equal(h.region.allowAttachmentOnlySend, true);
 
     let sending!: Promise<boolean | void>;
     await act(async () => { sending = h.region.onSend('hello'); });
@@ -609,7 +624,7 @@ describe('ComposerSubmissionProvider', () => {
     assert.deepEqual(reconciled, [['A', 'saved-follow-up']], 'the check keeps the Message\'s identity');
   });
 
-  test('a cancelled local message hands its text and staged context back to the Session it left', async () => {
+  test('navigation during local editing keeps the original paused and releases unused recovery approvals', async () => {
     const cancelling = deferred<void>();
     const calls: unknown[] = [];
     const attachment = {
@@ -626,27 +641,113 @@ describe('ComposerSubmissionProvider', () => {
             quotes: [{ text: 'quoted' }], inlineReferences: [],
           }]
         : [],
-      cancelMessage: async (sessionId, messageId) => { calls.push(['cancel', sessionId, messageId]); await cancelling.promise; },
+      cancelMessage: async (sessionId, messageId, options) => {
+        calls.push(['pause', sessionId, messageId, options]);
+        await cancelling.promise;
+        return {
+          messageId, replacesLocalMessageId: messageId, text: 'try again', attachments: [attachment],
+          stagedAttachments: [{ approvalId: 'local-recovery:navigated', name: 'local.txt', size: 3 }],
+          directoryReferences: [{ hostId: 'local', path: '/repo' }], quotes: [{ text: 'quoted' }], inlineReferences: [],
+        };
+      },
+      releaseRecoveryAttachments: async (ids) => { calls.push(['release', ids]); },
     });
     await act(async () => h.target.setActiveId('A'));
     await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
     h.region.composerRef.current = {
+      getText: () => '',
       appendDraft: (key: string, text: string) => { calls.push(['append', key, text]); },
     } as Partial<ComposerHandle>;
     const saved = h.region.pendingMessages.find((message) => message.id === 'saved-1');
     const edit = saved?.deliveryActions?.[0];
     assert.ok(edit, 'a never-dispatched message offers Edit');
 
-    await act(async () => edit.onClick());
+    await act(async () => { void edit.onClick(); });
     await act(async () => h.target.setActiveId('B'));
     await act(async () => h.published[1]!([userTurn('turn-b', 'elsewhere')]));
     assert.equal(h.conversation.workspace.target.getSnapshot(), 'B', 'the user has moved on before the Host answers');
     await act(async () => cancelling.resolve());
-    assert.deepEqual(calls, [['cancel', 'A', 'saved-1'], ['append', 'A', 'try again']]);
-    assert.deepEqual(h.staged.pendingAttachments.map((item) => item.displayName), ['notes.md'],
-      'the attachment returns to the draft of the Session it left, after navigation');
-    assert.deepEqual(h.staged.pendingDirectories.map((item) => item.path), ['/repo']);
-    assert.deepEqual(h.staged.pendingQuotes.map((quote) => quote.text), ['quoted']);
+    assert.deepEqual(calls, [
+      ['pause', 'A', 'saved-1', { restoreDraft: true }], ['release', ['local-recovery:navigated']],
+    ], 'navigation refuses the stale restore without deleting the durable original');
+    assert.deepEqual(h.staged.pendingAttachments, []);
+    assert.deepEqual(h.staged.pendingDirectories, []);
+    assert.deepEqual(h.staged.pendingQuotes, []);
+  });
+
+  test('one recovery owner restores attachment approvals and sends the linked replacement', async () => {
+    const listed: string[] = [];
+    const calls: unknown[] = [];
+    let replacement: string | undefined;
+    let text = '';
+    const h = harness({
+      stagingDraftKey: 'A',
+      listMessages: async (sessionId) => {
+        listed.push(sessionId);
+        return [{ sessionId, messageId: 'original', createdAt: 1, state: 'saved', canCancel: true,
+          placement: 'next_turn', text: 'saved body', attachments: [], inlineReferences: [] }];
+      },
+      cancelMessage: async (sessionId, messageId, options) => {
+        calls.push(['pause', sessionId, messageId, options]);
+        return { messageId, replacesLocalMessageId: messageId, text: 'saved body', attachments: [],
+          stagedAttachments: [{ approvalId: 'local-recovery:submission-owner', name: 'local.txt', size: 3 }],
+          directoryReferences: [{ hostId: 'local', path: '/repo' }], quotes: [{ text: 'quoted' }], inlineReferences: [] };
+      },
+      services: { submitMessage: async (sessionId, placement, command) => {
+        calls.push(['submit', sessionId, placement, command.replacesLocalMessageId, command.text,
+          command.attachmentItems, command.directoryReferences, command.quotes]);
+        return { ok: true, disposition: 'locally_saved', attachments: [], inlineReferences: [],
+          skillInvocation: { loaded: [], failed: [], receipts: [] } };
+      } },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
+    h.region.composerRef.current = {
+      getText: () => text,
+      appendDraft: (key, restored, _references, replacesLocalMessageId) => {
+        assert.equal(key, 'A'); text = restored; replacement = replacesLocalMessageId;
+      },
+    };
+    const action = (label: string) => h.region.pendingMessages.find((message) => message.id === 'original')!
+      .deliveryActions!.find((entry) => entry.label === label)!;
+    await act(async () => action('Edit').onClick());
+    assert.deepEqual(listed, ['A'], 'only one local recovery instance reads the Session');
+    assert.equal(replacement, 'original');
+    assert.deepEqual(h.staged.pendingAttachments.map((item) => item.source),
+      [{ type: 'approval', approvalId: 'local-recovery:submission-owner', name: 'local.txt' }]);
+    await act(async () => action('Delete unsent message').onClick());
+    assert.equal(calls.length, 1, 'the shared staging owner prevents deleting the edited original');
+    await act(async () => {
+      assert.equal(await h.region.onSend(text, { replacesLocalMessageId: replacement }), true);
+    });
+    assert.deepEqual(calls, [
+      ['pause', 'A', 'original', { restoreDraft: true }],
+      ['submit', 'A', 'next_turn', 'original', 'saved body',
+        [{ approvalId: 'local-recovery:submission-owner', name: 'local.txt', mimeType: 'application/octet-stream' }],
+        [{ hostId: 'local', path: '/repo' }], [{ text: 'quoted' }]],
+    ]);
+  });
+
+  test('pending session references block paused-original deletion through the submission owner', async () => {
+    let deletions = 0;
+    const h = harness({
+      stagingDraftKey: 'A',
+      listMessages: async (sessionId) => [{ sessionId, messageId: 'paused', createdAt: 1, state: 'paused', canCancel: true,
+        placement: 'next_turn', text: 'original', attachments: [], inlineReferences: [] }],
+      cancelMessage: async () => { deletions++; return undefined; },
+    });
+    await act(async () => h.target.setActiveId('A'));
+    await act(async () => h.published[0]!([userTurn('turn-1', 'earlier')]));
+    h.region.composerRef.current = { getText: () => '' };
+    await act(async () => h.mentions.onPickSessionReference!({ id: 'B', name: 'B' }));
+    assert.equal(h.mentions.hasPendingSessionReferences(), true);
+    const remove = () => h.region.pendingMessages.find((message) => message.id === 'paused')!
+      .deliveryActions!.find((entry) => entry.label === 'Delete unsent message')!;
+    await act(async () => remove().onClick());
+    assert.equal(deletions, 0);
+    await act(async () => h.mentions.onRemovePendingSessionReference('B'));
+    await act(async () => remove().onClick());
+    assert.equal(deletions, 1, 'an available empty composer still allows deletion');
   });
 
   test('editing a queued steering bubble hands its staged context back to its Session', async () => {
@@ -657,6 +758,9 @@ describe('ComposerSubmissionProvider', () => {
     });
     await act(async () => h.target.setActiveId('A'));
     await act(async () => h.published[0]!([userTurn('turn-1', 'running')]));
+    h.region.composerRef.current = {
+      appendDraft: (sessionId, text) => { calls.push(['append', sessionId, text]); },
+    };
     await act(async () => h.conversation.workspace.ui.setMessageQueueBySession((current) => ({
       ...current,
       A: {
@@ -670,7 +774,7 @@ describe('ComposerSubmissionProvider', () => {
     const bubble = h.queued.transientMessages.find((message) => message.id === 'message-steer');
     assert.ok(bubble?.deliveryActions?.[0], 'the steering bubble offers Edit');
     await act(async () => bubble.deliveryActions![0]!.onClick());
-    assert.deepEqual(calls, [['retract', 'A', 'entry-1']]);
+    assert.deepEqual(calls, [['retract', 'A', 'entry-1'], ['append', 'A', 'steer this way']]);
     assert.deepEqual(h.staged.pendingQuotes.map((quote) => quote.text), ['queued quote']);
   });
 
@@ -914,7 +1018,7 @@ describe('Desktop Composer submission adapter', () => {
     } as unknown as DesktopComposerSubmissionBridge;
     const services = createDesktopComposerSubmissionServices(bridge);
     const target = { profileId: 'local', hostId: 'host', projectId: null };
-    await services.submitMessage('s', 'next_turn', { messageId: 'm', text: 't' }, { waitForHostAdmission: true });
+    await services.submitMessage('s', 'next_turn', { messageId: 'm', text: 't', replacesLocalMessageId: 'original' }, { waitForHostAdmission: true });
     await services.createNewTask(target, { name: 'New' });
     await services.removeUnsentSession('s');
     await services.reviseBeforeTurn('s', { sourceTurnId: 'turn', copyId: 'copy' });
@@ -924,7 +1028,7 @@ describe('Desktop Composer submission adapter', () => {
     await services.respondToSandboxBoundary('s', { requestId: 'b' } as SandboxBoundaryResponse);
     await services.respondToUserQuestion('s', { requestId: 'q' } as UserQuestionResponse);
     assert.deepEqual(calls, [
-      ['sessions.submitMessage', 's', 'next_turn', { messageId: 'm', text: 't' }, { waitForHostAdmission: true }],
+      ['sessions.submitMessage', 's', 'next_turn', { messageId: 'm', text: 't', replacesLocalMessageId: 'original' }, { waitForHostAdmission: true }],
       ['newTasks.create', target, { name: 'New' }],
       ['sessions.remove', 's'],
       ['sessions.reviseBeforeTurn', 's', { sourceTurnId: 'turn', copyId: 'copy' }],
@@ -957,6 +1061,11 @@ describe('Composer submission ownership', () => {
 
   test('mounts one owner and reaches the Host through one adapter', () => {
     assert.deepEqual(sourcesMatching(/<(?:Conversation\.)?ComposerSubmissionProvider\b/), ['app-shell.tsx']);
+    assert.deepEqual(sourcesMatching(/<StagedLocalMessages\b/), ['features/conversation/ui/composer-submission-provider.tsx']);
+    assert.deepEqual(sourcesMatching(/<SessionLocalMessages\b/), ['features/conversation/ui/staged-local-messages.tsx']);
+    const shell = readFileSync(join(rendererRoot, 'app-shell.tsx'), 'utf8');
+    assert.match(shell, /render=\{renderComposerMentionsProvider\(composerMentionsSurface\)\}[\s\S]*<Conversation\.ComposerSubmissionProvider/,
+      'recovery must read the same pending references as the Composer');
     assert.deepEqual(sourcesMatching(/create-composer-submission-services/), ['composition/desktop-feature-services.tsx']);
     // Workbar and WorkHub keep their own adapters for their own Composers.
     const hostCalls = sourcesMatching(

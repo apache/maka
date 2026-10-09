@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { InlineReference } from '@maka/core/events';
 import { useToast, useUiLocale } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '@maka/ui/pending-items';
@@ -86,17 +86,6 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     shellCopy: getShellCopy(uiLocale).app,
     uiLocale,
   });
-  // A withdrawn send — an edited queue entry or a cancelled local message —
-  // hands its staged context back under the key of the Session it left, so the
-  // restore lands there even after navigation; the text goes through the
-  // editor's keyed draft beside it.
-  useLayoutEffect(() => {
-    const slot = queue.draftContextRestorer;
-    const restore: NonNullable<typeof slot.current> = (sessionId, draft) => staging.restoreContext(sessionId, draft);
-    slot.current = restore;
-    return () => { if (slot.current === restore) slot.current = undefined; };
-  }, [queue, staging]);
-
   // Held for the whole of a send; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
@@ -278,14 +267,6 @@ export function useComposerSubmission<Owner extends ComposerSurfaceOwner>(input:
     shellCommands,
     reader,
     turnReader,
-    // Local delivery recovery publishes into, and restores drafts for, the
-    // Session the Composer shows.
-    localMessages: {
-      publish: commands.addTransientMessage,
-      retire: commands.removeTransientMessage,
-      reportError: toastApi.error,
-      restoreDraft: queue.restoreDraft,
-    },
     revisionWatch: {
       sessionIds: [revisionDraft?.sourceSessionId, revisionDraft?.draftSessionId] as const,
       onRows: retireRevisionDraftIfRowsLeave,

@@ -40,6 +40,7 @@ import {
 } from '@maka/runtime-host/profile-kind';
 import { AttachmentIngestBlockedError, MAX_ATTACHMENT_DROP_COUNT } from '@maka/core/attachments';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
+import { projectLocalMessageDraft } from './session-local-draft.js';
 import { createRecallSearchClient } from './multi-host-recall-search.js';
 import { releaseSessionObservation } from './session-observation-release.js';
 import {
@@ -1530,6 +1531,15 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
   },
 }, browserDocumentId);
 
+async function releaseLocalRecoveryAttachments(approvalIds: readonly string[]): Promise<void> {
+  // Disposal must not wait for the currently selected Host: the owning draft
+  // may already have been abandoned during a target switch or disconnect.
+  const ids = [...new Set(approvalIds)];
+  for (let offset = 0; offset < ids.length; offset += 1000) {
+    await ipcRenderer.invoke('session-local:release-attachments', ids.slice(offset, offset + 1000));
+  }
+}
+
 const makaBridge = {
   clientPlugins: createClientPluginRouting({
     activeScope: activeRuntimeHostRef,
@@ -2244,14 +2254,40 @@ const makaBridge = {
 
   },
   sessionLocal: {
+    async readFailedMessage(sessionId, messageId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      const draft = await ipcRenderer.invoke('session-local:edit', session.scope, session.sessionId, messageId) as import('../shared/session-local-contract.js').DesktopLocalMessageDraft;
+      try {
+        return { ...projectLocalMessageDraft(draft), attachments: projectDesktopAttachmentRefs(session.scope, draft.attachments) };
+      } catch (error) {
+        const ids = Array.isArray(draft?.stagedAttachments) ? draft.stagedAttachments.flatMap((item) =>
+          typeof item?.approvalId === 'string' ? [item.approvalId] : []) : [];
+        await releaseLocalRecoveryAttachments(ids).catch(() => undefined);
+        throw error;
+      }
+    },
+    releaseRecoveryAttachments: releaseLocalRecoveryAttachments,
     async listMessages(sessionId) {
       const session = await runtimeHostSessionRef(sessionId);
       const records = await invokeWhenReady('session-local:messages', session.scope, session.sessionId) as import('../shared/session-local-contract.js').DesktopLocalMessage[];
       return records.map((record) => ({ ...record, sessionId, attachments: projectDesktopAttachmentRefs(session.scope, record.attachments) }));
     },
-    async cancelMessage(sessionId, messageId) {
+    async cancelMessage(sessionId, messageId, options) {
       const session = await runtimeHostSessionRef(sessionId);
-      await invokeWhenReady('session-local:cancel', session.scope, session.sessionId, messageId);
+      const draft = await invokeWhenReady('session-local:cancel', session.scope, session.sessionId, messageId, options) as import('../shared/session-local-contract.js').DesktopLocalMessageDraft | undefined;
+      if (!options?.restoreDraft || !draft) return;
+      try {
+        return { ...projectLocalMessageDraft(draft), attachments: projectDesktopAttachmentRefs(session.scope, draft.attachments) };
+      } catch (error) {
+        const ids = Array.isArray(draft?.stagedAttachments) ? draft.stagedAttachments.flatMap((item) =>
+          typeof item?.approvalId === 'string' ? [item.approvalId] : []) : [];
+        await releaseLocalRecoveryAttachments(ids).catch(() => undefined);
+        throw error;
+      }
+    },
+    async resumeMessage(sessionId, messageId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      await invokeWhenReady('session-local:resume', session.scope, session.sessionId, messageId);
     },
     async reconcileMessage(sessionId, messageId) {
       const session = await runtimeHostSessionRef(sessionId);
@@ -2355,7 +2391,9 @@ const makaBridge = {
     },
     async submitMessage(sessionId, placement, command, options) {
       const session = await runtimeHostSessionRef(sessionId);
-      const { localDisplayPlacement, ...submitCommand } = command;
+      const { localDisplayPlacement, replacesLocalMessageId, ...submitCommand } = command;
+      if (replacesLocalMessageId && options?.waitForHostAdmission)
+        throw new Error('A paused local message must be replaced through local admission');
       if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
         throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
       }
@@ -2377,6 +2415,7 @@ const makaBridge = {
         placement,
         {
           ...submitCommand,
+          ...(replacesLocalMessageId ? { replacesLocalMessageId } : {}),
           ...(!options?.waitForHostAdmission && localDisplayPlacement ? { localDisplayPlacement } : {}),
           ...(command.retainedAttachments ? { retainedAttachments: hostAttachmentRefs(session, command.retainedAttachments) } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
