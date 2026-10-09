@@ -95,7 +95,7 @@ const ERROR_SENTENCES: Record<ComputerUseErrorCode, string> = {
   outcome_unknown: 'The executor connection was lost. Observe before another action.',
   dispatch_refused: 'The target refused this action. Observe before trying another route.',
   foreground_required:
-    'The background action could not reach this window. Explain which application and action need brief foreground access, ask the user in conversation, and wait for an explicit reply before retrying with foreground delivery.',
+    'The background action could not reach this window. Observe again and retry this one action with foreground delivery; Maka asks the user to approve it first.',
 };
 
 const BEFORE_DISPATCH = new Set<ComputerUseErrorCode>([
@@ -188,12 +188,44 @@ function screenshot(result: CuaDriverResult, structured: RecordValue): CuScreens
   };
 }
 
+/**
+ * Cua returns every menu of the bar. Keep the titles, plus the commands of the
+ * one menu the model asked to open.
+ */
+function projectMenuBar(
+  elements: CuObservation['elements'],
+  menu: string | undefined,
+): { elements: CuObservation['elements']; opened?: string } {
+  const bar = elements.find((element) => element.role === 'AXMenuBar');
+  if (!bar) return { elements };
+  const titles = elements.filter((element) => element.parentElementId === bar.elementId);
+  const wanted = menu?.trim().toLowerCase();
+  const opened =
+    wanted === undefined
+      ? undefined
+      : titles.find((title) => title.label?.trim().toLowerCase() === wanted);
+  const shown = new Set(opened ? [opened.elementId] : []);
+  const closed = new Set(titles.map((title) => title.elementId).filter((id) => !shown.has(id)));
+  const removed = new Set<string>();
+  for (const element of elements) {
+    const parent = element.parentElementId;
+    if (parent === undefined || shown.has(element.elementId)) continue;
+    if (shown.has(parent)) shown.add(element.elementId);
+    else if (closed.has(parent) || removed.has(parent)) removed.add(element.elementId);
+  }
+  return {
+    elements: elements.filter((element) => !removed.has(element.elementId)),
+    ...(opened?.label ? { opened: opened.label } : {}),
+  };
+}
+
 function refusalCode(result: CuaDriverResult): ComputerUseErrorCode | undefined {
   const payload = result.structuredContent;
   const code = string(object(payload?.refusal)?.code) ?? string(payload?.code);
   switch (code) {
     case 'stale_element_token':
     case 'stale_snapshot':
+    case 'element_outside_target_window':
       return 'stale_frame';
     case 'window_target_not_found':
     case 'element_not_found':
@@ -315,7 +347,7 @@ export function createCuaDriverBackend(options: CuaDriverBackendOptions): CuDisp
     if (!nativeSnapshotId) throw new Error('capture_failed');
     const observationId = randomUUID();
     const tokens = new Map<string, string>();
-    const elements = (Array.isArray(structured.elements) ? structured.elements : [])
+    const walked = (Array.isArray(structured.elements) ? structured.elements : [])
       .map(object)
       .filter((element): element is RecordValue => !!element)
       .map((element) => {
@@ -324,10 +356,11 @@ export function createCuaDriverBackend(options: CuaDriverBackendOptions): CuDisp
         if (index === undefined || !token) return undefined;
         const elementId = String(index);
         tokens.set(elementId, token);
+        const role = string(element.role) ?? 'unknown';
         const frame = object(element.frame);
         return {
           elementId,
-          role: string(element.role) ?? 'unknown',
+          role,
           ...(string(element.label) ? { label: string(element.label) } : {}),
           ...(string(element.value) ? { value: string(element.value) } : {}),
           ...(typeof element.enabled === 'boolean' ? { enabled: element.enabled } : {}),
@@ -337,7 +370,12 @@ export function createCuaDriverBackend(options: CuaDriverBackendOptions): CuDisp
             ? {
                 actions: element.actions
                   .map((value) => SECONDARY_ACTIONS[String(value)])
-                  .filter((value): value is string => !!value && value !== 'press'),
+                  .filter(
+                    (value): value is string =>
+                      !!value &&
+                      value !== 'press' &&
+                      !(role.startsWith('AXMenu') && (value === 'pick' || value === 'cancel')),
+                  ),
               }
             : {}),
           ...(number(element.parent_index) !== undefined
@@ -359,13 +397,17 @@ export function createCuaDriverBackend(options: CuaDriverBackendOptions): CuDisp
             : {}),
           identity: {
             token,
-            role: string(element.role) ?? 'unknown',
+            role,
             label: string(element.label),
             value: string(element.value),
           },
         };
       })
       .filter((element): element is NonNullable<typeof element> => !!element);
+    const { elements, opened } = projectMenuBar(walked, input.menu);
+    const shown = new Set(elements.map((element) => element.elementId));
+    for (const elementId of tokens.keys()) if (!shown.has(elementId)) tokens.delete(elementId);
+    const truncated = structured.truncated === true || structured.elements_complete === false;
     const appId =
       string(appRows.find((app) => number(app.pid) === pid)?.bundle_id) ??
       string(structured.app_name) ??
@@ -401,8 +443,10 @@ export function createCuaDriverBackend(options: CuaDriverBackendOptions): CuDisp
       capturedAt: Date.now(),
       ...(windowBounds ? { windowBounds } : {}),
       ...(shot ? { screenshot: shot } : {}),
-      ...(input.menu ? { menu: { unavailable: true } } : {}),
-      truncated: structured.truncated === true || structured.elements_complete === false,
+      ...(input.menu
+        ? { menu: { ...(opened ? { opened } : {}), ...(truncated ? { truncated } : {}) } }
+        : {}),
+      truncated,
       elements,
     };
   }

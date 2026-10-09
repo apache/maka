@@ -41,7 +41,7 @@ import {
 } from '@maka/core/computer-use';
 import { redactSecrets } from '@maka/core/redaction';
 import { renderObservationForModel } from './computer-use-observation-text.js';
-import type { MakaTool } from './tool-runtime.js';
+import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 import {
   bindCuaActionToObservation,
   bindCuaSemanticActionToObservation,
@@ -134,7 +134,7 @@ export const computerWireParams = z
     action: z
       .enum(CU_TOOL_ACTION_TYPES as unknown as [string, ...string[]])
       .describe(
-        'Operation to perform. Required fields by action: list_apps takes an optional app to filter by — pass the name you were given ("TextEdit", "文本编辑") and it returns the matching app ids, which is far cheaper than listing everything; without it only apps that currently have a window are listed; launch_app requires app; observe/screenshot require app or window_id, and observe takes an optional query to show only the matching part of a large window; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; secondary_action requires observation_id, element_id, and text; scroll_element requires observation_id, element_id, and scroll_direction, with optional scroll_amount; element_sequence requires observation_id and steps, where each step names a control by the label it shows and optionally its role — prefer it whenever several controls must be operated in order, since it costs one call instead of one per control; window_action supports move and resize with position or size, respectively, and requires observation_id plus the window element_id. select_text and window_action=minimize are unavailable with the bundled Cua Driver. Coordinate input is not part of the production action space.',
+        'Operation to perform. Required fields by action: list_apps takes an optional app to filter by — pass the name you were given ("TextEdit", "文本编辑") and it returns the matching app ids, which is far cheaper than listing everything; without it only apps that currently have a window are listed; launch_app requires app; observe/screenshot require app or window_id, and observe takes an optional menu to open one menu bar menu and an optional query to show only the matching part of a large window; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; secondary_action requires observation_id, element_id, and text; scroll_element requires observation_id, element_id, and scroll_direction, with optional scroll_amount; element_sequence requires observation_id and steps, where each step names a control by the label it shows and optionally its role — prefer it whenever several controls must be operated in order, since it costs one call instead of one per control; window_action supports move and resize with position or size, respectively, and requires observation_id plus the window element_id. select_text and window_action=minimize are unavailable with the bundled Cua Driver. Coordinate input is not part of the production action space.',
       ),
     // "Exact" was already in this description and was not enough. On a real
     // desktop chain the model asked for "Calculator" and got nothing, because
@@ -173,7 +173,14 @@ export const computerWireParams = z
       .max(256)
       .optional()
       .describe(
-        'Menu bar expansion is unavailable with the bundled Cua Driver. Use controls present in the observed element tree.',
+        'For observe: the title of one menu bar menu to open, exactly as the observation lists it ' +
+          '("文件", "Format"). An observation lists the menu titles when the executor walks the menu bar; ' +
+          "this lists one menu's commands, and they can then be clicked with click_element like any other " +
+          'element. Most of what an application can do is a menu command and nothing in the window reaches it. ' +
+          'Open the one menu you need — the whole menu bar is several times the size of the window. A command ' +
+          'shown as disabled usually needs its application in front. ' +
+          'An observation that answers menu_bar=unavailable came from an executor that does not report the menu ' +
+          'bar at all, and no menu command is reachable there however the argument is spelled.',
       ),
     wait_for_text: z
       .string()
@@ -220,7 +227,7 @@ export const computerWireParams = z
       .enum(['background', 'foreground'])
       .optional()
       .describe(
-        'For click_element, secondary_action, scroll_element, press_key, type, and key. Defaults to background. Foreground may be needed when background reports foreground_required, or when background is unverifiable and a fresh observation proves the intended effect did not occur. First explain the application, window, and exact action to the user in conversation and wait for explicit agreement. Then re-observe and retry only that action with foreground delivery; it briefly activates the target and restores the previous app.',
+        'For click_element, secondary_action, scroll_element, press_key, type, and key. Defaults to background. Use foreground only when background reports foreground_required, or when background is unverifiable and a fresh observation proves the intended effect did not occur. Maka asks the user to approve each foreground call before it runs; it briefly activates the target and restores the previous app.',
       ),
     element_id: z
       .string()
@@ -811,6 +818,36 @@ export function buildComputerUseTools(deps: {
     return {
       text: `${tool} failed: ${reason} — ${SESSION_BLOCK_RECOVERY[reason]}`,
       error: reason,
+    };
+  }
+
+  async function foregroundRefusal(
+    input: ComputerParams,
+    sessionId: string,
+    requestUserForm: MakaToolContext['requestUserForm'],
+    signal: AbortSignal,
+  ): Promise<ComputerToolResult | undefined> {
+    const record = observations.get(sessionId);
+    const app = record?.appAlias ?? record?.appId ?? 'the observed application';
+    const elementId = 'element_id' in input ? input.element_id : undefined;
+    const label = elementId ? record?.elements?.get(elementId)?.label : undefined;
+    const answer = await requestUserForm?.(
+      {
+        message:
+          `Bring ${app} to the front for one ${input.action}` +
+          `${label ? ` on “${label}”` : ''}? ` +
+          'It briefly activates the app, then returns to the app you were using.',
+        requester: { name: 'Computer Use' },
+        fields: [],
+      },
+      { cancellationSignal: signal },
+    );
+    if (answer?.action === 'accept') return undefined;
+    return {
+      text:
+        `maka_computer.${input.action} failed: policy_denied — the user did not allow foreground delivery ` +
+        'for this action. Do not ask again for the same action; continue in the background or report what could not be done.',
+      error: 'policy_denied',
     };
   }
 
@@ -1558,9 +1595,12 @@ export function buildComputerUseTools(deps: {
       // window, and a background application has none. Two models spent nine and
       // four calls respectively re-sending `cmd+p` and `ctrl+f2` into that
       // silence, because nothing told them it could not arrive.
-      'Try every action in the background first. If the executor reports foreground_required, or a fresh observation proves an unverifiable background action had no effect, explain the application, window, and exact action to the user in conversation and wait for explicit agreement. Then observe again and retry only that action with delivery_mode=foreground; it briefly activates the target and restores the previous app. There is no automatic foreground retry. ' +
+      'A menu shortcut — cmd+P, cmd+S, cmd+W, ctrl+F2 and the like — cannot reach an application that is not ' +
+      'frontmost, because macOS routes it through the frontmost window. ' +
+      'Use the menu observation and click its returned command instead. ' +
+      'Try every action in the background first. If the executor reports foreground_required, or a fresh observation proves an unverifiable background action had no effect, observe again and retry only that action with delivery_mode=foreground. Maka asks the user to approve that one call; it briefly activates the target and restores the previous app. There is no automatic foreground retry. ' +
       'A "+name,name" suffix lists what that element accepts as a secondary_action, and an element with no suffix ' +
-      'offers nothing beyond click_element that this executor knows of. Menu bar expansion is unavailable. ' +
+      'offers nothing beyond click_element that this executor knows of. ' +
       '[focused] marks where a key sent without an element_id will land, when the executor reports focus. ' +
       'Coordinate mutation is not part of the Computer Use action space. Use click_element, set_value, ' +
       'scroll_element, secondary_action, window_action or element_sequence; if those cannot express the task, report the capability gap. ' +
@@ -1625,7 +1665,7 @@ export function buildComputerUseTools(deps: {
     },
     impl: async (
       args,
-      { abortSignal, sessionId, turnId, toolCallId, emitProgress },
+      { abortSignal, sessionId, turnId, toolCallId, emitProgress, requestUserForm },
     ): Promise<ComputerToolResult> => {
       if (abortSignal.aborted) return { text: 'computer aborted before start' };
       const input = snapshotComputerParams(computerParams.parse(args));
@@ -1635,6 +1675,10 @@ export function buildComputerUseTools(deps: {
       // of the record, not a value, and every path below would have typed it.
       const replayed = withheldValueReplayed(input);
       if (replayed) return replayed;
+      if ('delivery_mode' in input && input.delivery_mode === 'foreground') {
+        const refused = await foregroundRefusal(input, sessionId, requestUserForm, abortSignal);
+        if (refused) return refused;
+      }
       const invocationGeneration = presentationGenerations.get(sessionId) ?? 0;
       const releasePendingInvocation = trackPendingInvocation(sessionId, turnId);
       try {

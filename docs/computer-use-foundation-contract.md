@@ -35,7 +35,7 @@ owners:
 适用范围：Desktop foundation；CLI 仅实验性 opt-in；Eval subject 通过 Runtime Host 继承同一边界
 目的：定义 stacked PR 不可破坏的合同与验证门。
 
-更换 native executor 后，下述 WebContent generation、稳定元素身份、键盘 ownership、真实设备恢复路径仍需针对 Cua Driver 重新验证。当前实现用 Cua 的 snapshot token 和 Maka Runtime Host 的 observation claim 阻止旧动作重放，但不能据此声称已满足这些更强的条款。前台使用目前由 Agent 在对话中申请并等待用户回复；Maka 尚无独立的前台授权状态，因此这是一项 Agent 行为约定，而非宿主强制审批。
+更换 native executor 后，下述稳定元素身份、键盘 ownership、真实设备恢复路径仍需针对 Cua Driver 重新验证。当前实现用 Cua 的 snapshot token 和 Maka Runtime Host 的 observation claim 阻止旧动作重放，但不能据此声称已满足这些更强的条款。WebContent 已在真实 Safari 上验证到失败即拒绝：观察后页面导航，再按旧 token 点击，Cua 返回 `element_outside_target_window`，新页面没有收到点击。前台投递由宿主逐次确认：带 `delivery_mode: foreground` 的调用在派发前弹出确认表单，用户接受才执行；拒绝、取消或所在界面没有表单能力都按 `policy_denied` 拒绝，不留存授权。
 
 外部证据参考（不属于本仓库）：
 

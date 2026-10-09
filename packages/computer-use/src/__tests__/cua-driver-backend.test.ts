@@ -134,6 +134,8 @@ test('bundle-id observation, background refusal, and explicit foreground retry p
     onSessionInvalidated: ({ sessionId }) => invalidated.push(sessionId),
   });
   const [tool] = buildComputerUseTools({ backend });
+  const forms: string[] = [];
+  let formAnswer: 'accept' | 'decline' = 'decline';
   const context = (toolCallId: string) => ({
     sessionId: 'session-1',
     turnId: 'turn-1',
@@ -141,6 +143,12 @@ test('bundle-id observation, background refusal, and explicit foreground retry p
     cwd: '/tmp',
     abortSignal: new AbortController().signal,
     emitOutput() {},
+    requestUserForm: async (form: { message: string }) => {
+      forms.push(form.message);
+      return formAnswer === 'accept'
+        ? { action: 'accept' as const, values: {} }
+        : { action: 'decline' as const };
+    },
   });
   const invoke = async (args: Record<string, unknown>, id: string): Promise<{ text: string }> =>
     (await tool!.impl(args as never, context(id))) as { text: string };
@@ -167,6 +175,30 @@ test('bundle-id observation, background refusal, and explicit foreground retry p
   );
   const nextObservation = /observation_id[^\n]*?([a-f0-9-]{36})/i.exec(refreshed.text)?.[1];
   assert.ok(nextObservation);
+  const declined = await invoke(
+    {
+      action: 'click_element',
+      observation_id: nextObservation,
+      element_id: '1',
+      delivery_mode: 'foreground',
+    },
+    'click-foreground-declined',
+  );
+  assert.match(declined.text, /policy_denied/);
+  assert.equal(calls.filter((call) => call.name === 'click').length, 1);
+  assert.match(forms[0] ?? '', /com\.example\.fixture.*“Submit”/);
+  const formless = (await tool!.impl(
+    {
+      action: 'click_element',
+      observation_id: nextObservation,
+      element_id: '1',
+      delivery_mode: 'foreground',
+    } as never,
+    { ...context('click-foreground-formless'), requestUserForm: undefined },
+  )) as { text: string };
+  assert.match(formless.text, /policy_denied/);
+  assert.equal(calls.filter((call) => call.name === 'click').length, 1);
+  formAnswer = 'accept';
   const foreground = await invoke(
     {
       action: 'click_element',
@@ -203,5 +235,116 @@ test('bundle-id observation, background refusal, and explicit foreground retry p
   );
   assert.match(afterClose.text, /stale_frame|no_active_frame/);
   assert.equal(calls.filter((call) => call.name === 'click').length, 2);
+  backend.dispose();
+});
+
+test('observations list menu titles, open one named menu, and refuse a token from a replaced page', async () => {
+  const clicks: Array<Record<string, unknown>> = [];
+  const menuActions = ['AXPress', 'AXPick', 'AXCancel'];
+  const service = {
+    snapshot: () => ({ state: 'ready' as const, generation: 1 }),
+    dispose: async () => {},
+    async call(name: string, args: Record<string, unknown>): Promise<CuaDriverResult> {
+      if (name === 'list_apps')
+        return {
+          content: [],
+          structuredContent: {
+            apps: [{ bundle_id: 'com.apple.TextEdit', name: 'TextEdit', pid: 42 }],
+          },
+        };
+      if (name === 'list_windows')
+        return {
+          content: [],
+          structuredContent: { windows: [{ app_name: 'TextEdit', pid: 42, window_id: 7 }] },
+        };
+      if (name === 'get_window_state')
+        return {
+          content: [],
+          structuredContent: {
+            snapshot_id: 's00000001',
+            elements: [
+              [0, 'AXWindow', 'Untitled'],
+              [1, 'AXTextArea', 'Body', 0],
+              [2, 'AXMenuBar', undefined],
+              [3, 'AXMenuBarItem', 'File', 2],
+              [4, 'AXMenu', undefined, 3],
+              [5, 'AXMenuItem', 'Save', 4],
+              [6, 'AXMenuBarItem', 'Edit', 2],
+              [7, 'AXMenu', undefined, 6],
+              [8, 'AXMenuItem', 'Copy', 7],
+            ].map(([index, role, label, parent]) => ({
+              element_index: index,
+              element_token: `s00000001:${index}`,
+              role,
+              ...(label ? { label } : {}),
+              ...(parent === undefined ? {} : { parent_index: parent }),
+              ...(String(role).startsWith('AXMenu') ? { actions: menuActions } : {}),
+            })),
+          },
+        };
+      if (name === 'click') {
+        clicks.push(args);
+        return {
+          isError: true,
+          content: [],
+          structuredContent: { code: 'element_outside_target_window', effect: 'refused' },
+        };
+      }
+      throw new Error(`unexpected ${name}`);
+    },
+  } as unknown as CuaDriverService;
+  const backend = createCuaDriverBackend({
+    binaryPath: '/unused',
+    expectedBinarySha256: '0'.repeat(64),
+    createService: () => service,
+  });
+  const context = {
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    toolCallId: 'call-1',
+    boundAction: { target: { pid: 42, windowId: 7 } } as never,
+  };
+  const signal = new AbortController().signal;
+  const ids = (observation: { elements: Array<{ elementId: string }> }) =>
+    observation.elements.map((element) => element.elementId);
+
+  const bar = await backend.observeApp!(
+    { app: 'com.apple.TextEdit', includeScreenshot: false },
+    signal,
+    context,
+  );
+  assert.deepEqual(ids(bar), ['0', '1', '2', '3', '6']);
+  assert.equal(bar.menu, undefined);
+  assert.deepEqual(bar.elements.find((element) => element.elementId === '3')?.actions, []);
+  assert.equal(
+    (
+      await backend.runSemantic!(
+        { type: 'click_element', observationId: bar.observationId, elementId: '5' },
+        signal,
+        context,
+      )
+    ).outcome.ok,
+    false,
+  );
+  assert.equal(clicks.length, 0);
+
+  const file = await backend.observeApp!(
+    { app: 'com.apple.TextEdit', includeScreenshot: false, menu: 'file' },
+    signal,
+    context,
+  );
+  assert.deepEqual(ids(file), ['0', '1', '2', '3', '4', '5', '6']);
+  assert.deepEqual(file.menu, { opened: 'File' });
+
+  const replaced = await backend.runSemantic!(
+    { type: 'click_element', observationId: file.observationId, elementId: '5' },
+    signal,
+    context,
+  );
+  assert.equal(clicks[0]?.element_token, 's00000001:5');
+  assert.deepEqual(
+    replaced.outcome.ok ? undefined : [replaced.outcome.error, replaced.outcome.evidence],
+    ['stale_frame', { path: 'none' }],
+  );
   backend.dispose();
 });
