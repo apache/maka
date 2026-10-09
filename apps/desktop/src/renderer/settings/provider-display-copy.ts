@@ -259,6 +259,16 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'Cloudflare Workers AI', description: 'Cloudflare 託管模型，使用帳號層級連線', badge: 'API' },
     en: { name: 'Cloudflare Workers AI', description: 'Cloudflare-hosted models over the account-scoped API.', badge: 'API' },
   },
+  'azure-foundry': {
+    'zh-CN': { name: 'Azure AI Foundry', description: '使用 Foundry 终结点和 API 密钥连接已部署的 OpenAI 兼容模型。', badge: 'API' },
+    'zh-TW': { name: 'Azure AI Foundry', description: '使用 Foundry 端點與 API 金鑰連線已部署的 OpenAI 相容模型。', badge: 'API' },
+    en: { name: 'Azure AI Foundry', description: 'Connect a deployed OpenAI-compatible model with its Foundry endpoint and API key.', badge: 'API' },
+  },
+  'amazon-bedrock': {
+    'zh-CN': { name: 'Amazon Bedrock', description: '通过 Bedrock 的 OpenAI 兼容 API、区域终结点和 Bedrock API 密钥连接模型。', badge: 'API' },
+    'zh-TW': { name: 'Amazon Bedrock', description: '透過 Bedrock 的 OpenAI 相容 API、區域端點與 Bedrock API 金鑰連線模型。', badge: 'API' },
+    en: { name: 'Amazon Bedrock', description: 'Connect through Bedrock’s OpenAI-compatible API, regional endpoint, and Bedrock API key.', badge: 'API' },
+  },
   huggingface: {
     'zh-CN': { name: 'Hugging Face', description: 'Inference Providers 路由，聚合多家托管模型', badge: '路由' },
     'zh-TW': { name: 'Hugging Face', description: 'Inference Providers 路由，聚合多家託管模型', badge: '路由' },
