@@ -234,15 +234,14 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
             label="Cua Driver"
             description={copy.cuaDriverHelp}
             end={(
-              <Link
+              <Button
+                variant="secondary"
                 href={CUA_DRIVER_URL}
                 target="_blank"
                 rel="noreferrer noopener"
-                label="Cua Driver"
-                style={linkInRowEnd}
-              >
-                {copy.sourceCode}
-              </Link>
+                aria-label="Cua Driver"
+                label={copy.sourceCode}
+              />
             )}
           />
         </SettingsSection>
