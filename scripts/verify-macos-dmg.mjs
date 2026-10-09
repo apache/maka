@@ -32,6 +32,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crc32, inflateSync } from 'node:zlib';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
+import { assertMacAppExecutableUuids } from './macos-executable-uuid.mjs';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
 import {
@@ -314,6 +315,7 @@ export async function verifyPackagedMacApp(
     forbidPath = assertMissing,
     smokeRenderer = smokePackagedRenderer,
     smokeFilesystemWorker = smokePackagedFilesystemWorker,
+    assertExecutableUuids = assertMacAppExecutableUuids,
     workingDirectory = dirname(appPath),
     environment = process.env,
     // The architecture the DMG was chosen for, not the one this process happens
@@ -353,6 +355,7 @@ export async function verifyPackagedMacApp(
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable', expectedArch);
+  await assertExecutableUuids(appPath, appId);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);

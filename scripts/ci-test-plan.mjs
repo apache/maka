@@ -84,6 +84,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/product-nightly.test.mjs',
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-packaged-app.test.mjs',
+  'scripts/macos-executable-uuid.mjs',
+  'scripts/macos-executable-uuid.test.mjs',
   'scripts/macos-update-archive.test.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',
