@@ -529,6 +529,8 @@ test('verifies an Intel macOS package after a transient ticket validation failur
   const verificationSteps = [];
   // The archive and update configuration are real; macOS command output and
   // app launches are the system boundaries this portable test substitutes.
+  // The executables' LC_UUID stamp has its own suite in macos-executable-uuid.test.mjs.
+  const stampChecks = [];
   await verifyPackagedMacApp(app, {
     expectedArch: 'x64',
     channel: 'nightly',
@@ -538,6 +540,7 @@ test('verifies an Intel macOS package after a transient ticket validation failur
     smokeRenderer: async () => {
       verificationSteps.push('renderer');
     },
+    assertExecutableUuids: async (...args) => stampChecks.push(args),
     run: async (command, args) => {
       if (command === 'plutil') {
         const values = {
@@ -567,6 +570,7 @@ test('verifies an Intel macOS package after a transient ticket validation failur
     },
   });
   assert.deepEqual(verificationSteps, ['validate', 'validate', 'renderer']);
+  assert.deepEqual(stampChecks, [[app, 'com.maka.desktop']]);
 });
 
 describe('assertRenderableAppIcon', () => {
