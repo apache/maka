@@ -739,8 +739,7 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
-    // Foundry endpoints are resource-specific and must be supplied by the user.
-    category: 'custom',
+    category: 'overseas',
     catalogGroup: 'api',
     signupUrl: 'https://console.anthropic.com/settings/keys',
     catalogOrder: 9,
@@ -777,8 +776,7 @@ const providerRegistry = {
     status: 'ready',
     runtimeAdapter: { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     modelDiscovery: { kind: 'protocol' },
-    // Bedrock endpoint selection is region/account-specific and user supplied.
-    category: 'custom',
+    category: 'overseas',
     catalogGroup: 'plans',
     signupUrl: 'https://platform.minimax.io/subscribe/coding-plan',
     catalogOrder: 2,
