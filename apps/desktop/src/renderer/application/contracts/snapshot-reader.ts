@@ -17,8 +17,23 @@
  * under the License.
  */
 
+import { useMemo, useSyncExternalStore } from 'react';
+
 /** A read-only projection. Its owner notifies only when this snapshot changes. */
 export interface SnapshotReader<T> {
   getSnapshot(): T;
   subscribe(listener: () => void): () => void;
+}
+
+const unsubscribe = () => {};
+const subscribeInactive = () => unsubscribe;
+
+/** A covered surface retains one snapshot; its owner continues updating. */
+export function useSnapshotReader<T>(reader: SnapshotReader<T>, active = true): T {
+  const reading = useMemo(() => {
+    if (active) return reader;
+    const snapshot = reader.getSnapshot();
+    return { subscribe: subscribeInactive, getSnapshot: () => snapshot };
+  }, [reader, active]);
+  return useSyncExternalStore(reading.subscribe, reading.getSnapshot, reading.getSnapshot);
 }
