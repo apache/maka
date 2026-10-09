@@ -1,0 +1,62 @@
+{
+  "schema": "maka.pet/v1",
+  "id": "demo-blob",
+  "displayName": "Blob",
+  "description": "A test pet for maka-gpui's screenshots",
+  "spriteSheet": {
+    "path": "sheet.png",
+    "format": "png",
+    "frameWidth": 64,
+    "frameHeight": 64,
+    "columns": 4,
+    "rows": 3,
+    "frameCount": 12
+  },
+  "animations": {
+    "idle": {
+      "frames": [
+        0,
+        1
+      ],
+      "fps": 2,
+      "loop": true
+    },
+    "working": {
+      "frames": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "fps": 8,
+      "loop": true
+    },
+    "needs-input": {
+      "frames": [
+        6,
+        7
+      ],
+      "fps": 3,
+      "loop": true
+    },
+    "ready": {
+      "frames": [
+        8,
+        9,
+        8,
+        9
+      ],
+      "fps": 6,
+      "loop": false,
+      "fallback": "idle"
+    },
+    "blocked": {
+      "frames": [
+        10,
+        11
+      ],
+      "fps": 6,
+      "loop": true
+    }
+  }
+}

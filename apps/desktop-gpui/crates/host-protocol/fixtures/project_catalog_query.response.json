@@ -1,0 +1,13 @@
+{
+  "requestId": "f4fb086fc2ab4609a7b0222371e949cc",
+  "operation": "project.catalog.query",
+  "ok": true,
+  "result": {
+    "kind": "page",
+    "view": "summary",
+    "revision": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "projectCount": 0,
+    "items": [],
+    "nextCursor": null
+  }
+}

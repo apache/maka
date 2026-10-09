@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-09-28T18:34:47.870Z",
+  "appVersion": "0.2.0-dev.49",
+  "includedData": [
+    "connections",
+    "settings"
+  ],
+  "data": {
+    "connections": [
+      {
+        "connectionId": "00000001-0000-4000-8000-00000000c001",
+        "slug": "relay",
+        "name": "My relay",
+        "providerType": "custom",
+        "baseUrl": "https://relay.example/v1",
+        "defaultApiProtocol": "openai-chat",
+        "enabled": true,
+        "defaultModel": "m1",
+        "enabledModelIds": [
+          "m1"
+        ],
+        "models": [
+          {
+            "id": "m1",
+            "displayName": "Model one",
+            "contextWindow": 128000
+          },
+          {
+            "id": "m2"
+          }
+        ],
+        "catalogEntries": [
+          {
+            "id": "m1",
+            "displayName": "Model one",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          {
+            "id": "m2",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        ],
+        "modelOverrides": {
+          "m1": {
+            "contextWindow": 64000
+          }
+        },
+        "requestBodyOverlay": {
+          "reasoning": {
+            "effort": "low"
+          }
+        },
+        "modelSource": "fetched",
+        "lastTestStatus": "verified",
+        "lastTestAt": "2026-09-28T10:00:00.000Z",
+        "createdAt": 0,
+        "updatedAt": 3
+      },
+      {
+        "connectionId": "00000001-0000-4000-8000-00000000c002",
+        "slug": "deepseek",
+        "name": "DeepSeek",
+        "providerType": "deepseek",
+        "enabled": false,
+        "defaultModel": "",
+        "enabledModelIds": [
+          "deepseek-v4-flash"
+        ],
+        "models": [],
+        "catalogEntries": [
+          {
+            "id": "deepseek-v4-flash",
+            "displayName": "DeepSeek V4 Flash",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        ],
+        "createdAt": 0,
+        "updatedAt": 2
+      }
+    ],
+    "settings": {
+      "schemaVersion": 1,
+      "network": {
+        "proxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        }
+      },
+      "botChat": {
+        "channels": {
+          "telegram": {
+            "provider": "telegram",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": "http://127.0.0.1:7890"
+          },
+          "feishu": {
+            "provider": "feishu",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": ""
+          },
+          "wecom": {
+            "provider": "wecom",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": ""
+          },
+          "wechat": {
+            "provider": "wechat",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": "",
+            "webhookUrl": "http://127.0.0.1:18400"
+          },
+          "discord": {
+            "provider": "discord",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": ""
+          },
+          "dingtalk": {
+            "provider": "dingtalk",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": ""
+          },
+          "qq": {
+            "provider": "qq",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": ""
+          },
+          "slack": {
+            "provider": "slack",
+            "enabled": false,
+            "connected": false,
+            "readiness": "scaffolded",
+            "proxyUrl": ""
+          }
+        }
+      },
+      "usage": {
+        "range": "24h",
+        "status": "all",
+        "modelFilter": "",
+        "showDetails": false,
+        "activeTab": "requests"
+      },
+      "appearance": {
+        "workbarTogglePosition": "edge",
+        "theme": "auto",
+        "palette": "default",
+        "appIcon": "sky",
+        "uiFontSize": 14,
+        "terminalFontSize": 12
+      },
+      "personalization": {
+        "displayName": "Ada",
+        "assistantTone": "Brief.",
+        "uiLocale": "auto",
+        "selectedPetId": null
+      },
+      "onboarding": {
+        "milestones": []
+      },
+      "webSearch": {
+        "enabled": true,
+        "defaultProvider": "tavily",
+        "providers": {
+          "tavily": {
+            "credentialSource": "saved",
+            "credentialVersion": 1,
+            "credentialStatus": "untested",
+            "credentialCheckedAt": "2026-09-21T14:13:20.000Z"
+          }
+        }
+      },
+      "localMemory": {
+        "enabled": true,
+        "agentReadEnabled": false
+      },
+      "workspaceInstructions": {
+        "enabled": true
+      },
+      "privacy": {
+        "incognitoActive": true
+      },
+      "projects": {},
+      "jev": {
+        "enabled": false
+      },
+      "chatDefaults": {
+        "permissionMode": "ask",
+        "codeModeEnabled": true
+      },
+      "notifications": {
+        "runComplete": true
+      },
+      "workHub": {
+        "enabled": false
+      },
+      "system": {
+        "keepSystemAwake": false
+      },
+      "externalAgents": {
+        "antigravity": {
+          "executable": ""
+        }
+      },
+      "shell": {
+        "preference": "git_bash",
+        "executable": "C:/Git/bin/bash.exe"
+      },
+      "subagents": {
+        "presets": []
+      }
+    }
+  }
+}

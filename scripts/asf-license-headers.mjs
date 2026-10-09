@@ -102,6 +102,8 @@ const commentStyles = {
   // An Astro component opens with its frontmatter fence, and the header is the
   // first thing inside it.
   astro: { open: '/*', line: ' *', close: ' */', prefixPattern: /^---\n/ },
+  // An XML declaration must open the document, so the header follows it.
+  xml: { open: '<!--', line: ' ', close: '-->', prefixPattern: /^<\?xml[^\n]*\?>\n/ },
 };
 
 /**
@@ -124,6 +126,7 @@ const coveredExtensions = new Map([
   ['.rs', 'block'],
   ['.sh', 'hash'],
   ['.sql', 'block'],
+  ['.svg', 'xml'],
   ['.swift', 'block'],
   ['.toml', 'hash'],
   ['.ts', 'block'],
@@ -135,6 +138,10 @@ const coveredExtensions = new Map([
 /** Covered files whose name carries no extension. */
 const coveredNames = new Map([
   ['Dockerfile', 'hash'],
+  // The GPUI client's pinned Maka commit and protocol epoch; its readers skip
+  // `#` lines.
+  ['MAKA_PIN', 'hash'],
+  ['justfile', 'hash'],
   ['pre-commit', 'hash'],
   // A POSIX shell script that the Eval egress sidecar invokes by name.
   ['network-policy', 'hash'],
@@ -220,18 +227,23 @@ export const exclusionRules = [
     id: 'generated-files',
     justification:
       'Mechanically derived from a generator in this repository. A hand-written header would be reverted by the next regeneration; the generators themselves carry the header.',
-    matches: isOneOf(
-      'apps/desktop/src/renderer/astryx-theme/maka.css',
-      'apps/desktop/src/renderer/astryx-theme/maka.d.ts',
-      'apps/desktop/src/renderer/astryx-theme/maka.js',
-      'docs/astryx-surface-file-inventory.md',
-      'docs/astryx-surface-file-inventory.paths',
-      'docs/windows-test-inventory.md',
-      'native/gitoxide-helper/Cargo.lock',
-      'native/runtime-host-peer/Cargo.lock',
-      'native/runtime-host-windows-task-launcher/Cargo.lock',
-      'packages/runtime/src/bundled-skill-catalog.generated.ts',
-    ),
+    matches: (path) =>
+      isOneOf(
+        'apps/desktop-gpui/Cargo.lock',
+        'apps/desktop/src/renderer/astryx-theme/maka.css',
+        'apps/desktop/src/renderer/astryx-theme/maka.d.ts',
+        'apps/desktop/src/renderer/astryx-theme/maka.js',
+        'docs/astryx-surface-file-inventory.md',
+        'docs/astryx-surface-file-inventory.paths',
+        'docs/windows-test-inventory.md',
+        'native/gitoxide-helper/Cargo.lock',
+        'native/runtime-host-peer/Cargo.lock',
+        'native/runtime-host-windows-task-launcher/Cargo.lock',
+        'packages/runtime/src/bundled-skill-catalog.generated.ts',
+      )(path) ||
+      // The GPUI client's icon set, rendered by
+      // `apps/desktop-gpui/scripts/design-icons.py --write`.
+      isUnder('apps/desktop-gpui/assets/icons/maka', '.svg')(path),
   },
   {
     id: 'verbatim-runtime-payloads',
@@ -251,6 +263,7 @@ export const exclusionRules = [
       'Recorded inputs and captured historical state. Tests assert on their exact bytes or parse them with a strict reader, and their value is that they reproduce what a real system produced rather than that they are authored source.',
     matches: (path) =>
       isOneOf(
+        'apps/desktop-gpui/crates/host-client/tests/fixtures/win32-activation-command.txt',
         'packages/storage/src/__tests__/fixtures/codex-rollout-v0.144.jsonl',
         'packages/storage/test-fixtures/workflow-schema-v8.sql',
       )(path) || isUnder('docs/eval', '.csv')(path),
@@ -277,6 +290,7 @@ export const exclusionRules = [
         '.git-blame-ignore-revs',
         '.gitattributes',
         '.mailmap',
+        'apps/desktop-gpui/packaging/macos/Info.plist',
         'apps/desktop/build/entitlements.mac.inherit.plist',
         'apps/desktop/build/entitlements.mac.plist',
       )(path),

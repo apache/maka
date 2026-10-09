@@ -1,0 +1,16 @@
+{
+  "kind": "maka-runtime-host",
+  "schemaVersion": 1,
+  "rootId": "9baff23d644801812f705011d20ef0977936dc8a92134cad8af53e60c16d767b",
+  "hostEpoch": "e3960af7-eacc-430c-89d9-13d115cfac23",
+  "endpoint": "/var/folders/xy/T/m-501-m6_yPWRIAYEvcFAR-57r-Vfyvss/h.sock",
+  "protocolMin": 0,
+  "protocolMax": 0,
+  "compatibilityEpoch": 197,
+  "compositionId": "maka.interactive",
+  "compositionRevision": "3",
+  "lifecycleMode": "service",
+  "state": "ready",
+  "pid": 6759,
+  "createdAt": "2026-09-28T10:13:31.183Z"
+}

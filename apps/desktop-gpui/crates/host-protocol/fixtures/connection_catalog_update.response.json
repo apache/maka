@@ -1,0 +1,13 @@
+{
+  "requestId": "1deeeda9e75d4cd182a77adeb6a2b5e1",
+  "operation": "connection.catalog.update",
+  "ok": true,
+  "result": {
+    "kind": "committed",
+    "catalogRevision": 5,
+    "connection": {
+      "connectionId": "8904abca-2dca-45df-a1aa-47adeb3251fb",
+      "revision": 2
+    }
+  }
+}

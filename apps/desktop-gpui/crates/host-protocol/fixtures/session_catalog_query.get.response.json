@@ -1,0 +1,43 @@
+{
+  "requestId": "46bfaced0b7d42468e05a5072a6bffaa",
+  "operation": "session.catalog.query",
+  "ok": true,
+  "result": {
+    "kind": "session",
+    "session": {
+      "id": "fixture-5a56fb8e1d054938af8a6fb1ccfe3ff2",
+      "revision": 1,
+      "workspace": {
+        "target": {
+          "kind": "host_path",
+          "path": "/private/tmp/maka-gpui-fixture-workspace"
+        },
+        "hostCwd": "/private/tmp/maka-gpui-fixture-workspace"
+      },
+      "createdAt": 1790590459684,
+      "activityAt": 1790590459684,
+      "name": "Fixture session",
+      "isFlagged": false,
+      "isArchived": false,
+      "labels": [],
+      "labelsTruncated": false,
+      "hasUnread": false,
+      "status": "active",
+      "liveRunState": {
+        "schemaVersion": 1,
+        "runningTurnIds": [],
+        "runEpoch": 0,
+        "hostGeneration": "56cc7b89-1ed6-4ed8-9745-ae9dd32e07ed"
+      },
+      "statusUpdatedAt": 1790590459684,
+      "backend": "ai-sdk",
+      "llmConnectionId": "64274e29-9f00-4b58-84c6-cc8c7541f0f9",
+      "llmConnectionSlug": "ollama-local",
+      "connectionLocked": false,
+      "model": "qwen2.5:7b",
+      "permissionMode": "bypass",
+      "collaborationMode": "agent",
+      "orchestrationMode": "default"
+    }
+  }
+}

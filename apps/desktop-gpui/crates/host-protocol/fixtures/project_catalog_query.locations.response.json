@@ -1,0 +1,34 @@
+{
+  "requestId": "3edc926a85db4108815b980693f7543b",
+  "operation": "project.catalog.query",
+  "ok": true,
+  "result": {
+    "kind": "page",
+    "view": "locations",
+    "revision": "sha256:a210aa7c9a60041287ca90b3601a4baa64308cc5491d6ce2544cb2cacf6ae74a",
+    "projectCount": 1,
+    "items": [
+      {
+        "kind": "project",
+        "projectIndex": 0,
+        "id": "ad44a405-b24a-47c8-ad09-683aa0351b25",
+        "name": "maka-gpui-fixture-workspace",
+        "aliasCount": 0,
+        "locationCount": 1,
+        "preferredLocationIndex": 0,
+        "archivedAt": null,
+        "available": true
+      },
+      {
+        "kind": "location",
+        "projectIndex": 0,
+        "itemIndex": 0,
+        "location": {
+          "path": "/private/tmp/maka-gpui-fixture-workspace",
+          "isWorktree": false
+        }
+      }
+    ],
+    "nextCursor": null
+  }
+}

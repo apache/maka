@@ -1,0 +1,63 @@
+{
+  "requestId": "6055b6dabe1f489a9cbe19396422f764",
+  "operation": "runtime.policy.query",
+  "ok": true,
+  "result": {
+    "revision": 0,
+    "policy": {
+      "networkProxy": {
+        "enabled": false,
+        "protocol": "http",
+        "host": "127.0.0.1",
+        "port": 7890,
+        "authEnabled": false,
+        "username": "",
+        "bypassList": [
+          "metaso.cn",
+          "baidu.com"
+        ],
+        "autoBypassDomains": [
+          "localhost",
+          "127.0.0.1",
+          "::1",
+          "192.168.*",
+          "10.*",
+          "*.local"
+        ]
+      },
+      "personalization": {
+        "displayName": "",
+        "assistantTone": ""
+      },
+      "memory": {
+        "enabled": true,
+        "agentReadEnabled": false
+      },
+      "workspaceInstructions": {
+        "enabled": true
+      },
+      "privacy": {
+        "incognitoActive": false
+      },
+      "chatDefaults": {
+        "permissionMode": "bypass"
+      },
+      "webSearch": {
+        "enabled": false,
+        "defaultProvider": "model"
+      },
+      "subagents": {
+        "presets": []
+      },
+      "shell": {
+        "preference": "auto",
+        "executable": ""
+      },
+      "externalAgents": {
+        "antigravity": {
+          "executable": ""
+        }
+      }
+    }
+  }
+}

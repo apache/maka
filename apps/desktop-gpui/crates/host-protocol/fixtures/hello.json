@@ -1,0 +1,10 @@
+{
+  "kind": "hello",
+  "clientInstanceId": "bc7c112d-f22a-481b-a648-36abfea55517",
+  "protocolMin": 0,
+  "protocolMax": 0,
+  "compatibilityEpoch": 197,
+  "compositionId": "maka.interactive",
+  "activitySnapshotVersion": 2,
+  "surface": "desktop"
+}

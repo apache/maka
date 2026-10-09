@@ -1,0 +1,37 @@
+{
+  "requestId": "51be28ed42024a898c13bb3475ec8296",
+  "operation": "session.metadata.update",
+  "ok": true,
+  "result": {
+    "kind": "committed",
+    "session": {
+      "id": "fixture-8dc32a9e833145de99ebe245f9f155c7",
+      "revision": 2,
+      "workspace": {
+        "target": {
+          "kind": "host_path",
+          "path": "/private/tmp/maka-gpui-fixture-workspace"
+        },
+        "hostCwd": "/private/tmp/maka-gpui-fixture-workspace"
+      },
+      "createdAt": 1790590459796,
+      "activityAt": 1790590459796,
+      "name": "Fixture actions renamed",
+      "isFlagged": false,
+      "isArchived": false,
+      "labels": [],
+      "labelsTruncated": false,
+      "hasUnread": false,
+      "status": "active",
+      "statusUpdatedAt": 1790590459796,
+      "backend": "ai-sdk",
+      "llmConnectionId": "64274e29-9f00-4b58-84c6-cc8c7541f0f9",
+      "llmConnectionSlug": "ollama-local",
+      "connectionLocked": false,
+      "model": "qwen2.5:7b",
+      "permissionMode": "bypass",
+      "collaborationMode": "agent",
+      "orchestrationMode": "default"
+    }
+  }
+}

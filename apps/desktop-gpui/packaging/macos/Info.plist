@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for "Maka GPUI.app/Contents/Info.plist". scripts/bundle-macos.sh
+  replaces @VERSION@ with the workspace version from Cargo.toml and
+  @MINIMUM_SYSTEM_VERSION@ with the deployment target the binary is built for.
+
+  The NS*UsageDescription keys are for the Runtime Host the app starts and
+  the commands an agent task runs through it: macOS attributes a child
+  process's privacy request to the app that started it, and without a
+  purpose string for that service in this file it refuses the request
+  without asking. NSAppleEventsUsageDescription is Maka Desktop's
+  (apps/desktop/electron-builder.config.mjs, mac.extendInfo); camera,
+  microphone, system audio and Bluetooth are the ones Desktop's Electron
+  bundle carries as well. Nothing beyond Desktop's set: a purpose string
+  lets macOS put a question to the user, and Maka does not ask for more
+  than Desktop does. See packaging/README.md.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Maka GPUI</string>
+	<key>CFBundleExecutable</key>
+	<string>maka-gpui</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.longbridge.maka-gpui</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Maka GPUI</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>@MINIMUM_SYSTEM_VERSION@</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Maka GPUI may automate other applications when you explicitly run an agent task.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Maka GPUI may record system audio when you explicitly run an agent task that needs it.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Maka GPUI may use Bluetooth when you explicitly run an agent task that needs it.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Maka GPUI may use the camera when you explicitly run an agent task that needs it.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Maka GPUI may use the microphone when you explicitly run an agent task that needs it.</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>

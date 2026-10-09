@@ -115,7 +115,9 @@ const textSourceBasenames = new Set([
   'DISCLAIMER-WIP',
   'Dockerfile',
   'LICENSE',
+  'MAKA_PIN',
   'NOTICE',
+  'justfile',
   'network-policy',
   'pre-commit',
 ]);

@@ -1,0 +1,157 @@
+{
+  "requestId": "a0e5fae492f6468f95d37d3aa521f834",
+  "operation": "connection.catalog.query",
+  "ok": true,
+  "result": {
+    "kind": "page",
+    "revision": 3,
+    "defaultTarget": {
+      "connectionId": "64274e29-9f00-4b58-84c6-cc8c7541f0f9",
+      "modelId": "qwen2.5:7b"
+    },
+    "connectionCount": 2,
+    "items": [
+      {
+        "kind": "connection",
+        "connectionIndex": 0,
+        "connectionId": "64274e29-9f00-4b58-84c6-cc8c7541f0f9",
+        "revision": 1,
+        "slug": "ollama-local",
+        "name": "Ollama (local)",
+        "providerType": "custom",
+        "baseUrl": "http://127.0.0.1:11434/v1",
+        "defaultApiProtocol": "openai-chat",
+        "enabled": true,
+        "modelSource": "fetched",
+        "enabledModelIdCount": 3,
+        "modelCount": 3,
+        "catalogEntryCount": 3
+      },
+      {
+        "kind": "enabled_model_id",
+        "connectionIndex": 0,
+        "itemIndex": 0,
+        "modelId": "qwen2.5:7b"
+      },
+      {
+        "kind": "enabled_model_id",
+        "connectionIndex": 0,
+        "itemIndex": 1,
+        "modelId": "qwen3:0.6b"
+      },
+      {
+        "kind": "enabled_model_id",
+        "connectionIndex": 0,
+        "itemIndex": 2,
+        "modelId": "phi4:latest"
+      },
+      {
+        "kind": "model",
+        "connectionIndex": 0,
+        "itemIndex": 0,
+        "model": {
+          "id": "qwen3:0.6b"
+        }
+      },
+      {
+        "kind": "model",
+        "connectionIndex": 0,
+        "itemIndex": 1,
+        "model": {
+          "id": "qwen2.5:7b"
+        }
+      },
+      {
+        "kind": "model",
+        "connectionIndex": 0,
+        "itemIndex": 2,
+        "model": {
+          "id": "phi4:latest"
+        }
+      },
+      {
+        "kind": "catalog_entry",
+        "connectionIndex": 0,
+        "itemIndex": 0,
+        "entry": {
+          "id": "qwen3:0.6b",
+          "canUseAsChatDefault": true,
+          "isDefault": false,
+          "supportsVision": false,
+          "defaultSupportsVision": false,
+          "thinkingLevels": []
+        }
+      },
+      {
+        "kind": "catalog_entry",
+        "connectionIndex": 0,
+        "itemIndex": 1,
+        "entry": {
+          "id": "qwen2.5:7b",
+          "canUseAsChatDefault": true,
+          "isDefault": true,
+          "supportsVision": false,
+          "defaultSupportsVision": false,
+          "thinkingLevels": []
+        }
+      },
+      {
+        "kind": "catalog_entry",
+        "connectionIndex": 0,
+        "itemIndex": 2,
+        "entry": {
+          "id": "phi4:latest",
+          "canUseAsChatDefault": true,
+          "isDefault": false,
+          "supportsVision": false,
+          "defaultSupportsVision": false,
+          "thinkingLevels": []
+        }
+      },
+      {
+        "kind": "connection",
+        "connectionIndex": 1,
+        "connectionId": "d02c72f4-f8a8-4429-8d4e-3783d19ca606",
+        "revision": 1,
+        "slug": "fixture-auth",
+        "name": "Rejects every key",
+        "providerType": "custom",
+        "baseUrl": "http://127.0.0.1:11521/v1",
+        "defaultApiProtocol": "openai-chat",
+        "enabled": true,
+        "modelSource": "fetched",
+        "enabledModelIdCount": 1,
+        "modelCount": 1,
+        "catalogEntryCount": 1
+      },
+      {
+        "kind": "enabled_model_id",
+        "connectionIndex": 1,
+        "itemIndex": 0,
+        "modelId": "fixture-model"
+      },
+      {
+        "kind": "model",
+        "connectionIndex": 1,
+        "itemIndex": 0,
+        "model": {
+          "id": "fixture-model"
+        }
+      },
+      {
+        "kind": "catalog_entry",
+        "connectionIndex": 1,
+        "itemIndex": 0,
+        "entry": {
+          "id": "fixture-model",
+          "canUseAsChatDefault": true,
+          "isDefault": false,
+          "supportsVision": false,
+          "defaultSupportsVision": false,
+          "thinkingLevels": []
+        }
+      }
+    ],
+    "nextCursor": null
+  }
+}

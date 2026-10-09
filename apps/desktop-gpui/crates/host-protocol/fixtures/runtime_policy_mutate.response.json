@@ -1,0 +1,9 @@
+{
+  "requestId": "fed60970895142b691b2c40ce23d3a34",
+  "operation": "runtime.policy.mutate",
+  "ok": true,
+  "result": {
+    "kind": "committed",
+    "revision": 1
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "requestId": "99d2e96d293b4ab2a19ed5ef20bf9b64",
+  "operation": "connection.catalog.remove",
+  "ok": true,
+  "result": {
+    "kind": "committed",
+    "catalogRevision": 7
+  }
+}

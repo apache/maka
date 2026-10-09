@@ -56,6 +56,11 @@
       // made format-tolerant. See #415.
       "!apps/desktop/**",
       "!packages/ui/**",
+      // The GPUI client is its own Cargo workspace: its JSON fixtures are
+      // recorded by its capture scripts and would drift from a re-recording
+      // if reformatted, and its Node sidecar keeps the client's own style.
+      // It is still linted.
+      "!apps/desktop-gpui/**",
       // Byte-sensitive provenance / generated artifacts — NOT hand-authored
       // source. These are read whole and SHA-256'd + size-checked by the
       // executor preparation scripts, so reformatting breaks provenance

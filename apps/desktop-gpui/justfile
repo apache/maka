@@ -1,0 +1,133 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Task runner for maka-gpui. `just` with no arguments lists the recipes.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+default:
+    @just --list
+
+# Run before asking for review: format check, Clippy with warnings denied, tests.
+check:
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --locked
+
+# Format the workspace.
+fmt:
+    cargo fmt --all
+
+# Run the workspace tests. Extra arguments go to `cargo test`.
+test *args:
+    cargo test --workspace {{args}}
+
+# Run the desktop app against this checkout's dev State Root (.dev-root).
+# Extra arguments go to the app; a later --root wins.
+run *args:
+    cargo run -p app -- --root "{{justfile_directory()}}/.dev-root" {{args}}
+
+# Start a Runtime Host on this checkout's dev State Root, in the foreground
+# (Ctrl-C stops it). This runs the "Start" command of docs/dev-host.md, which
+# stays the reference; keep the two in step. Needs the Maka checkout at
+# $MAKA_REPO (default ~/code/maka-pin, at the commit MAKA_PIN names) with its
+# CLI built.
+dev-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo="${MAKA_REPO:-$HOME/code/maka-pin}"
+    root="{{justfile_directory()}}/.dev-root"
+    if [ ! -f "$repo/packages/cli/dist/dev-cli.js" ]; then
+        echo "No built Maka CLI at $repo/packages/cli/dist/dev-cli.js; see docs/dev-host.md, Prerequisites." >&2
+        exit 1
+    fi
+    cd "$repo"
+    if [ -s "$HOME/.nvm/nvm.sh" ]; then
+        set +u
+        source "$HOME/.nvm/nvm.sh"
+        nvm use 24.18 >/dev/null
+        set -u
+    fi
+    echo "Starting a Runtime Host for $root. Never point it at live Maka data."
+    exec node packages/cli/dist/dev-cli.js runtime-host serve --root "$root" --json
+
+# Delete the dev State Root (.dev-root) and its Host control directory.
+# Prints what it would delete; pass --yes to delete. Refuses while a Host runs.
+dev-root-reset *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}/.dev-root"
+    if [ ! -e "$root" ]; then
+        echo "$root does not exist; nothing to reset."
+        exit 0
+    fi
+    control=""
+    marker="$root/.maka-storage-root.json"
+    if [ -f "$marker" ]; then
+        root_id="$(sed -n 's/.*"rootId": *"\([0-9a-f]\{64\}\)".*/\1/p' "$marker")"
+        if [ -n "$root_id" ]; then
+            case "$(uname -s)" in
+                Darwin) control="$HOME/Library/Caches/Maka/runtime-hosts/$root_id" ;;
+                *) control="$HOME/.cache/maka/runtime-hosts/$root_id" ;;
+            esac
+            registration="$control/registration.json"
+            if [ -f "$registration" ]; then
+                pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$registration")"
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    echo "A Runtime Host (pid $pid) is running on $root. Stop it first (see docs/dev-host.md, Stop)." >&2
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+    echo "This deletes:"
+    echo "  $root"
+    if [ -n "$control" ] && [ -e "$control" ]; then echo "  $control"; fi
+    if [ "{{flags}}" != "--yes" ]; then
+        echo "Run 'just dev-root-reset --yes' to delete them."
+        exit 1
+    fi
+    rm -rf -- "$root"
+    if [ -n "$control" ]; then rm -rf -- "$control"; fi
+    echo "Deleted. The next 'just dev-host' creates a fresh State Root."
+
+# Build "target/bundle/Maka GPUI.app" (release, ad-hoc signed) and print its path.
+# Open it on the dev State Root with:
+#   open -n "target/bundle/Maka GPUI.app" --args --root "$PWD/.dev-root"
+bundle:
+    scripts/bundle-macos.sh
+
+# Capture golden protocol fixtures from a running dev Host.
+fixtures *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    script=scripts/capture-fixtures.sh
+    if [ ! -x "$script" ]; then
+        echo "$script not found. Fixture capture is not wired in yet; see docs/dev-host.md." >&2
+        exit 1
+    fi
+    exec "$script" {{args}}
+
+# Check that the protocol constant, MAKA_PIN, and $MAKA_REPO (default
+# ~/code/maka-pin) agree on the Maka commit and compatibility epoch.
+drift:
+    scripts/check-protocol-drift.sh
+
+# Check advisories, licenses, bans, and sources with cargo-deny.
+deny:
+    @command -v cargo-deny >/dev/null || { echo "cargo-deny is not installed. Install it with: cargo install --locked cargo-deny" >&2; exit 1; }
+    cargo deny check

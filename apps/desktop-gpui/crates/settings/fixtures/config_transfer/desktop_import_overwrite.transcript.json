@@ -1,0 +1,2941 @@
+[
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 4,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 6,
+          "slug": "relay",
+          "name": "Old relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": false,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m0"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-0000000000a2",
+          "revision": 2,
+          "slug": "deepseek",
+          "name": "Not DeepSeek",
+          "providerType": "moonshot",
+          "enabled": true,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "kimi-k2"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "kimi-k2",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 4,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 6,
+          "slug": "relay",
+          "name": "Old relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": false,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m0"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-0000000000a2",
+          "revision": 2,
+          "slug": "deepseek",
+          "name": "Not DeepSeek",
+          "providerType": "moonshot",
+          "enabled": true,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "kimi-k2"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "kimi-k2",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "connection.catalog.update",
+    "input": {
+      "expected": {
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "revision": 6
+      },
+      "changes": {
+        "name": "My relay",
+        "baseUrl": "https://relay.example/v1",
+        "enabled": true,
+        "enabledModelIds": [
+          "m1"
+        ],
+        "modelOverrides": {
+          "m1": {
+            "contextWindow": 64000
+          }
+        },
+        "requestBodyOverlay": {
+          "reasoning": {
+            "effort": "low"
+          }
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "catalogRevision": 5,
+      "connection": {
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "revision": 7
+      }
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 5,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 7,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m1",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-0000000000a2",
+          "revision": 2,
+          "slug": "deepseek",
+          "name": "Not DeepSeek",
+          "providerType": "moonshot",
+          "enabled": true,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "kimi-k2"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "kimi-k2",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 5,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 7,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m1",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-0000000000a2",
+          "revision": 2,
+          "slug": "deepseek",
+          "name": "Not DeepSeek",
+          "providerType": "moonshot",
+          "enabled": true,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "kimi-k2"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "kimi-k2",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "connection.catalog.remove",
+    "input": {
+      "expected": {
+        "connectionId": "00000001-0000-4000-8000-0000000000a2",
+        "revision": 2
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "catalogRevision": 6
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 6,
+      "defaultTarget": null,
+      "connectionCount": 1,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 7,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m1",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "connection.catalog.create",
+    "input": {
+      "expectedCatalogRevision": 6,
+      "connection": {
+        "slug": "deepseek",
+        "name": "DeepSeek",
+        "providerType": "deepseek",
+        "enabled": false,
+        "enabledModelIds": [
+          "deepseek-v4-flash"
+        ]
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "catalogRevision": 7,
+      "connection": {
+        "connectionId": "00000001-0000-4000-8000-000000000002",
+        "revision": 1
+      }
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 7,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 7,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m1",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-000000000002",
+          "revision": 1,
+          "slug": "deepseek",
+          "name": "DeepSeek",
+          "providerType": "deepseek",
+          "enabled": false,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "deepseek-v4-flash"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "deepseek-v4-flash",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "jev",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "jev",
+          "kind": "api_key"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 1,
+      "policy": {
+        "networkProxy": {
+          "enabled": false,
+          "protocol": "http",
+          "host": "127.0.0.1",
+          "port": 7890,
+          "authEnabled": false,
+          "username": "",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "",
+          "assistantTone": ""
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 1,
+      "operation": {
+        "kind": "set_jev",
+        "value": {
+          "enabled": false
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 2
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 2,
+      "policy": {
+        "networkProxy": {
+          "enabled": false,
+          "protocol": "http",
+          "host": "127.0.0.1",
+          "port": 7890,
+          "authEnabled": false,
+          "username": "",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "",
+          "assistantTone": ""
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 2,
+      "policy": {
+        "networkProxy": {
+          "enabled": false,
+          "protocol": "http",
+          "host": "127.0.0.1",
+          "port": 7890,
+          "authEnabled": false,
+          "username": "",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "",
+          "assistantTone": ""
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "network_proxy",
+        "kind": "password"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "network_proxy",
+          "kind": "password"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.network-proxy.update",
+    "input": {
+      "expectedPolicyRevision": 2,
+      "expectedCredential": null,
+      "networkProxy": {
+        "enabled": true,
+        "protocol": "http",
+        "host": "proxy.example",
+        "port": 8080,
+        "authEnabled": true,
+        "username": "ada",
+        "bypassList": [
+          "metaso.cn",
+          "baidu.com"
+        ],
+        "autoBypassDomains": [
+          "localhost",
+          "127.0.0.1",
+          "::1",
+          "192.168.*",
+          "10.*",
+          "*.local"
+        ]
+      },
+      "credential": {
+        "kind": "delete"
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 3,
+      "credentialStatus": {
+        "locator": {
+          "scope": "network_proxy",
+          "kind": "password"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 3,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "",
+          "assistantTone": ""
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 3,
+      "operation": {
+        "kind": "set_personalization",
+        "value": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 4
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 4,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 4,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 4,
+      "operation": {
+        "kind": "set_memory",
+        "value": {
+          "enabled": true,
+          "agentReadEnabled": false
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 5
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 5,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 5,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 5,
+      "operation": {
+        "kind": "set_workspace_instructions",
+        "value": {
+          "enabled": true
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 6
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 6,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 6,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": false
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 6,
+      "operation": {
+        "kind": "set_privacy",
+        "value": {
+          "incognitoActive": true
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 7
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 7,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 7,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "bypass"
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 7,
+      "operation": {
+        "kind": "set_chat_defaults",
+        "value": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 8
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 8,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 8,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 8,
+      "operation": {
+        "kind": "set_external_agents",
+        "value": {
+          "antigravity": {
+            "executable": ""
+          }
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 9
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 9,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 9,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "auto",
+          "executable": ""
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 9,
+      "operation": {
+        "kind": "set_shell",
+        "value": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 10
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 10,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 10,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": false,
+          "defaultProvider": "model"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 10,
+      "operation": {
+        "kind": "set_web_search",
+        "value": {
+          "enabled": true,
+          "defaultProvider": "tavily"
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 11
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 11,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": true,
+          "defaultProvider": "tavily"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "web_search",
+        "provider": "tavily",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "web_search",
+          "provider": "tavily",
+          "kind": "api_key"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.set",
+    "input": {
+      "locator": {
+        "scope": "web_search",
+        "provider": "tavily",
+        "kind": "api_key"
+      },
+      "expected": null,
+      "secret": "tvly-key"
+    },
+    "output": {
+      "kind": "committed",
+      "vaultRevision": 3,
+      "status": {
+        "locator": {
+          "scope": "web_search",
+          "provider": "tavily",
+          "kind": "api_key"
+        },
+        "configured": true,
+        "credentialId": "00000002-0000-4000-8000-000000000003",
+        "revision": 1,
+        "updatedAt": 1790000000000
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 11,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": true,
+          "defaultProvider": "tavily"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.mutate",
+    "input": {
+      "expectedRevision": 11,
+      "operation": {
+        "kind": "set_subagents",
+        "value": {
+          "presets": []
+        }
+      }
+    },
+    "output": {
+      "kind": "committed",
+      "revision": 12
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 12,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": true,
+          "defaultProvider": "tavily"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 12,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": true,
+          "defaultProvider": "tavily"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        },
+        "jev": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "network_proxy",
+        "kind": "password"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "network_proxy",
+          "kind": "password"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "web_search",
+        "provider": "tavily",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "web_search",
+          "provider": "tavily",
+          "kind": "api_key"
+        },
+        "configured": true,
+        "credentialId": "00000002-0000-4000-8000-000000000003",
+        "revision": 1,
+        "updatedAt": 1790000000000
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "jev",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "jev",
+          "kind": "api_key"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 7,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 7,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m1",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-000000000002",
+          "revision": 1,
+          "slug": "deepseek",
+          "name": "DeepSeek",
+          "providerType": "deepseek",
+          "enabled": false,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "deepseek-v4-flash"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "deepseek-v4-flash",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "connection",
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "connection",
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "kind": "api_key"
+        },
+        "configured": true,
+        "credentialId": "00000002-0000-4000-8000-000000000001",
+        "revision": 3,
+        "updatedAt": 1790000000000
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.set",
+    "input": {
+      "locator": {
+        "scope": "connection",
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "kind": "api_key"
+      },
+      "expected": {
+        "credentialId": "00000002-0000-4000-8000-000000000001",
+        "revision": 3
+      },
+      "expectedConnection": {
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "revision": 7,
+        "slug": "relay",
+        "providerType": "custom",
+        "effectiveBaseUrl": "https://relay.example/v1"
+      },
+      "secret": "sk-relay"
+    },
+    "output": {
+      "kind": "committed",
+      "vaultRevision": 4,
+      "status": {
+        "locator": {
+          "scope": "connection",
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "kind": "api_key"
+        },
+        "configured": true,
+        "credentialId": "00000002-0000-4000-8000-000000000001",
+        "revision": 4,
+        "updatedAt": 1790000000000
+      }
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 7,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 7,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m1",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-000000000002",
+          "revision": 1,
+          "slug": "deepseek",
+          "name": "DeepSeek",
+          "providerType": "deepseek",
+          "enabled": false,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "deepseek-v4-flash"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "deepseek-v4-flash",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "connection",
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "kind": "request_headers"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "connection",
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "kind": "request_headers"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.set",
+    "input": {
+      "locator": {
+        "scope": "connection",
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "kind": "request_headers"
+      },
+      "expected": null,
+      "expectedConnection": {
+        "connectionId": "00000001-0000-4000-8000-0000000000a1",
+        "revision": 7,
+        "slug": "relay",
+        "providerType": "custom",
+        "effectiveBaseUrl": "https://relay.example/v1"
+      },
+      "secret": "{\"X-Org\":\"acme\"}"
+    },
+    "output": {
+      "kind": "committed",
+      "vaultRevision": 5,
+      "status": {
+        "locator": {
+          "scope": "connection",
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "kind": "request_headers"
+        },
+        "configured": true,
+        "credentialId": "00000002-0000-4000-8000-000000000004",
+        "revision": 1,
+        "updatedAt": 1790000000000
+      }
+    }
+  },
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 7,
+      "defaultTarget": null,
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-0000000000a1",
+          "revision": 7,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m0",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m1",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-000000000002",
+          "revision": 1,
+          "slug": "deepseek",
+          "name": "DeepSeek",
+          "providerType": "deepseek",
+          "enabled": false,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "deepseek-v4-flash"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "deepseek-v4-flash",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "connection",
+        "connectionId": "00000001-0000-4000-8000-000000000002",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "connection",
+          "connectionId": "00000001-0000-4000-8000-000000000002",
+          "kind": "api_key"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.set",
+    "input": {
+      "locator": {
+        "scope": "connection",
+        "connectionId": "00000001-0000-4000-8000-000000000002",
+        "kind": "api_key"
+      },
+      "expected": null,
+      "expectedConnection": {
+        "connectionId": "00000001-0000-4000-8000-000000000002",
+        "revision": 1,
+        "slug": "deepseek",
+        "providerType": "deepseek",
+        "effectiveBaseUrl": "https://api.deepseek.com/"
+      },
+      "secret": "sk-deep"
+    },
+    "output": {
+      "kind": "committed",
+      "vaultRevision": 6,
+      "status": {
+        "locator": {
+          "scope": "connection",
+          "connectionId": "00000001-0000-4000-8000-000000000002",
+          "kind": "api_key"
+        },
+        "configured": true,
+        "credentialId": "00000002-0000-4000-8000-000000000005",
+        "revision": 1,
+        "updatedAt": 1790000000000
+      }
+    }
+  },
+  {
+    "operation": "memory.query",
+    "input": {
+      "kind": "state"
+    },
+    "output": {
+      "kind": "state",
+      "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "memoryRevision": null,
+      "pendingRevision": null,
+      "agentReadEnabled": false,
+      "status": "missing",
+      "entryCount": 0,
+      "activeEntryCount": 0,
+      "archivedEntryCount": 0,
+      "proposalCount": 0,
+      "backups": []
+    }
+  },
+  {
+    "operation": "memory.mutate",
+    "input": {
+      "kind": "replace_begin",
+      "expectedRevision": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+      "totalBytes": 25,
+      "contentSha256": "sha256:6dbd8ea737fa201e4ef5d0db10103990e7e1726adb4e612ff503ce0d82364321"
+    },
+    "output": {
+      "kind": "upload_opened",
+      "uploadId": "00000003-0000-4000-8000-000000000006",
+      "nextOffset": 0
+    }
+  },
+  {
+    "operation": "memory.mutate",
+    "input": {
+      "kind": "replace_chunk",
+      "uploadId": "00000003-0000-4000-8000-000000000006",
+      "offset": 0,
+      "chunkBase64": "IyBNZW1vcnkKCi0gUHJlZmVycyB0ZWEuCg=="
+    },
+    "output": {
+      "kind": "chunk_accepted",
+      "uploadId": "00000003-0000-4000-8000-000000000006",
+      "nextOffset": 25
+    }
+  },
+  {
+    "operation": "memory.mutate",
+    "input": {
+      "kind": "replace_commit",
+      "uploadId": "00000003-0000-4000-8000-000000000006"
+    },
+    "output": {
+      "kind": "committed",
+      "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "memoryRevision": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "pendingRevision": null
+    }
+  }
+]

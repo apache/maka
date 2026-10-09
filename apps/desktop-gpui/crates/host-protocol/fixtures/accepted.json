@@ -1,0 +1,12 @@
+{
+  "kind": "accepted",
+  "cooperativeHandoff": true,
+  "rootId": "9baff23d644801812f705011d20ef0977936dc8a92134cad8af53e60c16d767b",
+  "hostEpoch": "e3960af7-eacc-430c-89d9-13d115cfac23",
+  "connectionId": "e8395203-56ec-4195-bc52-0984ffd7a38d",
+  "selectedProtocol": 0,
+  "compatibilityEpoch": 197,
+  "compositionId": "maka.interactive",
+  "compositionRevision": "3",
+  "state": "ready"
+}

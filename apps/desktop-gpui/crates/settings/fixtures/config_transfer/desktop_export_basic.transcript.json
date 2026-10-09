@@ -1,0 +1,260 @@
+[
+  {
+    "operation": "connection.catalog.query",
+    "input": {
+      "kind": "start"
+    },
+    "output": {
+      "kind": "page",
+      "revision": 5,
+      "defaultTarget": {
+        "connectionId": "00000001-0000-4000-8000-00000000c001",
+        "modelId": "m1"
+      },
+      "connectionCount": 2,
+      "items": [
+        {
+          "kind": "connection",
+          "connectionIndex": 0,
+          "connectionId": "00000001-0000-4000-8000-00000000c001",
+          "revision": 3,
+          "slug": "relay",
+          "name": "My relay",
+          "providerType": "custom",
+          "baseUrl": "https://relay.example/v1",
+          "defaultApiProtocol": "openai-chat",
+          "enabled": true,
+          "modelSource": "fetched",
+          "lastTest": {
+            "status": "verified",
+            "checkedAt": "2026-09-28T10:00:00.000Z"
+          },
+          "requestBodyOverlay": {
+            "reasoning": {
+              "effort": "low"
+            }
+          },
+          "enabledModelIdCount": 1,
+          "modelCount": 2,
+          "catalogEntryCount": 2
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "modelId": "m1"
+        },
+        {
+          "kind": "model",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "model": {
+            "id": "m1",
+            "displayName": "Model one",
+            "contextWindow": 128000
+          }
+        },
+        {
+          "kind": "model",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "model": {
+            "id": "m2"
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 0,
+          "entry": {
+            "id": "m1",
+            "displayName": "Model one",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          "modelOverride": {
+            "contextWindow": 64000
+          }
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 0,
+          "itemIndex": 1,
+          "entry": {
+            "id": "m2",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        },
+        {
+          "kind": "connection",
+          "connectionIndex": 1,
+          "connectionId": "00000001-0000-4000-8000-00000000c002",
+          "revision": 2,
+          "slug": "deepseek",
+          "name": "DeepSeek",
+          "providerType": "deepseek",
+          "enabled": false,
+          "enabledModelIdCount": 1,
+          "modelCount": 0,
+          "catalogEntryCount": 1
+        },
+        {
+          "kind": "enabled_model_id",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "modelId": "deepseek-v4-flash"
+        },
+        {
+          "kind": "catalog_entry",
+          "connectionIndex": 1,
+          "itemIndex": 0,
+          "entry": {
+            "id": "deepseek-v4-flash",
+            "displayName": "DeepSeek V4 Flash",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "operation": "runtime.policy.query",
+    "input": {},
+    "output": {
+      "revision": 7,
+      "policy": {
+        "networkProxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ]
+        },
+        "personalization": {
+          "displayName": "Ada",
+          "assistantTone": "Brief."
+        },
+        "memory": {
+          "enabled": true,
+          "agentReadEnabled": false
+        },
+        "workspaceInstructions": {
+          "enabled": true
+        },
+        "privacy": {
+          "incognitoActive": true
+        },
+        "chatDefaults": {
+          "permissionMode": "ask",
+          "codeModeEnabled": true
+        },
+        "webSearch": {
+          "enabled": true,
+          "defaultProvider": "tavily"
+        },
+        "subagents": {
+          "presets": []
+        },
+        "shell": {
+          "preference": "git_bash",
+          "executable": "C:/Git/bin/bash.exe"
+        },
+        "externalAgents": {
+          "antigravity": {
+            "executable": ""
+          }
+        }
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "network_proxy",
+        "kind": "password"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "network_proxy",
+          "kind": "password"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "web_search",
+        "provider": "tavily",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "web_search",
+          "provider": "tavily",
+          "kind": "api_key"
+        },
+        "configured": true,
+        "credentialId": "00000002-0000-4000-8000-000000000004",
+        "revision": 1,
+        "updatedAt": 1790000000000
+      }
+    }
+  },
+  {
+    "operation": "credential.vault.query",
+    "input": {
+      "locator": {
+        "scope": "jev",
+        "kind": "api_key"
+      }
+    },
+    "output": {
+      "kind": "status",
+      "status": {
+        "locator": {
+          "scope": "jev",
+          "kind": "api_key"
+        },
+        "configured": false,
+        "credentialId": null,
+        "revision": null,
+        "updatedAt": null
+      }
+    }
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "requestId": "1afd32d773654c9eb304bf6b29fc8f74",
+  "operation": "project.catalog.mutate",
+  "ok": true,
+  "result": {
+    "kind": "project",
+    "project": {
+      "id": "ad44a405-b24a-47c8-ad09-683aa0351b25",
+      "aliases": [],
+      "name": "maka-gpui-fixture-workspace",
+      "locationCount": 1,
+      "archivedAt": null,
+      "available": true
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "requestId": "bd6bab0aeee44b708118f318c3d906ef",
+  "operation": "session.remove.preview",
+  "ok": true,
+  "result": {
+    "archivableSubtaskCount": 0
+  }
+}

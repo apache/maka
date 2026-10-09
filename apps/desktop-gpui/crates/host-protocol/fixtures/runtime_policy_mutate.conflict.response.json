@@ -1,0 +1,10 @@
+{
+  "requestId": "64e6bf9da2cb44958200774ef2185552",
+  "operation": "runtime.policy.mutate",
+  "ok": true,
+  "result": {
+    "kind": "revision_conflict",
+    "expectedRevision": 0,
+    "actualRevision": 1
+  }
+}

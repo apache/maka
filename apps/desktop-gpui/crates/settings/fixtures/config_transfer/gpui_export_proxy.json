@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "exportedAt": "2026-09-29T00:00:00.000Z",
+  "appVersion": "0.1.0",
+  "includedData": [
+    "connections",
+    "settings",
+    "credentials",
+    "memory"
+  ],
+  "data": {
+    "connections": [
+      {
+        "connectionId": "00000001-0000-4000-8000-00000000c001",
+        "slug": "relay",
+        "name": "My relay",
+        "providerType": "custom",
+        "baseUrl": "https://relay.example/v1",
+        "defaultApiProtocol": "openai-chat",
+        "enabled": true,
+        "defaultModel": "m1",
+        "enabledModelIds": [
+          "m1"
+        ],
+        "models": [
+          {
+            "id": "m1",
+            "displayName": "Model one",
+            "contextWindow": 128000
+          },
+          {
+            "id": "m2"
+          }
+        ],
+        "catalogEntries": [
+          {
+            "id": "m1",
+            "displayName": "Model one",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          },
+          {
+            "id": "m2",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        ],
+        "modelOverrides": {
+          "m1": {
+            "contextWindow": 64000
+          }
+        },
+        "requestBodyOverlay": {
+          "reasoning": {
+            "effort": "low"
+          }
+        },
+        "modelSource": "fetched",
+        "lastTestStatus": "verified",
+        "lastTestAt": "2026-09-28T10:00:00.000Z",
+        "createdAt": 0,
+        "updatedAt": 3
+      },
+      {
+        "connectionId": "00000001-0000-4000-8000-00000000c002",
+        "slug": "deepseek",
+        "name": "DeepSeek",
+        "providerType": "deepseek",
+        "enabled": false,
+        "defaultModel": "",
+        "enabledModelIds": [
+          "deepseek-v4-flash"
+        ],
+        "models": [],
+        "catalogEntries": [
+          {
+            "id": "deepseek-v4-flash",
+            "displayName": "DeepSeek V4 Flash",
+            "canUseAsChatDefault": true,
+            "isDefault": false,
+            "supportsVision": false,
+            "thinkingLevels": []
+          }
+        ],
+        "createdAt": 0,
+        "updatedAt": 2
+      }
+    ],
+    "settings": {
+      "network": {
+        "proxy": {
+          "enabled": true,
+          "protocol": "http",
+          "host": "proxy.example",
+          "port": 8080,
+          "authEnabled": true,
+          "username": "ada",
+          "bypassList": [
+            "metaso.cn",
+            "baidu.com"
+          ],
+          "autoBypassDomains": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "192.168.*",
+            "10.*",
+            "*.local"
+          ],
+          "password": "proxy-pw",
+          "credentialTarget": {
+            "protocol": "http",
+            "host": "proxy.example",
+            "port": 8080,
+            "username": "ada"
+          }
+        }
+      },
+      "personalization": {
+        "displayName": "Ada",
+        "assistantTone": "Brief."
+      },
+      "webSearch": {
+        "enabled": true,
+        "defaultProvider": "tavily",
+        "providers": {
+          "tavily": {
+            "apiKey": "tvly-key",
+            "credentialSource": "saved",
+            "credentialVersion": 1,
+            "credentialStatus": "untested",
+            "credentialCheckedAt": "2026-09-21T14:13:20.000Z"
+          }
+        }
+      },
+      "localMemory": {
+        "enabled": true,
+        "agentReadEnabled": false
+      },
+      "workspaceInstructions": {
+        "enabled": true
+      },
+      "privacy": {
+        "incognitoActive": true
+      },
+      "jev": {
+        "enabled": false,
+        "apiKey": ""
+      },
+      "chatDefaults": {
+        "permissionMode": "ask",
+        "codeModeEnabled": true
+      },
+      "externalAgents": {
+        "antigravity": {
+          "executable": ""
+        }
+      },
+      "shell": {
+        "preference": "git_bash",
+        "executable": "C:/Git/bin/bash.exe"
+      },
+      "subagents": {
+        "presets": []
+      }
+    },
+    "credentials": [
+      {
+        "slug": "relay",
+        "kind": "api_key",
+        "value": "sk-relay",
+        "connection": {
+          "providerType": "custom",
+          "effectiveBaseUrl": "https://relay.example/v1"
+        }
+      },
+      {
+        "slug": "relay",
+        "kind": "request_headers",
+        "value": "{\"X-Org\":\"acme\"}",
+        "connection": {
+          "providerType": "custom",
+          "effectiveBaseUrl": "https://relay.example/v1"
+        }
+      },
+      {
+        "slug": "deepseek",
+        "kind": "api_key",
+        "value": "sk-deep",
+        "connection": {
+          "providerType": "deepseek",
+          "effectiveBaseUrl": "https://api.deepseek.com/"
+        }
+      }
+    ],
+    "memory": "# Memory\n\n- Prefers tea.\n"
+  }
+}

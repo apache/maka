@@ -1,0 +1,14 @@
+# Cargo build output
+/target/
+
+# Dedicated development State Root for a local Runtime Host.
+# The Host copies provider API keys from the environment into its credential
+# vault here, so this directory must never be committed.
+/.dev-root/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+
+# Python bytecode from scripts/
+__pycache__/

@@ -1,0 +1,19 @@
+{
+  "kind": "incompatible",
+  "hostEpoch": "e3960af7-eacc-430c-89d9-13d115cfac23",
+  "protocolMin": 0,
+  "protocolMax": 0,
+  "compatibilityEpoch": 197,
+  "compositionId": "maka.interactive",
+  "compositionRevision": "3",
+  "state": "ready",
+  "replacement": "blocked_by_residency",
+  "activity": {
+    "connections": 1,
+    "activeOperations": 0,
+    "processUptimeSeconds": 48,
+    "residencies": [],
+    "drainResidencies": 0,
+    "cooperativeHandoff": true
+  }
+}

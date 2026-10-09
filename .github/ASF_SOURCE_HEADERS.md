@@ -73,8 +73,8 @@ Subtracting in a checkout is not the enumeration excusing itself. It decides whi
 | --- | --- |
 | `/* … */` | `.cjs`, `.css`, `.js`, `.mjs`, `.mts`, `.rs`, `.swift`, `.ts`, `.tsx` |
 | `//` | `.jsonc` |
-| `#` | `.ps1`, `.py`, `.sh`, `.toml`, `.yaml`, `.yml`, `Dockerfile`, `network-policy` |
-| `<!-- … -->` | `.html`, `.md` |
+| `#` | `.ps1`, `.py`, `.sh`, `.toml`, `.yaml`, `.yml`, `Dockerfile`, `justfile`, `MAKA_PIN`, `network-policy` |
+| `<!-- … -->` | `.html`, `.md`, `.svg` (after an XML declaration, if any) |
 
 ## Reviewed exclusions
 

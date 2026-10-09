@@ -1,0 +1,9 @@
+{
+  "requestId": "61d4e2f631d242e89f0a90bbf8b2284c",
+  "operation": "session.remove",
+  "ok": true,
+  "result": {
+    "kind": "removed",
+    "sessionId": "fixture-8dc32a9e833145de99ebe245f9f155c7"
+  }
+}

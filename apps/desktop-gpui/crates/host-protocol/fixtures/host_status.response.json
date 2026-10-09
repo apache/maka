@@ -1,0 +1,14 @@
+{
+  "requestId": "6dff603a8dad4aa99d22d9d11ea49414",
+  "operation": "host.status",
+  "ok": true,
+  "result": {
+    "hostEpoch": "e3960af7-eacc-430c-89d9-13d115cfac23",
+    "compositionId": "maka.interactive",
+    "compositionRevision": "3",
+    "state": "ready",
+    "connections": 1,
+    "activeOperations": 1,
+    "activeResidencies": 0
+  }
+}

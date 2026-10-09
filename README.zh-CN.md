@@ -160,6 +160,7 @@ Experiment → Cells → Attempts → Results
 
 ```text
 apps/desktop/          Electron main / preload / React renderer
+apps/desktop-gpui/     实验性的 GPUI 桌面壳，接 Runtime Host（Rust，独立 Cargo workspace）
 
 packages/core/         Session、Event、Permission、Connection 等纯 contracts
 packages/storage/      SQLite 运行状态、配置与 payload stores

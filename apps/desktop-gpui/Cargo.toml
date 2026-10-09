@@ -1,0 +1,130 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[workspace]
+resolver = "3"
+members = [
+  "crates/app",
+  "crates/automations",
+  "crates/bots",
+  "crates/conversation",
+  "crates/extensions",
+  "crates/host-client",
+  "crates/host-protocol",
+  "crates/pet",
+  "crates/review",
+  "crates/session",
+  "crates/settings",
+  "crates/shared",
+  "crates/transcript-model",
+  "crates/workspace",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.98"
+publish = false
+
+[workspace.dependencies]
+host-protocol = { path = "crates/host-protocol" }
+host-client = { path = "crates/host-client" }
+transcript-model = { path = "crates/transcript-model" }
+shared = { path = "crates/shared" }
+workspace = { path = "crates/workspace" }
+session = { path = "crates/session" }
+conversation = { path = "crates/conversation" }
+extensions = { path = "crates/extensions" }
+automations = { path = "crates/automations" }
+pet = { path = "crates/pet" }
+review = { path = "crates/review" }
+settings = { path = "crates/settings" }
+bots = { path = "crates/bots" }
+
+# Pinned to git main for the Diff component; back to the crates.io release when it ships (expected 2026-10-12).
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "1e41f17e27ea46589af9c6c428d18b5bf23ef4f6" }
+
+anyhow = "1"
+async-channel = "2"
+async-fs = "2"
+async-io = "2"
+async-lock = "3"
+async-net = "2"
+async-process = "2"
+# WebSocket framing over any futures-io stream (the remote Host transport).
+# Only the client handshake: no runtime integration, no TLS feature; TLS is
+# futures-rustls below.
+async-tungstenite = { version = "0.35", default-features = false, features = ["handshake"] }
+base64 = "0.22"
+blocking = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+fastrand = "2"
+futures-lite = "2"
+# TLS for `wss:` Hosts on the ring provider, which GPUI's graph already
+# builds; no aws-lc.
+futures-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+getrandom = "0.4"
+# Only the codecs attachments decode and encode (the conversation crate).
+# GPUI already depends on this version with more of them.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
+log = "0.4"
+# QR codes for the chat bots' guided setup (the settings crate draws them);
+# the module matrix only, no image or SVG renderer.
+qrcode = { version = "0.14", default-features = false }
+rustls-platform-verifier = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# The system's preferred languages, for the Follow system interface language.
+sys-locale = "0.3"
+thiserror = "2"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+# The shipped app (scripts/bundle-macos.sh). Thin LTO with one codegen unit
+# trades build time for a smaller, faster binary. `panic = "unwind"` is
+# Cargo's default, written out so that switching to abort for size is a
+# visible decision.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+# Debug builds keep line tables for our crates (backtraces still name the
+# line) and no debug info for dependencies: full debug info for gpui and its
+# graph grew target/debug past 40 GB within hours of parallel test builds.
+[profile.dev]
+debug = "line-tables-only"
+# Incremental caches of a dozen crates, rebuilt by parallel test runs,
+# reached 20 GB on their own; a clean crate rebuild costs less than that.
+incremental = false
+
+[profile.dev.package."*"]
+debug = false

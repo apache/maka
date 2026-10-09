@@ -1,0 +1,74 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "maka-gpui"
+path = "src/main.rs"
+
+[dependencies]
+automations.workspace = true
+bots.workspace = true
+conversation.workspace = true
+extensions.workspace = true
+futures-lite.workspace = true
+gpui-kit.workspace = true
+host-protocol.workspace = true
+log.workspace = true
+pet.workspace = true
+review.workspace = true
+session.workspace = true
+settings.workspace = true
+shared.workspace = true
+workspace.workspace = true
+
+# The Dock tile's content view, for the app icon Settings chooses (see
+# src/dock_icon.rs). Already in GPUI's graph; only these calls, all safe.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSApplication",
+  "NSCell",
+  "NSControl",
+  "NSDockTile",
+  "NSImage",
+  "NSImageView",
+  "NSResponder",
+  "NSView",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSGeometry"] }
+
+[dev-dependencies]
+async-channel.workspace = true
+bots = { workspace = true, features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
+host-client.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

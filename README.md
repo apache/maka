@@ -161,6 +161,7 @@ Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, cod
 
 ```text
 apps/desktop/          Electron main / preload / React renderer
+apps/desktop-gpui/     Experimental GPUI desktop shell for the Runtime Host (Rust, own Cargo workspace)
 
 packages/core/         Pure contracts for Sessions, Events, Permissions, and Connections
 packages/storage/      SQLite operational state, configuration, and payload stores

@@ -1,0 +1,16 @@
+{
+  "requestId": "b4f91210a9f34399a496e34c9ccb7f19",
+  "operation": "connection.catalog.update",
+  "ok": true,
+  "result": {
+    "kind": "connection_stale",
+    "expected": {
+      "connectionId": "8904abca-2dca-45df-a1aa-47adeb3251fb",
+      "revision": 1
+    },
+    "actual": {
+      "connectionId": "8904abca-2dca-45df-a1aa-47adeb3251fb",
+      "revision": 2
+    }
+  }
+}

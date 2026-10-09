@@ -252,6 +252,10 @@ rejected even if a path is listed here.
 - `website/src/assets/social.*.png`: social previews rendered from Maka's own website by `website/scripts/readme-hero.mjs`, using the same copy, styles and licensed fonts as the README heroes.
 - `apps/desktop/assets/icon.png`: the AI-generated application mark recorded above.
 - `apps/desktop/assets/app-icons/*.png`: `mono.png` is the contributor-submitted grayscale derivative of the application mark from pull request #3431; the remaining variants are reproducibly rendered from the Apache-licensed geometry and palette in `scripts/generate-app-icons.py` and byte-checked by `scripts/generate-app-icons.test.mjs`.
+- `apps/desktop-gpui/assets/maka-icon.png`: the GPUI client's application icon, an unchanged copy of `apps/desktop/assets/app-icons/sky.png`.
+- `apps/desktop-gpui/assets/app-icons/*.png`: unchanged copies of `apps/desktop/assets/app-icons/*.png`, recorded above, and `default.png`, an unchanged copy of `apps/desktop/assets/icon.png`.
+- `apps/desktop-gpui/assets/app-icons/thumbnails/*.png`: the same icons scaled to 128 px by `apps/desktop-gpui/scripts/app-icons.sh` with macOS `sips`.
+- `apps/desktop-gpui/crates/pet/fixtures/demo-pet/sheet.png`: a test sprite sheet that `apps/desktop-gpui/scripts/demo-pet.py` draws with the Python standard library and reproduces byte for byte.
 - `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.
 - `apps/desktop/resources/status/*.png`: the status images recorded above and reproducibly rendered by `scripts/generate-cu-status-icons.mjs`.
 - `docs/images/**/*.png`: screenshots of Maka's own user interface committed as review evidence, including pull requests #3584 and #3588.

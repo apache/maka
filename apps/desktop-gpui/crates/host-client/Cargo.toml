@@ -1,0 +1,68 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[package]
+name = "host-client"
+description = "Async client for the Maka Runtime Host over local IPC, WebSocket, and SSH"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+host-protocol.workspace = true
+async-channel.workspace = true
+async-fs.workspace = true
+async-io.workspace = true
+async-lock.workspace = true
+async-net.workspace = true
+async-process.workspace = true
+async-tungstenite.workspace = true
+base64.workspace = true
+blocking.workspace = true
+dirs.workspace = true
+fastrand.workspace = true
+futures-lite.workspace = true
+futures-rustls.workspace = true
+getrandom.workspace = true
+log.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+# Named pipes with overlapped I/O behind a safe API, so one thread can wait
+# in a read while another writes (see src/named_pipe.rs). Windows only, and
+# without its tokio integration.
+[target.'cfg(windows)'.dependencies]
+interprocess = { version = "2.4", default-features = false }
+
+[features]
+# A scripted WebSocket Host for other crates' tests (`test_support`).
+test-support = []
+
+[dev-dependencies]
+anyhow.workspace = true
+# Fixture capture pretty-prints frames in the key order the Host sent them.
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[lints]
+workspace = true

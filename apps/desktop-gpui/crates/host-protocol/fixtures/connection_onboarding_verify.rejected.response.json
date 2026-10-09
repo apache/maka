@@ -1,0 +1,9 @@
+{
+  "requestId": "766b83777f9147b4befac767dd6f455d",
+  "operation": "connection.onboarding.verify",
+  "ok": true,
+  "result": {
+    "kind": "rejected",
+    "reason": "slug_taken"
+  }
+}

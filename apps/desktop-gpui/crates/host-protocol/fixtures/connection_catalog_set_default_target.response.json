@@ -1,0 +1,9 @@
+{
+  "requestId": "9c3b49f720564d75968d2e1a1791f944",
+  "operation": "connection.catalog.set-default-target",
+  "ok": true,
+  "result": {
+    "kind": "committed",
+    "catalogRevision": 6
+  }
+}

@@ -1,0 +1,28 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="思考中的小表情">
+<g fill="none" stroke="#171717" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M40 54 L53 54 L54 54"><animate attributeName="d" dur="2.4s" repeatCount="indefinite" values="M40 54 L53 54 L54 54;M40 54 L53 54 L54 54;M43 54 L57 54 L58 46;M43 54 L57 54 L58 46;M40 54 L53 54 L54 54;M40 54 L53 54 L54 54" keyTimes="0;0.18;0.43;0.65;0.9;1" calcMode="spline" keySplines=".42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1"/></path>
+<path d="M68 53 L82 53"><animate attributeName="d" dur="2.4s" repeatCount="indefinite" values="M68 53 L82 53;M68 53 L82 53;M65 53 L79 53;M65 53 L79 53;M68 53 L82 53;M68 53 L82 53" keyTimes="0;0.18;0.43;0.65;0.9;1" calcMode="spline" keySplines=".42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1;.42 0 .58 1"/></path>
+</g>
+<g fill="#171717">
+<ellipse cx="47" cy="65" rx="3.6" ry="3.6"><animate attributeName="rx" values="3.6;3.6;4.8;4.8;3.6;3.6" keyTimes="0;0.18;0.43;0.65;0.9;1" dur="2.4s" repeatCount="indefinite"/><animate attributeName="ry" values="3.6;3.6;4.8;4.8;3.6;3.6" keyTimes="0;0.18;0.43;0.65;0.9;1" dur="2.4s" repeatCount="indefinite"/></ellipse>
+<ellipse cx="74" cy="65" rx="3.6" ry="3.6"><animate attributeName="rx" values="3.6;3.6;4.8;4.8;3.6;3.6" keyTimes="0;0.18;0.43;0.65;0.9;1" dur="2.4s" repeatCount="indefinite"/><animate attributeName="ry" values="3.6;3.6;4.8;4.8;3.6;3.6" keyTimes="0;0.18;0.43;0.65;0.9;1" dur="2.4s" repeatCount="indefinite"/></ellipse>
+</g></svg>

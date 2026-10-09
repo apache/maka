@@ -1,0 +1,14 @@
+{
+  "requestId": "892acfe258364142bb4606bf5740e044",
+  "operation": "connection.onboarding.save",
+  "ok": true,
+  "result": {
+    "kind": "saved",
+    "connection": {
+      "connectionId": "8904abca-2dca-45df-a1aa-47adeb3251fb",
+      "revision": 1,
+      "slug": "fixture-onboarding-fac2b8ad",
+      "providerType": "custom"
+    }
+  }
+}

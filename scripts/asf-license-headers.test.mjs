@@ -113,6 +113,17 @@ describe('ASF header application', () => {
     assert.ok(hasHeader(updated, 'html'));
   });
 
+  test('keeps an XML declaration first', () => {
+    const source = '<?xml version="1.0" encoding="UTF-8"?>\n<svg></svg>\n';
+    const updated = applyHeader(source, 'xml');
+    assert.equal(
+      updated,
+      `<?xml version="1.0" encoding="UTF-8"?>\n${renderHeader('xml')}\n<svg></svg>\n`,
+    );
+    assert.ok(hasHeader(updated, 'xml'));
+    assert.equal(commentStyleFor('assets/icon.svg'), 'xml');
+  });
+
   test('keeps Markdown front matter first', () => {
     const source = '---\nname: skill\n---\n\n# Title\n';
     const updated = applyHeader(source, 'html');

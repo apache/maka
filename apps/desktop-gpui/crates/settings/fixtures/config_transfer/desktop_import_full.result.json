@@ -1,0 +1,17 @@
+{
+  "connections": {
+    "created": 2,
+    "overwritten": 0,
+    "skipped": 0
+  },
+  "settings": {
+    "applied": true
+  },
+  "credentials": {
+    "applied": 3,
+    "skipped": 0
+  },
+  "memory": {
+    "applied": true
+  }
+}

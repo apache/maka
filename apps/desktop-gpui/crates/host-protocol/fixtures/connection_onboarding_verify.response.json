@@ -1,0 +1,19 @@
+{
+  "requestId": "beace17e53394c17adf097e1edc3c704",
+  "operation": "connection.onboarding.verify",
+  "ok": true,
+  "result": {
+    "kind": "verified",
+    "models": [
+      {
+        "id": "qwen3:0.6b"
+      },
+      {
+        "id": "qwen2.5:7b"
+      },
+      {
+        "id": "phi4:latest"
+      }
+    ]
+  }
+}
