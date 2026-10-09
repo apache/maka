@@ -34,6 +34,7 @@ export interface AppQuitCoordinatorDeps {
   onCleanupError(error: unknown): void;
   onWindowCreationError(error: unknown): void;
   resumeQuit(): void;
+  revealPendingQuit(): void;
 }
 
 type AppQuitPhase = 'running' | 'preparing' | 'cleaning' | 'ready-to-exit';
@@ -59,6 +60,9 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
     handleBeforeQuit(event): void {
       if (phase === 'ready-to-exit') return;
       event.preventDefault();
+      // A repeated request joins the quit already in progress; while it may
+      // still be waiting on a decision, show that decision again.
+      if (phase === 'preparing') deps.revealPendingQuit();
       if (phase !== 'running') return;
       phase = 'preparing';
       windowCreationAbort.abort();
