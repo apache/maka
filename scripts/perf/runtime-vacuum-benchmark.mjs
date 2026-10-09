@@ -24,8 +24,9 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 const MiB = 1024 * 1024;
-const sizes = (process.argv.slice(2).length ? process.argv.slice(2) : ['100', '1024', '3072'])
-  .map(Number);
+const sizes = (process.argv.slice(2).length ? process.argv.slice(2) : ['100', '1024', '3072']).map(
+  Number,
+);
 const root = mkdtempSync(join(tmpdir(), 'maka-vacuum-bench-'));
 
 try {
@@ -60,16 +61,18 @@ try {
     conversion.exec('VACUUM');
     const vacuumMs = performance.now() - vacuumStart;
     conversion.close();
-    console.log(JSON.stringify({
-      platform: `${process.platform}-${process.arch}`,
-      node: process.version,
-      sqlite: process.versions.sqlite,
-      targetMiB,
-      sourceBytesBeforeDelete: before,
-      insertedRows: inserted,
-      populationMs: Math.round(populatedMs),
-      conversionVacuumMs: Math.round(vacuumMs),
-    }));
+    console.log(
+      JSON.stringify({
+        platform: `${process.platform}-${process.arch}`,
+        node: process.version,
+        sqlite: process.versions.sqlite,
+        targetMiB,
+        sourceBytesBeforeDelete: before,
+        insertedRows: inserted,
+        populationMs: Math.round(populatedMs),
+        conversionVacuumMs: Math.round(vacuumMs),
+      }),
+    );
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
