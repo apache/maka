@@ -6,8 +6,7 @@
  * Core: @astryxdesign/core@0.1.0
  */
 
-import { neutralTheme } from '@astryxdesign/theme-neutral';
-import { neutralIconRegistry } from '@astryxdesign/theme-neutral';
+import { neutralTheme, neutralIconRegistry } from '@astryxdesign/theme-neutral';
 const themeIcons = {...neutralTheme["icons"], ...neutralIconRegistry};
 /**
  * maka theme — built by `astryx theme build`
