@@ -71,7 +71,10 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       const definition = PROVIDER_REGISTRY[type];
       assert.equal(definition.authKind, 'api_key');
       assert.equal(definition.baseUrl, '');
-      assert.equal(definition.runtimeAdapter.requireBaseUrl, true);
+      assert.ok(
+        definition.runtimeAdapter.kind === 'openai-compatible' &&
+          definition.runtimeAdapter.requireBaseUrl,
+      );
       assert.equal(definition.category, 'custom');
     }
   });
