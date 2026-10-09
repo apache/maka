@@ -379,8 +379,9 @@ export function buildPreviewPreflightTools(
           ),
       })
       .strict(),
-    categoryHint: 'read',
-    recoveryMode: 'replay_safe',
+    // No categoryHint or recoveryMode: this tool is published as a client
+    // capability, whose descriptor carries neither, and the Runtime Host
+    // assigns both itself. Declaring them here would only mislead a reader.
     impl: async ({ origin: rawOrigin }, { sessionId, abortSignal }) => {
       abortSignal.throwIfAborted();
       // Validate before probing so a malformed origin is an argument error the
@@ -393,7 +394,11 @@ export function buildPreviewPreflightTools(
       const urlSchemes = classifyUrlSchemes(probeNavigableSchemes());
       // Skip the drive check when there is demonstrably no view host: asking
       // would throw, and an exception dressed as `unknown` would hide the
-      // settled `unsupported` answer the caller needs.
+      // settled `unsupported` answer the caller needs. Desktop, the only
+      // publisher today, registers its host before any offer is published, so
+      // this branch is unreachable there; it is kept because GUI availability
+      // is part of the classification #5235 builds on, and that contract must
+      // answer correctly for a publisher without a view host rather than throw.
       const browserView =
         guiSurface.status === 'unsupported'
           ? BROWSER_VIEW_WITHOUT_HOST

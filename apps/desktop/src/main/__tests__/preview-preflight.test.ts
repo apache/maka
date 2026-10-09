@@ -31,6 +31,7 @@ import { after, describe, it } from 'node:test';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { parseNavigable } from '../browser/logic.js';
 import {
+  ARTIFACT_PREVIEW_HANDOFF,
   assertLoopbackOrigin,
   buildPreviewPreflightTools,
   classifyBrowserView,
@@ -47,6 +48,7 @@ import {
   createPreviewPreflightAuthority,
   LOOPBACK_PROBE_TIMEOUT_MS,
 } from '../preview-preflight-probes.js';
+import { buildArtifactPreviewOfferTools } from '../managed-artifact-preview-tools.js';
 
 function ctx(signal?: AbortSignal): MakaToolContext {
   return {
@@ -295,6 +297,19 @@ describe('preview preflight tool', () => {
       /turn ended/u,
     );
     await assert.rejects(() => run(healthyAuthority(), {}, AbortSignal.abort(new Error('gone'))), /gone/u);
+  });
+});
+
+describe('artifact preview offer', () => {
+  it('publishes the preflight together with the tool it hands off to', () => {
+    const names = buildArtifactPreviewOfferTools({
+      preflight: healthyAuthority(),
+      prepare: () => Promise.reject(new Error('not called')),
+    }).map((tool) => tool.name);
+    assert.deepEqual(names, ['preview_preflight', 'ArtifactPreview']);
+    // The handoff may only name a tool this same offer grants.
+    const named = names.filter((name) => ARTIFACT_PREVIEW_HANDOFF.includes(name));
+    assert.deepEqual(named, ['ArtifactPreview']);
   });
 });
 

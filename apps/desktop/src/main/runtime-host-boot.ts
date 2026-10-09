@@ -188,8 +188,7 @@ import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import { ManagedArtifactPreview } from './managed-artifact-preview.js';
-import { buildManagedArtifactPreviewTools } from './managed-artifact-preview-tools.js';
-import { buildPreviewPreflightTools } from './preview-preflight.js';
+import { buildArtifactPreviewOfferTools } from './managed-artifact-preview-tools.js';
 import { createPreviewPreflightAuthority } from './preview-preflight-probes.js';
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
@@ -1070,15 +1069,15 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
             // "requires an HTTP origin" error it exists to explain. And the
             // route it hands off to is ArtifactPreview, so the two must be
             // granted together or the handoff names a tool the caller lacks.
-            tools: [
-              ...buildPreviewPreflightTools(createPreviewPreflightAuthority()),
-              ...buildManagedArtifactPreviewTools(async (sessionId, artifactId, signal) => {
+            tools: buildArtifactPreviewOfferTools({
+              preflight: createPreviewPreflightAuthority(),
+              prepare: async (sessionId, artifactId, signal) => {
                 if (!scope || !runtimeHostManager?.ownsScope(scope)) throw new Error('Preview target is unavailable');
                 const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
                 if (!target?.isActive()) throw new Error('Preview target is no longer active');
                 return managedArtifactPreview.prepare(scope.targetEpoch, target.client, sessionId, artifactId, signal);
-              }),
-            ],
+              },
+            }),
           },
           {
             offerId: "desktop_settings",
