@@ -97,17 +97,21 @@ describe('tool row detail availability', () => {
       args: { path: '/private/data' },
       result: { kind: 'text', text: 'User denied permission request' },
     }, false);
+    assertRow({ result: { kind: 'text', text: '  \n\t ' } }, false);
+    assertRow({ result: summaryResult('   ') }, false);
   });
 
   it('compares untitled invocation text using trim, redaction and the row cap', () => {
     for (const command of [
       '  git status  \n',
-      `echo ${'x'.repeat(300)}`,
       'curl -H "Authorization: Bearer secret-token-value" https://example.com',
     ]) {
       const markup = assertRow({ toolName: 'Bash', args: { command } }, false);
       assert.doesNotMatch(markup, /secret-token-value/);
     }
+    // The row shows only the first 119 characters; the tail is readable only
+    // inside the detail panel, so a capped invocation stays expandable.
+    assertRow({ toolName: 'Bash', args: { command: `echo ${'x'.repeat(300)}` } }, true);
     assertRow({ args: { command: 'git status' }, intent: 'Inspect working tree' }, true);
     assertRow({ args: { command: 'echo first\necho second' } }, true);
   });
@@ -122,9 +126,11 @@ describe('tool row detail availability', () => {
     }, true);
     assert.ok(markup.includes(intent), 'the target retains its suffix beyond 120 characters');
     assertRow({ intent, result: quietResult(`  ${intent}  `) }, false);
+    // Same rule at the 240-character intent cap: a body longer than the
+    // displayed target keeps its tail only inside the detail panel.
     assertRow({
       intent: `Inspect   ${'x'.repeat(250)}`, result: quietResult(`Inspect ${'x'.repeat(250)}`),
-    }, false);
+    }, true);
   });
 
   it('keeps args-only details when the target omits information', () => {
@@ -144,6 +150,12 @@ describe('tool row detail availability', () => {
         assert.doesNotMatch(markup, /\[archived_tool_result\]/);
       }
     }
+    // An archived result on an interrupted call keeps its outcome word.
+    const interrupted = assertRow({ status: 'interrupted', result: archivedResult }, false);
+    const copy = getToolActivityCopy('en');
+    assert.ok(
+      interrupted.includes(`${copy.status.interrupted} · ${copy.result.archivedStatus.not_loaded}`),
+    );
   });
 
   it('preserves text, diff, terminal, shell and web search activation', () => {
@@ -170,6 +182,24 @@ describe('tool row detail availability', () => {
       { kind: 'text', text: 'requires bypass', sandboxFailure: { reason: 'requires_bypass', source: 'client_capability' } },
     ];
     for (const result of results) assertRow({ result, status: 'errored' }, true);
+  });
+
+  it('ignores session-scoped detail plugin keys outside a session scope', () => {
+    const core = new MakaClientSlotCore();
+    core.register({ name: 'conversation.tool.detail', key: 'CustomTool' }, () => null);
+    const unscoped = renderWithLocale(createElement(
+      MakaClientSlotProvider, { core },
+      createElement(ToolTrow, { items: [{ ...baseItem }] }),
+    ));
+    assertExpandable(parseHTML(unscoped).document, false);
+    const scoped = renderWithLocale(createElement(
+      MakaClientSlotProvider, { core },
+      createElement(
+        MakaClientSessionScope, { sessionId: 'session-1' },
+        createElement(ToolTrow, { items: [{ ...baseItem }] }),
+      ),
+    ));
+    assertExpandable(parseHTML(scoped).document, true);
   });
 
   it('renders summary code with text redaction, localization and actual line truncation', () => {

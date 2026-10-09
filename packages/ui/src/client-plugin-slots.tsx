@@ -748,6 +748,18 @@ interface SlotHostValue {
 
 const MakaClientSlotHostContext = createContext<SlotHostValue | null>(null);
 
+/**
+ * Whether a Slot's contributions would render for this host: the spec must be
+ * declared, and session-scoped Slots need a sessionId. Mirrors the outlet's
+ * gate so occupancy hooks cannot report content the outlet would hide.
+ */
+function slotEntriesRenderForHost(
+  spec: MakaClientSlotSpec | undefined,
+  sessionId: string | undefined,
+): spec is MakaClientSlotSpec {
+  return spec !== undefined && !(spec.scope === 'session' && sessionId === undefined);
+}
+
 /** Whether a Slot currently has at least one live contribution. */
 export function useMakaClientSlotOccupied(
   name: keyof MakaClientSlotMap & string,
@@ -780,13 +792,15 @@ export function useMakaClientSlotOccupiedKeys(
     [Name in keyof MakaClientSlotMap]: MakaClientSlotMap[Name]['kind'] extends 'keyed' ? Name : never;
   }[keyof MakaClientSlotMap] & string,
 ): ReadonlySet<string> {
-  const core = useContext(MakaClientSlotHostContext)?.core;
+  const host = useContext(MakaClientSlotHostContext);
+  const core = host?.core;
   useSyncExternalStore(
     (listener) => core?.subscribe(name, listener) ?? (() => {}),
     () => core?.getVersion(name) ?? 0,
     () => core?.getVersion(name) ?? 0,
   );
-  return new Set(core?.activeEntries(name).flatMap((entry) =>
+  if (!core || !slotEntriesRenderForHost(core.spec(name), host?.sessionId)) return new Set();
+  return new Set(core.activeEntries(name).flatMap((entry) =>
     entry.options.key === undefined ? [] : [entry.options.key],
   ));
 }
@@ -911,7 +925,7 @@ function DynamicMakaClientSlotOutlet(props: {
   if (!host || !core) return props.options?.fallback ?? null;
 
   const spec = core.specDynamic(props.name);
-  if (!spec || (spec.scope === 'session' && host.sessionId === undefined)) {
+  if (!slotEntriesRenderForHost(spec, host.sessionId)) {
     return props.options?.fallback ?? null;
   }
   const active = core.activeEntries(props.name);

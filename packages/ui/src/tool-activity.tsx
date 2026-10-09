@@ -78,6 +78,7 @@ import { cn } from './ui.js';
 import {
   describeLoadToolResult,
   formatToolIntent,
+  normalizeToolIntent,
   type LoadToolGroupKind,
 } from './tool-format.js';
 import {
@@ -359,15 +360,23 @@ function toolCallHasDetail(
       return false;
     case 'quietText': {
       const text = body.body.trim();
+      // Compare the uncapped body to the displayed (capped) target: a line cut
+      // by the row's cap still holds its tail only inside the detail panel.
       return Boolean(body.title) || /[\r\n]/.test(text)
-        || (targetUsesIntent ? formatToolIntent(text) : boundedToolTarget(text)) !== target;
+        || (targetUsesIntent ? normalizeToolIntent(text) : firstToolTargetLine(text)) !== (target ?? '');
     }
     case 'argsOnly':
       // Unlike a repeated invocation, full arguments can reveal information
       // lost to the row's first-line/120-character cap.
       return body.text.trim() !== target;
-    case 'result':
-      return body.result.kind !== 'image' && body.result.kind !== 'archived_tool_result';
+    case 'result': {
+      const { result } = body;
+      if (result.kind === 'image' || result.kind === 'archived_tool_result') return false;
+      // A whitespace-only body would expand to an empty code block.
+      if (result.kind === 'text') return result.text.trim().length > 0;
+      if (result.kind === 'summary') return result.summarized.trim().length > 0;
+      return true;
+    }
     default:
       return true;
   }
@@ -663,7 +672,12 @@ function standardToolCall(
     stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
       ? `${item.progress.current}/${item.progress.total}`
       : item.result?.kind === 'archived_tool_result'
-        ? getToolActivityCopy(locale).result.archivedStatus[item.result.status]
+        ? [
+            outcomeWord(item, locale),
+            getToolActivityCopy(locale).result.archivedStatus[item.result.status],
+          ]
+            .filter(Boolean)
+            .join(' · ')
         : outcomeWord(item, locale),
     ...diffStats(itemDiffs(item)),
     resultDetail: hasDetailPlugin || toolCallHasDetail(
@@ -713,8 +727,12 @@ function collapsedToolTarget(
   return boundedToolTarget(line);
 }
 
+function firstToolTargetLine(line: string): string {
+  return line.split('\n')[0]!.trim();
+}
+
 function boundedToolTarget(line: string): string | undefined {
-  const firstLine = line.split('\n')[0]!.trim();
+  const firstLine = firstToolTargetLine(line);
   if (!firstLine) return undefined;
   return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
 }
