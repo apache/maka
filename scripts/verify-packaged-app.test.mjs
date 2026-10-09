@@ -506,6 +506,8 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
   await rename(resources, join(app, 'Contents', 'Resources'));
   // The archive and update configuration are real; macOS command output and
   // app launches are the system boundaries this portable test substitutes.
+  // The executables' LC_UUID stamp has its own suite in macos-executable-uuid.test.mjs.
+  const stampChecks = [];
   await verifyPackagedMacApp(app, {
     expectedArch: 'x64',
     channel: 'nightly',
@@ -513,6 +515,7 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     requirePath: async () => {},
     smokeFilesystemWorker: async () => {},
     smokeRenderer: async () => {},
+    assertExecutableUuids: async (...args) => stampChecks.push(args),
     run: async (command, args) => {
       if (command === 'plutil') {
         const values = {
@@ -532,6 +535,7 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
       throw new Error(`Unexpected command: ${command}`);
     },
   });
+  assert.deepEqual(stampChecks, [[app, 'com.maka.desktop']]);
 });
 
 describe('assertRenderableAppIcon', () => {
