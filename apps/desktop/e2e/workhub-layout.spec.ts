@@ -255,7 +255,7 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await workhub.reload();
   await expect(workhub.locator('article').filter({ hasText: 'WorkHub composer sends through its own coordination model.' }).first()).toBeVisible();
   await workhub.locator('[data-chat-scroll-container]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  await expect(workhub.locator('.astryx-chat-layout-scroll-button > div')).toHaveCSS('opacity', '0');
+  await expect(workhub.locator('.astryx-chat-layout-scroll-button')).toHaveCSS('opacity', '0');
   // The macOS hidden-test launch starts without a Dock icon. Establish normal
   // application visibility before checking the floating-window transition.
   await app.evaluate(async ({ app }) => { if (process.platform === 'darwin') await app.dock!.show(); });

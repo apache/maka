@@ -4182,7 +4182,7 @@ export const WorkbarEdgeRevealAndCollapse: Story = {
     const edge = canvas.getByRole('button', { name: '收起任务工作栏' });
     const glass = edge.querySelector<HTMLElement>('.maka-workbar-edge-glass')!;
     const scrollButton = canvasElement.querySelector('.astryx-chat-layout-scroll-button')!;
-    const blur = scrollButton.nextElementSibling!;
+    const blur = scrollButton.parentElement!.nextElementSibling!;
     const composer = canvasElement.querySelector('.maka-composer-astryx')!;
     const fadeEnd = Number(getComputedStyle(blur).maskImage.match(/([\d.]+)px\)/)?.[1]);
     expect(fadeEnd).toBeGreaterThanOrEqual(composer.getBoundingClientRect().top - blur.getBoundingClientRect().top);
