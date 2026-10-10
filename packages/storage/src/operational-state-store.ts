@@ -23,6 +23,7 @@ import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   configureSqliteRuntimeDatabase,
+  configureSqliteRuntimeAutoVacuumForNewDatabase,
   configureSqliteRuntimeLockWait,
   migrateSqliteRuntimeDatabase,
   readUserVersion,
@@ -208,7 +209,8 @@ class OperationalStateDatabaseOwner {
     readonly databasePath: string,
     options: OperationalStateDatabaseOptions,
   ) {
-    if (options.schemaMigration === 'require_current' && !existsSync(databasePath)) {
+    const databaseExisted = existsSync(databasePath);
+    if (options.schemaMigration === 'require_current' && !databaseExisted) {
       throw new OperationalStateMigrationBlockedError(
         new Error('Operational state has not been initialized by its Runtime Host'),
         'requires_host_migration',
@@ -223,6 +225,9 @@ class OperationalStateDatabaseOwner {
     try {
       configureSqliteRuntimeLockWait(this.database);
       this.database.exec('PRAGMA foreign_keys = ON');
+      if (options.schemaMigration !== 'require_current') {
+        configureSqliteRuntimeAutoVacuumForNewDatabase(this.database, databaseExisted);
+      }
       if (options.schemaMigration === 'require_current') {
         requireCurrentOperationalState(this.database);
       } else {

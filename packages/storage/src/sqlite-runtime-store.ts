@@ -36,7 +36,7 @@ export type {
   ImmutableRuntimePrefixProofReadBudget,
 } from './runtime-event-store-contract.js';
 
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
@@ -133,6 +133,7 @@ import {
 } from '@maka/core/tool-recovery-bundle';
 import {
   configureSqliteRuntimeDatabase,
+  configureSqliteRuntimeAutoVacuumForNewDatabase,
   migrateSqliteRuntimeDatabase,
   readUserVersion,
   RUNTIME_RECOVERY_AUTHORITY_CAPABILITY,
@@ -345,6 +346,7 @@ export class SqliteRuntimeStore
       return;
     }
     const DatabaseSync = loadDatabaseSync();
+    const databaseExisted = path !== ':memory:' && existsSync(path);
     this.db = options.readOnly
       ? new DatabaseSync(path, { readOnly: true })
       : new DatabaseSync(path);
@@ -358,6 +360,7 @@ export class SqliteRuntimeStore
           );
         }
       } else {
+        configureSqliteRuntimeAutoVacuumForNewDatabase(this.db, databaseExisted);
         configureSqliteRuntimeDatabase(this.db);
         migrateSqliteRuntimeDatabase(this.db);
       }
