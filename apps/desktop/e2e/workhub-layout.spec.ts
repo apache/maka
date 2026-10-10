@@ -105,18 +105,42 @@ test('WorkHub uses its coordination model and shared attachment composer', async
   await expect.poll(() => page.evaluate(() => innerWidth)).toBe(restoredContentWidth);
   const restoredDockWidth = await page.locator('.workHubDock').evaluate((element) => Math.round(element.getBoundingClientRect().width));
   await expect.poll(() => workhub.evaluate(() => innerWidth)).toBe(restoredDockWidth);
+  // Main's titlebar controls the sibling WorkHub WebContentsView through IPC.
+  const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
+  await page.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
+  await expect(workbar).toBeVisible();
+  await page.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
+  await expect(workbar).toBeHidden();
+  await page.evaluate(() => window.maka.settings.updateClient({ appearance: { workbarTogglePosition: 'edge' } }));
   // The edge belongs to the native conversation renderer. A Main DOM overlay
   // would be covered by this WebContentsView and never receive native clicks.
   await workhub.getByRole('button', { name: '展开任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeVisible();
-  // A real native menu must coexist with the live sibling WebContentsView.
-  // DOM tests cannot detect replacing that view with a frozen screenshot.
+  // The menu interaction must coexist with the live sibling WebContentsView.
+  // DOM tests cannot detect replacing that view with a frozen screenshot, so
+  // the WorkHub view's native visibility is asserted below. The popup itself
+  // is stubbed instead of really opened: on Linux the native teardown races
+  // the scripted close and crashes the main process (#5995), and every
+  // assertion here is Maka state — aria-expanded, the dock backdrop, the
+  // view's visibility — none of which needs a real GTK menu.
   await app.evaluate(({ Menu }) => {
     const original = Menu.prototype.popup;
     Menu.prototype.popup = function (options) {
-      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu = this;
+      const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
+      probe.workbarMenu = this;
+      probe.workbarMenuOpen = true;
+      // Restoring immediately keeps the later task-action menu on the real
+      // native popup; only this scripted one is simulated.
       Menu.prototype.popup = original;
-      return original.call(this, options);
+      // The popup contract is that options.callback fires once the menu is
+      // closed; that callback resolves the renderer's request and drops
+      // aria-expanded. Driving it from the menu's own lifecycle event lets
+      // the test close the menu without ever touching native closePopup.
+      this.once('menu-will-close', () => {
+        probe.workbarMenuOpen = false;
+        (options as { callback?: () => void } | undefined)?.callback?.();
+      });
+      return undefined;
     };
   });
   const addPanel = page.getByRole('button', { name: '添加面板', exact: true });
@@ -128,15 +152,15 @@ test('WorkHub uses its coordination model and shared attachment composer', async
       'webContents' in child && (child as Electron.WebContentsView).webContents.getURL().includes('surface=workhub')));
     return container?.getVisible();
   })).toBe(true);
-  // aria-expanded tracks the popup IPC resolution, so a menu that already
-  // auto-dismissed (Linux closes popups after window resizes) must not be
-  // closed again — closePopup on a dead popup crashes the main process.
-  if ((await addPanel.getAttribute('aria-expanded')) === 'true') {
-    // Close on the same owner passed to popup(). The no-window overload takes
-    // Electron's close-all MenuRunner path on Linux, even for this single menu.
-    await mainWindow.evaluate((window) =>
-      (globalThis as unknown as { workbarMenu: Electron.Menu }).workbarMenu.closePopup(window));
-  }
+  // Close through the menu's own lifecycle event. The stubbed popup never
+  // opened a native menu, so there is nothing for closePopup to close — and
+  // closePopup on a popup GTK already tore down crashes the main process
+  // (#5995). Decide inside the main process, in the same task as the emit,
+  // so the close cannot land before the state behind the assertions above.
+  await mainWindow.evaluate(() => {
+    const probe = globalThis as unknown as { workbarMenu: Electron.Menu; workbarMenuOpen: boolean };
+    if (probe.workbarMenuOpen) probe.workbarMenu.emit('menu-will-close');
+  });
   await expect(addPanel).not.toHaveAttribute('aria-expanded', 'true');
   await workhub.getByRole('button', { name: '收起任务工作栏', exact: true }).click();
   await expect(page.locator('.maka-session-workbar[data-placement="right"]')).toBeHidden();

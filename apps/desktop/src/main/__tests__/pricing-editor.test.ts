@@ -693,6 +693,77 @@ describe('PricingEditor', () => {
     }
   });
 
+  for (const outcome of ['saved', 'synchronized', 'saved_refresh_failed', 'reconciliation_unavailable'] as const) {
+    for (const duplicate of [false, true]) {
+      it(`uses fresh authority for a changed model key after ${outcome}${duplicate ? ' and rejects a newly existing override' : ''}`, async () => {
+        const pending = deferred<DesktopPricingMutationOutcome>();
+        const latest: DesktopPricingSnapshot = {
+          ...SNAPSHOT,
+          revision: 6,
+          entries: [
+            ...SNAPSHOT.entries,
+            { source: 'custom', resetEffect: 'become_unpriced', pricing: { modelKey: 'acme:first', inputUsdPer1M: 1, outputUsdPer1M: 2 } },
+            ...(duplicate ? [{ source: 'custom' as const, resetEffect: 'become_unpriced' as const, pricing: { modelKey: 'acme:second', inputUsdPer1M: 99, outputUsdPer1M: 99 } }] : []),
+          ],
+        };
+        const saved: DesktopPricingSnapshot = {
+          ...latest,
+          revision: 7,
+          entries: [...latest.entries, { source: 'custom', resetEffect: 'become_unpriced', pricing: { modelKey: 'acme:second', inputUsdPer1M: 7.25, outputUsdPer1M: 2 } }],
+        };
+        let reads = 0;
+        let writes = 0;
+        const harness = await renderEditor({
+          load: async () => ++reads === 1 ? SNAPSHOT : latest,
+          mutate: async (base) => {
+            if (++writes === 1) return pending.promise;
+            // Simulate the Host's revision-CAS check for the second model.
+            return base.revision === latest.revision
+              ? { kind: 'saved', disposition: 'committed', snapshot: saved }
+              : { kind: 'review_required', reason: 'revision_conflict', snapshot: latest };
+          },
+        });
+        try {
+          await click(buttonByText(harness.doc, copy.add));
+          await click(buttonByText(harness.doc, copy.manualEntryToggle));
+          await setInput(inputByLabel(harness.doc, copy.modelKeyLabel), 'acme:first');
+          await setInput(inputByLabel(harness.doc, copy.inputLabel), '1');
+          await setInput(inputByLabel(harness.doc, copy.outputLabel), '2');
+          await clickWithoutSettling(buttonByText(harness.doc, copy.save));
+          await typeInput(inputByLabel(harness.doc, copy.modelKeyLabel), 'acme:second');
+          await typeInput(inputByLabel(harness.doc, copy.inputLabel), '7.25');
+          await act(async () => pending.resolve(
+            outcome === 'saved' ? { kind: 'saved', disposition: 'committed', snapshot: latest }
+              : outcome === 'synchronized' ? { kind: 'synchronized', reason: 'outcome_unknown', snapshot: latest }
+              : outcome === 'saved_refresh_failed' ? { kind: 'saved_refresh_failed', disposition: 'committed' }
+              : { kind: 'reconciliation_unavailable', reason: 'outcome_unknown' },
+          ));
+          if (outcome === 'saved_refresh_failed' || outcome === 'reconciliation_unavailable') {
+            await click(buttonByText(openDialog(harness.doc)!, copy.refresh));
+          }
+          assert.ok(openDialog(harness.doc), 'completion of the first model leaves the new draft open');
+          assert.equal(inputByLabel(harness.doc, copy.modelKeyLabel)?.value, 'acme:second');
+          assert.equal(inputByLabel(harness.doc, copy.inputLabel)?.value, '7.25');
+          assert.equal(harness.mutations.length, 1, 'a fresh snapshot never replays the first write');
+          await click(buttonByText(openDialog(harness.doc)!, copy.save));
+          if (duplicate) {
+            assert.equal(harness.mutations.length, 1, 'the newly existing override must not be overwritten');
+            assert.match(openDialog(harness.doc)?.textContent ?? '', new RegExp(copy.errorDuplicate));
+          } else {
+            assert.equal(harness.mutations.length, 2);
+            assert.deepEqual(harness.mutations[1]?.base, latest);
+            assert.deepEqual(harness.mutations[1]?.mutation, {
+              kind: 'upsert', pricing: { modelKey: 'acme:second', inputUsdPer1M: 7.25, outputUsdPer1M: 2 },
+            });
+            assert.equal(openDialog(harness.doc) === undefined, true, 'the second save succeeds without a false conflict');
+          }
+        } finally {
+          await act(async () => harness.root.unmount());
+        }
+      });
+    }
+  }
+
   it('does not apply an earlier model conflict after the pending Add changes keys', async () => {
     const pending = deferred<DesktopPricingMutationOutcome>();
     const harness = await renderEditor({

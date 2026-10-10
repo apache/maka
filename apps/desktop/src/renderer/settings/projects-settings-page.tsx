@@ -269,6 +269,7 @@ export function ProjectsSettingsPage(props: {
             removed from the skills page. The rule this page exists for lives in
             the page subtitle; the section keeps only its action. */}
         <SettingsSection
+          title={copy.projectsTitle}
           description={
             defaultProjectId !== undefined && !defaultResolves
               ? `${copy.sectionHelp} ${copy.defaultUnavailable}`
@@ -278,7 +279,6 @@ export function ProjectsSettingsPage(props: {
             <Button
               ref={directoryPickerTriggerRef}
               variant="secondary"
-              size="sm"
               label={copy.addProject}
               clickAction={capabilities.chooseHostDirectory
                 ? () => {

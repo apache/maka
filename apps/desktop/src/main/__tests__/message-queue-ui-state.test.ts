@@ -26,13 +26,13 @@ import {
   type ComposerHandle,
   type TransientUserMessageProjection,
 } from '@maka/ui';
-import { ConversationServicesProvider, SessionLocalMessages } from '../../renderer/features/conversation/index.js';
-import { stubConversationServices, useSessionMessageQueue } from '../../renderer/features/conversation/testing.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
+import { SessionLocalMessages, stubConversationServices, useSessionMessageQueue } from '../../renderer/features/conversation/testing.js';
 import type { RestoredDraftContent } from '../../renderer/application/contracts/transient-message-projection.js';
 import type { DesktopLocalMessage } from '../../shared/session-local-contract.js';
 import { mergeTransientMessageProjection } from '../../renderer/application/contracts/transient-message-projection.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
-import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
+import { createAppShellSessionEventHandlers } from '../../renderer/features/conversation/testing.js';
 import { createAppShellSessionUiStateController } from '../../renderer/features/conversation/testing.js';
 
 afterEach(cleanupFakeDom);

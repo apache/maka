@@ -24,16 +24,19 @@ import { LocaleProvider, ToastProvider, type LiveTurnBuffer } from '@maka/ui';
 import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 import {
   ConversationServicesProvider,
-  useAppShellSessionUiState,
+  ConversationProvider,
   type AppShellSessionUiStateController,
 } from '../../renderer/features/conversation/index.js';
 import * as conversation from '../../renderer/features/conversation/index.js';
 import {
   createProductionSessionUiStateController as createController,
   stubConversationServices,
+  useConversationOwner,
+  useConversationQueue,
+  useSessionUiRead,
 } from '../../renderer/features/conversation/testing.js';
-import { useAppShellSessionUiReads } from '../../renderer/use-app-shell-session-ui-reads.js';
-import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../renderer/application/contracts/session-catalog/use-external-store-selector.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 function interaction(requestId: string): SandboxBoundaryRequestEvent {
@@ -202,17 +205,29 @@ describe('Session UI public read capabilities', () => {
   });
 });
 
+/** The fixed-purpose reads the Conversation regions take for the displayed and owner Session. */
+function useDisplayedSessionReads(reads: AppShellSessionUiStateController['reads'], activeId?: string, ownerId?: string) {
+  return {
+    ...useSessionUiRead(reads, 'load', activeId),
+    ...useSessionUiRead(reads, 'summary', activeId),
+    messageRetryPending: useSessionUiRead(reads, 'retry', activeId),
+    stopPending: useSessionUiRead(reads, 'stop', activeId),
+    activeInteraction: useSessionUiRead(reads, 'interaction', ownerId),
+    activeMessageQueue: useSessionUiRead(reads, 'queue', activeId),
+  };
+}
+
 describe('production Session UI consumers', () => {
-  it('keeps background state and pulse out of the shell, while respecting owner Session identity', async () => {
+  it('keeps background state and pulse out of a displayed-Session reader, while respecting owner Session identity', async () => {
     const { root } = installReactRenderer();
     const c = createController();
     let renders = 0;
     let pulseRenders = 0;
-    let value!: ReturnType<typeof useAppShellSessionUiReads>;
+    let value!: ReturnType<typeof useDisplayedSessionReads>;
     let pulse!: ReadonlySet<string>;
     function Shell(props: { activeId?: string; ownerId?: string }) {
       renders += 1;
-      value = useAppShellSessionUiReads(c.reads, props.activeId, props.ownerId);
+      value = useDisplayedSessionReads(c.reads, props.activeId, props.ownerId);
       return null;
     }
     function Rail() {
@@ -256,15 +271,56 @@ describe('production Session UI consumers', () => {
     }
   });
 
+  it('holds covered token and shell-run readings through parent renders, then reads the latest owner state', async () => {
+    const { root } = installReactRenderer();
+    const c = createController();
+    start(c, 'A');
+    let renders = 0;
+    let value!: {
+      turns: ReturnType<ReturnType<typeof c.reads.liveTurns>['getSnapshot']>;
+      runs: ReturnType<ReturnType<typeof c.reads.shellRuns>['getSnapshot']>;
+    };
+    function Transcript({ visible }: { visible: boolean }) {
+      renders += 1;
+      value = {
+        turns: useExternalStoreSelector(c.reads.liveTurns, 'A', visible),
+        runs: useExternalStoreSelector(c.reads.shellRuns, 'A', visible),
+      };
+      return null;
+    }
+    try {
+      await act(async () => root.render(createElement(Transcript, { visible: true })));
+      await act(async () => root.render(createElement(Transcript, { visible: false })));
+      const held = value;
+      const before = renders;
+      await act(async () => {
+        c.setLiveTurnBySession((s) => ({ ...s, A: live('hidden tokens') }));
+        c.setShellRunUpdatesBySession((s) => ({ ...s, A: { run: {
+          sessionId: 'A', ownership: { kind: 'local' }, sourceTurnId: 'turn', sourceToolCallId: 'tool',
+          result: { kind: 'shell_run', ref: 'run', status: 'running', cwd: '/tmp', cmd: 'echo', startedAt: 1, updatedAt: 2, revision: 1, mode: 'pipes' },
+        } } }));
+      });
+      assert.equal(renders, before, 'covered readers do not render owner publications');
+      await act(async () => root.render(createElement(Transcript, { visible: false })));
+      assert.equal(value.turns, held.turns, 'an unrelated parent render cannot pull hidden tokens');
+      assert.equal(value.runs, held.runs);
+      await act(async () => root.render(createElement(Transcript, { visible: true })));
+      assert.equal(value.turns?.[0]?.steps[0]?.text?.text, 'hidden tokens');
+      assert.equal(value.runs?.run?.result.updatedAt, 2);
+    } finally {
+      cleanupFakeDom();
+    }
+  });
+
   it('scopes the workspace publication hook queue read to its published Session', async () => {
     const { root } = installReactRenderer();
     const catalog = createSessionCatalogController();
-    const activeId = { current: 'A' as string | undefined };
-    let value!: ReturnType<typeof useAppShellSessionUiState>;
+    let value!: ReturnType<typeof useConversationOwner>['workspace'];
     let renders = 0;
     function Workspace() {
       renders += 1;
-      value = useAppShellSessionUiState(catalog, 'A', activeId, () => true);
+      value = useConversationOwner().workspace;
+      useConversationQueue();
       return null;
     }
     try {
@@ -272,13 +328,13 @@ describe('production Session UI consumers', () => {
         locale: 'en',
         children: createElement(ToastProvider, {
           children: createElement(ConversationServicesProvider, {
-            services: stubConversationServices(), children: createElement(Workspace),
+            services: stubConversationServices(), children: createElement(SessionCatalogContext.Provider, { value: catalog, children: createElement(ConversationProvider, { children: createElement(Workspace) }) }),
           }),
         }),
       })));
-      await act(async () => { value.publication.setMessagesState([]); });
+      await act(async () => { value.commands.setActiveId('A'); });
       const initial = renders;
-      const c = value.controller;
+      const c = value.ui;
       await act(async () => { c.setMessageQueueBySession((s) => ({ ...s, B: { ts: 1, entries: [] } })); });
       assert.equal(renders, initial);
       await act(async () => { c.setMessageQueueBySession((s) => ({ ...s, A: { ts: 2, entries: [] } })); });

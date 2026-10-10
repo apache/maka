@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -53,6 +53,39 @@ test('built Desktop public UI and Client Plugin entries share their Slot provide
     const result = await import(pathToFileURL(join(root, 'out/entry.mjs')).href);
     assert.equal(result.sameOutlet, true, 'native and SDK Slot outlets must be the same module');
     assert.match(result.rendered, /plugin-visible/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('renderer build emits KaTeX fonts as CSP-compatible files', async () => {
+  const desktop = resolve(import.meta.dirname, '..');
+  const cache = join(desktop, '../../node_modules/.cache');
+  await mkdir(cache, { recursive: true });
+  const root = await mkdtemp(join(cache, 'katex-fonts-'));
+  try {
+    const entry = join(root, 'entry.js');
+    const outDir = join(root, 'out');
+    await writeFile(entry, "import 'katex/dist/katex.min.css';\n");
+    const config = await resolveConfig({ configFile: join(desktop, 'vite.config.ts') }, 'build');
+    await build({
+      configFile: false,
+      root,
+      logLevel: 'error',
+      build: {
+        assetsInlineLimit: config.build.assetsInlineLimit,
+        outDir,
+        rolldownOptions: { input: entry },
+      },
+    });
+    const assets = await readdir(join(outDir, 'assets'));
+    const cssFiles = assets.filter((name) => name.endsWith('.css'));
+    assert.ok(cssFiles.length > 0, 'KaTeX build must emit CSS');
+    const css = (
+      await Promise.all(cssFiles.map((name) => readFile(join(outDir, 'assets', name), 'utf8')))
+    ).join('\n');
+    assert.doesNotMatch(css, /data:font/iu);
+    assert.ok(assets.some((name) => /\.(?:woff2?|ttf|otf)$/iu.test(name)));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

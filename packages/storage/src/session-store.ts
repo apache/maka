@@ -51,6 +51,9 @@ import {
   type CoordinationTranscriptIndexRecord,
   type CoordinationTranscriptIndexState,
   type SessionAuthorityStore,
+  type ArchiveRetentionCandidateCount,
+  type ArchiveRetentionCandidateQuery,
+  type ArchiveRetentionCandidateRow,
 } from './session-store-contract.js';
 export {
   isSafeSessionId,
@@ -95,6 +98,7 @@ import { createHash } from 'node:crypto';
 import {
   createSqliteSessionMetadataStore,
   type SessionCatalogRevisionState,
+  type SessionMetadataCatalogRecord,
   type SessionMetadataRecord,
   type SessionRemovalProbe,
   type SqliteSessionMetadataStore,
@@ -607,7 +611,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return (await this.metadata.list(filter, 'ordinary'))
       .filter((record) => record.header.transcriptLedgerVersion !== 0)
       .filter((record) => record.header.conversationCopy?.state !== 'preparing')
-      .map((record) => toCatalogSummary(record.header, record.lastMessagePreview));
+      .map(toCatalogRecordSummary);
   }
 
   async listCatalogPage(
@@ -633,7 +637,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       records: page.records.map((record) => ({
         ...projectHeaderSnapshot(record),
         activityAt: record.activityAt,
-        summary: toCatalogSummary(record.header, record.lastMessagePreview),
+        summary: toCatalogRecordSummary(record),
       })),
       hasMore: page.hasMore,
     };
@@ -671,7 +675,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return {
       ...projectHeaderSnapshot(record),
       activityAt: record.activityAt,
-      summary: toCatalogSummary(record.header, record.lastMessagePreview),
+      summary: toCatalogRecordSummary(record),
     };
   }
 
@@ -904,6 +908,32 @@ class SqliteSessionStore implements SessionAuthorityStore {
     await this.metadata.completeSessionRetirementCleanup(sessionId);
   }
 
+  async listArchiveRetentionCandidates(
+    query: ArchiveRetentionCandidateQuery,
+  ): Promise<ArchiveRetentionCandidateRow[]> {
+    await this.ensureReady();
+    return (await this.metadata.listArchiveRetentionCandidates(query)).map((record) =>
+      'undecodable' in record
+        ? record
+        : {
+            ...projectHeaderSnapshot(record),
+            ...(record.archivedAt === undefined ? {} : { archivedAt: record.archivedAt }),
+          },
+    );
+  }
+
+  async countArchiveRetentionCandidates(
+    enabledAt: number,
+  ): Promise<ArchiveRetentionCandidateCount> {
+    await this.ensureReady();
+    return this.metadata.countArchiveRetentionCandidates(enabledAt);
+  }
+
+  async readLatestSessionMetadataTime(): Promise<number | undefined> {
+    await this.ensureReady();
+    return this.metadata.readLatestSessionMetadataTime();
+  }
+
   async setFlagged(sessionId: string, isFlagged: boolean): Promise<void> {
     await this.updateHeader(sessionId, { isFlagged });
   }
@@ -1007,12 +1037,12 @@ function projectStableSessionCreateProbe(
     : probe;
 }
 
-function toCatalogSummary(
-  header: SessionHeader,
-  lastMessagePreview: string | undefined,
-): SessionSummary {
+function toCatalogRecordSummary(record: SessionMetadataCatalogRecord): SessionSummary {
   return {
-    ...toSummary(header),
-    ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+    ...toSummary(record.header),
+    ...(record.lastMessagePreview === undefined
+      ? {}
+      : { lastMessagePreview: record.lastMessagePreview }),
+    ...(record.archivedAt === undefined ? {} : { archivedAt: record.archivedAt }),
   };
 }

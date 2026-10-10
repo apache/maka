@@ -18,6 +18,7 @@
  */
 
 import { PlanServicesProvider } from '../../renderer/features/conversation/index.js';
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { deferred } from '@maka/core/test-only/async-primitives';
@@ -108,10 +109,13 @@ test('query blocking pauses, resumes, and fences automatic Skills and Plan reads
           services,
           children: createElement(SessionCatalogContext.Provider, {
             value: catalog,
-            children: createElement(ComposerMentionsProvider, {
+            children: createElement(ComposerStagingFixture, {
+              draftKey: session.id,
+              children: createElement(ComposerMentionsProvider, {
               skillCatalogRevision: 0,
               sessionId: session.id,
               children: createElement(PlanServicesProvider, { services: window.maka.sessions, children: createElement(QueryProbe) }),
+              }),
             }),
           }),
         }),

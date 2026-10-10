@@ -23,7 +23,7 @@ import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import {
   startWorkHubCoordinationLifecycle,
   type WorkHubCoordinationHostChange,
-} from '../../renderer/features/workhub/index.js';
+} from '../../renderer/application/contracts/workhub-workspace/coordination-lifecycle.js';
 
 const coordinationSessionId = (hostId: string) => desktopSessionKey({
   hostId,

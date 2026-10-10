@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import { strict as assert } from 'node:assert';
 import { test, type TestContext } from 'node:test';
 import { parseHTML } from 'linkedom';
@@ -132,11 +133,14 @@ function installCatalogRenderer(t: TestContext) {
           services,
           children: createElement(SessionCatalogContext.Provider, {
             value: sessionCatalog,
-            children: createElement(ComposerMentionsProvider, {
+            children: createElement(ComposerStagingFixture, {
+              draftKey: sessionId,
+              children: createElement(ComposerMentionsProvider, {
               sessionId,
               projectPath,
               skillCatalogRevision,
               children: createElement(Consumer, { sessionId }),
+              }),
             }),
           }),
         }),

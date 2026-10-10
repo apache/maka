@@ -43,9 +43,11 @@
 
 只提交你有权贡献的内容，记录第三方来源、许可和必要署名。贡献以 [Apache License 2.0](./LICENSE) 授权；AI 生成的实质内容遵循 [ASF 生成式工具指南](https://www.apache.org/legal/generative-tooling.html)。
 
+在 Grok 使用条款得到澄清前，请勿使用 Grok 生成对 Maka 的贡献。
+
 ## 快速开始
 
-需要 Node `>=22.19.0` 和 npm `11.19.0`（见根 `package.json`）。开发 Desktop Direct Peer 或 Peer Mesh 还需要 Rust stable 1.98 或更高版本，以及 macOS 的 Xcode Command Line Tools 或 Windows 的 MSVC Build Tools。
+需要 Node `^22.19.0 || >=24.0.0`（不支持 Node 23：其 `node:sqlite` 缺少 `DatabaseSync.isTransaction`）和 npm `11.19.0`（见根 `package.json`）。开发 Desktop Direct Peer 或 Peer Mesh 还需要 Rust stable 1.98 或更高版本，以及 macOS 的 Xcode Command Line Tools 或 Windows 的 MSVC Build Tools。
 
 ```sh
 git clone https://github.com/apache/maka.git

@@ -453,6 +453,13 @@ export function usePricingController(props: {
     // Reconciliation still updates authority after Cancel. Only its original
     // dialog may be closed, reopened for review, or given a conflict notice.
     const ownsDialog = attempt.dialogGeneration === dialogGenerationRef.current;
+    if (!ownsDialog && editorRef.current !== null &&
+      (outcome.kind === 'saved' || outcome.kind === 'synchronized')) {
+      // A model selected during this write keeps its own input and mode, but
+      // the successful write advances its CAS and duplicate-check authority.
+      // Do not finish or reclassify that new draft as the completed intent.
+      setMutationBase(outcome.snapshot);
+    }
     switch (outcome.kind) {
       case 'saved':
         setWriteState({ kind: 'idle' });

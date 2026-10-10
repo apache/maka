@@ -51,6 +51,7 @@ concurrency:
 
 jobs:
   audit:
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

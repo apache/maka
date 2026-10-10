@@ -47,6 +47,7 @@ concurrency:
 jobs:
   protocol:
     name: windows_sandbox_w0_protocol
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: windows-2025
     timeout-minutes: 45
     steps:

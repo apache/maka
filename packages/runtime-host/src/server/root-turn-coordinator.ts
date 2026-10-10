@@ -1267,6 +1267,50 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     });
   }
 
+  /**
+   * Activation-scoped graph stop: the same durable Host fence as `stopRoot`,
+   * but the Runtime stop reaches only this exact Run's owner, is redelivered
+   * after a failed attempt, and retries retained cleanup of a completed Run.
+   */
+  stopRootRun(identity: RuntimeMessageRunIdentity, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
+    return this.runCommand(async () => {
+      const declared = await this.sessionAdmission.run(identity.sessionId, (lease) =>
+        this.declareStopFence(
+          identity,
+          () => this.messages.commitStopFence(identity),
+          lease,
+          input,
+          true,
+        ),
+      );
+      await declared?.deliverStop();
+      await declared?.active.startSettled.promise;
+      const disposition = await this.sessionAdmission.run(identity.sessionId, (lease) =>
+        this.prepareStopDisposition(identity, () => this.messages.commitStopFence(identity), lease),
+      );
+      if (disposition.kind === 'complete') {
+        if (!disposition.outcome.ok) throwHostedStopError(identity.sessionId, disposition.outcome);
+        const logical = await readLogicalRuntimeExecutionForRun(
+          this.stores.runtimeEventStore,
+          identity,
+        );
+        await this.deliverRuntimeStopIntent(identity.sessionId, input, {
+          ...identity,
+          runId: logical?.tip.runId ?? identity.runId,
+        });
+        return;
+      }
+      if (disposition.kind === 'request_stop') {
+        await this.deliverRuntimeStopIntent(identity.sessionId, input, {
+          ...identity,
+          runId: disposition.active.continuation?.runId ?? identity.runId,
+        });
+      }
+      await disposition.active.done;
+    });
+  }
+
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
     normalizeStopSessionSource(input.source, input.workHubActionId);
     return this.runCommand(async () => {
@@ -2700,6 +2744,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     commitQueueFence: () => QueueFenceResult,
     admission: SessionAdmissionLease,
     stopInput: StopSessionInput = {},
+    scoped = false,
   ): Promise<DeclaredStopFence | undefined> {
     const active = this.#executions.get(input.sessionId);
     if (!active || active.turnId !== input.turnId || active.runId !== input.runId) {
@@ -2718,13 +2763,22 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       'turn_stopped',
       admission,
     );
-    const shouldDeliverStop = !active.stopRequested;
+    const shouldDeliverStop = scoped || !active.stopRequested;
     active.stopRequested = stopInput;
     return {
       active,
       deliverStop: () =>
         shouldDeliverStop
-          ? this.deliverRuntimeStopIntent(input.sessionId, stopInput)
+          ? this.deliverRuntimeStopIntent(
+              input.sessionId,
+              stopInput,
+              scoped
+                ? {
+                    ...input,
+                    runId: active.continuation?.runId ?? active.runId,
+                  }
+                : undefined,
+            )
           : Promise.resolve(),
     };
   }
@@ -3376,8 +3430,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   private async deliverRuntimeStopIntent(
     sessionId: string,
     input: StopSessionInput = { source: 'stop_button' },
+    identity?: RuntimeMessageRunIdentity,
   ): Promise<void> {
-    await this.manager.deliverHostedRootStop(sessionId, input);
+    await this.manager.deliverHostedRootStop(sessionId, input, identity);
   }
 
   private async stopActiveTurn(sessionId: string, active: ActiveRootTurn): Promise<void> {

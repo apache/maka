@@ -20,7 +20,13 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement, Fragment, type ReactNode } from 'react';
-import { LocaleProvider, ToastProvider, type WorkspacePickerModel } from '@maka/ui';
+import {
+  AstryxLocaleProvider,
+  LocaleProvider,
+  ToastProvider,
+  type ToastErrorAction,
+  type WorkspacePickerModel,
+} from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeTaskEntryServices,
@@ -396,5 +402,62 @@ describe('TaskEntryRoot render scope', () => {
     assert.deepEqual(calls, ['add:local:host-local:Imported', 'relocate:session-1:project-new']);
     assert.equal(latestRecoveryPicker?.showForActiveSession, undefined);
     await act(async () => root.unmount());
+  });
+});
+
+describe('TaskEntryRoot error reports', () => {
+  type TreeNode = { readonly childNodes?: readonly TreeNode[]; readonly tagName?: string; readonly textContent: string };
+
+  async function clickButton(root: TreeNode, label: string): Promise<void> {
+    const buttons: TreeNode[] = [];
+    const visit = (node: TreeNode) => {
+      if (node.tagName === 'BUTTON') buttons.push(node);
+      for (const child of node.childNodes ?? []) visit(child);
+    };
+    visit(root);
+    const button = buttons.find((candidate) => candidate.textContent === label);
+    assert.ok(button, `missing button ${label}`);
+    const key = Object.keys(button).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key, 'missing React button props');
+    const props = (button as unknown as Record<string, { onClick(event: unknown): void }>)[key];
+    await act(async () => props.onClick({ preventDefault() {}, stopPropagation() {} }));
+  }
+
+  it('reports a task folder failure against the task', async () => {
+    const { root, container } = installReactRenderer();
+    const reports: Parameters<ToastErrorAction['onClick']>[0][] = [];
+    const errorAction: ToastErrorAction = {
+      label: 'Report',
+      failureTitle: 'Report failed',
+      failureDescription: 'Report failed',
+      onClick: async (report) => {
+        reports.push(report);
+      },
+    };
+    const services = createFakeTaskEntryServices({
+      folders: {
+        openProjectFolder: async () => ({
+          kind: 'refused',
+          reason: 'missing',
+          diagnosticTarget: { sessionId: 'session-1' },
+        }),
+        openWorkspaceFolder: async () => ({ kind: 'opened' }),
+      },
+    });
+    await act(async () => root.render(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(ToastProvider, {
+          errorAction,
+          children: createElement(TaskEntryServicesProvider, { services }, createElement(ShellProbe)),
+        }),
+      }),
+    })));
+
+    await act(async () => latestTaskEntry?.commands.openProjectFolder('session-1'));
+    await clickButton(container, 'Report');
+
+    assert.equal(reports.length, 1);
+    assert.deepEqual(reports[0]?.diagnosticTarget, { sessionId: 'session-1' });
   });
 });

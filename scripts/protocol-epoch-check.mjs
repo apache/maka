@@ -27,8 +27,9 @@
 // current base branch. An incompatible change must move the epoch. A compatible
 // extension may keep it only when a declaration added against the base names every
 // changed protocol file, keeping that exception explicit and reviewable. The
-// `--staged` pre-commit mode judges one commit against HEAD and cannot see the base,
-// so it also honors a declaration the branch amends; the merge result decides.
+// `--staged` normally judges one commit against HEAD and also honors a declaration
+// the branch amends. During a merge it uses the incoming parent, so historical
+// declarations stay unchanged and only declarations added against that base count.
 
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -185,17 +186,31 @@ function stagedFile(file, exec = execFileSync) {
 }
 
 export function evaluateStagedEpochCheck(exec = execFileSync) {
+  let base = 'HEAD';
+  try {
+    base = git(['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'], exec).trim();
+  } catch (error) {
+    if (error.status !== 1) throw error;
+  }
   const changedProtocolFiles = git(
-    ['diff', '--cached', '--no-renames', '--name-only', 'HEAD', '--', PROTOCOL_DIR],
+    ['diff', '--cached', '--no-renames', '--name-only', base, '--', PROTOCOL_DIR],
     exec,
   )
     .split('\n')
     .filter(Boolean)
-    .filter((file) => !isStagedHeaderOnlyChange(file, exec));
+    .filter((file) => !isStagedHeaderOnlyChange(file, exec, base));
   // `M` too: a branch amends the declaration it added. The merge-result check counts
   // only declarations added against the base, so editing a landed one grants nothing.
   const declarations = git(
-    ['diff', '--cached', '--diff-filter=AM', '--name-only', 'HEAD', '--', COMPATIBLE_CHANGE_DIR],
+    [
+      'diff',
+      '--cached',
+      base === 'HEAD' ? '--diff-filter=AM' : '--diff-filter=A',
+      '--name-only',
+      base,
+      '--',
+      COMPATIBLE_CHANGE_DIR,
+    ],
     exec,
   )
     .split('\n')
@@ -208,7 +223,7 @@ export function evaluateStagedEpochCheck(exec = execFileSync) {
     );
   }
   return evaluateEpochCheck({
-    baseEpoch: epochAtRevision('HEAD', exec),
+    baseEpoch: epochAtRevision(base, exec),
     headEpoch,
     changedProtocolFiles,
     compatibleProtocolFiles,
@@ -249,11 +264,11 @@ export function isHeaderOnlyChange(file, base, head, exec = execFileSync) {
   }
 }
 
-export function isStagedHeaderOnlyChange(file, exec = execFileSync) {
+export function isStagedHeaderOnlyChange(file, exec = execFileSync, base = 'HEAD') {
   const style = classifyPath(file).style;
   if (!style) return false;
   try {
-    const before = git(['show', `HEAD:${file}`], exec);
+    const before = git(['show', `${base}:${file}`], exec);
     const after = stagedFile(file, exec);
     return applyHeader(before, style) === after;
   } catch {

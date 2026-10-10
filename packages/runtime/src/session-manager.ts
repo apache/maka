@@ -409,6 +409,7 @@ type ResolvedClaimedAgentGraphIntentInput = Omit<
 > & {
   claim: AgentGraphIntentClaim;
   hostedGraphExecution?: RuntimeHostedAgentGraphExecutionCapability;
+  onHostAdmission?: () => void;
 };
 
 const CHILD_AGENT_SUMMARY_MAX_CHARS = 4_000;
@@ -903,7 +904,16 @@ export class SessionManager {
   >();
   private readonly claimedAgentGraphIntentRuns = new Map<
     string,
-    { requestFingerprint: string; promise: Promise<ClaimedAgentGraphIntentResult> }
+    {
+      requestFingerprint: string;
+      owner: {
+        identity: RuntimeMessageRunIdentity;
+        execution: RuntimeExecutionClaim;
+        hostAdmitted: boolean;
+        stopTask?: Promise<void>;
+      };
+      promise: Promise<ClaimedAgentGraphIntentResult>;
+    }
   >();
   private readonly claimedAgentGraphSessionTails = new Map<string, Promise<void>>();
 
@@ -1531,53 +1541,33 @@ export class SessionManager {
     policy: RecoveryPolicy,
     scope?: ReadonlySet<string>,
   ): Promise<string[]> {
-    const profileEnabled = process.env.MAKA_STARTUP_PROFILE === '1';
-    const profileTotals = new Map<string, number>();
-    const profileCalls = new Map<string, number>();
-    const measure = async <T>(label: string, operation: () => Promise<T>): Promise<T> => {
-      if (!profileEnabled) return operation();
-      const started = performance.now();
-      try {
-        return await operation();
-      } finally {
-        profileTotals.set(label, (profileTotals.get(label) ?? 0) + performance.now() - started);
-        profileCalls.set(label, (profileCalls.get(label) ?? 0) + 1);
-      }
-    };
-    const interrupted = (
-      await measure('list-sessions', () => listSessionsForRecovery(this.deps.store, policy))
-    ).filter((session) => !session.isArchived && (scope === undefined || scope.has(session.id)));
+    const interrupted = (await listSessionsForRecovery(this.deps.store, policy)).filter(
+      (session) => !session.isArchived && (scope === undefined || scope.has(session.id)),
+    );
     const recoveryCandidateSet = async (
-      label: string,
       operation: (() => Promise<string[] | undefined>) | undefined,
     ): Promise<ReadonlySet<string> | undefined> => {
       if (!operation) return undefined;
-      const sessionIds = await measure(label, () =>
-        recoverOr<string[] | undefined>(policy, operation, undefined),
-      );
+      const sessionIds = await recoverOr<string[] | undefined>(policy, operation, undefined);
       return sessionIds ? new Set(sessionIds) : undefined;
     };
     const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
     const [shellRecoverySessions, unsettledContinuationClaims, planRecoverySessions] =
       await Promise.all([
         recoveryCandidateSet(
-          'shell-inventory',
           this.deps.shellRuns ? () => this.deps.shellRuns!.listRecoverySessionIds() : undefined,
         ),
         continuationAuthority?.listUnsettledContinuationClaimsForRecovery
-          ? measure('continuation-inventory', () =>
-              recoverOr<ContinuationClaimStateV1[] | undefined>(
-                policy,
-                () =>
-                  continuationAuthority.listUnsettledContinuationClaimsForRecovery!(
-                    interrupted.map((session) => session.id),
-                  ),
-                undefined,
-              ),
+          ? recoverOr<ContinuationClaimStateV1[] | undefined>(
+              policy,
+              () =>
+                continuationAuthority.listUnsettledContinuationClaimsForRecovery!(
+                  interrupted.map((session) => session.id),
+                ),
+              undefined,
             )
           : Promise.resolve(undefined),
         recoveryCandidateSet(
-          'plan-inventory',
           this.deps.planStore?.listPlanRecoverySessionIds
             ? () => this.deps.planStore!.listPlanRecoverySessionIds!()
             : undefined,
@@ -1626,8 +1616,10 @@ export class SessionManager {
         this.deps.shellRuns &&
         (!shellRecoverySessions || shellRecoverySessions.has(session.id))
       ) {
-        const recoveredShellRuns = await measure('shell', () =>
-          recoverOr(policy, () => this.deps.shellRuns!.recoverOrphanedSession(session.id), 0),
+        const recoveredShellRuns = await recoverOr(
+          policy,
+          () => this.deps.shellRuns!.recoverOrphanedSession(session.id),
+          0,
         );
         if (recoveredShellRuns > 0) recovered.add(session.id);
       }
@@ -1647,13 +1639,11 @@ export class SessionManager {
           ))
       ) {
         try {
-          continuationClaimRecovered = await measure('continuation', () =>
-            this.recoverContinuationClaimsBeforeProvider(
-              session.id,
-              continuationAuthority,
-              policy,
-              unsettledClaims,
-            ),
+          continuationClaimRecovered = await this.recoverContinuationClaimsBeforeProvider(
+            session.id,
+            continuationAuthority,
+            policy,
+            unsettledClaims,
           );
         } catch (error) {
           if (policy.kind === 'strict') throw error;
@@ -1670,38 +1660,36 @@ export class SessionManager {
         // Plan events are the domain authority for whether there is a Plan
         // obligation at all. Runtime evidence is needed only to decide whether
         // an existing active Plan belongs to a pending handoff and must survive.
-        const planState = await measure('plan-state', () =>
-          recoverOr(policy, () => this.deps.planStore!.readState(session.id), undefined),
+        const planState = await recoverOr(
+          policy,
+          () => this.deps.planStore!.readState(session.id),
+          undefined,
         );
         if (planState?.activeExecutionId) {
-          const preservesHandoff = await measure('plan-handoff', () =>
-            recoverOr(
-              policy,
-              async () => {
-                if (!continuationAuthority) return false;
-                const latest = latestInvocation(
-                  (await this.listInvocations(session.id)).filter((run) =>
-                    isSessionInlineInvocation(run.opening),
-                  ),
-                );
-                if (!latest) return false;
-                // Only the current logical execution may preserve a session-owned Plan.
-                // Read after claim repair: an abandoned successor now has a real failure.
-                return Boolean(
-                  (await readLogicalRuntimeExecutionForRun(continuationAuthority, latest))
-                    ?.pendingHandoff,
-                );
-              },
-              false,
-            ),
+          const preservesHandoff = await recoverOr(
+            policy,
+            async () => {
+              if (!continuationAuthority) return false;
+              const latest = latestInvocation(
+                (await this.listInvocations(session.id)).filter((run) =>
+                  isSessionInlineInvocation(run.opening),
+                ),
+              );
+              if (!latest) return false;
+              // Only the current logical execution may preserve a session-owned Plan.
+              // Read after claim repair: an abandoned successor now has a real failure.
+              return Boolean(
+                (await readLogicalRuntimeExecutionForRun(continuationAuthority, latest))
+                  ?.pendingHandoff,
+              );
+            },
+            false,
           );
           if (!preservesHandoff) {
-            const planRecovery = await measure('plan-interrupt', () =>
-              recoverOr(
-                policy,
-                () => this.deps.planStore!.interruptActiveExecution(session.id, 'runtime_recovery'),
-                null,
-              ),
+            const planRecovery = await recoverOr(
+              policy,
+              () => this.deps.planStore!.interruptActiveExecution(session.id, 'runtime_recovery'),
+              null,
             );
             if (planRecovery) recovered.add(session.id);
           }
@@ -1730,10 +1718,8 @@ export class SessionManager {
       runRecoveryQueue.length > 0
     ) {
       try {
-        const inventory = await measure('run-inventory', () =>
-          this.deps.runtimeEventStore!.listInvocationRecoveryInventory!(
-            runRecoveryQueue.map(({ session }) => session.id),
-          ),
+        const inventory = await this.deps.runtimeEventStore.listInvocationRecoveryInventory(
+          runRecoveryQueue.map(({ session }) => session.id),
         );
         const mutable = new Map<string, RuntimeInvocationRecoveryInventoryEntry[]>();
         for (const entry of inventory) {
@@ -1753,18 +1739,16 @@ export class SessionManager {
       claimOwnedUnsettledRunIds,
     } of runRecoveryQueue) {
       if (this.deps.runStore) {
-        const runRecovery = await measure('runs', () =>
-          recoverOr(
-            policy,
-            () =>
-              this.recoverAgentRunsFromLedger(
-                session.id,
-                policy,
-                inventoryBySession ? (inventoryBySession.get(session.id) ?? []) : undefined,
-                claimOwnedUnsettledRunIds,
-              ),
-            undefined,
-          ),
+        const runRecovery = await recoverOr(
+          policy,
+          () =>
+            this.recoverAgentRunsFromLedger(
+              session.id,
+              policy,
+              inventoryBySession ? (inventoryBySession.get(session.id) ?? []) : undefined,
+              claimOwnedUnsettledRunIds,
+            ),
+          undefined,
         );
         if (runRecovery?.hasLedger) {
           if (runRecovery.recovered || continuationClaimRecovered) {
@@ -1788,19 +1772,6 @@ export class SessionManager {
         await recoverOr(policy, () => this.updateStatus(session.id, 'active'), undefined);
         recovered.add(session.id);
       }
-    }
-    if (profileEnabled) {
-      console.error(
-        `[startup-profile] session-recovery ${JSON.stringify({
-          sessions: interrupted.length,
-          totals: Object.fromEntries(
-            [...profileTotals].map(([label, ms]) => [
-              label,
-              { calls: profileCalls.get(label) ?? 0, ms },
-            ]),
-          ),
-        })}`,
-      );
     }
     return [...recovered];
   }
@@ -2987,11 +2958,33 @@ export class SessionManager {
       return await inFlight.promise;
     }
     const runtimeExecution = this.runtimeKernel.claimExecution(claim.targetSessionId);
-    const promise = this.enqueueClaimedAgentGraphIntent(resolved, runtimeExecution).finally(() =>
-      runtimeExecution.release(),
-    );
+    const owner: {
+      identity: RuntimeMessageRunIdentity;
+      execution: RuntimeExecutionClaim;
+      hostAdmitted: boolean;
+      stopTask?: Promise<void>;
+    } = {
+      identity: {
+        sessionId: claim.targetSessionId,
+        runId: claim.targetRunId,
+        turnId: claim.targetTurnId,
+      },
+      execution: runtimeExecution,
+      hostAdmitted: false,
+    };
+    resolved.onHostAdmission = () => {
+      owner.hostAdmitted = true;
+    };
+    const promise = this.enqueueClaimedAgentGraphIntent(resolved, runtimeExecution, async () => {
+      runtimeExecution.release();
+      // Keep the existing Session slot until scoped backend cleanup completes.
+      // Other queued claims retain their own uncancelled runtime capabilities.
+      await owner.stopTask?.catch(() => undefined);
+      await this.runtimeKernel.waitForExecutionStop?.(runtimeExecution);
+    });
     this.claimedAgentGraphIntentRuns.set(claim.claimId, {
       requestFingerprint,
+      owner,
       promise,
     });
     try {
@@ -3006,6 +2999,7 @@ export class SessionManager {
   private enqueueClaimedAgentGraphIntent(
     input: ResolvedClaimedAgentGraphIntentInput,
     runtimeExecution: RuntimeExecutionClaim,
+    release: () => Promise<void>,
   ): Promise<ClaimedAgentGraphIntentResult> {
     const sessionId = input.claim.targetSessionId;
     const previous = this.claimedAgentGraphSessionTails.get(sessionId) ?? Promise.resolve();
@@ -3023,7 +3017,8 @@ export class SessionManager {
         }
         enteredQueue = true;
         return this.runClaimedAgentGraphIntentOnce(input, runtimeExecution);
-      });
+      })
+      .finally(release);
     const tail = queuedExecution.then(
       () => {},
       () => {},
@@ -3040,7 +3035,10 @@ export class SessionManager {
       rejectStopped = reject;
     });
     const onRuntimeStop = (): void => {
-      if (!enteredQueue) rejectStopped(runtimeExecution.stopSignal.reason);
+      if (!enteredQueue) {
+        runtimeExecution.release();
+        rejectStopped(runtimeExecution.stopSignal.reason);
+      }
     };
     runtimeExecution.stopSignal.addEventListener('abort', onRuntimeStop, { once: true });
     if (runtimeExecution.stopSignal.aborted) onRuntimeStop();
@@ -3113,6 +3111,9 @@ export class SessionManager {
           claim,
           input.hostedGraphExecution,
         );
+        if (input.hostedGraphExecution && runtimeExecution.stopSignal.aborted)
+          throw runtimeExecution.stopSignal.reason;
+        input.onHostAdmission?.();
         await this.consumeLinkedRootExecution({
           sessionId: child.id,
           turnId: claim.targetTurnId,
@@ -3162,16 +3163,23 @@ export class SessionManager {
 
     // An invocation is what makes a Turn exist on the ledger, so the run listing
     // is the whole occupancy check: a Turn with durable content has one.
-    const turnOwner = (await this.listInvocations(child.id)).find(
-      (candidate) => candidate.turnId === claim.targetTurnId,
-    );
+    const invocations = await this.listInvocations(child.id);
+    const turnOwner = invocations.find((candidate) => candidate.turnId === claim.targetTurnId);
     if (turnOwner) {
       throw new Error(
         `Claimed graph turn ${claim.targetTurnId} is already owned by run ${turnOwner.runId}`,
       );
     }
-    if (child.isArchived || child.status === 'aborted') {
+    if (child.isArchived) {
       throw new Error('Claimed graph execution target child session is terminated');
+    }
+    if (child.status === 'aborted') {
+      const latest = [...invocations].sort((left, right) => right.openedAt - left.openedAt)[0];
+      // A graph stop ends one activation, not the reusable operator. Only a
+      // durable graph-supervisor stop permits a new claim on an aborted child.
+      if (latest?.terminalEvent?.actions?.stateDelta?.abortSource !== 'graph.supervisor') {
+        throw new Error('Claimed graph execution target child session is terminated');
+      }
     }
     if (input.abortSignal?.aborted) {
       throw new Error('Claimed graph execution was cancelled before runtime admission');
@@ -3188,11 +3196,26 @@ export class SessionManager {
     let aborted = false;
     let stopPromise: Promise<void> | undefined;
     const userMessageId = await this.claimedGraphUserMessageId(claim, input.hostedGraphExecution);
+    if (input.hostedGraphExecution && runtimeExecution.stopSignal.aborted)
+      throw runtimeExecution.stopSignal.reason;
+    // Host runs this gate in its Session admission lease immediately before
+    // the durable admission. Until it passes, a graph stop only cancels the
+    // local capability and the gate refuses the Turn; after it passes, the
+    // stop must go through the Host fence.
+    const hostedAdmitExecution = input.hostedGraphExecution
+      ? async (): Promise<'executing' | 'cancelled'> => {
+          if (runtimeExecution.stopSignal.aborted) return 'cancelled';
+          const admission = admitExecution ? await admitExecution() : 'executing';
+          if (admission === 'cancelled' || runtimeExecution.stopSignal.aborted) return 'cancelled';
+          input.onHostAdmission?.();
+          return 'executing';
+        }
+      : admitExecution;
     const execution = this.consumeLinkedRootExecution({
       ...identity,
       userMessageId,
       execution: rootExecution,
-      ...(admitExecution ? { admitExecution } : {}),
+      ...(hostedAdmitExecution ? { admitExecution: hostedAdmitExecution } : {}),
       content: { text: input.prompt },
       start: ({ runId, userMessageId, onRunStarted }) =>
         this.sendMessage(
@@ -3934,6 +3957,75 @@ export class SessionManager {
     };
   }
 
+  /** Stop the captured graph activation, never a newer Run or a queued sibling. */
+  async stopAgentGraphActivation(
+    identity: RuntimeMessageRunIdentity,
+    input: StopSessionInput = { source: 'graph_supervisor' },
+  ): Promise<void> {
+    const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
+      ? this.deps.messageAuthority
+      : undefined;
+    // Until the Host admission gate passes, the capability is only local
+    // ownership: cancel it synchronously, and both the pre-submission check
+    // and that gate refuse the Turn. Once admitted, Host must commit its
+    // durable fence before Runtime stop.
+    if (authority) {
+      const admission = await this.deps.hostedAgentGraphExecution?.readRootTurnAdmissionIdentity(
+        identity.sessionId,
+        identity.turnId,
+      );
+      if (admission && admission.runId !== identity.runId) {
+        throw new Error('Graph stop identity does not match its durable admission');
+      }
+      // A recovered local claim can be new while the Host already owns its Run.
+      // Recheck the gate after the durable read closes that lookup race.
+      if (admission || this.findGraphRuntimeActivation(identity)?.hostAdmitted) {
+        await authority.stopRootRun(identity, input);
+        return;
+      }
+    }
+    await this.stopGraphRuntimeActivation(identity, input);
+  }
+
+  /** Whether a failed stop left cleanup retained for this exact graph activation. */
+  hasPendingAgentGraphActivationStop(identity: RuntimeMessageRunIdentity): boolean {
+    return this.runtimeKernel.hasPendingRunStop?.(identity) ?? false;
+  }
+
+  private findGraphRuntimeActivation(identity: RuntimeMessageRunIdentity) {
+    return [...this.claimedAgentGraphIntentRuns.values()]
+      .map((entry) => entry.owner)
+      .find(
+        (candidate) =>
+          candidate.identity.sessionId === identity.sessionId &&
+          candidate.identity.runId === identity.runId &&
+          candidate.identity.turnId === identity.turnId,
+      );
+  }
+
+  private stopGraphRuntimeActivation(
+    identity: RuntimeMessageRunIdentity,
+    input: StopSessionInput,
+  ): Promise<void> {
+    const owner = this.findGraphRuntimeActivation(identity);
+    if (owner) {
+      if (owner.stopTask) return owner.stopTask;
+      if (!this.runtimeKernel.stopExecution) {
+        throw new Error('Runtime kernel does not support scoped graph activation stops');
+      }
+      const task = this.runtimeKernel.stopExecution(owner.execution, input);
+      owner.stopTask = task;
+      void task.catch(() => {
+        if (owner.stopTask === task) owner.stopTask = undefined;
+      });
+      return task;
+    }
+    if (!this.runtimeKernel.stopRun) {
+      throw new Error('Runtime kernel does not support exact Run stops');
+    }
+    return this.runtimeKernel.stopRun(identity, input);
+  }
+
   async stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
     const hostedAuthority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
@@ -3950,17 +4042,27 @@ export class SessionManager {
     );
   }
 
-  async deliverHostedRootStop(sessionId: string, input: StopSessionInput = {}): Promise<void> {
+  async deliverHostedRootStop(
+    sessionId: string,
+    input: StopSessionInput = {},
+    identity?: RuntimeMessageRunIdentity,
+  ): Promise<void> {
+    if (identity && identity.sessionId !== sessionId) {
+      throw new Error('Hosted stop identity belongs to another Session');
+    }
     const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
     await this.#stopSessionTree(
       sessionId,
-      this.runtimeKernel.stopSession(sessionId, input),
+      identity
+        ? this.stopGraphRuntimeActivation(identity, input)
+        : this.runtimeKernel.stopSession(sessionId, input),
       (childSessionId) =>
         authority
           ? authority.stopSession(childSessionId, input)
           : this.runtimeKernel.stopSession(childSessionId, input),
+      identity,
     );
   }
 
@@ -3968,6 +4070,7 @@ export class SessionManager {
     sessionId: string,
     ownStop: Promise<void>,
     stopChild: (childSessionId: string) => Promise<void>,
+    parentIdentity?: RuntimeMessageRunIdentity,
   ): Promise<void> {
     // Observe immediately while child lookup runs; await below still propagates the original error.
     void ownStop.catch(() => undefined);
@@ -3977,7 +4080,12 @@ export class SessionManager {
       const children = await this.listChildSessions(sessionId);
       childStops = await Promise.allSettled(
         children
-          .filter((child) => child.subagentParent?.lifecycle === 'foreground')
+          .filter(
+            (child) =>
+              child.subagentParent?.lifecycle === 'foreground' &&
+              (!parentIdentity ||
+                child.subagentParent.spawnedBy.parentTurnId === parentIdentity.turnId),
+          )
           .map((child) => stopChild(child.id)),
       );
     } catch (error) {
@@ -4948,11 +5056,12 @@ export class SessionManager {
   private classifyRuntimeEventRecovery(
     inspected: AgentRunInspectModel,
   ): AgentRunRecoveryDecision | undefined {
-    if (!inspected.terminalRuntimeFact) return undefined;
-    return runtimeTerminalFactToRecoveryDecision(
-      inspected.invocation,
-      inspected.terminalRuntimeFact,
-    );
+    const fact = inspected.terminalRuntimeFact;
+    // A handed-off run ended on purpose; its continuation is owned by the
+    // handoff claim saga, and generic restart repair must not manufacture an
+    // outcome for it.
+    if (!fact || fact.runStatus === 'handed_off') return undefined;
+    return runtimeTerminalFactToRecoveryDecision(inspected.invocation, fact);
   }
 
   private async applyAgentRunRecovery(
@@ -5400,6 +5509,7 @@ function sessionConfigurationMatchesExceptPermissionMode(
     header.backend === configuration.backend &&
     header.executorId === configuration.executorId &&
     header.executorConfig?.model === configuration.executorConfig?.model &&
+    header.executorConfig?.mode === configuration.executorConfig?.mode &&
     header.llmConnectionId === configuration.llmConnectionId &&
     header.llmConnectionSlug === configuration.llmConnectionSlug &&
     header.connectionLocked === configuration.connectionLocked &&
@@ -5520,6 +5630,11 @@ function runtimeTerminalFactToRecoveryDecision(
   invocation: RuntimeInvocationRecord,
   fact: RuntimeEventTerminalFact,
 ): AgentRunRecoveryDecision {
+  // classifyRuntimeEventRecovery filters handed-off runs before this; the
+  // guard keeps the recovery status type honest at the boundary.
+  if (fact.runStatus === 'handed_off') {
+    throw new Error('A handed-off run has no recovery decision');
+  }
   return {
     runId: fact.runId,
     turnId: fact.turnId,

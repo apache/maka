@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { act } from 'react';
+import { act, Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installDom, settleEffects } from './mermaid-test-dom.js';
 import { LocaleProvider } from '../locale-context.js';
@@ -138,8 +138,23 @@ test('renders repeated real Mermaid diagrams across remounts and themes', async 
     const remount = dom.document.createElement('div');
     dom.document.body.appendChild(remount);
     root = createRoot(remount);
-    await act(async () => root.render(view()));
+    const committedStates: string[][] = [];
+    await act(async () => root.render(
+      <Profiler id="cached-diagrams" onRender={() => {
+        committedStates.push(Array.from(
+          remount.querySelectorAll('[data-maka-mermaid-state]'),
+          (node) => node.getAttribute('data-maka-mermaid-state')!,
+        ));
+      }}>
+        {view()}
+      </Profiler>,
+    ));
     await settleEffects();
+    assert.ok(committedStates.length > 0);
+    for (const states of committedStates) {
+      assert.deepEqual(states, ['rendered', 'rendered', 'rendered', 'rendered'],
+        'every cached-remount commit must contain complete diagrams');
+    }
     assert.equal(renderCalls, 2, 'a real Mermaid remount should use both cached templates');
 
     dom.document.documentElement.classList.add('dark');
@@ -172,12 +187,22 @@ test('reuses a rendered Mermaid result across remounts and isolates themes', asy
     renderCalls += 1;
     return {
       diagramType: 'flowchart-v2',
-      svg: `<svg id="${id}" viewBox="0 0 100 50"><text>${code}</text></svg>`,
+      svg: `<svg id="${id}" data-theme="${themes.at(-1)}" viewBox="0 0 100 50"><text>${code}</text></svg>`,
     };
   };
 
   const code = 'flowchart LR\ncache_a --> cache_b';
-  const view = () => diagram(code);
+  const cachedThemeCommits: boolean[] = [];
+  let trackCachedTheme = false;
+  const view = () => (
+    <Profiler id="cached-theme" onRender={() => {
+      if (trackCachedTheme) {
+        cachedThemeCommits.push(Boolean(dom.document.querySelector('.maka-mermaid-svg > svg')));
+      }
+    }}>
+      {diagram(code)}
+    </Profiler>
+  );
   let root = createRoot(dom.document.querySelector('#root')!);
 
   try {
@@ -196,10 +221,23 @@ test('reuses a rendered Mermaid result across remounts and isolates themes', asy
     dom.document.documentElement.classList.add('dark');
     await settleEffects();
     assert.equal(renderCalls, 2, 'dark theme must use a distinct render result');
+    assert.equal(
+      dom.document.querySelector('.maka-mermaid-svg > svg')?.getAttribute('data-theme'),
+      'dark',
+      'the dark render should be mounted',
+    );
 
+    trackCachedTheme = true;
     dom.document.documentElement.classList.remove('dark');
     await settleEffects();
     assert.equal(renderCalls, 2, 'switching back should reuse the cached default-theme result');
+    assert.ok(cachedThemeCommits.length > 0, 'the cached theme switch should commit');
+    assert.ok(cachedThemeCommits.every(Boolean), 'a cached theme switch must never commit loading');
+    assert.equal(
+      dom.document.querySelector('.maka-mermaid-svg > svg')?.getAttribute('data-theme'),
+      'default',
+      'a cached theme switch should restore the default-theme SVG',
+    );
     assert.deepEqual(themes, ['default', 'dark']);
   } finally {
     await act(async () => root.unmount());
