@@ -102,6 +102,45 @@ describe('Maka Pi TUI transcript', () => {
     }
   });
 
+  test('traces quotes on the durable user entry', () => {
+    const state = createMakaPiTranscriptState();
+    const excerpt = {
+      text: 'a large pasted excerpt',
+      label: 'earlier turn',
+      sourceTurnId: 'turn-0',
+    };
+    replaceTranscriptWithStoredMessages(state, [
+      // A quote-only submit stores no text: without the trace the sent
+      // context would leave no row at all (#5109 review).
+      {
+        type: 'user',
+        id: 'message-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: '',
+        quotes: [excerpt, { ...excerpt, text: 'second excerpt' }],
+      },
+      {
+        type: 'user',
+        id: 'message-2',
+        turnId: 'turn-1',
+        ts: 2,
+        text: 'with words',
+        quotes: [excerpt],
+      },
+      { type: 'user', id: 'message-3', turnId: 'turn-1', ts: 3, text: 'plain' },
+    ] as StoredMessage[]);
+    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.match(rendered, /· 2 quotes/);
+    assert.match(rendered, /· 1 quote/);
+    assert.match(rendered, /with words/);
+    assert.equal(
+      (rendered.match(/· \d+ quotes?/g) ?? []).length,
+      2,
+      'messages without quotes render no hint',
+    );
+  });
+
   test('renders stored legacy Automation prompts as read-only provenance', () => {
     const state = createMakaPiTranscriptState();
     replaceTranscriptWithStoredMessages(state, [
