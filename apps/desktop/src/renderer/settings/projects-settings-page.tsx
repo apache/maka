@@ -304,7 +304,7 @@ export function ProjectsSettingsPage(props: {
             {listed.map((project) => {
               const isDefault = project.id === defaultProjectId;
               const endCluster = (
-                    <>
+                    <HStack gap={2} align="center">
                       {capabilities.setLocalDefault && isDefault ? (
                         <Badge
                           className="settingsActionSlotBadge"
@@ -418,7 +418,7 @@ export function ProjectsSettingsPage(props: {
                           },
                         ]}
                       />
-                    </>
+                    </HStack>
               );
 
               const isRenaming = renamingId === project.id;
