@@ -31,27 +31,18 @@ export function ProviderEndpointField(props: {
   apiProtocol?: ModelApiProtocol;
   children(description: string | undefined): ReactNode;
 }) {
-  const locale = useUiLocale();
-  const copy = getProviderSettingsCopy(locale).shared;
+  const copy = getProviderSettingsCopy(useUiLocale()).shared;
   const url = providerRequestUrlPreview(props.providerType, props.baseUrl, props.apiProtocol);
   const supportsPreview = props.providerType === 'custom' || props.providerType === 'azure-foundry' ||
     props.providerType === 'amazon-bedrock-api-key';
   if (!supportsPreview) return props.children(undefined);
   const description = url ? `${copy.requestUrlLabel} ${url}` : undefined;
   const endpointHelp = props.providerType === 'azure-foundry'
-    ? locale === 'en'
-      ? 'Use the deployed model endpoint ending in /openai/v1. Enter the deployment name as the model ID; the models list may only contain base models.'
-      : locale === 'zh-CN'
-        ? '使用以 /openai/v1 结尾的已部署模型终结点。模型 ID 请填写部署名称；模型列表可能只包含基础模型。'
-        : '請使用以 /openai/v1 結尾的已部署模型端點。模型 ID 請填寫部署名稱；模型清單可能只包含基礎模型。'
+    ? copy.azureFoundryEndpointHelp
     : props.providerType === 'amazon-bedrock-api-key'
-      ? (props.apiProtocol === 'anthropic-messages'
-        ? locale === 'en'
-          ? 'For Anthropic Messages, use https://bedrock-runtime.{region}.amazonaws.com/anthropic. Enter the Bedrock model ID manually if it is not listed.'
-          : 'Anthropic Messages 請使用 https://bedrock-runtime.{region}.amazonaws.com/anthropic。若未列出，請手動輸入 Bedrock 模型 ID。'
-        : locale === 'en'
-          ? 'For Chat Completions or Responses, use https://bedrock-runtime.{region}.amazonaws.com/openai/v1. Enter the Bedrock model ID manually if it is not listed.'
-          : 'Chat Completions 或 Responses 請使用 https://bedrock-runtime.{region}.amazonaws.com/openai/v1。若未列出，請手動輸入 Bedrock 模型 ID。')
+      ? props.apiProtocol === 'anthropic-messages'
+        ? copy.bedrockAnthropicEndpointHelp
+        : copy.bedrockOpenAiEndpointHelp
       : undefined;
   // Astryx's description is above the input (and hidden with its label).
   // This computed output belongs below it; pass it through aria-description
