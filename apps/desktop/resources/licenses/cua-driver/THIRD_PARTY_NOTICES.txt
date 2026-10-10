@@ -576,7 +576,7 @@ jsonschema 0.46.10
 jsonschema-regex 0.46.10
   License: MIT
   Source: https://github.com/Stranger6667/jsonschema
-  Text: Stranger6667/jsonschema@ecaeceac2340908a8fbf71404442296bd1536520/jsonschema-LICENSE: sha256:19c8b10a10caf8e4033e64441769422596d323dcf2442b83d0787cd62faa4d94
+  Text: Stranger6667/jsonschema@ecaeceac2340908a8fbf71404442296bd1536520/jsonschema-LICENSE.txt: sha256:19c8b10a10caf8e4033e64441769422596d323dcf2442b83d0787cd62faa4d94
 
 lazy_static 1.5.0
   License: MIT OR Apache-2.0
@@ -1256,12 +1256,12 @@ uuid 1.23.1
 uuid-simd 0.8.0
   License: MIT
   Source: https://github.com/Nugine/simd
-  Text: Nugine/simd@d74c030d9dc4f3cae02146d1f497ff62726ef09a/simd-LICENSE: sha256:71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d
+  Text: Nugine/simd@d74c030d9dc4f3cae02146d1f497ff62726ef09a/simd-LICENSE.txt: sha256:71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d
 
 vsimd 0.8.0
   License: MIT
   Source: https://github.com/Nugine/simd
-  Text: Nugine/simd@d74c030d9dc4f3cae02146d1f497ff62726ef09a/simd-LICENSE: sha256:71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d
+  Text: Nugine/simd@d74c030d9dc4f3cae02146d1f497ff62726ef09a/simd-LICENSE.txt: sha256:71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d
 
 webpki-roots 1.0.7
   License: CDLA-Permissive-2.0

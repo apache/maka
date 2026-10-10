@@ -51,10 +51,10 @@ const upstream = {
     '309762f55db3f0548194a9ceba3027fa64b18a93': 'MPL-2.0.txt',
   },
   'Nugine/simd': {
-    d74c030d9dc4f3cae02146d1f497ff62726ef09a: 'upstream/simd-LICENSE',
+    d74c030d9dc4f3cae02146d1f497ff62726ef09a: 'upstream/simd-LICENSE.txt',
   },
   'Stranger6667/jsonschema': {
-    ecaeceac2340908a8fbf71404442296bd1536520: 'upstream/jsonschema-LICENSE',
+    ecaeceac2340908a8fbf71404442296bd1536520: 'upstream/jsonschema-LICENSE.txt',
   },
 };
 
