@@ -7,7 +7,7 @@ counterpart: ./llm-compaction-events-log-projection-draft.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-08-28
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -38,7 +38,7 @@ owners:
 
 本文主要讨论 **RuntimeEvent history compaction**：compactor 生成 continuation summary 或 provider-native compact state，checkpoint 覆盖一段安全的 RuntimeEvent 前缀，并在以后请求中用该投影替代前缀。手动、pre-turn、mid-turn 与 overflow 触发器共用同一个 planner 和 checkpoint transaction。本文不完整展开单个 Tool Result 的 active/stale prune；它们会缩小 provider messages，但不会形成另一套 LLM compaction 机制。
 
-本文描述截至 2026-08-30 的当前实现。ledger-backed checkpoint 中，schema V2 保存文本摘要，schema V3 保存 provider-native state。OpenAI Codex 订阅模型优先使用 Codex remote compaction V2，并保留文本 summarizer 作为范围严格的 liveness fallback；其他 provider 直接使用文本摘要行为。
+本文描述截至 2026-10-10 的当前实现。ledger-backed checkpoint 中，schema V2 保存文本摘要，schema V3 保存 provider-native state。OpenAI Codex 订阅模型优先使用 Codex remote compaction V2，并保留文本 summarizer 作为范围严格的 liveness fallback；其他 provider 直接使用文本摘要行为。
 
 ## 从一个长期会话开始
 
@@ -157,7 +157,7 @@ V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque comp
 
 ## Current：完整请求仍从 RuntimeEvents 开始
 
-每次普通 Send 的 prior-history 路径从 `AiSdkBackend.buildPriorMessages()` 开始。它不会先读取上次已经拼好的 provider messages，而是优先接收此前 Run 的 RuntimeEvents，再执行一条投影流水线：
+每次普通 Send 的 prior-history 路径从 `AiSdkTurn.buildPriorMessages()` 开始。它不会先读取上次已经拼好的 provider messages，而是优先接收此前 Run 的 RuntimeEvents，再执行一条投影流水线：
 
 1. 排除当前 `turnId`，得到 prior Runtime context；
 2. 准备 context budget policy；

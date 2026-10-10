@@ -7,7 +7,7 @@ counterpart: ./llm-compaction-events-log-projection-draft.zh-CN.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-08-28
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -38,7 +38,7 @@ This chapter builds on Chapter 1's log-first Runtime and Chapter 2's distinction
 
 The primary subject is **RuntimeEvent history compaction**: a compactor produces either a continuation summary or provider-native compact state, the checkpoint covers a safe prefix of RuntimeEvents, and later requests use that projection in place of the prefix. The same planner and checkpoint transaction serve manual, pre-turn, mid-turn, and overflow triggers. The chapter does not fully cover active or stale pruning of individual Tool Results; those reduce provider messages without creating another LLM compaction mechanism.
 
-This chapter describes the implementation current as of 2026-08-30. Ledger-backed checkpoints use schema V2 for text summaries and schema V3 for provider-native state. OpenAI Codex subscription models prefer Codex remote compaction V2 and retain the text summarizer as a narrow liveness fallback; other providers use text-summary behavior directly.
+This chapter describes the implementation current as of 2026-10-10. Ledger-backed checkpoints use schema V2 for text summaries and schema V3 for provider-native state. OpenAI Codex subscription models prefer Codex remote compaction V2 and retain the text summarizer as a narrow liveness fallback; other providers use text-summary behavior directly.
 
 ## Start with a long-running Session
 
@@ -157,7 +157,7 @@ For V2, the model sees `summary`. For V3, the provider sees its own opaque compa
 
 ## Current: every request still begins with RuntimeEvents
 
-The prior-history path for a normal Send begins in `AiSdkBackend.buildPriorMessages()`. It does not reuse the provider messages assembled for an earlier request. Instead, it receives RuntimeEvents from earlier Runs and executes a projection pipeline:
+The prior-history path for a normal Send begins in `AiSdkTurn.buildPriorMessages()`. It does not reuse the provider messages assembled for an earlier request. Instead, it receives RuntimeEvents from earlier Runs and executes a projection pipeline:
 
 1. Exclude the current `turnId` to obtain the prior Runtime context.
 2. Prepare the context-budget policy.
