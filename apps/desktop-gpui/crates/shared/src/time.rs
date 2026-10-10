@@ -242,6 +242,33 @@ pub fn locale_date_time(locale: Locale, timestamp_ms: u64, offset_seconds: i32) 
     }
 }
 
+/// A timestamp's date and time as `Intl.DateTimeFormat` writes it with
+/// `dateStyle: "short", timeStyle: "medium"`, the way Desktop's Inspector
+/// names a Turn: "9/28/26, 3:04:05 PM", "2026/9/28 15:04:05",
+/// "2026/9/28 下午3:04:05", in the zone `offset_seconds` east of UTC. Only
+/// English's year differs from [`locale_date_time`]: two digits.
+pub fn short_date_time(locale: Locale, timestamp_ms: u64, offset_seconds: i32) -> String {
+    if locale != Locale::English {
+        return locale_date_time(locale, timestamp_ms, offset_seconds);
+    }
+    let zone = FixedOffset::east_opt(offset_seconds).unwrap_or_else(|| Local::now().offset().fix());
+    let Some(time) =
+        i64::try_from(timestamp_ms).ok().and_then(|ms| zone.timestamp_millis_opt(ms).earliest())
+    else {
+        return String::new();
+    };
+    let (pm, hour12) = time.hour12();
+    let period = if pm { copy::TIME_PM } else { copy::TIME_AM }.in_locale(locale);
+    let year = time.year().rem_euclid(100);
+    format!(
+        "{}/{}/{year:02}, {hour12}:{:02}:{:02} {period}",
+        time.month(),
+        time.day(),
+        time.minute(),
+        time.second()
+    )
+}
+
 /// The local time zone's offset from UTC now, in seconds east. Reads the
 /// zone, so call it from an event or a rebuild, never from `render`.
 pub fn local_utc_offset() -> i32 {
@@ -481,6 +508,11 @@ mod tests {
             locale_date_time(Locale::TraditionalChinese, ms, offset),
             "2026/9/28 下午3:04:05"
         );
+        assert_eq!(short_date_time(Locale::English, ms, offset), "9/28/26, 3:04:05 PM");
+        assert_eq!(short_date_time(Locale::SimplifiedChinese, ms, offset), "2026/9/28 15:04:05");
+        let early = zone.with_ymd_and_hms(2005, 1, 2, 0, 0, 9).single().expect("time");
+        let early = early.timestamp_millis() as u64;
+        assert_eq!(short_date_time(Locale::English, early, offset), "1/2/05, 12:00:09 AM");
     }
 
     #[test]

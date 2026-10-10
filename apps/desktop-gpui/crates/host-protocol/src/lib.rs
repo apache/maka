@@ -35,9 +35,11 @@ mod compat;
 mod configuration;
 mod connection_catalog;
 mod connection_effects;
+mod context;
 mod credential_vault;
 mod daily_review;
 mod envelope;
+mod execution_inspect;
 mod frame;
 mod handshake;
 mod host_frame;
@@ -51,16 +53,20 @@ mod network_proxy;
 mod operation;
 mod project_catalog;
 mod provider_registry;
+mod recall;
 mod registration;
 mod request_headers;
 mod runtime_policy;
+mod runtime_resource;
 mod scheduled_task;
 mod serde_util;
 mod session;
 mod session_catalog;
 mod session_continuity;
 mod session_retirement;
+mod session_revision;
 mod session_transcript;
+mod session_turns;
 mod session_update;
 mod skill_catalog;
 mod stored_message;
@@ -84,8 +90,13 @@ pub use access::{
     normalize_ssh_destination, operation_allows_remote_owner,
 };
 pub use artifact::{
-    ARTIFACT_INGEST_CHUNK_MAX_BYTES, ARTIFACT_NAME_MAX_BYTES, ArtifactIngest, ArtifactIngestInput,
-    ArtifactIngestResult, AttachmentKind, AttachmentRef, MAX_ATTACHMENT_BYTES,
+    ARTIFACT_CURSOR_MAX_BYTES, ARTIFACT_INGEST_CHUNK_MAX_BYTES, ARTIFACT_MIME_TYPE_MAX_BYTES,
+    ARTIFACT_NAME_MAX_BYTES, ARTIFACT_PAGE_MAX_ITEMS, ARTIFACT_PREVIEW_MAX_BYTES,
+    ARTIFACT_READ_CHUNK_MAX_BYTES, ARTIFACT_RESULT_MAX_BYTES, ARTIFACT_SUMMARY_MAX_BYTES,
+    ArtifactBinaryPreview, ArtifactDelete, ArtifactDeleteInput, ArtifactDeleteResult,
+    ArtifactIngest, ArtifactIngestInput, ArtifactIngestResult, ArtifactKind, ArtifactProjection,
+    ArtifactQuery, ArtifactQueryInput, ArtifactQueryResult, ArtifactReadFailureReason,
+    ArtifactSource, ArtifactTextPreview, AttachmentKind, AttachmentRef, MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_COUNT, StorageRef,
 };
 pub use compat::{
@@ -119,6 +130,13 @@ pub use connection_effects::{
     ConnectionTestRun, ConnectionTestRunInput, ConnectionTestRunResult, DiscoveredModel,
     SavedConnection,
 };
+pub use context::{
+    CONTEXT_COMPOSITION_MAX_TOOLS, ContextCompaction, ContextCompactionKind,
+    ContextCompactionPhase, ContextComposition, ContextDiagnostics, ContextDiagnosticsQuery,
+    ContextDiagnosticsQueryInput, ContextDiagnosticsResult, ContextDiagnosticsUnavailable,
+    ContextSegment, ContextSegmentKind, ContextTool, ContextToolRemainder,
+    ContextUnavailableReason,
+};
 pub use credential_vault::{
     CredentialExpectation, CredentialKind, CredentialLocator, CredentialMutationResult,
     CredentialStatus, CredentialVaultDelete, CredentialVaultDeleteInput, CredentialVaultQuery,
@@ -135,6 +153,15 @@ pub use daily_review::{
 };
 pub use envelope::{
     HostOperationError, HostOperationErrorCode, Outcome, RequestFrame, ResponseFrame,
+};
+pub use execution_inspect::{
+    CostBasis, EXECUTION_INSPECT_CURSOR_MAX_BYTES, EXECUTION_INSPECT_RESULT_MAX_BYTES,
+    EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS, ExecutionInspectQuery, ExecutionInspectQueryInput,
+    ExecutionInspectQueryResult, HistoryCompactRoute, ModelCallCoverage, ModelCallKind,
+    ModelCallStatus, SESSION_TRACE_SCHEMA_VERSION, SessionTraceCoverage, SessionTracePage,
+    ToolRecoveryDisposition, ToolStepStatus, TraceCompactionStep, TraceErrorStep,
+    TraceFailureAttribution, TraceModelAttempt, TraceModelCallStep, TracePermissionStep, TraceStep,
+    TraceToolRecovery, TraceToolStep, TraceTurnIdentity, TurnTrace, UsageBasis,
 };
 pub use frame::{FrameDecoder, FrameError, decode_frame_json, encode_frame};
 pub use handshake::{
@@ -172,11 +199,12 @@ pub use memory::{
 };
 pub use message::{
     MESSAGE_QUEUE_MAX_ENTRIES, MessageContent, MessagePlacement, MessageQueueEntrySnapshot,
-    MessageQueueEntryState, QueueEntriesReorder, QueueEntriesReorderInput, QueueEntryPromote,
+    MessageQueueEntryState, QUOTE_COMMENT_MAX_LENGTH, QUOTE_LABEL_MAX_LENGTH, QUOTE_MAX_COUNT,
+    QUOTE_TEXT_MAX_LENGTH, QueueEntriesReorder, QueueEntriesReorderInput, QueueEntryPromote,
     QueueEntryPromoteInput, QueueEntryRetract, QueueEntryRetractInput, QueueEntryUpdate,
     QueueEntryUpdateInput, QueueMutationResult, QueueRetract, QueueRetractInput,
-    QueueRetractResult, SessionMessageQueueProjection, TurnMessageSubmit, TurnMessageSubmitInput,
-    TurnMessageSubmitResult,
+    QueueRetractResult, QuoteRef, SessionMessageQueueProjection, TurnMessageSubmit,
+    TurnMessageSubmitInput, TurnMessageSubmitResult,
 };
 pub use model_override::{
     DECLARABLE_THINKING_LEVELS, FAST_SERVICE_TIER, ModelOverride, ModelOverrides,
@@ -198,6 +226,14 @@ pub use provider_registry::{
     CUSTOM_PROVIDER_TYPE, ModelApiProtocol, PROVIDER_REGISTRY, ProviderAuth, ProviderDefinition,
     ProviderGroup,
 };
+pub use recall::{
+    RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT, RECALL_MAX_TERMS, RECALL_MESSAGE_MAX_BYTES,
+    RECALL_PASSAGE_MAX_BYTES, RECALL_PASSAGE_NEIGHBOURS, RECALL_QUERY_QUESTION_MAX_BYTES,
+    RECALL_QUERY_TERM_MAX_CHARS, RECALL_QUESTION_MAX_UTF16, RECALL_TOTAL_PAYLOAD_CAP_BYTES,
+    RecallFact, RecallFailureReason, RecallMatchKind, RecallMaterial, RecallPassage,
+    RecallPassageMessage, RecallQuery, RecallQueryError, RecallQueryInput, RecallQueryResult,
+    RecallRole, recall_terms_for,
+};
 pub use registration::{HostLifecycleMode, HostRegistration, InvalidRegistration};
 pub use request_headers::{
     ConnectionRequestHeadersQuery, ConnectionRequestHeadersQueryInput,
@@ -213,6 +249,24 @@ pub use runtime_policy::{
     RuntimePolicyMutation, RuntimePolicyQuery, RuntimePolicyQueryInput, RuntimePolicySnapshot,
     ShellPolicy, ShellPreference, SubagentPreset, SubagentProfile, SubagentSettings,
     WebSearchPolicy, WebSearchProvider, WorkspaceInstructionsPolicy,
+};
+pub use runtime_resource::{
+    DESKTOP_TERMINAL_LAUNCH_PREFIX, MAX_LIVE_PTY_RUNS, PipeShellOutput, PtyControl, PtyCursor,
+    PtyShellOutput, PtySize, PtySnapshot, RUNTIME_RESOURCE_COMMAND_MAX_BYTES,
+    RUNTIME_RESOURCE_CONTROL_INPUT_MAX_BYTES, RUNTIME_RESOURCE_CONTROLLER_ACQUIRE_RESULT_MAX_BYTES,
+    RUNTIME_RESOURCE_CURSOR_MAX_BYTES, RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE,
+    RUNTIME_RESOURCE_MAX_PTY_COLS, RUNTIME_RESOURCE_MAX_PTY_ROWS, RUNTIME_RESOURCE_MIN_PTY_COLS,
+    RUNTIME_RESOURCE_MIN_PTY_ROWS, RUNTIME_RESOURCE_PAGE_MAX_ITEMS,
+    RUNTIME_RESOURCE_PTY_BUFFER_MAX_BYTES, RUNTIME_RESOURCE_REF_MAX_BYTES,
+    RUNTIME_RESOURCE_RESULT_MAX_BYTES, RuntimeResource, RuntimeResourceAcquireResult,
+    RuntimeResourceControlInput, RuntimeResourceControlResult, RuntimeResourceControllerAcquire,
+    RuntimeResourceControllerControl, RuntimeResourceControllerInput,
+    RuntimeResourceControllerRelease, RuntimeResourceFailure, RuntimeResourceInputError,
+    RuntimeResourceOwnership, RuntimeResourceQuery, RuntimeResourceQueryInput,
+    RuntimeResourceQueryResult, RuntimeResourceReleaseResult, RuntimeResourceStart,
+    RuntimeResourceStartInput, RuntimeResourceStartResult, RuntimeResourceStop,
+    RuntimeResourceStopInput, RuntimeResourceStopResult, SandboxDenial, ShellMode, ShellOutput,
+    ShellRunState, ShellRunStatus,
 };
 pub use scheduled_task::{
     SCHEDULED_TASK_CATALOG_MAX_ITEMS, SCHEDULED_TASK_CHAT_ID_MAX_CHARS,
@@ -237,28 +291,37 @@ pub use session_catalog::{
     SessionSubagentProjection, UnsupportedLegacySessionCatalogRecord,
 };
 pub use session_continuity::{
-    AgentGraphChangedFrame, AgentGraphChangedReason, AssistantStreamKind,
-    SESSION_CONTINUITY_SCHEMA_VERSION, SessionAssistantDelta, SessionAssistantStreamIdentity,
-    SessionContinuityIdentity, SessionContinuitySnapshot, SessionDeltaFrame, SessionDomain,
-    SessionDomainChangedFrame, SessionEventFrame, SessionFrame, SessionFrameEvent,
-    SessionProjectionFrame, SessionRuntimeResourceChange, SessionRuntimeResourcePtyDataFrame,
-    SessionSteeringEvent, SessionToolOutputDelta, SessionToolProgress, SessionToolResult,
-    SessionToolResultPreview, SessionToolResultStatus, SessionToolStart,
-    SessionTranscriptAdvancedFrame, SubscriptionClose, SubscriptionClosedFrame,
+    AgentGraphChangedFrame, AgentGraphChangedReason, AssistantStreamKind, PTY_INTEREST_MAX_REFS,
+    PtyInterestInput, SESSION_CONTINUITY_SCHEMA_VERSION,
+    SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES, SessionAssistantDelta,
+    SessionAssistantStreamIdentity, SessionContinuityIdentity, SessionContinuitySnapshot,
+    SessionDeltaFrame, SessionDomain, SessionDomainChangedFrame, SessionEventFrame, SessionFrame,
+    SessionFrameEvent, SessionProjectionFrame, SessionRuntimeResourceChange,
+    SessionRuntimeResourcePtyDataFrame, SessionSteeringEvent, SessionToolOutputDelta,
+    SessionToolProgress, SessionToolResult, SessionToolResultPreview, SessionToolResultStatus,
+    SessionToolStart, SessionTranscriptAdvancedFrame, SubscriptionClose, SubscriptionClosedFrame,
     SubscriptionClosedReason, SubscriptionIdInput, SubscriptionIdResult, SubscriptionOpen,
-    SubscriptionOpenInput, SubscriptionOpenResult, SubscriptionReady, ToolOutputStream,
-    TranscriptPolicy,
+    SubscriptionOpenInput, SubscriptionOpenResult, SubscriptionPtyInterestSet, SubscriptionReady,
+    ToolOutputStream, TranscriptPolicy,
 };
 pub use session_retirement::{
     SessionLifecycleSet, SessionLifecycleSetInput, SessionLifecycleState, SessionRemove,
     SessionRemoveInput, SessionRemovePreview, SessionRemovePreviewInput,
     SessionRemovePreviewResult, SessionRemoveResult,
 };
+pub use session_revision::{
+    ConversationCopyIntent, SIDE_CONVERSATION_SESSION_LABEL, SessionBranchCreate,
+    SessionConversationCopyInput, SessionConversationCopyResult, is_side_conversation,
+};
 pub use session_transcript::{
     SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES, SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
     SessionTranscriptBootstrap, SessionTranscriptFragment, SessionTranscriptPage,
     SessionTranscriptPageInput, SessionTranscriptPageQuery, TranscriptAssembler,
     TranscriptAssemblyError, TranscriptDirection, TranscriptEntry,
+};
+pub use session_turns::{
+    SESSION_TURNS_QUERY_MAX_CONTRIBUTIONS, SessionTurnContribution, SessionTurnState,
+    SessionTurnsQuery, SessionTurnsQueryInput, SessionTurnsQueryResult, latest_completed_turn,
 };
 pub use session_update::{
     SessionConfigurationPatch, SessionConfigurationUpdate, SessionConfigurationUpdateInput,
@@ -298,11 +361,12 @@ pub use turn::{
     TurnStopInput,
 };
 pub use usage::{
-    LlmUsageLog, LlmUsageQuery, USAGE_PAGE_MAX_ITEMS, USAGE_SCREEN_SEARCH_MAX_BYTES,
-    UsageActivityPage, UsageCoverage, UsageLogSource, UsageModelRow, UsageOutcome, UsagePricingRow,
-    UsageProvenance, UsageProviderRow, UsageQuery, UsageQueryInput, UsageQueryResult,
-    UsageRangeBounds, UsageRequestLog, UsageRowKind, UsageScreen, UsageScreenQuery,
-    UsageStatusFilter, UsageSummary, UsageToolRow,
+    LlmUsageLog, LlmUsageQuery, ToolUsageTotals, USAGE_PAGE_MAX_ITEMS,
+    USAGE_SCREEN_SEARCH_MAX_BYTES, UsageActivityPage, UsageCoverage, UsageLogSource, UsageModelRow,
+    UsageOutcome, UsagePricingRow, UsageProvenance, UsageProviderRow, UsageQuery, UsageQueryInput,
+    UsageQueryResult, UsageRangeBounds, UsageRequestLog, UsageRowKind, UsageScreen,
+    UsageScreenQuery, UsageStatusFilter, UsageSummary, UsageSummaryV2, UsageTokenTotals,
+    UsageToolRow,
 };
 pub use web_search::{
     WEB_SEARCH_DEFAULT_LIMIT, WEB_SEARCH_MAX_LIMIT, WEB_SEARCH_QUERY_MAX_CHARS,

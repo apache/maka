@@ -53,6 +53,7 @@ use host_protocol::{
 use shared::copy::automations as copy;
 use shared::copy::{self as shell_copy, Locale, Text};
 use shared::domain_element_id;
+use shared::links::follow_link;
 use shared::rows::{EmptyRow, list_row};
 use shared::theme::{
     ActiveMakaPalette as _, HEADING_LINE_REMS, HEADING_TEXT_REMS, RADIUS_SURFACE, back_link,
@@ -942,6 +943,7 @@ impl DailyReviewView {
                             // paragraph gap; the review keeps 1rem.
                             .style(TextViewStyle::default().paragraph_gap(rems(1.)))
                             .selectable(true)
+                            .on_link_click(|href, event, _, cx| follow_link(href, event, cx))
                             .w_full()
                             .text_sm()
                             .line_height(relative(22. / 14.))

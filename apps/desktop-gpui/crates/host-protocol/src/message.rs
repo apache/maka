@@ -37,12 +37,87 @@ use crate::{AttachmentRef, Operation, TurnOrchestration};
 /// follow-up entries together.
 pub const MESSAGE_QUEUE_MAX_ENTRIES: usize = 64;
 
+/// `TURN_MESSAGE_QUOTE_MAX_COUNT` (`protocol/turn.ts`): quotes on one
+/// message.
+pub const QUOTE_MAX_COUNT: usize = 16;
+/// `TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH` (`protocol/turn.ts`): a quote's
+/// text, in UTF-16 code units (a JavaScript string's length).
+pub const QUOTE_TEXT_MAX_LENGTH: usize = 32_000;
+/// `TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH` (`protocol/turn.ts`), in UTF-16
+/// code units.
+pub const QUOTE_LABEL_MAX_LENGTH: usize = 200;
+/// `QUOTE_COMMENT_MAX_LENGTH` (`packages/core/src/events.ts`), in UTF-16
+/// code units.
+pub const QUOTE_COMMENT_MAX_LENGTH: usize = 1000;
+
+/// `QuoteRef` (`isQuoteRef` and `QUOTE_REF_SHAPE` in
+/// `packages/core/src/events.ts`; the Host's caps in `decodeMessageContent`,
+/// `packages/runtime-host/src/protocol/turn.ts`): an excerpt carried inline
+/// on a user message, shown as a chip on its row and folded into what the
+/// model reads. `text` is required and not empty; `label` and `comment`
+/// are not empty when present. The source fields describe a cross-session
+/// snapshot and come together. `sourceCapturedAt` keeps the number as
+/// written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[non_exhaustive]
+pub struct QuoteRef {
+    pub text: String,
+    /// Shown before the text on the chip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The person's note on why they quoted it; the model reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// The Turn the excerpt was selected from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_name: Option<String>,
+    /// Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_captured_at: Option<serde_json::Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_truncated: Option<bool>,
+}
+
+impl QuoteRef {
+    /// A quote of `text` with nothing else.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            label: None,
+            comment: None,
+            source_turn_id: None,
+            source_session_id: None,
+            source_session_name: None,
+            source_captured_at: None,
+            source_truncated: None,
+        }
+    }
+
+    /// The same quote, labelled `label`.
+    pub fn with_label(mut self, label: Option<String>) -> Self {
+        self.label = label;
+        self
+    }
+
+    /// The same quote, from Turn `turn_id`.
+    pub fn with_source_turn_id(mut self, turn_id: Option<String>) -> Self {
+        self.source_turn_id = turn_id;
+        self
+    }
+}
+
 /// `MessageContent`: what a user sent.
 ///
-/// The MVP reads `text` and `displayText`, and the attachments through
-/// [`Self::attachment_refs`]. Attachments, directory references, quotes, and
-/// inline references are kept verbatim so re-encoding loses nothing; they
-/// are modeled when a feature needs them.
+/// The MVP reads `text` and `displayText`, the attachments through
+/// [`Self::attachment_refs`], and the quotes. Attachments, directory
+/// references, and inline references are kept verbatim so re-encoding
+/// loses nothing; they are modeled when a feature needs them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, serde(deny_unknown_fields))]
@@ -62,7 +137,7 @@ pub struct MessageContent {
     pub directory_references: Option<Vec<Value>>,
     /// `QuoteRef[]`; omitted when empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quotes: Option<Vec<Value>>,
+    pub quotes: Option<Vec<QuoteRef>>,
     /// `InlineReference[]`; an empty array marks a current-format plain message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_references: Option<Vec<Value>>,
@@ -79,6 +154,13 @@ impl MessageContent {
             quotes: None,
             inline_references: None,
         }
+    }
+
+    /// The same content carrying `quotes`, none when empty (the wire omits
+    /// an empty list).
+    pub fn with_quotes(mut self, quotes: Vec<QuoteRef>) -> Self {
+        self.quotes = (!quotes.is_empty()).then_some(quotes);
+        self
     }
 
     /// The text a person should see (`userFacingText` in
@@ -443,6 +525,26 @@ message_operation!(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn quotes_round_trip_with_every_field_and_stay_out_when_empty() {
+        let value = json!({
+            "text": "what this does",
+            "quotes": [
+                {"text": "fn main() {}", "sourceTurnId": "t1"},
+                {"text": "the plan", "label": "Plan", "comment": "is this still right?",
+                 "sourceSessionId": "s2", "sourceSessionName": "Other task",
+                 "sourceCapturedAt": 1791622549249_u64, "sourceTruncated": false}
+            ]
+        });
+        let content: MessageContent = serde_json::from_value(value.clone()).expect("decode");
+        let quotes = content.quotes.as_deref().expect("quotes");
+        assert_eq!(quotes[0], QuoteRef::new("fn main() {}").with_source_turn_id(Some("t1".into())));
+        assert_eq!(quotes[1].label.as_deref(), Some("Plan"));
+        assert_eq!(serde_json::to_value(&content).expect("encode"), value);
+        let plain = MessageContent::text("hi").with_quotes(Vec::new());
+        assert_eq!(serde_json::to_value(plain).expect("encode"), json!({"text": "hi"}));
+    }
 
     #[test]
     fn attachment_refs_skip_what_does_not_decode() {

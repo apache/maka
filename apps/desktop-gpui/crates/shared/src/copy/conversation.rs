@@ -103,6 +103,21 @@ texts! {
     SHOW_DETAILS = "Show input and output", "展开输入和输出", "展開輸入和輸出";
     HIDE_DETAILS = "Hide input and output", "收起输入和输出", "收起輸入和輸出";
 
+    // The card under a settled turn that edited files (Codex's): how many
+    // files, their lines, and each file.
+    EDITED_FILES_ONE = "Edited {count} file", "已编辑 {count} 个文件", "已編輯 {count} 個檔案";
+    EDITED_FILES_OTHER = "Edited {count} files", "已编辑 {count} 个文件", "已編輯 {count} 個檔案";
+    /// Opens the changes panel on the turn's changes.
+    VIEW_CHANGES = "View changes", "查看变更", "查看變更";
+    /// Lists the card's files past the first three, and folds them away.
+    SHOW_MORE_FILES_ONE = "Show {count} more file", "再显示 {count} 个文件", "再顯示 {count} 個檔案";
+    SHOW_MORE_FILES_OTHER = "Show {count} more files", "再显示 {count} 个文件", "再顯示 {count} 個檔案";
+    SHOW_FEWER_FILES = "Show fewer files", "收起", "收起";
+    /// In place of a file's line counts when the turn's changes do not
+    /// say them: a file it created, or one it deleted.
+    NEW_FILE = "New file", "新文件", "新檔案";
+    DELETED_FILE = "Deleted", "已删除", "已刪除";
+
     // Prompts.
     ALLOW = "Allow", "允许", "允許";
     DENY = "Deny", "拒绝", "拒絕";
@@ -274,6 +289,10 @@ texts! {
     ATTACH_UNREADABLE = "Couldn’t read “{name}”.", "无法读取「{name}」。", "無法讀取「{name}」。";
     /// A chip's remove button.
     REMOVE_ATTACHMENT = "Remove {name}", "移除 {name}", "移除 {name}";
+    /// What a quote's chip is (Desktop's `quoteSelection`).
+    QUOTE = "Quote", "引用", "引用";
+    /// A staged quote's remove button, by the start of its excerpt.
+    REMOVE_QUOTE = "Remove quote: {text}", "移除引用：{text}", "移除引用：{text}";
     /// A file under 1 KB on its chip.
     FILE_SIZE_BYTES = "{count} bytes", "{count} 字节", "{count} 位元組";
     /// The message queue's accessible name.
@@ -466,6 +485,16 @@ pub fn remove_attachment(locale: Locale, name: &str) -> String {
     REMOVE_ATTACHMENT.fill(locale, &[("name", name)])
 }
 
+/// A staged quote's remove button, naming the start of its excerpt (at
+/// most 40 characters).
+pub fn remove_quote(locale: Locale, text: &str) -> String {
+    let mut start: String = text.chars().take(40).collect();
+    if start.len() < text.len() {
+        start.push('…');
+    }
+    REMOVE_QUOTE.fill(locale, &[("text", &start)])
+}
+
 /// A file's size on its chip: bytes, then KB and MB (1024-based, as Finder
 /// shows sizes under 1 MB rounded). The units are the same in every locale.
 pub fn file_size(locale: Locale, bytes: u64) -> String {
@@ -478,6 +507,18 @@ pub fn file_size(locale: Locale, bytes: u64) -> String {
     } else {
         format!("{:.1} MB", value / (KB * KB))
     }
+}
+
+/// The title of the card under a turn that edited files.
+pub fn edited_files(locale: Locale, count: usize) -> String {
+    plural(count as u64, EDITED_FILES_ONE, EDITED_FILES_OTHER)
+        .fill(locale, &[("count", &count.to_string())])
+}
+
+/// The card's button that lists the files past the first ones.
+pub fn show_more_files(locale: Locale, count: usize) -> String {
+    plural(count as u64, SHOW_MORE_FILES_ONE, SHOW_MORE_FILES_OTHER)
+        .fill(locale, &[("count", &count.to_string())])
 }
 
 /// The note under a Tool's diff cut to what its card shows.

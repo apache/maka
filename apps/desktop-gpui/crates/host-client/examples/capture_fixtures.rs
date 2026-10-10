@@ -73,7 +73,18 @@
 //! untouched; `reasoning` needs a model that streams reasoning,
 //! `message_queue` records `turn.message.submit` and the `queue.*` commands
 //! (see [`record_message_queue`]), and `attachment_ingest` records
-//! `artifact.ingest` (see [`record_attachment_ingest`]).
+//! `artifact.ingest` (see [`record_attachment_ingest`]). Five more need no
+//! model: `terminal` drives a Host-owned PTY through `runtime.resource.*`
+//! (see [`record_terminal`]), `recall` records `recall.query` over the
+//! Sessions the State Root already holds (see [`record_recall`]),
+//! `artifact_files` lists, reads and deletes an uploaded file (see
+//! [`record_artifact_files`]), `inspector` only reads the trace, the
+//! context snapshot and the usage summary of Sessions the State Root holds
+//! (see [`record_inspector`]), and `side_chat` forks a Session the State
+//! Root holds with `session.branch.create` and removes the forks (see
+//! [`record_side_chat`]). These five remove any Session they create and
+//! replace the home directory, user name and host name in what they write
+//! (see [`LocalIdentity`]).
 //!
 //! `--long-history` is a mode of its own: it writes only
 //! `sequences/long_history.jsonl` and leaves every other fixture untouched.
@@ -157,17 +168,25 @@ fn main() -> Result<()> {
     let model_target = resolve_model_target(&mut wire, &args)?;
 
     if let (Some(name), Some(workspace)) = (&args.only_sequence, &args.sequences)
-        && (name == MESSAGE_QUEUE || name == ATTACHMENT_INGEST)
+        && STANDALONE_SEQUENCES.contains(&name.as_str())
     {
-        let mut frames = if name == MESSAGE_QUEUE {
-            record_message_queue(&endpoint, workspace, &model_target)?
-        } else {
-            record_attachment_ingest(&endpoint, workspace, &model_target)?
+        let identity = LocalIdentity::of_this_machine()?;
+        let mut frames = match name.as_str() {
+            MESSAGE_QUEUE => record_message_queue(&endpoint, workspace, &model_target)?,
+            ATTACHMENT_INGEST => record_attachment_ingest(&endpoint, workspace, &model_target)?,
+            TERMINAL => record_terminal(&endpoint, workspace, &model_target)?,
+            RECALL => record_recall(&endpoint)?,
+            INSPECTOR => record_inspector(&endpoint)?,
+            SIDE_CHAT => record_side_chat(&endpoint)?,
+            _ => record_artifact_files(&endpoint, workspace, &model_target)?,
         };
         let directory = args.out.join("sequences");
         fs::create_dir_all(&directory)?;
         let mut text = String::new();
         for frame in &mut frames {
+            if [TERMINAL, RECALL, ARTIFACT_FILES, INSPECTOR, SIDE_CHAT].contains(&name.as_str()) {
+                identity.redact(name, frame)?;
+            }
             sanitize(name, frame)?;
             text.push_str(&serde_json::to_string(frame)?);
             text.push('\n');
@@ -464,6 +483,611 @@ impl Outcome {
 const MESSAGE_QUEUE: &str = "message_queue";
 /// The `--only-sequence` name of [`record_attachment_ingest`].
 const ATTACHMENT_INGEST: &str = "attachment_ingest";
+/// The `--only-sequence` name of [`record_terminal`].
+const TERMINAL: &str = "terminal";
+/// The `--only-sequence` name of [`record_recall`].
+const RECALL: &str = "recall";
+/// The `--only-sequence` name of [`record_artifact_files`].
+const ARTIFACT_FILES: &str = "artifact_files";
+/// The `--only-sequence` name of [`record_inspector`].
+const INSPECTOR: &str = "inspector";
+/// The `--only-sequence` name of [`record_side_chat`].
+const SIDE_CHAT: &str = "side_chat";
+/// `--only-sequence` names recorded by their own function, not a [`Scenario`].
+const STANDALONE_SEQUENCES: &[&str] =
+    &[MESSAGE_QUEUE, ATTACHMENT_INGEST, TERMINAL, RECALL, ARTIFACT_FILES, INSPECTOR, SIDE_CHAT];
+/// Budget for a terminal step: the shell's prompt, an echo, an exit.
+const TERMINAL_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `--only-sequence terminal`: a terminal as the Desktop's Terminal tool
+/// drives it (`apps/desktop/src/main/runtime-host-shell-runs-ipc-main.ts`),
+/// in a new Session in `workspace`. It starts a login shell with
+/// `runtime.resource.start` (no `command`, a `desktop-terminal-` launch id),
+/// lists the Session's resources, names the ref in
+/// `subscription.pty_interest.set`, lets the prompt arrive, takes the
+/// controller seat with `runtime.resource.controller.acquire` (whose
+/// snapshot holds the prompt), types `echo hi` and Enter, resizes to 100x30,
+/// asks for the seat again under another controller id (refused with
+/// `operation_conflict`), releases the seat, stops the shell, and waits for
+/// the `runtime_resource` domain change after which a `get` shows the ended
+/// run. The Session is removed afterwards (not recorded). No Turn runs.
+fn record_terminal(endpoint: &str, workspace: &Path, model_target: &Value) -> Result<Vec<Value>> {
+    let mut wire = Wire::connect(endpoint)?;
+    wire.handshake()?;
+    wire.recording = Some(Vec::new());
+    let session_id =
+        create_scratch_session(&mut wire, workspace, model_target, "Fixture terminal")?;
+    let mut started_ref = None;
+    let recorded = drive_terminal(&mut wire, &session_id, &mut started_ref);
+    let frames = wire.recording.take().unwrap_or_default();
+    if recorded.is_err()
+        && let Some(resource_ref) = &started_ref
+    {
+        // A live shell keeps its Session from being removed.
+        let stop = json!({"sessionId": session_id, "ref": resource_ref});
+        wire.request("runtime.resource.stop", stop)?;
+        while wire.next_frame_within(SETTLE_QUIET)?.is_some() {}
+    }
+    remove_scratch_session(&mut wire, &session_id)?;
+    recorded?;
+    println!("terminal: session {session_id} recorded and removed");
+    Ok(frames)
+}
+
+/// The recorded part of [`record_terminal`]. `started_ref` names the shell
+/// once it runs, for the cleanup after a failure.
+fn drive_terminal(
+    wire: &mut Wire,
+    session_id: &str,
+    started_ref: &mut Option<String>,
+) -> Result<()> {
+    let (open, _) = wire.request(
+        "subscription.open",
+        json!({"sessionId": session_id, "transcript": {"kind": "none"}}),
+    )?;
+    ensure!(open["ok"] == true, "subscription.open failed: {open}");
+    let subscription_id = open["result"]["subscriptionId"].as_str().context("id")?.to_owned();
+    let (ready, _) =
+        wire.request("subscription.ready", json!({"subscriptionId": subscription_id}))?;
+    ensure!(ready["ok"] == true, "subscription.ready failed: {ready}");
+
+    let launch_id = format!("desktop-terminal-{}", random_client_instance_id().as_str());
+    let (started, _) = wire.request(
+        "runtime.resource.start",
+        json!({"sessionId": session_id, "launchId": launch_id}),
+    )?;
+    ensure!(started["ok"] == true, "runtime.resource.start failed: {started}");
+    let resource_ref = started["result"]["resource"]["ref"].as_str().context("ref")?.to_owned();
+    *started_ref = Some(resource_ref.clone());
+    let (listed, _) = wire.request(
+        "runtime.resource.query",
+        json!({"kind": "list_start", "sessionId": session_id}),
+    )?;
+    ensure!(listed["ok"] == true, "runtime.resource.query failed: {listed}");
+    let (interest, _) = wire.request(
+        "subscription.pty_interest.set",
+        json!({"subscriptionId": subscription_id, "refs": [resource_ref]}),
+    )?;
+    ensure!(interest["ok"] == true, "subscription.pty_interest.set failed: {interest}");
+    // The prompt, so the snapshot has something to replay.
+    wire.read_pty_until(&resource_ref, |output| !output.is_empty())?;
+
+    let controller = |controller_id: &str| json!({"sessionId": session_id, "ref": resource_ref, "controllerId": controller_id});
+    let controller_id = uuid_simple();
+    let (acquired, _) =
+        wire.request("runtime.resource.controller.acquire", controller(&controller_id))?;
+    ensure!(acquired["ok"] == true, "acquire failed: {acquired}");
+    let mut sequence = acquired["result"]["nextSequence"].as_u64().context("nextSequence")?;
+    let mut control = |wire: &mut Wire, control: Value| -> Result<()> {
+        let (answer, _) = wire.request(
+            "runtime.resource.controller.control",
+            json!({"sessionId": session_id, "ref": resource_ref, "controllerId": controller_id,
+                   "sequence": sequence, "control": control}),
+        )?;
+        ensure!(answer["ok"] == true, "control {sequence} failed: {answer}");
+        sequence += 1;
+        Ok(())
+    };
+    control(wire, json!({"kind": "input", "input": "echo hi\r"}))?;
+    wire.read_pty_until(&resource_ref, |output| output.contains("\nhi\r\n"))?;
+    control(wire, json!({"kind": "resize", "cols": 100, "rows": 30}))?;
+    while wire.next_frame_within(SETTLE_QUIET)?.is_some() {}
+
+    let (refused, _) =
+        wire.request("runtime.resource.controller.acquire", controller(&uuid_simple()))?;
+    ensure!(
+        refused["ok"] == false && refused["error"]["code"] == "operation_conflict",
+        "a second controller was not refused: {refused}"
+    );
+    let (released, _) =
+        wire.request("runtime.resource.controller.release", controller(&controller_id))?;
+    ensure!(released["result"]["released"] == true, "release failed: {released}");
+    let (stopped, mut pushes) = wire
+        .request("runtime.resource.stop", json!({"sessionId": session_id, "ref": resource_ref}))?;
+    ensure!(stopped["ok"] == true, "runtime.resource.stop failed: {stopped}");
+    // No frame announces the exit: wait for the domain change naming the
+    // ref, then read the state, until it has ended.
+    let names_the_terminal = |frame: &Value| {
+        frame["kind"] == "subscription.session_domain_changed"
+            && frame["domain"] == "runtime_resource"
+            && frame["resources"]
+                .as_array()
+                .is_some_and(|changes| changes.iter().any(|change| change["ref"] == resource_ref))
+    };
+    let deadline = Instant::now() + TERMINAL_STEP_TIMEOUT;
+    loop {
+        ensure!(Instant::now() < deadline, "the stopped terminal never reported its end");
+        if !pushes.iter().any(names_the_terminal) {
+            pushes = wire.next_frame_within(Duration::from_secs(1))?.into_iter().collect();
+            continue;
+        }
+        let (got, more) = wire.request(
+            "runtime.resource.query",
+            json!({"kind": "get", "sessionId": session_id, "ref": resource_ref}),
+        )?;
+        ensure!(got["ok"] == true, "runtime.resource.query get failed: {got}");
+        let status = got["result"]["resource"]["result"]["status"].as_str().unwrap_or_default();
+        if !matches!(status, "starting" | "running") {
+            break;
+        }
+        pushes = more;
+    }
+    while wire.next_frame_within(SETTLE_QUIET)?.is_some() {}
+    let (closed, _) =
+        wire.request("subscription.close", json!({"subscriptionId": subscription_id}))?;
+    ensure!(closed["ok"] == true, "subscription.close failed: {closed}");
+    Ok(())
+}
+
+/// The terms of `--only-sequence recall`, words of the demo State Root's
+/// scripted Sessions (`target/demo-root`).
+const RECALL_TERMS: [&str; 2] = ["backoff", "reconnect"];
+
+/// `--only-sequence recall`: `recall.query` over the Sessions the State
+/// Root already holds (no Session is created and no model runs): a search
+/// for [`RECALL_TERMS`] with a question and a limit of 3, which must find
+/// passages, then a blank term, which the search refuses as
+/// `invalid_query` in an `ok: false` result.
+fn record_recall(endpoint: &str) -> Result<Vec<Value>> {
+    let mut wire = Wire::connect(endpoint)?;
+    wire.handshake()?;
+    wire.recording = Some(Vec::new());
+    let (found, _) = wire.request(
+        "recall.query",
+        json!({"terms": RECALL_TERMS, "question": "How long does the client wait between reconnects?",
+               "limit": 3}),
+    )?;
+    ensure!(found["result"]["ok"] == true, "recall.query failed: {found}");
+    ensure!(
+        found["result"]["passages"].as_array().is_some_and(|passages| !passages.is_empty()),
+        "recall.query found no passages for {RECALL_TERMS:?}; the State Root needs Sessions that \
+         mention them"
+    );
+    let (refused, _) = wire.request("recall.query", json!({"terms": ["   "]}))?;
+    ensure!(
+        refused["result"]["ok"] == false && refused["result"]["reason"] == "invalid_query",
+        "a blank term was not refused: {refused}"
+    );
+    Ok(wire.recording.take().unwrap_or_default())
+}
+
+/// Trace pages `--only-sequence inspector` reads of one Session at most.
+const INSPECTOR_MAX_PAGES: usize = 2;
+
+/// `--only-sequence inspector`: the reads of the workbar's Trace face (Maka
+/// Desktop's Inspector, `loadSessionTracePage`, `loadSessionUsageSummary`
+/// and `inspector.context` in `apps/desktop/src/preload/preload.ts`) over
+/// Sessions the State Root already holds. Only reads: no Session is created,
+/// no Turn runs, nothing is written. On an unrecorded connection it lists
+/// the catalog and reads each Session's newest trace page, to choose a
+/// Session whose trace has more than one page, the Session whose newest
+/// page has the most kinds of step (then the most steps), and one with no
+/// Turn at all; then, recording, it reads for each `execution.inspect.query`
+/// `session_trace_start` (and `session_trace_continue` while a cursor comes
+/// back, at most [`INSPECTOR_MAX_PAGES`] pages), `context.diagnostics.query`
+/// and `usage.query` `summary` for the Session over all time.
+fn record_inspector(endpoint: &str) -> Result<Vec<Value>> {
+    let mut wire = Wire::connect(endpoint)?;
+    wire.handshake()?;
+    let (catalog, _) = wire.request("session.catalog.query", json!({"kind": "list_start"}))?;
+    ensure!(catalog["ok"] == true, "session.catalog.query failed: {catalog}");
+    let ids: Vec<String> = catalog["result"]["sessions"]
+        .as_array()
+        .context("the catalog lists no sessions")?
+        .iter()
+        .filter_map(|session| session["id"].as_str().map(str::to_owned))
+        .collect();
+    let mut paged = None;
+    let mut varied: Option<((usize, usize), String)> = None;
+    let mut idle = None;
+    for id in &ids {
+        let (page, _) = wire.request(
+            "execution.inspect.query",
+            json!({"kind": "session_trace_start", "sessionId": id}),
+        )?;
+        let Some(turns) = page["result"]["turns"].as_array() else { continue };
+        let steps: Vec<&Value> =
+            turns.iter().filter_map(|turn| turn["steps"].as_array()).flatten().collect();
+        let kinds: std::collections::BTreeSet<&str> =
+            steps.iter().filter_map(|step| step["kind"].as_str()).collect();
+        let rank = (kinds.len(), steps.len());
+        if turns.is_empty() && idle.is_none() {
+            idle = Some(id.clone());
+        }
+        if page["result"]["nextCursor"].is_string() && paged.is_none() {
+            paged = Some(id.clone());
+        }
+        if !steps.is_empty() && varied.as_ref().is_none_or(|(best, _)| rank > *best) {
+            varied = Some((rank, id.clone()));
+        }
+    }
+    let (_, varied) = varied.context("no Session of the State Root has a traced step")?;
+    let idle = idle.context("every Session of the State Root has run a Turn")?;
+    let mut sessions = vec![varied];
+    if let Some(paged) = paged.filter(|paged| !sessions.contains(paged)) {
+        sessions.insert(0, paged);
+    }
+    sessions.push(idle);
+
+    wire.recording = Some(Vec::new());
+    for session in &sessions {
+        let mut cursor: Option<String> = None;
+        for _ in 0..INSPECTOR_MAX_PAGES {
+            let input = match &cursor {
+                Some(cursor) => json!({"kind": "session_trace_continue", "sessionId": session,
+                                       "cursor": cursor}),
+                None => json!({"kind": "session_trace_start", "sessionId": session}),
+            };
+            let (page, _) = wire.request("execution.inspect.query", input)?;
+            ensure!(page["ok"] == true, "execution.inspect.query failed: {page}");
+            cursor = page["result"]["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let (context, _) =
+            wire.request("context.diagnostics.query", json!({"sessionId": session}))?;
+        ensure!(context["ok"] == true, "context.diagnostics.query failed: {context}");
+        let (summary, _) = wire.request(
+            "usage.query",
+            json!({"kind": "summary", "query": {"range": "all", "sessionId": session}}),
+        )?;
+        ensure!(summary["ok"] == true, "usage.query failed: {summary}");
+    }
+    Ok(wire.recording.take().unwrap_or_default())
+}
+
+/// The catalog projection of `session_id`, or `None` when the Host has no
+/// such Session; on an unrecorded read unless the wire records.
+fn catalog_get(wire: &mut Wire, session_id: &str) -> Result<Option<Value>> {
+    let (got, _) =
+        wire.request("session.catalog.query", json!({"kind": "get", "sessionId": session_id}))?;
+    ensure!(got["ok"] == true, "session.catalog.query get failed: {got}");
+    Ok(Some(got["result"]["session"].clone()).filter(|session| !session.is_null()))
+}
+
+/// Removes the Session `session_id` at its current revision.
+fn remove_session(wire: &mut Wire, session_id: &str) -> Result<()> {
+    let session = catalog_get(wire, session_id)?.context("the Session to remove is gone")?;
+    let (removed, _) = wire.request(
+        "session.remove",
+        json!({"sessionId": session_id, "expectedRevision": session["revision"]}),
+    )?;
+    ensure!(
+        removed["ok"] == true && removed["result"]["kind"] == "removed",
+        "session.remove failed: {removed}"
+    );
+    Ok(())
+}
+
+/// `--only-sequence side_chat`: what the workbar's Side chat asks of the
+/// Host to fork a task, over a Session the State Root already holds (no
+/// model runs, no Turn starts). Unrecorded, it lists the catalog and reads
+/// each Session's Turns to choose one whose latest completed Turn exists.
+/// Then, recording: `session.turns.query` of that Session (every page, as
+/// Desktop's `listSessionTurns` reads them) and its catalog `get`;
+/// `session.branch.create` with the side-conversation intent through that
+/// Turn at a revision the source does not have (`source_revision_conflict`),
+/// at its revision (`committed`), and the same request again (the same
+/// fork, by its target id); an empty fork of the same source (no
+/// `sourceTurnId`); a fork of a source that does not exist (`not_found`);
+/// then each fork's `get` and `session.remove`, and a `get` that no longer
+/// finds the first. Every fork it creates it removes; on a failure it
+/// removes the ones made so far before it reports.
+fn record_side_chat(endpoint: &str) -> Result<Vec<Value>> {
+    let mut wire = Wire::connect(endpoint)?;
+    wire.handshake()?;
+    let (catalog, _) = wire.request("session.catalog.query", json!({"kind": "list_start"}))?;
+    ensure!(catalog["ok"] == true, "session.catalog.query failed: {catalog}");
+    let candidates: Vec<String> = catalog["result"]["sessions"]
+        .as_array()
+        .context("the catalog lists no sessions")?
+        .iter()
+        .filter(|session| {
+            session["parentSessionId"].is_null()
+                && session["subagent"].is_null()
+                && session["isArchived"] == false
+        })
+        .filter_map(|session| session["id"].as_str().map(str::to_owned))
+        .collect();
+    let mut source = None;
+    for id in &candidates {
+        let contributions = read_turns(&mut wire, id)?;
+        let decoded: Vec<host_protocol::SessionTurnContribution> = contributions
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<_, _>>()
+            .context("decoding session.turns.query contributions")?;
+        if let Some(turn) = host_protocol::latest_completed_turn(&decoded) {
+            source = Some((id.clone(), turn));
+            break;
+        }
+    }
+    let (source, turn) = source.context("no Session of the State Root has a completed Turn")?;
+
+    wire.recording = Some(Vec::new());
+    let mut forks = Vec::new();
+    let recorded = record_side_chat_steps(&mut wire, &source, &turn, &mut forks);
+    // Whatever happened, no fork stays behind.
+    let recording = wire.recording.take().unwrap_or_default();
+    for fork in &forks {
+        if catalog_get(&mut wire, fork)?.is_some() {
+            remove_session(&mut wire, fork)?;
+        }
+    }
+    recorded?;
+    Ok(recording)
+}
+
+/// Every contribution of `session_id`'s `session.turns.query` pages.
+fn read_turns(wire: &mut Wire, session_id: &str) -> Result<Vec<Value>> {
+    let mut contributions = Vec::new();
+    let mut input = json!({"sessionId": session_id, "throughSequence": null, "position": 0,
+                           "maxContributions": 128});
+    for _ in 0..64 {
+        let (page, _) = wire.request("session.turns.query", input.clone())?;
+        ensure!(page["ok"] == true, "session.turns.query failed: {page}");
+        let result = &page["result"];
+        contributions.extend(result["contributions"].as_array().cloned().unwrap_or_default());
+        let Some(next) = result["nextPosition"].as_u64() else { return Ok(contributions) };
+        ensure!(next > input["position"].as_u64().unwrap_or(0), "the turn pages do not move on");
+        input["throughSequence"] = result["throughSequence"].clone();
+        input["position"] = json!(next);
+    }
+    bail!("too many pages of Turns")
+}
+
+/// The recorded steps of [`record_side_chat`]; each fork it commits goes
+/// into `forks` at once.
+fn record_side_chat_steps(
+    wire: &mut Wire,
+    source: &str,
+    turn: &str,
+    forks: &mut Vec<String>,
+) -> Result<()> {
+    read_turns(wire, source)?;
+    let session = catalog_get(wire, source)?.context("the source Session is gone")?;
+    let revision = session["revision"].as_u64().context("no revision")?;
+    let fork = format!("fixture-side-{}", uuid_simple());
+    let input = |target: &str, turn: Option<&str>, revision: u64| {
+        let mut input = json!({"sourceSessionId": source, "targetSessionId": target,
+                               "expectedSourceRevision": revision, "intent": "side_conversation"});
+        if let Some(turn) = turn {
+            input["sourceTurnId"] = json!(turn);
+        }
+        input
+    };
+    let (stale, _) =
+        wire.request("session.branch.create", input(&fork, Some(turn), revision + 1))?;
+    ensure!(
+        stale["ok"] == true && stale["result"]["kind"] == "source_revision_conflict",
+        "a stale revision was not a conflict: {stale}"
+    );
+    let (committed, _) =
+        wire.request("session.branch.create", input(&fork, Some(turn), revision))?;
+    if committed["ok"] == true && committed["result"]["kind"] == "committed" {
+        forks.push(fork.clone());
+    }
+    ensure!(
+        committed["result"]["session"]["id"] == fork.as_str(),
+        "the fork was not committed: {committed}"
+    );
+    let (again, _) = wire.request("session.branch.create", input(&fork, Some(turn), revision))?;
+    ensure!(
+        again["ok"] == true && again["result"]["session"]["id"] == fork.as_str(),
+        "the same request did not resolve to the same fork: {again}"
+    );
+    let empty = format!("fixture-side-{}", uuid_simple());
+    let latest = catalog_get(wire, source)?.context("the source Session is gone")?;
+    let latest = latest["revision"].as_u64().context("no revision")?;
+    let (created, _) = wire.request("session.branch.create", input(&empty, None, latest))?;
+    if created["ok"] == true && created["result"]["kind"] == "committed" {
+        forks.push(empty.clone());
+    }
+    ensure!(
+        created["result"]["session"]["id"] == empty.as_str(),
+        "the empty fork was not committed: {created}"
+    );
+    let missing = format!("fixture-missing-{}", uuid_simple());
+    let (refused, _) = wire.request(
+        "session.branch.create",
+        json!({"sourceSessionId": missing, "targetSessionId": format!("fixture-side-{}", uuid_simple()),
+               "expectedSourceRevision": 1, "intent": "side_conversation"}),
+    )?;
+    ensure!(
+        refused["ok"] == false && refused["error"]["code"] == "not_found",
+        "a missing source was not refused as not_found: {refused}"
+    );
+    for fork in forks.clone() {
+        remove_session(wire, &fork)?;
+    }
+    ensure!(catalog_get(wire, &fork)?.is_none(), "the removed fork is still listed");
+    Ok(())
+}
+
+/// `--only-sequence artifact_files`: the Files tool's reads on a file
+/// uploaded into a new Session in `workspace` (`artifact.ingest` as in
+/// [`record_attachment_ingest`]): `artifact.query` `list_start`, `get`,
+/// `read_text`, `read_binary` (a text file is not an image, so
+/// `unsupported_mime`), `read_chunk` from 0, then `artifact.delete` and a
+/// `list_start` that no longer has it. The Session is removed afterwards
+/// (not recorded). No Turn runs.
+fn record_artifact_files(
+    endpoint: &str,
+    workspace: &Path,
+    model_target: &Value,
+) -> Result<Vec<Value>> {
+    const CONTENT: &[u8] = b"Notes for the Files panel: the garden gate opens at nine.\n";
+    let mut wire = Wire::connect(endpoint)?;
+    wire.handshake()?;
+    wire.recording = Some(Vec::new());
+    let session_id = create_scratch_session(&mut wire, workspace, model_target, "Fixture files")?;
+    let upload_id = uuid_simple();
+    let begin = host_protocol::ArtifactIngestInput::begin(
+        &session_id,
+        &upload_id,
+        "files-note.txt",
+        "text/plain",
+        CONTENT,
+    );
+    let (opened, _) = wire.request("artifact.ingest", serde_json::to_value(begin)?)?;
+    ensure!(opened["result"]["kind"] == "upload_opened", "begin did not open: {opened}");
+    let mut offset = opened["result"]["nextOffset"].as_u64().context("nextOffset")?;
+    while let Some(chunk) =
+        host_protocol::ArtifactIngestInput::chunk(&session_id, &upload_id, CONTENT, offset)
+    {
+        let (accepted, _) = wire.request("artifact.ingest", serde_json::to_value(chunk)?)?;
+        ensure!(accepted["result"]["kind"] == "chunk_accepted", "chunk refused: {accepted}");
+        offset = accepted["result"]["nextOffset"].as_u64().context("nextOffset")?;
+    }
+    let commit = host_protocol::ArtifactIngestInput::commit(&session_id, &upload_id);
+    let (committed, _) = wire.request("artifact.ingest", serde_json::to_value(commit)?)?;
+    ensure!(committed["result"]["kind"] == "committed", "commit failed: {committed}");
+
+    let query = |wire: &mut Wire, input: Value| -> Result<Value> {
+        let (answer, _) = wire.request("artifact.query", input)?;
+        ensure!(answer["ok"] == true, "artifact.query failed: {answer}");
+        Ok(answer["result"].clone())
+    };
+    let page = query(&mut wire, json!({"kind": "list_start", "sessionId": session_id}))?;
+    let artifact_id = page["artifacts"]
+        .as_array()
+        .and_then(|artifacts| artifacts.iter().find(|artifact| artifact["turnId"] == upload_id))
+        .and_then(|artifact| artifact["id"].as_str())
+        .context("the upload is not listed")?
+        .to_owned();
+    let item =
+        |kind: &str| json!({"kind": kind, "sessionId": session_id, "artifactId": artifact_id});
+    query(&mut wire, item("get"))?;
+    let text = query(&mut wire, item("read_text"))?;
+    ensure!(text["preview"]["ok"] == true, "read_text had no text: {text}");
+    query(&mut wire, item("read_binary"))?;
+    query(
+        &mut wire,
+        json!({"kind": "read_chunk", "sessionId": session_id, "artifactId": artifact_id,
+               "offset": 0}),
+    )?;
+    let (deleted, _) = wire
+        .request("artifact.delete", json!({"sessionId": session_id, "artifactId": artifact_id}))?;
+    ensure!(deleted["result"]["kind"] == "deleted", "artifact.delete failed: {deleted}");
+    let after = query(&mut wire, json!({"kind": "list_start", "sessionId": session_id}))?;
+    ensure!(
+        after["artifacts"].as_array().is_some_and(|artifacts| artifacts
+            .iter()
+            .all(|artifact| artifact["id"] != artifact_id.as_str())),
+        "the deleted file is still listed: {after}"
+    );
+    let frames = wire.recording.take().unwrap_or_default();
+    remove_scratch_session(&mut wire, &session_id)?;
+    println!("artifact files: session {session_id} recorded and removed");
+    Ok(frames)
+}
+
+/// Creates a Session in `workspace` for one recording.
+fn create_scratch_session(
+    wire: &mut Wire,
+    workspace: &Path,
+    model_target: &Value,
+    name: &str,
+) -> Result<String> {
+    fs::create_dir_all(workspace)?;
+    let session_id = format!("fixture-{}", uuid_simple());
+    let (created, _) = wire.request(
+        "session.create",
+        json!({
+            "sessionId": session_id,
+            "workspace": {"kind": "host_path", "path": workspace},
+            "modelTarget": model_target,
+            "name": name
+        }),
+    )?;
+    ensure!(created["ok"] == true, "session.create failed: {created}");
+    Ok(session_id)
+}
+
+/// Archives and removes a Session a recording created, so the State Root
+/// ends as it began.
+fn remove_scratch_session(wire: &mut Wire, session_id: &str) -> Result<()> {
+    let (archived, _) = wire
+        .request("session.lifecycle.set", json!({"sessionId": session_id, "state": "archived"}))?;
+    let revision = archived["result"]["revision"]
+        .as_u64()
+        .with_context(|| format!("archiving {session_id} failed: {archived}"))?;
+    let (removed, _) = wire.request(
+        "session.remove",
+        json!({"sessionId": session_id, "expectedRevision": revision}),
+    )?;
+    ensure!(removed["result"]["kind"] == "removed", "session.remove failed: {removed}");
+    Ok(())
+}
+
+/// What a recording must not carry from this machine: the home directory,
+/// the user name, and the host name, which a login shell's prompt and the
+/// demo Sessions' workspace paths contain. [`LocalIdentity::redact`]
+/// replaces them with `/Users/me`, `me` and `host`, as the hand-built
+/// fixtures name a home directory.
+struct LocalIdentity {
+    home: String,
+    user: String,
+    host: String,
+}
+
+impl LocalIdentity {
+    fn of_this_machine() -> Result<Self> {
+        let home = std::env::var("HOME").context("HOME")?;
+        let user = std::env::var("USER").context("USER")?;
+        let host = std::process::Command::new("hostname").arg("-s").output()?;
+        let host = String::from_utf8(host.stdout)?.trim().to_owned();
+        ensure!(!user.is_empty() && !host.is_empty(), "no user or host name to redact");
+        Ok(Self { home, user, host })
+    }
+
+    /// Replaces the identity in every string of `value`, then refuses a
+    /// frame that still names the user.
+    fn redact(&self, name: &str, value: &mut Value) -> Result<()> {
+        match value {
+            Value::String(text) => {
+                *text = text
+                    .replace(&self.home, "/Users/me")
+                    .replace(&self.host, "host")
+                    .replace(&self.user, "me");
+                ensure!(!text.contains(&self.user), "{name} still names the user");
+            }
+            Value::Object(object) => {
+                for child in object.values_mut() {
+                    self.redact(name, child)?;
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    self.redact(name, child)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
 
 /// `--only-sequence attachment_ingest`: uploads a small text file into a new
 /// Session with `artifact.ingest` as the Desktop's `ingestAttachment` does
@@ -1489,6 +2113,41 @@ impl Wire {
         }
     }
 
+    /// Sends `hello` and checks that the Host accepted it.
+    fn handshake(&mut self) -> Result<()> {
+        self.send(&serde_json::to_value(ClientHello::new(random_client_instance_id()))?)?;
+        let accepted = self.next_frame()?;
+        ensure!(accepted["kind"] == "accepted", "handshake was not accepted: {accepted}");
+        Ok(())
+    }
+
+    /// Reads frames until the PTY output of `resource_ref` read here
+    /// satisfies `done` and the Host has then been quiet for
+    /// [`SETTLE_QUIET`]; fails after [`TERMINAL_STEP_TIMEOUT`].
+    fn read_pty_until(&mut self, resource_ref: &str, done: impl Fn(&str) -> bool) -> Result<()> {
+        let deadline = Instant::now() + TERMINAL_STEP_TIMEOUT;
+        let mut output = String::new();
+        loop {
+            let satisfied = done(&output);
+            match self.next_frame_within(SETTLE_QUIET)? {
+                Some(frame) => {
+                    if frame["kind"] == "subscription.runtime_resource_pty_data"
+                        && frame["ref"] == resource_ref
+                        && let Some(data) = frame["data"].as_str()
+                    {
+                        output.push_str(data);
+                    }
+                }
+                None if satisfied => return Ok(()),
+                None => {}
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "the terminal did not print what was expected; it printed {output:?}"
+            );
+        }
+    }
+
     /// Sends a request and returns its id.
     fn send_request(&mut self, operation: &str, input: Value) -> Result<String> {
         let request_id = uuid_simple();
@@ -1542,14 +2201,25 @@ fn sanitize(name: &str, value: &mut Value) -> Result<()> {
     mask_strings(name, value)
 }
 
-/// Fails if any object key in `value` looks like it carries a secret.
+/// Fails if any object key in `value` looks like it carries a secret. A
+/// key naming tokens whose value is a count (`inputTokens: 1200`), or an
+/// object of counts (a usage summary's `totalTokens`), is a usage figure,
+/// not a credential: a credential is never a number.
 fn refuse_credentials(name: &str, value: &Value) -> Result<()> {
     const SUSPICIOUS: [&str; 5] = ["secret", "apikey", "token", "password", "credential"];
+    let is_count = |child: &Value| match child {
+        Value::Number(_) => true,
+        Value::Object(counts) => counts.values().all(Value::is_number),
+        _ => false,
+    };
     match value {
         Value::Object(object) => {
             for (key, child) in object {
                 let lowered = key.to_ascii_lowercase().replace(['_', '-'], "");
-                if SUSPICIOUS.iter().any(|word| lowered.contains(word)) {
+                let usage = lowered.contains("token")
+                    && !SUSPICIOUS.iter().any(|word| *word != "token" && lowered.contains(word))
+                    && is_count(child);
+                if !usage && SUSPICIOUS.iter().any(|word| lowered.contains(word)) {
                     bail!("{name} contains a credential-looking key {key:?}; not writing it");
                 }
                 refuse_credentials(name, child)?;
@@ -1701,7 +2371,9 @@ impl Args {
                      [--connection-slug <slug> --model <model-id>] \
                      [--onboarding <base-url> [--onboarding-key <key>]] \
                      [--task-actions <workspace-dir>] [--long-history <workspace-dir>] \
-                     [--sequences <workspace-dir> --only-sequence <name>]";
+                     [--sequences <workspace-dir> --only-sequence <name>] \
+                     (standalone names: message_queue, attachment_ingest, terminal, recall, \
+                     artifact_files)";
         let mut root = None;
         let mut out = None;
         let mut create_session = None;

@@ -19,10 +19,11 @@
 
 //! The changes panel: Maka Desktop's Workbar `review` tool for the selected
 //! task's workspace, laid out as Claude Code's changes panel. A bar on top:
-//! the file tree's toggle, the base branch (a picker) → the current branch,
-//! a "⋯" menu, maximize and close. Below it the changed files as a tree,
-//! the scopes and the branch's commits under it, beside every file of the
-//! chosen scope in one continuous diff; above it where the panel is
+//! the file tree's toggle, the base branch (a picker) → the current branch
+//! (a turn's prompt while a turn shows), a "⋯" menu, maximize and close.
+//! Below it the changed files as a tree, the scopes, the task's turns that
+//! edited files and the branch's commits under it, beside every file of
+//! the chosen scope in one continuous diff; above it where the panel is
 //! narrow.
 
 use std::cell::Cell;
@@ -42,8 +43,8 @@ use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::skeleton::Skeleton;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
-    ThemeStyled as _, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _, ThemeStyled as _, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, Entity, EventEmitter,
@@ -57,28 +58,32 @@ use shared::copy::review as copy;
 use shared::copy::{Locale, Text};
 use shared::diff::DiffSide as UnifiedSide;
 use shared::domain_element_id;
-use shared::icons::MakaIcon;
+use shared::icons::{MakaIcon, ink};
+use shared::layout::{ICON_BUTTON_REMS, ICON_GLYPH_REMS, PLATE_LINE_REMS, ink_padding};
 use shared::menu::{MenuEntry, MenuItem, MenuPlacement, MenuSlot};
 use shared::rows::StatusLine;
-use shared::theme::{ActiveMakaPalette as _, selectable_row};
+use shared::theme::{ActiveMakaPalette as _, RADIUS_MODAL, RADIUS_SURFACE, selectable_row};
 
 use crate::git::{
-    BaseBranch, BranchContext, FailureReason, FilePatch, FileStatus, GitError, GitRunner,
-    PatchBatch, ReviewFailure, ReviewRead, ReviewScope, ReviewSnapshot, read_patches, read_review,
-    read_whole_file,
+    BaseBranch, BranchContext, FailureReason, FilePatch, FileStatus, GitError, GitRunner, Origin,
+    PatchBatch, ReviewFailure, ReviewFile, ReviewRead, ReviewScope, ReviewSnapshot, read_patches,
+    read_review, read_whole_file,
 };
 use crate::refit::DiffRefit;
 use crate::shown::{DiffInput, DiffSource, ShownFile, prepare};
 use crate::summary::ChangeTotals;
-use crate::sync::{HeaderMarks, InView, header_probe};
+use crate::sync::{HeaderMarks, InView, StickyHeader, header_probe};
 use crate::tree::{
     FileTree, ROW_REMS, RowContext, TreeFile, TreeKey, TreeNode, counts_label, file_counts,
     status_word,
 };
+use crate::turns::{ChangeKind, FileView, TurnChange, TurnChanges};
+
+mod scopes;
 use crate::{
     FILES_CONTEXT, FirstRow, FocusDiff, FoldFolder, LastRow, NextChange, NextFile, NextRow,
     NextScope, OpenRow, PANEL_CONTEXT, PreviousChange, PreviousFile, PreviousRow, PreviousScope,
-    RestoreSplit, SCOPES_CONTEXT, ToggleMaximized, UnfoldFolder,
+    RestoreSplit, SCOPES_CONTEXT, UnfoldFolder,
 };
 
 /// The most lines of one file's diff shown before its "Show all"
@@ -120,17 +125,32 @@ const MENU_WIDTH_REMS: f32 = 13.;
 pub struct ReviewTarget {
     session_id: SharedString,
     workspace: Option<PathBuf>,
+    /// The task's folder, on whichever machine its Host is: what the
+    /// paths of its turns' edits are shown relative to.
+    folder: Option<PathBuf>,
 }
 
 impl ReviewTarget {
     /// Task `session_id`, running in `workspace` on this machine.
     pub fn local(session_id: impl Into<SharedString>, workspace: impl Into<PathBuf>) -> Self {
-        Self { session_id: session_id.into(), workspace: Some(workspace.into()) }
+        let workspace = workspace.into();
+        Self {
+            session_id: session_id.into(),
+            folder: Some(workspace.clone()),
+            workspace: Some(workspace),
+        }
     }
 
     /// Task `session_id`, on a Host that is not this machine.
     pub fn remote(session_id: impl Into<SharedString>) -> Self {
-        Self { session_id: session_id.into(), workspace: None }
+        Self { session_id: session_id.into(), workspace: None, folder: None }
+    }
+
+    /// The task's folder on its Host, for a task on a Host elsewhere: its
+    /// turns' edits show paths relative to it.
+    pub fn with_task_folder(mut self, folder: impl Into<PathBuf>) -> Self {
+        self.folder = Some(folder.into());
+        self
     }
 
     pub fn session_id(&self) -> &SharedString {
@@ -140,6 +160,11 @@ impl ReviewTarget {
     /// The task's folder on this machine; none on a Host elsewhere.
     pub fn workspace(&self) -> Option<&Path> {
         self.workspace.as_deref()
+    }
+
+    /// The task's folder on its Host, wherever that is.
+    pub fn folder(&self) -> Option<&Path> {
+        self.folder.as_deref()
     }
 }
 
@@ -151,11 +176,9 @@ pub enum ReviewPanelEvent {
     /// `session_id` compares against, or forget it (`None`, when the branch
     /// it named is gone).
     BaseBranchChanged { session_id: SharedString, base_branch: Option<String> },
-    /// The panel's own close button.
-    CloseRequested,
-    /// Fill the plate in the conversation's place (`true`), or give the
-    /// conversation its place back: the panel's button, and Esc while it
-    /// is maximized. ⇧Esc is [`ToggleMaximized`], the owner's action.
+    /// Give the conversation its place back (`false`): Esc while the
+    /// panel is maximized. Maximizing, restoring and closing are the
+    /// owner's (the workbar's strip, ⇧Esc as [`ToggleMaximized`]).
     MaximizeRequested(bool),
     /// A read of task `session_id`'s All changes landed, saying this of
     /// them: what the context strip shows, without a read of its own.
@@ -191,22 +214,37 @@ struct Reading {
 /// What the Diff's files were read for. Files listed for another
 /// repository, scope or base branch empty the Diff as they land, rather
 /// than leave the files before beside the tree of the files after while
-/// their patches are read.
+/// their patches are read; so does another turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DiffKey {
-    root: PathBuf,
-    scope: ReviewScope,
-    base_branch: Option<String>,
+enum DiffKey {
+    Git { root: PathBuf, scope: ReviewScope, base_branch: Option<String> },
+    Turn(SharedString),
 }
 
 impl DiffKey {
     fn of(snapshot: &ReviewSnapshot) -> Self {
-        Self {
+        Self::Git {
             root: snapshot.repository_root.clone(),
             scope: snapshot.scope.clone(),
             base_branch: snapshot.base_branch.clone(),
         }
     }
+}
+
+/// Where the tree's files and their diffs come from: a Git scope's listing,
+/// or a turn's changes.
+#[derive(Clone, Copy)]
+enum Source<'a> {
+    Git(&'a ReviewSnapshot),
+    Turn(&'a TurnChange),
+}
+
+/// What a file's header in the Diff says beyond the tree's row: which of
+/// the turn's edits of the file it is, when they show one after another.
+#[derive(Debug, Clone)]
+struct Header {
+    file: TreeFile,
+    step: Option<(usize, usize)>,
 }
 
 /// What the last frame measured of the panel, for the layout that depends
@@ -263,6 +301,15 @@ struct WholeText {
 /// to the file, and scrolling the diff moves the tree's highlight to the
 /// file at its top (`crate::sync`). It is the file's path, so a read that
 /// changes nothing keeps the file, the diff's scroll and its folds.
+///
+/// The task's turns that edited files are scopes too ([`TurnChanges`],
+/// which the panel owns and the owner feeds): a turn shows its files with
+/// their net diffs (or their edits one after another), and needs no Git.
+/// Where Git cannot show the folder's changes (no repository, no `git`, a
+/// Host elsewhere) the panel shows the newest turn and lists only the
+/// turns; the Git scopes and the base picker show only where Git works.
+/// While the owner reads the task's earlier history, a quiet line under the
+/// turns says so ([`Self::set_reading_turns`]).
 pub struct ReviewPanel {
     git: Arc<dyn GitRunner>,
     target: Option<ReviewTarget>,
@@ -311,7 +358,7 @@ pub struct ReviewPanel {
     /// Each shown file's place in the Diff, by its path there.
     diff_order: Rc<HashMap<SharedString, usize>>,
     /// What each shown file's header says, by its path in the Diff.
-    headers: Rc<HashMap<SharedString, TreeFile>>,
+    headers: Rc<HashMap<SharedString, Header>>,
     diff: Entity<DiffState>,
     /// The person's Unified or Split; none follows the column's width.
     chosen_mode: Option<DiffMode>,
@@ -328,15 +375,30 @@ pub struct ReviewPanel {
     scopes_focus: FocusHandle,
     files_scroll: UniformListScrollHandle,
     scopes_scroll: VirtualListScrollHandle,
-    /// The scopes list's row heights, by the rem and the number of commits
-    /// they were measured for.
-    scope_sizes: Option<((Pixels, usize), Rc<Vec<Size<Pixels>>>)>,
+    /// The scopes list's row heights, by the rem and the rows they were
+    /// measured for.
+    scope_sizes: Option<((Pixels, scopes::Layout), Rc<Vec<Size<Pixels>>>)>,
     measured: Rc<Measured>,
     refit: Rc<DiffRefit>,
     marks: Rc<HeaderMarks>,
     picker: Entity<BranchPicker>,
     picker_options: Vec<BaseBranch>,
     menu: MenuSlot,
+    /// What each turn of the task edited.
+    turns: Entity<TurnChanges>,
+    /// The task's settled turns that edited files, oldest first, as
+    /// `turns` last worked them out.
+    turn_list: Arc<Vec<TurnChange>>,
+    /// The turn the person chose to see; none shows the Git scope, or the
+    /// newest turn where Git cannot show the folder's changes.
+    chosen_turn: Option<SharedString>,
+    /// When the turn list was taken, and the zone, for the turns' times.
+    turns_at: (u64, i32),
+    /// `turns` is working out what the turns changed.
+    turns_computing: bool,
+    /// The task's earlier history is being read, so the turns listed are
+    /// not all of them yet; the owner says so ([`Self::set_reading_turns`]).
+    reading_turns: bool,
     _load: Option<Task<()>>,
     _prepare: Option<Task<()>>,
     _more: Option<Task<()>>,
@@ -366,8 +428,10 @@ impl ReviewPanel {
         let picker = cx.new(|cx| {
             SelectState::new(SearchableVec::new(Vec::new()), None, window, cx).searchable(true)
         });
+        let turns = cx.new(|_| TurnChanges::new());
         let subscriptions = vec![
             cx.observe(&diff, |_, _, cx| cx.notify()),
+            cx.observe(&turns, |this, _, cx| this.sync_turns(cx)),
             // A file too large to show has no rows: its header stays
             // folded, the notice under it saying why.
             cx.subscribe(&diff, |this, diff, event: &DiffEvent, cx| {
@@ -434,6 +498,12 @@ impl ReviewPanel {
             picker,
             picker_options: Vec::new(),
             menu: MenuSlot::new(MenuPlacement::BelowEnd),
+            turns,
+            turn_list: Arc::default(),
+            chosen_turn: None,
+            turns_at: (0, 0),
+            turns_computing: false,
+            reading_turns: false,
             _load: None,
             _prepare: None,
             _more: None,
@@ -456,6 +526,7 @@ impl ReviewPanel {
         if self.target == target {
             return;
         }
+        self.turns.update(cx, |turns, cx| turns.set_target(target.as_ref(), cx));
         self.target = target;
         self.base_branch = base_branch;
         self.scope = ReviewScope::All;
@@ -475,9 +546,12 @@ impl ReviewPanel {
         self.more.clear();
         self.reading_more = None;
         self.focus_tree_on_read = false;
+        self.chosen_turn = None;
+        self.reading_turns = false;
         self._load = None;
         self._more = None;
         self.sync_picker(window, cx);
+        self.sync_turns(cx);
         self.sync_files();
         self.clear_diff(cx);
         cx.notify();
@@ -492,9 +566,141 @@ impl ReviewPanel {
         self.target.as_ref()
     }
 
-    /// The scope the panel shows.
+    /// What each turn of the followed task edited: the owner hands it the
+    /// session's edits ([`TurnChanges::set_edits`]).
+    pub fn turn_changes(&self) -> &Entity<TurnChanges> {
+        &self.turns
+    }
+
+    /// The Git scope the panel shows, or last showed while it shows a
+    /// turn.
     pub fn scope(&self) -> &ReviewScope {
         &self.scope
+    }
+
+    /// The turn whose changes the panel shows, by id: the one chosen, or
+    /// the newest where Git cannot show the folder's changes.
+    pub fn shown_turn(&self) -> Option<&SharedString> {
+        self.turn_shown().map(TurnChange::turn_id)
+    }
+
+    /// The task's settled turns that edited files, oldest first.
+    pub fn turn_list(&self) -> &[TurnChange] {
+        &self.turn_list
+    }
+
+    /// Whether the task's earlier history is being read, so that the turn
+    /// list will grow: a quiet line under the turns says so. The owner,
+    /// who reads it, keeps this in step.
+    pub fn set_reading_turns(&mut self, reading: bool, cx: &mut Context<Self>) {
+        if self.reading_turns != reading {
+            self.reading_turns = reading;
+            cx.notify();
+        }
+    }
+
+    /// Whether the panel says earlier turns are being read.
+    pub fn is_reading_turns(&self) -> bool {
+        self.reading_turns
+    }
+
+    fn turn_shown(&self) -> Option<&TurnChange> {
+        let chosen = self
+            .chosen_turn
+            .as_ref()
+            .and_then(|id| self.turn_list.iter().find(|turn| turn.turn_id() == id));
+        chosen.or_else(|| self.git_unavailable().then(|| self.turn_list.last()).flatten())
+    }
+
+    /// The last read found no repository changes to show: no folder here,
+    /// not a repository, no `git`, or Git failing.
+    fn git_unavailable(&self) -> bool {
+        matches!(self.read, Some(Err(_)))
+    }
+
+    /// Where the tree's files and their diffs come from now.
+    fn source(&self) -> Option<Source<'_>> {
+        match self.turn_shown() {
+            Some(turn) => Some(Source::Turn(turn)),
+            None => self.snapshot().map(Source::Git),
+        }
+    }
+
+    /// What the Diff's files are for now.
+    fn source_key(&self) -> Option<DiffKey> {
+        match self.source()? {
+            Source::Git(snapshot) => Some(DiffKey::of(snapshot)),
+            Source::Turn(turn) => Some(DiffKey::Turn(turn.turn_id().clone())),
+        }
+    }
+
+    /// Takes the turns `turns` last worked out: the list of turn scopes,
+    /// and the shown turn's files and diffs when they changed.
+    fn sync_turns(&mut self, cx: &mut Context<Self>) {
+        let turns = self.turns.read(cx);
+        let computing = turns.is_computing();
+        let list: Vec<TurnChange> = turns
+            .turns()
+            .iter()
+            .filter(|turn| turn.is_settled() && !turn.files().is_empty())
+            .cloned()
+            .collect();
+        if std::mem::replace(&mut self.turns_computing, computing) != computing {
+            cx.notify();
+        }
+        if *self.turn_list == list {
+            return;
+        }
+        let shown = self.turn_shown().cloned();
+        self.turn_list = Arc::new(list);
+        self.turns_at = (now_ms(), shared::time::local_utc_offset());
+        if self.turn_shown() != shown.as_ref() {
+            self.show_source(cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows what [`Self::source`] gives in the tree and the Diff: another
+    /// source empties the Diff until its files are ready.
+    fn show_source(&mut self, cx: &mut Context<Self>) {
+        if self.diff_key.is_some() && self.diff_key != self.source_key() {
+            self.clear_diff(cx);
+        }
+        self.sync_files();
+        if matches!(self.source(), Some(Source::Turn(_))) {
+            self.load_diff(None, cx);
+        }
+    }
+
+    /// Shows turn `turn_id`'s changes, scrolled to the file at `path` (as
+    /// the turn shows it) when given: the card under the turn's "View
+    /// changes" and its file rows. A Git read in flight is dropped.
+    pub fn show_turn(
+        &mut self,
+        turn_id: impl Into<SharedString>,
+        path: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        let turn_id = turn_id.into();
+        if self.chosen_turn.as_ref() != Some(&turn_id) || self.reading.is_some() {
+            self.chosen_turn = Some(turn_id);
+            // Patches being read for the Git scope stop; the listing in
+            // flight still lands, for the scopes and the strip.
+            self.reading = None;
+            self.patches.clear();
+            self.patches_failed = false;
+            self.switching = false;
+            if !self.loading {
+                self.generation += 1;
+                self._load = None;
+            }
+            self.show_source(cx);
+            self.reveal_scope(cx);
+        }
+        if let Some(path) = path {
+            self.select_file(path, cx);
+        }
+        cx.notify();
     }
 
     /// Reads the target's changes in the chosen scope again, keeping the
@@ -579,6 +785,7 @@ impl ReviewPanel {
             // A commit gone from the branch read as all changes.
             self.scope = snapshot.scope.clone();
         }
+        let git_ok = result.is_ok();
         if self.scope == ReviewScope::All
             && let Some(target) = &self.target
         {
@@ -591,7 +798,18 @@ impl ReviewPanel {
             Ok(snapshot) => Some(snapshot.branches.clone()),
             Err(failure) => failure.branches.clone(),
         };
+        // A turn shown, chosen or where Git shows nothing: the listing
+        // serves the scopes, the picker and the strip; no patch is read.
+        let turn_shown = self
+            .chosen_turn
+            .as_ref()
+            .is_some_and(|id| self.turn_list.iter().any(|turn| turn.turn_id() == id))
+            || (!git_ok && !self.turn_list.is_empty());
         let batches = match &result {
+            _ if turn_shown => {
+                self.reading = None;
+                None
+            }
             Ok(snapshot) => {
                 if self.diff_key.as_ref().is_some_and(|key| *key != DiffKey::of(snapshot)) {
                     self.clear_diff(cx);
@@ -616,7 +834,7 @@ impl ReviewPanel {
         self.loading = false;
         self.switching = false;
         self.sync_picker(window, cx);
-        self.sync_files();
+        self.show_source(cx);
         if std::mem::take(&mut self.focus_tree_on_read)
             && self.focus.is_focused(window)
             && self.tree_visible
@@ -694,39 +912,24 @@ impl ReviewPanel {
     }
 
     /// Shows `scope`'s changes: all of them, the uncommitted ones, or one
-    /// of the branch's commits; reads them.
+    /// of the branch's commits; reads them. From a turn, the scope it left
+    /// is read again.
     pub fn choose_scope(
         &mut self,
         scope: ReviewScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.scope == scope {
+        let from_turn = self.chosen_turn.take().is_some();
+        if self.scope == scope && !from_turn {
             return;
         }
         self.scope = scope;
         self.switching = true;
-        self.refresh(window, cx);
-    }
-
-    /// The scopes in the order the list shows them: all changes, the
-    /// uncommitted ones, then the branch's commits.
-    fn scopes(&self) -> Vec<ReviewScope> {
-        let commits = self.snapshot().map(|snapshot| snapshot.commits.as_slice()).unwrap_or(&[]);
-        [ReviewScope::All, ReviewScope::Uncommitted]
-            .into_iter()
-            .chain(commits.iter().map(|commit| ReviewScope::Commit(commit.sha.clone())))
-            .collect()
-    }
-
-    fn move_scope(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let scopes = self.scopes();
-        let ix = scopes.iter().position(|scope| *scope == self.scope).unwrap_or(0);
-        let next = ix.saturating_add_signed(step).min(scopes.len() - 1);
-        if next != ix {
-            self.scopes_scroll.scroll_to_item(next, ScrollStrategy::Nearest);
-            self.choose_scope(scopes[next].clone(), window, cx);
+        if from_turn {
+            self.show_source(cx);
         }
+        self.refresh(window, cx);
     }
 
     /// Shows the file at `path` (a path the read lists): scrolls the diff to
@@ -796,7 +999,11 @@ impl ReviewPanel {
 
     /// How many files the scope has: every file the read lists.
     pub fn file_count(&self) -> usize {
-        self.snapshot().map_or(0, |snapshot| snapshot.files.len())
+        match self.source() {
+            Some(Source::Git(snapshot)) => snapshot.files.len(),
+            Some(Source::Turn(turn)) => turn.files().len(),
+            None => 0,
+        }
     }
 
     /// The listed files' patches are being read: how many of how many are
@@ -1072,9 +1279,9 @@ impl ReviewPanel {
     }
 
     /// A read is in flight: its listing, its patches, or the Diff's files
-    /// being prepared from them.
+    /// being prepared from them; or the turns' changes being worked out.
     pub fn is_loading(&self) -> bool {
-        self.loading || self.reading.is_some() || self.preparing
+        self.loading || self.reading.is_some() || self.preparing || self.turns_computing
     }
 
     /// The last read's result, `None` before the first one.
@@ -1091,11 +1298,15 @@ impl ReviewPanel {
         self.read.as_ref()?.as_ref().ok()
     }
 
-    /// Builds the tree of the last listing's files, and keeps the selected
-    /// file when the listing still has it (else selects the first).
+    /// Builds the tree of the shown files (the last listing's, or the shown
+    /// turn's), and keeps the selected file when it is still there (else
+    /// selects the first).
     fn sync_files(&mut self) {
-        let tree =
-            self.snapshot().map(|snapshot| FileTree::new(&snapshot.files)).unwrap_or_default();
+        let tree = match self.source() {
+            Some(Source::Git(snapshot)) => FileTree::new(&snapshot.files),
+            Some(Source::Turn(turn)) => turn_tree(turn),
+            None => FileTree::default(),
+        };
         if *self.tree != tree {
             self.tree = Rc::new(tree);
         }
@@ -1125,8 +1336,12 @@ impl ReviewPanel {
 
     /// What the Diff is to show of each listed file, in the tree's order:
     /// its patch (its whole text once read for "Show more lines"), cut to
-    /// [`DIFF_LINE_CAP`] lines unless it shows whole.
+    /// [`DIFF_LINE_CAP`] lines unless it shows whole. A turn's file shows
+    /// its net diff, or each of its edits one after another.
     fn diff_inputs(&self) -> Vec<DiffInput> {
+        if let Some(Source::Turn(turn)) = self.source() {
+            return self.turn_inputs(turn);
+        }
         self.tree
             .files()
             .map(|file| {
@@ -1149,11 +1364,44 @@ impl ReviewPanel {
                     path: file.path.clone(),
                     status: file.status,
                     whole_text: whole_text.is_some(),
+                    more: true,
+                    step: None,
                     source: whole_text.map_or(source, DiffSource::Text),
                     cap,
                 }
             })
             .collect()
+    }
+
+    /// The Diff's inputs for `turn`'s files, in the tree's order.
+    fn turn_inputs(&self, turn: &TurnChange) -> Vec<DiffInput> {
+        let mut inputs = Vec::new();
+        for file in self.tree.files() {
+            let Some(change) = turn.file(&file.path) else { continue };
+            let cap = if self.whole.contains(&file.path) { usize::MAX } else { DIFF_LINE_CAP };
+            let input = |patch: &Arc<str>, step| DiffInput {
+                path: file.path.clone(),
+                status: file.status,
+                source: DiffSource::Text(patch.clone()),
+                whole_text: false,
+                more: false,
+                step,
+                cap,
+            };
+            match change.view() {
+                FileView::Net(patch) => inputs.push(input(patch, None)),
+                FileView::Steps(steps) => {
+                    let total = steps.len();
+                    inputs.extend(
+                        steps
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, step)| input(&step.patch, Some((ix + 1, total)))),
+                    );
+                }
+            }
+        }
+        inputs
     }
 
     /// Gives the Diff every listed file in the tree's order, once their
@@ -1163,15 +1411,20 @@ impl ReviewPanel {
     /// and folds; `anchor`, the line to keep in view, else the selected
     /// file shows from its top.
     fn load_diff(&mut self, anchor: Option<DiffLinePosition>, cx: &mut Context<Self>) {
-        if self.reading.is_some() || self.patches_failed || self.snapshot().is_none() {
+        let ready = match self.source() {
+            Some(Source::Git(_)) => self.reading.is_none() && !self.patches_failed,
+            Some(Source::Turn(_)) => true,
+            None => false,
+        };
+        if !ready {
             return;
         }
-        let kept: HashMap<&SharedString, &ShownFile> =
-            self.shown.iter().map(|shown| (shown.path(), shown)).collect();
+        let kept: HashMap<(&SharedString, Option<(usize, usize)>), &ShownFile> =
+            self.shown.iter().map(|shown| ((shown.path(), shown.input.step), shown)).collect();
         let mut next = Vec::new();
         let mut fresh = Vec::new();
         for (ix, input) in self.diff_inputs().into_iter().enumerate() {
-            match kept.get(&input.path).filter(|shown| shown.input == input) {
+            match kept.get(&(&input.path, input.step)).filter(|shown| shown.input == input) {
                 Some(shown) => next.push(Some((*shown).clone())),
                 None => {
                     next.push(None);
@@ -1215,14 +1468,14 @@ impl ReviewPanel {
         anchor: Option<DiffLinePosition>,
         cx: &mut Context<Self>,
     ) {
-        self.diff_key = self.snapshot().map(DiffKey::of);
+        self.diff_key = self.source_key();
         let tree_files: HashMap<&SharedString, &TreeFile> =
             self.tree.files().map(|file| (&file.path, file)).collect();
         let headers = next
             .iter()
             .filter_map(|shown| {
-                let file = tree_files.get(shown.path())?;
-                Some((shown.diff_path.clone(), (*file).clone()))
+                let file = (*tree_files.get(shown.path())?).clone();
+                Some((shown.diff_path.clone(), Header { file, step: shown.input.step }))
             })
             .collect();
         self.headers = Rc::new(headers);
@@ -1302,16 +1555,32 @@ impl ReviewPanel {
 
     /// Why there is nothing to show, in Desktop's words; Git failing past
     /// the listing is a failure to read too.
+    ///
+    /// Where the task's turns show instead, or are being read, a folder
+    /// that is no repository, is not on this machine, or has no `git` to
+    /// read it says nothing: the turns are the changes there are to show.
     fn failure_text(&self) -> Option<Text> {
-        if self.patches_failed {
+        if self.patches_failed && self.turn_shown().is_none() {
             return Some(copy::GIT_FAILED);
         }
         let Some(Err(failure)) = &self.read else { return None };
+        if (self.turn_shown().is_some() || self.reading_turns)
+            && matches!(
+                failure.reason,
+                FailureReason::NotGitRepository
+                    | FailureReason::WorkspaceUnavailable
+                    | FailureReason::GitMissing
+            )
+        {
+            return None;
+        }
         Some(match failure.reason {
             FailureReason::NotGitRepository => copy::NOT_GIT_REPOSITORY,
             FailureReason::WorkspaceUnavailable => copy::WORKSPACE_UNAVAILABLE,
             FailureReason::UnbornRepository => copy::UNBORN_REPOSITORY,
-            FailureReason::InvalidBaseBranch | FailureReason::GitFailed => copy::GIT_FAILED,
+            FailureReason::InvalidBaseBranch
+            | FailureReason::GitFailed
+            | FailureReason::GitMissing => copy::GIT_FAILED,
         })
     }
 
@@ -1381,28 +1650,29 @@ impl ReviewPanel {
         MenuSlot::open(self, |this| &mut this.menu, entries, width, window, cx);
     }
 
-    /// The bar on top: the tree's toggle, the base branch → the current
-    /// branch (the panel's name while there are none), then the "⋯" menu,
-    /// maximize and close.
+    /// The bar on top, under the workbar's strip: the tree's toggle, the
+    /// base branch → the current branch (the panel's name while there are
+    /// none), then the "⋯" menu.
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let maka = cx.maka();
         let icon = |glyph: Icon| glyph.size_4().text_color(maka.ink_muted);
-        let close = copy::CLOSE_PANEL.get(cx);
-        let (maximize, glyph) = if self.maximized {
-            (copy::RESTORE_SPLIT.get(cx), AssetIcon::Minimize2)
-        } else {
-            (copy::FOCUS_PANEL.get(cx), AssetIcon::Maximize2)
-        };
         let tree =
             if self.tree_visible { copy::HIDE_TREE.get(cx) } else { copy::SHOW_TREE.get(cx) };
         let more = copy::MORE_ACTIONS.get(cx);
         let bar_button =
             |id: &'static str| Button::new(id).ghost().small().size_7().flex_shrink_0();
+        // The tree's toggle and the "⋯" button put their glyphs' ink on the
+        // plate's 16 px line, where the rows' icons and the scopes' text
+        // start; the title keeps its gap after the toggle.
+        let edge =
+            |share| rems(ink_padding(PLATE_LINE_REMS, ICON_BUTTON_REMS, ICON_GLYPH_REMS, share));
         h_flex()
             .id("review-bar")
+            .test_support()
             .h(rems(3.))
             .flex_shrink_0()
-            .px_2()
+            .pl(edge(ink::LIST_TREE_LEADING))
+            .pr(edge(ink::MORE))
             .gap_1()
             .border_b_1()
             .border_color(maka.border_soft)
@@ -1440,22 +1710,6 @@ impl ReviewPanel {
                     )
                     .children(self.menu.layer()),
             )
-            .child(
-                bar_button("review-maximize")
-                    .icon(icon(Icon::new(glyph)))
-                    .accessibility_label(maximize)
-                    .tooltip_with_action(maximize, &ToggleMaximized, None)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        cx.emit(ReviewPanelEvent::MaximizeRequested(!this.maximized));
-                    })),
-            )
-            .child(
-                bar_button("review-close")
-                    .icon(icon(Icon::new(MakaIcon::Close)))
-                    .accessibility_label(close)
-                    .tooltip(close)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ReviewPanelEvent::CloseRequested))),
-            )
     }
 
     /// Claude Code's "main → staging": the picker of the base branch, which
@@ -1464,6 +1718,26 @@ impl ReviewPanel {
     /// read knows no branches.
     fn render_branches(&self, cx: &mut Context<Self>) -> AnyElement {
         let maka = cx.maka();
+        if let Some(turn) = self.turn_shown() {
+            let label: SharedString = if turn.prompt().is_empty() {
+                copy::UNTITLED_TURN.get(cx).into()
+            } else {
+                turn.prompt().clone()
+            };
+            return div()
+                .id("review-turn-label")
+                .test_support()
+                .aria_label(label.clone())
+                .flex_1()
+                .min_w_0()
+                .pl_1()
+                .truncate()
+                .text_sm()
+                .font_semibold()
+                .text_color(maka.ink)
+                .child(label)
+                .into_any_element();
+        }
         let Some(branches) = self.branches.as_ref().filter(|b| !b.base_branch_options.is_empty())
         else {
             return div()
@@ -1525,15 +1799,19 @@ impl ReviewPanel {
     }
 
     /// The tree's column: the tree, then the scopes and the commits under
-    /// it.
-    fn render_left(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// it. Beside the diff the column reaches the plate's bottom, where its
+    /// lists stop the plate's radius short of the edge, outside their
+    /// scrolling, so no row reaches into the plate's bottom corner at any
+    /// scroll.
+    fn render_left(&self, wide: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .id("review-left")
             .test_support()
             .size_full()
             .min_h_0()
+            .when(wide, |this| this.pb(RADIUS_MODAL))
             .child(div().flex_1().min_h(rems(ROW_REMS * 2.)).child(self.render_tree(window, cx)))
-            .child(self.render_scopes(cx))
+            .when(self.scopes_height() > 0., |this| this.child(self.render_scopes(cx)))
             .into_any_element()
     }
 
@@ -1552,6 +1830,7 @@ impl ReviewPanel {
             selected: self.selected.clone(),
             cursor,
             keyboard,
+            deletions: self.tree.has_deletions(),
             focus: self.files_focus.clone(),
             panel: cx.entity().downgrade(),
         };
@@ -1576,189 +1855,25 @@ impl ReviewPanel {
                     range.map(|ix| context.render(ix, window, cx)).collect::<Vec<_>>()
                 })
                 .size_full()
-                .p_1()
+                // The rows' fills 8 px in from the plate's sides, their
+                // first row level with the diff's box.
+                .px_2()
+                .pt_2()
+                .pb_1()
                 .track_scroll(&self.files_scroll),
             )
             .child(Scrollbar::vertical(&self.files_scroll))
             .into_any_element()
     }
 
-    /// Claude Code's "Commits 126" section: All changes, Uncommitted
-    /// changes, then every commit of the branch since the merge base, in a
-    /// list that draws only the rows in view, the scope shown filled;
-    /// choosing one shows its changes. One Tab stop, ↑ and ↓ choose.
-    fn render_scopes(&self, cx: &mut Context<Self>) -> AnyElement {
-        let maka = cx.maka();
-        let count = self.snapshot().map_or(0, |snapshot| snapshot.commits.len());
-        let height = SCOPES_HEADING_REMS + 0.5 + 2. * ROW_REMS + count as f32 * COMMIT_ROW_REMS;
-        let sizes = self.scope_sizes.as_ref().map_or_else(Rc::default, |(_, sizes)| sizes.clone());
-        v_flex()
-            .flex_none()
-            .w_full()
-            .h(rems(height))
-            .max_h(relative(SCOPES_SHARE))
-            .border_t_1()
-            .border_color(maka.border_soft)
-            .child(
-                h_flex()
-                    .id("review-commits-heading")
-                    .test_support()
-                    .aria_label(format!("{} {count}", copy::COMMITS.get(cx)))
-                    .flex_none()
-                    .h(rems(SCOPES_HEADING_REMS))
-                    .px_4()
-                    .gap_2()
-                    .text_xs()
-                    .font_medium()
-                    .text_color(maka.ink_muted)
-                    .child(copy::COMMITS.get(cx))
-                    .child(
-                        div().font_features(shared::theme::tabular_nums()).child(count.to_string()),
-                    ),
-            )
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        div()
-                            .id("review-scopes")
-                            .test_support()
-                            .role(Role::List)
-                            .aria_label(copy::SCOPES.get(cx))
-                            .track_focus(&self.scopes_focus)
-                            .key_context(SCOPES_CONTEXT)
-                            .on_action(cx.listener(|this, _: &NextScope, window, cx| {
-                                this.move_scope(1, window, cx);
-                            }))
-                            .on_action(cx.listener(|this, _: &PreviousScope, window, cx| {
-                                this.move_scope(-1, window, cx);
-                            }))
-                            .size_full()
-                            .child(
-                                v_virtual_list(
-                                    cx.entity(),
-                                    "review-scope-rows",
-                                    sizes,
-                                    |this, range, window, cx| {
-                                        range
-                                            .map(|ix| this.render_scope_row(ix, window, cx))
-                                            .collect::<Vec<_>>()
-                                    },
-                                )
-                                .track_scroll(&self.scopes_scroll)
-                                .px_1()
-                                .pb_1(),
-                            ),
-                    )
-                    .child(Scrollbar::vertical(&self.scopes_scroll)),
-            )
-            .into_any_element()
-    }
-
-    /// The scopes list's row `ix`: All changes, Uncommitted changes, then
-    /// the branch's commits, newest first, each its subject over its hash,
-    /// author and time; filled while it is the scope shown.
-    fn render_scope_row(&self, ix: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let maka = cx.maka();
-        let locale = Locale::current(cx);
-        let line = |text: SharedString, selected: bool| {
-            div()
-                .min_w_0()
-                .truncate()
-                .text_sm()
-                .text_color(maka.ink)
-                .when(selected, |this| this.font_medium())
-                .child(text)
-                .into_any_element()
-        };
-        let (id, scope, label, height, content) = match ix {
-            0 | 1 => {
-                let (key, scope, label) = if ix == 0 {
-                    ("all", ReviewScope::All, copy::ALL_CHANGES)
-                } else {
-                    ("uncommitted", ReviewScope::Uncommitted, copy::UNCOMMITTED_CHANGES)
-                };
-                let label = label.get(cx);
-                let content = line(label.into(), self.scope == scope);
-                (domain_element_id("review-scope", key), scope, label.to_owned(), ROW_REMS, content)
-            }
-            _ => {
-                let commits = self.snapshot().map_or(&[][..], |snapshot| &snapshot.commits);
-                let Some(commit) = commits.get(ix - 2) else { return div().into_any_element() };
-                let (now, offset) = self.read_at;
-                let when =
-                    shared::time::compact_timestamp(locale, commit.timestamp_ms, now, offset);
-                let meta = copy::commit_meta(&commit.short_sha, &commit.author, &when);
-                let scope = ReviewScope::Commit(commit.sha.clone());
-                let label = shared::copy::parts(locale, &[&commit.subject, &meta]);
-                let content = v_flex()
-                    .min_w_0()
-                    .child(line(commit.subject.clone().into(), self.scope == scope))
-                    .child(
-                        div().min_w_0().truncate().text_xs().text_color(maka.ink_muted).child(meta),
-                    )
-                    .into_any_element();
-                let id = domain_element_id("review-commit", &commit.sha);
-                (id, scope, label, COMMIT_ROW_REMS, content)
-            }
-        };
-        let selected = self.scope == scope;
-        let keyboard = self.scopes_focus.is_focused(window) && window.last_input_was_keyboard();
-        let focus = self.scopes_focus.clone();
-        div()
-            .id(id)
-            .test_support()
-            .role(Role::ListItem)
-            .aria_label(label)
-            .aria_selected(selected)
-            .flex_none()
-            .w_full()
-            .h(rems(height))
-            .px_3()
-            .flex()
-            .flex_col()
-            .justify_center()
-            .rounded(shared::theme::RADIUS_CONTROL)
-            .map(|this| selectable_row(this, selected, cx))
-            .when(selected && keyboard, |this| this.focus_ring_style(window, cx))
-            .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx| {
-                window.prevent_default();
-                focus.focus(window, cx);
-            })
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.choose_scope(scope.clone(), window, cx);
-            }))
-            .child(content)
-            .into_any_element()
-    }
-
-    /// The scopes list's row heights at `rem`, kept while neither the rem
-    /// nor the number of commits changes: two scopes, then the commits.
-    fn sync_scope_sizes(&mut self, rem: Pixels) {
-        let commits = self.snapshot().map_or(0, |snapshot| snapshot.commits.len());
-        let key = (rem, commits);
-        if self.scope_sizes.as_ref().is_some_and(|(at, _)| *at == key) {
-            return;
-        }
-        let row = |height: f32| size(px(0.), rems(height).to_pixels(rem));
-        let sizes = [ROW_REMS, ROW_REMS]
-            .into_iter()
-            .chain(std::iter::repeat_n(COMMIT_ROW_REMS, commits))
-            .map(row)
-            .collect();
-        self.scope_sizes = Some((key, Rc::new(sizes)));
-    }
-
     /// The tree's column and the diff on one surface: the column beside
     /// the diff, resizable, where the panel is wide; above it, at most
     /// [`STACKED_LIST_SHARE`] of the height, where it is narrow. The
-    /// tree's toggle hides the column.
+    /// tree's toggle hides the column. The diff sits in its box 8 px in
+    /// from the plate's sides and bottom, and from the column.
     fn render_review(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let maka = cx.maka();
         let rem = window.rem_size();
-        let diff = self.render_diff_column(cx);
+        let diff = div().size_full().min_w_0().min_h_0().p_2().child(self.render_diff_box(cx));
         let surface = div()
             .id("review-area")
             .test_support()
@@ -1769,8 +1884,9 @@ impl ReviewPanel {
         if !self.tree_visible {
             return surface.child(diff).into_any_element();
         }
-        let left = self.render_left(window, cx);
-        if self.measured.wide.get() {
+        let wide = self.measured.wide.get();
+        let left = self.render_left(wide, window, cx);
+        if wide {
             surface
                 .child(
                     h_resizable("review-columns")
@@ -1788,16 +1904,12 @@ impl ReviewPanel {
                 )
                 .into_any_element()
         } else {
-            // The column's own height, up to its share: the visible rows
-            // and 4 px of padding above and below them, and the scopes.
-            let commits = self.snapshot().map_or(0, |snapshot| snapshot.commits.len());
+            // The column's own height, up to its share: the visible rows,
+            // the 8 px above and 4 px below them, and the scopes. The box
+            // under it takes the rest, its own 8 px gap above it in place
+            // of a divider.
             let rows = self.tree.visible(&self.folded).len();
-            let height = rows as f32 * ROW_REMS
-                + 0.5
-                + SCOPES_HEADING_REMS
-                + 0.5
-                + 2. * ROW_REMS
-                + commits as f32 * COMMIT_ROW_REMS;
+            let height = rows as f32 * ROW_REMS + 0.75 + self.scopes_height();
             surface
                 .child(
                     v_flex()
@@ -1810,25 +1922,37 @@ impl ReviewPanel {
                                 .max_h(relative(STACKED_LIST_SHARE))
                                 .child(left),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .w_full()
-                                .border_t_1()
-                                .border_color(maka.border_soft)
-                                .child(diff),
-                        ),
+                        .child(div().flex_1().min_h_0().w_full().child(diff)),
                 )
                 .into_any_element()
         }
+    }
+
+    /// The continuous diff's box, as Desktop's `.maka-session-review-diff`:
+    /// a rounded surface in the transcript's code-block fill, the diff 8 px
+    /// in at its sides and the box's radius in above and below, outside
+    /// the diff's scrolling, so the scroller's clip keeps every row clear
+    /// of the box's corners at any scroll.
+    fn render_diff_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("review-diff-box")
+            .test_support()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .rounded(RADIUS_SURFACE)
+            .bg(cx.maka().code)
+            .px_2()
+            .py(RADIUS_SURFACE)
+            .child(self.render_diff_column(cx))
     }
 
     /// Every file of the scope in the kit's Diff, one after another: each
     /// under its header (fold chevron, file icon, name, folder, counts),
     /// changed lines with word-level highlights, unchanged runs folded to
     /// three lines around each change for the reader to unfold, long lines
-    /// wrapped, line numbers. Where a file's diff was cut, a note under its
+    /// wrapped, line numbers, the code in the palette's syntax colours by the
+    /// file's extension. Where a file's diff was cut, a note under its
     /// last shown line gives Desktop's "n more lines not shown" and a Show
     /// all; where Git has lines of a file the diff does not carry, "Show
     /// more lines" at its end.
@@ -1838,7 +1962,7 @@ impl ReviewPanel {
         let column =
             v_flex().id("review-diff").test_support().relative().size_full().min_w_0().min_h_0();
         if self.shown.is_empty() {
-            let listed = self.snapshot().map(|snapshot| snapshot.files.len());
+            let listed = self.source().map(|_| self.file_count());
             let reading = listed.is_some_and(|files| files > 0) && self.is_loading();
             let empty = listed == Some(0) && !self.loading;
             return column
@@ -1880,10 +2004,10 @@ impl ReviewPanel {
         let diff = Diff::new(&self.diff)
             .soft_wrap(true)
             .line_number(true)
-            .syntax_highlight(false)
             .hunk_separator(DiffHunkSeparator::Simple)
             .render_header(move |file, _, cx| {
-                render_header(file, headers.get(file.path()), &marks, cx)
+                let id = domain_element_id("review-file-header", file.path());
+                render_header(file, headers.get(file.path()), Some(&marks), id, cx)
             })
             .annotations(annotations)
             .render_annotation(move |annotation, _, cx| {
@@ -1893,13 +2017,95 @@ impl ReviewPanel {
             .min_h_0()
             .w_full()
             .border_0()
-            .bg(maka.plate);
+            .bg(maka.code);
         column
             .child(diff)
             .child(self.refit.probe(&self.diff))
             .child(self.split_probe(cx))
             .child(self.marks.probe(self.diff_order.clone(), cx.entity().downgrade()))
+            .children(self.render_sticky_header(cx))
             .into_any_element()
+    }
+
+    /// The diff's sticky header, as GitHub's: over the top of the diff, a
+    /// copy of the header of the file at the top (the rule the tree's
+    /// highlight follows, without its pin on a file just chosen), drawn
+    /// while that file's own header is above the diff's top and gone once
+    /// any of it is in view ([`StickyHeader`]). The kit's header row around
+    /// the same content, in the box's fill with a hairline under it; its
+    /// chevron folds the file as the header's own does.
+    fn render_sticky_header(&self, cx: &mut Context<Self>) -> Option<StickyHeader> {
+        let maka = cx.maka();
+        let sticky = self.marks.sticky()?;
+        let shown = self.shown.get(sticky.file)?;
+        let path = shown.diff_path.clone();
+        let folded = self.diff.read(cx).is_file_collapsed(&path);
+        let name = self.headers.get(&path).map_or_else(|| path.clone(), |h| h.file.name.clone());
+        let label = copy::fold_file(Locale::current(cx), &name, folded);
+        let content = render_header(
+            &shown.file,
+            self.headers.get(&path),
+            None,
+            "review-sticky-file".into(),
+            cx,
+        );
+        let panel = cx.entity().downgrade();
+        let header = div()
+            .id("review-sticky-header")
+            .test_support()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .block_mouse_except_scroll()
+            .bg(maka.code)
+            .border_b_1()
+            .border_color(maka.border)
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .pl_1()
+                    .pr_3()
+                    .py_1()
+                    .gap_1()
+                    .child(
+                        Button::new("review-sticky-fold")
+                            .ghost()
+                            .xsmall()
+                            .icon(if folded {
+                                IconName::ChevronRight
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .accessibility_label(label)
+                            .on_click(move |_, _, cx| {
+                                panel
+                                    .update(cx, |panel, cx| panel.fold_from_sticky(&path, cx))
+                                    .ok();
+                            }),
+                    )
+                    .child(div().flex_1().min_w_0().child(content)),
+            );
+        Some(StickyHeader::new(header, sticky.file, &self.marks))
+    }
+
+    /// The sticky header's chevron: folds the file at `path` (the Diff's)
+    /// to its header, which then shows at the top, as a fold from the
+    /// header's own chevron leaves it in view; or unfolds it, unless it is
+    /// too large to show.
+    fn fold_from_sticky(&mut self, path: &SharedString, cx: &mut Context<Self>) {
+        let too_large =
+            self.shown.iter().any(|shown| &shown.diff_path == path && shown.is_too_large());
+        self.diff.update(cx, |diff, cx| {
+            let folded = diff.is_file_collapsed(path);
+            if folded && too_large {
+                return;
+            }
+            diff.set_file_collapsed(path, !folded, cx);
+            diff.scroll_to_file(path, cx);
+        });
+        cx.notify();
     }
 
     /// Measures the diff's column each frame and opens the diff split or
@@ -1963,14 +2169,35 @@ enum Note {
 /// A file's header, after the Diff's fold chevron: the file's icon, its
 /// name, its folder muted, how it changed (when not a modification), and
 /// the lines it adds and deletes (an untracked file's size when too large
-/// to read); with the probe that tells the tree where the header is.
+/// to read); with the probe that tells the tree where the header is. One of
+/// a turn's edits shown one after another says which it is, and its own
+/// lines.
 fn render_header(
     file: &DiffFile,
-    info: Option<&TreeFile>,
-    marks: &Rc<HeaderMarks>,
+    header: Option<&Header>,
+    marks: Option<&Rc<HeaderMarks>>,
+    id: ElementId,
     cx: &App,
 ) -> AnyElement {
     let maka = cx.maka();
+    let locale = Locale::current(cx);
+    let info = header.map(|header| &header.file);
+    let step = header.filter(|header| header.file.stepwise).map(|header| header.step);
+    let mark = step.map(|step| {
+        let (n, total) = step.unwrap_or((1, 1));
+        copy::step_mark(locale, n, total)
+    });
+    // A step's own lines, from its diff; the file's otherwise.
+    let counts = match (info, step) {
+        (Some(info), Some(_)) => {
+            let (added, deleted) = (file.additions() as u32, file.deletions() as u32);
+            let mut info = info.clone();
+            (info.additions, info.deletions, info.unread_size) = (added, deleted, None);
+            Some(info)
+        }
+        (info, None) => info.cloned(),
+        (None, Some(_)) => None,
+    };
     let (name, folder) = match info {
         Some(info) => (info.name.clone(), info.folder.clone()),
         None => (file.path().clone(), SharedString::default()),
@@ -1979,7 +2206,7 @@ fn render_header(
         .map(|info| info.status)
         .filter(|status| !matches!(status, FileStatus::Modified | FileStatus::Unknown));
     h_flex()
-        .id(domain_element_id("review-file-header", file.path()))
+        .id(id)
         .test_support()
         .aria_label(file.path().clone())
         .relative()
@@ -2012,6 +2239,18 @@ fn render_header(
                         .child(folder),
                 ),
         )
+        .when_some(mark, |this, mark| {
+            this.child(
+                div()
+                    .id(domain_element_id("review-step-mark", file.path()))
+                    .test_support()
+                    .aria_label(mark.clone())
+                    .flex_none()
+                    .text_xs()
+                    .text_color(maka.ink_muted)
+                    .child(mark),
+            )
+        })
         .when_some(status, |this, status| {
             this.child(
                 div()
@@ -2021,17 +2260,17 @@ fn render_header(
                     .child(status_word(status).get(cx)),
             )
         })
-        .when_some(info, |this, info| {
+        .when_some(counts, |this, info| {
             this.child(
                 div()
                     .id(domain_element_id("review-header-counts", file.path()))
                     .test_support()
-                    .aria_label(counts_label(info, Locale::current(cx)))
+                    .aria_label(counts_label(&info, locale))
                     .flex_none()
-                    .child(file_counts(info, cx)),
+                    .child(file_counts(&info, true, cx)),
             )
         })
-        .child(header_probe(marks, file.path().clone()))
+        .children(marks.map(|marks| header_probe(marks, file.path().clone())))
         .into_any_element()
 }
 
@@ -2089,6 +2328,38 @@ fn render_note(
         }
         None => div().into_any_element(),
     }
+}
+
+/// A turn's changed files as the tree shows them: each with how the turn
+/// left it and its lines, marked when its edits show one after another.
+fn turn_tree(turn: &TurnChange) -> FileTree {
+    let files: Vec<ReviewFile> = turn
+        .files()
+        .iter()
+        .map(|file| {
+            let (additions, deletions) = file.counts().unwrap_or_default();
+            ReviewFile {
+                path: file.path().to_string(),
+                previous_path: None,
+                status: match file.kind() {
+                    ChangeKind::Created => FileStatus::Added,
+                    ChangeKind::Deleted => FileStatus::Deleted,
+                    _ => FileStatus::Modified,
+                },
+                additions,
+                deletions,
+                binary: false,
+                unread_size: None,
+                origin: Origin::Compared(Vec::new()),
+            }
+        })
+        .collect();
+    let mut tree = FileTree::new(&files);
+    let paths = |pick: fn(&crate::turns::FileChange) -> bool| -> HashSet<SharedString> {
+        turn.files().iter().filter(|file| pick(file)).map(|file| file.path().clone()).collect()
+    };
+    tree.mark_turn_files(&paths(|file| file.is_stepwise()), &paths(|file| file.counts().is_none()));
+    tree
 }
 
 /// The Diff's side for the unified reader's.
@@ -2197,12 +2468,24 @@ impl Render for ReviewPanel {
             .relative()
             .size_full()
             .min_w_0()
+            // A plate wherever it sits: beside the conversation, below it,
+            // or in its place. Nothing in it reaches into the corners (GPUI
+            // clips no child to a radius): the bar's controls and the rows
+            // stay inside, and the diff scrolls in its own box.
+            .rounded(RADIUS_MODAL)
             .bg(maka.plate)
             .text_color(maka.ink)
             .child(self.render_bar(cx))
             .child(notices)
-            .when(self.loading && self.read.is_none(), |this| this.child(loading_state()))
-            .when(self.snapshot().is_some(), |this| this.child(self.render_review(window, cx)))
+            .when(self.loading && self.read.is_none() && self.source().is_none(), |this| {
+                this.child(loading_state())
+            })
+            // Where Git cannot show the folder's changes, the turns being
+            // read show in the scopes before any is listed.
+            .when(
+                self.source().is_some() || (self.reading_turns && self.git_unavailable()),
+                |this| this.child(self.render_review(window, cx)),
+            )
             .child(self.width_probe(cx))
     }
 }

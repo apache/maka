@@ -81,6 +81,13 @@ impl SubscriptionFrame {
     pub fn decode(&self) -> Result<SessionFrame, serde_json::Error> {
         serde_json::from_value(self.raw.clone())
     }
+
+    /// Decodes the frame as the one frame type its `kind` names, for
+    /// example [`crate::SessionRuntimeResourcePtyDataFrame`], without
+    /// copying it first: terminal output frames carry up to 48 KiB.
+    pub fn decode_as<'a, T: Deserialize<'a>>(&'a self) -> Result<T, serde_json::Error> {
+        T::deserialize(&self.raw)
+    }
 }
 
 wire_enum! {

@@ -802,6 +802,237 @@ fn older_pages_prepend_whole_turns_at_the_tail_watermark() {
     assert_eq!(transcript.apply_transcript_page(&page), []);
 }
 
+/// A search result names a message by its id and by its index in the
+/// Session: the id finds its item once its row is held; the index only
+/// once the first row is held, since the rows' sequences are not indexes.
+#[test]
+fn a_message_is_found_by_id_once_held_and_by_index_from_the_start() {
+    let mut transcript = open_with_older_history();
+    assert_eq!(transcript.item_of_message("t3"), Some(("t3".into(), ItemKey::User("t3".into()))));
+    assert_eq!(transcript.item_of_message("t1"), None, "not read yet");
+    assert_eq!(transcript.item_of_message("t3-end"), None, "a Turn's state shows no item");
+    assert_eq!(transcript.message_id_at(0), None, "the start is not held");
+
+    let mut rows = turn_rows("t1", 8);
+    rows.extend([
+        (
+            17,
+            json!({"type": "assistant", "id": "t1-a", "turnId": "t1", "ts": 9,
+                   "text": "Done.", "contentOrder": ["tools", "text"], "modelId": "m"}),
+        ),
+        (
+            18,
+            json!({"type": "tool_call", "id": "t1-c", "turnId": "t1", "ts": 9,
+                   "toolName": "Bash", "args": {"command": "ls"}, "stepId": "t1-a"}),
+        ),
+        (
+            19,
+            json!({"type": "tool_result", "id": "t1-r", "turnId": "t1", "ts": 9,
+                   "toolUseId": "t1-c", "isError": false,
+                   "content": {"kind": "text", "text": "a.txt"}}),
+        ),
+    ]);
+    rows.sort_by_key(|(sequence, _)| *sequence);
+    let page: SessionTranscriptPage =
+        serde_json::from_value(older_page(&rows, None, true)).expect("page");
+    transcript.apply_transcript_page(&page);
+    let t1 = |key| Some(("t1".to_owned(), key));
+    assert_eq!(transcript.item_of_message("t1"), t1(ItemKey::User("t1".into())));
+    assert_eq!(transcript.item_of_message("t1-a"), t1(ItemKey::Text("t1-a".into())));
+    assert_eq!(transcript.item_of_message("t1-c"), t1(ItemKey::Tool("t1-c".into())));
+    assert_eq!(transcript.item_of_message("t1-r"), t1(ItemKey::Tool("t1-c".into())), "its call");
+    // Sequences 8, 16, 17, 18, 19, then t3's 40 and 48.
+    let ids: Vec<_> = (0..8).map(|index| transcript.message_id_at(index)).collect();
+    assert_eq!(
+        ids,
+        [
+            Some("t1"),
+            Some("t1-end"),
+            Some("t1-a"),
+            Some("t1-c"),
+            Some("t1-r"),
+            Some("t3"),
+            Some("t3-end"),
+            None
+        ]
+    );
+}
+
+/// A turn too large for the 16 KiB tail: the tail holds its reply, and the
+/// older page that brings the rest, a code cell's `Write` among it, makes
+/// its edits worth reading again, though no newer row arrived and no turn
+/// was added (F29: the card of a Code Mode turn whose cells wrote seven
+/// files never showed, its edits read once from the tail alone).
+#[test]
+fn older_rows_of_a_turn_already_shown_move_its_edits_key() {
+    use transcript_model::edits::{EditsKey, session_edits};
+    let nested = |row: Value| {
+        let mut row = row;
+        row["origin"] = json!("code_mode");
+        row["modelVisibility"] = json!("hidden");
+        row["parentToolCallId"] = json!("call_e1");
+        row["parentOperationId"] = json!("op1");
+        row
+    };
+    let rows = [
+        (40, json!({"type": "user", "id": "t3", "turnId": "t3", "ts": 40, "text": "Notes"})),
+        (
+            41,
+            json!({"type": "tool_call", "id": "call_e1", "turnId": "t3", "ts": 41,
+                   "toolName": "exec", "stepId": "s1", "origin": "provider",
+                   "modelVisibility": "visible", "args": {"code": "await tools.Write(…)"}}),
+        ),
+        (
+            42,
+            nested(json!({"type": "tool_call", "id": "call_e1:nested:u1", "turnId": "t3",
+                          "ts": 42, "toolName": "Write", "stepId": "call_e1:nested",
+                          "args": {"path": "notes.md", "content": "hi\n"}})),
+        ),
+        (
+            43,
+            nested(json!({"type": "tool_result", "id": "op2_response", "turnId": "t3", "ts": 43,
+                          "toolUseId": "call_e1:nested:u1", "isError": false,
+                          "content": {"kind": "file_diff", "paths": ["/w/notes.md"],
+                                      "diff": "--- /dev/null\n+++ b//w/notes.md\n@@ -0,0 +1 @@\n+hi"}})),
+        ),
+        (
+            44,
+            json!({"type": "tool_result", "id": "op1_response", "turnId": "t3", "ts": 44,
+                   "toolUseId": "call_e1", "isError": false, "origin": "provider",
+                   "modelVisibility": "visible",
+                   "content": {"kind": "json", "value": {"ok": true}}}),
+        ),
+        (
+            45,
+            json!({"type": "assistant", "id": "s2", "turnId": "t3", "ts": 45, "text": "Done.",
+                   "modelId": "m"}),
+        ),
+        (
+            48,
+            json!({"type": "turn_state", "id": "t3-end", "turnId": "t3", "ts": 48,
+                   "status": "completed"}),
+        ),
+    ];
+    let mut open: Value = json!({
+        "hostEpoch": EPOCH, "subscriptionId": SUBSCRIPTION, "nextSequence": 1,
+        "snapshot": snapshot(1, Value::Null, vec![]), "activeAssistantStreams": [],
+        "transcript": {"durable": older_page(&rows[4..], Some("c1"), false)}
+    });
+    open["transcript"]["durable"]["throughSequence"] = json!(48);
+    let mut transcript = Transcript::bootstrap(&serde_json::from_value(open).expect("open result"))
+        .expect("bootstrap");
+    assert_eq!(turn_ids(&transcript), ["t3"], "the turn shows from its reply");
+    let key = EditsKey::of(&transcript);
+    assert_eq!(session_edits(&transcript), []);
+
+    let page: SessionTranscriptPage =
+        serde_json::from_value(older_page(&rows[..4], None, true)).expect("page");
+    transcript.apply_transcript_page(&page);
+    assert_eq!(turn_ids(&transcript), ["t3"]);
+    assert_ne!(EditsKey::of(&transcript), key, "the turn has rows it had not");
+    let edits = session_edits(&transcript);
+    let paths: Vec<(&str, &str)> = edits
+        .iter()
+        .flat_map(|turn| &turn.edits)
+        .map(|edit| (edit.tool_use_id.as_str(), edit.path.as_str()))
+        .collect();
+    assert_eq!(paths, [("call_e1:nested:u1", "/w/notes.md")]);
+}
+
+/// Turn `turn`'s rows from `first`: its prompt, a step that says what it
+/// will do, an `Edit` of `path`, the reply, and its end.
+fn edit_turn_rows(turn: &str, first: u64, path: &str) -> Vec<(u64, Value)> {
+    let (step, call) = (format!("{turn}-s1"), format!("{turn}-c1"));
+    let diff = format!("--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b");
+    vec![
+        (first, json!({"type": "user", "id": turn, "turnId": turn, "ts": first, "text": turn})),
+        (
+            first + 1,
+            json!({"type": "assistant", "id": step, "turnId": turn, "ts": first + 1,
+                   "text": "Editing.", "contentOrder": ["text", "tools"], "modelId": "m"}),
+        ),
+        (
+            first + 2,
+            json!({"type": "tool_call", "id": call, "turnId": turn, "ts": first + 2,
+                   "toolName": "Edit", "args": {"path": path}, "stepId": step}),
+        ),
+        (
+            first + 3,
+            json!({"type": "tool_result", "id": format!("{call}-r"), "turnId": turn,
+                   "ts": first + 3, "toolUseId": call, "isError": false,
+                   "content": {"kind": "file_diff", "paths": [path], "diff": diff}}),
+        ),
+        (
+            first + 4,
+            json!({"type": "assistant", "id": format!("{turn}-s2"), "turnId": turn,
+                   "ts": first + 4, "text": "Done.", "modelId": "m"}),
+        ),
+        (
+            first + 5,
+            json!({"type": "turn_state", "id": format!("{turn}-end"), "turnId": turn,
+                   "ts": first + 5, "status": "completed"}),
+        ),
+    ]
+}
+
+fn edited_turns(transcript: &Transcript) -> Vec<String> {
+    transcript_model::edits::session_edits(transcript)
+        .into_iter()
+        .map(|turn| turn.turn_id)
+        .collect()
+}
+
+/// A turn larger than the tail: the tail stops inside it, so it shows
+/// without its start and none of its edits count, not even the one in the
+/// tail, until the older pages that reach its start are prepended. A turn
+/// whose first row comes after the tail is whole at once (F30: the card
+/// counted half a turn).
+#[test]
+fn a_turn_the_tail_cut_counts_no_edits_until_its_start_is_held() {
+    use transcript_model::edits::EditsKey;
+    let rows = edit_turn_rows("t3", 40, "/w/a.py");
+    // The tail starts at the Edit; the prompt and the first step are older.
+    let mut open: Value = json!({
+        "hostEpoch": EPOCH, "subscriptionId": SUBSCRIPTION, "nextSequence": 1,
+        "snapshot": snapshot(1, Value::Null, vec![]), "activeAssistantStreams": [],
+        "transcript": {"durable": older_page(&rows[2..], Some("c1"), false)}
+    });
+    open["transcript"]["durable"]["throughSequence"] = json!(48);
+    let mut transcript = Transcript::bootstrap(&serde_json::from_value(open).expect("open result"))
+        .expect("bootstrap");
+    assert!(transcript.has_partial_turn());
+    assert!(!transcript.has_turn_start("t3"));
+    assert_eq!(edited_turns(&transcript), Vec::<String>::new(), "its Edit is in the tail");
+
+    let mut host = Host::new();
+    transcript.apply(&host.advanced(60));
+    transcript.apply_transcript_page(&page(60, &edit_turn_rows("t4", 50, "/w/b.py")));
+    assert!(transcript.has_turn_start("t4"), "a turn after the tail starts in it");
+    assert_eq!(edited_turns(&transcript), ["t4"]);
+    let key = EditsKey::of(&transcript);
+
+    // A page that stops inside t3 holds its rows back: nothing changes.
+    let page_inside: SessionTranscriptPage =
+        serde_json::from_value(older_page(&rows[1..2], Some("c2"), false)).expect("page");
+    transcript.apply_transcript_page(&page_inside);
+    assert!(!transcript.has_turn_start("t3"));
+    assert_eq!(EditsKey::of(&transcript), key);
+
+    // The page that reaches its prompt, and the whole turn t2 before it.
+    let mut older = turn_rows("t2", 24);
+    older.push(rows[0].clone());
+    let start: SessionTranscriptPage =
+        serde_json::from_value(older_page(&older, Some("c3"), true)).expect("page");
+    transcript.apply_transcript_page(&start);
+    assert!(!transcript.has_partial_turn());
+    assert!(transcript.has_turn_start("t3"));
+    assert_ne!(EditsKey::of(&transcript), key);
+    assert_eq!(edited_turns(&transcript), ["t3", "t4"]);
+
+    // A tail that ends between turns cuts none.
+    assert!(!open_with_older_history().has_partial_turn());
+}
+
 #[test]
 fn a_broken_older_page_asks_for_a_reopen() {
     // Another Session's page.

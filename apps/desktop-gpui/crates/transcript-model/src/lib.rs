@@ -57,6 +57,7 @@
 //!   live stream missed (`overlayLiveTurn`'s deferred steering).
 //! - Side conversations, revisions, and branches.
 
+pub mod edits;
 mod live;
 mod materialize;
 mod stream;

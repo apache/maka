@@ -263,6 +263,24 @@ pub const DEFAULT_REVIEW_WIDTH: u16 = 480;
 /// edge: this client's 256 (Desktop's is 260), the width it was reviewed at.
 pub const DEFAULT_SIDEBAR_WIDTH: u16 = 256;
 
+/// The kind of face a task's workbar shows: the changes, the task's files,
+/// a terminal (which one is not kept: terminals are the Host's, and a task
+/// shown again shows its first live one), or the task's trace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum WorkbarFace {
+    #[default]
+    Changes,
+    Files,
+    Terminal,
+    Inspector,
+    /// One of the task's side chats (which one is not kept, nor are they:
+    /// a task shown again in a new run of the app has none, so its panel
+    /// shows its first open face).
+    SideChat,
+}
+
 /// What the person chose. Missing or unknown values read as the defaults,
 /// so a file from a newer or older client never stops the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +355,34 @@ pub struct Preferences {
     /// place while it is open (Desktop's per-Session focused Workbar tool).
     #[serde(deserialize_with = "or_default", skip_serializing_if = "BTreeSet::is_empty")]
     pub review_maximized: BTreeSet<String>,
+    /// The face each task's workbar shows, where it is not the changes.
+    #[serde(deserialize_with = "or_default", skip_serializing_if = "BTreeMap::is_empty")]
+    pub workbar_faces: BTreeMap<String, WorkbarFace>,
+    /// The tasks whose workbar has its Changes face closed (open unless
+    /// listed: Desktop persists the `review` tool's tab).
+    #[serde(deserialize_with = "or_default", skip_serializing_if = "BTreeSet::is_empty")]
+    pub workbar_changes_closed: BTreeSet<String>,
+    /// The tasks whose workbar has its Files face open (closed unless
+    /// listed; Desktop persists the `files` tool's tab).
+    #[serde(deserialize_with = "or_default", skip_serializing_if = "BTreeSet::is_empty")]
+    pub workbar_files_open: BTreeSet<String>,
+    /// The tasks whose workbar has its Trace face open (closed unless
+    /// listed; Desktop persists the `inspector` tool's tab).
+    #[serde(deserialize_with = "or_default", skip_serializing_if = "BTreeSet::is_empty")]
+    pub workbar_inspector_open: BTreeSet<String>,
+    /// Whether Option sends Meta (Escape and the key) to a terminal's
+    /// program rather than compose text, as macOS terminals offer. Off.
+    #[serde(deserialize_with = "or_default", skip_serializing_if = "is_false")]
+    pub terminal_option_as_meta: bool,
+    /// Whether a terminal's cursor blinks where the program has not chosen
+    /// a style. On.
+    #[serde(deserialize_with = "on_unless_false", skip_serializing_if = "is_true")]
+    pub terminal_cursor_blink: bool,
+    /// Whether closing a side chat that has a conversation goes without
+    /// asking (its confirmation's "Don't ask again"; Desktop's
+    /// `maka-skip-side-chat-close-confirmation-v1`). Off.
+    #[serde(deserialize_with = "or_default", skip_serializing_if = "is_false")]
+    pub side_chat_close_unconfirmed: bool,
 }
 
 impl Default for Preferences {
@@ -358,6 +404,13 @@ impl Default for Preferences {
             review_width: DEFAULT_REVIEW_WIDTH,
             review_base_branches: BTreeMap::new(),
             review_maximized: BTreeSet::new(),
+            workbar_faces: BTreeMap::new(),
+            workbar_changes_closed: BTreeSet::new(),
+            workbar_files_open: BTreeSet::new(),
+            workbar_inspector_open: BTreeSet::new(),
+            terminal_option_as_meta: false,
+            terminal_cursor_blink: true,
+            side_chat_close_unconfirmed: false,
         }
     }
 }
@@ -532,6 +585,14 @@ fn review_width<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u16
 
 fn is_default_review_width(width: &u16) -> bool {
     *width == DEFAULT_REVIEW_WIDTH
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 fn is_default_narrow_sidebar(narrow: &NarrowSidebar) -> bool {
@@ -788,6 +849,20 @@ impl AppPreferences {
         }
     }
 
+    /// Whether closing a side chat that has a conversation goes without
+    /// asking.
+    pub fn is_side_chat_close_unconfirmed(&self) -> bool {
+        self.current.side_chat_close_unconfirmed
+    }
+
+    /// "Don't ask again" in a side chat's close confirmation.
+    pub fn set_side_chat_close_unconfirmed(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.current.side_chat_close_unconfirmed != on {
+            self.current.side_chat_close_unconfirmed = on;
+            self.save(cx);
+        }
+    }
+
     /// Whether a task that ends while the window is in the background posts
     /// a system notification.
     pub fn set_run_notifications(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -941,17 +1016,121 @@ impl AppPreferences {
         self.current.review_maximized.contains(session)
     }
 
+    /// The face task `session`'s workbar shows.
+    pub fn workbar_face(&self, session: &str) -> WorkbarFace {
+        self.current.workbar_faces.get(session).copied().unwrap_or_default()
+    }
+
+    /// Remembers the face task `session`'s workbar shows.
+    pub fn set_workbar_face(&mut self, session: &str, face: WorkbarFace, cx: &mut Context<Self>) {
+        let changed = match face {
+            WorkbarFace::Changes => self.current.workbar_faces.remove(session).is_some(),
+            face => self.current.workbar_faces.insert(session.to_owned(), face) != Some(face),
+        };
+        if changed {
+            self.save(cx);
+        }
+    }
+
+    /// Whether task `session`'s workbar has its Changes face open.
+    pub fn is_changes_face_open(&self, session: &str) -> bool {
+        !self.current.workbar_changes_closed.contains(session)
+    }
+
+    /// Opens or closes task `session`'s Changes face.
+    pub fn set_changes_face_open(&mut self, session: &str, open: bool, cx: &mut Context<Self>) {
+        let changed = if open {
+            self.current.workbar_changes_closed.remove(session)
+        } else {
+            self.current.workbar_changes_closed.insert(session.to_owned())
+        };
+        if changed {
+            self.save(cx);
+        }
+    }
+
+    /// Whether task `session`'s workbar has its Files face open.
+    pub fn is_files_face_open(&self, session: &str) -> bool {
+        self.current.workbar_files_open.contains(session)
+    }
+
+    /// Opens or closes task `session`'s Files face.
+    pub fn set_files_face_open(&mut self, session: &str, open: bool, cx: &mut Context<Self>) {
+        let changed = if open {
+            self.current.workbar_files_open.insert(session.to_owned())
+        } else {
+            self.current.workbar_files_open.remove(session)
+        };
+        if changed {
+            self.save(cx);
+        }
+    }
+
+    /// Whether task `session`'s workbar has its Trace face open.
+    pub fn is_inspector_face_open(&self, session: &str) -> bool {
+        self.current.workbar_inspector_open.contains(session)
+    }
+
+    /// Opens or closes task `session`'s Trace face.
+    pub fn set_inspector_face_open(&mut self, session: &str, open: bool, cx: &mut Context<Self>) {
+        let changed = if open {
+            self.current.workbar_inspector_open.insert(session.to_owned())
+        } else {
+            self.current.workbar_inspector_open.remove(session)
+        };
+        if changed {
+            self.save(cx);
+        }
+    }
+
+    /// Whether Option sends Meta to a terminal's program.
+    pub fn terminal_option_as_meta(&self) -> bool {
+        self.current.terminal_option_as_meta
+    }
+
+    pub fn set_terminal_option_as_meta(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.current.terminal_option_as_meta != on {
+            self.current.terminal_option_as_meta = on;
+            self.save(cx);
+        }
+    }
+
+    /// Whether a terminal's cursor blinks where the program has not chosen
+    /// a style.
+    pub fn terminal_cursor_blink(&self) -> bool {
+        self.current.terminal_cursor_blink
+    }
+
+    pub fn set_terminal_cursor_blink(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.current.terminal_cursor_blink != on {
+            self.current.terminal_cursor_blink = on;
+            self.save(cx);
+        }
+    }
+
     /// Forgets the changes panel's state of every task but `sessions`
     /// (Desktop's `retain-sessions`), so the file keeps only live tasks.
     pub fn retain_review_tasks(&mut self, sessions: &BTreeSet<String>, cx: &mut Context<Self>) {
         let count = |current: &Preferences| {
             let open = current.review_open.len();
-            (open, current.review_base_branches.len(), current.review_maximized.len())
+            (
+                open,
+                current.review_base_branches.len(),
+                current.review_maximized.len(),
+                current.workbar_faces.len(),
+                current.workbar_changes_closed.len(),
+                current.workbar_files_open.len(),
+                current.workbar_inspector_open.len(),
+            )
         };
         let before = count(&self.current);
         self.current.review_open.retain(|id| sessions.contains(id));
         self.current.review_base_branches.retain(|id, _| sessions.contains(id));
         self.current.review_maximized.retain(|id| sessions.contains(id));
+        self.current.workbar_faces.retain(|id, _| sessions.contains(id));
+        self.current.workbar_changes_closed.retain(|id| sessions.contains(id));
+        self.current.workbar_files_open.retain(|id| sessions.contains(id));
+        self.current.workbar_inspector_open.retain(|id| sessions.contains(id));
         if before != count(&self.current) {
             self.save(cx);
         }
@@ -1240,11 +1419,31 @@ mod tests {
         let text = serde_json::to_string(&chosen).expect("encode");
         assert!(text.ends_with(r#""reviewMaximized":["s1"]}"#), "{text}");
         assert_eq!(serde_json::from_str::<Preferences>(&text).expect("decode"), chosen);
+        chosen.workbar_faces.insert("s1".to_owned(), WorkbarFace::Terminal);
+        chosen.workbar_changes_closed.insert("s1".to_owned());
+        chosen.workbar_files_open.insert("s2".to_owned());
+        chosen.workbar_faces.insert("s2".to_owned(), WorkbarFace::Files);
+        chosen.workbar_inspector_open.insert("s3".to_owned());
+        chosen.workbar_faces.insert("s3".to_owned(), WorkbarFace::Inspector);
+        chosen.terminal_option_as_meta = true;
+        chosen.terminal_cursor_blink = false;
+        let text = serde_json::to_string(&chosen).expect("encode");
+        assert!(
+            text.ends_with(
+                r#""workbarFaces":{"s1":"terminal","s2":"files","s3":"inspector"},"workbarChangesClosed":["s1"],"workbarFilesOpen":["s2"],"workbarInspectorOpen":["s3"],"terminalOptionAsMeta":true,"terminalCursorBlink":false}"#
+            ),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<Preferences>(&text).expect("decode"), chosen);
         let fresh = serde_json::to_string(&Preferences::default()).expect("encode");
         assert!(!fresh.contains("review"), "the defaults are left out: {fresh}");
+        assert!(!fresh.contains("workbar") && !fresh.contains("terminal"), "{fresh}");
         assert_eq!(Preferences::default().review_width, DEFAULT_REVIEW_WIDTH);
 
         let read = |text: &str| serde_json::from_str::<Preferences>(text).expect("decode");
+        assert!(read("{}").terminal_cursor_blink, "the cursor blinks unless the file says not");
+        assert!(read(r#"{"terminalCursorBlink":"off"}"#).terminal_cursor_blink);
+        assert!(!read(r#"{"terminalCursorBlink":false}"#).terminal_cursor_blink);
         for (width, expected) in [
             ("100", 340),
             ("999", 999),

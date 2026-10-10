@@ -54,6 +54,13 @@ ICONS = [
  ("attach", '<path d="m13 7.6-4.95 4.95a3.2 3.2 0 0 1-4.53-4.53l5.3-5.3a2.13 2.13 0 0 1 3.02 3.02L6.6 11a1.07 1.07 0 0 1-1.51-1.51l4.6-4.6"/>'),
  ("file-diff", '<path d="M9.5 2H5a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 5 14h6a1.5 1.5 0 0 0 1.5-1.5V5z"/><path d="M6 6.5h4"/><path d="M8 4.5v4"/><path d="M6 11h4"/>'),
  ("folder-open", '<path d="M2.5 11.5v-7A1.5 1.5 0 0 1 4 3h2.4L8 4.75h3.5A1.5 1.5 0 0 1 13 6.25V7.5"/><path d="M2.5 11.5l1.6-3.17A1.5 1.5 0 0 1 5.44 7.5h8.06a.75.75 0 0 1 .7 1.01l-1.28 3.5a1.5 1.5 0 0 1-1.41.99H4a1.5 1.5 0 0 1-1.5-1.5z"/>'),
+ # The workbar's Trace tool, where Desktop shows Lucide's `activity`: a pulse
+ # across the 16px grid, its peak and trough inside the circles' 2.25..13.75.
+ ("activity", '<path d="M2.25 8h2.25l1.75-4.75 3.5 9.5L11.5 8h2.25"/>'),
+ # The workbar's Side chat tool, where Desktop shows Lucide's
+ # `message-circle-question`: status-waiting's question mark in a bubble drawn
+ # on the same 5.75 circle, its tail at the bottom left.
+ ("chat", '<path d="M5.4 13.12A5.75 5.75 0 1 0 2.88 10.6L2.25 13.75Z"/><path d="M6.35 6.45a1.7 1.7 0 1 1 2.4 1.55c-.45.22-.75.55-.75 1.05v.2"/><path d="M8 10.85h.01" stroke-width="2"/>'),
 ]
 
 def svg(inner, size):

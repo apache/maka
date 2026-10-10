@@ -19,16 +19,20 @@
 
 //! `usage.query`: the Usage screen (a headline summary, the breakdowns by
 //! provider, model and tool, the pricing in effect, and the first page of
-//! activity) and its activity continuation, plus the model-call log rows
-//! the Health page reads a connection's last run from.
+//! activity) and its activity continuation, the model-call log rows the
+//! Health page reads a connection's last run from, and the summary of one
+//! Session's recorded calls the Inspector reads (Desktop's `usage:summary`
+//! in `apps/desktop/src/main/runtime-host-usage-ipc-main.ts`).
 //!
 //! Source: `packages/runtime-host/src/protocol/usage-pricing.ts`
 //! (`USAGE_PRICING_OPERATION_SPECS`, `decodeUsageQueryInput`,
 //! `decodeUsageQueryResult`, `decodeUsageProvenance`, `decodeLlmUsageLog`)
-//! and `usage-screen.ts` (`decodeUsageScreenRequest`,
+//! `decodeUsageSummary`, `decodeToolUsage`) and `usage-screen.ts`
+//! (`decodeUsageScreenRequest`,
 //! `decodeUsageScreenResult`, `assertUsageScreenResult`), with the domain
 //! types of `packages/core/src/settings.ts` (`UsageScreenQuery`,
-//! `UsageScreen`, `UsageRequestLog`, `UsageSummary`) and
+//! `UsageScreen`, `UsageRequestLog`, `UsageSummary`),
+//! `packages/core/src/usage-stats/types.ts` (`UsageSummaryV2`) and
 //! `packages/core/src/usage-ledger-merge.ts` (`UsageProvenance`).
 //!
 //! Numbers the decoders read as non-negative finite amounts (timestamps,
@@ -112,8 +116,9 @@ impl UsageScreenQuery {
     }
 }
 
-/// `LlmUsageQuery` (`decodeLlmUsageQuery`) as the Health page sends it: all
-/// time, one connection, optionally one model.
+/// `LlmUsageQuery` (`decodeLlmUsageQuery`) as this client sends it: all
+/// time, and one connection (optionally one model) for the Health page or
+/// one Session for the Inspector.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, serde(deny_unknown_fields))]
@@ -121,6 +126,8 @@ impl UsageScreenQuery {
 pub struct LlmUsageQuery {
     /// `'24h' | '7d' | '30d' | 'all'`.
     pub range: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_slug: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,7 +137,22 @@ pub struct LlmUsageQuery {
 impl LlmUsageQuery {
     /// Every call on the connection `slug` (and `model`, when given).
     pub fn connection(slug: impl Into<String>, model: Option<String>) -> Self {
-        Self { range: "all".to_owned(), connection_slug: Some(slug.into()), model_id: model }
+        Self {
+            range: "all".to_owned(),
+            session_id: None,
+            connection_slug: Some(slug.into()),
+            model_id: model,
+        }
+    }
+
+    /// Every call of Session `session_id`.
+    pub fn session(session_id: impl Into<String>) -> Self {
+        Self {
+            range: "all".to_owned(),
+            session_id: Some(session_id.into()),
+            connection_slug: None,
+            model_id: None,
+        }
     }
 }
 
@@ -146,6 +168,8 @@ pub enum UsageQueryInput {
     /// `query_identity`, from `cursor`.
     #[serde(rename_all = "camelCase")]
     Activity { query: UsageScreenQuery, revision: String, query_identity: String, cursor: String },
+    /// The summary of the recorded calls matching `query`.
+    Summary { query: LlmUsageQuery },
     /// Model-call log rows (`source: "llm"`), newest first.
     Logs {
         source: UsageLogSource,
@@ -161,6 +185,12 @@ impl UsageQueryInput {
     /// The newest model call matching `query`.
     pub fn latest_llm_log(query: LlmUsageQuery) -> Self {
         Self::Logs { source: UsageLogSource::Llm, query, offset: Some(0), limit: Some(1) }
+    }
+
+    /// The summary of every recorded call of Session `session_id`, as the
+    /// Inspector reads it.
+    pub fn session_summary(session_id: impl Into<String>) -> Self {
+        Self::Summary { query: LlmUsageQuery::session(session_id) }
     }
 }
 
@@ -188,6 +218,55 @@ pub struct UsageSummary {
     pub cache_read: u64,
     pub cache_creation: u64,
     pub reasoning: u64,
+}
+
+/// `UsageSummaryV2` (`decodeUsageSummary`): the totals of the recorded calls
+/// a summary query matches.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[non_exhaustive]
+pub struct UsageSummaryV2 {
+    pub range: UsageRangeBounds,
+    /// Model calls.
+    pub total_requests: u64,
+    pub total_cost_usd: f64,
+    pub total_tokens: UsageTokenTotals,
+    pub cache_hit_requests: u64,
+    pub cache_create_requests: u64,
+    pub error_requests: u64,
+    /// Recorded model-call time over the same calls, a sum of per-call
+    /// durations (not wall-clock).
+    pub total_duration_ms: u64,
+    /// The tool executions behind the same query, from the tool ledger;
+    /// absent when the query cannot be scoped for them (a connection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_usage: Option<ToolUsageTotals>,
+}
+
+/// `UsageSummaryV2.totalTokens`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[non_exhaustive]
+pub struct UsageTokenTotals {
+    pub input: u64,
+    pub output: u64,
+    pub cache_miss: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub reasoning: u64,
+    pub total: u64,
+}
+
+/// `UsageSummaryV2.toolUsage` (`decodeToolUsage`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[non_exhaustive]
+pub struct ToolUsageTotals {
+    pub requests: u64,
+    pub duration_ms: u64,
 }
 
 /// `ModelCallCoverage`: how the canonical records behind a figure were
@@ -423,6 +502,11 @@ pub enum UsageQueryResult {
     ScreenResponseTooLarge {
         section: String,
     },
+    /// The summary a `summary` query asked for, and what it rests on.
+    Summary {
+        summary: UsageSummaryV2,
+        provenance: UsageProvenance,
+    },
     /// A model-call log page.
     #[serde(rename_all = "camelCase")]
     Logs {
@@ -550,6 +634,33 @@ mod tests {
             ),
             UsageQueryResult::ScreenResponseTooLarge { section: "activity_page".into() }
         );
+    }
+
+    #[test]
+    fn a_session_summary_encodes_and_decodes() {
+        assert_eq!(
+            serde_json::to_value(UsageQueryInput::session_summary("s1")).expect("encode"),
+            json!({"kind": "summary", "query": {"range": "all", "sessionId": "s1"}})
+        );
+        // Hand-built with a tool split and a priced call; the demo Host's
+        // recording is unpriced.
+        let summary = json!({"kind": "summary", "summary": {
+            "range": {"from": 0.0, "to": 1_790_000_000_000.0}, "totalRequests": 3,
+            "totalCostUsd": 0.02, "totalTokens": {"input": 4_000_000, "output": 60_300,
+                "cacheMiss": 100_000, "cacheRead": 3_900_000, "cacheWrite": 0,
+                "reasoning": 12_000, "total": 4_060_300},
+            "cacheHitRequests": 2, "cacheCreateRequests": 0, "errorRequests": 0,
+            "totalDurationMs": 1_873_000, "toolUsage": {"requests": 78, "durationMs": 78_000}},
+            "provenance": {"coverage": {"attempts": 3, "pricedAttempts": 3,
+                "unpricedAttempts": 0, "usageReportedAttempts": 3, "usagePartialAttempts": 0,
+                "usageMissingAttempts": 0}, "legacyRecords": 0, "unreadableRecords": 0,
+                "pendingRepairs": 0}});
+        let UsageQueryResult::Summary { summary, provenance } = round_trip(&summary) else {
+            panic!("a summary");
+        };
+        assert_eq!(summary.total_tokens.cache_read, 3_900_000);
+        assert_eq!(summary.tool_usage.map(|tools| tools.requests), Some(78));
+        assert_eq!(provenance.estimated_cost(summary.total_cost_usd), Some(0.02));
     }
 
     #[test]

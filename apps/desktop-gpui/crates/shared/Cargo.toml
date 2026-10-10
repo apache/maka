@@ -26,6 +26,9 @@ publish.workspace = true
 [dependencies]
 chrono.workspace = true
 gpui-kit.workspace = true
+# gpui-kit's highlight theme is built as the Zed-format JSON it reads.
+serde_json.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

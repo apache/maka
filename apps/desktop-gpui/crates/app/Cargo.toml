@@ -35,15 +35,20 @@ automations.workspace = true
 bots.workspace = true
 conversation.workspace = true
 extensions.workspace = true
+files.workspace = true
 futures-lite.workspace = true
 gpui-kit.workspace = true
 host-protocol.workspace = true
+inspector.workspace = true
 log.workspace = true
 pet.workspace = true
 review.workspace = true
+search.workspace = true
 session.workspace = true
 settings.workspace = true
 shared.workspace = true
+terminal.workspace = true
+transcript-model.workspace = true
 workspace.workspace = true
 
 # The Dock tile's content view, for the app icon Settings chooses (see
@@ -65,6 +70,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 [dev-dependencies]
 async-channel.workspace = true
+base64.workspace = true
 bots = { workspace = true, features = ["test-support"] }
 gpui-kit = { workspace = true, features = ["test-support"] }
 host-client.workspace = true

@@ -64,9 +64,27 @@ gpui_kit::actions!(
         OpenExtensions,
         /// Show the Scheduled tasks page on the plate.
         OpenScheduledTasks,
-        /// Open the selected task's changes panel, or close it (Desktop's
-        /// Workbar `review` tool).
+        /// Show the Search page on the plate and focus its field (⇧⌘F):
+        /// what was said in every task. Text selected in the window
+        /// becomes the query.
+        SearchAllTasks,
+        /// Show the selected task's changes in the workbar, or hide the
+        /// workbar while it shows them (Desktop's Workbar `review` tool).
         ToggleReview,
+        /// Show the selected task's terminal in the workbar and focus it,
+        /// starting one when the task has none; hide the workbar while a
+        /// terminal has focus (Desktop's Workbar `terminal` tool, Ctrl+`).
+        ToggleTerminal,
+        /// Show the selected task's files in the workbar and focus their
+        /// list, or hide the workbar while it shows them (Desktop's Workbar
+        /// `files` tool, ⌘P).
+        ToggleFiles,
+        /// Show the selected task's side chat in the workbar and focus its
+        /// composer, opening one when the task has none, or hide the
+        /// workbar while it shows one; with text selected in the
+        /// conversation, stage it as a quote in the task's side chat
+        /// instead (Desktop's Workbar `side-chat` tool, ⌥⌘S).
+        ToggleSideChat,
         /// Draw every window a pixel larger: the UI font size, up to its
         /// largest (View › Zoom In).
         ZoomIn,
@@ -81,6 +99,11 @@ gpui_kit::actions!(
         /// one (settings, the Extensions and Scheduled tasks pages), not
         /// for the whole window.
         FocusSearch,
+        /// Show the find bar over the selected task's conversation and
+        /// focus its query (⌘F). Bound in the task view's key context, so
+        /// a page's ⌘F stays its own search and a view inside the task view
+        /// with a find of its own (a terminal) can take ⌘F in its context.
+        FindInConversation,
     ]
 );
 

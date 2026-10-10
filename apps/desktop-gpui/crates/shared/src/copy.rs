@@ -35,7 +35,7 @@
 //! The shell, the sidebar, the empty state, and the menus use this module
 //! directly; a feature with more copy than that keeps it in its own
 //! submodule ([`conversation`], [`settings`], [`models`], [`providers`],
-//! [`commands`], [`extensions`]).
+//! [`commands`], [`extensions`], [`search`]).
 
 use std::path::Path;
 
@@ -58,20 +58,26 @@ pub mod bots;
 pub mod commands;
 pub mod conversation;
 pub mod extensions;
+pub mod files;
 pub mod health;
 pub mod host;
+pub mod inspector;
 pub mod memory;
 pub mod models;
 pub mod providers;
 pub mod remote_hosts;
 pub mod review;
+pub mod search;
 pub mod settings;
+pub mod side_chat;
 pub mod subagents;
 pub mod system;
 pub mod tasks;
+pub mod terminal;
 mod text;
 pub mod usage;
 pub mod web_search;
+pub mod workbar;
 
 pub use text::{Locale, Text, plural};
 
@@ -359,6 +365,12 @@ pub fn all_texts() -> impl Iterator<Item = (&'static str, &'static str, Text)> {
         .chain(module("bots", bots::TEXTS))
         .chain(module("remote_hosts", remote_hosts::TEXTS))
         .chain(module("review", review::TEXTS))
+        .chain(module("search", search::TEXTS))
+        .chain(module("terminal", terminal::TEXTS))
+        .chain(module("workbar", workbar::TEXTS))
+        .chain(module("files", files::TEXTS))
+        .chain(module("inspector", inspector::TEXTS))
+        .chain(module("side_chat", side_chat::TEXTS))
 }
 
 /// The accessible name of the footer row, which opens the footer menu.
@@ -614,6 +626,8 @@ mod tests {
             "SLACK_APP_TOKEN",
             "QQ_SECRET",
             "INVALID_USERS_SEPARATOR",
+            // The Search page's name for Maka's messages: the product's.
+            "ROLE_MAKA",
             // Quotation marks around a name.
             "QUOTED",
             // Runtime Host terms Desktop keeps in English in Chinese.
@@ -622,6 +636,11 @@ mod tests {
             "TRANSPORT_SSH",
             "STATE_ROOT_ID",
             "PLATFORM_WINDOWS",
+            // The Files face: a count of a count, and kinds Desktop keeps
+            // in English.
+            "FILTER_COUNT",
+            "KIND_HTML",
+            "KIND_PDF",
         ];
         let mut names = std::collections::HashSet::new();
         let mut count = 0;

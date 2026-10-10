@@ -60,11 +60,16 @@ type Reply = Result<Value, HostRequestError>;
 /// Answers each operation from a queue of scripted replies, in order, and
 /// records every request. `subscription.ready` and `subscription.close`
 /// succeed unless scripted. A reply may be held until the test releases it.
+/// With no scripted reply, a responder the test set may answer.
 #[derive(Default)]
 struct ScriptedHost {
     replies: Mutex<HashMap<String, VecDeque<Scripted>>>,
     requests: Mutex<Vec<(String, Value)>>,
+    responder: Mutex<Option<Responder>>,
 }
+
+/// Answers an operation's input, or leaves it to the defaults.
+type Responder = Box<dyn FnMut(&str, &Value) -> Option<Reply> + Send>;
 
 enum Scripted {
     Now(Reply),
@@ -81,6 +86,11 @@ impl ScriptedHost {
         let (sender, receiver) = async_channel::bounded(1);
         self.push(operation, Scripted::Held(receiver));
         sender
+    }
+
+    /// Answers what nothing scripted answers with `responder`.
+    fn respond_with(&self, responder: impl FnMut(&str, &Value) -> Option<Reply> + Send + 'static) {
+        *self.responder.lock().expect("responder") = Some(Box::new(responder));
     }
 
     fn push(&self, operation: &str, scripted: Scripted) {
@@ -103,6 +113,10 @@ impl HostTransport for ScriptedHost {
         self.requests.lock().expect("requests").push((operation.to_owned(), input.clone()));
         let scripted =
             self.replies.lock().expect("replies").get_mut(operation).and_then(VecDeque::pop_front);
+        let scripted = scripted.or_else(|| {
+            let mut responder = self.responder.lock().expect("responder");
+            responder.as_mut().and_then(|respond| respond(operation, &input)).map(Scripted::Now)
+        });
         match scripted {
             Some(Scripted::Now(reply)) => Box::pin(async move { reply }),
             Some(Scripted::Held(receiver)) => Box::pin(async move {
@@ -1969,9 +1983,16 @@ fn fill_replaces_the_draft_and_focuses_it_without_sending(cx: &mut TestAppContex
 }
 
 mod attachments;
+mod edits;
+mod find;
 mod history;
+mod links;
+mod pty;
 mod queue;
 mod reasoning;
 mod reconnect;
 mod settings;
+mod side_chat;
+mod syntax;
+mod turn_start;
 mod turn_status;

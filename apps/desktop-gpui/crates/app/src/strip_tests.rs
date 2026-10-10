@@ -199,7 +199,7 @@ impl Strip {
     }
 
     fn panel_shown(&self, cx: &mut TestAppContext) -> bool {
-        self.exists("review-pane", cx)
+        self.exists("workbar-pane", cx)
     }
 }
 
@@ -233,6 +233,15 @@ fn the_strip_shows_the_task_its_branch_and_its_changes(cx: &mut TestAppContext) 
     );
     assert!(name.right() <= branch.left() && branch.right() < chip.left(), "name, branch, chip");
     assert!(chip.right() <= bar.right());
+    // No fill of its own: the folder is a 28 px chip that hugs its glyph,
+    // name and chevron, its glyph over the composer's "+" glyph; the
+    // changes chip ends where the composer's controls do.
+    assert_eq!(name.size.height, px(28.));
+    assert!(name.size.width < bar.size.width / 2., "it hugs its content: {name:?}");
+    let (glyph, attach) =
+        (strip.bounds("context-strip-folder", cx), strip.bounds("composer-attach", cx));
+    assert_eq!(glyph.center().x, attach.center().x, "{glyph:?} over {attach:?}");
+    assert_eq!(chip.right(), composer.right() - px(12.));
 
     assert!(!strip.panel_shown(cx));
     strip.click("context-strip-changes", cx);

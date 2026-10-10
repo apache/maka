@@ -828,13 +828,13 @@ fn escape_clears_the_query_then_closes_the_palette(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_palette_opens_a_task_by_title_from_the_sidebar_search(cx: &mut TestAppContext) {
+fn the_palette_opens_a_task_by_title(cx: &mut TestAppContext) {
     let harness = Harness::open(vec![session("s1", "Alpha"), session("s2", "Beta release")], cx);
     let draft = harness.draft_id(cx);
     harness.with_window(cx, |window, cx| window.click(row("s1"), cx));
-    harness.with_window(cx, |window, cx| window.click("command-palette-button", cx));
+    harness.with_window(cx, |window, cx| window.press("cmd-k", cx));
     harness.with_window(cx, |window, cx| {
-        assert!(window.find("command-palette").visible(), "the search button opens it");
+        assert!(window.find("command-palette").visible(), "⌘K opens it");
         window.input("beta", cx);
     });
     harness.with_window(cx, |window, cx| window.press("enter", cx));
@@ -1313,8 +1313,11 @@ fn the_view_menu_zooms_with_its_keys_shown(cx: &mut TestAppContext) {
     }
 }
 
+/// ⌘F is each surface's own: a page's search, the settings' section
+/// search, and in the task view Find in conversation, which an empty task
+/// has nothing for (`find_tests` has the rest).
 #[gpui_kit::test]
-fn command_f_finds_on_pages_and_in_settings_but_not_in_the_task_view(cx: &mut TestAppContext) {
+fn command_f_finds_on_pages_and_in_settings(cx: &mut TestAppContext) {
     use gpui_kit::{Action as _, Focusable as _};
     use workspace::actions::{FocusSearch, OpenExtensions};
     let harness = Harness::open(vec![session("s1", "Alpha")], cx);
@@ -1324,7 +1327,8 @@ fn command_f_finds_on_pages_and_in_settings_but_not_in_the_task_view(cx: &mut Te
         window.click(draft.clone(), cx);
         window.input("hello", cx);
     });
-    // The task view leaves ⌘F unbound for now.
+    // The task view's ⌘F is Find in conversation; an empty task has
+    // nothing to find, and its draft keeps focus.
     harness.with_window(cx, |window, cx| {
         assert!(window.highest_precedence_binding_for_action(&FocusSearch).is_none());
         window.press("secondary-f", cx);

@@ -91,6 +91,8 @@ fn measure(root: &Path, base: &str) -> Measure {
                 _ => DiffSource::TooLarge,
             },
             whole_text: false,
+            more: true,
+            step: None,
             cap: DIFF_LINE_CAP,
         })
         .collect();

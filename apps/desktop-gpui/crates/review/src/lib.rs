@@ -20,10 +20,12 @@
 //! The selected task's workspace changes, as Maka Desktop's Workbar
 //! `review` tool shows them, laid out as Claude Code's changes panel:
 //! [`git`] reads the task folder's Git changes on this machine (the client
-//! runs `git`, as Desktop's main process does; the Host is not asked), and
-//! [`ReviewPanel`] shows them beside the conversation, or in the
-//! conversation's place while maximized. [`ChangeSummary`] keeps what the
-//! context strip over the composer says of them.
+//! runs `git`, as Desktop's main process does; the Host is not asked),
+//! [`turns`] works out what each turn of the task changed in each file it
+//! edited through Maka's file tools, and [`ReviewPanel`] shows either,
+//! beside the conversation or in the conversation's place while maximized.
+//! [`ChangeSummary`] keeps what the context strip over the composer says of
+//! the Git changes.
 
 pub mod git;
 mod panel;
@@ -32,6 +34,7 @@ mod shown;
 mod summary;
 mod sync;
 mod tree;
+pub mod turns;
 
 use gpui_kit::{App, KeyBinding};
 
@@ -131,3 +134,5 @@ mod bench_tests;
 mod git_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod turns_tests;

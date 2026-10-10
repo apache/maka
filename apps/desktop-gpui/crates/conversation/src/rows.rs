@@ -29,16 +29,18 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::Arc;
 
 use gpui_kit::{ElementId, SharedString};
 use host_protocol::{
     AttachmentKind, AttachmentRef, InteractionClosureReason, InteractionRequest,
-    PermissionDecision, PermissionPrompt, PermissionReview, SandboxBoundaryRequest,
+    PermissionDecision, PermissionPrompt, PermissionReview, QuoteRef, SandboxBoundaryRequest,
     SandboxBoundaryScope, SandboxBoundaryStatus, StorageRef, TurnProviderRetry,
 };
 use serde_json::Value;
 use shared::diff::DiffRows;
 use shared::domain_element_id;
+use transcript_model::edits::{EditedFile, EditedTurns};
 use transcript_model::{
     InteractionItem, InteractionState, ItemKey, Resolution, ThinkingItem, ToolItem, ToolStatus,
     Transcript, TurnItem, TurnView, TurnViewStatus,
@@ -70,6 +72,12 @@ pub fn footer_element_id(turn_id: &str) -> ElementId {
     domain_element_id("turn-footer", turn_id)
 }
 
+/// The `ElementId` of the card under turn `turn_id` that lists the files
+/// it edited.
+pub fn edits_element_id(turn_id: &str) -> ElementId {
+    domain_element_id("turn-edits", turn_id)
+}
+
 /// The `ElementId` of the row above the first message that loads, or
 /// marks the end of, older history.
 pub fn history_element_id() -> ElementId {
@@ -85,16 +93,35 @@ pub(crate) enum RowKey {
         turn_id: String,
         key: ItemKey,
     },
+    /// The card of the files the turn edited, before its footer.
+    Edits {
+        turn_id: String,
+    },
     Footer {
         turn_id: String,
     },
 }
 
 impl RowKey {
+    /// The turn the row belongs to; `None` for the older-history row.
+    pub(crate) fn turn_id(&self) -> Option<&str> {
+        match self {
+            Self::History => None,
+            Self::Item { turn_id, .. } | Self::Edits { turn_id } | Self::Footer { turn_id } => {
+                Some(turn_id)
+            }
+        }
+    }
+
+    pub(crate) fn is_of_turn(&self, turn_id: &str) -> bool {
+        self.turn_id() == Some(turn_id)
+    }
+
     pub(crate) fn element_id(&self) -> ElementId {
         match self {
             Self::History => history_element_id(),
             Self::Item { turn_id, key } => item_element_id(turn_id, key),
+            Self::Edits { turn_id } => edits_element_id(turn_id),
             Self::Footer { turn_id } => footer_element_id(turn_id),
         }
     }
@@ -109,12 +136,25 @@ pub(crate) struct Row {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RowBody {
     History(HistoryRow),
-    User { text: SharedString, attachments: Vec<SentAttachment> },
+    User { text: SharedString, attachments: Vec<SentAttachment>, quotes: Vec<SentQuote> },
     Thinking(ThinkingRow),
     Text { text: SharedString, streaming: bool, interrupted: bool },
     Tool(ToolRow),
     Prompt(PromptRow),
+    Edits(EditsRow),
     Footer(FooterRow),
+}
+
+/// The card under a settled turn that edited files (Codex's): the files in
+/// the order the turn first edited them, each with how the turn changed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditsRow {
+    pub(crate) turn_id: SharedString,
+    /// Identifies the card for expansion: `turn_id/edits`.
+    pub(crate) expansion_key: String,
+    pub(crate) files: Arc<[EditedFile]>,
+    /// Every file shows, not only the first ones.
+    pub(crate) expanded: bool,
 }
 
 /// A file a sent message carries, as its chip above the bubble shows it.
@@ -128,6 +168,50 @@ pub(crate) struct SentAttachment {
     pub(crate) image: bool,
     /// The kind the Host gave it, which its chip's glyph shows.
     pub(crate) kind: AttachmentKind,
+}
+
+/// A quote a user message carries (`QuoteRef`), as its row shows it: the
+/// label when it has one, the excerpt with its whitespace folded and its
+/// leading heading marks gone (Desktop's `stripQuoteHeadingMarkers`), and
+/// the note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SentQuote {
+    /// `quote/<message id>/<position>`: the chip's identity, and what
+    /// expanding it records.
+    pub(crate) key: String,
+    pub(crate) label: Option<SharedString>,
+    pub(crate) text: SharedString,
+    pub(crate) comment: Option<SharedString>,
+    /// Shown whole rather than on one line.
+    pub(crate) expanded: bool,
+}
+
+impl SentQuote {
+    pub(crate) fn of(key: String, expanded: bool, quote: &QuoteRef) -> Self {
+        let folded = quote.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = strip_heading_marks(&folded).to_owned();
+        let label = match (&quote.source_session_id, &quote.source_session_name) {
+            (Some(_), Some(name)) if !name.trim().is_empty() => Some(name.trim().to_owned()),
+            _ => quote.label.clone().filter(|label| !label.trim().is_empty()),
+        };
+        Self {
+            key,
+            label: label.map(Into::into),
+            text: text.into(),
+            comment: quote.comment.clone().filter(|note| !note.trim().is_empty()).map(Into::into),
+            expanded,
+        }
+    }
+}
+
+/// `stripQuoteHeadingMarkers`: a leading ATX heading mark (`### `) goes.
+fn strip_heading_marks(text: &str) -> &str {
+    let hashes = text.chars().take_while(|ch| *ch == '#').count();
+    if (1..=6).contains(&hashes) && text[hashes..].starts_with([' ', '\t']) {
+        text[hashes..].trim_start_matches([' ', '\t'])
+    } else {
+        text
+    }
 }
 
 impl SentAttachment {
@@ -403,6 +487,13 @@ pub(crate) struct RowOptions {
     pub(crate) choices: HashMap<String, Vec<Option<usize>>>,
     /// The language the rows' words are in.
     pub(crate) locale: Locale,
+    /// What each settled turn edited, as the window last worked it out.
+    pub(crate) edited: Arc<EditedTurns>,
+    /// A side chat's fork: the Turn its copy of the task's conversation
+    /// runs through. That Turn and those before it are the model's
+    /// context, not the side chat's own, and show no rows; neither does
+    /// the history before them.
+    pub(crate) hidden_through: Option<String>,
 }
 
 /// An answer in flight or failed, by interaction id: what the conversation
@@ -423,14 +514,23 @@ pub(crate) fn build_rows(
     let previous: HashMap<&RowKey, &RowBody> =
         previous.iter().map(|row| (&row.key, &row.body)).collect();
     let mut rows = Vec::new();
-    if let Some(history) = HistoryRow::of(older) {
+    // The copied Turns, when the transcript holds them: everything before
+    // the boundary is copied too, so the history row goes with them.
+    let copied = options
+        .hidden_through
+        .as_deref()
+        .and_then(|boundary| transcript.turns().iter().position(|turn| turn.turn_id == boundary));
+    if copied.is_none()
+        && let Some(history) = HistoryRow::of(older)
+    {
         rows.push(Row { key: RowKey::History, body: RowBody::History(history) });
     }
     let live_turn = transcript
         .root_turn()
         .filter(|root| !root.status.is_terminal())
         .map(|root| root.turn_id.as_str());
-    for turn in transcript.turns() {
+    let shown = copied.map_or(0, |last| last + 1);
+    for turn in &transcript.turns()[shown..] {
         for item in &turn.items {
             let key = RowKey::Item { turn_id: turn.turn_id.clone(), key: item.key() };
             let before = previous.get(&key).copied();
@@ -446,7 +546,19 @@ pub(crate) fn build_rows(
                         .into_iter()
                         .map(SentAttachment::of)
                         .collect();
-                    RowBody::User { text: reuse(before, user.text()), attachments }
+                    let quotes = user
+                        .content
+                        .quotes
+                        .iter()
+                        .flatten()
+                        .enumerate()
+                        .map(|(ix, quote)| {
+                            let key = format!("quote/{}/{ix}", user.message_id);
+                            let expanded = options.expanded.contains(&key);
+                            SentQuote::of(key, expanded, quote)
+                        })
+                        .collect();
+                    RowBody::User { text: reuse(before, user.text()), attachments, quotes }
                 }
                 TurnItem::Text(text) => {
                     let before = match before {
@@ -473,6 +585,9 @@ pub(crate) fn build_rows(
             };
             rows.push(Row { key, body });
         }
+        if let Some(edits) = edits_row(transcript, turn, options) {
+            rows.push(Row { key: RowKey::Edits { turn_id: turn.turn_id.clone() }, body: edits });
+        }
         rows.push(Row {
             key: RowKey::Footer { turn_id: turn.turn_id.clone() },
             body: RowBody::Footer(FooterRow {
@@ -492,6 +607,22 @@ pub(crate) fn build_rows(
     }
     place_tool_groups(&mut rows);
     rows
+}
+
+/// The card of the files `turn` edited: only once the turn has settled,
+/// and only for the session the edits were worked out for.
+fn edits_row(transcript: &Transcript, turn: &TurnView, options: &RowOptions) -> Option<RowBody> {
+    if !turn.status.is_terminal() || options.edited.session_id != transcript.session_id() {
+        return None;
+    }
+    let files = options.edited.files(&turn.turn_id)?.clone();
+    let expansion_key = format!("{}/edits", turn.turn_id);
+    Some(RowBody::Edits(EditsRow {
+        turn_id: turn.turn_id.clone().into(),
+        expanded: options.expanded.contains(&expansion_key),
+        expansion_key,
+        files,
+    }))
 }
 
 /// Marks each Tool row's place in its run of consecutive Tool rows. Runs
@@ -553,7 +684,7 @@ fn tool_row(
 ) -> ToolRow {
     let expansion_key = format!("{turn_id}/{}", tool.tool_use_id);
     let expanded = options.expanded.contains(&expansion_key);
-    let name = tool.display_name.clone().unwrap_or_else(|| tool_label(&tool.tool_name));
+    let name = tool_name_text(tool);
     let (added, removed) = file_diff(tool).map(shared::diff::line_counts).unwrap_or_default();
     // Unfinished, or refused by the sandbox, while the turn waits on the
     // user: the call is waiting for permission, not failed (DESIGN.md §9
@@ -572,12 +703,7 @@ fn tool_row(
         waiting,
         group: GroupPlace::default(),
         expanded,
-        // Only until a result arrives: a result with nothing to show says
-        // so, as Maka Desktop's does, rather than repeat the call.
-        input: (expanded && tool.result.is_none())
-            .then(|| tool.display_args().map(pretty))
-            .flatten()
-            .map(SharedString::from),
+        input: expanded.then(|| tool_input(tool)).flatten().map(SharedString::from),
         output: expanded
             .then(|| tool_output(tool, options.locale))
             .flatten()
@@ -585,6 +711,29 @@ fn tool_row(
         diff: expanded.then(|| file_diff(tool).map(ToolDiff::new)).flatten(),
         note: tool_note(tool, waiting),
     }
+}
+
+/// A Tool row's name, as its header shows it.
+pub(crate) fn tool_name_text(tool: &ToolItem) -> String {
+    tool.display_name.clone().unwrap_or_else(|| tool_label(&tool.tool_name))
+}
+
+/// What an open card shows of the call before a result arrives: its
+/// arguments. Only until then: a result with nothing to show says so, as
+/// Maka Desktop's does, rather than repeat the call.
+fn tool_input(tool: &ToolItem) -> Option<String> {
+    tool.result.is_none().then(|| tool.display_args().map(pretty)).flatten()
+}
+
+/// The text an open card shows, as the card shows it: its output, or its
+/// input before there is any; `None` for a call whose result is a diff,
+/// which the card draws in the kit's Diff, and for one with nothing to
+/// show.
+pub(crate) fn tool_detail_text(tool: &ToolItem, locale: Locale) -> Option<String> {
+    if file_diff(tool).is_some() {
+        return None;
+    }
+    tool_output(tool, locale).or_else(|| tool_input(tool))
 }
 
 /// What an open card says when the call has neither output nor input: a
@@ -610,7 +759,7 @@ fn sandbox_denied(tool: &ToolItem) -> bool {
 /// Tool calls a person has nothing to do with: `tool_search` only loads
 /// another tool's definition, and a boundary request that still waits is
 /// already shown in full by its prompt card right below (review round 2).
-fn hidden_tool(tool: &ToolItem, turn_status: TurnViewStatus) -> bool {
+pub(crate) fn hidden_tool(tool: &ToolItem, turn_status: TurnViewStatus) -> bool {
     tool.tool_name == "tool_search"
         || (tool.tool_name == "request_sandbox_boundary"
             && tool.status == ToolStatus::Interrupted
@@ -684,11 +833,16 @@ fn display_path(path: &str, home: Option<&str>) -> String {
 /// pattern, or the model's stated intent; for a code cell (`exec`), whose
 /// only argument is its `code`, the intent before the script's first line,
 /// as Maka Desktop puts a call's intent before its arguments.
-fn tool_summary(tool: &ToolItem) -> Option<String> {
+pub(crate) fn tool_summary(tool: &ToolItem) -> Option<String> {
+    tool_summary_source(tool).map(|summary| one_line(&summary, SUMMARY_MAX_CHARS))
+}
+
+/// The text [`tool_summary`] takes its line from.
+fn tool_summary_source(tool: &ToolItem) -> Option<String> {
     if tool.tool_name == "request_sandbox_boundary"
         && let Some(summary) = tool.display_args().and_then(boundary_summary)
     {
-        return Some(one_line(&summary, SUMMARY_MAX_CHARS));
+        return Some(summary);
     }
     const KEYS: [&str; 10] = [
         "command",
@@ -710,7 +864,15 @@ fn tool_summary(tool: &ToolItem) -> Option<String> {
         .or_else(|| tool.intent.clone())
         .or_else(|| field("code").filter(|code| !code.trim().is_empty()))
         .or_else(|| args.filter(|args| !is_empty_json(args)).map(Value::to_string))?;
-    Some(one_line(&summary, SUMMARY_MAX_CHARS))
+    Some(summary)
+}
+
+/// What [`tool_summary`] keeps of the summary before its mark, and the
+/// character the summary went on with where its line was cut.
+pub(crate) fn tool_summary_cut(tool: &ToolItem) -> Option<(String, Option<char>)> {
+    let summary = tool_summary_source(tool)?;
+    let (kept, next) = one_line_cut(&summary, SUMMARY_MAX_CHARS);
+    Some((kept.to_owned(), next))
 }
 
 fn is_empty_json(value: &Value) -> bool {
@@ -792,21 +954,39 @@ fn pretty(value: &Value) -> String {
 }
 
 /// At most [`DETAIL_MAX_CHARS`] characters, marked when cut.
-fn cap(text: &str) -> String {
+pub(crate) fn cap(text: &str) -> String {
+    match cap_cut(text) {
+        (kept, Some(_)) => format!("{kept}\n…"),
+        (kept, None) => kept.to_owned(),
+    }
+}
+
+/// What [`cap`] keeps of `text` before its mark, and the first character
+/// it cut off.
+pub(crate) fn cap_cut(text: &str) -> (&str, Option<char>) {
     match text.char_indices().nth(DETAIL_MAX_CHARS) {
-        Some((end, _)) => format!("{}\n…", &text[..end]),
-        None => text.to_owned(),
+        Some((end, next)) => (&text[..end], Some(next)),
+        None => (text, None),
     }
 }
 
 /// The first line of `text`, at most `max` characters, marked when cut.
 fn one_line(text: &str, max: usize) -> String {
-    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
     let more_lines = text.trim().lines().count() > 1;
+    match one_line_cut(text, max) {
+        (kept, Some(_)) => format!("{kept}…"),
+        (kept, None) if more_lines => format!("{kept} …"),
+        (kept, None) => kept.to_owned(),
+    }
+}
+
+/// What [`one_line`] keeps of `text` before its mark, and the first
+/// character it cut off the line.
+fn one_line_cut(text: &str, max: usize) -> (&str, Option<char>) {
+    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
     match first.char_indices().nth(max) {
-        Some((end, _)) => format!("{}…", &first[..end]),
-        None if more_lines => format!("{first} …"),
-        None => first.to_owned(),
+        Some((end, next)) => (&first[..end], Some(next)),
+        None => (first, None),
     }
 }
 

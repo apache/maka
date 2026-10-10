@@ -24,10 +24,13 @@
 //! task posts when it ends in the background, project instructions), Task
 //! defaults (Code Mode, the default model, the permission mode new tasks
 //! start in), Command environment (the shell the Host's Bash tool runs),
-//! and Network ([`NetworkSection`]).
+//! Terminal (how the workbar's terminals take Option and draw their
+//! cursor; Desktop has no such group, its xterm fixes both), and Network
+//! ([`NetworkSection`]).
 //!
-//! The interface language and the notification switch are the client's own
-//! preferences; everything else is the Host's runtime policy, except the
+//! The interface language, the notification switch and the Terminal group
+//! are the client's own preferences; everything else is the Host's runtime
+//! policy, except the
 //! default model, which is the connection catalog's default (the one the
 //! Models page marks). Desktop's WorkHub switch is held back (it enables
 //! nothing yet, upstream), and its Jev section is not part of this page's
@@ -685,6 +688,38 @@ impl GeneralPage {
             .update(cx, |preferences, cx| preferences.set_run_notifications(on, cx));
     }
 
+    /// The Terminal group: the client's own switches, saved as they change.
+    fn render_terminal(&self, cx: &mut Context<Self>) -> SettingsGroup {
+        let preferences = AppPreferences::global(cx).read(cx);
+        let (option_as_meta, cursor_blink) =
+            (preferences.terminal_option_as_meta(), preferences.terminal_cursor_blink());
+        let option_as_meta = SettingsRow::toggle(
+            "terminal-option-as-meta",
+            copy::TERMINAL_OPTION_AS_META.get(cx),
+            option_as_meta,
+            false,
+            |on, _, cx| {
+                AppPreferences::global(cx)
+                    .update(cx, |preferences, cx| preferences.set_terminal_option_as_meta(*on, cx));
+            },
+        )
+        .detail(copy::TERMINAL_OPTION_AS_META_HELP.get(cx));
+        let cursor_blink = SettingsRow::toggle(
+            "terminal-cursor-blink",
+            copy::TERMINAL_CURSOR_BLINK.get(cx),
+            cursor_blink,
+            false,
+            |on, _, cx| {
+                AppPreferences::global(cx)
+                    .update(cx, |preferences, cx| preferences.set_terminal_cursor_blink(*on, cx));
+            },
+        );
+        SettingsGroup::new("terminal")
+            .title(copy::TERMINAL.get(cx))
+            .child(option_as_meta)
+            .child(cursor_blink)
+    }
+
     /// Opens the display name's editor on the name as saved, focused.
     pub fn edit_display_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let policy = self.policy.read(cx).policy();
@@ -1236,6 +1271,7 @@ impl Render for GeneralPage {
                     .children(self.render_permission(cx)),
             )
             .children(self.render_shell(cx))
+            .child(self.render_terminal(cx))
             .when(network_shown, |this| this.child(self.network.clone()))
     }
 }

@@ -290,6 +290,9 @@ fn main() {
         cx.set_app_identity(BUNDLE_IDENTIFIER, shared::copy::APP_NAME.en());
         gpui_kit::init(cx);
         app::init(cx);
+        // The copies of a task's files that open in the default app: this
+        // launch's directory, and those of launches that ended removed.
+        files::install_temp_files(cx);
         // Keep system awake applies from launch, as in Maka Desktop.
         automations::KeepSystemAwake::init_global(cx);
         // The Runtime Hosts every window can talk to; the window opens on the
@@ -310,7 +313,21 @@ fn main() {
         // the chosen appearance instead of switching after its first frame.
         let preferences_store = preferences_store(passive);
         let load = preferences_store.as_ref().map(|store| store.load());
+        // The side chats' forks are written down in the client's config
+        // directory, so a run that ends before removing one leaves it to
+        // the next; its file is in place before the window opens, so no
+        // fork is asked for before it is on disk. A passive launch keeps
+        // them in memory, as it does its preferences.
+        let ledger = (!passive).then(conversation::LedgerFile::open_default);
         cx.spawn(async move |cx| {
+            if let Some(ledger) = ledger
+                && let Some(file) = ledger.await
+            {
+                cx.update(|cx| {
+                    conversation::SideChatLedger::global(cx)
+                        .update(cx, |ledger, cx| ledger.restore(Rc::new(file), cx))
+                });
+            }
             let preferences = match load {
                 Some(load) => load.await.unwrap_or_else(|error| {
                     log::warn!("could not read the preferences: {error}");
@@ -500,9 +517,17 @@ fn build_workbench(
         workbench.read_changes_with(std::sync::Arc::new(review::git::SystemGit), cx);
     });
     let catalog = workbench.read(cx).sidebar().read(cx).catalog().clone();
+    let names = catalog.clone();
     let task_names: TaskNames =
-        Rc::new(move |id, cx| catalog.read(cx).row(id).map(|row| row.name.clone()));
+        Rc::new(move |id, cx| names.read(cx).row(id).map(|row| row.name.clone()));
     let notifier = cx.new(|cx| RunNotifier::new(host, task_names, window, cx));
+    // A side chat's fork is no task: its turns post nothing.
+    notifier.update(cx, |notifier, _| {
+        notifier.set_hidden_sessions(Rc::new(move |id, cx| {
+            catalog.read(cx).is_side_conversation(id)
+                || conversation::SideChatLedger::global(cx).read(cx).holds(id)
+        }))
+    });
     cx.observe_release(&workbench, move |_, _| drop(notifier)).detach();
     app::link_bots(&workbench, cx);
     workbench
@@ -1089,9 +1114,10 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--group-by-project" => group_by_project = true,
             "--open-page" => {
-                let value = args.next().ok_or("--open-page needs extensions or scheduled-tasks")?;
+                let value =
+                    args.next().ok_or("--open-page needs extensions, scheduled-tasks or search")?;
                 page = Some(SidebarPage::from_key(&value).ok_or_else(|| {
-                    format!("--open-page {value:?}: extensions or scheduled-tasks")
+                    format!("--open-page {value:?}: extensions, scheduled-tasks or search")
                 })?);
             }
             "--open-model-menu" => open = Some(Opening::ModelMenu),

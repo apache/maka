@@ -36,3 +36,22 @@ pub const COLUMN_GUTTER_REMS: f32 = 1.5;
 /// as here (908 less 24 each side). Settings' column is Desktop's other
 /// width, 920 less 24 each side (review round 12).
 pub const PAGE_MAX_WIDTH_REMS: f32 = 56.75;
+
+/// The line a plate's chrome and lists start their content on, in from the
+/// plate's edge: 16px. Row fills sit half way, 8px in, so their content
+/// lands on the line; an icon button at the plate's edge puts its glyph's
+/// ink there ([`ink_padding`]).
+pub const PLATE_LINE_REMS: f32 = 1.;
+
+/// A plate's icon button: 28px square, its glyph 16px.
+pub const ICON_BUTTON_REMS: f32 = 1.75;
+pub const ICON_GLYPH_REMS: f32 = 1.;
+
+/// The padding from an edge that puts a glyph's ink `line` in from it: the
+/// glyph, `glyph` square and centred in a `button` square button, draws its
+/// strokes `ink` (a share of its side) inside its square on that side. All
+/// in rem. The ink, not the button's frame or the glyph's square, is what
+/// lines up with the text and the rows' icons on the line.
+pub const fn ink_padding(line: f32, button: f32, glyph: f32, ink: f32) -> f32 {
+    line - (button - glyph) / 2. - glyph * ink
+}

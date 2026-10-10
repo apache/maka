@@ -158,6 +158,38 @@ The version lives only in the workspace `Cargo.toml`. A release moves the
   counted each second. While the Runtime retries a provider request the
   line gives the reason and counts down to the attempt, or says the attempt
   is under way.
+- A new task opens as a draft and is created with its first message; a
+  project's heading starts a task in that project; the thinking level is
+  chosen beside the model.
+- A long Tool output scrolls inside the transcript, a Write or Edit card
+  shows its diff, and a code cell's finished call shows what it did and
+  returned. Dragging the sidebar's edge past its narrowest width collapses
+  it.
+- The workbar: the right panel as tool tabs, opened beside the conversation,
+  dragged wide, or maximized in its place.
+  - Changes: the task folder's Git changes (the whole branch, what is
+    uncommitted, one commit, or one turn), every changed file beside the
+    selected file's diff. A card under a settled turn's reply lists the
+    files it edited and opens its changes; the task's folder, branch and
+    changes show over the composer.
+  - Files (⌘P): the task's files, with a preview of each and its actions.
+    HTML pages show rendered or as source (no scripts or styles) and open in
+    the default app.
+  - Trace: the task's trace, usage and context window, as Maka Desktop's
+    Inspector shows them.
+  - Terminal: terminals the Host runs for the task, drawn as Zed draws
+    them, with a scrollbar over the scrollback, ⌘-click on web links, a
+    blinking cursor, and Settings › Terminal (Option as Meta).
+  - Side chat (⌥⌘S): a side conversation about the task on a hidden fork
+    of it, which reads the task's history and does not change the task.
+    Text selected in the conversation goes in as a quote. Closing a side
+    chat or deleting its task removes the fork; forks a quit leaves behind
+    are removed at the next launch.
+- Find in the conversation (⌘F), with match case and whole word; each
+  Chinese character counts as a word.
+- Search every task (⇧⌘F, the sidebar's search button, or the palette): the
+  Search page, which opens a task at the passage it found.
+- Syntax colours in code blocks, diffs and file previews.
 
 ### Changed
 
@@ -167,3 +199,9 @@ The version lives only in the workspace `Cargo.toml`. A release moves the
 - A connection to an endpoint Maka does not know is added as a Custom
   connection with its API protocol (OpenAI Chat, OpenAI Responses, or
   Anthropic Messages), replacing the three custom relay providers.
+
+### Security
+
+- A link in rendered text (a reply, a file in the Files face, the daily
+  review) opens only when it is a web or mail address, as in Maka Desktop.
+  Any address used to open, and a `file:` link could start an application.

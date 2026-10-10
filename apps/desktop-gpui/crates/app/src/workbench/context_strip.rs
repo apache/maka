@@ -17,14 +17,15 @@
  * under the License.
  */
 
-//! The context strip over the composer, as Claude Code's: a quiet bar the
+//! The context strip over the composer, as Claude Code's: a line the
 //! composer's width directly above it, in an existing task (the new task's
-//! draft keeps its project picker in the composer instead). On the left
-//! the task's folder name, which opens the project menu above it (the
-//! header's folder button's entries), and the current branch, muted, in
-//! mono; on the right the lines all the task's changes add and delete,
-//! "+N −M" in the diff colours, in a chip that opens the changes panel, or
-//! focuses it while open.
+//! draft keeps its project picker in the composer instead), with no fill
+//! of its own. On the left the task's folder, a chip that hugs its folder
+//! glyph, its name and a chevron and opens the project menu above it (the
+//! header's folder button's entries), its glyph over the composer's "+"
+//! glyph; then the current branch, muted, in mono; on the right the lines
+//! all the task's changes add and delete, "+N −M" in the diff colours, in
+//! a chip that opens the changes panel, or focuses it while open.
 //!
 //! The counts are the changes panel's All changes against its base: the
 //! window's [`ChangeSummary`] reads them as the panel does, off the main
@@ -43,10 +44,8 @@
 
 use std::sync::Arc;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, h_flex,
-};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_kit::component::{ActiveTheme as _, Icon, Selectable as _, StyledExt as _, h_flex};
 use gpui_kit::{
     AnyElement, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
@@ -56,12 +55,21 @@ use review::git::GitRunner;
 use review::{ChangeSummary, ChangeTotals};
 use shared::copy::review as review_copy;
 use shared::copy::{self, Locale};
+use shared::icons::MakaIcon;
 use shared::layout::COLUMN_MAX_WIDTH_REMS;
 use shared::menu::{MenuPlacement, MenuSlot};
 use shared::theme::{ActiveMakaPalette as _, tabular_nums, tinted_button};
 use workspace::actions::ToggleReview;
 
 use super::{PROJECT_MENU_MIN_WIDTH_REMS, Workbench};
+
+/// The composer's padding (the conversation's dock, 12 px): the strip's
+/// chips start and end where the composer's controls do.
+const COMPOSER_INSET_REMS: f32 = 0.75;
+/// The composer's "+": a 28 px button, its glyph 16 px in its middle. The
+/// folder chip's glyph sits in a 16 px slot as far into the chip as the
+/// "+" glyph is into its button, so the two glyphs share a centre line.
+const ATTACH_GLYPH_INSET_REMS: f32 = (1.75 - 1.) / 2.;
 
 /// The strip's state in the window.
 pub(crate) struct ContextStrip {
@@ -100,12 +108,10 @@ impl Workbench {
         self.strip.menu.is_open()
     }
 
-    /// The strip's chip: opens the selected task's changes panel and gives
-    /// it the focus, or only the focus while it is open.
+    /// The strip's chip: shows the selected task's changes in the workbar
+    /// and gives them the focus.
     fn open_changes_from_strip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.review_open(cx) {
-            self.set_review_open(true, window, cx);
-        }
+        self.show_changes(window, cx);
         self.review_panel().update(cx, |panel, cx| panel.focus_files(window, cx));
         cx.notify();
     }
@@ -116,10 +122,6 @@ impl Workbench {
         self.catalog.read(cx).selected_id()?;
         let maka = cx.maka();
         let locale = Locale::current(cx);
-        // The composer's surface sunk a step, as the segmented track is:
-        // in dark the ink wash, not the sunken tier, which would be the
-        // darkest surface on screen.
-        let fill = if cx.theme().is_dark() { maka.wash } else { maka.sunken };
         let totals = self.strip.summary.read(cx).totals().cloned();
         let name = self.task_folder(cx).map(|folder| folder.name);
         let branch = totals.as_ref().and_then(|totals| totals.current_branch.clone());
@@ -131,13 +133,8 @@ impl Workbench {
             .max_w(rems(COLUMN_MAX_WIDTH_REMS))
             .mx_auto()
             .h_8()
-            .px_1()
+            .px(rems(COMPOSER_INSET_REMS))
             .gap_1()
-            // The composer's radius, 28 at the spec's scale: over half this
-            // one line's height at every zoom, so the ends are round, as
-            // the buttons inside them are 4 in.
-            .rounded_full()
-            .bg(fill)
             .text_xs()
             .children(name.map(|name| self.render_strip_name(name, cx)))
             .when_some(branch, |this, branch| {
@@ -206,8 +203,11 @@ impl Workbench {
         )
     }
 
-    /// The task's folder name, the first thing the strip gives up width
-    /// for: a quiet button that opens the project menu above it.
+    /// The task's folder, the first thing the strip gives up width for: a
+    /// 28 px chip that hugs the folder glyph, the name and a chevron and
+    /// opens the project menu above it. It sits on the composer's surface
+    /// sunk a step, as the segmented track is: in dark the ink wash, not
+    /// the sunken tier, which would be the darkest surface on screen.
     fn render_strip_name(
         &self,
         name: gpui_kit::SharedString,
@@ -215,16 +215,30 @@ impl Workbench {
     ) -> AnyElement {
         let maka = cx.maka();
         let tip = copy::PROJECT_INFO.get(cx);
+        let (fill, hover, press) = if cx.theme().is_dark() {
+            let fill = maka.wash;
+            (fill, maka.ink.opacity(fill.a + 0.05), maka.ink.opacity(fill.a + 0.1))
+        } else {
+            (maka.sunken, maka.sunken.blend(maka.hover), maka.sunken.blend(maka.selected))
+        };
         div()
             .relative()
             .min_w_0()
             .flex_shrink(1.)
             .child(
                 Button::new("context-strip-project")
-                    .ghost()
-                    .xsmall()
-                    .h_6()
-                    .px_2()
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(fill)
+                            .foreground(maka.ink)
+                            .hover(hover)
+                            .active(press)
+                            .shadow(false),
+                    )
+                    .bg(fill)
+                    .h_7()
+                    .pl(rems(ATTACH_GLYPH_INSET_REMS))
+                    .pr_2()
                     .min_w_0()
                     .max_w_full()
                     .rounded_full()
@@ -244,13 +258,37 @@ impl Workbench {
                         );
                     }))
                     .child(
-                        div()
+                        h_flex()
                             .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .font_medium()
-                            .text_color(maka.ink)
-                            .child(name),
+                            .gap_1p5()
+                            .child(
+                                h_flex()
+                                    .id("context-strip-folder")
+                                    .test_support()
+                                    .flex_none()
+                                    .size_4()
+                                    .justify_center()
+                                    .child(
+                                        Icon::new(MakaIcon::Folder)
+                                            .size_3p5()
+                                            .text_color(maka.ink_muted),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(maka.ink)
+                                    .child(name),
+                            )
+                            .child(
+                                Icon::new(MakaIcon::ChevronDown)
+                                    .size_3p5()
+                                    .flex_none()
+                                    .text_color(maka.ink_muted),
+                            ),
                     ),
             )
             .children(self.strip.menu.layer())

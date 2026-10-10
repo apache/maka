@@ -35,7 +35,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::serde_util::{is_false, present};
-use crate::{MessageContent, PermissionDecision};
+use crate::{MessageContent, PermissionDecision, QuoteRef};
 
 /// One durable transcript row.
 #[derive(Debug, Clone, PartialEq)]
@@ -182,7 +182,7 @@ pub struct UserMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory_references: Option<Vec<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quotes: Option<Vec<Value>>,
+    pub quotes: Option<Vec<QuoteRef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_references: Option<Vec<Value>>,
     /// Set on a mid-Turn steering message: the RuntimeEvent that admitted it.

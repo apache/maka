@@ -37,6 +37,7 @@ use gpui_kit::{
     TestSupportExt as _, WeakEntity, Window, div, px, rems,
 };
 use host_protocol::PermissionMode;
+use search::matching::fuzzy_score;
 use settings::{Appearance, Language, SettingsSection};
 use shared::copy::{Text, commands as words};
 use shared::domain_element_id;
@@ -120,8 +121,9 @@ pub(crate) struct PaletteEntry {
     pub(crate) keywords: Vec<SharedString>,
     pub(crate) icon: Icon,
     pub(crate) checked: bool,
-    /// The Action whose key binding the line shows.
-    pub(crate) shortcut: Option<Box<dyn Action>>,
+    /// The Action whose key binding the line shows, and the key context
+    /// that binding applies in (`None` for anywhere).
+    pub(crate) shortcut: Option<(Box<dyn Action>, Option<&'static str>)>,
     pub(crate) command: PaletteCommand,
 }
 
@@ -155,8 +157,12 @@ impl PaletteEntry {
         self
     }
 
-    pub(crate) fn shortcut(mut self, action: Box<dyn Action>) -> Self {
-        self.shortcut = Some(action);
+    pub(crate) fn shortcut(
+        mut self,
+        action: Box<dyn Action>,
+        context: Option<&'static str>,
+    ) -> Self {
+        self.shortcut = Some((action, context));
         self
     }
 
@@ -293,10 +299,9 @@ fn item(entries: &Rc<Vec<PaletteEntry>>, ix: usize) -> CommandItem {
     let entries = entries.clone();
     CommandItem::new().label(entry.label.clone()).checked(entry.checked).child(move |window, cx| {
         let entry = &entries[ix];
-        let shortcut = entry
-            .shortcut
-            .as_ref()
-            .and_then(|action| Kbd::binding_for_action(action.as_ref(), None, window));
+        let shortcut = entry.shortcut.as_ref().and_then(|(action, context)| {
+            Kbd::binding_for_action(action.as_ref(), *context, window)
+        });
         h_flex()
             .id(domain_element_id("palette-entry", &entry.key))
             .test_support()
@@ -335,35 +340,6 @@ fn filter(entries: &[PaletteEntry], query: &str) -> Vec<(Section, Vec<usize>)> {
         .collect()
 }
 
-/// A fuzzy match of `query` in `text`, ignoring case and the query's
-/// spaces: every query character must appear in order. Higher is better:
-/// each match scores, more when it continues the previous one, starts a
-/// word, or starts the text; each skipped character costs a little. `None`
-/// when a character is missing.
-pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
-    let text: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let mut score = 0;
-    let mut position = 0;
-    let mut previous: Option<usize> = None;
-    for wanted in query.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase) {
-        let found = (position..text.len()).find(|&ix| text[ix] == wanted)?;
-        score += 10;
-        if previous.is_some_and(|previous| previous + 1 == found) {
-            score += 15;
-        }
-        let word_start = found == 0 || !text[found - 1].is_alphanumeric();
-        if found == 0 {
-            score += 20;
-        } else if word_start {
-            score += 12;
-        }
-        score -= (found - position).min(10) as i32;
-        previous = Some(found);
-        position = found + 1;
-    }
-    Some(score)
-}
-
 /// Opens the palette over `window` with `entries`, its query field
 /// focused. Escape clears a query, then closes the palette; focus returns
 /// to what had it.
@@ -388,27 +364,4 @@ pub(crate) fn open_palette(
     let state = palette.read(cx).state.clone();
     state.update(cx, |state, cx| state.focus(window, cx));
     palette
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fuzzy_match_needs_every_character_in_order() {
-        assert!(fuzzy_score("tgsb", "Toggle sidebar").is_some());
-        assert!(fuzzy_score("sidebar", "Toggle sidebar").is_some());
-        assert!(fuzzy_score("bs", "Toggle sidebar").is_none(), "out of order");
-        assert!(fuzzy_score("xyz", "Toggle sidebar").is_none());
-        assert!(fuzzy_score("任务", "新任务").is_some());
-        assert_eq!(fuzzy_score("", "anything"), Some(0));
-    }
-
-    #[test]
-    fn prefixes_and_word_starts_beat_scattered_matches() {
-        let score = |query, text| fuzzy_score(query, text).expect("match");
-        assert!(score("new", "New task") > score("new", "Renew the key"));
-        assert!(score("st", "Stop turn") > score("st", "Toggle sidebar list"));
-        assert!(score("dark", "Dark") > score("dark", "Dim background, dark mode"));
-    }
 }

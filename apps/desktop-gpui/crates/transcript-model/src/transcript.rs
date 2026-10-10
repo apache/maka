@@ -176,6 +176,13 @@ pub struct Transcript {
     older: Option<Older>,
     /// At least one older page was applied.
     paged_older: bool,
+    /// Set when the rows held begin inside a Turn: the tail stopped part
+    /// way through one (`endsAtTurnBoundary` false, or a row cut at its
+    /// edge). The Turns with a row at or before this sequence, the tail's
+    /// newest, may not hold their first rows. Cleared once older rows are
+    /// prepended, which always begin at a Turn's start, or the first row is
+    /// held.
+    partial_through: Option<u64>,
     catch_up: Option<CatchUp>,
     durable: BTreeMap<u64, StoredMessage>,
     durable_by_turn: HashMap<String, Vec<u64>>,
@@ -298,6 +305,7 @@ impl Transcript {
             durable_through: None,
             older: None,
             paged_older: false,
+            partial_through: None,
             catch_up: None,
             durable: BTreeMap::new(),
             durable_by_turn: HashMap::new(),
@@ -320,6 +328,14 @@ impl Transcript {
             let mut assembler = TranscriptAssembler::new(TranscriptDirection::Older);
             assembler.accept(&page.fragments)?;
             let entries = assembler.take_complete();
+            // The Host cuts a tail back to the last point between Turns; it
+            // stops inside one only when a single Turn fills it, so the
+            // Turns it holds are the one that reaches its start and those
+            // nested in it.
+            let cut = !page.ends_at_turn_boundary || assembler.continuation_bytes().is_some();
+            if page.next_cursor.is_some() && cut {
+                transcript.partial_through = entries.iter().map(|entry| entry.sequence).max();
+            }
             transcript.older = page.next_cursor.clone().map(|cursor| Older {
                 assembler,
                 through: page.through_sequence,
@@ -554,6 +570,10 @@ impl Transcript {
             None => {}
         }
         self.paged_older = true;
+        // What is prepended begins at a Turn's start, or at the first row.
+        if page.next_cursor.is_none() || !rows.is_empty() {
+            self.partial_through = None;
+        }
         match self.insert_rows(rows, Placement::Oldest) {
             Ok(changes) => changes,
             Err(reason) => self.reopen(reason),
@@ -636,6 +656,38 @@ impl Transcript {
         self.views.iter().find(|view| view.turn_id == turn_id)
     }
 
+    /// The item that shows the durable row `message_id`, with its Turn: a
+    /// user message, a reply (or, without text, its reasoning), or a Tool
+    /// call by its call row or its result row. `None` while the row is not
+    /// held, or for a row no item shows (a Turn's state, a usage record).
+    /// Walks the rows held: for a one-off lookup, not for every frame.
+    pub fn item_of_message(&self, message_id: &str) -> Option<(String, ItemKey)> {
+        let message = self.durable.values().find(|message| message.id() == message_id)?;
+        let turn_id = message.turn_id().unwrap_or(LOOSE_TURN_ID);
+        let turn = self.turn(turn_id)?;
+        let candidates = match message {
+            StoredMessage::User(user) => vec![ItemKey::User(user.id.clone())],
+            StoredMessage::Assistant(assistant) => {
+                vec![ItemKey::Text(assistant.id.clone()), ItemKey::Thinking(assistant.id.clone())]
+            }
+            StoredMessage::ToolCall(call) => vec![ItemKey::Tool(call.id.clone())],
+            StoredMessage::ToolResult(result) => vec![ItemKey::Tool(result.tool_use_id.clone())],
+            _ => return None,
+        };
+        let key = candidates.into_iter().find(|key| turn.item(key).is_some())?;
+        Some((turn_id.to_owned(), key))
+    }
+
+    /// The id of the Session's durable row at `index` (0-based, in storage
+    /// order), once the transcript holds the Session's first row; `None`
+    /// before that, when no row is at `index`, or for a row without an id.
+    pub fn message_id_at(&self, index: usize) -> Option<&str> {
+        if self.older.is_some() {
+            return None;
+        }
+        self.durable.values().nth(index).map(StoredMessage::id).filter(|id| !id.is_empty())
+    }
+
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -673,6 +725,13 @@ impl Transcript {
         self.durable_through
     }
 
+    /// The sequence of the oldest durable row held: each page of older
+    /// history moves it back, also when its rows belong to a Turn already
+    /// shown.
+    pub fn durable_from(&self) -> Option<u64> {
+        self.durable.keys().next().copied()
+    }
+
     /// Whether rows older than the ones held exist
     /// ([`Transcript::older_request`] reads them).
     pub fn has_older_history(&self) -> bool {
@@ -682,6 +741,27 @@ impl Transcript {
     /// Whether older pages were read back to the Session's first row.
     pub fn reached_first_row(&self) -> bool {
         self.paged_older && self.older.is_none()
+    }
+
+    /// Whether a Turn shown may lack its first rows: the tail stopped inside
+    /// it. Reading older history ([`Transcript::older_request`]) until this
+    /// is false completes it.
+    pub fn has_partial_turn(&self) -> bool {
+        self.partial_through.is_some()
+    }
+
+    /// Whether the transcript holds Turn `turn_id`'s first row, so the Turn
+    /// shows whole. A Turn the tail cut does not, and neither do the Turns
+    /// nested in it, until the older pages that complete it are prepended;
+    /// a Turn whose first row arrived after the tail does.
+    pub fn has_turn_start(&self, turn_id: &str) -> bool {
+        let Some(through) = self.partial_through else {
+            return true;
+        };
+        self.durable_by_turn
+            .get(turn_id)
+            .and_then(|sequences| sequences.first())
+            .is_none_or(|first| *first > through)
     }
 
     /// Whether the last older page stopped inside a Turn: its rows are held

@@ -21,6 +21,7 @@
 //! transcript, and the commands that act on it.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Subscription, Task};
@@ -40,6 +41,10 @@ use host_protocol::{
     QueueEntryUpdateInput, QueueMutationResult, SessionCreate, SessionCreateInput,
     SessionMessageQueueProjection, SessionRemove, SessionRemoveInput, SessionRemoveResult,
     StorageRef, TurnMessageSubmit, TurnMessageSubmitInput, TurnMessageSubmitResult,
+};
+use host_protocol::{
+    PtyInterestInput, SessionDomain, SessionDomainChangedFrame, SessionRuntimeResourceChange,
+    SessionRuntimeResourcePtyDataFrame, SubscriptionPtyInterestSet,
 };
 use serde_json::Value;
 use transcript_model::{Change, Transcript};
@@ -102,6 +107,19 @@ fn reopen_delay(failures: u32) -> Duration {
 /// reaching the top add a few Turns rather than the whole history, and a
 /// page that stops inside a Turn is followed by the next one at once.
 pub const OLDER_PAGE_BYTES: u64 = 64 * 1024;
+
+/// The most bytes one read of older history the transcript makes on its own
+/// asks for: the Host's maximum, as the Desktop asks (`readOlderPage`).
+/// Nothing shows of a Turn until the page that reaches its start, so a
+/// smaller page only means more round trips.
+pub const BACKGROUND_PAGE_BYTES: u64 = host_protocol::SESSION_TRANSCRIPT_PAGE_MAX_BYTES;
+
+/// The most pages read on their own to reach the start of the Turn the
+/// tail cut, [`BACKGROUND_PAGE_BYTES`] each: 8 MiB, about four times a long
+/// Code Mode turn (150 calls, 2 MB, five pages). Past it the read stops,
+/// and the card under that Turn shows nothing until the person scrolls to
+/// the top, whose read goes on to the Turn's start as before.
+pub const TURN_START_PAGE_CAP: u32 = 16;
 
 /// Where the subscription of the selected session stands. The last
 /// transcript stays readable through every state except [`Self::Idle`].
@@ -200,7 +218,7 @@ pub struct SessionSettings {
 }
 
 impl SessionSettings {
-    fn from_projection(session: &SessionCatalogProjection) -> Self {
+    pub(crate) fn from_projection(session: &SessionCatalogProjection) -> Self {
         Self {
             model: session.model.clone().into(),
             connection_id: session.llm_connection_id.clone().map(Into::into),
@@ -300,9 +318,12 @@ struct FirstSend {
     /// The created session's revision, which `session.remove` names; `None`
     /// until `session.create` answers.
     revision: Option<u64>,
-    /// The text and files, until they are submitted.
-    message: Option<(String, Vec<PickedFile>)>,
+    /// The content and files, until they are submitted.
+    message: Option<(MessageContent, Vec<PickedFile>)>,
     reply: async_channel::Sender<Result<SendOutcome, SharedString>>,
+    /// Whether the session goes again when its first message does not go:
+    /// a new task's does; a side chat's fork stays for the next attempt.
+    discard: bool,
 }
 
 /// Emitted by [`ConversationState`] once per commit.
@@ -311,8 +332,41 @@ struct FirstSend {
 pub enum ConversationEvent {
     /// The transcript, the phase, or an answer changed. `session_changed`
     /// is true when a different session (or none) is shown from now on, so
-    /// views start over instead of diffing.
-    Changed { session_changed: bool },
+    /// views start over instead of diffing. `changes` are what the
+    /// transcript reported since the last commit, item by item.
+    Changed { session_changed: bool, changes: Arc<[Change]> },
+}
+
+/// What the selected session's subscription carries for the task's
+/// terminals: the feed of the `terminal` crate's owner, which asks for it
+/// with [`ConversationState::set_pty_interest`].
+///
+/// Terminal output (`subscription.runtime_resource_pty_data`) travels on
+/// the Session subscription, outside its sequence order, for the refs named
+/// in `subscription.pty_interest.set`. The subscription is this state's, and
+/// it is reopened with a new id after a gap, a new connection, or another
+/// selection; the interest is sent again after every open.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum SessionPtyEvent {
+    /// The Host confirmed interest in `refs` on the subscription
+    /// `subscription_id` of `session_id`: their output arrives as
+    /// [`Self::Data`] from now on.
+    InterestSet { session_id: SharedString, subscription_id: SharedString, refs: Arc<[String]> },
+    /// The subscription the interest was set on is gone (closed, reopening,
+    /// another session selected, the connection lost): no output arrives
+    /// until the next [`Self::InterestSet`], and what was sent meanwhile is
+    /// lost.
+    InterestLost { session_id: SharedString },
+    /// The Host refused the interest, or the request failed.
+    InterestFailed { session_id: SharedString, message: SharedString },
+    /// Output of a terminal, on the current subscription.
+    Data(Arc<SessionRuntimeResourcePtyDataFrame>),
+    /// `session_domain_changed` with domain `runtime_resource`: these
+    /// resources changed. The Host sends every change to every open Session
+    /// view (`enqueueRuntimeResourceChanged`), so `source_session_id` names
+    /// whose resource it is.
+    ResourcesChanged { session_id: SharedString, changes: Arc<[SessionRuntimeResourceChange]> },
 }
 
 /// The selected session's conversation: its subscription, its transcript,
@@ -328,6 +382,14 @@ pub enum ConversationEvent {
 /// epoch change, or a new connection reopens the subscription while the last
 /// transcript stays visible; reopens after failures back off and stop at
 /// [`REOPEN_ATTEMPT_LIMIT`]. Nothing here runs from `render`.
+///
+/// Older history is read when the person reaches the top
+/// ([`Self::load_older_history`]) and, in the background, when a view needs
+/// what the tail left out: the start of the Turn it cut
+/// ([`Self::read_turn_start`]) or the whole history
+/// ([`Self::set_whole_history_wanted`], and the find bar's
+/// [`Self::set_find_history_wanted`]). Background reads go one page at a
+/// time, never while a turn runs or starts, and resume when it ends.
 pub struct ConversationState {
     host: Entity<HostSession>,
     session_id: Option<SharedString>,
@@ -344,8 +406,23 @@ pub struct ConversationState {
     page_in_flight: bool,
     /// A read of older history is in flight.
     older_loading: bool,
+    /// The read in flight was started in the background: a page of it that
+    /// stops inside a Turn is followed only while the background still
+    /// wants more ([`Self::continue_background_read`]).
+    older_in_background: bool,
     /// Why the last read of older history failed.
     older_failure: Option<SharedString>,
+    /// The start of the Turn the tail cut is wanted
+    /// ([`Self::read_turn_start`]); reset with each new transcript.
+    turn_start_wanted: bool,
+    /// Pages read in the background since the transcript was bootstrapped:
+    /// [`TURN_START_PAGE_CAP`] bounds those read for a Turn's start.
+    background_pages: u32,
+    /// The whole history is wanted ([`Self::set_whole_history_wanted`]).
+    whole_history_wanted: bool,
+    /// The find bar wants the whole history
+    /// ([`Self::set_find_history_wanted`]).
+    find_history_wanted: bool,
     /// Changes applied since the last commit.
     pending: Vec<Change>,
     /// A commit was held back by the rate limit.
@@ -368,6 +445,16 @@ pub struct ConversationState {
     configuring: bool,
     /// A new task's first message on its way ([`Self::start_session`]).
     first: Option<FirstSend>,
+    /// The refs whose terminal output the subscription should carry
+    /// ([`Self::set_pty_interest`]).
+    pty_interest: Vec<String>,
+    /// The subscription `subscription.ready` succeeded for: the interest is
+    /// set on it.
+    ready_subscription: Option<String>,
+    /// The interest the Host confirmed, and the subscription it holds on.
+    pty_confirmed: Option<(String, Vec<String>)>,
+    /// A `subscription.pty_interest.set` is in flight.
+    _pty_interest: Option<Task<()>>,
     _first: Option<Task<()>>,
     _commit_window: Option<Task<()>>,
     _open: Option<Task<()>>,
@@ -388,6 +475,7 @@ pub struct ConversationState {
 
 impl EventEmitter<ConversationEvent> for ConversationState {}
 impl EventEmitter<NewSessionEvent> for ConversationState {}
+impl EventEmitter<SessionPtyEvent> for ConversationState {}
 
 /// A turn `turn.message.submit` started, until the transcript shows it or
 /// anything after it.
@@ -433,7 +521,12 @@ impl ConversationState {
             reopen_failures: 0,
             page_in_flight: false,
             older_loading: false,
+            older_in_background: false,
             older_failure: None,
+            turn_start_wanted: false,
+            background_pages: 0,
+            whole_history_wanted: false,
+            find_history_wanted: false,
             pending: Vec::new(),
             commit_pending: false,
             session_changed: false,
@@ -446,6 +539,10 @@ impl ConversationState {
             settings_revision: 0,
             configuring: false,
             first: None,
+            pty_interest: Vec::new(),
+            ready_subscription: None,
+            pty_confirmed: None,
+            _pty_interest: None,
             _first: None,
             _commit_window: None,
             _open: None,
@@ -500,6 +597,21 @@ impl ConversationState {
         } else {
             OlderHistory::None
         }
+    }
+
+    /// Whether older history is being read while the whole history is
+    /// wanted ([`Self::set_whole_history_wanted`]): earlier turns are on
+    /// their way.
+    pub fn is_reading_whole_history(&self) -> bool {
+        self.whole_history_wanted && self.older_loading
+    }
+
+    /// Whether the transcript does not hold the session's start yet and a
+    /// read can still get there: one is in flight, or nothing failed. The
+    /// find bar says it reads earlier messages meanwhile.
+    pub fn is_history_pending(&self) -> bool {
+        let Some(transcript) = &self.transcript else { return false };
+        self.older_loading || (transcript.has_older_history() && self.older_failure.is_none())
     }
 
     /// The selected session's model and permission mode, once read.
@@ -584,11 +696,15 @@ impl ConversationState {
         {
             let locale = Locale::current(cx);
             first.reply.try_send(Err(copy::OTHER_SESSION.in_locale(locale).into())).ok();
-            self.discard_session(first.session_id, first.revision, cx);
+            if first.discard {
+                self.discard_session(first.session_id, first.revision, cx);
+            }
         }
         self.close_subscription(cx);
         self.session_id = session_id;
         self.transcript = None;
+        // Terminal interest names the previous session's refs.
+        self.pty_interest.clear();
         self.reopen_failures = 0;
         self._reopen_delay = None;
         self.started_turn = None;
@@ -601,6 +717,8 @@ impl ConversationState {
         self._settings = None;
         self.configuring = false;
         self._configure = None;
+        self.whole_history_wanted = false;
+        self.find_history_wanted = false;
         self.pending.clear();
         self.session_changed = true;
         self.open(cx);
@@ -626,6 +744,7 @@ impl ConversationState {
         self.page_in_flight = false;
         self._older = None;
         self.older_loading = false;
+        self.older_in_background = false;
         self.older_failure = None;
     }
 
@@ -724,6 +843,9 @@ impl ConversationState {
         // answer arrives.
         self.subscription_id = Some(subscription_id.clone());
         self.transcript = Some(transcript);
+        // A new tail: a Turn it cuts is wanted again only once a view asks.
+        self.turn_start_wanted = false;
+        self.background_pages = 0;
         self.phase = ConversationPhase::Live;
         self.forget_started_turn_after_open(generation);
         self.forget_seen_turn();
@@ -751,8 +873,11 @@ impl ConversationState {
         }
         match result {
             Ok(_) => {
+                self.ready_subscription = self.subscription_id.clone();
+                self.send_pty_interest(cx);
                 self.fetch_page(cx);
                 self.submit_first(cx);
+                self.continue_background_read(cx);
             }
             // A lost connection reopens on the next `Connected`.
             Err(HostRequestError::NotConnected | HostRequestError::Transport(_))
@@ -841,23 +966,105 @@ impl ConversationState {
     /// longer accepts reopens the subscription; any other failure shows in
     /// the transcript ([`OlderHistory::Failed`]) until the next attempt.
     pub fn load_older_history(&mut self, cx: &mut Context<Self>) {
+        self.read_older(false, cx);
+    }
+
+    /// Reads older history in the background until every Turn shown holds
+    /// its first row ([`Transcript::has_partial_turn`]): the card under a
+    /// settled Turn the tail cut counts the whole Turn or nothing. At most
+    /// [`TURN_START_PAGE_CAP`] background pages for this transcript; never
+    /// while a turn runs or starts (it resumes when the turn ends); nothing
+    /// after a failed read until a read succeeds again. The new rows go above
+    /// the ones shown, which views keep where they are on screen.
+    pub fn read_turn_start(&mut self, cx: &mut Context<Self>) {
+        self.turn_start_wanted = true;
+        self.continue_background_read(cx);
+    }
+
+    /// Whether the whole history is wanted: while it is, older history is
+    /// read in the background, page after page, until the Session's first
+    /// row is held, so that every turn is known (the changes panel lists
+    /// them). As [`Self::read_turn_start`], without its cap.
+    pub fn set_whole_history_wanted(&mut self, wanted: bool, cx: &mut Context<Self>) {
+        if self.whole_history_wanted == wanted {
+            return;
+        }
+        self.whole_history_wanted = wanted;
+        self.continue_background_read(cx);
+    }
+
+    /// Whether the find bar wants the whole history: while it shows,
+    /// older history is read in the background as for
+    /// [`Self::set_whole_history_wanted`], so every match counts. When
+    /// neither it nor anything else wants more any longer, the background
+    /// page in flight is dropped.
+    pub fn set_find_history_wanted(&mut self, wanted: bool, cx: &mut Context<Self>) {
+        if self.find_history_wanted == wanted {
+            return;
+        }
+        self.find_history_wanted = wanted;
+        if wanted {
+            self.continue_background_read(cx);
+        } else if self.older_loading && self.older_in_background && !self.background_wanted() {
+            log::info!("session {}: dropping the older page read for the find bar", self.label());
+            self._older = None;
+            self.older_loading = false;
+            self.older_in_background = false;
+            self.commit_now(cx);
+        }
+    }
+
+    /// Whether a background read of older history is wanted: the start of
+    /// the Turn the tail cut, or the whole history.
+    fn background_wanted(&self) -> bool {
+        let turn_start = self.transcript.as_ref().is_some_and(|transcript| {
+            self.turn_start_wanted
+                && transcript.has_partial_turn()
+                && self.background_pages < TURN_START_PAGE_CAP
+        });
+        turn_start || self.whole_history_wanted || self.find_history_wanted
+    }
+
+    /// Starts the next background read of older history if one is wanted
+    /// and allowed: nothing in flight, no failure standing, no turn running
+    /// or starting, and the transcript still missing what is wanted.
+    fn continue_background_read(&mut self, cx: &mut Context<Self>) {
+        if self.older_loading
+            || self.older_failure.is_some()
+            || self.turn_activity() != TurnActivity::Idle
+            || self.transcript.is_none()
+        {
+            return;
+        }
+        if self.background_wanted() {
+            self.read_older(true, cx);
+        }
+    }
+
+    /// Reads the next page of older history, for the person
+    /// ([`OLDER_PAGE_BYTES`]) or in the background
+    /// ([`BACKGROUND_PAGE_BYTES`]).
+    fn read_older(&mut self, background: bool, cx: &mut Context<Self>) {
         if self.older_loading || self.phase != ConversationPhase::Live {
             return;
         }
         let Some(transcript) = &self.transcript else {
             return;
         };
-        let Some(input) = transcript.older_request(OLDER_PAGE_BYTES) else {
+        let bytes = if background { BACKGROUND_PAGE_BYTES } else { OLDER_PAGE_BYTES };
+        let Some(input) = transcript.older_request(bytes) else {
             return;
         };
         let subscription_id = transcript.subscription_id().to_owned();
         let request = self.requester(cx).request::<SessionTranscriptPageQuery>(&input);
         log::info!(
-            "session {}: reading older history before watermark {:?}",
+            "session {}: reading older history before watermark {:?}{}",
             self.label(),
-            input.through_sequence
+            input.through_sequence,
+            if background { " in the background" } else { "" }
         );
         self.older_loading = true;
+        self.older_in_background = background;
         self.older_failure = None;
         self._older = Some(cx.spawn(async move |this, cx| {
             let result = request.await;
@@ -883,11 +1090,15 @@ impl ConversationState {
         };
         self.older_loading = false;
         self._older = None;
+        let background = std::mem::take(&mut self.older_in_background);
         match result {
             Ok(page) => {
                 let changes = transcript.apply_transcript_page(&page);
                 let incomplete = transcript.older_read_incomplete();
                 let (turns, reached) = (transcript.turns().len(), transcript.reached_first_row());
+                if background {
+                    self.background_pages += 1;
+                }
                 log::info!(
                     "session {}: older page of {} fragments, {turns} Turns shown{}",
                     self.label(),
@@ -895,9 +1106,12 @@ impl ConversationState {
                     if reached { ", first row reached" } else { "" }
                 );
                 self.handle_changes(changes, cx);
-                if incomplete {
+                // The person's read finishes the Turn it stopped in; one in
+                // the background goes on only while it is still wanted.
+                if incomplete && !background {
                     self.load_older_history(cx);
                 }
+                self.continue_background_read(cx);
             }
             Err(HostRequestError::Operation {
                 code:
@@ -939,7 +1153,9 @@ impl ConversationState {
         });
         if unsent && let Some(first) = self.first.take() {
             first.reply.try_send(Err(message.into())).ok();
-            self.discard_session(first.session_id, first.revision, cx);
+            if first.discard {
+                self.discard_session(first.session_id, first.revision, cx);
+            }
         }
     }
 
@@ -995,6 +1211,7 @@ impl ConversationState {
     }
 
     fn close_subscription(&mut self, cx: &mut Context<Self>) {
+        self.forget_pty_subscription(cx);
         if let Some(subscription_id) = self.subscription_id.take() {
             self.send_close(subscription_id, cx);
         }
@@ -1028,6 +1245,9 @@ impl ConversationState {
         match event {
             HostSessionEvent::Push(frame) => {
                 if let PushFrame::Subscription(frame) = frame.as_ref() {
+                    if self.tap_pty_frame(frame, cx) {
+                        return;
+                    }
                     self.apply_frame(frame, cx);
                 }
             }
@@ -1041,6 +1261,7 @@ impl ConversationState {
                     "session {}: connected (Host changed: {host_changed}), reopening",
                     self.label()
                 );
+                self.forget_pty_subscription(cx);
                 self.subscription_id = None;
                 self.reopen_failures = 0;
                 self._reopen_delay = None;
@@ -1051,12 +1272,156 @@ impl ConversationState {
                 let live =
                     matches!(self.phase, ConversationPhase::Live | ConversationPhase::Opening);
                 if live && !self.host.read(cx).is_connected() {
+                    self.forget_pty_subscription(cx);
                     self.subscription_id = None;
                     self.open(cx);
                     self.commit_now(cx);
                 }
             }
             _ => {}
+        }
+    }
+
+    // Terminal output on the subscription.
+
+    /// Asks for the terminal output of `refs` (at most
+    /// [`host_protocol::PTY_INTEREST_MAX_REFS`], no ref twice) on the
+    /// selected session's subscription: sent once the subscription is
+    /// ready, and again after every open. Each call replaces the set, and an
+    /// empty set stops the output; selecting another session clears it. The
+    /// Host's answer arrives as [`SessionPtyEvent::InterestSet`], the output
+    /// as [`SessionPtyEvent::Data`]. One owner merges every terminal's refs
+    /// into this one set.
+    pub fn set_pty_interest(&mut self, refs: Vec<String>, cx: &mut Context<Self>) {
+        if self.pty_interest == refs {
+            return;
+        }
+        self.pty_interest = refs;
+        self.send_pty_interest(cx);
+    }
+
+    /// Sends the wanted interest on the ready subscription unless the Host
+    /// holds it there already. One request at a time: a set changed while
+    /// one is in flight goes when it answers.
+    fn send_pty_interest(&mut self, cx: &mut Context<Self>) {
+        if self._pty_interest.is_some() {
+            return;
+        }
+        let (Some(session_id), Some(subscription_id)) =
+            (self.session_id.clone(), self.ready_subscription.clone())
+        else {
+            return;
+        };
+        let held = self.pty_confirmed.as_ref().filter(|(held_on, _)| *held_on == subscription_id);
+        let unchanged = match held {
+            Some((_, refs)) => *refs == self.pty_interest,
+            // A new subscription starts with no interest.
+            None => self.pty_interest.is_empty(),
+        };
+        if unchanged {
+            return;
+        }
+        let refs = self.pty_interest.clone();
+        let input = match PtyInterestInput::new(subscription_id.clone(), refs.clone()) {
+            Ok(input) => input,
+            Err(error) => {
+                log::warn!("session {session_id}: PTY interest not sent: {error}");
+                let message = error.to_string().into();
+                cx.emit(SessionPtyEvent::InterestFailed { session_id, message });
+                return;
+            }
+        };
+        let request = self.requester(cx).request::<SubscriptionPtyInterestSet>(&input);
+        self._pty_interest = Some(cx.spawn(async move |this, cx| {
+            let result = request.await.map(drop);
+            this.update(cx, |this, cx| {
+                this._pty_interest = None;
+                this.finish_pty_interest(session_id, subscription_id, refs, result, cx);
+            })
+            .ok();
+        }));
+    }
+
+    fn finish_pty_interest(
+        &mut self,
+        session_id: SharedString,
+        subscription_id: String,
+        refs: Vec<String>,
+        result: Result<(), HostRequestError>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ready_subscription.as_deref() != Some(subscription_id.as_str()) {
+            // An answer for a subscription that is gone; the current one
+            // may still need the set.
+            self.send_pty_interest(cx);
+            return;
+        }
+        match result {
+            Ok(()) => {
+                self.pty_confirmed = Some((subscription_id.clone(), refs.clone()));
+                cx.emit(SessionPtyEvent::InterestSet {
+                    session_id,
+                    subscription_id: subscription_id.into(),
+                    refs: refs.into(),
+                });
+            }
+            // The connection is gone; the next open sends the set again.
+            Err(_) if !self.host.read(cx).is_connected() => return,
+            Err(error) => {
+                log::warn!("session {session_id}: subscription.pty_interest.set failed: {error}");
+                let message = error.to_string().into();
+                cx.emit(SessionPtyEvent::InterestFailed { session_id, message });
+                return;
+            }
+        }
+        self.send_pty_interest(cx);
+    }
+
+    /// The subscription is going away, and the interest set on it with it:
+    /// no terminal output arrives until the next open sets it again.
+    fn forget_pty_subscription(&mut self, cx: &mut Context<Self>) {
+        self._pty_interest = None;
+        let ready = self.ready_subscription.take();
+        let confirmed = self.pty_confirmed.take();
+        if (ready.is_some() || confirmed.is_some())
+            && let Some(session_id) = self.session_id.clone()
+        {
+            cx.emit(SessionPtyEvent::InterestLost { session_id });
+        }
+    }
+
+    /// Hands the terminal owner what the current subscription carries for
+    /// it. PTY data has no sequence and means nothing to the transcript, so
+    /// it stops here (`true`); a `runtime_resource` domain change goes on to
+    /// the transcript, which counts its sequence. A malformed frame goes on
+    /// too, and the transcript reopens as for any malformed frame.
+    fn tap_pty_frame(&mut self, frame: &SubscriptionFrame, cx: &mut Context<Self>) -> bool {
+        let current = self.phase == ConversationPhase::Live
+            && self.subscription_id.as_deref() == Some(frame.subscription_id.as_str());
+        let Some(session_id) = self.session_id.clone().filter(|_| current) else {
+            return false;
+        };
+        match frame.kind.as_str() {
+            "subscription.runtime_resource_pty_data" => {
+                match frame.decode_as::<SessionRuntimeResourcePtyDataFrame>() {
+                    Ok(data) => {
+                        cx.emit(SessionPtyEvent::Data(Arc::new(data)));
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+            "subscription.session_domain_changed" => {
+                if let Ok(changed) = frame.decode_as::<SessionDomainChangedFrame>()
+                    && changed.domain == SessionDomain::RuntimeResource
+                    && let Some(changes) = changed.resources
+                {
+                    let changes = changes.into();
+                    cx.emit(SessionPtyEvent::ResourcesChanged { session_id, changes });
+                }
+                false
+            }
+            _ => false,
         }
     }
 
@@ -1087,6 +1452,8 @@ impl ConversationState {
             self.refresh_settings(revision, false, cx);
         }
         self.handle_changes(changes, cx);
+        // A turn that ended lets a background read go on.
+        self.continue_background_read(cx);
     }
 
     /// Reads the session's settings from the catalog (`session.catalog.query`
@@ -1163,6 +1530,7 @@ impl ConversationState {
         if let Some(message) = ended {
             log::info!("session {}: {message}", self.label());
             // The Host already closed it.
+            self.forget_pty_subscription(cx);
             self.subscription_id = None;
             self.phase = ConversationPhase::Ended(message.into());
             self.commit_now(cx);
@@ -1249,7 +1617,7 @@ impl ConversationState {
             log::info!("session {}: {}", self.label(), describe_changes(&changes, self));
         }
         let session_changed = std::mem::take(&mut self.session_changed);
-        cx.emit(ConversationEvent::Changed { session_changed });
+        cx.emit(ConversationEvent::Changed { session_changed, changes: changes.into() });
         cx.notify();
     }
 
@@ -1405,7 +1773,20 @@ impl ConversationState {
         placement: MessagePlacement,
         cx: &mut Context<Self>,
     ) -> Task<Result<SendOutcome, SharedString>> {
-        let sent = self.submit_with_attachments(session_id, text, files, placement, cx);
+        self.send_content(session_id, MessageContent::text(text), files, placement, cx)
+    }
+
+    /// [`Self::send_with_attachments`] for `content` that carries more than
+    /// text (a side chat's quotes); the files' references join it.
+    pub fn send_content(
+        &mut self,
+        session_id: &str,
+        content: MessageContent,
+        files: Vec<PickedFile>,
+        placement: MessagePlacement,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SendOutcome, SharedString>> {
+        let sent = self.submit_with_attachments(session_id, content, files, placement, cx);
         cx.foreground_executor().spawn(async move { sent.await.map_err(NotSent::into_message) })
     }
 
@@ -1415,14 +1796,14 @@ impl ConversationState {
     fn submit_with_attachments(
         &mut self,
         session_id: &str,
-        text: String,
+        content: MessageContent,
         files: Vec<PickedFile>,
         placement: MessagePlacement,
         cx: &mut Context<Self>,
     ) -> Task<Result<SendOutcome, NotSent>> {
         let locale = Locale::current(cx);
         if files.is_empty() {
-            return self.submit_message(session_id, MessageContent::text(text), placement, cx);
+            return self.submit_message(session_id, content, placement, cx);
         }
         let refused = |text: shared::copy::Text| {
             Task::ready(Err(NotSent::Refused(text.in_locale(locale).into())))
@@ -1477,7 +1858,7 @@ impl ConversationState {
                     log::warn!("session {session}: {message}");
                     return Task::ready(Err(NotSent::Refused(message)));
                 }
-                let mut content = MessageContent::text(text);
+                let mut content = content;
                 content.attachments = Some(
                     attachments
                         .iter()
@@ -1534,8 +1915,9 @@ impl ConversationState {
         self.first = Some(FirstSend {
             session_id: session_id.clone(),
             revision: None,
-            message: Some((text, files)),
+            message: Some((MessageContent::text(text), files)),
             reply,
+            discard: true,
         });
         self._first = Some(cx.spawn(async move |this, cx| {
             let result = request.await;
@@ -1589,13 +1971,51 @@ impl ConversationState {
         self.select_session(Some(session_id), cx);
     }
 
+    /// Shows `session_id`, a session made elsewhere for this message (a
+    /// side chat's fork of its task), and sends `content` with `files` as
+    /// its first message once its subscription is ready, as
+    /// [`Self::start_session`] does after its create. Unlike a new task's,
+    /// the session stays when the message does not go: it is the side
+    /// chat's to keep or dispose of. Only from no session, one at a time.
+    pub fn open_with_message(
+        &mut self,
+        session_id: SharedString,
+        content: MessageContent,
+        files: Vec<PickedFile>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<SendOutcome, SharedString>> {
+        let locale = Locale::current(cx);
+        if self.first.is_some() {
+            return Task::ready(Err(copy::SEND_BUSY.in_locale(locale).into()));
+        }
+        let (reply, answer) = async_channel::bounded(1);
+        self.first = Some(FirstSend {
+            session_id: session_id.clone(),
+            revision: None,
+            message: Some((content, files)),
+            reply,
+            discard: false,
+        });
+        if self.session_id.as_ref() == Some(&session_id) {
+            // Already open: the message goes once the subscription is.
+            if self.ready_subscription.is_some() && self.ready_subscription == self.subscription_id
+            {
+                self.submit_first(cx);
+            }
+        } else {
+            self.select_session(Some(session_id), cx);
+        }
+        cx.notify();
+        receive(answer, copy::SEND_FAILED.in_locale(locale), cx)
+    }
+
     /// Submits the new session's first message, once its subscription is
     /// ready.
     fn submit_first(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.session_id.clone() else {
             return;
         };
-        let Some((text, files)) = self
+        let Some((content, files)) = self
             .first
             .as_mut()
             .filter(|first| first.session_id == session_id)
@@ -1603,8 +2023,13 @@ impl ConversationState {
         else {
             return;
         };
-        let sent =
-            self.submit_with_attachments(&session_id, text, files, MessagePlacement::NextTurn, cx);
+        let sent = self.submit_with_attachments(
+            &session_id,
+            content,
+            files,
+            MessagePlacement::NextTurn,
+            cx,
+        );
         self._first = Some(cx.spawn(async move |this, cx| {
             let result = sent.await;
             this.update(cx, |this, cx| this.finish_first(&session_id, result, cx)).ok();
@@ -1627,10 +2052,14 @@ impl ConversationState {
             Err(NotSent::Unknown(message)) => {
                 first.reply.try_send(Err(message)).ok();
             }
-            Err(NotSent::Refused(message)) => {
+            Err(NotSent::Refused(message)) if first.discard => {
                 log::info!("session {session_id}: its first message was not taken, deleting it");
                 first.reply.try_send(Err(message)).ok();
                 self.discard_session(first.session_id, first.revision, cx);
+            }
+            Err(NotSent::Refused(message)) => {
+                log::info!("session {session_id}: its first message was not taken");
+                first.reply.try_send(Err(message)).ok();
             }
         }
         cx.notify();

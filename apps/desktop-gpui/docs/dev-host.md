@@ -357,6 +357,36 @@ catalog holds a real projection) and also records `session.create`, a
 adds a new Session every time it runs, so use it only when the fixtures need
 one. Set `MAKA_GPUI_DEV_ROOT` to use a root other than `.dev-root`.
 
+`--sequences <dir> --only-sequence <name>` writes only
+`sequences/<name>.jsonl`. Four of these need no model and record the
+operations of the terminal, search, Files and Trace tools:
+
+- `terminal`: a login shell through `runtime.resource.*` and
+  `subscription.pty_interest.set`, from start to the ended run (see
+  `record_terminal` in the tool).
+- `recall`: `recall.query` over the Sessions the State Root already holds,
+  for the terms `backoff` and `reconnect`, plus a blank term the search
+  refuses. The committed recording comes from `target/demo-root`, whose
+  scripted demo Sessions mention them; another root needs Sessions that do.
+- `artifact_files`: `artifact.query` (list, get, text, binary, chunk) and
+  `artifact.delete` on a file it uploads.
+- `inspector`: only reads, over the Sessions the State Root already holds:
+  `execution.inspect.query` (`session_trace_start`, then
+  `session_trace_continue` from the page's cursor), `context.diagnostics.query`
+  and `usage.query` `summary`, for a Session traced over more than one page,
+  the Session whose newest page has the most kinds of step, and one that never
+  ran. The committed recording comes from `target/demo-root`.
+
+```sh
+MAKA_GPUI_DEV_ROOT="$PWD/target/demo-root" scripts/capture-fixtures.sh \
+  --sequences /private/tmp/maka-gpui-fixture-workspace --only-sequence terminal
+```
+
+`terminal` and `artifact_files` create a Session in the workspace directory
+and remove it afterwards; `inspector` writes nothing to the Host. All four replace the home directory, the user
+name and the host name in what they write with `/Users/me`, `me` and
+`host`: a login shell's prompt shows the last two.
+
 The capture tool refuses to write a frame with a credential-looking key.
 Fixtures do contain Host epochs, connection ids, and the socket path; those
 are random per run and not secret.

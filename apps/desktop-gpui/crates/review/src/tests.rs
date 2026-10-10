@@ -383,17 +383,18 @@ fn a_gone_base_branch_is_dropped(cx: &mut TestAppContext) {
     assert_eq!(base.as_deref(), Some("refs/remotes/origin/main"));
 }
 
-/// The bar: the tree's toggle, the base branch → the current branch, the
-/// "⋯" menu, maximize and close; no Unified/Split segmented control.
+/// The bar: the tree's toggle, the base branch → the current branch and
+/// the "⋯" menu; maximize and close are the workbar's strip's; no
+/// Unified/Split segmented control.
 #[gpui_kit::test]
 fn the_bar_holds_the_branches_and_the_menu_and_no_segmented_control(cx: &mut TestAppContext) {
     let harness = Harness::open(changed(2), 1000., cx);
     harness.show_changes(cx);
-    for id in ["review-tree-toggle", "review-base-branch", "review-more", "review-maximize"] {
+    for id in ["review-tree-toggle", "review-base-branch", "review-more"] {
         assert!(harness.exists(id, cx), "{id}");
     }
-    assert!(harness.exists("review-close", cx));
-    for id in ["review-layout", "review-unified", "review-split"] {
+    for id in ["review-maximize", "review-close", "review-layout", "review-unified", "review-split"]
+    {
         assert!(!harness.exists(id, cx), "{id} is gone");
     }
     assert_eq!(harness.label("review-current-branch", cx).as_deref(), Some("feature"));
@@ -529,7 +530,8 @@ fn the_toggle_hides_the_tree_and_the_commits(cx: &mut TestAppContext) {
     assert!(left.size.height <= area.size.height * 0.4 + px(1.), "{left:?} in {area:?}");
     harness.click("review-tree-toggle", cx);
     assert!(!harness.exists("review-left", cx));
-    assert_eq!(harness.bounds("review-diff", cx).top(), area.top(), "the diff takes its place");
+    let diff_box = harness.bounds("review-diff-box", cx);
+    assert_eq!(diff_box.top(), area.top() + px(8.), "the diff's box takes its place");
     harness.click("review-tree-toggle", cx);
     assert!(harness.exists("review-scopes", cx));
 
@@ -676,21 +678,15 @@ fn the_menu_switches_the_layout_and_folds_unchanged_lines(cx: &mut TestAppContex
     assert!(!drawn("above 10", cx), "folded again");
 }
 
-/// The bar's button asks the owner to maximize the panel, or to restore
-/// it; Esc asks for the restore only while it is maximized.
+/// Esc asks the owner for the restore only while the panel is maximized.
 #[gpui_kit::test]
-fn the_maximize_button_and_esc_ask_the_owner(cx: &mut TestAppContext) {
+fn esc_asks_the_owner_to_restore_a_maximized_panel(cx: &mut TestAppContext) {
     let harness = Harness::open(changed(2), 520., cx);
     harness.show_changes(cx);
-    harness.click("review-maximize", cx);
-    assert_eq!(harness.events.borrow().last(), Some(&ReviewPanelEvent::MaximizeRequested(true)));
-    assert_eq!(harness.label("review-maximize", cx).as_deref(), Some(copy::FOCUS_PANEL.en()));
-
     harness.panel.update(cx, |panel, cx| panel.set_maximized(true, cx));
     harness.click(domain_element_id("review-file", "f000"), cx);
     harness.press("escape", cx);
     assert_eq!(harness.events.borrow().last(), Some(&ReviewPanelEvent::MaximizeRequested(false)));
-    assert_eq!(harness.label("review-maximize", cx).as_deref(), Some(copy::RESTORE_SPLIT.en()));
 
     harness.panel.update(cx, |panel, cx| panel.set_maximized(false, cx));
     let before = harness.events.borrow().len();
@@ -1199,3 +1195,220 @@ fn two_hundred_and_fifty_commits_are_all_listed(cx: &mut TestAppContext) {
     assert!(label.is_some_and(|label| label.starts_with("Commit 249")), "the 250th commit");
     assert!(drawn(cx) < 40, "still only the rows in view");
 }
+
+impl Harness {
+    /// Hands the panel's turn changes the edits of a transcript of `rows`,
+    /// as the window does when the transcript moves on, and works them out.
+    fn feed(&self, rows: &[serde_json::Value], cx: &mut TestAppContext) {
+        let transcript = crate::turns_tests::transcript(rows);
+        let key = transcript_model::edits::EditsKey::of(&transcript);
+        let edits = transcript_model::edits::session_edits(&transcript);
+        let turns = self.panel.read_with(cx, |panel, _| panel.turn_changes().clone());
+        turns.update(cx, |turns, cx| turns.set_edits(key, edits, cx));
+        self.settle(cx);
+    }
+
+    fn shown_turn(&self, cx: &mut TestAppContext) -> Option<String> {
+        self.panel.read_with(cx, |panel, _| panel.shown_turn().map(ToString::to_string))
+    }
+
+    /// The scopes list's choosable rows, by their accessible names, in
+    /// order.
+    fn scope_rows(&self, cx: &mut TestAppContext) -> Vec<String> {
+        self.with_window(cx, |window, _| {
+            window
+                .within("review-scopes")
+                .find_all_by_role(Role::ListItem)
+                .into_iter()
+                .filter_map(|row| row.label().map(str::to_owned))
+                .collect()
+        })
+    }
+}
+
+/// In a folder that is no repository, the panel lists the task's turns that
+/// edited files instead of saying so, shows the newest one's files in the
+/// tree and their net diffs, and names the turn in its bar.
+#[gpui_kit::test]
+fn a_folder_outside_a_repository_shows_its_turns(cx: &mut TestAppContext) {
+    use crate::turns_tests::{Folder, first_turn};
+    let folder = Folder::outside("panel-turns");
+    let rows = first_turn(&folder);
+    let harness = Harness::open(FakeGit::default(), 1000., cx);
+    harness.show(ReviewTarget::local("s1", &folder.0), None, cx);
+    assert_eq!(harness.failure(cx).as_deref(), Some(copy::NOT_GIT_REPOSITORY.en()), "no turns yet");
+
+    harness.feed(&rows, cx);
+    assert_eq!(harness.failure(cx), None);
+    assert_eq!(harness.shown_turn(cx).as_deref(), Some("t1"));
+    assert_eq!(harness.label("review-turn-label", cx).as_deref(), Some("Build the report"));
+    assert!(!harness.exists("review-commits-heading", cx), "no Git scopes");
+    assert!(!harness.exists(domain_element_id("review-scope", "all"), cx));
+    assert_eq!(harness.label("review-turns-heading", cx).as_deref(), Some("Edits by turn 1"));
+    let rows = harness.scope_rows(cx);
+    let [turn] = rows.as_slice() else { panic!("one turn: {rows:?}") };
+    assert!(
+        turn.starts_with("Build the report, 4 files, 6 lines added, 3 lines deleted, "),
+        "{turn}"
+    );
+    assert_eq!(
+        harness.with_window(cx, |window, _| {
+            window.find(domain_element_id("review-turn", "t1")).selected()
+        }),
+        Some(true)
+    );
+    assert_eq!(
+        harness.tree_rows(cx),
+        [
+            "Modified, data.txt, 1 line added, 1 line deleted",
+            "Added, notes.md, 3 lines added, 0 lines deleted",
+            "Deleted, old.txt",
+            "Modified, report.py, 2 lines added, 2 lines deleted",
+        ]
+    );
+    assert_eq!(harness.diff_files(cx), ["data.txt", "notes.md", "old.txt", "report.py"]);
+    let report = harness.panel.read_with(cx, |panel, cx| {
+        let diff = panel.diff().read(cx);
+        let file = diff.files().iter().find(|file| file.path().as_ref() == "report.py").cloned();
+        file.map(|file| (file.additions(), file.deletions()))
+    });
+    assert_eq!(report, Some((2, 2)), "the two Edits are one net diff");
+    assert!(!harness.exists(domain_element_id("review-step-mark", "report.py"), cx));
+}
+
+/// A turn that edited a file itself and then through a code cell: its scope
+/// shows both, the cell's created file and `report.py`'s two edits, one by
+/// the model and one by the cell, as one net diff.
+#[gpui_kit::test]
+fn a_turns_scope_shows_its_own_and_its_code_cells_edits(cx: &mut TestAppContext) {
+    use crate::turns_tests::{Folder, mixed_turn};
+    let folder = Folder::outside("panel-code-cell");
+    let rows = mixed_turn(&folder);
+    let harness = Harness::open(FakeGit::default(), 1000., cx);
+    harness.show(ReviewTarget::local("s1", &folder.0), None, cx);
+    harness.feed(&rows, cx);
+    assert_eq!(harness.shown_turn(cx).as_deref(), Some("t1"));
+    let rows = harness.scope_rows(cx);
+    let [turn] = rows.as_slice() else { panic!("one turn: {rows:?}") };
+    assert!(
+        turn.starts_with("Build the report, 2 files, 5 lines added, 2 lines deleted, "),
+        "{turn}"
+    );
+    assert_eq!(
+        harness.tree_rows(cx),
+        [
+            "Added, notes.md, 3 lines added, 0 lines deleted",
+            "Modified, report.py, 2 lines added, 2 lines deleted",
+        ]
+    );
+    assert_eq!(harness.diff_files(cx), ["notes.md", "report.py"]);
+    let counts = harness.panel.read_with(cx, |panel, cx| {
+        let diff = panel.diff().read(cx);
+        diff.files()
+            .iter()
+            .map(|file| (file.path().to_string(), file.additions(), file.deletions()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(counts, [("notes.md".to_owned(), 3, 0), ("report.py".to_owned(), 2, 2)]);
+    assert!(!harness.exists(domain_element_id("review-step-mark", "report.py"), cx));
+}
+
+/// In a repository the turns sit between Uncommitted changes and the
+/// commits; choosing one shows it, and All changes shows the branch again.
+#[gpui_kit::test]
+fn turn_scopes_sit_beside_the_git_scopes(cx: &mut TestAppContext) {
+    use crate::turns_tests::{Folder, first_turn};
+    // The turn edited files in the repository: they are untracked there.
+    let folder = Folder(branch_repository("panel-turn-scopes"));
+    let repo = folder.0.clone();
+    let rows = first_turn(&folder);
+    let harness = Harness::on_repository(&repo, 1000., cx);
+    harness.feed(&rows, cx);
+    assert_eq!(harness.shown_turn(cx), None, "Git's All changes stay shown");
+    let names: Vec<String> = harness
+        .scope_rows(cx)
+        .into_iter()
+        .map(|row| row.split(", ").next().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        ["All changes", "Uncommitted changes", "Build the report", "Add b", "Add a second line"]
+    );
+    assert_eq!(harness.label("review-turns-heading", cx).as_deref(), Some("Edits by turn 1"));
+    assert_eq!(harness.label("review-commits-heading", cx).as_deref(), Some("Commits 2"));
+
+    harness.click(domain_element_id("review-turn", "t1"), cx);
+    assert_eq!(harness.shown_turn(cx).as_deref(), Some("t1"));
+    assert!(!harness.exists("review-current-branch", cx), "the bar names the turn");
+    assert_eq!(harness.label("review-turn-label", cx).as_deref(), Some("Build the report"));
+    assert_eq!(harness.diff_files(cx), ["data.txt", "notes.md", "old.txt", "report.py"]);
+
+    harness.press("up", cx);
+    assert_eq!(harness.shown_turn(cx), None, "↑ goes back to Uncommitted changes");
+    assert_eq!(
+        harness.panel.read_with(cx, |panel, _| panel.scope().clone()),
+        ReviewScope::Uncommitted
+    );
+    assert_eq!(
+        harness.diff_files(cx),
+        ["a.txt", "data.txt", "new.txt", "notes.md", "report.py"],
+        "Git's uncommitted changes, the turn's files untracked among them"
+    );
+    harness.press("down", cx);
+    assert_eq!(harness.shown_turn(cx).as_deref(), Some("t1"), "↓ into the turns");
+    harness.click(domain_element_id("review-scope", "all"), cx);
+    assert_eq!(harness.shown_turn(cx), None);
+    assert_eq!(harness.label("review-current-branch", cx).as_deref(), Some("feature"));
+    assert_eq!(harness.diff_files(cx).first().map(String::as_str), Some("src/deep/b.txt"));
+}
+
+/// The card's "View changes" and its file rows: the panel shows the turn,
+/// scrolled to the file asked for.
+#[gpui_kit::test]
+fn a_turn_opens_at_the_file_asked_for(cx: &mut TestAppContext) {
+    use crate::turns_tests::{Folder, first_turn};
+    let folder = Folder::outside("panel-turn-file");
+    let rows = first_turn(&folder);
+    let harness = Harness::open(FakeGit::default(), 1000., cx);
+    harness.show(ReviewTarget::local("s1", &folder.0), None, cx);
+    harness.feed(&rows, cx);
+    harness.panel.update(cx, |panel, cx| panel.show_turn("t1", Some("report.py".into()), cx));
+    harness.settle(cx);
+    assert_eq!(harness.selected(cx).as_deref(), Some("report.py"));
+    let row = domain_element_id("review-file", "report.py");
+    assert_eq!(harness.with_window(cx, |window, _| window.find(row).selected()), Some(true));
+    let diff = harness.bounds("review-diff", cx);
+    let offset = harness.header_offset("report.py", cx).expect("its header shows");
+    assert!(offset >= px(0.) && offset < diff.size.height, "in view: {offset:?}");
+}
+
+/// A file changed since the turn shows its edits one after another, each
+/// header saying which it is and its own lines; the tree row sums them.
+#[gpui_kit::test]
+fn a_stepwise_file_marks_each_edit(cx: &mut TestAppContext) {
+    use crate::turns_tests::{Folder, REPORT_AFTER, first_turn};
+    let folder = Folder::outside("panel-steps");
+    let rows = first_turn(&folder);
+    folder.write("report.py", &REPORT_AFTER.replace("a10", "z10"));
+    let harness = Harness::open(FakeGit::default(), 1000., cx);
+    harness.show(ReviewTarget::local("s1", &folder.0), None, cx);
+    harness.feed(&rows, cx);
+    assert_eq!(
+        harness.diff_files(cx),
+        ["data.txt", "notes.md", "old.txt", "report.py (1/2)", "report.py (2/2)"]
+    );
+    assert!(
+        harness.tree_rows(cx).contains(
+            &"Modified, report.py, 2 lines added, 2 lines deleted, Step by step".to_owned()
+        )
+    );
+    harness.panel.update(cx, |panel, cx| panel.select_file("report.py", cx));
+    harness.settle(cx);
+    let mark = |n: usize| domain_element_id("review-step-mark", &format!("report.py ({n}/2)"));
+    assert_eq!(harness.label(mark(1), cx).as_deref(), Some("Step 1 of 2"));
+    assert_eq!(harness.label(mark(2), cx).as_deref(), Some("Step 2 of 2"));
+    let counts = domain_element_id("review-header-counts", "report.py (1/2)");
+    assert_eq!(harness.label(counts, cx).as_deref(), Some("1 line added, 1 line deleted"));
+}
+
+mod geometry;

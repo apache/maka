@@ -43,6 +43,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui_kit::{
@@ -99,6 +100,9 @@ struct PagingState {
     /// Runs once, deferred, when the older-history row is painted inside the
     /// viewport: reaching the top loads older messages.
     on_history_visible: RefCell<Option<Deferred>>,
+    /// Runs once, deferred, when one of these rows is painted inside the
+    /// viewport: the place of a card that waits for older history.
+    on_rows_visible: RefCell<Option<(HashSet<RowKey>, Deferred)>>,
 }
 
 /// Work a paint callback hands to the next effect cycle.
@@ -145,6 +149,17 @@ impl Paging {
         })
     }
 
+    /// Whether row `key` was painted inside the viewport in the last frame.
+    pub(crate) fn is_painted(&self, key: &RowKey) -> bool {
+        self.0.rows.borrow().iter().any(|(painted, _)| painted == key)
+    }
+
+    /// The topmost row painted inside the viewport in the last frame.
+    pub(crate) fn top_painted_row(&self) -> Option<RowKey> {
+        let rows = self.0.rows.borrow();
+        rows.iter().min_by(|a, b| by_top(a, b)).map(|(key, _)| key.clone())
+    }
+
     /// Runs `action` (deferred, once) the next time the older-history row
     /// is painted inside the viewport, replacing an earlier one.
     pub(crate) fn when_history_visible(&self, action: impl FnOnce(&mut App) + 'static) {
@@ -154,6 +169,21 @@ impl Paging {
     /// Drops the action [`Self::when_history_visible`] set.
     pub(crate) fn forget_history_visible(&self) {
         self.0.on_history_visible.replace(None);
+    }
+
+    /// Runs `action` (deferred, once) the next time one of `keys` is
+    /// painted inside the viewport, replacing an earlier one.
+    pub(crate) fn when_any_visible(
+        &self,
+        keys: HashSet<RowKey>,
+        action: impl FnOnce(&mut App) + 'static,
+    ) {
+        self.0.on_rows_visible.replace(Some((keys, Box::new(action))));
+    }
+
+    /// Drops the action [`Self::when_any_visible`] set.
+    pub(crate) fn forget_any_visible(&self) {
+        self.0.on_rows_visible.replace(None);
     }
 
     /// An empty element that covers the list's viewport. Place it before the
@@ -190,6 +220,14 @@ impl Paging {
                 {
                     // Paint must not change state; the action runs after
                     // this frame.
+                    cx.defer(action);
+                }
+                let watched = paint
+                    .on_rows_visible
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(keys, _)| keys.contains(&painted_key));
+                if watched && let Some((_, action)) = paint.on_rows_visible.borrow_mut().take() {
                     cx.defer(action);
                 }
                 paint.rows.borrow_mut().push((painted_key, bounds));

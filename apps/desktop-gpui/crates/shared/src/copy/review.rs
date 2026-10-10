@@ -82,10 +82,8 @@ texts! {
     SPLIT = "Split", "并排", "並排";
     /// The rest of a long file's diff, past the lines shown at first.
     SHOW_ALL = "Show all", "显示全部", "顯示全部";
-    /// The panel in the conversation's place, and back: Desktop's words for
-    /// a Workbar tool taking the window (`focusPreview`, `restorePreview`
-    /// of its file and web previews).
-    FOCUS_PANEL = "Focus changes", "聚焦变更", "聚焦變更";
+    /// The workbar back beside the conversation from filling the plate:
+    /// Desktop's `restorePreview` of its file and web previews.
     RESTORE_SPLIT = "Restore split view", "还原分栏", "還原分欄";
     /// The list of changed files, by its accessible name.
     FILES = "Changed files", "变更文件", "變更檔案";
@@ -125,6 +123,33 @@ texts! {
     /// The context strip over the composer: the button that opens the
     /// changes panel, by its accessible name.
     OPEN_CHANGES = "Open changes", "打开改动", "打開改動";
+    /// The scopes list's group of the task's turns that edited files, each
+    /// a scope of its own.
+    EDITS_BY_TURN = "Edits by turn", "各轮编辑", "各輪編輯";
+    /// A turn scope's line under its prompt: how many files it changed.
+    TURN_FILES_ONE = "{count} file", "{count} 个文件", "{count} 個檔案";
+    TURN_FILES_OTHER = "{count} files", "{count} 个文件", "{count} 個檔案";
+    /// A turn whose opening message has no text, in its scope's row.
+    UNTITLED_TURN = "Untitled turn", "未命名的一轮", "未命名的一輪";
+    /// Under the turns while the task's earlier history is read, so that
+    /// every turn is listed; a spinner goes with it.
+    READING_EARLIER_TURNS = "Reading earlier turns", "正在读取更早的轮次", "正在讀取更早的輪次";
+    /// A turn's file whose net change could not be worked out, so its
+    /// edits show one after another: the mark in its diff's header, and
+    /// with more than one edit, which one this is.
+    STEPWISE = "Step by step", "按步骤显示", "按步驟顯示";
+    STEP_OF = "Step {step} of {total}", "第 {step}/{total} 步", "第 {step}/{total} 步";
+    /// The fold chevron of the diff's sticky header, by its accessible
+    /// name: the file it folds or unfolds.
+    FOLD_FILE = "Collapse {name}", "折叠 {name}", "摺疊 {name}";
+    UNFOLD_FILE = "Expand {name}", "展开 {name}", "展開 {name}";
+}
+
+/// The sticky header's fold chevron, by its accessible name: folds the
+/// file at `name`, or unfolds it while `folded`.
+pub fn fold_file(locale: Locale, name: &str, folded: bool) -> String {
+    let text = if folded { UNFOLD_FILE } else { FOLD_FILE };
+    text.fill(locale, &[("name", name)])
 }
 
 /// `count` in the template `one` or `other` asks for.
@@ -155,6 +180,21 @@ pub fn added_lines(locale: Locale, count: usize) -> String {
 /// Desktop's `deletedLines`.
 pub fn deleted_lines(locale: Locale, count: usize) -> String {
     counted(locale, count, DELETED_LINES_ONE, DELETED_LINES_OTHER)
+}
+
+/// How many files a turn changed, in its scope's row.
+pub fn turn_files(locale: Locale, count: usize) -> String {
+    counted(locale, count, TURN_FILES_ONE, TURN_FILES_OTHER)
+}
+
+/// The mark in the header of one of a file's edits shown one after
+/// another: which one it is when there are several.
+pub fn step_mark(locale: Locale, step: usize, total: usize) -> String {
+    if total > 1 {
+        STEP_OF.fill(locale, &[("step", &step.to_string()), ("total", &total.to_string())])
+    } else {
+        STEPWISE.in_locale(locale).to_owned()
+    }
 }
 
 /// A commit's line under its subject: its short hash, its author and when

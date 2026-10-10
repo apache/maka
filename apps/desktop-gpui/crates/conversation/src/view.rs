@@ -18,17 +18,22 @@
  */
 
 //! The conversation pane: the selected session's transcript as a
-//! virtualized list, with its empty, loading, and failure states, and its
-//! keyboard scrolling.
+//! virtualized list, with its empty, loading, and failure states, its
+//! keyboard scrolling, and its find bar ([`find`]).
+
+mod find;
+mod landing;
+mod text_views;
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gpui_kit::base::{TextView, TextViewStyle};
+use gpui_kit::base::{TextSelection, TextView, TextViewState, TextViewStyle};
 use gpui_kit::component::bubble::{Bubble, BubbleContent, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants as _};
 use gpui_kit::component::diff::{Diff, DiffFile, DiffHunkSeparator, DiffState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::message::MessageAlignment;
 use gpui_kit::component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_kit::component::scroll::{ScrollableMask, Scrollbar};
@@ -39,22 +44,24 @@ use gpui_kit::component::{
     h_flex, v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Axis, ClipboardItem, Context, ElementId, Entity, FocusHandle,
-    Focusable, FontWeight, HighlightStyle, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
-    ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Task,
-    TestSupportExt as _, Transformation, WeakEntity, Window, div, percentage,
+    AnyElement, App, AppContext as _, Axis, ClipboardItem, Context, ElementId, Entity,
+    EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle, Hsla,
+    InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _, Pixels, Render, Role,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    Subscription, Task, TestSupportExt as _, Transformation, WeakEntity, Window, div, percentage,
     prelude::FluentBuilder as _, relative,
 };
 use host_protocol::{InteractionAnswer, PermissionDecision, ProviderRetryPhase};
+use transcript_model::edits::EditedTurns;
 use transcript_model::{ToolStatus, TurnViewStatus};
 
 use crate::composer::{attachment_chip, attachment_kind_icon};
+use crate::corpus::Field;
 use crate::paging::{PageDirection, Paging};
 use crate::rows::{
     FooterRow, GroupPlace, HistoryRow, ListEdit, PromptAnswers, PromptBody, PromptRow, Row,
-    RowBody, RowKey, RowOptions, SentAttachment, ThinkingRow, ToolDiff, ToolKind, ToolNote,
-    ToolRow, build_rows, diff, reply_text,
+    RowBody, RowKey, RowOptions, SentAttachment, SentQuote, ThinkingRow, ToolDiff, ToolKind,
+    ToolNote, ToolRow, build_rows, diff, reply_text,
 };
 use crate::state::{
     AnswerState, ConversationEvent, ConversationPhase, ConversationState, OlderHistory,
@@ -66,10 +73,29 @@ use crate::style::{
 };
 use crate::thinking_face::{self, thinking_face};
 use crate::turn_status::{self, RetryCountdown, RunningLine};
+use find::{Find, RowFind};
+use landing::Landing;
+use text_views::TextViews;
 
 /// Key context of the transcript. PageUp, PageDown, Home, and End scroll it
-/// while it, or a control in one of its rows, has focus.
+/// while it, or a control in one of its rows, has focus; while the find bar
+/// shows, ⌘G and ⇧⌘G move through its matches and Escape closes it.
 pub const TRANSCRIPT_CONTEXT: &str = "Transcript";
+
+/// What the conversation view asks its owner to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConversationViewEvent {
+    /// Open the changes panel on turn `turn_id`'s changes (or show them,
+    /// if it is open), at the file at `path` (as the turn's card names it)
+    /// when given: the card under the turn, its "View changes" and its file
+    /// rows.
+    ShowTurnChanges { turn_id: SharedString, path: Option<SharedString> },
+    /// Ask about `text`, selected in the transcript, in the task's side
+    /// chat: the transcript's context menu (Desktop's "Ask in side panel").
+    /// `turn_id` names the Turn whose replies hold the whole selection.
+    AskInSideChat { text: SharedString, turn_id: Option<SharedString> },
+}
 
 gpui_kit::actions!(
     transcript,
@@ -88,23 +114,34 @@ gpui_kit::actions!(
 /// Binds the transcript and message queue keys. Call once at startup,
 /// before building menus.
 pub fn init(cx: &mut App) {
+    crate::side_chat::SideChatLedger::init(cx);
     let context = Some(TRANSCRIPT_CONTEXT);
     cx.bind_keys([
         KeyBinding::new("pageup", ScrollPageUp, context),
         KeyBinding::new("pagedown", ScrollPageDown, context),
         KeyBinding::new("home", ScrollToTop, context),
         KeyBinding::new("end", ScrollToBottom, context),
+        // The find bar's keys, while it shows; otherwise they go on.
+        KeyBinding::new("secondary-g", search::SelectNextMatch, context),
+        KeyBinding::new("secondary-shift-g", search::SelectPreviousMatch, context),
+        KeyBinding::new("escape", search::Dismiss, context),
     ]);
+    search::init(cx);
     crate::queue::init(cx);
 }
 use shared::copy::conversation as copy;
 use shared::copy::{self as shell_copy, Locale};
 use shared::icons::MakaIcon;
+use shared::links::follow_link;
 use shared::theme::{ActiveMakaPalette as _, MakaPalette, floating_shadow, tabular_nums};
 use shared::time::{local_utc_offset, relative_time};
 
 /// How long a copy button shows that it copied.
 const REPLY_COPIED_FOR: Duration = Duration::from_secs(2);
+
+/// How many of a turn's rows before its footer count as near the place of
+/// its card: the reader is at the turn's end when one of them is in view.
+const CARD_NEAR_ROWS: usize = 8;
 
 /// One frame of the running-turn spinner: about 30 Hz, under the 60 Hz
 /// spinner limit in `AGENTS.md`. It rotates once a second.
@@ -168,11 +205,22 @@ const TOP_FADE_SOLID: f32 = 6.;
 /// visible row is scrolled back to where it was. Once the first message is
 /// reached the row says so.
 ///
+/// A settled turn larger than the tail shows without its start, and with
+/// no card: the card counts a whole turn or nothing. When the turn's end
+/// (its footer, or one of the [`CARD_NEAR_ROWS`] rows before it) is in
+/// view, the state reads older history in the background until the turn's
+/// start is held ([`ConversationState::read_turn_start`]); the rows go
+/// above in the same way, and the card appears once the owner has worked
+/// out the whole turn's edits.
+///
 /// Keyboard: the transcript region is one Tab stop with a visible focus ring
 /// while keyboard focus is on it; PageUp, PageDown, Home, and End scroll it
 /// ([`TRANSCRIPT_CONTEXT`]). Every control in a row is a `Button` (a Tab
 /// stop; Enter and Space activate it). No key answers a prompt except
-/// activating its buttons; Escape in particular does nothing here.
+/// activating its buttons; Escape only closes the find bar.
+///
+/// Find ([`Self::open_find`]): the view is the find bar's
+/// [`search::Searchable`] item; see [`find`].
 pub struct ConversationView {
     state: Entity<ConversationState>,
     scroller: Entity<MessageScrollerState>,
@@ -205,9 +253,19 @@ pub struct ConversationView {
     copied: Option<String>,
     /// What the running turn's clock reads.
     wall_clock: WallClock,
+    /// The find bar and its matches.
+    find: Find,
+    /// A passage of a search waiting for its message to be held
+    /// ([`Self::open_at_passage`]).
+    landing: Option<Landing>,
+    /// The text view state of each reply row the list lays out.
+    text_views: TextViews,
     /// The live running turn's scheduled provider retry, counted down from
     /// when this view first saw it.
     retry_countdown: Option<RetryCountdown>,
+    /// Whether right-clicking the transcript offers "Ask in side chat":
+    /// the task's conversation does, a side chat's own does not.
+    side_chat_menu: bool,
     _copied: Option<Task<()>>,
     _spinner: Option<Task<()>>,
     /// Redraws the live running turn's status line as its clock reaches
@@ -215,6 +273,8 @@ pub struct ConversationView {
     _clock: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<ConversationViewEvent> for ConversationView {}
 
 impl std::fmt::Debug for ConversationView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -227,13 +287,15 @@ impl ConversationView {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         let subscriptions = vec![
             cx.subscribe(&state, |this, _, event: &ConversationEvent, cx| {
-                let ConversationEvent::Changed { session_changed } = event;
+                let ConversationEvent::Changed { session_changed, changes } = event;
                 this.sync_rows(*session_changed, cx);
+                this.note_find_changes(*session_changed, changes, cx);
             }),
             // The rows carry prompt outcomes and grants in words; rebuild
             // them in the new language and measure every row again.
             cx.observe_global::<Locale>(|this, cx| {
                 this.sync_rows(false, cx);
+                this.note_find_locale(cx);
                 let count = this.rows.len();
                 this.scroller.update(cx, |scroller, cx| {
                     scroller.remeasure_items(0..count, cx);
@@ -254,7 +316,11 @@ impl ConversationView {
             utc_offset: 0,
             copied: None,
             wall_clock: Rc::new(system_time_ms),
+            find: Find::default(),
+            landing: None,
+            text_views: TextViews::default(),
             retry_countdown: None,
+            side_chat_menu: false,
             _copied: None,
             _spinner: None,
             _clock: None,
@@ -282,6 +348,30 @@ impl ConversationView {
     #[cfg(test)]
     pub(crate) fn detail_scroll(&self, expansion_key: &str) -> Option<ScrollHandle> {
         self.detail_scrolls.get(expansion_key).cloned()
+    }
+
+    /// The text view states of the reply rows laid out.
+    #[cfg(test)]
+    pub(crate) fn text_views(&self) -> &TextViews {
+        &self.text_views
+    }
+
+    /// How many items the find keeps the text of.
+    #[cfg(test)]
+    pub(crate) fn find_kept_items(&self) -> usize {
+        self.find.index.len()
+    }
+
+    /// The row a reveal waits in.
+    #[cfg(test)]
+    pub(crate) fn pending_reveal(&self) -> Option<RowKey> {
+        self.find.reveal.row()
+    }
+
+    /// The matches row `key` paints.
+    #[cfg(test)]
+    pub(crate) fn find_marks(&self, key: &RowKey) -> Vec<find::Mark> {
+        self.find.marks.of(key).map(|marks| marks.to_vec()).unwrap_or_default()
     }
 
     /// Reads the running turn's clock from `clock` instead of the system
@@ -321,9 +411,13 @@ impl ConversationView {
     /// where it was on screen.
     fn sync_rows(&mut self, session_changed: bool, cx: &mut Context<Self>) {
         if session_changed {
-            self.options = RowOptions::default();
+            // What the turns edited names its session; it stays until the
+            // owner hands over the next one.
+            let edited = self.options.edited.clone();
+            self.options = RowOptions { edited, ..RowOptions::default() };
             self.detail_scrolls.clear();
             self.card_diffs.clear();
+            self.text_views.clear();
             self.rows.clear();
         }
         self.options.locale = Locale::current(cx);
@@ -385,6 +479,15 @@ impl ConversationView {
         } else {
             self.paging.forget_history_visible();
         }
+        match self.cut_turn_end(cx) {
+            Some(keys) => {
+                let view = cx.weak_entity();
+                self.paging.when_any_visible(keys, move |cx| {
+                    view.update(cx, |view, cx| view.read_turn_start(cx)).ok();
+                });
+            }
+            None => self.paging.forget_any_visible(),
+        }
         self.update_spinner(cx);
         self.note_retry(cx);
         self.update_clock(cx);
@@ -418,6 +521,41 @@ impl ConversationView {
     /// Reads the previous page of older history, when there is one.
     fn load_older(&mut self, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| state.load_older_history(cx));
+    }
+
+    /// Asks the state for the start of the turn the tail cut.
+    fn read_turn_start(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.read_turn_start(cx));
+    }
+
+    /// The rows at the place of the card under the newest settled turn
+    /// whose start the transcript does not hold: its footer and the
+    /// [`CARD_NEAR_ROWS`] rows of the turn before it. `None` when no
+    /// settled turn waits for its start.
+    fn cut_turn_end(&self, cx: &App) -> Option<HashSet<RowKey>> {
+        let transcript = self.state.read(cx).transcript()?;
+        let turn =
+            transcript.turns().iter().rev().find(|turn| {
+                turn.status.is_terminal() && !transcript.has_turn_start(&turn.turn_id)
+            })?;
+        let of_turn = |key: &RowKey| match key {
+            RowKey::Item { turn_id, .. }
+            | RowKey::Edits { turn_id }
+            | RowKey::Footer { turn_id } => *turn_id == turn.turn_id,
+            RowKey::History => false,
+        };
+        let footer = self.rows.iter().position(
+            |row| matches!(&row.key, RowKey::Footer { turn_id } if *turn_id == turn.turn_id),
+        )?;
+        let from = footer.saturating_sub(CARD_NEAR_ROWS);
+        Some(
+            self.rows[from..=footer]
+                .iter()
+                .map(|row| &row.key)
+                .filter(|key| of_turn(key))
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Runs the spinner clock while a turn, a Tool call or a reasoning
@@ -548,6 +686,81 @@ impl ConversationView {
             .ok();
         }));
         cx.notify();
+    }
+
+    /// What each settled turn of the session edited, as the owner worked it
+    /// out: the card under each turn lists it.
+    pub fn set_edited_turns(&mut self, edited: EditedTurns, cx: &mut Context<Self>) {
+        if *self.options.edited == edited {
+            return;
+        }
+        self.options.edited = std::sync::Arc::new(edited);
+        self.sync_rows(false, cx);
+    }
+
+    /// Asks the owner to show turn `turn_id`'s changes, at `path` when
+    /// given.
+    pub(crate) fn show_turn_changes(
+        &mut self,
+        turn_id: &SharedString,
+        path: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(ConversationViewEvent::ShowTurnChanges { turn_id: turn_id.clone(), path });
+    }
+
+    /// Shows every file of a turn's card, or only its first ones again.
+    pub(crate) fn toggle_edits(&mut self, expansion_key: &str, cx: &mut Context<Self>) {
+        if !self.options.expanded.remove(expansion_key) {
+            self.options.expanded.insert(expansion_key.to_owned());
+        }
+        self.sync_rows(false, cx);
+    }
+
+    /// Offers "Ask in side chat" when the transcript is right-clicked.
+    pub fn set_side_chat_menu(&mut self, on: bool) {
+        self.side_chat_menu = on;
+    }
+
+    /// Whether a reply row of this transcript holds selected text.
+    pub fn holds_selection(&self, cx: &App) -> bool {
+        !self.text_views.selected(cx).is_empty()
+    }
+
+    /// The Turn whose replies hold the whole of `selected`, the window's
+    /// text selection: a quote's `sourceTurnId`. The kit tells which of the
+    /// reply rows laid out hold selected text; `None` when they belong to
+    /// more than one Turn, or the selection takes in text besides theirs (a
+    /// user message, a Tool card, text outside the transcript).
+    pub fn selection_turn(&self, selected: &str, cx: &App) -> Option<SharedString> {
+        let parts = self.text_views.selected(cx);
+        let turn = parts.first()?.0.turn_id()?.to_owned();
+        if parts.iter().any(|(key, _)| key.turn_id() != Some(turn.as_str())) {
+            return None;
+        }
+        let ink = |text: &str| text.chars().filter(|ch| !ch.is_whitespace()).count();
+        let held: usize = parts.iter().map(|(_, text)| ink(text)).sum();
+        (held > 0 && held == ink(selected)).then(|| turn.into())
+    }
+
+    /// Opens a quote's chip on a sent message to its whole excerpt, or
+    /// closes it again.
+    pub(crate) fn toggle_quote(&mut self, expansion_key: &str, cx: &mut Context<Self>) {
+        if !self.options.expanded.remove(expansion_key) {
+            self.options.expanded.insert(expansion_key.to_owned());
+        }
+        self.sync_rows(false, cx);
+    }
+
+    /// A side chat's fork: hides Turn `turn_id` and the Turns before it,
+    /// the copy of its task's conversation the fork runs on, and the
+    /// history before them (`None` for an empty fork, which hides nothing).
+    pub fn set_hidden_through(&mut self, turn_id: Option<String>, cx: &mut Context<Self>) {
+        if self.options.hidden_through == turn_id {
+            return;
+        }
+        self.options.hidden_through = turn_id;
+        self.sync_rows(false, cx);
     }
 
     /// Expands or collapses a Tool card or a reasoning row.
@@ -854,7 +1067,7 @@ impl ConversationView {
         .with_row_style(StyleRefinement::default().pb_0().px(dp(COLUMN_GUTTER)))
         .with_bottom_fade(cx.maka().plate)
         .size_full();
-        div()
+        let region = div()
             .id("conversation-transcript")
             .test_support()
             .track_focus(&self.focus)
@@ -863,6 +1076,9 @@ impl ConversationView {
             .on_action(cx.listener(Self::scroll_page_down))
             .on_action(cx.listener(Self::scroll_to_top))
             .on_action(cx.listener(Self::scroll_to_bottom))
+            .on_action(cx.listener(Self::select_next_match))
+            .on_action(cx.listener(Self::select_previous_match))
+            .on_action(cx.listener(Self::dismiss_find))
             .aria_label(copy::TRANSCRIPT.get(cx))
             .relative()
             .flex_1()
@@ -875,6 +1091,7 @@ impl ConversationView {
             .border_color(cx.maka().plate)
             .when(focus_visible, |this| this.focus_ring_style(window, cx))
             .child(self.paging.viewport_probe())
+            .child(self.text_views.frame_probe())
             .child(list)
             // A 12pt fade at the top, so text scrolling under the header is
             // not cut mid-glyph: the first 6pt are the plate, hiding the clip
@@ -888,6 +1105,38 @@ impl ConversationView {
                     gpui_kit::linear_color_stop(cx.maka().plate.opacity(0.), 1.),
                 ),
             ))
+            .children(self.render_find_bar());
+        if !self.side_chat_menu {
+            return region.into_any_element();
+        }
+        // Right-clicking keeps the selection (the kit selects with the left
+        // button only); the menu reads it as it opens.
+        let view = cx.weak_entity();
+        region
+            .context_menu(move |menu, window, cx| {
+                let text: SharedString = TextSelection::selected_text(window, cx).into();
+                let (held, turn_id) = view
+                    .upgrade()
+                    .map(|view| {
+                        let view = view.read(cx);
+                        (view.holds_selection(cx), view.selection_turn(&text, cx))
+                    })
+                    .unwrap_or_default();
+                let view = view.clone();
+                // Only a selection in this transcript's replies is asked about.
+                let empty = text.trim().is_empty() || !held;
+                menu.item(
+                    PopupMenuItem::new(shared::copy::side_chat::ASK_IN_SIDE_CHAT.get(cx))
+                        .disabled(empty)
+                        .on_click(move |_, _, cx| {
+                            let (text, turn_id) = (text.clone(), turn_id.clone());
+                            view.update(cx, |_, cx| {
+                                cx.emit(ConversationViewEvent::AskInSideChat { text, turn_id })
+                            })
+                            .ok();
+                        }),
+                )
+            })
             .into_any_element()
     }
 }
@@ -974,9 +1223,11 @@ fn render_row(
         copied,
         wall_clock,
         countdown,
+        (marks, marks_revision, reveal, text_views),
     ) = {
         let this = this.read(cx);
         let row = this.rows.get(ix).cloned();
+        let marks = row.as_ref().and_then(|row| this.find.marks.of(&row.key));
         let (detail_scroll, card_diff) = match row.as_ref().map(|row| &row.body) {
             Some(RowBody::Tool(tool)) => (
                 this.detail_scrolls.get(&tool.expansion_key).cloned(),
@@ -995,6 +1246,7 @@ fn render_row(
             this.copied.clone(),
             this.wall_clock.clone(),
             this.retry_countdown.clone(),
+            (marks, this.find.marks.revision(), this.find.reveal.clone(), this.text_views.clone()),
         )
     };
     let Some(row) = row else {
@@ -1002,6 +1254,7 @@ fn render_row(
     };
     let id = row.key.element_id();
     let probe = paging.row_probe(row.key.clone());
+    let find = RowFind::new(row.key.clone(), view, marks, reveal, cx);
     // Rows of one Tool group touch: the group is one container. A user
     // message stands 24 px off the reply that follows it; the items of one
     // turn sit 12 px apart.
@@ -1012,17 +1265,37 @@ fn render_row(
     };
     let content = match row.body {
         RowBody::History(history) => render_history(history, view.clone(), window, cx),
-        RowBody::User { text, attachments } => render_user(text, attachments, window, cx),
+        RowBody::User { text, attachments, quotes } => {
+            render_user(&row.key, text, attachments, quotes, &find, view.clone(), window, cx)
+        }
         RowBody::Thinking(thinking) => {
-            render_thinking(thinking, face_secs, view.clone(), window, cx)
+            render_thinking(thinking, face_secs, view.clone(), &find, window, cx)
         }
         RowBody::Text { text, interrupted, .. } => {
-            render_text(id.clone(), text, interrupted, window, cx)
+            // The reply's text view, reached here so that the find bar's
+            // matches paint in it and one can be revealed.
+            let state = text_views.state(&row.key, &text, cx);
+            let marks = find.marks.as_deref();
+            text_views.paint_marks(&row.key, marks, marks_revision, find.fills, cx);
+            if let Some(range) = find.reveal.pending(&row.key, Field::Body, find.now)
+                && text_views.reveal(&row.key, range, cx)
+            {
+                find.reveal.clear();
+            }
+            render_text(id.clone(), text, interrupted, Some(state), window, cx)
         }
-        RowBody::Tool(tool) => {
-            render_tool(tool, detail_scroll, card_diff, spinner_turns, view.clone(), window, cx)
-        }
+        RowBody::Tool(tool) => render_tool(
+            tool,
+            detail_scroll,
+            card_diff,
+            spinner_turns,
+            view.clone(),
+            &find,
+            window,
+            cx,
+        ),
         RowBody::Prompt(prompt) => render_prompt(prompt, view.clone(), cx),
+        RowBody::Edits(edits) => crate::edits_card::render_edits(edits, view.clone(), window, cx),
         RowBody::Footer(footer) => {
             let turn_id = match &row.key {
                 RowKey::Footer { turn_id } => turn_id.as_str(),
@@ -1134,12 +1407,34 @@ fn running_icon(color: Hsla, size: f32, window: &Window) -> AnyElement {
 /// request this client does not make. A message of files alone has no
 /// bubble, as in Maka Desktop.
 fn render_user(
+    key: &RowKey,
     text: SharedString,
     attachments: Vec<SentAttachment>,
+    quotes: Vec<SentQuote>,
+    find: &RowFind,
+    view: WeakEntity<ConversationView>,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
     let maka = cx.maka();
+    // The quotes it carries, compactly, above its files: one line each,
+    // opening to the whole excerpt (Desktop's chips on the bubble).
+    let quoted = (!quotes.is_empty()).then(|| {
+        v_flex()
+            .id(shared::domain_element_id("sent-quotes", &format!("{key:?}")))
+            .test_support()
+            .w_full()
+            .items_end()
+            .gap(dp(6.))
+            .children(quotes.iter().map(|quote| {
+                div().max_w(relative(0.7)).min_w_0().child(crate::quotes::sent_quote_chip(
+                    quote,
+                    view.clone(),
+                    window,
+                    cx,
+                ))
+            }))
+    });
     let chips = (!attachments.is_empty()).then(|| {
         h_flex().w_full().justify_end().flex_wrap().gap(dp(6.)).children(
             attachments.into_iter().map(|attachment| {
@@ -1150,6 +1445,7 @@ fn render_user(
         )
     });
     let bubble = (!text.trim().is_empty()).then(|| {
+        let (text, probe) = find.text(Field::Body, text, None);
         Bubble::new()
             .alignment(MessageAlignment::End)
             .with_variant(BubbleVariant::Muted)
@@ -1166,8 +1462,16 @@ fn render_user(
                     .text_color(maka.ink),
             )
             .child(text)
+            .children(probe)
     });
-    v_flex().w_full().pt(dp(16.)).gap(dp(6.)).children(chips).children(bubble).into_any_element()
+    v_flex()
+        .w_full()
+        .pt(dp(16.))
+        .gap(dp(6.))
+        .children(quoted)
+        .children(chips)
+        .children(bubble)
+        .into_any_element()
 }
 
 /// Markdown in a reply (spec §7): headings 18, 16 and 14 (levels 1, 2,
@@ -1255,14 +1559,17 @@ pub fn assistant_text(
     window: &Window,
     cx: &App,
 ) -> AnyElement {
-    render_text(id.into(), text.into(), false, window, cx)
+    render_text(id.into(), text.into(), false, None, window, cx)
 }
 
-/// Assistant text: plain markdown on the plate, no bubble, body 14/22.
+/// Assistant text: plain markdown on the plate, no bubble, body 14/22. In
+/// the transcript the view's state is the row's (`state`, see
+/// [`TextViews`]); elsewhere it is the element's own.
 fn render_text(
     id: ElementId,
     text: SharedString,
     interrupted: bool,
+    state: Option<Entity<TextViewState>>,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
@@ -1270,10 +1577,14 @@ fn render_text(
         .w_full()
         .gap_1()
         .when(!text.is_empty(), |this| {
+            let view = match &state {
+                Some(state) => TextView::new(state),
+                None => TextView::markdown(id, text),
+            };
             this.child(
-                TextView::markdown(id, text)
-                    .style(message_text_style(window, cx))
+                view.style(message_text_style(window, cx))
                     .selectable(true)
+                    .on_link_click(|href, event, _, cx| follow_link(href, event, cx))
                     .w_full()
                     .text_size(dp(BODY_SIZE))
                     .line_height(relative(BODY_LINE_HEIGHT))
@@ -1305,6 +1616,7 @@ fn render_thinking(
     row: ThinkingRow,
     face_secs: f32,
     view: WeakEntity<ConversationView>,
+    find: &RowFind,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
@@ -1381,6 +1693,7 @@ fn render_thinking(
         .w_full()
         .child(header)
         .when_some(row.text.clone(), |this, text| {
+            let (shown, probe) = find.text(Field::Body, text.clone(), None);
             this.child(
                 v_flex()
                     .id("thinking-text")
@@ -1394,7 +1707,8 @@ fn render_thinking(
                     .text_size(dp(BODY_SIZE))
                     .line_height(dp(20.))
                     .text_color(maka.ink_muted)
-                    .child(text)
+                    .child(shown)
+                    .children(probe)
                     .when(row.truncated, |this| {
                         this.child(
                             div()
@@ -1467,12 +1781,14 @@ fn tool_icon(kind: ToolKind) -> MakaIcon {
 /// output (or, before there is one, the input) sits below on the code tone,
 /// inset 38 px so it starts under the name; past 256 px of text it scrolls
 /// (see [`tool_detail`]).
+#[allow(clippy::too_many_arguments)]
 fn render_tool(
     tool: ToolRow,
     detail_scroll: Option<ScrollHandle>,
     card_diff: Option<Entity<DiffState>>,
     spinner_turns: f32,
     view: WeakEntity<ConversationView>,
+    find: &RowFind,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
@@ -1491,6 +1807,12 @@ fn render_tool(
         status = status.transform(Transformation::rotate(percentage(spinner_turns)));
     }
     let chevron = if tool.expanded { MakaIcon::ChevronDown } else { MakaIcon::ChevronRight };
+    let (name, name_probe) = find.text(Field::ToolName, tool.name.clone(), None);
+    let summary = tool.summary.clone().map(|summary| find.line(Field::ToolSummary, summary));
+    let (summary, summary_probe) = match summary {
+        Some((summary, probe)) => (Some(summary), probe),
+        None => (None, None),
+    };
     let header = Button::new("tool-toggle")
         .ghost()
         .w_full()
@@ -1527,7 +1849,8 @@ fn render_tool(
                         .text_size(dp(LABEL_SIZE))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(maka.ink)
-                        .child(tool.name.clone()),
+                        .child(name)
+                        .children(name_probe),
                 )
                 .child(
                     h_flex()
@@ -1541,7 +1864,8 @@ fn render_tool(
                                 .min_w_0()
                                 .truncate()
                                 .text_color(maka.ink_muted)
-                                .children(tool.summary.clone()),
+                                .children(summary)
+                                .children(summary_probe),
                         )
                         .when(tool.added > 0, |this| {
                             this.child(
@@ -1602,7 +1926,8 @@ fn render_tool(
         .when(!first, |this| this.child(div().w_full().h_px().bg(maka.border_soft)))
         .child(header)
         .when(tool.expanded, |this| {
-            this.child(tool_detail(&tool, detail_scroll.unwrap_or_default(), card_diff, window, cx))
+            let scroll = detail_scroll.unwrap_or_default();
+            this.child(tool_detail(&tool, scroll, card_diff, find, window, cx))
         })
         .into_any_element()
 }
@@ -1626,6 +1951,7 @@ fn tool_detail(
     tool: &ToolRow,
     scroll: ScrollHandle,
     card_diff: Option<Entity<DiffState>>,
+    find: &RowFind,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
@@ -1633,32 +1959,36 @@ fn tool_detail(
     let diff = tool.diff.as_ref().zip(card_diff);
     let body = match (diff, tool.output.clone().or_else(|| tool.input.clone())) {
         (Some((diff, state)), _) => diff_block(diff, state, &scroll, window, cx),
-        (None, Some(text)) => div()
-            .relative()
-            .w_full()
-            .child(
-                div()
-                    .id("tool-output")
-                    .test_support()
-                    .w_full()
-                    .max_h(dp(TOOL_OUTPUT_MAX_TEXT + 20.))
-                    .overflow_y_scroll()
-                    // A sideways swipe never scrolls the block down.
-                    .restrict_scroll_to_axis()
-                    .track_scroll(&scroll)
-                    .rounded(dp(RADIUS_SURFACE))
-                    .bg(maka.code)
-                    .px(dp(12.))
-                    .py(dp(10.))
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_size(dp(CODE_COMPACT_SIZE))
-                    .line_height(dp(CODE_LINE))
-                    .text_color(maka.ink)
-                    .child(text),
-            )
-            .child(ScrollableMask::new(Axis::Vertical, &scroll))
-            .child(Scrollbar::vertical(&scroll))
-            .into_any_element(),
+        (None, Some(text)) => {
+            let (text, probe) = find.text(Field::ToolDetail, text, Some(scroll.clone()));
+            div()
+                .relative()
+                .w_full()
+                .child(
+                    div()
+                        .id("tool-output")
+                        .test_support()
+                        .w_full()
+                        .max_h(dp(TOOL_OUTPUT_MAX_TEXT + 20.))
+                        .overflow_y_scroll()
+                        // A sideways swipe never scrolls the block down.
+                        .restrict_scroll_to_axis()
+                        .track_scroll(&scroll)
+                        .rounded(dp(RADIUS_SURFACE))
+                        .bg(maka.code)
+                        .px(dp(12.))
+                        .py(dp(10.))
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_size(dp(CODE_COMPACT_SIZE))
+                        .line_height(dp(CODE_LINE))
+                        .text_color(maka.ink)
+                        .child(text)
+                        .children(probe),
+                )
+                .child(ScrollableMask::new(Axis::Vertical, &scroll))
+                .child(Scrollbar::vertical(&scroll))
+                .into_any_element()
+        }
         (None, None) => div()
             .id("tool-note")
             .test_support()
@@ -1683,8 +2013,9 @@ fn tool_detail(
 
 /// A Write or Edit's diff in the kit's [`Diff`]: readonly, unified, line
 /// numbers, added and removed lines in the theme's `success` and `danger`
-/// tints, no syntax colour, and long lines scrolling sideways as Desktop's
-/// preview does (`white-space: pre`). The card's header already names the
+/// tints, the code in the palette's syntax colours by the file's extension,
+/// and long lines scrolling sideways as Desktop's preview does
+/// (`white-space: pre`). The card's header already names the
 /// call and its counts, so the Diff draws no file header, and a thin rule
 /// stands between hunks where Desktop draws nothing.
 ///
@@ -1737,7 +2068,6 @@ fn diff_block(
                         .child(
                             Diff::new(&state)
                                 .header_visible(false)
-                                .syntax_highlight(false)
                                 .hunk_separator(DiffHunkSeparator::Simple)
                                 .w_full()
                                 .h(height)
@@ -1880,7 +2210,11 @@ fn decision_buttons(
             },
         )
     };
+    // At a narrow width (a side chat in the workbar, 340 pt at its
+    // narrowest) the waiting words go under the buttons rather than past
+    // the card's edge.
     h_flex()
+        .flex_wrap()
         .gap_2()
         .child(button("allow", copy::ALLOW.in_locale(locale), allow))
         .child(button("deny", copy::DENY.in_locale(locale), deny))

@@ -510,7 +510,7 @@ fn a_sent_message_shows_its_files_above_the_bubble(cx: &mut TestAppContext) {
     });
     assert!(text.bottom() - chip.bottom() >= px(40.), "the bubble sits under the chips");
     assert!(
-        matches!(&harness.rows(cx)[0], RowBody::User { text, attachments }
+        matches!(&harness.rows(cx)[0], RowBody::User { text, attachments, .. }
             if text.as_ref() == "Quote the file." && attachments.len() == 2 && attachments[1].image),
         "{:?}",
         harness.rows(cx)

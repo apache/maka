@@ -23,13 +23,17 @@ members = [
   "crates/bots",
   "crates/conversation",
   "crates/extensions",
+  "crates/files",
   "crates/host-client",
   "crates/host-protocol",
+  "crates/inspector",
   "crates/pet",
   "crates/review",
+  "crates/search",
   "crates/session",
   "crates/settings",
   "crates/shared",
+  "crates/terminal",
   "crates/transcript-model",
   "crates/workspace",
 ]
@@ -50,15 +54,48 @@ workspace = { path = "crates/workspace" }
 session = { path = "crates/session" }
 conversation = { path = "crates/conversation" }
 extensions = { path = "crates/extensions" }
+files = { path = "crates/files" }
+inspector = { path = "crates/inspector" }
 automations = { path = "crates/automations" }
 pet = { path = "crates/pet" }
 review = { path = "crates/review" }
+search = { path = "crates/search" }
 settings = { path = "crates/settings" }
+terminal = { path = "crates/terminal" }
 bots = { path = "crates/bots" }
 
 # Pinned to git main for the Diff component; back to the crates.io release when it ships (expected 2026-10-12).
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "1e41f17e27ea46589af9c6c428d18b5bf23ef4f6" }
+#
+# Syntax colours: the kit's highlighter colours nothing without its
+# `tree-sitter` feature (which brings JSON) and a grammar per language. The
+# grammars are a curated set, the languages a coding agent's transcript,
+# diffs and files mostly hold, not the kit's whole `tree-sitter-languages`
+# list: each grammar is a C parser compiled into the binary.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "1e41f17e27ea46589af9c6c428d18b5bf23ef4f6", features = [
+  "tree-sitter",
+  "tree-sitter-bash",
+  "tree-sitter-c",
+  "tree-sitter-cpp",
+  "tree-sitter-css",
+  "tree-sitter-diff",
+  "tree-sitter-go",
+  "tree-sitter-html",
+  "tree-sitter-java",
+  "tree-sitter-javascript",
+  "tree-sitter-markdown",
+  "tree-sitter-python",
+  "tree-sitter-rust",
+  "tree-sitter-sql",
+  "tree-sitter-toml",
+  "tree-sitter-tsx",
+  "tree-sitter-typescript",
+  "tree-sitter-yaml",
+] }
 
+# The terminal emulator a terminal's Host output is parsed into (the
+# terminal crate): its grid, modes and vte parser only; the Host owns the
+# PTY, so its tty and event loop stay unused.
+alacritty_terminal = "0.26"
 anyhow = "1"
 async-channel = "2"
 async-fs = "2"
@@ -80,17 +117,31 @@ futures-lite = "2"
 # builds; no aws-lc.
 futures-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 getrandom = "0.4"
+# Unicode NFC, as the Host folds what recall matches (`foldForMatch`): the
+# Search page highlights matched terms by the same rule. Already in the
+# graph through url's IDNA, with its compiled data.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Only the codecs attachments decode and encode (the conversation crate).
 # GPUI already depends on this version with more of them.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
 log = "0.4"
+# The Markdown parser gpui-kit's text view uses (same version, already in
+# the graph): the find bar reads a reply's visible text with the same parse.
+markdown = { version = "1.0.0", default-features = false }
 # QR codes for the chat bots' guided setup (the settings crate draws them);
 # the module matrix only, no image or SVG renderer.
 qrcode = { version = "0.14", default-features = false }
+# The web address pattern a terminal's links are found by (the terminal
+# crate). Already in the graph through GPUI and gpui-kit.
+regex = "1.13"
 rustls-platform-verifier = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+# Line diffs of a turn's file before and after it (the review crate's turn
+# changes): the comparison only, no text helpers. Already in the graph
+# through gpui-kit's Diff component.
+similar = { version = "2.7", default-features = false }
 # The system's preferred languages, for the Follow system interface language.
 sys-locale = "0.3"
 thiserror = "2"

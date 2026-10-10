@@ -34,6 +34,7 @@ use conversation::{
 };
 use extensions::{ExtensionsContext, ExtensionsView};
 use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::base::TextSelection;
 use gpui_kit::base::animation::{EffectTransition, ease_in_out_cubic};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::clipboard::Clipboard;
@@ -49,6 +50,7 @@ use gpui_kit::{
     Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     TestSupportExt as _, Window, div, prelude::FluentBuilder as _, px, rems,
 };
+use search::{SearchPageEvent, SearchView, TaskEntry};
 use session::{
     Place, SessionCatalog, SessionCatalogEvent, SessionHistory, SessionSidebar, SidebarEvent,
     SidebarPage,
@@ -60,12 +62,16 @@ use settings::{
 };
 use shared::copy::commands as palette_words;
 use shared::copy::extensions as pages_copy;
+use shared::copy::search as search_copy;
 use shared::copy::settings as settings_copy;
 use shared::copy::{self, Locale};
 use shared::domain_element_id;
 use shared::hop::Hops;
-use shared::icons::MakaIcon;
-use shared::layout::{COLUMN_GUTTER_REMS, COLUMN_MAX_WIDTH_REMS, PAGE_MAX_WIDTH_REMS};
+use shared::icons::{MakaIcon, ink};
+use shared::layout::{
+    COLUMN_GUTTER_REMS, COLUMN_MAX_WIDTH_REMS, ICON_BUTTON_REMS, ICON_GLYPH_REMS,
+    PAGE_MAX_WIDTH_REMS, PLATE_LINE_REMS, ink_padding,
+};
 use shared::menu::{
     Menu, MenuEntry, MenuHeading, MenuItem, MenuPlacement, MenuSlot, menu_layer, reopens_on,
 };
@@ -73,6 +79,8 @@ use shared::theme::{
     ActiveMakaPalette as _, RADIUS_MODAL, badge, banner, banner_description, floating_shadow,
     quiet_button,
 };
+
+use terminal::Terminals;
 
 use crate::commands::palette_commands;
 use crate::empty_state::EmptyState;
@@ -84,19 +92,20 @@ use crate::sidebar_layout::{SidebarForm, SidebarLayout};
 use crate::state_root_dialog::{StateRootSetup, open_state_root_dialog, show_workbench_on};
 
 mod context_strip;
-mod review_pane;
+mod side_chats;
+mod workbar;
 
 use context_strip::ContextStrip;
-use review_pane::ReviewPane;
-pub use review_pane::{
-    NarrowReviewLargeStep, NarrowReviewStep, REVIEW_RESIZE_CONTEXT, ResetReviewWidth,
-    WidenReviewLargeStep, WidenReviewStep,
+use workbar::Workbar;
+pub use workbar::{
+    NarrowWorkbarLargeStep, NarrowWorkbarStep, ResetWorkbarWidth, WORKBAR_RESIZE_CONTEXT,
+    WidenWorkbarLargeStep, WidenWorkbarStep,
 };
 use workspace::actions::{
-    AddConnection, ArchiveTask, FlagTask, FocusComposer, GoBack, GoForward, NewSession,
-    OpenCommandPalette, OpenExtensions, OpenProjectSettings, OpenScheduledTasks, OpenSettings,
-    Reconnect, SendMessage, ShowKeyboardShortcuts, StopTurn, SwitchHost, SwitchStateRoot,
-    ToggleSidebar,
+    AddConnection, ArchiveTask, FindInConversation, FlagTask, FocusComposer, GoBack, GoForward,
+    NewSession, OpenCommandPalette, OpenExtensions, OpenProjectSettings, OpenScheduledTasks,
+    OpenSettings, Reconnect, SearchAllTasks, SendMessage, ShowKeyboardShortcuts, StopTurn,
+    SwitchHost, SwitchStateRoot, ToggleSidebar,
 };
 use workspace::{
     ConnectionCatalog, ConnectionStatus, HostDirectory, HostSession, ProjectCatalogSource,
@@ -232,6 +241,15 @@ pub const SIDEBAR_RESIZE_CONTEXT: &str = "SidebarResize";
 
 /// Key context of the sidebar while it lies over the plate.
 pub const SIDEBAR_OVERLAY_CONTEXT: &str = "SidebarOverlay";
+
+/// Key context of the task view (the plate while it shows the selected
+/// task: its header, the conversation and the composer), which owns ⌘F,
+/// Find in conversation. A page or settings in the plate's place have
+/// contexts of their own.
+pub const TASK_VIEW_CONTEXT: &str = "TaskView";
+
+/// The most of a selection ⇧⌘F takes as the Search page's query.
+const SEARCH_SEED_MAX_CHARS: usize = 200;
 
 /// How long the sidebar takes to change width, eased in and out: the kit
 /// sidebar's transition (`SIDEBAR_TRANSITION_DURATION` and
@@ -420,6 +438,9 @@ pub struct Workbench {
     pet: Entity<PetWatch>,
     /// The Scheduled tasks page, from the first time it shows.
     automations: Option<Entity<AutomationsView>>,
+    /// The Search page, from the first time it shows: its query, results
+    /// and scroll stay for Back.
+    search: Option<Entity<SearchView>>,
     /// The task Back or Forward is selecting: its selection change is not
     /// a visit.
     navigating: Option<SharedString>,
@@ -442,7 +463,7 @@ pub struct Workbench {
     /// How Open project folder opens it.
     folder_opener: FolderOpener,
     /// The changes panel beside the plate, and its width.
-    review: ReviewPane,
+    workbar: Workbar,
     /// The context strip over the composer.
     strip: ContextStrip,
     _subscriptions: Vec<Subscription>,
@@ -475,6 +496,9 @@ impl Workbench {
         });
         let scheduled = cx.new(|cx| ScheduledTasks::new(host.clone(), cx));
         let pet = cx.new(|cx| PetWatch::new(&host, &catalog, &state, cx));
+        // The window's terminals, beside the conversation state whose
+        // Session subscription carries their output, following its task.
+        let terminals = cx.new(|cx| Terminals::new(host.clone(), state.clone(), cx));
         let subscriptions = vec![
             // The sidebar's Scheduled tasks entry counts the active tasks.
             cx.observe(&scheduled, |this, scheduled, cx| {
@@ -496,8 +520,10 @@ impl Workbench {
                 window.set_window_title(
                     &this.title(cx).unwrap_or_else(|| copy::APP_NAME.get(cx).into()),
                 );
-                // The changes panel follows the selected task.
+                // The workbar's changes follow the selected task.
                 this.sync_review_target(window, cx);
+                // The Search page names and matches the tasks listed.
+                this.sync_search_tasks(cx);
                 cx.notify();
             }),
             cx.subscribe_in(&catalog, window, {
@@ -551,8 +577,12 @@ impl Workbench {
                     cx.notify();
                 }
             }),
-            // The header's folder button names the selected task's project.
-            cx.observe(&projects, |_, _, cx| cx.notify()),
+            // The header's folder button names the selected task's project,
+            // and the Search page each task's.
+            cx.observe(&projects, |this, _, cx| {
+                this.sync_search_tasks(cx);
+                cx.notify();
+            }),
             // While settings show, the section list takes it instead, and
             // on a page the page.
             cx.on_focus_lost(window, |this, window, cx| this.focus_main(window, cx)),
@@ -577,6 +607,7 @@ impl Workbench {
                 }
             }),
         ];
+        let workbar = Workbar::new(terminals, host.clone(), window, cx);
         let mut this = Self {
             host,
             catalog,
@@ -608,6 +639,7 @@ impl Workbench {
             scheduled,
             pet,
             automations: None,
+            search: None,
             navigating: None,
             state_root_setup: None,
             settings: None,
@@ -616,7 +648,7 @@ impl Workbench {
             footer_menu_closed_at: None,
             project_menu: MenuSlot::new(MenuPlacement::BelowStart),
             folder_opener: Rc::new(|path, cx| cx.open_with_system(path)),
-            review: ReviewPane::new(window, cx),
+            workbar,
             strip: ContextStrip::new(cx),
             _subscriptions: subscriptions,
         };
@@ -627,7 +659,7 @@ impl Workbench {
         this.layout = SidebarLayout::new(this.window_is_narrow());
         this.shown_form = this.layout.form(narrow_sidebar(cx));
         window.set_window_title(&this.title(cx).unwrap_or_else(|| copy::APP_NAME.get(cx).into()));
-        this.watch_review(window, cx);
+        this.watch_workbar(window, cx);
         this
     }
 
@@ -785,9 +817,7 @@ impl Workbench {
         match &self.settings {
             Some(settings) => settings.view.update(cx, |view, cx| view.focus_nav(window, cx)),
             None if self.page.is_some() => self.focus_page(window, cx),
-            None if self.review_maximized(cx) => {
-                self.review_panel().update(cx, |panel, cx| panel.focus_files(window, cx));
-            }
+            None if self.workbar_maximized(cx) => self.focus_workbar_face(window, cx),
             None => self.composer.update(cx, |composer, cx| composer.focus(window, cx)),
         }
     }
@@ -1114,6 +1144,11 @@ impl Workbench {
         self.extensions.as_ref()
     }
 
+    /// The Search page, once it has shown.
+    pub fn search_view(&self) -> Option<&Entity<SearchView>> {
+        self.search.as_ref()
+    }
+
     /// The Host's scheduled tasks.
     pub fn scheduled_tasks(&self) -> &Entity<ScheduledTasks> {
         &self.scheduled
@@ -1154,6 +1189,106 @@ impl Workbench {
         self.show_page(SidebarPage::ScheduledTasks, window, cx);
     }
 
+    /// ⇧⌘F: shows the Search page and focuses its field, its text
+    /// selected; text selected in the window (in a reply, or in the draft)
+    /// becomes the query and is searched at once. From settings, it leaves
+    /// them first.
+    pub(crate) fn search_all_tasks(
+        &mut self,
+        _: &SearchAllTasks,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let seed = self.selection_seed(window, cx);
+        self.show_page(SidebarPage::Search, window, cx);
+        if let Some(view) = &self.search {
+            view.update(cx, |view, cx| match &seed {
+                Some(seed) => view.search_for(seed, window, cx),
+                None => view.focus_query(window, cx),
+            });
+        }
+    }
+
+    /// The text selected in the window, as a query: the transcript's
+    /// selection, else the draft's while it has focus, its whitespace
+    /// folded and cut to [`SEARCH_SEED_MAX_CHARS`].
+    fn selection_seed(&self, window: &mut Window, cx: &mut App) -> Option<String> {
+        let mut text = TextSelection::selected_text(window, cx);
+        if text.trim().is_empty() {
+            let draft = self.composer.read(cx).draft().read(cx);
+            if draft.focus_handle(cx).is_focused(window) {
+                text = draft.selected_value().to_string();
+            }
+        }
+        let folded = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!folded.is_empty()).then(|| folded.chars().take(SEARCH_SEED_MAX_CHARS).collect())
+    }
+
+    /// Hands the Search page the tasks the catalog lists, as the sidebar
+    /// names them, with their projects.
+    fn sync_search_tasks(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.search.clone() else { return };
+        let locale = Locale::current(cx);
+        let projects = self.projects.read(cx);
+        let tasks: Vec<TaskEntry> = self
+            .catalog
+            .read(cx)
+            .rows()
+            .iter()
+            .map(|row| {
+                let project = projects
+                    .registered_project(row.project_id.as_deref())
+                    .map(|project| project.label())
+                    .filter(|label| !label.is_empty());
+                TaskEntry::new(row.id.clone(), copy::task_title(locale, &row.name).to_owned())
+                    .with_project(project)
+                    .archived(row.is_archived)
+                    .with_activity_at(row.activity_at)
+            })
+            .collect();
+        // Side chats' forks copy their task's words; their passages go: those
+        // the catalog lists, and this client's own before it lists them.
+        let mut hidden: std::collections::HashSet<SharedString> =
+            self.catalog.read(cx).side_conversations().cloned().collect();
+        let ledger = conversation::SideChatLedger::global(cx);
+        hidden.extend(
+            ledger.read(cx).entries().iter().map(|entry| entry.target_session_id.clone().into()),
+        );
+        view.update(cx, |view, cx| {
+            view.set_tasks(tasks, cx);
+            view.set_hidden_sessions(hidden, cx);
+        });
+    }
+
+    /// What the Search page asks of the window: a task by its title, as
+    /// the sidebar opens one; a passage's task, at its message with the
+    /// find bar on its term; or, Escape with nothing typed, the task view.
+    /// Back returns to the page as it was.
+    fn search_event(
+        &mut self,
+        _: &Entity<SearchView>,
+        event: &SearchPageEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SearchPageEvent::OpenTask(id) => {
+                self.leave_page(Some(id.clone()), window, cx);
+                self.catalog.update(cx, |catalog, cx| catalog.select_when_listed(id.clone(), cx));
+                self.composer.update(cx, |composer, cx| composer.focus(window, cx));
+            }
+            SearchPageEvent::OpenPassage(target) => {
+                let id = target.session_id().clone();
+                self.leave_page(Some(id.clone()), window, cx);
+                self.catalog.update(cx, |catalog, cx| catalog.select_when_listed(id, cx));
+                self.conversation
+                    .update(cx, |view, cx| view.open_at_passage(target.clone(), window, cx));
+            }
+            SearchPageEvent::Leave => self.focus_composer(&FocusComposer, window, cx),
+            _ => {}
+        }
+    }
+
     /// Puts `page` (or the task view) on the plate without recording a
     /// visit; the sidebar marks its entry. The Extensions page is made the
     /// first time and reads its catalog then.
@@ -1179,7 +1314,20 @@ impl Workbench {
         if let (Some(SidebarPage::ScheduledTasks), Some(view)) = (page, &self.automations) {
             view.update(cx, |view, cx| view.activate(cx));
         }
+        if page == Some(SidebarPage::Search) && self.search.is_none() {
+            let view = cx.new(|cx| SearchView::new(self.host.clone(), window, cx));
+            self._subscriptions.push(cx.observe(&view, |_, _, cx| cx.notify()));
+            self._subscriptions.push(cx.subscribe_in(&view, window, Self::search_event));
+            self.search = Some(view);
+        }
         self.page = page;
+        if page.is_some() {
+            // A passage still being read for the task view waits no more.
+            self.conversation.update(cx, |view, _| view.cancel_landing());
+        }
+        if page == Some(SidebarPage::Search) {
+            self.sync_search_tasks(cx);
+        }
         self.sidebar.update(cx, |sidebar, cx| sidebar.set_open_page(page, cx));
         window.set_window_title(&self.title(cx).unwrap_or_else(|| copy::APP_NAME.get(cx).into()));
         cx.notify();
@@ -1211,6 +1359,11 @@ impl Workbench {
             }
             (Some(SidebarPage::ScheduledTasks), _, Some(view)) => {
                 view.update(cx, |view, cx| view.focus(window, cx))
+            }
+            (Some(SidebarPage::Search), _, _) => {
+                if let Some(view) = &self.search {
+                    view.update(cx, |view, cx| view.focus(window, cx));
+                }
             }
             _ => {}
         }
@@ -1274,7 +1427,7 @@ impl Workbench {
         self.close_settings(window, cx);
         self.leave_page(None, window, cx);
         self.close_sidebar_overlay(window, cx);
-        self.restore_review(window, cx);
+        self.restore_workbar(window, cx);
         self.composer.update(cx, |composer, cx| composer.focus(window, cx));
     }
 
@@ -1286,7 +1439,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.settings.is_none() && self.page.is_none() && !self.review_maximized(cx) {
+        if self.settings.is_none() && self.page.is_none() && !self.workbar_maximized(cx) {
             self.composer.update(cx, |composer, cx| composer.send(window, cx));
         }
     }
@@ -1378,7 +1531,10 @@ impl Workbench {
             // A task the Usage page's activity log names: leave settings
             // for it, as the Scheduled tasks page does.
             cx.subscribe_in(&view, window, |this, _, event: &settings::OpenTask, window, cx| {
+                // A side chat's fork is no task the window shows: its row
+                // opens the task it forks.
                 let id = event.session_id.clone();
+                let id = this.catalog.read(cx).side_conversation_source(&id).cloned().unwrap_or(id);
                 this.close_settings(window, cx);
                 this.leave_page(Some(id.clone()), window, cx);
                 this.catalog.update(cx, |catalog, cx| catalog.select(Some(&id), cx));
@@ -1605,6 +1761,55 @@ impl Workbench {
         });
     }
 
+    /// ⌘F: shows the find bar over the conversation and focuses its query,
+    /// while the plate shows a conversation to find in.
+    pub(crate) fn find_in_conversation(
+        &mut self,
+        _: &FindInConversation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shows_conversation(cx) {
+            self.conversation.update(cx, |view, cx| view.open_find(window, cx));
+        }
+    }
+
+    /// ⌘G and ⇧⌘G from the rest of the task view (the composer): the next
+    /// or previous match while the find bar shows; else the key goes on.
+    fn select_next_match(
+        &mut self,
+        _: &search::SelectNextMatch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.conversation.update(cx, |view, cx| view.step_find(true, window, cx)) {
+            cx.propagate();
+        }
+    }
+
+    fn select_previous_match(
+        &mut self,
+        _: &search::SelectPreviousMatch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.conversation.update(cx, |view, cx| view.step_find(false, window, cx)) {
+            cx.propagate();
+        }
+    }
+
+    /// Whether the plate shows the selected task's conversation: no
+    /// settings, page, Host blocker, maximized changes panel or empty state
+    /// in its place.
+    fn shows_conversation(&self, cx: &App) -> bool {
+        self.settings.is_none()
+            && self.page.is_none()
+            && self.host.read(cx).blocker().is_none()
+            && !self.workbar_maximized(cx)
+            && !self.shows_empty_state(cx)
+            && self.conversation.read(cx).has_rows()
+    }
+
     /// Archives the selected task, or unarchives it.
     pub(crate) fn archive_task(&mut self, _: &ArchiveTask, _: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.catalog.read(cx).selected_row() else {
@@ -1674,6 +1879,7 @@ impl Workbench {
                     conversation::ComposerAction::Send { enabled: true, .. }
                 ),
                 "switch-state-root" => self.state_root_setup.is_some(),
+                "find-in-conversation" => self.shows_conversation(cx),
                 _ => true,
             };
             if !runs {
@@ -1689,7 +1895,7 @@ impl Workbench {
                     PaletteCommand::Action(spec.action()),
                 )
                 .keywords([english(label), english(spec.label), english(heading)])
-                .shortcut(spec.action()),
+                .shortcut(spec.action(), spec.context),
             );
         }
         if composer.model_switchable(cx) {
@@ -2044,12 +2250,16 @@ impl Workbench {
         // The changes panel's button ends the task view's header.
         let review = (!chrome_only).then(|| self.render_review_button(cx)).flatten();
         // The plate shows through: a header fill would paint square corners
-        // over the plate's rounded ones. No divider under it.
+        // over the plate's rounded ones. No divider under it. The changes
+        // panel's button at its end puts its glyph's ink on the plate's 16 px
+        // line, as the panel's own bar does.
+        let trailing =
+            ink_padding(PLATE_LINE_REMS, ICON_BUTTON_REMS, ICON_GLYPH_REMS, ink::FILE_DIFF);
         div().id("main-header").test_support().child(
             TitleBar::new()
                 .h(rems(CHROME_HEIGHT_REMS))
                 .when(self.shown_form != SidebarForm::Hidden || settings, |this| this.pl_5())
-                .pr_4()
+                .pr(rems(trailing))
                 .bg(cx.theme().transparent)
                 .border_b_0()
                 .child(h_flex().flex_1().min_w_0().gap_2().children(controls).map(|this| {
@@ -2426,7 +2636,7 @@ impl Workbench {
             .on_click(cx.listener(|this, _, window, cx| this.new_session(&NewSession, window, cx)));
         let new_task = self.rail_hop("new-task", new_task, cx);
         let mut pages = Vec::new();
-        for page in SidebarPage::ALL {
+        for page in SidebarPage::LISTED {
             let title: SharedString = page.title().get(cx).into();
             let id = domain_element_id("rail-page", page.key());
             let button = self
@@ -2436,12 +2646,13 @@ impl Workbench {
                 .on_click(move |_, window, cx| window.dispatch_action(page.action(), cx));
             pages.push(self.rail_hop(page.key(), button, cx));
         }
-        let search: SharedString = palette_words::SEARCH.get(cx).into();
+        let search: SharedString = search_copy::SEARCH_ALL_TASKS.get(cx).into();
         let magnifier = Icon::new(MakaIcon::Search);
         let search = self
             .rail_button("rail-search".into(), "search", magnifier, search.clone(), window, cx)
-            .tooltip_with_action(search, &OpenCommandPalette, None)
-            .on_click(|_, window, cx| window.dispatch_action(OpenCommandPalette.boxed_clone(), cx));
+            .tooltip_with_action(search, &SearchAllTasks, None)
+            .selected(self.page == Some(SidebarPage::Search))
+            .on_click(|_, window, cx| window.dispatch_action(SearchAllTasks.boxed_clone(), cx));
         let search = self.rail_hop("search", search, cx);
         let (label, dot) = self.host_status(cx);
         let host = Button::new("rail-host-status")
@@ -2651,6 +2862,9 @@ impl Workbench {
                 view.update(cx, |view, cx| view.render_page(window, cx))
             }
             (Some(SidebarPage::ScheduledTasks), _, Some(view)) => {
+                view.update(cx, |view, cx| view.render_page(window, cx))
+            }
+            (Some(SidebarPage::Search), _, _) if let Some(view) = &self.search => {
                 view.update(cx, |view, cx| view.render_page(window, cx))
             }
             _ => div().flex_1().min_h_0().into_any_element(),
@@ -2890,6 +3104,7 @@ impl Render for Workbench {
         let maka = cx.maka();
         // While settings show, their navigation takes the sidebar's place and
         // their page the plate's; the task view's entities keep their state.
+        let mut task_view = false;
         let (column, plate): (Option<AnyElement>, Vec<AnyElement>) = match self.settings_view() {
             Some(settings) => (
                 Some(self.render_settings_column(&settings, window, cx).into_any_element()),
@@ -2913,13 +3128,14 @@ impl Render for Workbench {
             }
             // The changes panel maximized for the task: the conversation and
             // the composer keep their state and leave the plate to it.
-            None if self.review_maximized(cx) => {
+            None if self.workbar_maximized(cx) => {
                 let mut plate = vec![self.render_header(cx).into_any_element()];
                 plate.extend(self.render_connection_strip(COLUMN_MAX_WIDTH_REMS, cx));
-                plate.push(self.render_review_maximized());
+                plate.push(self.render_workbar_maximized(window, cx));
                 (self.render_column(window, cx), plate)
             }
             None => {
+                task_view = true;
                 // The conversation keeps its slot; the empty state stands in
                 // for it while there is nothing to read.
                 let body = if self.shows_empty_state(cx) {
@@ -2953,6 +3169,7 @@ impl Render for Workbench {
         let main = v_flex()
             .id("main-pane")
             .test_support()
+            .when(task_view, |this| this.key_context(TASK_VIEW_CONTEXT))
             .size_full()
             .bg(maka.plate)
             .rounded(RADIUS_MODAL)
@@ -2960,8 +3177,8 @@ impl Render for Workbench {
             .into_any_element();
         // Beside the task view, the selected task's changes panel, unless
         // it fills the plate.
-        let beside = self.review_shown(cx) && !self.review_maximized(cx);
-        let review = if beside { self.with_review(main, window, cx) } else { main };
+        let beside = self.workbar_shown(cx) && !self.workbar_maximized(cx);
+        let review = if beside { self.with_workbar(main, window, cx) } else { main };
         h_flex()
             .id("workbench")
             .size_full()
@@ -2987,18 +3204,25 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::show_keyboard_shortcuts))
             .on_action(cx.listener(Self::open_extensions))
             .on_action(cx.listener(Self::open_scheduled_tasks))
+            .on_action(cx.listener(Self::search_all_tasks))
             .on_action(cx.listener(Self::close_overlay_action))
             .on_action(cx.listener(Self::toggle_review))
-            .on_action(cx.listener(Self::toggle_review_maximized))
+            .on_action(cx.listener(Self::toggle_terminal))
+            .on_action(cx.listener(Self::toggle_files))
+            .on_action(cx.listener(Self::toggle_side_chat))
+            .on_action(cx.listener(Self::toggle_workbar_maximized))
+            .on_action(cx.listener(Self::find_in_conversation))
+            .on_action(cx.listener(Self::select_next_match))
+            .on_action(cx.listener(Self::select_previous_match))
             .on_drag_move(cx.listener(Self::drag_sidebar_edge))
-            .on_drag_move(cx.listener(Self::drag_review_edge))
+            .on_drag_move(cx.listener(Self::drag_workbar_edge))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     if std::mem::take(&mut this.resizing) {
                         cx.notify();
                     }
-                    this.end_review_drag(cx);
+                    this.end_workbar_drag(cx);
                 }),
             )
             .children(column)

@@ -866,6 +866,9 @@ impl Menu {
             .role(Role::MenuItem)
             .aria_label(item.label.clone())
             .aria_selected(highlighted)
+            // A checked item says so to assistive technology, as its check
+            // mark does on screen.
+            .when(item.checked, |this| this.aria_toggled(gpui_kit::Toggled::True))
             .when(item.has_submenu(), |this| this.aria_expanded(expanded))
             .relative()
             .flex_shrink_0()

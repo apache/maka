@@ -335,7 +335,7 @@ fn the_rail_holds_new_task_the_pages_search_the_host_and_settings(cx: &mut TestA
             ("rail-new-task".into(), shared::copy::NEW_TASK.en()),
             (rail_page("extensions"), session::SidebarPage::Extensions.title().en()),
             (rail_page("scheduled-tasks"), session::SidebarPage::ScheduledTasks.title().en()),
-            ("rail-search".into(), shared::copy::commands::SEARCH.en()),
+            ("rail-search".into(), shared::copy::search::SEARCH_ALL_TASKS.en()),
             ("rail-settings".into(), shared::copy::settings::SETTINGS.en()),
         ];
         let mut above = px(0.);
@@ -365,10 +365,11 @@ fn the_rail_holds_new_task_the_pages_search_the_host_and_settings(cx: &mut TestA
         Some(session::SidebarPage::Extensions)
     );
     harness.with_window(cx, |window, cx| window.click("rail-search", cx));
-    harness.with_window(cx, |window, cx| {
-        assert!(window.find("command-palette").visible(), "search opens the palette");
-        window.press("escape", cx);
-    });
+    assert_eq!(
+        harness.workbench.read_with(cx, |workbench, _| workbench.page()),
+        Some(session::SidebarPage::Search),
+        "search opens the Search page"
+    );
     harness.with_window(cx, |window, cx| window.click("rail-host-status", cx));
     assert!(harness.workbench.read_with(cx, |workbench, _| workbench.footer_menu_open()));
     harness.with_window(cx, |window, cx| window.press("escape", cx));

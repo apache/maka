@@ -20,7 +20,10 @@
 //! What the sidebar shows for one session.
 
 use gpui_kit::SharedString;
-use host_protocol::{SessionCatalogItem, SessionCatalogProjection, SessionStatus, WorkspaceTarget};
+use host_protocol::{
+    SessionCatalogItem, SessionCatalogProjection, SessionStatus, WorkspaceTarget,
+    is_side_conversation,
+};
 
 /// A presentation snapshot of one catalog session, built once per catalog
 /// load so rendering never walks the protocol types.
@@ -53,9 +56,11 @@ pub struct SessionRow {
 
 impl SessionRow {
     /// The row for a catalog item, or `None` for items the sidebar does not
-    /// list: legacy records the Host cannot represent and subagent sessions
-    /// (they belong under their parent, Phase 2). Archived sessions are
-    /// listed, marked [`Self::is_archived`].
+    /// list: legacy records the Host cannot represent, subagent sessions
+    /// (they belong under their parent, Phase 2), and a side chat's fork of
+    /// a task (it belongs to its workbar tab, as in Maka Desktop's
+    /// `sessionMatchesRail`; a fork has a parent, and its label says so
+    /// too). Archived sessions are listed, marked [`Self::is_archived`].
     pub fn from_item(item: &SessionCatalogItem) -> Option<Self> {
         match item {
             SessionCatalogItem::Session(session) => Self::from_projection(session),
@@ -64,7 +69,10 @@ impl SessionRow {
     }
 
     fn from_projection(session: &SessionCatalogProjection) -> Option<Self> {
-        if session.parent_session_id.is_some() || session.subagent.is_some() {
+        if session.parent_session_id.is_some()
+            || session.subagent.is_some()
+            || is_side_conversation(&session.labels)
+        {
             return None;
         }
         let is_waiting = session.status == SessionStatus::WaitingForUser;
@@ -139,6 +147,20 @@ mod tests {
         for value in [child, legacy] {
             assert_eq!(SessionRow::from_item(&item(value)), None);
         }
+    }
+
+    #[test]
+    fn a_side_chat_fork_is_not_listed_by_its_parent_or_its_label() {
+        let mut fork = projection("f1", "Plan");
+        fork["parentSessionId"] = json!("s1");
+        fork["labels"] = json!(["mode:side_conversation"]);
+        assert_eq!(SessionRow::from_item(&item(fork.clone())), None);
+        // The label alone hides it.
+        fork.as_object_mut().expect("object").remove("parentSessionId");
+        assert_eq!(SessionRow::from_item(&item(fork)), None);
+        let mut other = projection("s2", "Other");
+        other["labels"] = json!(["mode:other"]);
+        assert!(SessionRow::from_item(&item(other)).is_some());
     }
 
     #[test]

@@ -52,6 +52,7 @@ use workspace::{
 
 use crate::attachments::{self, AttachmentSource, PickRefusal, PickedFile};
 use crate::queue::QueuePlate;
+use crate::side_chat::SideChat;
 use crate::state::{ConversationState, TurnActivity, new_session_id};
 use crate::style::{
     BODY_SIZE, COLUMN_GUTTER, LABEL_SIZE, RADIUS_CHAT, RADIUS_CONTROL, RADIUS_SURFACE,
@@ -181,11 +182,20 @@ pub enum ComposerAction {
 /// the text and files on screen belong to the task shown, and come back
 /// when it shows again.
 ///
+/// A side chat's composer ([`Self::for_side_chat`]) sends through its
+/// [`SideChat`], which makes the fork on the first send. It has one draft
+/// (the side chat's), the quotes staged for the next message as chips
+/// above it, the model as a read-only chip (the fork runs its task's), the
+/// permission mode picker (before the fork exists, the mode it starts
+/// with), and no project chip.
+///
 /// Keyboard: Tab goes from the draft to the model and permission mode
 /// pickers (once the settings are read) and then to the round button.
 pub struct Composer {
     draft: Entity<TextareaState>,
     state: Entity<ConversationState>,
+    /// The side chat this composer sends for, when it is one's.
+    side: Option<Entity<SideChat>>,
     queue: Entity<QueuePlate>,
     /// Files picked, pasted, or dropped for the next message, in that
     /// order.
@@ -303,6 +313,7 @@ impl Composer {
         let mut this = Self {
             draft,
             state,
+            side: None,
             queue,
             attachments: Vec::new(),
             draft_key,
@@ -330,6 +341,28 @@ impl Composer {
         };
         this.read_default_mode(cx);
         this
+    }
+
+    /// A side chat's composer: it sends through `chat`, whose fork it
+    /// shows once made.
+    pub fn for_side_chat(
+        chat: Entity<SideChat>,
+        connections: Entity<ConnectionCatalog>,
+        projects: Entity<ProjectSelection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let state = chat.read(cx).state().clone();
+        let mut this = Self::new(state, connections, projects, window, cx);
+        this.draft_key = None;
+        this._subscriptions.push(cx.observe(&chat, |_, _, cx| cx.notify()));
+        this.side = Some(chat);
+        this
+    }
+
+    /// The side chat it sends for, when it is one's.
+    pub fn side_chat(&self) -> Option<&Entity<SideChat>> {
+        self.side.as_ref()
     }
 
     /// Reads the permission mode the Host starts a new task in
@@ -362,6 +395,10 @@ impl Composer {
     /// Puts the draft of the task now shown on screen, keeping the one it
     /// replaces for when its task shows again (Desktop's per-task drafts).
     fn sync_draft_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A side chat has one draft, the fork's from its first send on.
+        if self.side.is_some() {
+            return;
+        }
         let key = self.state.read(cx).session_id().cloned();
         if key == self.draft_key {
             return;
@@ -634,9 +671,11 @@ impl Composer {
         }
     }
 
-    /// Nothing to send: no text and no attachment.
+    /// Nothing to send: no text, no attachment, and (in a side chat) no
+    /// staged quote, which a message may carry alone.
     fn draft_is_empty(&self, cx: &App) -> bool {
-        self.attachments.is_empty() && self.draft.read(cx).value().trim().is_empty()
+        let quoted = self.side.as_ref().is_some_and(|side| !side.read(cx).quotes().is_empty());
+        !quoted && self.attachments.is_empty() && self.draft.read(cx).value().trim().is_empty()
     }
 
     fn selected_session(&self, cx: &gpui_kit::App) -> Option<SharedString> {
@@ -653,6 +692,12 @@ impl Composer {
         let state = self.state.read(cx);
         if self.sending || !state.host().read(cx).is_connected() || self.draft_is_empty(cx) {
             return false;
+        }
+        if let Some(side) = &self.side {
+            let side = side.read(cx);
+            if side.is_creating() || side.is_disposed() {
+                return false;
+            }
         }
         match state.session_id() {
             Some(_) => !state.is_submitting() && state.turn_activity().is_sendable(),
@@ -685,6 +730,12 @@ impl Composer {
         let text = self.draft.read(cx).value().trim_end().to_owned();
         let files = self.attachments.clone();
         let accepted = match self.selected_session(cx) {
+            _ if self.side.is_some() => {
+                let list = self.connections.read(cx).list().cloned();
+                let (text, files) = (text.clone(), files.clone());
+                let side = self.side.clone().expect("a side chat");
+                side.update(cx, |side, cx| side.send(text, files, placement, list.as_ref(), cx))
+            }
             Some(session_id) if files.is_empty() => {
                 let content = MessageContent::text(text.clone());
                 self.state
@@ -1020,6 +1071,15 @@ impl Composer {
     /// for the session's own mode or while another settings change is in
     /// flight. No confirmation: a mode is switched back just as easily.
     pub fn select_permission_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+        if let Some(side) = self.side.clone()
+            && self.selected_session(cx).is_none()
+        {
+            // The mode the fork starts with, set on it before its first
+            // message runs.
+            side.update(cx, |side, cx| side.stage_permission_mode(mode, cx));
+            cx.notify();
+            return;
+        }
         if self.selected_session(cx).is_none() {
             // The new task's, sent when it is created.
             self.draft_mode = Some(mode);
@@ -1246,6 +1306,9 @@ impl Composer {
     /// mode unless one is picked. Offline, Desktop's composer keeps both
     /// pickers, disabled.
     fn render_settings(&mut self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if self.side.is_some() {
+            return self.render_side_settings(window, cx);
+        }
         if let Some(settings) = self.state.read(cx).settings().cloned() {
             // The connection it runs on, found once rather than per model.
             let list = self.connections.read(cx).list();
@@ -1301,6 +1364,86 @@ impl Composer {
         let mode = self.draft_permission_mode();
         controls.push(self.render_permission_mode_picker(mode, window, cx));
         controls
+    }
+
+    /// A side chat's controls: the model as a read-only chip (the fork
+    /// runs its task's model and does not switch it, as in Desktop), then
+    /// the permission mode picker. Nothing until the settings are read.
+    fn render_side_settings(&mut self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(side) = self.side.clone() else { return Vec::new() };
+        let side = side.read(cx);
+        let Some(settings) = side.settings(cx).cloned() else { return Vec::new() };
+        let mode = side.permission_mode(cx).unwrap_or(PermissionMode::Ask);
+        let locale = Locale::current(cx);
+        let catalog = self.connections.read(cx);
+        let list = catalog.list();
+        let on = list.and_then(|list| settings.connection_in(list)).map(|c| c.id.clone());
+        let current =
+            |id: &str, model: &str| on.as_deref() == Some(id) && settings.model.as_ref() == model;
+        let label = ModelMenu::new(&current, list, catalog.status())
+            .current_label()
+            .unwrap_or_else(|| settings.model.clone());
+        // The model's name gives way first at the panel's width (Desktop
+        // caps the side chat's model chip): it shrinks and ends in an
+        // ellipsis, so the mode and the round button keep their place.
+        let (ink, _) = chip_inks(&cx.maka(), true);
+        let model = Button::new("composer-model")
+            .ghost()
+            .h(dp(28.))
+            .px(dp(8.))
+            .min_w_0()
+            .flex_shrink(1.)
+            .rounded(dp_px(RADIUS_SURFACE, window))
+            .disabled(true)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(dp(LABEL_SIZE))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(ink)
+                    .child(label.clone()),
+            )
+            .accessibility_label(shell_copy::labeled(locale, copy::MODEL.get(cx), &label))
+            .tooltip(shared::copy::side_chat::MODEL_INHERITED.get(cx));
+        let mode = self.render_permission_mode_picker(mode, window, cx);
+        vec![model.into_any_element(), div().flex_none().child(mode).into_any_element()]
+    }
+
+    /// The quotes staged in a side chat for its next message, as chips
+    /// above the files: each with its remove button.
+    fn render_quotes(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let side = self.side.clone()?;
+        let quotes = side.read(cx).quotes().to_vec();
+        if quotes.is_empty() {
+            return None;
+        }
+        let chips = quotes.into_iter().map(|staged| {
+            let id = staged.id;
+            let chat = side.downgrade();
+            let label = staged.quote.label.clone().map(SharedString::from);
+            let text: SharedString =
+                staged.quote.text.split_whitespace().collect::<Vec<_>>().join(" ").into();
+            crate::quotes::staged_quote_chip(
+                shared::domain_element_id("staged-quote", &id.to_string()),
+                label.as_ref(),
+                &text,
+                move |_, cx| {
+                    chat.update(cx, |chat, cx| chat.remove_quote(id, cx)).ok();
+                },
+                window,
+                cx,
+            )
+        });
+        Some(
+            v_flex()
+                .id("composer-quotes")
+                .test_support()
+                .w_full()
+                .gap(dp(6.))
+                .children(chips)
+                .into_any_element(),
+        )
     }
 
     /// The thinking level picker (Desktop's `ThinkingLevelSelector`) right
@@ -1911,15 +2054,21 @@ impl Render for Composer {
         .pr(dp(6.));
         let mut controls = self.render_settings(window, cx);
         controls.insert(0, self.render_attach_button(window, cx));
-        // Last in the row, so nothing moves when it goes with the draft.
-        if self.selected_session(cx).is_none() {
+        // Last in the row, so nothing moves when it goes with the draft. A
+        // side chat runs where its task does.
+        if self.selected_session(cx).is_none() && self.side.is_none() {
             controls.push(self.render_project_picker(window, cx));
         }
         // First in the row, the note starts on the input's text edge (the
         // field's 8 inside the dock's 12, review round 12); after a control,
         // 6 from it.
         let note = note.pl(dp(if controls.is_empty() { 8. } else { 6. })).into_any_element();
-        let chips = self.render_attachments(window, cx);
+        let chips = match (self.render_quotes(window, cx), self.render_attachments(window, cx)) {
+            (Some(quotes), Some(files)) => {
+                Some(v_flex().w_full().gap(dp(6.)).child(quotes).child(files).into_any_element())
+            }
+            (quotes, files) => quotes.or(files),
+        };
         let action = self.render_action_button(window, cx);
         // The outer row centres the dock in the reading column, 16 px above
         // the plate's bottom edge; queued messages sit right above it.

@@ -20,12 +20,15 @@
 //! Small pieces every feature crate uses: stable element identity derived
 //! from domain ids, the interface copy, time formatting for lists, shared
 //! layout measures, the menu surface, the theme and Desktop's palettes,
-//! unified diffs as Desktop reads them, and the embedded assets.
+//! the minimum contrast themed text keeps, the code languages the
+//! highlighter knows, unified diffs as Desktop reads them, and the embedded
+//! assets.
 //!
 //! Theme access needs no helper here: views read `cx.theme()` through
 //! `gpui_kit::component::ActiveTheme` directly.
 
 pub mod assets;
+pub mod contrast;
 pub mod copy;
 pub mod dialog;
 pub mod diff;
@@ -33,9 +36,11 @@ pub mod hop;
 pub mod icons;
 mod ids;
 pub mod layout;
+pub mod links;
 pub mod menu;
 pub mod palette;
 pub mod rows;
+pub mod syntax;
 pub mod theme;
 pub mod time;
 

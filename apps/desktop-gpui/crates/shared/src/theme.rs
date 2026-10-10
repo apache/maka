@@ -30,6 +30,11 @@
 //! dialogs, lists, scrollbars) paint in them too; the preferences call it
 //! after every appearance change.
 //!
+//! Code: each palette has its syntax colours in both modes
+//! ([`SyntaxPalette`]), and [`apply_kit_theme`] hands them to gpui-kit as
+//! its highlight theme ([`highlight_theme`]), which the transcript's code
+//! blocks, the diffs and the Files source view all paint from.
+//!
 //! Type: gpui-kit sets the window's rem from the theme's base font, and its
 //! scale is built on a 16px rem: `text_sm()` is 14px (body, labels, rows),
 //! `text_xs()` 12px (supporting), `h_8()` 32px, `size_7()` 28px, as the
@@ -45,6 +50,7 @@ use std::sync::{Arc, LazyLock};
 use gpui_kit::component::button::{
     Button, ButtonCustomVariant, ButtonVariant, ButtonVariants as _,
 };
+use gpui_kit::component::highlighter::HighlightTheme;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::{
     ActiveTheme, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _, Theme, ThemeColor,
@@ -72,6 +78,10 @@ pub const DISPLAY_LINE_REMS: f32 = 2.;
 /// Headings (dialog titles): 16px semibold on 24px lines.
 pub const HEADING_TEXT_REMS: f32 = 1.;
 pub const HEADING_LINE_REMS: f32 = 1.5;
+/// Code, in the mono face: 14px on 20px lines, the rung of the
+/// transcript's code blocks, and of a terminal's cells.
+pub const CODE_TEXT_REMS: f32 = 0.875;
+pub const CODE_LINE_REMS: f32 = 1.25;
 
 /// A group heading's text (the task list's "Today"): 12px supporting text,
 /// or 14px in Chinese, as Maka Desktop sets "最近" (its 12px glyphs sit at
@@ -260,6 +270,13 @@ pub struct MakaPalette {
     pub on_warning: Hsla,
     /// The backdrop behind a modal dialog.
     pub scrim: Hsla,
+    /// The fill behind a find match (the find bar's, ⌘F): a translucent
+    /// highlighter yellow, read with the text's own ink on it.
+    pub find_match: Hsla,
+    /// The fill behind the active find match: a deeper orange, a different
+    /// hue from [`Self::find_match`] and not only a stronger one, so the
+    /// match the count names stands out among the rest.
+    pub find_match_active: Hsla,
 }
 
 impl MakaPalette {
@@ -308,6 +325,8 @@ impl MakaPalette {
             warning_fill: rgb(0xFFCE2F).into(),
             on_warning: rgb(0x111111).into(),
             scrim: rgba(0x00000033).into(),
+            find_match: rgba(0xFFCE2F59).into(),
+            find_match_active: rgba(0xF08A2499).into(),
         }
     }
 
@@ -343,18 +362,310 @@ impl MakaPalette {
             warning_fill: rgb(0xFFCE2F).into(),
             on_warning: rgb(0x111111).into(),
             scrim: rgba(0x00000080).into(),
+            find_match: rgba(0xFFCE2F38).into(),
+            find_match_active: rgba(0xF08A2466).into(),
         }
+    }
+}
+
+/// The colours a terminal paints in: the sixteen a program names (SGR
+/// 30–37 and 90–97, and their backgrounds), its default ink and fill, the
+/// cursor and the selection. A program's own redefinitions (OSC 4, 10, 11,
+/// 12) take precedence over these, and its 24-bit colours are its own.
+///
+/// Every palette has them in both modes: the six hues at a lightness that
+/// reads on the palette's `code` fill, the greys mixed from its ink and
+/// background, so a terminal keeps the palette's tint (`crate::palette`).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalPalette {
+    /// Black, red, green, yellow, blue, magenta, cyan and white, then their
+    /// bright forms, in xterm's order.
+    pub ansi: [Hsla; 16],
+    /// The ink of cells with no colour of their own: the plate's ink.
+    pub foreground: Hsla,
+    /// The fill behind cells with no colour of their own: the `code` fill,
+    /// as code blocks and the changes panel's diff box.
+    pub background: Hsla,
+    pub cursor: Hsla,
+    /// Translucent, over the cells, so their ink still reads.
+    pub selection: Hsla,
+}
+
+impl TerminalPalette {
+    /// The terminal colours of `palette` in `mode`, derived once.
+    pub fn for_palette(palette: ThemePalette, mode: ThemeMode) -> Self {
+        static RESOLVED: LazyLock<[[TerminalPalette; 2]; ThemePalette::ALL.len()]> =
+            LazyLock::new(|| {
+                ThemePalette::ALL.map(|each| {
+                    [palette::resolve_terminal(each, false), palette::resolve_terminal(each, true)]
+                })
+            });
+        RESOLVED[palette as usize][usize::from(mode.is_dark())]
+    }
+
+    /// Colour `index` of xterm's 256: the sixteen named ones, then the
+    /// 6×6×6 colour cube (16–231) and the 24 greys (232–255), whose values
+    /// xterm's protocol fixes (they are data, not the palette's).
+    pub fn indexed(&self, index: u8) -> Hsla {
+        let channel = |value: u8| f32::from(value) / 255.;
+        let opaque = |r: u8, g: u8, b: u8| -> Hsla {
+            gpui_kit::Rgba { r: channel(r), g: channel(g), b: channel(b), a: 1. }.into()
+        };
+        match index {
+            0..=15 => self.ansi[usize::from(index)],
+            16..=231 => {
+                let cube = index - 16;
+                let level = |step: u8| if step == 0 { 0 } else { 55 + 40 * step };
+                opaque(level(cube / 36), level(cube / 6 % 6), level(cube % 6))
+            }
+            232..=255 => {
+                let grey = 8 + 10 * (index - 232);
+                opaque(grey, grey, grey)
+            }
+        }
+    }
+}
+
+/// The colours code is drawn in: the transcript's code blocks, the diffs
+/// and the Files source view. Each role covers a set of the names gpui-kit's
+/// highlighter gives what a grammar captures ([`highlight_theme`] lists
+/// them).
+///
+/// Every palette has them in both modes (`crate::palette`): the coloured
+/// roles share one hue each across palettes, as a terminal's six hues do,
+/// at a lightness that reads on the fills code sits on (the `code` fill,
+/// the `sunken` fill under a Markdown code block outside the transcript,
+/// and a diff's added and removed rows); the ink and the greys come from
+/// the palette's own ink and background. Every role keeps APCA Lc
+/// [`MINIMUM_CONTRAST`](crate::contrast::MINIMUM_CONTRAST) on those fills,
+/// comments [`COMMENT_MINIMUM_CONTRAST`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SyntaxPalette {
+    /// Keywords, `self` and `this`, preprocessor directives, and a Markdown
+    /// heading.
+    pub keyword: Hsla,
+    /// Function, method and macro names, and a Markdown link's text.
+    pub function: Hsla,
+    /// Type names, constructors and enums.
+    pub type_name: Hsla,
+    /// Strings, Markdown code spans and link addresses, and a diff's added
+    /// lines.
+    pub string: Hsla,
+    /// Numbers, booleans, constants, enum variants, escapes and regexes.
+    pub constant: Hsla,
+    /// Comments, drawn italic.
+    pub comment: Hsla,
+    /// Variables and parameters: the ink.
+    pub variable: Hsla,
+    /// Fields and properties, and a JSON object's keys.
+    pub property: Hsla,
+    /// Markup tags, and a diff's removed lines.
+    pub tag: Hsla,
+    /// Attributes (Rust's `#[…]`, an HTML attribute's name), labels and
+    /// lifetimes.
+    pub attribute: Hsla,
+    pub operator: Hsla,
+    /// Brackets, delimiters and list markers.
+    pub punctuation: Hsla,
+}
+
+/// The least lightness contrast (APCA Lc) a comment keeps on the fills
+/// code sits on: under the Lc 45 of every other role, so comments recede,
+/// and over Lc 30, APCA's floor for any text a person is meant to read.
+pub const COMMENT_MINIMUM_CONTRAST: f32 = 35.;
+
+impl SyntaxPalette {
+    /// The syntax colours of `palette` in `mode`, derived once.
+    pub fn for_palette(palette: ThemePalette, mode: ThemeMode) -> Self {
+        static RESOLVED: LazyLock<[[SyntaxPalette; 2]; ThemePalette::ALL.len()]> =
+            LazyLock::new(|| {
+                ThemePalette::ALL.map(|each| {
+                    [palette::resolve_syntax(each, false), palette::resolve_syntax(each, true)]
+                })
+            });
+        RESOLVED[palette as usize][usize::from(mode.is_dark())]
+    }
+}
+
+/// gpui-kit's highlight theme for `palette` in `mode`: every name its
+/// highlighter gives a capture, mapped to the [`SyntaxPalette`] role it
+/// takes ([`SYNTAX_NAMES`]), built once per palette and mode. The kit's
+/// code block, Diff and editor caches key on the theme's `Arc`, so a stable
+/// one keeps their work across frames, and a palette or appearance change
+/// hands them a new one.
+pub fn highlight_theme(palette: ThemePalette, mode: ThemeMode) -> Arc<HighlightTheme> {
+    static BUILT: LazyLock<[[Arc<HighlightTheme>; 2]; ThemePalette::ALL.len()]> =
+        LazyLock::new(|| {
+            ThemePalette::ALL.map(|each| {
+                [ThemeMode::Light, ThemeMode::Dark]
+                    .map(|mode| Arc::new(build_highlight_theme(each, mode)))
+            })
+        });
+    BUILT[palette as usize][usize::from(mode.is_dark())].clone()
+}
+
+/// How a syntax name is drawn: its colour role, if it has one (emphasis is
+/// a face, not a colour), and its face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxRole {
+    Keyword,
+    Function,
+    TypeName,
+    String,
+    Constant,
+    Comment,
+    Variable,
+    Property,
+    Tag,
+    Attribute,
+    Operator,
+    Punctuation,
+}
+
+impl SyntaxRole {
+    /// The role's colour in `syntax`.
+    pub fn color(self, syntax: &SyntaxPalette) -> Hsla {
+        match self {
+            Self::Keyword => syntax.keyword,
+            Self::Function => syntax.function,
+            Self::TypeName => syntax.type_name,
+            Self::String => syntax.string,
+            Self::Constant => syntax.constant,
+            Self::Comment => syntax.comment,
+            Self::Variable => syntax.variable,
+            Self::Property => syntax.property,
+            Self::Tag => syntax.tag,
+            Self::Attribute => syntax.attribute,
+            Self::Operator => syntax.operator,
+            Self::Punctuation => syntax.punctuation,
+        }
+    }
+}
+
+/// A face a syntax name is drawn in besides its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxFace {
+    Regular,
+    Italic,
+    Bold,
+}
+
+/// Every name gpui-kit's highlighter gives a capture (its
+/// `HIGHLIGHT_NAMES`, Zed's syntax theme keys) that Maka colours, with its
+/// role and face. A grammar's longer names fall back to their first part
+/// (`function.method` is `function`). The kit's `embedded`, `hint`,
+/// `predictive` and `primary` are left out: grammars do not capture them,
+/// or capture text that keeps the ink around it.
+///
+/// A diff's lines: tree-sitter-diff captures an added line as `string`,
+/// and Maka's diff query ([`crate::syntax`]) a removed line as `tag`, the
+/// two roles in the green and the red.
+pub const SYNTAX_NAMES: [(&str, Option<SyntaxRole>, SyntaxFace); 37] = {
+    use SyntaxFace::{Bold, Italic, Regular};
+    use SyntaxRole::*;
+    [
+        ("attribute", Some(Attribute), Regular),
+        ("boolean", Some(Constant), Regular),
+        ("comment", Some(Comment), Italic),
+        ("comment.doc", Some(Comment), Italic),
+        ("constant", Some(Constant), Regular),
+        ("constructor", Some(TypeName), Regular),
+        ("emphasis", None, Italic),
+        ("emphasis.strong", None, Bold),
+        ("enum", Some(TypeName), Regular),
+        ("function", Some(Function), Regular),
+        ("keyword", Some(Keyword), Regular),
+        ("label", Some(Attribute), Regular),
+        ("link_text", Some(Function), Regular),
+        ("link_uri", Some(String), Regular),
+        ("number", Some(Constant), Regular),
+        ("operator", Some(Operator), Regular),
+        ("preproc", Some(Keyword), Regular),
+        ("property", Some(Property), Regular),
+        ("punctuation", Some(Punctuation), Regular),
+        ("punctuation.bracket", Some(Punctuation), Regular),
+        ("punctuation.delimiter", Some(Punctuation), Regular),
+        ("punctuation.list_marker", Some(Punctuation), Regular),
+        ("punctuation.special", Some(Punctuation), Regular),
+        ("string", Some(String), Regular),
+        ("string.escape", Some(Constant), Regular),
+        ("string.regex", Some(Constant), Regular),
+        ("string.special", Some(String), Regular),
+        ("string.special.symbol", Some(Constant), Regular),
+        ("tag", Some(Tag), Regular),
+        ("tag.doctype", Some(Keyword), Regular),
+        ("text.code.span", Some(String), Regular),
+        ("text.literal", Some(String), Regular),
+        ("title", Some(Keyword), Bold),
+        ("type", Some(TypeName), Regular),
+        ("variable", Some(Variable), Regular),
+        ("variable.special", Some(Keyword), Regular),
+        ("variant", Some(Constant), Regular),
+    ]
+};
+
+/// The highlight theme [`highlight_theme`] hands out. gpui-kit's
+/// `ThemeStyle` has no constructor (the kit reads its themes from Zed-format
+/// JSON), so the theme is built as that JSON and read the same way.
+fn build_highlight_theme(palette: ThemePalette, mode: ThemeMode) -> HighlightTheme {
+    let syntax = SyntaxPalette::for_palette(palette, mode);
+    let maka = MakaPalette::for_palette(palette, mode);
+    let names: serde_json::Map<String, serde_json::Value> = SYNTAX_NAMES
+        .iter()
+        .map(|&(name, role, face)| {
+            let mut style = serde_json::Map::new();
+            if let Some(role) = role {
+                style.insert("color".into(), serde_json::json!(role.color(&syntax)));
+            }
+            match face {
+                SyntaxFace::Regular => {}
+                SyntaxFace::Italic => {
+                    style.insert("font_style".into(), "italic".into());
+                }
+                SyntaxFace::Bold => {
+                    style.insert("font_weight".into(), 700.into());
+                }
+            }
+            (name.to_owned(), style.into())
+        })
+        .collect();
+    // The line under a read-only editor's caret (the Files source view)
+    // takes the row hover wash.
+    let style = serde_json::json!({
+        "editor.active_line.background": maka.hover,
+        "syntax": names,
+    });
+    HighlightTheme {
+        name: format!("Maka {} {}", palette.id(), if mode.is_dark() { "dark" } else { "light" }),
+        appearance: mode,
+        style: serde_json::from_value(style).unwrap_or_default(),
     }
 }
 
 /// `cx.maka()`: the chosen palette's roles for the current appearance.
 pub trait ActiveMakaPalette {
     fn maka(&self) -> MakaPalette;
+
+    /// The chosen palette's terminal colours for the current appearance.
+    fn terminal_palette(&self) -> TerminalPalette;
+
+    /// The chosen palette's syntax colours for the current appearance.
+    fn syntax_palette(&self) -> SyntaxPalette;
 }
 
 impl ActiveMakaPalette for App {
     fn maka(&self) -> MakaPalette {
         MakaPalette::for_palette(theme_palette(self), self.theme().mode)
+    }
+
+    fn terminal_palette(&self) -> TerminalPalette {
+        TerminalPalette::for_palette(theme_palette(self), self.theme().mode)
+    }
+
+    fn syntax_palette(&self) -> SyntaxPalette {
+        SyntaxPalette::for_palette(theme_palette(self), self.theme().mode)
     }
 }
 
@@ -873,7 +1184,14 @@ fn segment_in(button: Button, content: Div, label: &str, selected: bool, cx: &Ap
 /// Call it after every `Theme::change` (which reloads gpui-kit's default
 /// colours for the mode), then refresh the windows. Kit roles that have no
 /// Maka meaning (charts, the magenta and cyan bases) keep gpui-kit's values.
+///
+/// The palette's syntax colours become the kit's highlight theme
+/// ([`highlight_theme`]): the Diff and the editor read it as they paint,
+/// and `Theme::sync_base` installs the code block highlighter every text
+/// view without one of its own uses, built on it. The first call also
+/// registers the app's code languages ([`crate::syntax`]).
 pub fn apply_kit_theme(cx: &mut App) {
+    crate::syntax::register_languages();
     let command_open = cx.try_global::<OpenCommandLists>().is_some_and(|open| open.0 > 0);
     let chosen = theme_palette(cx);
     let rem = rem_for(ui_font_size(cx));
@@ -884,6 +1202,7 @@ pub fn apply_kit_theme(cx: &mut App) {
     if command_open {
         theme.colors.accent = palette.active_row;
     }
+    theme.highlight_theme = highlight_theme(chosen, theme.mode);
     theme.tokens = ThemeTokens::from(&theme.colors);
     theme.radius = RADIUS_SURFACE;
     theme.radius_lg = RADIUS_MODAL;
@@ -1252,6 +1571,95 @@ mod tests {
             apply_kit_theme(cx);
         });
         assert_eq!(rem(cx), px(24.));
+    }
+
+    /// `color` as the kit holds it: eight bits a channel.
+    fn bytes(color: Hsla) -> [u8; 4] {
+        let gpui_kit::Rgba { r, g, b, a } = color.to_rgb();
+        [r, g, b, a].map(|channel| (channel * 255.).round() as u8)
+    }
+
+    /// Every name the table maps resolves in the kit's theme to its role's
+    /// colour and its face, with no fill of its own (a diff row's tint
+    /// shows through); every other name resolves to nothing, so it keeps the
+    /// ink around it.
+    #[test]
+    fn the_kit_highlight_theme_takes_each_name_s_role_in_every_palette() {
+        use gpui_kit::FontStyle;
+        for palette in ThemePalette::ALL {
+            for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                let syntax = SyntaxPalette::for_palette(palette, mode);
+                let theme = highlight_theme(palette, mode);
+                assert!(Arc::ptr_eq(&theme, &highlight_theme(palette, mode)), "built once");
+                for (name, role, face) in SYNTAX_NAMES {
+                    let style = theme.style(name).unwrap_or_else(|| panic!("{name}"));
+                    assert_eq!(style.color.map(bytes), role.map(|role| bytes(role.color(&syntax))));
+                    assert_eq!(style.background_color, None, "{name}");
+                    let italic = style.font_style == Some(FontStyle::Italic);
+                    let bold = style.font_weight == Some(FontWeight::BOLD);
+                    assert_eq!(
+                        (italic, bold),
+                        (face == SyntaxFace::Italic, face == SyntaxFace::Bold)
+                    );
+                }
+                for name in ["embedded", "hint", "predictive", "primary"] {
+                    assert_eq!(theme.style(name), None, "{name}");
+                }
+                // A grammar's longer name falls back to its first part.
+                assert_eq!(
+                    theme.style("function.method").and_then(|style| style.color).map(bytes),
+                    Some(bytes(syntax.function))
+                );
+                assert_eq!(theme.appearance, mode);
+            }
+        }
+    }
+
+    /// Choosing a palette and switching appearance hand the kit a new
+    /// highlight theme at once, and a code block highlighter built on it:
+    /// Rust's comment takes the palette's comment grey and its keyword the
+    /// mode's violet.
+    #[gpui_kit::test]
+    fn a_palette_or_appearance_change_recolours_code(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            apply_kit_theme(cx);
+        });
+        let code = "// note\nfn main() {}\n";
+        let painted = |cx: &mut gpui_kit::TestAppContext| {
+            cx.update(|cx| {
+                let theme = cx.theme().highlight_theme.clone();
+                assert!(gpui_kit::base::TextViewDefaults::global(cx).has_code_block_highlighter());
+                let styles = crate::syntax::highlight("rust", code, &theme);
+                let at = |start: usize| {
+                    styles.iter().find(|(range, _)| range.contains(&start)).and_then(|s| s.1.color)
+                };
+                (theme, at(0), at(code.find("fn").expect("fn")))
+            })
+        };
+        let expected = |palette, mode| {
+            let syntax = SyntaxPalette::for_palette(palette, mode);
+            (highlight_theme(palette, mode), Some(syntax.comment), Some(syntax.keyword))
+        };
+        let same =
+            |(theme, comment, keyword): (Arc<HighlightTheme>, _, _),
+             (other, other_comment, other_keyword): (Arc<HighlightTheme>, _, _)| {
+                Arc::ptr_eq(&theme, &other) && comment == other_comment && keyword == other_keyword
+            };
+        assert!(same(painted(cx), expected(ThemePalette::Default, ThemeMode::Light)));
+
+        cx.update(|cx| set_theme_palette(ThemePalette::Nord, cx));
+        let nord = painted(cx);
+        assert!(same(nord.clone(), expected(ThemePalette::Nord, ThemeMode::Light)));
+        assert_ne!(nord.1, expected(ThemePalette::Default, ThemeMode::Light).1, "Nord's grey");
+
+        cx.update(|cx| {
+            Theme::change(ThemeMode::Dark, None, cx);
+            apply_kit_theme(cx);
+        });
+        let dark = painted(cx);
+        assert!(same(dark.clone(), expected(ThemePalette::Nord, ThemeMode::Dark)));
+        assert_ne!(dark.2, nord.2, "the dark mode's keyword");
     }
 }
 

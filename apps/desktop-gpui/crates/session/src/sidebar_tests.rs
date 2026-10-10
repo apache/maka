@@ -1344,6 +1344,12 @@ fn a_project_headings_plus_opens_a_draft_in_that_project(cx: &mut TestAppContext
             let line = window.find(heading(id)).bounds();
             assert!(line.contains(&button.bounds().center()), "on {name}'s heading");
             assert!(button.bounds().right() > line.right() - px(16.), "at its end");
+            // Its glyph's ink ends on the column's trailing edge, where
+            // the tasks' ages end: the 14 px glyph in the middle of its
+            // 20 px button draws 2.75 of 16 short of its square's edge.
+            let ink = button.bounds().center().x + px(7.) - px(14. * shared::icons::ink::PLUS);
+            let age = window.find(domain_element_id("session-lane", "s1")).bounds().right();
+            assert!((ink - age).abs() < px(0.5), "{ink:?} on {age:?}");
             // The heading keeps its height and its words.
             assert_eq!(line.size.height, px(28.));
         }
@@ -1597,7 +1603,7 @@ fn the_sidebar_icons_hop_once_as_the_pointer_enters_their_rows(cx: &mut TestAppC
         (gpui_kit::ElementId::from("new-session"), "new-task"),
         (domain_element_id("sidebar-page", "extensions"), "extensions"),
         (domain_element_id("sidebar-page", "scheduled-tasks"), "scheduled-tasks"),
-        ("command-palette-button".into(), "search"),
+        ("search-button".into(), "search"),
     ] {
         hover(id, cx);
         assert!(hopping(key, cx), "{key} hops");
@@ -1606,9 +1612,9 @@ fn the_sidebar_icons_hop_once_as_the_pointer_enters_their_rows(cx: &mut TestAppC
     }
     // Once per entry: staying on the row does not hop it again; leaving
     // and coming back does.
-    hover("command-palette-button".into(), cx);
+    hover("search-button".into(), cx);
     assert!(!hopping("search", cx));
     hover(row("s1"), cx);
-    hover("command-palette-button".into(), cx);
+    hover("search-button".into(), cx);
     assert!(hopping("search", cx), "a new entry");
 }

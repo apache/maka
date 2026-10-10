@@ -32,9 +32,14 @@ futures-lite.workspace = true
 gpui-kit.workspace = true
 log.workspace = true
 shared.workspace = true
+similar.workspace = true
+transcript-model.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
+host-protocol.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

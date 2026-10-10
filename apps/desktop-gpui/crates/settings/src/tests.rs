@@ -1174,6 +1174,54 @@ fn the_notification_switch_is_the_clients_own_and_on_by_default(cx: &mut TestApp
     assert!(harness.transport.requests("runtime.policy.mutate").is_empty(), "not the Host's");
 }
 
+/// Records every save of the preferences.
+#[derive(Default)]
+struct RecordedPreferences(RefCell<Vec<crate::Preferences>>);
+
+impl crate::PreferencesStore for RecordedPreferences {
+    fn load(&self) -> Boxed<std::io::Result<Option<crate::Preferences>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn save(&self, preferences: crate::Preferences) -> Boxed<std::io::Result<()>> {
+        self.0.borrow_mut().push(preferences);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[gpui_kit::test]
+fn the_terminal_switches_are_the_clients_own_and_saved(cx: &mut TestAppContext) {
+    let harness = Harness::open_on(SettingsSection::General, catalog_page(6), cx);
+    let saved = Rc::new(RecordedPreferences::default());
+    cx.update(|cx| {
+        let store: Rc<dyn crate::PreferencesStore> = saved.clone();
+        // In English whatever the machine speaks.
+        let english = crate::Preferences::new(crate::Language::English, crate::Appearance::Light);
+        crate::AppPreferences::global(cx)
+            .update(cx, |preferences, cx| preferences.restore(english, Some(store), cx));
+    });
+    harness.with_window(cx, |window, _| {
+        let title = window.find(domain_element_id("settings-group-title", "terminal"));
+        assert_eq!(title.label(), Some(copy::TERMINAL.en()));
+        let option = window.find(row_id("terminal-option-as-meta"));
+        assert_eq!(option.label(), Some(copy::TERMINAL_OPTION_AS_META.en()));
+        let blink = window.find(row_id("terminal-cursor-blink"));
+        assert_eq!(blink.label(), Some(copy::TERMINAL_CURSOR_BLINK.en()));
+    });
+    assert_eq!(harness.checked("terminal-option-as-meta", cx), Some(false), "off by default");
+    assert_eq!(harness.checked("terminal-cursor-blink", cx), Some(true), "on by default");
+
+    harness.click(toggle("terminal-option-as-meta"), cx);
+    harness.click(toggle("terminal-cursor-blink"), cx);
+    assert_eq!(harness.checked("terminal-option-as-meta", cx), Some(true));
+    assert_eq!(harness.checked("terminal-cursor-blink", cx), Some(false));
+    let current = cx.update(|cx| crate::AppPreferences::current(cx));
+    assert!(current.terminal_option_as_meta && !current.terminal_cursor_blink);
+    let last = saved.0.borrow().last().cloned().expect("saved");
+    assert!(last.terminal_option_as_meta && !last.terminal_cursor_blink, "both are kept");
+    assert!(harness.transport.requests("runtime.policy.mutate").is_empty(), "not the Host's");
+}
+
 #[gpui_kit::test]
 fn the_display_name_opens_saves_and_keeps_its_editor_on_a_refusal(cx: &mut TestAppContext) {
     let harness = Harness::open_on(SettingsSection::General, catalog_page(6), cx);
@@ -1676,7 +1724,9 @@ fn a_run_that_ends_in_the_background_notifies_once(cx: &mut TestAppContext) {
         notifier = Some(cx.new(|cx| crate::RunNotifier::new(host.clone(), names, window, cx)));
         Root::new(cx.new(|_| Blank), window, cx)
     });
-    let _notifier = notifier.expect("notifier");
+    let notifier = notifier.expect("notifier");
+    // A side chat's fork posts nothing.
+    notifier.update(cx, |notifier, _| notifier.set_hidden_sessions(Rc::new(|id, _| id == "fork")));
     let send = |event: HostEvent, cx: &mut TestAppContext| {
         host.update(cx, |host, cx| host.handle_host_event(event, cx));
         cx.run_until_parked();
@@ -1699,6 +1749,7 @@ fn a_run_that_ends_in_the_background_notifies_once(cx: &mut TestAppContext) {
     // The same event again (another connection delivered it) posts nothing.
     send(attention("s1", "errored", "e2", Some("auth failed")), cx);
     send(attention("s2", "waiting", "e3", None), cx);
+    send(attention("fork", "completed", "e5", None), cx);
     assert_eq!(
         shown(cx),
         [

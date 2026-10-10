@@ -36,12 +36,23 @@
 //! in view follows. A jump that lands deep in a long file with no header in
 //! view (the scrollbar dragged far, End, `n` into a long file) keeps the
 //! last file until a header shows: the Diff gives nothing else to tell.
+//!
+//! The same frame's marks place the diff's sticky header (the kit's Diff
+//! has none): a copy of the header of the file at the top, at the top of
+//! the diff, while that file's own header is above the diff's top, and
+//! pushed up by the next file's header as it comes up under it
+//! ([`StickyHeader`]). It is placed as the frame is laid out, after the
+//! Diff, so it never lags the scroll.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui_kit::{IntoElement, Pixels, SharedString, Styled as _, WeakEntity, canvas};
+use gpui_kit::{
+    AnyElement, App, Bounds, ContentMask, Element, ElementId, GlobalElementId, InspectorElementId,
+    IntoElement, LayoutId, Pixels, SharedString, Styled as _, WeakEntity, Window, canvas, point,
+    px,
+};
 
 use crate::panel::ReviewPanel;
 
@@ -49,6 +60,23 @@ use crate::panel::ReviewPanel;
 /// as the top: a header scrolled to the top has its border and padding
 /// above its content.
 const TOP_SLACK_REMS: f32 = 0.75;
+
+/// The kit's header row around the content the panel draws in it
+/// (`render_file_header`): 4 px of padding and a hairline above and below.
+const HEADER_CHROME_REMS: f32 = 0.25;
+const HEADER_HAIRLINE: Pixels = px(1.);
+
+/// Where this frame put the diff's sticky header.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Sticky {
+    /// The file at the top of the diff, by its place in the Diff.
+    pub(crate) file: usize,
+    /// Its own header is above the diff's top, out of view: the copy shows.
+    pub(crate) shown: bool,
+    /// The top of the next file's header, if it is drawn: the copy's
+    /// bottom goes no lower.
+    next_top: Option<Pixels>,
+}
 
 /// What the panel learns from a frame: the file at the top of the diff,
 /// and the files whose headers are in view.
@@ -62,17 +90,27 @@ pub(crate) struct InView {
 /// the file the last frame found at the top.
 #[derive(Debug, Default)]
 pub(crate) struct HeaderMarks {
-    marks: RefCell<Vec<(SharedString, Pixels)>>,
+    /// Each drawn header's content, its top and bottom.
+    marks: RefCell<Vec<(SharedString, Pixels, Pixels)>>,
     last: Cell<Option<usize>>,
     /// The panel asked for each frame's answer, until it has the one it
     /// waits for (after it scrolled the diff itself).
     eager: Cell<bool>,
+    /// The sticky header as this frame placed it.
+    sticky: Cell<Option<Sticky>>,
 }
 
 impl HeaderMarks {
-    /// The header of the file at `path` in the Diff has its top at `top`.
-    pub(crate) fn mark(&self, path: SharedString, top: Pixels) {
-        self.marks.borrow_mut().push((path, top));
+    /// The content of the header of the file at `path` in the Diff spans
+    /// `top` to `bottom`.
+    pub(crate) fn mark(&self, path: SharedString, top: Pixels, bottom: Pixels) {
+        self.marks.borrow_mut().push((path, top, bottom));
+    }
+
+    /// The sticky header as the last frame placed it: the file whose
+    /// header the panel draws a copy of.
+    pub(crate) fn sticky(&self) -> Option<Sticky> {
+        self.sticky.get()
     }
 
     /// Report every frame's answer, not only a changed one.
@@ -83,6 +121,7 @@ impl HeaderMarks {
     /// Forgets the file at the top, as the Diff's files changed.
     pub(crate) fn reset(&self) {
         self.last.set(None);
+        self.sticky.set(None);
         self.marks.borrow_mut().clear();
     }
 
@@ -98,12 +137,40 @@ impl HeaderMarks {
         canvas(
             move |bounds, window, cx| {
                 let drawn = std::mem::take(&mut *marks.marks.borrow_mut());
-                let slack = window.rem_size() * TOP_SLACK_REMS;
-                let headers: Vec<(usize, Pixels)> = drawn
+                let rem = window.rem_size();
+                let slack = rem * TOP_SLACK_REMS;
+                let chrome = rem * HEADER_CHROME_REMS + HEADER_HAIRLINE;
+                let drawn: Vec<(usize, Pixels, Pixels)> = drawn
                     .into_iter()
-                    .filter_map(|(path, top)| order.get(&path).map(|ix| (*ix, top)))
+                    .filter_map(|(path, top, bottom)| order.get(&path).map(|ix| (*ix, top, bottom)))
                     .collect();
-                let Some(top) = file_at_top(&headers, bounds.top() + slack) else { return };
+                let headers: Vec<(usize, Pixels)> =
+                    drawn.iter().map(|(ix, top, _)| (*ix, *top)).collect();
+                let line = bounds.top();
+                let found = file_at_top(&headers, line + slack);
+                // The sticky header: the file at the top, the one the last
+                // frame found while no header is drawn.
+                let sticky = found.or(marks.last.get()).map(|file| Sticky {
+                    file,
+                    shown: drawn
+                        .iter()
+                        .find(|(ix, _, _)| *ix == file)
+                        .is_none_or(|(_, _, bottom)| *bottom + chrome <= line),
+                    next_top: drawn
+                        .iter()
+                        .filter(|(ix, _, _)| *ix > file)
+                        .min_by_key(|(ix, _, _)| *ix)
+                        .map(|(_, top, _)| *top - chrome),
+                });
+                let before = marks.sticky.replace(sticky);
+                if before.map(|sticky| sticky.file) != sticky.map(|sticky| sticky.file) {
+                    // The copy drawn is of another file: draw it again.
+                    let panel = panel.clone();
+                    cx.defer(move |cx| {
+                        panel.update(cx, |_, cx| cx.notify()).ok();
+                    });
+                }
+                let Some(top) = found else { return };
                 if marks.last.replace(Some(top)) == Some(top) && !marks.eager.get() {
                     return;
                 }
@@ -130,15 +197,111 @@ pub(crate) fn file_at_top(headers: &[(usize, Pixels)], line: Pixels) -> Option<u
     above.or_else(|| headers.iter().map(|(ix, _)| *ix).min().map(|first| first.saturating_sub(1)))
 }
 
-/// A probe inside the header of the file at `path`: notes its top as the
-/// frame is laid out. Put it in a `relative` element.
+/// A probe inside the header of the file at `path`: notes its top and
+/// bottom as the frame is laid out. Put it in a `relative` element.
 pub(crate) fn header_probe(marks: &Rc<HeaderMarks>, path: SharedString) -> impl IntoElement {
     let marks = marks.clone();
-    canvas(move |bounds, _, _| marks.mark(path.clone(), bounds.top()), |_, _, _, _| {})
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
+    canvas(
+        move |bounds, _, _| marks.mark(path.clone(), bounds.top(), bounds.bottom()),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// The diff's sticky header: `header`, a copy of the header of file `file`
+/// laid out at the top of the diff, drawn only while this frame's marks
+/// say that file is at the top with its own header out of view, pushed up
+/// by the next file's header and clipped to where it rests. Put it after
+/// the marks' probe in the diff's column, so the frame's marks are read
+/// by the time it is placed.
+pub(crate) struct StickyHeader {
+    header: AnyElement,
+    file: usize,
+    marks: Rc<HeaderMarks>,
+}
+
+impl StickyHeader {
+    pub(crate) fn new(header: impl IntoElement, file: usize, marks: &Rc<HeaderMarks>) -> Self {
+        Self { header: header.into_any_element(), file, marks: marks.clone() }
+    }
+}
+
+impl IntoElement for StickyHeader {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for StickyHeader {
+    type RequestLayoutState = ();
+    /// Whether the header is drawn this frame.
+    type PrepaintState = bool;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.header.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(sticky) =
+            self.marks.sticky.get().filter(|sticky| sticky.file == self.file && sticky.shown)
+        else {
+            return false;
+        };
+        let lift = sticky.next_top.map_or(px(0.), |next| (next - bounds.bottom()).min(px(0.)));
+        if -lift >= bounds.size.height {
+            return false;
+        }
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            window.with_element_offset(point(px(0.), lift), |window| {
+                self.header.prepaint(window, cx);
+            });
+        });
+        true
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        drawn: &mut bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if *drawn {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                self.header.paint(window, cx);
+            });
+        }
+    }
 }
 
 #[cfg(test)]

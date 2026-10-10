@@ -18,8 +18,8 @@
  */
 
 //! Session subscriptions: `subscription.open`, `subscription.ready`,
-//! `subscription.close`, the continuity snapshot, and every
-//! `subscription.*` push frame.
+//! `subscription.close`, `subscription.pty_interest.set`, the continuity
+//! snapshot, and every `subscription.*` push frame.
 //!
 //! Source: `packages/runtime-host/src/protocol/session-continuity.ts`
 //! (`SESSION_CONTINUITY_OPERATION_SPECS`, `decodeSubscriptionOpenResult`,
@@ -41,12 +41,19 @@ use serde_json::Value;
 
 use crate::serde_util::{is_false, present};
 use crate::{
-    MessageContent, Operation, SessionInteractionProjection, SessionMessageQueueProjection,
-    SessionStatus, SessionTranscriptBootstrap, TurnSnapshot,
+    MessageContent, Operation, RuntimeResourceInputError, SessionInteractionProjection,
+    SessionMessageQueueProjection, SessionStatus, SessionTranscriptBootstrap, TurnSnapshot,
 };
 
 /// `SESSION_CONTINUITY_SCHEMA_VERSION`.
 pub const SESSION_CONTINUITY_SCHEMA_VERSION: u32 = 5;
+
+/// `SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES`: output the Host puts in one
+/// PTY data frame. A larger chunk arrives as an empty frame with `reset`.
+pub const SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES: usize = 48 * 1024;
+
+/// The refs one `subscription.pty_interest.set` may name.
+pub const PTY_INTEREST_MAX_REFS: usize = 16;
 
 /// `SubscriptionOpenInput.transcript`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +161,47 @@ pub enum SubscriptionClose {}
 impl Operation for SubscriptionClose {
     const NAME: &'static str = "subscription.close";
     type Input = SubscriptionIdInput;
+    type Output = SubscriptionIdResult;
+}
+
+/// `subscription.pty_interest.set` input: the refs whose terminal output
+/// this subscription receives as [`SessionRuntimeResourcePtyDataFrame`]s.
+/// Each call replaces the whole set, and the Host drops queued output of refs
+/// that left it (`SessionContinuityCoordinator`, `pty_interest.set` handler).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+#[non_exhaustive]
+pub struct PtyInterestInput {
+    pub subscription_id: String,
+    /// At most [`PTY_INTEREST_MAX_REFS`], no ref twice.
+    pub refs: Vec<String>,
+}
+
+impl PtyInterestInput {
+    /// Interest in `refs`; refused when there are more than
+    /// [`PTY_INTEREST_MAX_REFS`] or one repeats.
+    pub fn new(
+        subscription_id: impl Into<String>,
+        refs: Vec<String>,
+    ) -> Result<Self, RuntimeResourceInputError> {
+        let distinct = refs.iter().collect::<std::collections::HashSet<_>>().len();
+        if refs.len() > PTY_INTEREST_MAX_REFS || distinct != refs.len() {
+            return Err(RuntimeResourceInputError::PtyInterest);
+        }
+        Ok(Self { subscription_id: subscription_id.into(), refs })
+    }
+}
+
+/// `subscription.pty_interest.set` (mode `control`). Answers
+/// [`SubscriptionIdResult`]; `not_found` when the subscription is not this
+/// connection's.
+#[derive(Debug)]
+pub enum SubscriptionPtyInterestSet {}
+
+impl Operation for SubscriptionPtyInterestSet {
+    const NAME: &'static str = "subscription.pty_interest.set";
+    type Input = PtyInterestInput;
     type Output = SubscriptionIdResult;
 }
 
@@ -571,8 +619,10 @@ pub struct SessionRuntimeResourceChange {
     pub resource_ref: String,
 }
 
-/// `SessionRuntimeResourcePtyDataFrame`: terminal bytes, outside the
-/// sequence order. Terminal display is out of MVP scope.
+/// `SessionRuntimeResourcePtyDataFrame`: terminal output for a ref named in
+/// `subscription.pty_interest.set`, outside the sequence order. `pty_sequence`
+/// rises by one per chunk of the resource's output; chunks at or below a
+/// [`crate::PtySnapshot`]'s `sequence` are already in its buffer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, serde(deny_unknown_fields))]
@@ -584,8 +634,10 @@ pub struct SessionRuntimeResourcePtyDataFrame {
     #[serde(rename = "ref")]
     pub resource_ref: String,
     pub pty_sequence: u64,
+    /// UTF-8 text, at most [`SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES`].
     pub data: String,
-    /// Bytes were omitted; reacquire the terminal snapshot first.
+    /// The chunk was too large and is missing (`data` is empty); acquire the
+    /// terminal again for a fresh snapshot before showing more.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reset: bool,
 }
@@ -721,6 +773,18 @@ mod tests {
         assert_eq!(frame.sequence(), Some(9));
         assert_eq!(frame.host_epoch(), Some("e"));
         assert!(matches!(frame, SessionFrame::Unknown(_)));
+    }
+
+    #[test]
+    fn pty_interest_names_at_most_sixteen_distinct_refs() {
+        let refs: Vec<String> = (0..PTY_INTEREST_MAX_REFS).map(|n| format!("r{n}")).collect();
+        let input = PtyInterestInput::new("sub", refs.clone()).expect("sixteen refs");
+        assert_eq!(serde_json::to_value(&input).expect("encode")["refs"], json!(refs));
+        let mut more = refs;
+        more.push("r16".into());
+        assert!(PtyInterestInput::new("sub", more).is_err());
+        assert!(PtyInterestInput::new("sub", vec!["a".into(), "a".into()]).is_err());
+        assert!(PtyInterestInput::new("sub", Vec::new()).is_ok(), "an empty set stops output");
     }
 
     #[test]

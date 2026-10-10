@@ -421,6 +421,8 @@ pub enum FailureReason {
     UnbornRepository,
     /// The chosen base branch no longer exists.
     InvalidBaseBranch,
+    /// No `git` to run.
+    GitMissing,
     GitFailed,
 }
 
@@ -477,7 +479,9 @@ pub async fn read_review(
             Err(ReviewFailure { reason: FailureReason::InvalidBaseBranch, branches })
         }
         Err(ReadError::Git(error)) => {
-            let reason = if is_unborn(&error) {
+            let reason = if error == GitError::Missing {
+                FailureReason::GitMissing
+            } else if is_unborn(&error) {
                 FailureReason::UnbornRepository
             } else {
                 FailureReason::GitFailed

@@ -117,7 +117,7 @@ impl Panel {
     }
 
     fn shown(&self, cx: &mut TestAppContext) -> bool {
-        self.harness.with_window(cx, |window, _| window.try_find("review-pane").is_some())
+        self.harness.with_window(cx, |window, _| window.try_find("workbar-pane").is_some())
     }
 
     fn target(&self, cx: &mut TestAppContext) -> Option<String> {
@@ -175,7 +175,7 @@ fn the_button_and_its_shortcut_toggle_the_changes_panel(cx: &mut TestAppContext)
     assert!(panel.shown(cx), "and opens it");
 
     // The panel's own close button closes it too.
-    panel.harness.with_window(cx, |window, cx| window.click("review-close", cx));
+    panel.harness.with_window(cx, |window, cx| window.click("workbar-close", cx));
     panel.settle(cx);
     assert!(!panel.shown(cx));
 }
@@ -234,18 +234,18 @@ fn the_changes_panel_sits_beside_the_plate_at_its_width(cx: &mut TestAppContext)
     let panel = Panel::open(&["s1"], 1600., cx);
     panel.harness.with_window(cx, |window, cx| window.press("ctrl-shift-g", cx));
     panel.settle(cx);
-    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("review-pane", cx));
+    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("workbar-pane", cx));
     assert_eq!(pane.size.width, px(480.));
     assert_eq!(pane.left(), main.right() + px(8.), "the canvas margin between the plates");
     assert_eq!(pane.top(), main.top());
 
     panel.harness.with_window(cx, |window, cx| {
-        let start = window.find("review-resize").bounds().center();
+        let start = window.find("workbar-resize").bounds().center();
         window.drag(start, gpui_kit::point(start.x + px(80.), start.y), cx);
     });
     cx.executor().advance_clock(Duration::from_millis(300));
     settle(cx);
-    assert_eq!(panel.bounds("review-pane", cx).size.width, px(400.));
+    assert_eq!(panel.bounds("workbar-pane", cx).size.width, px(400.));
     assert_eq!(cx.update(|cx| AppPreferences::current(cx).review_width), 400);
 }
 
@@ -261,7 +261,7 @@ fn a_narrow_window_puts_the_changes_panel_below(cx: &mut TestAppContext) {
         panel.harness.workbench.read_with(cx, |workbench, _| workbench.sidebar_form())
     };
     assert_eq!(form(cx), SidebarForm::Expanded, "1200 px keeps the sidebar");
-    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("review-pane", cx));
+    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("workbar-pane", cx));
     assert_eq!(pane.top(), main.bottom() + px(8.), "below the plate");
     assert_eq!((pane.left(), pane.size.width), (main.left(), main.size.width));
     assert!(pane.size.height <= px(360.));
@@ -270,7 +270,7 @@ fn a_narrow_window_puts_the_changes_panel_below(cx: &mut TestAppContext) {
     cx.simulate_window_resize(panel.harness.window.into(), size(px(1000.), px(800.)));
     panel.settle(cx);
     assert_ne!(form(cx), SidebarForm::Expanded, "the sidebar collapses at its breakpoint");
-    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("review-pane", cx));
+    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("workbar-pane", cx));
     assert!(pane.top() > main.top(), "still below");
 }
 
@@ -284,17 +284,17 @@ fn the_changes_panel_drags_wide_until_the_conversation_keeps_its_least(cx: &mut 
     panel.settle(cx);
     let drag = |by: f32, cx: &mut TestAppContext| {
         panel.harness.with_window(cx, |window, cx| {
-            let start = window.find("review-resize").bounds().center();
+            let start = window.find("workbar-resize").bounds().center();
             window.drag(start, gpui_kit::point(start.x - px(by), start.y), cx);
         });
         cx.executor().advance_clock(Duration::from_millis(300));
         settle(cx);
     };
     drag(300., cx);
-    assert_eq!(panel.bounds("review-pane", cx).size.width, px(780.), "past 600");
+    assert_eq!(panel.bounds("workbar-pane", cx).size.width, px(780.), "past 600");
     drag(1000., cx);
     // 1600 less the 256 px sidebar, the 8 px margins and gap, and 400.
-    assert_eq!(panel.bounds("review-pane", cx).size.width, px(920.));
+    assert_eq!(panel.bounds("workbar-pane", cx).size.width, px(920.));
     let main = panel.bounds("main-pane", cx);
     assert_eq!(main.size.width, px(400.), "the conversation keeps its least");
     assert_eq!(cx.update(|cx| AppPreferences::current(cx).review_width), 920);
@@ -320,22 +320,24 @@ fn the_changes_panel_maximizes_in_the_conversations_place(cx: &mut TestAppContex
         draft.update(cx, |draft, cx| draft.set_value("half a thought", window, cx));
     });
     let maximized = |cx: &mut TestAppContext| {
-        workbench.read_with(cx, |workbench, cx| workbench.review_maximized(cx))
+        workbench.read_with(cx, |workbench, cx| workbench.workbar_maximized(cx))
     };
     let composer_shown = |cx: &mut TestAppContext| {
         panel.harness.with_window(cx, |window, _| window.try_find("composer").is_some())
     };
     let sidebar = panel.bounds("main-pane", cx).left();
 
-    panel.harness.with_window(cx, |window, cx| window.click("review-maximize", cx));
+    panel.harness.with_window(cx, |window, cx| window.click("workbar-maximize", cx));
     panel.settle(cx);
     assert!(maximized(cx));
-    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("review-pane", cx));
+    let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("workbar-pane", cx));
     assert_eq!(main.left(), sidebar, "the sidebar stays");
     assert_eq!((pane.left(), pane.size.width), (main.left(), main.size.width), "the plate's width");
     assert_eq!(pane.bottom(), main.bottom());
     assert!(!composer_shown(cx), "the composer leaves the plate");
-    assert!(!panel.harness.with_window(cx, |window, _| window.try_find("review-resize").is_some()));
+    assert!(
+        !panel.harness.with_window(cx, |window, _| window.try_find("workbar-resize").is_some())
+    );
     let remembered = cx.update(|cx| AppPreferences::current(cx).review_maximized);
     assert!(remembered.contains("s1"), "{remembered:?}");
 
@@ -359,7 +361,7 @@ fn the_changes_panel_maximizes_in_the_conversations_place(cx: &mut TestAppContex
     assert!(!maximized(cx), "and opens beside the conversation");
     panel.select("s1", cx);
     assert!(maximized(cx), "the first task's panel is still maximized");
-    panel.harness.with_window(cx, |window, cx| window.click("review-maximize", cx));
+    panel.harness.with_window(cx, |window, cx| window.click("workbar-maximize", cx));
     panel.settle(cx);
     assert!(!maximized(cx), "its button restores it");
     panel.harness.with_window(cx, |window, cx| window.press("shift-escape", cx));
@@ -380,9 +382,175 @@ fn the_changes_panel_maximizes_in_the_conversations_place(cx: &mut TestAppContex
     panel.settle(cx);
     let focused = panel.harness.with_window(cx, |window, _| window.find("review-panel").focused());
     assert_eq!(focused, Some(true), "maximizing moves the focus into the panel");
-    panel.harness.with_window(cx, |window, cx| window.click("review-close", cx));
+    panel.harness.with_window(cx, |window, cx| window.click("workbar-close", cx));
     panel.settle(cx);
     assert!(!panel.shown(cx));
     let focused = panel.harness.with_window(cx, |window, _| window.find(draft).focused());
     assert_eq!(focused, Some(true), "the composer takes the focus");
+}
+
+/// Runs `git` in `dir`, as a test author with no hooks or signing.
+fn git(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Review Test", "-c", "user.email=review@example.invalid"])
+        .args(["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"])
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .expect("git");
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// Makes the task folder `dir` a repository with thirty files of sixty
+/// lines on `main`, three commits on `feature`, and every file changed
+/// since: the panel's tree, its scopes and its diff all scroll.
+fn fill_repository(dir: &Path) {
+    std::fs::remove_dir_all(dir.join(".git")).expect("folder");
+    git(dir, &["init", "-q", "-b", "main"]);
+    let write = |pass: usize| {
+        for file in 0..30 {
+            let text: String = (0..60)
+                .map(|line| {
+                    if line % 7 == pass % 7 {
+                        format!("{pass} {line}\n")
+                    } else {
+                        format!("line {line}\n")
+                    }
+                })
+                .collect();
+            std::fs::write(dir.join(format!("file{file:02}.txt")), text).expect("write");
+        }
+    };
+    write(0);
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-q", "-m", "start"]);
+    git(dir, &["checkout", "-q", "-b", "feature"]);
+    for pass in 1..=3 {
+        write(pass);
+        git(dir, &["commit", "-q", "-am", &format!("Pass {pass}")]);
+    }
+    write(4);
+}
+
+/// The squares of `plate`'s radius at its corners.
+fn corner_squares(plate: gpui_kit::Bounds<Pixels>) -> [gpui_kit::Bounds<Pixels>; 4] {
+    use gpui_kit::{Bounds, point};
+    let radius = shared::theme::RADIUS_MODAL;
+    let side = size(radius, radius);
+    let (left, right) = (plate.left(), plate.right() - radius);
+    let (top, bottom) = (plate.top(), plate.bottom() - radius);
+    [
+        Bounds::new(point(left, top), side),
+        Bounds::new(point(right, top), side),
+        Bounds::new(point(left, bottom), side),
+        Bounds::new(point(right, bottom), side),
+    ]
+}
+
+impl Panel {
+    /// Asserts that nothing the panel scrolls paints into a corner square
+    /// of its plate: its lists' clips and every row in them as far as the
+    /// clip shows it, and the diff's viewport and every line in it.
+    fn assert_clear_of_corners(&self, when: &str, cx: &mut TestAppContext) {
+        use gpui_kit::{Bounds, Role};
+        let painted = |bounds: Bounds<Pixels>, clip: Bounds<Pixels>| {
+            let part = bounds.intersect(&clip);
+            (part.size.width > px(0.) && part.size.height > px(0.)).then_some(part)
+        };
+        let plate = self.bounds("review-panel", cx);
+        let parts = self.harness.with_window(cx, |window, _| {
+            let mut parts: Vec<(String, Bounds<Pixels>)> = Vec::new();
+            for (list, role) in
+                [("review-files", Role::TreeItem), ("review-scopes", Role::ListItem)]
+            {
+                let clip = window.find(list).bounds();
+                parts.extend(painted(clip, plate).map(|part| (list.to_owned(), part)));
+                for row in window.within(list).find_all_by_role(role) {
+                    let name = format!("{list} row {:?}", row.label());
+                    parts.extend(painted(row.bounds(), clip).map(|part| (name, part)));
+                }
+            }
+            let viewport = window.find("review-diff").bounds();
+            parts.extend(painted(viewport, plate).map(|part| ("the diff".to_owned(), part)));
+            for line in window.find_all("source") {
+                let name = format!("diff line {:?}", line.label());
+                parts.extend(painted(line.bounds(), viewport).map(|part| (name, part)));
+            }
+            parts
+        });
+        assert!(parts.iter().any(|(name, _)| name.starts_with("diff line")), "{when}: lines drawn");
+        for (name, part) in parts {
+            for corner in corner_squares(plate) {
+                assert!(
+                    painted(part, corner).is_none(),
+                    "{when}: {name} at {part:?} reaches the corner {corner:?} of {plate:?}"
+                );
+            }
+        }
+    }
+
+    /// Turns the wheel over each of the panel's lists and its diff
+    /// `times` times, `step` px down each.
+    fn scroll_all(&self, times: usize, step: f32, cx: &mut TestAppContext) {
+        for id in ["review-files", "review-scopes", "diff-body"] {
+            for _ in 0..times {
+                self.harness.with_window(cx, |window, cx| {
+                    let delta = gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-step)));
+                    window.scroll(id, delta, cx);
+                });
+            }
+        }
+        self.settle(cx);
+    }
+}
+
+/// Beside the conversation, below it and in its place, the changes panel
+/// is one rounded plate: at the top of its lists, part way down and at
+/// the end, nothing it scrolls reaches into its corners.
+#[gpui_kit::test]
+fn the_changes_panel_keeps_its_corners_clear_in_every_place(cx: &mut TestAppContext) {
+    let panel = Panel::open(&["s1"], 1600., cx);
+    fill_repository(&panel.folders[0]);
+    panel.harness.workbench.update(cx, |workbench, cx| {
+        workbench.review_panel().update(cx, |panel, _| {
+            panel.set_git_runner(Arc::new(review::git::SystemGit));
+        });
+    });
+    panel.harness.with_window(cx, |window, cx| window.press("ctrl-shift-g", cx));
+    panel.settle(cx);
+    for (width, maximized, place) in
+        [(1600., false, "beside"), (1200., false, "below"), (1600., true, "maximized")]
+    {
+        cx.simulate_window_resize(panel.harness.window.into(), size(px(width), px(800.)));
+        panel.settle(cx);
+        if maximized {
+            panel.harness.with_window(cx, |window, cx| window.click("workbar-maximize", cx));
+            panel.settle(cx);
+        }
+        let (main, pane) = (panel.bounds("main-pane", cx), panel.bounds("workbar-pane", cx));
+        match place {
+            "beside" => assert_eq!(pane.left(), main.right() + px(8.)),
+            "below" => assert_eq!(pane.top(), main.bottom() + px(8.)),
+            _ => assert_eq!(pane.bottom(), main.bottom()),
+        }
+        panel.scroll_all(12, -1000., cx);
+        panel.assert_clear_of_corners(&format!("{place}, at the top"), cx);
+        panel.scroll_all(3, 100., cx);
+        panel.assert_clear_of_corners(&format!("{place}, part way down"), cx);
+        panel.scroll_all(12, 1000., cx);
+        panel.assert_clear_of_corners(&format!("{place}, at the end"), cx);
+    }
+}
+
+/// The header's changes button puts its glyph's ink on the plate's 16 px
+/// line, as the panel's bar does.
+#[gpui_kit::test]
+fn the_headers_changes_button_inks_on_the_plates_line(cx: &mut TestAppContext) {
+    let panel = Panel::open(&["s1"], 1600., cx);
+    let (main, button) = (panel.bounds("main-pane", cx), panel.bounds("review-toggle", cx));
+    assert_eq!(button.size, size(px(28.), px(28.)));
+    let ink = button.center().x + px(8.) - px(16. * shared::icons::ink::FILE_DIFF);
+    assert!((main.right() - px(16.) - ink).abs() < px(0.5), "{ink:?} in {main:?}");
 }

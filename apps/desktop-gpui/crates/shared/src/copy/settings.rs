@@ -384,6 +384,16 @@ texts! {
         "当前 Runtime Host 无法把该路径作为 GNU Bash 运行。请检查 Host 是否为 Windows、路径是否存在，并确认文件名为 bash.exe。",
         "目前 Runtime Host 無法把該路徑作為 GNU Bash 執行。請檢查 Host 是否為 Windows、路徑是否存在，並確認檔名為 bash.exe。";
 
+    // The Terminal group: how the workbar's terminals take keys and draw
+    // their cursor, the client's own preferences.
+    TERMINAL = "Terminal", "终端", "終端機";
+    TERMINAL_OPTION_AS_META = "Option as Meta key", "将 Option 用作 Meta 键", "將 Option 用作 Meta 鍵";
+    TERMINAL_OPTION_AS_META_HELP =
+        "Option with a key sends Escape and the key, as Meta does, instead of typing a special character.",
+        "按 Option 组合键时发送 Escape 加该键（同 Meta 键），而不是输入特殊字符。",
+        "按 Option 組合鍵時傳送 Escape 加該鍵（同 Meta 鍵），而不是輸入特殊字元。";
+    TERMINAL_CURSOR_BLINK = "Blinking cursor", "光标闪烁", "游標閃爍";
+
     // The Network group: the proxy AI model requests go through.
     NETWORK = "Network", "网络", "網路";
     NETWORK_HELP = "The network path AI model requests take.", "AI 模型请求走的网络通道。", "AI 模型請求走的網路通道。";

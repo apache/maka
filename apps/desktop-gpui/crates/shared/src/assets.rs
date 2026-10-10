@@ -84,7 +84,10 @@ gpui_kit::assets::icon_assets!(
         UnfoldVertical,
         FoldVertical,
         // The changes panel's file tree toggle, as Claude Code draws it.
-        ListTree
+        ListTree,
+        // The find bar's Match whole word (Match case's glyph is in the
+        // default bundle).
+        WholeWord
     ]
 );
 

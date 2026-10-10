@@ -26,10 +26,15 @@ publish.workspace = true
 
 [dependencies]
 async-channel.workspace = true
+blocking.workspace = true
+futures-lite.workspace = true
 gpui-kit.workspace = true
 host-protocol.workspace = true
 image.workspace = true
 log.workspace = true
+markdown.workspace = true
+search.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 shared.workspace = true
 transcript-model.workspace = true
@@ -38,7 +43,6 @@ workspace.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-futures-lite.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 host-client.workspace = true
 

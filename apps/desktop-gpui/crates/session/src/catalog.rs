@@ -21,12 +21,12 @@
 
 mod commands;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gpui_kit::{Context, Entity, EventEmitter, SharedString, Subscription, Task};
 use host_protocol::{
     ChangeNotice, PushFrame, SessionCatalogItem, SessionCatalogQuery, SessionCatalogQueryInput,
-    SessionCatalogQueryResult,
+    SessionCatalogQueryResult, is_side_conversation,
 };
 use workspace::{HostRequestError, HostRequester, HostSession, HostSessionEvent};
 
@@ -101,6 +101,10 @@ pub struct SessionCatalog {
     command_error: Option<SharedString>,
     /// The name a pending rename replaced, to restore if it fails.
     rollback: HashMap<SharedString, SharedString>,
+    /// The side chats' forks the last load listed (by their label), with
+    /// the task each forks: the rows leave them out, and so must whatever
+    /// names a task's turns.
+    side_conversations: BTreeMap<SharedString, Option<SharedString>>,
     _subscription: Subscription,
     _load: Option<Task<()>>,
     _commands: HashMap<SharedString, Task<()>>,
@@ -148,6 +152,7 @@ impl SessionCatalog {
             pending: HashMap::new(),
             command_error: None,
             rollback: HashMap::new(),
+            side_conversations: BTreeMap::new(),
             _subscription: subscription,
             _load: None,
             _commands: HashMap::new(),
@@ -171,6 +176,24 @@ impl SessionCatalog {
     /// The listed session `id`.
     pub fn row(&self, id: &str) -> Option<&SessionRow> {
         self.rows.iter().find(|row| row.id == id)
+    }
+
+    /// Whether the last load listed `id` as a side chat's fork (any
+    /// client's): hidden like the rows, from search results and run
+    /// notifications too.
+    pub fn is_side_conversation(&self, id: &str) -> bool {
+        self.side_conversations.contains_key(id)
+    }
+
+    /// The side chats' forks the last load listed.
+    pub fn side_conversations(&self) -> impl Iterator<Item = &SharedString> {
+        self.side_conversations.keys()
+    }
+
+    /// The task the side chat's fork `id` forks, when the last load listed
+    /// it with its parent.
+    pub fn side_conversation_source(&self, id: &str) -> Option<&SharedString> {
+        self.side_conversations.get(id)?.as_ref()
     }
 
     pub fn load_state(&self) -> &LoadState {
@@ -300,6 +323,18 @@ impl SessionCatalog {
             Ok(items) => {
                 let mut rows: Vec<SessionRow> =
                     items.iter().filter_map(SessionRow::from_item).collect();
+                self.side_conversations = items
+                    .iter()
+                    .filter_map(|item| match item {
+                        SessionCatalogItem::Session(session)
+                            if is_side_conversation(&session.labels) =>
+                        {
+                            let parent = session.parent_session_id.clone().map(SharedString::from);
+                            Some((SharedString::from(session.id.clone()), parent))
+                        }
+                        _ => None,
+                    })
+                    .collect();
                 self.created.retain(|(_, before)| generation <= *before);
                 for (id, _) in &self.created {
                     if !rows.iter().any(|row| &row.id == id)

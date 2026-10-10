@@ -20,15 +20,18 @@
 //! The pages the sidebar opens on the plate instead of a task: Desktop's
 //! `NavSelection` sections other than the Session list
 //! (packages/ui/src/nav-selection.ts), in the order its rail lists them
-//! (`SessionSidebarNav` in packages/ui/src/session-sidebar-nav.tsx).
-//! WorkHub is not one of them: this client does not offer it.
+//! (`SessionSidebarNav` in packages/ui/src/session-sidebar-nav.tsx), and
+//! Search, which the search button beside the app name opens. WorkHub is
+//! not one of them: this client does not offer it.
 
 use gpui_kit::Action;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::Icon;
 use shared::copy::Text;
 use shared::copy::extensions as copy;
-use workspace::actions::{OpenExtensions, OpenScheduledTasks};
+use shared::copy::search as search_copy;
+use shared::icons::MakaIcon;
+use workspace::actions::{OpenExtensions, OpenScheduledTasks, SearchAllTasks};
 
 /// A page of the main area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -37,17 +40,24 @@ pub enum SidebarPage {
     Extensions,
     /// Scheduled tasks (Desktop's `automations` section).
     ScheduledTasks,
+    /// What was said in every task (Desktop's search, a page here).
+    Search,
 }
 
 impl SidebarPage {
-    /// Every page, in the sidebar's order.
-    pub const ALL: [Self; 2] = [Self::Extensions, Self::ScheduledTasks];
+    /// Every page.
+    pub const ALL: [Self; 3] = [Self::Extensions, Self::ScheduledTasks, Self::Search];
+
+    /// The pages the sidebar lists under New task, in its order; Search
+    /// has its button beside the app name instead.
+    pub const LISTED: [Self; 2] = [Self::Extensions, Self::ScheduledTasks];
 
     /// A stable key: element ids, launch flags, tests.
     pub fn key(self) -> &'static str {
         match self {
             Self::Extensions => "extensions",
             Self::ScheduledTasks => "scheduled-tasks",
+            Self::Search => "search",
         }
     }
 
@@ -61,6 +71,7 @@ impl SidebarPage {
         match self {
             Self::Extensions => copy::EXTENSIONS,
             Self::ScheduledTasks => copy::SCHEDULED_TASKS,
+            Self::Search => search_copy::SEARCH,
         }
     }
 
@@ -69,15 +80,17 @@ impl SidebarPage {
         match self {
             Self::Extensions => copy::OPEN_EXTENSIONS,
             Self::ScheduledTasks => copy::OPEN_SCHEDULED_TASKS,
+            Self::Search => search_copy::SEARCH_ALL_TASKS,
         }
     }
 
-    /// Desktop's glyph for it (`Blocks`, `Timer`).
+    /// Desktop's glyph for it (`Blocks`, `Timer`), and the magnifier.
     pub fn icon(self) -> Icon {
-        Icon::new(match self {
-            Self::Extensions => AssetIcon::Blocks,
-            Self::ScheduledTasks => AssetIcon::Timer,
-        })
+        match self {
+            Self::Extensions => Icon::new(AssetIcon::Blocks),
+            Self::ScheduledTasks => Icon::new(AssetIcon::Timer),
+            Self::Search => Icon::new(MakaIcon::Search),
+        }
     }
 
     /// The Action that opens it.
@@ -85,6 +98,7 @@ impl SidebarPage {
         match self {
             Self::Extensions => Box::new(OpenExtensions),
             Self::ScheduledTasks => Box::new(OpenScheduledTasks),
+            Self::Search => Box::new(SearchAllTasks),
         }
     }
 }

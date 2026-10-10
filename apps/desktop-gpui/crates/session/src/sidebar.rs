@@ -49,8 +49,7 @@ use gpui_kit::{
     rems, size, svg,
 };
 use shared::copy::{
-    self, Locale, automations as scheduled_copy, commands as palette_words,
-    extensions as pages_copy,
+    self, Locale, automations as scheduled_copy, extensions as pages_copy, search as search_copy,
 };
 use shared::domain_element_id;
 use shared::hop::Hops;
@@ -61,7 +60,7 @@ use shared::theme::{
     ActiveMakaPalette as _, group_label_size, row_icon_button, segment, segmented_track,
     shortcut_hint, tabular_nums,
 };
-use workspace::actions::{FocusComposer, NewSession, OpenCommandPalette};
+use workspace::actions::{FocusComposer, NewSession, SearchAllTasks};
 use workspace::{ConnectionStatus, ProjectSelection};
 
 use crate::SidebarPage;
@@ -101,6 +100,20 @@ const LIST_END_PADDING_REMS: f32 = ROW_HEIGHT_REMS + 0.5;
 /// under their group header at 16px (review round 4; Maka Desktop's
 /// sidebar indents them the same way).
 const TITLE_INSET_REMS: f32 = 2.;
+/// The end padding of a project's heading: its "+" is a 20 px button with
+/// a 14 px glyph, so this puts the glyph's ink, not the button, on the
+/// column's trailing edge, 16 px in, where the ages, search, ⌘N and the
+/// settings button end.
+const HEADING_END_REMS: f32 = shared::layout::ink_padding(
+    ROW_INSET_REMS,
+    PLUS_BUTTON_REMS,
+    PLUS_GLYPH_REMS,
+    shared::icons::ink::PLUS,
+);
+/// A project heading's "+": the kit's extra-small icon button and its
+/// glyph.
+const PLUS_BUTTON_REMS: f32 = 1.25;
+const PLUS_GLYPH_REMS: f32 = 0.875;
 /// How often row ages and day groups are brought up to date.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -940,10 +953,10 @@ impl SessionSidebar {
                             .text_color(maka.brand),
                     )
                     .child(div().flex_1())
-                    // Search opens the command palette, which finds tasks too
-                    // (AllSum's search icon beside the app name). Its tooltip
-                    // takes the button's hover, so the icon's hop listens
-                    // on a box around it.
+                    // Search opens the Search page (AllSum's search icon
+                    // beside the app name), selected while it shows; the
+                    // palette keeps ⌘K. Its tooltip takes the button's
+                    // hover, so the icon's hop listens on a box around it.
                     .child(
                         div()
                             .id("search-hop")
@@ -951,19 +964,20 @@ impl SessionSidebar {
                             .flex_shrink_0()
                             .on_hover(self.hop_on_entry("search", cx))
                             .child(
-                                Button::new("command-palette-button")
+                                Button::new("search-button")
                                     .ghost()
                                     .small()
                                     .size_7()
                                     .icon(search)
-                                    .accessibility_label(palette_words::SEARCH.get(cx))
+                                    .accessibility_label(search_copy::SEARCH_ALL_TASKS.get(cx))
                                     .tooltip_with_action(
-                                        palette_words::SEARCH.get(cx),
-                                        &OpenCommandPalette,
+                                        search_copy::SEARCH_ALL_TASKS.get(cx),
+                                        &SearchAllTasks,
                                         None,
                                     )
+                                    .selected(self.open_page == Some(SidebarPage::Search))
                                     .on_click(|_, window, cx| {
-                                        window.dispatch_action(OpenCommandPalette.boxed_clone(), cx)
+                                        window.dispatch_action(SearchAllTasks.boxed_clone(), cx)
                                     }),
                             ),
                     ),
@@ -992,7 +1006,7 @@ impl SessionSidebar {
             .id("sidebar-pages")
             .test_support()
             .aria_label(pages_copy::MAIN_NAVIGATION.get(cx))
-            .children(SidebarPage::ALL.map(|page| {
+            .children(SidebarPage::LISTED.map(|page| {
                 let title: SharedString = page.title().get(cx).into();
                 // The active scheduled tasks: a count at the row's end, and
                 // the whole sentence for the accessible name.
@@ -1235,6 +1249,7 @@ impl SessionSidebar {
                     }
                     _ => None,
                 };
+                let plus = new_task.is_some();
                 // A project's heading, and the tasks in no project's, start
                 // with an open folder in the icon column (Desktop's
                 // `FolderOpen`), which puts the name on the task titles' edge.
@@ -1265,7 +1280,12 @@ impl SessionSidebar {
                             })
                             .when(!empty, |this| this.aria_expanded(!collapsed))
                             .h(rems(GROUP_LABEL_HEIGHT_REMS))
-                            .px_2()
+                            .pl_2()
+                            .map(
+                                |this| {
+                                    if plus { this.pr(rems(HEADING_END_REMS)) } else { this.pr_2() }
+                                },
+                            )
                             .gap_1()
                             .rounded(radius)
                             .text_size(group_label_size(Locale::current(cx)))

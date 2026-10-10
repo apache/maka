@@ -60,6 +60,12 @@ pub(crate) struct DiffInput {
     pub(crate) source: DiffSource,
     /// The source is the file's whole text, read for "Show more lines".
     pub(crate) whole_text: bool,
+    /// Git can give more of the file's lines than its diff carries ("Show
+    /// more lines"): a Git scope's file, not a turn's.
+    pub(crate) more: bool,
+    /// Which of the turn's edits of the file this diff is, and of how
+    /// many, when a turn's file shows its edits one after another.
+    pub(crate) step: Option<(usize, usize)>,
     /// The most lines of the diff shown before its "Show all".
     pub(crate) cap: usize,
 }
@@ -120,9 +126,10 @@ pub(crate) fn prepare(input: DiffInput) -> ShownFile {
         matches!(input.status, FileStatus::Modified | FileStatus::Renamed | FileStatus::Copied);
     let missing =
         extent.first_line > 1 || extent.hunks > 1 || extent.trailing_context >= DIFF_CONTEXT_LINES;
-    let more_at = (partial && !input.whole_text && bounded.hidden_lines == 0 && missing)
-        .then_some(extent.last_line)
-        .flatten();
+    let more_at =
+        (input.more && partial && !input.whole_text && bounded.hidden_lines == 0 && missing)
+            .then_some(extent.last_line)
+            .flatten();
     let file = DiffFile::parse(&bounded.text)
         .ok()
         .and_then(|parsed| parsed.into_iter().next())

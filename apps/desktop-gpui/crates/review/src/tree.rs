@@ -74,6 +74,12 @@ pub(crate) struct TreeFile {
     pub(crate) binary: bool,
     /// An untracked file too large to read: its size, in place of counts.
     pub(crate) unread_size: Option<u64>,
+    /// A turn's file whose edits show one after another, its net change
+    /// unknown.
+    pub(crate) stepwise: bool,
+    /// Its line counts are known: a turn's file may have none (a file it
+    /// deleted, unknown before).
+    pub(crate) counted: bool,
 }
 
 impl TreeFile {
@@ -91,6 +97,8 @@ impl TreeFile {
             deletions: file.deletions,
             binary: file.binary,
             unread_size: file.unread_size,
+            stepwise: false,
+            counted: true,
         }
     }
 }
@@ -163,6 +171,28 @@ impl FileTree {
         let mut nodes = Vec::new();
         emit(&root, "", 0, &Rc::from([]), &mut nodes);
         Self { nodes }
+    }
+
+    /// Marks the files at `stepwise` as showing their edits one after
+    /// another, and those at `uncounted` as having no known line counts.
+    pub(crate) fn mark_turn_files(
+        &mut self,
+        stepwise: &HashSet<SharedString>,
+        uncounted: &HashSet<SharedString>,
+    ) {
+        for node in &mut self.nodes {
+            if let TreeNode::File { file, .. } = node {
+                file.stepwise = stepwise.contains(&file.path);
+                file.counted = !uncounted.contains(&file.path);
+            }
+        }
+    }
+
+    /// Whether any file deletes lines: the tree keeps its deletions' lane
+    /// only then, so the counts of a tree that only adds end at the rows'
+    /// edge.
+    pub(crate) fn has_deletions(&self) -> bool {
+        self.files().any(|file| file.unread_size.is_none() && file.deletions > 0)
     }
 
     /// Every row, folded or not, in order.
@@ -244,7 +274,9 @@ pub(crate) fn status_word(status: FileStatus) -> Text {
 
 /// What a file's row and header say of its size: its line counts, or the
 /// size of an untracked file too large to read, muted, across both lanes.
-pub(crate) fn file_counts(file: &TreeFile, cx: &App) -> AnyElement {
+/// Without `deletions` the deletions' lane is left out (no file the
+/// list shows deletes lines).
+pub(crate) fn file_counts(file: &TreeFile, deletions: bool, cx: &App) -> AnyElement {
     match file.unread_size {
         Some(bytes) => div()
             .flex_none()
@@ -255,7 +287,7 @@ pub(crate) fn file_counts(file: &TreeFile, cx: &App) -> AnyElement {
             .text_color(cx.maka().ink_muted)
             .child(file_size(Locale::current(cx), bytes))
             .into_any_element(),
-        None => line_counts(file.additions, file.deletions, cx).into_any_element(),
+        None => line_counts(file.additions, file.deletions, deletions, cx).into_any_element(),
     }
 }
 
@@ -266,6 +298,7 @@ pub(crate) fn counts_label(file: &TreeFile, locale: Locale) -> String {
     match file.unread_size {
         Some(bytes) => file_size(locale, bytes),
         None if file.binary => copy::BINARY.in_locale(locale).to_owned(),
+        None if !file.counted => String::new(),
         None => {
             let added = copy::added_lines(locale, file.additions as usize);
             let deleted = copy::deleted_lines(locale, file.deletions as usize);
@@ -274,17 +307,31 @@ pub(crate) fn counts_label(file: &TreeFile, locale: Locale) -> String {
     }
 }
 
-/// A file's row as a screen reader names it: its status, its path, and
-/// its counts.
+/// A file's row as a screen reader names it: its status, its path, its
+/// counts, and whether its edits show one after another.
 pub(crate) fn file_label(file: &TreeFile, locale: Locale) -> String {
     let status = status_word(file.status).in_locale(locale);
-    shared::copy::parts(locale, &[status, &file.path, &counts_label(file, locale)])
+    let counts = counts_label(file, locale);
+    let mut parts = vec![status, file.path.as_ref()];
+    if !counts.is_empty() {
+        parts.push(counts.as_str());
+    }
+    if file.stepwise {
+        parts.push(copy::STEPWISE.in_locale(locale));
+    }
+    shared::copy::parts(locale, &parts)
 }
 
 /// The lines a file adds and deletes, `+N` in the success ink and `−N` in
 /// the destructive one, each in its own lane so the figures of every row
-/// line up; a zero leaves its lane empty.
-pub(crate) fn line_counts(additions: u32, deletions: u32, cx: &App) -> impl IntoElement {
+/// line up; a zero leaves its lane empty. Without `deletions_lane` there
+/// is no deletions' lane at all.
+pub(crate) fn line_counts(
+    additions: u32,
+    deletions: u32,
+    deletions_lane: bool,
+    cx: &App,
+) -> impl IntoElement {
     let maka = cx.maka();
     let lane = |text: Option<String>| {
         div()
@@ -299,7 +346,11 @@ pub(crate) fn line_counts(additions: u32, deletions: u32, cx: &App) -> impl Into
         .text_xs()
         .font_features(tabular_nums())
         .child(lane((additions > 0).then(|| format!("+{additions}"))).text_color(maka.success))
-        .child(lane((deletions > 0).then(|| format!("−{deletions}"))).text_color(maka.destructive))
+        .when(deletions_lane, |this| {
+            this.child(
+                lane((deletions > 0).then(|| format!("−{deletions}"))).text_color(maka.destructive),
+            )
+        })
 }
 
 /// What each row needs from the panel, shared by every row of a frame.
@@ -312,6 +363,9 @@ pub(crate) struct RowContext {
     /// focus from the keyboard.
     pub(crate) cursor: Option<TreeKey>,
     pub(crate) keyboard: bool,
+    /// Some file of the tree deletes lines: every row keeps the deletions'
+    /// lane.
+    pub(crate) deletions: bool,
     pub(crate) focus: FocusHandle,
     pub(crate) panel: WeakEntity<ReviewPanel>,
 }
@@ -343,6 +397,7 @@ impl RowContext {
                 let folded = self.folded.contains(path);
                 let chevron = if folded { MakaIcon::ChevronRight } else { MakaIcon::ChevronDown };
                 let path = path.clone();
+                let glyph = domain_element_id("review-folder-glyph", &path);
                 row.id(domain_element_id("review-folder", &path))
                     .test_support()
                     .role(Role::TreeItem)
@@ -353,7 +408,13 @@ impl RowContext {
                     .on_click(move |_: &ClickEvent, _, cx| {
                         panel.update(cx, |panel, cx| panel.toggle_folder(&path, cx)).ok();
                     })
-                    .child(Icon::new(chevron).size_4().flex_none().text_color(maka.ink_muted))
+                    .child(
+                        div()
+                            .id(glyph)
+                            .test_support()
+                            .flex_none()
+                            .child(Icon::new(chevron).size_4().text_color(maka.ink_muted)),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -379,7 +440,11 @@ impl RowContext {
                         panel.update(cx, |panel, cx| panel.select_file(path.clone(), cx)).ok();
                     })
                     .child(
-                        Icon::new(AssetIcon::File).size_4().flex_none().text_color(maka.ink_muted),
+                        div()
+                            .id(domain_element_id("review-file-glyph", &file.path))
+                            .test_support()
+                            .flex_none()
+                            .child(Icon::new(AssetIcon::File).size_4().text_color(maka.ink_muted)),
                     )
                     .child(
                         div()
@@ -394,7 +459,13 @@ impl RowContext {
                             })
                             .child(file.name.clone()),
                     )
-                    .child(file_counts(file, cx))
+                    .child(
+                        div()
+                            .id(domain_element_id("review-file-counts", &file.path))
+                            .test_support()
+                            .flex_none()
+                            .child(file_counts(file, self.deletions, cx)),
+                    )
             }
         };
         row.into_any_element()

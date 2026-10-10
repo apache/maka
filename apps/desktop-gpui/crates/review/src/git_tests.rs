@@ -377,7 +377,8 @@ fn a_gone_base_branch_is_invalid() {
 }
 
 /// A failed command is Desktop's `git_failed`, or `unborn_repository` when
-/// Git says there is no commit; `git` missing is a failure too.
+/// Git says there is no commit; `git` missing is its own failure, which the
+/// panel words as `git_failed` unless the task's turns show instead.
 #[test]
 fn failures_read_as_desktop_reads_them() {
     let root = fake_repository("failures");
@@ -400,7 +401,7 @@ fn failures_read_as_desktop_reads_them() {
     let missing = Arc::new(FakeGit::default());
     missing.reply("branch --show-current", Err(GitError::Missing));
     let failure = read(&root, None, missing).expect_err("no git");
-    assert_eq!(failure.reason, FailureReason::GitFailed);
+    assert_eq!(failure.reason, FailureReason::GitMissing);
     std::fs::remove_dir_all(&root).ok();
 }
 

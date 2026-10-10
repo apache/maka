@@ -33,8 +33,6 @@ texts! {
         "搜索命令、设置项或任务…",
         "搜尋命令、設定項或任務…";
     PALETTE_EMPTY = "No matching commands", "没有匹配的命令", "沒有符合的命令";
-    /// The sidebar's search button: its tooltip and accessible name.
-    SEARCH = "Search commands and tasks", "搜索命令和任务", "搜尋命令和任務";
 
     // Group headings, in the order the palette lists them.
     GROUP_TASK = "Task", "任务", "任務";

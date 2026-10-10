@@ -63,6 +63,16 @@ pub(crate) struct ScriptedHost {
     replies: Mutex<HashMap<String, VecDeque<Reply>>>,
     held: Mutex<HashMap<String, VecDeque<async_channel::Receiver<Reply>>>>,
     pub(crate) requests: Mutex<Vec<(String, Value)>>,
+    /// Each task's terminals as `runtime.resource.query` lists them; a
+    /// start adds a running one.
+    terminals: Mutex<HashMap<String, Vec<Value>>>,
+    starts: Mutex<usize>,
+    /// Each task's files as `artifact.query` lists them, and the revision
+    /// of the list (moved by every change).
+    artifacts: Mutex<HashMap<String, Vec<Value>>>,
+    artifact_revision: Mutex<u64>,
+    /// Each task's Turns as `session.turns.query` lists them.
+    turns: Mutex<HashMap<String, Vec<Value>>>,
 }
 
 impl ScriptedHost {
@@ -80,6 +90,38 @@ impl ScriptedHost {
         let mut held = self.held.lock().expect("held");
         held.entry(operation.to_owned()).or_default().push_back(receiver);
         sender
+    }
+
+    /// Answers `get` with the listed session (see `answers_get`).
+    pub(crate) fn answer_gets(&self) {
+        *self.answers_get.lock().expect("answers_get") = true;
+    }
+
+    /// Sets the Turns `session.turns.query` lists for task `session`.
+    pub(crate) fn set_turns(&self, session: &str, turns: Vec<Value>) {
+        self.turns.lock().expect("turns").insert(session.to_owned(), turns);
+    }
+
+    /// Sets the sessions the catalog lists.
+    pub(crate) fn set_sessions(&self, sessions: Vec<Value>) {
+        *self.sessions.lock().expect("sessions") = sessions;
+    }
+
+    /// The sessions the catalog lists now.
+    pub(crate) fn sessions(&self) -> Vec<Value> {
+        self.sessions.lock().expect("sessions").clone()
+    }
+
+    /// Sets the terminals task `session` lists.
+    pub(crate) fn set_terminals(&self, session: &str, names: &[&str]) {
+        let resources = names.iter().map(|name| terminal_resource(session, name)).collect();
+        self.terminals.lock().expect("terminals").insert(session.to_owned(), resources);
+    }
+
+    /// Sets the files task `session` lists, moving the list's revision.
+    pub(crate) fn set_artifacts(&self, session: &str, artifacts: Vec<Value>) {
+        self.artifacts.lock().expect("artifacts").insert(session.to_owned(), artifacts);
+        *self.artifact_revision.lock().expect("revision") += 1;
     }
 
     pub(crate) fn requests(&self, operation: &str) -> Vec<Value> {
@@ -153,17 +195,172 @@ impl HostTransport for ScriptedHost {
                 "skillInvocation": {"loaded": [], "failed": [], "receipts": []}
             })),
             (None, "session.remove") => {
+                // A side chat's fork leaves the catalog with its removal.
+                self.sessions.lock().expect("sessions").retain(|session| {
+                    session["id"] != input["sessionId"]
+                        || !session["labels"]
+                            .as_array()
+                            .is_some_and(|labels| labels.contains(&json!("mode:side_conversation")))
+                });
                 Ok(json!({"kind": "removed", "sessionId": input["sessionId"]}))
+            }
+            (None, "session.turns.query") => {
+                let session = input["sessionId"].as_str().expect("session");
+                let turns = self.turns.lock().expect("turns").get(session).cloned();
+                Ok(json!({"sessionId": session, "throughSequence": 40,
+                          "contributions": turns.unwrap_or_default(), "nextPosition": null}))
+            }
+            // A side chat's fork: the source's projection with the label
+            // and the parent, listed from now on.
+            (None, "session.branch.create") => {
+                let source = input["sourceSessionId"].as_str().expect("source");
+                let target = input["targetSessionId"].as_str().expect("target");
+                let mut sessions = self.sessions.lock().expect("sessions");
+                let Some(mut fork) =
+                    sessions.iter().find(|session| session["id"] == source).cloned()
+                else {
+                    return Box::pin(async move {
+                        Err(HostRequestError::Operation {
+                            operation: "session.branch.create",
+                            code: host_protocol::HostOperationErrorCode::NotFound,
+                            message: "Source Session does not exist".into(),
+                        })
+                    });
+                };
+                fork["id"] = json!(target);
+                fork["revision"] = json!(2);
+                fork["labels"] = json!(["mode:side_conversation"]);
+                fork["parentSessionId"] = json!(source);
+                if let Some(turn) = input["sourceTurnId"].as_str() {
+                    fork["branchOfTurnId"] = json!(turn);
+                }
+                if !sessions.iter().any(|session| session["id"] == target) {
+                    sessions.push(fork.clone());
+                }
+                Ok(json!({"kind": "committed", "session": fork}))
             }
             (None, "turn.stop") => Ok(json!({
                 "sessionId": input["sessionId"], "turnId": input["turnId"],
                 "runId": input["runId"], "status": "cancelled", "terminalEventId": "end",
                 "abortSource": "renderer.stop_button"
             })),
+            (None, "subscription.pty_interest.set") => {
+                Ok(json!({"subscriptionId": input["subscriptionId"]}))
+            }
+            (None, "runtime.resource.query") if input["kind"] == "list_start" => {
+                let session = input["sessionId"].as_str().expect("session");
+                let terminals = self.terminals.lock().expect("terminals");
+                let resources = terminals.get(session).cloned().unwrap_or_default();
+                Ok(json!({"kind": "page", "sessionId": session, "revision": "sha256:00",
+                          "resources": resources, "nextCursor": null}))
+            }
+            (None, "runtime.resource.start") => {
+                let session = input["sessionId"].as_str().expect("session").to_owned();
+                let name = {
+                    let mut starts = self.starts.lock().expect("starts");
+                    *starts += 1;
+                    format!("started-{starts}")
+                };
+                let resource = terminal_resource(&session, &name);
+                self.terminals
+                    .lock()
+                    .expect("terminals")
+                    .entry(session)
+                    .or_default()
+                    .push(resource.clone());
+                Ok(json!({"resource": resource["result"]}))
+            }
+            (None, "runtime.resource.controller.acquire") => Ok(json!({
+                "controllerId": input["controllerId"], "nextSequence": 1,
+                "pty": {"sessionId": input["sessionId"], "ref": input["ref"], "sequence": 0,
+                        "buffer": "", "size": {"cols": 80, "rows": 24}}
+            })),
+            (None, "runtime.resource.controller.control") => {
+                Ok(json!({"controllerId": input["controllerId"], "sequence": input["sequence"]}))
+            }
+            (None, "runtime.resource.controller.release") => {
+                Ok(json!({"controllerId": input["controllerId"], "released": true}))
+            }
+            (None, "runtime.resource.stop") => {
+                let session = input["sessionId"].as_str().expect("session");
+                let reference = input["ref"].as_str().expect("ref");
+                if let Some(terminals) = self.terminals.lock().expect("terminals").get_mut(session)
+                {
+                    terminals.retain(|terminal| terminal["result"]["ref"] != reference);
+                }
+                Ok(json!({}))
+            }
+            (None, "artifact.query")
+                if matches!(input["kind"].as_str(), Some("list_start" | "get")) =>
+            {
+                let session = input["sessionId"].as_str().expect("session");
+                let artifacts = self.artifacts.lock().expect("artifacts");
+                let listed = artifacts.get(session).cloned().unwrap_or_default();
+                let revision =
+                    format!("sha256:{:064x}", *self.artifact_revision.lock().expect("revision"));
+                if input["kind"] == "get" {
+                    Ok(json!({"kind": "artifact", "sessionId": session, "revision": revision,
+                              "artifact": null}))
+                } else {
+                    Ok(json!({"kind": "page", "sessionId": session, "revision": revision,
+                              "artifacts": listed, "nextCursor": null}))
+                }
+            }
+            // The Trace face's reads: a task that has not run.
+            (None, "execution.inspect.query") => Ok(json!({
+                "kind": "session_trace_page", "schemaVersion": 1,
+                "sessionId": input["sessionId"], "turns": [],
+                "coverage": {"modelCalls": "none", "turnsMissingModelCalls": [],
+                             "turnsWithFewerModelCallsThanSteps": [], "unreadableRecords": 0,
+                             "oversizedRuns": 0},
+                "nextCursor": null
+            })),
+            (None, "context.diagnostics.query") => {
+                Ok(json!({"status": "unavailable", "reason": "no_completed_request"}))
+            }
+            (None, "usage.query") if input["kind"] == "summary" => Ok(json!({
+                "kind": "summary",
+                "summary": {"range": {"from": 0, "to": 1}, "totalRequests": 0, "totalCostUsd": 0,
+                    "totalTokens": {"input": 0, "output": 0, "cacheMiss": 0, "cacheRead": 0,
+                                    "cacheWrite": 0, "reasoning": 0, "total": 0},
+                    "cacheHitRequests": 0, "cacheCreateRequests": 0, "errorRequests": 0,
+                    "totalDurationMs": 0},
+                "provenance": {"coverage": {"attempts": 0, "pricedAttempts": 0,
+                    "unpricedAttempts": 0, "usageReportedAttempts": 0, "usagePartialAttempts": 0,
+                    "usageMissingAttempts": 0}, "legacyRecords": 0, "unreadableRecords": 0,
+                    "pendingRepairs": 0}
+            })),
             (None, other) => Err(HostRequestError::Transport(format!("unexpected {other}").into())),
         };
         Box::pin(async move { result })
     }
+}
+
+/// A file of task `session` a subagent wrote back, as `artifact.query`
+/// lists it.
+pub(crate) fn artifact(session: &str, id: &str, name: &str) -> Value {
+    json!({
+        "id": id, "sessionId": session, "turnId": "t1", "createdAt": 1, "name": name,
+        "kind": "file", "sizeBytes": 3, "source": "subagent_writeback"
+    })
+}
+
+/// The ref of the terminal `name`.
+pub(crate) fn terminal_ref(name: &str) -> String {
+    format!("maka://runtime/background-tasks/{name}")
+}
+
+/// A running terminal of task `session`, as `runtime.resource.query` lists
+/// it.
+pub(crate) fn terminal_resource(session: &str, name: &str) -> Value {
+    json!({
+        "sessionId": session, "ownership": {"kind": "local"},
+        "sourceTurnId": format!("desktop-terminal-{name}"),
+        "sourceToolCallId": format!("desktop-terminal-{name}"),
+        "result": {"kind": "shell_run", "ref": terminal_ref(name), "mode": "pty",
+                   "status": "running", "cwd": "/w", "cmd": "exec \"$SHELL\" -l",
+                   "startedAt": 1, "updatedAt": 2, "revision": 2}
+    })
 }
 
 /// The one project the Host lists: new tasks go into it.
@@ -224,7 +421,7 @@ fn open_result(session_id: &str) -> Value {
     })
 }
 
-fn accepted() -> HostAccepted {
+pub(crate) fn accepted() -> HostAccepted {
     serde_json::from_value(json!({
         "kind": "accepted", "rootId": "r", "hostEpoch": EPOCH, "connectionId": "c",
         "selectedProtocol": 0, "compatibilityEpoch": 197, "compositionId": "maka.interactive",
@@ -301,7 +498,7 @@ impl Harness {
         settle(cx);
     }
 
-    fn push(&self, frame: PushFrame, cx: &mut TestAppContext) {
+    pub(crate) fn push(&self, frame: PushFrame, cx: &mut TestAppContext) {
         self.host.update(cx, |host, cx| host.handle_host_event(HostEvent::Push(frame), cx));
         settle(cx);
     }
@@ -315,6 +512,25 @@ impl Harness {
             "kind": "subscription.session_projection", "hostEpoch": EPOCH,
             "subscriptionId": subscription, "sequence": *sequence,
             "snapshot": snapshot(session_id, *revision, root)
+        });
+        *sequence += 1;
+        self.push(frame(value), cx);
+    }
+
+    /// Sends the next `session_domain_changed` of `session_id`'s
+    /// subscription, for `domain`.
+    pub(crate) fn domain_changed(
+        &mut self,
+        session_id: &str,
+        domain: &str,
+        cx: &mut TestAppContext,
+    ) {
+        let subscription = format!("sub-{session_id}");
+        let (sequence, _) = self.sequences.entry(subscription.clone()).or_insert((1, 1));
+        let value = json!({
+            "kind": "subscription.session_domain_changed", "hostEpoch": EPOCH,
+            "subscriptionId": subscription, "sequence": *sequence, "sessionId": session_id,
+            "domain": domain
         });
         *sequence += 1;
         self.push(frame(value), cx);
@@ -371,7 +587,7 @@ pub(crate) fn settle(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-fn frame(value: Value) -> PushFrame {
+pub(crate) fn frame(value: Value) -> PushFrame {
     match HostFrame::decode(value).expect("frame") {
         HostFrame::Push(frame) => frame,
         other => panic!("not a push frame: {other:?}"),
@@ -756,9 +972,9 @@ fn tab_walks_the_sidebar_then_the_composer(cx: &mut TestAppContext) {
         }
         window.press("shift-tab", cx);
         assert_eq!(window.find("new-session").focused(), Some(true), "Extensions → New task");
-        // The app name row's search button opens the command palette.
+        // The app name row's search button opens the Search page.
         window.press("shift-tab", cx);
-        let search = window.find("command-palette-button");
+        let search = window.find("search-button");
         assert_eq!(search.focused(), Some(true), "New task → search");
         // Before the sidebar's rows come the window controls in its top
         // strip; Back and Forward are disabled, so the toggle is next.

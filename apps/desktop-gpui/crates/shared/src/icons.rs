@@ -62,8 +62,15 @@ macro_rules! maka_icons {
 }
 
 maka_icons! {
+    // A pulse, for the workbar's Trace tool, where Desktop shows Lucide's
+    // `activity`: drawn on the set's grid and stroke.
+    Activity => "activity",
     Archive => "archive",
     Attach => "attach",
+    // A speech bubble with a question, for the workbar's Side chat, where
+    // Desktop shows Lucide's `message-circle-question`: drawn on the set's
+    // grid and stroke, its question mark `status-waiting`'s.
+    Chat => "chat",
     ChevronDown => "chevron-down",
     ChevronLeft => "chevron-left",
     ChevronRight => "chevron-right",
@@ -124,4 +131,21 @@ mod tests {
                 .contains("viewBox=\"0 0 460 120\"")
         );
     }
+}
+
+/// How far inside its square a glyph's strokes stop, as a share of the
+/// square's side, read off its SVG (the stroke's outer edge), for the
+/// glyphs whose ink lines up with the text at a plate's or a column's edge
+/// ([`crate::layout::ink_padding`]).
+pub mod ink {
+    /// `close`: its strokes end 4.25 − 0.75 of 16 in on every side.
+    pub const CLOSE: f32 = 3.5 / 16.;
+    /// `file-diff`: its page ends 3.5 − 0.75 of 16 in at either side.
+    pub const FILE_DIFF: f32 = 2.75 / 16.;
+    /// `plus`: its strokes end 3.5 − 0.75 of 16 in on every side.
+    pub const PLUS: f32 = 2.75 / 16.;
+    /// `more`: its outer dots end 3.5 − 1 of 16 in at either side.
+    pub const MORE: f32 = 2.5 / 16.;
+    /// The kit's Lucide `list-tree`, its leading edge: 3 − 1 of 24 in.
+    pub const LIST_TREE_LEADING: f32 = 2. / 24.;
 }

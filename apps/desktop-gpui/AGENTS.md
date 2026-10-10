@@ -41,7 +41,7 @@ phase plan is in `docs/plan/`.
 
 ```text
 crates/
-├── app/            shell: main, windows, menus; composes feature crates
+├── app/            shell: main, windows, menus, the workbar's strip; composes feature crates
 ├── host-protocol/  wire types and frame codec; no GPUI, no I/O
 ├── host-client/    transport, handshake, request multiplexing, subscriptions,
 │                   reconnect, Host spawn
@@ -50,7 +50,17 @@ crates/
 ├── session/        session catalog, creation, switching, metadata
 ├── transcript-model/ pure logic: subscription frames -> transcript state; no GPUI
 ├── conversation/   transcript, streaming output, tool calls, permission prompts, composer
-├── review/         the task's Git changes, read on this machine, and the changes panel
+├── review/         the task's Git changes, read on this machine, and the workbar's
+│                   Changes face
+├── search/         finding text: the Searchable seam, matching, the find bar, and the
+│                   Search page over every task
+├── terminal/       a task's terminals: Host-owned PTYs driven through runtime resources,
+│                   the emulator their output is parsed into, key and mouse tables, and
+│                   the terminal view (the workbar's Terminal face) that paints them
+├── files/          a task's artifacts read from the Host: the workbar's Files face,
+│                   its list, previews and actions
+├── inspector/      a task's trace, usage and context window read from the Host: the
+│                   workbar's Trace face (Desktop's Inspector)
 └── settings/       model connections, preferences
 docs/
 ├── plan/           phase plans

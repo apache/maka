@@ -42,9 +42,10 @@ use settings::FontSizeStep;
 use shared::copy::{self, Locale};
 use shared::theme::{BODY_LINE_HEIGHT, BODY_TEXT_REMS};
 use workspace::actions::{
-    AddConnection, FocusComposer, GoBack, GoForward, NewSession, OpenCommandPalette, OpenSettings,
-    Reconnect, ResetZoom, SendMessage, ShowKeyboardShortcuts, StopTurn, SwitchStateRoot,
-    ToggleReview, ToggleSidebar, ZoomIn, ZoomOut,
+    AddConnection, FindInConversation, FocusComposer, GoBack, GoForward, NewSession,
+    OpenCommandPalette, OpenSettings, Reconnect, ResetZoom, SearchAllTasks, SendMessage,
+    ShowKeyboardShortcuts, StopTurn, SwitchStateRoot, ToggleFiles, ToggleReview, ToggleSideChat,
+    ToggleSidebar, ToggleTerminal, ZoomIn, ZoomOut,
 };
 
 pub use bot_link::link_bots;
@@ -57,7 +58,8 @@ pub use state_root_dialog::{
     show_workbench, show_workbench_on,
 };
 pub use workbench::{
-    CHROME_HEIGHT_REMS, PassivePointer, SIDEBAR_OVERLAY_CONTEXT, SIDEBAR_RESIZE_CONTEXT, Workbench,
+    CHROME_HEIGHT_REMS, PassivePointer, SIDEBAR_OVERLAY_CONTEXT, SIDEBAR_RESIZE_CONTEXT,
+    TASK_VIEW_CONTEXT, Workbench,
 };
 
 gpui_kit::actions!(
@@ -92,6 +94,10 @@ pub fn init(cx: &mut App) {
     extensions::init(cx);
     automations::init(cx);
     review::init(cx);
+    search::init(cx);
+    terminal::init(cx);
+    files::init(cx);
+    inspector::init(cx);
     // Bindings first: `set_menus` copies each item's shortcut from the keymap.
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewSession, None),
@@ -109,6 +115,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-p", OpenCommandPalette, Some(MENU_SKIPS)),
         KeyBinding::new("secondary-k", OpenCommandPalette, None),
         KeyBinding::new("secondary-/", ShowKeyboardShortcuts, None),
+        // Search every task, wherever focus is (Zed's project search key).
+        KeyBinding::new("secondary-shift-f", SearchAllTasks, None),
         KeyBinding::new("secondary-q", Quit, None),
         // Zoom: + takes Shift on most layouts, so ⌘= and ⌘+ both zoom in,
         // with Shift or without. The menu bar shows a command's first
@@ -119,9 +127,15 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-=", ZoomIn, None),
         KeyBinding::new("secondary--", ZoomOut, None),
         KeyBinding::new("secondary-0", ResetZoom, None),
-        // The changes panel: Desktop's `ctrl+shift+g`, the Control key on
-        // every platform, macOS included.
+        // The workbar's tools: Desktop's `ctrl+shift+g` for the changes and
+        // `ctrl+\`` for the terminal, the Control key on every platform,
+        // macOS included, and its ⌘P for the files. They reach no
+        // terminal's program, and the menu bar shows none of them.
         KeyBinding::new("ctrl-shift-g", ToggleReview, None),
+        KeyBinding::new("ctrl-`", ToggleTerminal, None),
+        KeyBinding::new("secondary-p", ToggleFiles, None),
+        // Desktop's `mod+alt+s` for the side chat.
+        KeyBinding::new("secondary-alt-s", ToggleSideChat, None),
     ]);
     // The sidebar's edge, while its handle has focus (Desktop's separator
     // keys).
@@ -135,15 +149,26 @@ pub fn init(cx: &mut App) {
         // The sidebar over the plate.
         KeyBinding::new("escape", workbench::CloseSidebarOverlay, Some(SIDEBAR_OVERLAY_CONTEXT)),
     ]);
-    // The changes panel's edge, while its handle has focus: Left moves the
-    // edge toward the plate, widening the panel.
-    let review = Some(workbench::REVIEW_RESIZE_CONTEXT);
+    // Find in the conversation, anywhere in the task view (the transcript,
+    // its find bar, the composer, the header): ⌘F opens the bar; while it
+    // shows, ⌘G and ⇧⌘G move through its matches. A page binds ⌘F in its
+    // own context (its search field); a view in the task view with a find
+    // of its own takes ⌘F in its deeper context.
+    let task_view = Some(TASK_VIEW_CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("left", workbench::WidenReviewStep, review),
-        KeyBinding::new("right", workbench::NarrowReviewStep, review),
-        KeyBinding::new("shift-left", workbench::WidenReviewLargeStep, review),
-        KeyBinding::new("shift-right", workbench::NarrowReviewLargeStep, review),
-        KeyBinding::new("enter", workbench::ResetReviewWidth, review),
+        KeyBinding::new("secondary-f", FindInConversation, task_view),
+        KeyBinding::new("secondary-g", search::SelectNextMatch, task_view),
+        KeyBinding::new("secondary-shift-g", search::SelectPreviousMatch, task_view),
+    ]);
+    // The workbar's edge, while its handle has focus: Left moves the edge
+    // toward the plate, widening the panel.
+    let workbar = Some(workbench::WORKBAR_RESIZE_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("left", workbench::WidenWorkbarStep, workbar),
+        KeyBinding::new("right", workbench::NarrowWorkbarStep, workbar),
+        KeyBinding::new("shift-left", workbench::WidenWorkbarLargeStep, workbar),
+        KeyBinding::new("shift-right", workbench::NarrowWorkbarLargeStep, workbar),
+        KeyBinding::new("enter", workbench::ResetWorkbarWidth, workbar),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
     // The UI font size is the app's, so every window zooms from here,
@@ -170,8 +195,13 @@ pub fn init(cx: &mut App) {
     fallback(cx, Workbench::show_keyboard_shortcuts);
     fallback(cx, Workbench::open_extensions);
     fallback(cx, Workbench::open_scheduled_tasks);
+    fallback(cx, Workbench::search_all_tasks);
     fallback(cx, Workbench::toggle_review);
-    fallback(cx, Workbench::toggle_review_maximized);
+    fallback(cx, Workbench::toggle_terminal);
+    fallback(cx, Workbench::toggle_files);
+    fallback(cx, Workbench::toggle_side_chat);
+    fallback(cx, Workbench::toggle_workbar_maximized);
+    fallback(cx, Workbench::find_in_conversation);
     cx.set_menus(menus(cx));
     // The menu bar is the platform's copy of the menus: rebuild it in the
     // new language.
@@ -240,6 +270,8 @@ mod chrome_tests;
 #[cfg(test)]
 mod draft_tests;
 #[cfg(test)]
+mod find_tests;
+#[cfg(test)]
 mod font_size_tests;
 #[cfg(test)]
 mod host_blocked_tests;
@@ -250,6 +282,10 @@ mod pet_tests;
 #[cfg(test)]
 mod review_tests;
 #[cfg(test)]
+mod search_tests;
+#[cfg(test)]
+mod side_chat_tests;
+#[cfg(test)]
 mod sidebar_tests;
 #[cfg(test)]
 mod state_root_tests;
@@ -257,3 +293,7 @@ mod state_root_tests;
 mod strip_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod turn_edits_tests;
+#[cfg(test)]
+mod workbar_tests;

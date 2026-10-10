@@ -32,8 +32,10 @@ use async_net::unix::UnixStream;
 use futures_lite::future::block_on;
 use host_protocol::{
     ChangeNotice, ClientHello, ClientInstanceId, HostOperationErrorCode, HostStatus,
-    HostStatusInput, PushFrame, SessionCatalogQuery, SessionCatalogQueryInput,
-    SessionCatalogQueryResult,
+    HostStatusInput, PtyControl, PushFrame, RuntimeResourceControlInput,
+    RuntimeResourceControllerAcquire, RuntimeResourceControllerControl,
+    RuntimeResourceControllerInput, RuntimeResourceFailure, SessionCatalogQuery,
+    SessionCatalogQueryInput, SessionCatalogQueryResult,
 };
 use serde_json::{Value, json};
 
@@ -379,6 +381,41 @@ fn operation_errors_are_returned_to_the_caller() {
             assert_eq!(error.code, HostOperationErrorCode::HostNotReady);
         }
         other => panic!("expected an operation error, got {other:?}"),
+    }
+    let _host = host.join().expect("host thread");
+    connection.shutdown();
+    pump.join().expect("pump thread").expect("clean shutdown");
+}
+
+#[test]
+fn terminal_operations_use_the_typed_request_path() {
+    let (stream, host) = fake_host(|mut host| {
+        host.accept();
+        let control = host.read();
+        assert_eq!(control["operation"], "runtime.resource.controller.control");
+        assert_eq!(control["input"]["control"], json!({"kind": "input", "input": "ls\r"}));
+        host.reply(&control, json!({"controllerId": "c", "sequence": 1}));
+        let acquire = host.read();
+        host.write(json!({
+            "requestId": acquire["requestId"], "operation": acquire["operation"], "ok": false,
+            "error": {"code": "operation_conflict",
+                      "message": "Runtime Resource already has a connected controller"}
+        }));
+        host
+    });
+    let (connection, _pushes, pump) = connect_running(stream);
+    let controller =
+        RuntimeResourceControllerInput::new("s", "maka://runtime/background-tasks/r", "c");
+    let input =
+        RuntimeResourceControlInput::new(&controller, 1, PtyControl::input("ls\r").expect("input"));
+    let answer = block_on(connection.request::<RuntimeResourceControllerControl>(&input))
+        .expect("control answered");
+    assert_eq!(answer.sequence, 1);
+    match block_on(connection.request::<RuntimeResourceControllerAcquire>(&controller)) {
+        Err(RequestError::Operation { error, .. }) => {
+            assert_eq!(RuntimeResourceFailure::of(&error), RuntimeResourceFailure::ControllerHeld);
+        }
+        other => panic!("expected the seat to be refused, got {other:?}"),
     }
     let _host = host.join().expect("host thread");
     connection.shutdown();

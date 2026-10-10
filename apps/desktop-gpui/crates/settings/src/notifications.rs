@@ -102,6 +102,10 @@ pub fn notification_content(
 /// Reads a task's name by its id, for a notification's title.
 pub type TaskNames = Rc<dyn Fn(&str, &App) -> Option<SharedString>>;
 
+/// Whether a Session's runs post nothing: a side chat's fork, whose turns
+/// belong to its workbar tab, not to a task of the list.
+pub type HiddenSessions = Rc<dyn Fn(&str, &App) -> bool>;
+
 /// Behavior owner of one window's run notifications: it watches the
 /// window's Host session for attentions and posts each one once, while the
 /// preference is on and the window is in the background. It lives as long
@@ -110,6 +114,7 @@ pub struct RunNotifier {
     window: AnyWindowHandle,
     host: Entity<HostSession>,
     task_names: TaskNames,
+    hidden: Option<HiddenSessions>,
     /// `(host epoch, session, event)` of the attentions posted, oldest first.
     seen: VecDeque<(String, String, String)>,
     seen_set: HashSet<(String, String, String)>,
@@ -147,10 +152,16 @@ impl RunNotifier {
             window: window.window_handle(),
             host,
             task_names,
+            hidden: None,
             seen: VecDeque::new(),
             seen_set: HashSet::new(),
             _subscription: subscription,
         }
+    }
+
+    /// Posts nothing for the Sessions `hidden` names (side chats' forks).
+    pub fn set_hidden_sessions(&mut self, hidden: HiddenSessions) {
+        self.hidden = Some(hidden);
     }
 
     fn on_attention(
@@ -160,6 +171,10 @@ impl RunNotifier {
         window_active: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.hidden.as_ref().is_some_and(|hidden| hidden(session_id, cx)) {
+            log::debug!("no notification for {session_id}: a side chat's fork");
+            return;
+        }
         let epoch = self.host.read(cx).accepted().map(|accepted| accepted.host_epoch.clone());
         let key = (epoch.unwrap_or_default(), session_id.to_owned(), attention.event_id.clone());
         if !self.seen_set.insert(key.clone()) {

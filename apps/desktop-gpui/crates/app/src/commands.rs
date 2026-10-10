@@ -36,16 +36,18 @@ use session::{
     SelectNextSession, SelectPreviousSession,
 };
 use shared::copy::{
-    self, Text, commands as words, conversation, extensions as pages, settings as settings_copy,
+    self, Text, commands as words, conversation, extensions as pages, search as find_words,
+    settings as settings_copy,
 };
 use shared::icons::MakaIcon;
 use workspace::actions::{
-    AddConnection, ArchiveTask, FlagTask, FocusComposer, GoBack, GoForward, NewSession,
-    OpenCommandPalette, OpenExtensions, OpenProjectSettings, OpenScheduledTasks, OpenSettings,
-    Reconnect, SendMessage, ShowKeyboardShortcuts, StopTurn, SwitchStateRoot, ToggleSidebar,
+    AddConnection, ArchiveTask, FindInConversation, FlagTask, FocusComposer, GoBack, GoForward,
+    NewSession, OpenCommandPalette, OpenExtensions, OpenProjectSettings, OpenScheduledTasks,
+    OpenSettings, Reconnect, SearchAllTasks, SendMessage, ShowKeyboardShortcuts, StopTurn,
+    SwitchStateRoot, ToggleSidebar,
 };
 
-use crate::Quit;
+use crate::{Quit, TASK_VIEW_CONTEXT};
 
 /// A group of commands, in the order the palette and the sheet list them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,8 +85,9 @@ pub struct CommandSpec {
     /// The key context the binding applies in; `None` for anywhere in the
     /// window.
     pub context: Option<&'static str>,
-    /// Whether the palette offers it: window-wide commands, except the
-    /// ones that open the palette's own neighbours.
+    /// Whether the palette offers it: the commands that act on the window
+    /// or the task, wherever focus is, except the ones that open the
+    /// palette's own neighbours; not the keys of a focused list.
     pub palette: bool,
     icon: fn() -> Icon,
     action: fn() -> Box<dyn Action>,
@@ -144,6 +147,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         palette: true,
         icon: || Icon::new(MakaIcon::Stop),
         action: || Box::new(StopTurn),
+    },
+    CommandSpec {
+        id: "find-in-conversation",
+        label: find_words::FIND_IN_CONVERSATION,
+        group: CommandGroup::Task,
+        context: Some(TASK_VIEW_CONTEXT),
+        palette: true,
+        icon: || Icon::new(MakaIcon::Search),
+        action: || Box::new(FindInConversation),
     },
     CommandSpec {
         id: "archive-task",
@@ -207,6 +219,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         palette: true,
         icon: || Icon::new(AssetIcon::Timer),
         action: || Box::new(OpenScheduledTasks),
+    },
+    CommandSpec {
+        id: "search-all-tasks",
+        label: find_words::SEARCH_ALL_TASKS,
+        group: CommandGroup::View,
+        context: None,
+        palette: true,
+        icon: || Icon::new(MakaIcon::Search),
+        action: || Box::new(SearchAllTasks),
     },
     CommandSpec {
         id: "command-palette",
@@ -370,11 +391,30 @@ pub static COMMANDS: &[CommandSpec] = &[
         icon: || Icon::new(IconName::ArrowDown),
         action: || Box::new(ScrollToBottom),
     },
+    // While the find bar shows, anywhere in the task view.
+    CommandSpec {
+        id: "next-match",
+        label: find_words::NEXT_MATCH,
+        group: CommandGroup::Transcript,
+        context: Some(TASK_VIEW_CONTEXT),
+        palette: false,
+        icon: || Icon::new(MakaIcon::ChevronRight),
+        action: || Box::new(search::SelectNextMatch),
+    },
+    CommandSpec {
+        id: "previous-match",
+        label: find_words::PREVIOUS_MATCH,
+        group: CommandGroup::Transcript,
+        context: Some(TASK_VIEW_CONTEXT),
+        palette: false,
+        icon: || Icon::new(MakaIcon::ChevronLeft),
+        action: || Box::new(search::SelectPreviousMatch),
+    },
 ];
 
 /// The commands the palette may list, in table order.
 pub fn palette_commands() -> impl Iterator<Item = &'static CommandSpec> {
-    COMMANDS.iter().filter(|command| command.palette && command.context.is_none())
+    COMMANDS.iter().filter(|command| command.palette)
 }
 
 /// The command whose key is `id`.

@@ -129,13 +129,15 @@ pub use manual_host_form::{ManualField, ManualHostForm, SshHostChoice, Transport
 pub use memory_page::MemoryPage;
 pub use memory_store::{MemoryAccess, MemorySnapshot};
 pub use network_section::NetworkSection;
-pub use notifications::{RunNotifier, TaskNames, notification_content, should_notify};
+pub use notifications::{
+    HiddenSessions, RunNotifier, TaskNames, notification_content, should_notify,
+};
 pub use pet_section::PetSection;
 pub use policy::{HostPolicy, ProxyPassword, Refusal};
 pub use preferences::{
     AppPreferences, Appearance, DEFAULT_REVIEW_WIDTH, DEFAULT_SIDEBAR_WIDTH, FontSizeStep,
     Language, NarrowSidebar, PREFERENCES_FILE, Preferences, PreferencesFile, PreferencesStore,
-    REVIEW_WIDTHS, SIDEBAR_WIDTHS, UI_FONT_SIZES, apply_appearance, choose_appearance,
+    REVIEW_WIDTHS, SIDEBAR_WIDTHS, UI_FONT_SIZES, WorkbarFace, apply_appearance, choose_appearance,
     choose_language, choose_narrow_sidebar, choose_palette, choose_ui_font_size,
     clamp_review_width, clamp_sidebar_width, follow_system_appearance, remembered_settings_section,
     resolve_system_locale, step_ui_font_size, theme_mode,
