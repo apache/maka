@@ -25,6 +25,8 @@ export type BrowserCopy = {
   openFailed: string;
   navigationFailed: string;
   navigationFailedDetail: string;
+  actionFailed: string;
+  actionFailedDetail: string;
   loadFailed: string;
   retry: string;
   retryAria: string;
@@ -65,6 +67,8 @@ const BROWSER_COPY = {
     openFailed: '无法打开地址',
     navigationFailed: '浏览器导航失败',
     navigationFailedDetail: '页面暂时无法打开，请稍后重试。',
+    actionFailed: '浏览器操作失败',
+    actionFailedDetail: '无法完成此操作，请重试。',
     loadFailed: '页面加载失败',
     retry: '重试',
     retryAria: '重试加载页面',
@@ -103,6 +107,8 @@ const BROWSER_COPY = {
     openFailed: '無法開啟地址',
     navigationFailed: '瀏覽器導航失敗',
     navigationFailedDetail: '頁面暫時無法開啟，請稍後重試。',
+    actionFailed: '瀏覽器操作失敗',
+    actionFailedDetail: '無法完成此操作，請重試。',
     loadFailed: '頁面載入失敗',
     retry: '重試',
     retryAria: '重試載入頁面',
@@ -141,6 +147,8 @@ const BROWSER_COPY = {
     openFailed: 'Could not open address',
     navigationFailed: 'Browser navigation failed',
     navigationFailedDetail: 'The page could not be opened. Try again later.',
+    actionFailed: 'Browser action failed',
+    actionFailedDetail: 'The action could not be completed. Try again.',
     loadFailed: 'Page failed to load',
     retry: 'Retry',
     retryAria: 'Retry loading page',
