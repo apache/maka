@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 53 |
-| platform-contract | 46 |
+| portable-candidate | 56 |
+| platform-contract | 48 |
 
-Total Windows-excluded declarations: **126**
+Total Windows-excluded declarations: **131**
 
 ## Inventory
 
@@ -109,6 +109,9 @@ Total Windows-excluded declarations: **126**
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` creates the target 0600 on POSIX | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` re-chmods a pre-existing world-readable target to 0600 on the next write | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` refuses to write through a pre-planted symlink at the temp path | `process.platform === 'win32'` |
+| platform-contract | `packages/storage/src/__tests__/git-entry.test.ts` inaccessible ${fixture.name} cannot downgrade identity or publish a marker | `process.platform === 'win32' \|\| process.getuid?.() === 0 ? 'Requires enforced POSIX permissions' : false` |
+| portable-candidate | `packages/storage/src/__tests__/git-entry.test.ts` a dangling HEAD symlink is not evidence that HEAD is absent | `process.platform === 'win32' ? 'Requires POSIX symlink support' : false` |
+| portable-candidate | `packages/storage/src/__tests__/git-entry.test.ts` failed ancestor ${shape} is not treated as an ordinary broken directory | `shape === 'gitdir-symlink' && process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
@@ -144,6 +147,8 @@ Total Windows-excluded declarations: **126**
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
+| platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unreadable ancestor Git repository fails closed until permissions return | `process.platform === 'win32' ? 'POSIX permissions are required for an unreadable HEAD fixture' : false` |
+| portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` a dangling .git symlink in the workspace itself blocks marker publication | `process.platform === 'win32' ? 'Windows symlink creation requires elevated privileges or Developer Mode' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
 | platform-contract | `scripts/macos-update-archive.test.mjs` the macOS update ZIP keeps bundle symlinks and modification times | `process.platform !== 'darwin' && 'the macOS update ZIP is built on macOS'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after a delayed Runtime Host Ready | `process.platform === 'win32'` |

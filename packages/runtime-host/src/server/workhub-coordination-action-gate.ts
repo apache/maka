@@ -1120,19 +1120,25 @@ export function candidateSet(
     .filter(isCandidateSession)
     .sort((left, right) => updatedAt(right) - updatedAt(left) || left.id.localeCompare(right.id))
     .slice(0, WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS);
+  // The set identity is the menu: which Sessions are offered, from which
+  // workspace, in which state. `name` and `updatedAt` stay out of it, and it is
+  // digested in id order rather than presentation order, because a title commit
+  // or a timestamp on one Session used to rotate the whole page and abort a
+  // delegation to a target that had not moved (#4785). Those fields are still in
+  // the per-Session ref, so a target that does move is still rejected.
   const candidateSetId = digest(
-    eligible.map((session) => ({
-      id: session.id,
-      name: session.name,
-      workspace: workspaceProjection(session),
-      status: session.status,
-      updatedAt: updatedAt(session),
-    })),
+    [...eligible]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((session) => ({
+        id: session.id,
+        workspace: workspaceProjection(session),
+        state: candidateState(session.status),
+      })),
   );
   return {
     candidateSetId,
     candidates: eligible.map((session) => ({
-      candidateRef: candidateRef(candidateSetId, session.id),
+      candidateRef: candidateRef(session),
       sessionId: session.id,
       sessionName: session.name,
       workspace: workspaceProjection(session),
@@ -1152,8 +1158,16 @@ function isCandidateSession(session: WorkHubActionGateSession): boolean {
   );
 }
 
-function candidateRef(candidateSetId: string, sessionId: string): string {
-  return `whc_${hash(`${candidateSetId}\0${sessionId}`).slice(0, 48)}`;
+function candidateRef(session: WorkHubActionGateSession): string {
+  return `whc_${hash(
+    JSON.stringify({
+      id: session.id,
+      name: session.name,
+      workspace: workspaceProjection(session),
+      status: session.status,
+      updatedAt: updatedAt(session),
+    }),
+  ).slice(0, 48)}`;
 }
 
 function delegationAssignment(

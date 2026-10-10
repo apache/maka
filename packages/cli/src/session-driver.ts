@@ -146,12 +146,16 @@ export interface MakaUserCommand {
 }
 
 export interface MakaSessionDriver {
-  listSessions(): Promise<SessionSummary[]>;
+  listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]>;
+  getSessionSummary?(sessionId: string): Promise<SessionSummary | undefined>;
   /** The Host workspace currently attached to this shell, when one exists. */
   getWorkspaceTarget(): WorkspaceTarget | undefined;
   /** Reads the current committed Todo projection for the attached Session. */
   queryTodo?(sessionId: string): Promise<{ sessionId: string; items: SessionTodoItem[] }>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
+  getSessionResumeCandidateAvailability?(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability>;
   preparePrompt(
     prompt: string,
     options?: MakaPreparePromptOptions,
@@ -249,6 +253,23 @@ export interface MakaSessionDriver {
    * invented mode here.
    */
   getPermissionMode?(): PermissionMode | undefined;
+}
+
+export interface MakaSessionListOptions {
+  /** Maximum number returned; truncation before the catalog ends is reported as incomplete. */
+  readonly limit?: number;
+  /** Restrict the catalog read to sessions in this working directory. */
+  readonly cwd?: string;
+}
+
+export class MakaSessionCatalogIncompleteError extends Error {
+  constructor(
+    readonly scannedPages: number,
+    readonly sessions: readonly SessionSummary[] = [],
+  ) {
+    super(`Session catalog results may be incomplete after scanning ${scannedPages} pages.`);
+    this.name = 'MakaSessionCatalogIncompleteError';
+  }
 }
 
 /**

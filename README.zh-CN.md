@@ -170,7 +170,7 @@ packages/eval/         Experiment cell、attempt、result 与 executor/subject a
 packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
 packages/cli/          TUI 和非交互 CLI
 packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
-native/                Rust：Runtime Host 的 direct-peer addon 与 gitoxide helper
+native/                Rust：Runtime Host 的 direct-peer addon 与 Windows task launcher，以及 gitoxide helper
 website/               maka.apache.org 的 Astro 源码
 
 docs/                  架构、产品、安全、隐私和测试契约

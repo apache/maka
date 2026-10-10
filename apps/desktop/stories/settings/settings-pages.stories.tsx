@@ -76,6 +76,8 @@ import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import type { PetPackManifestV1 } from '@maka/core/pet';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
+import { TaskEntryServicesProvider } from '../../src/renderer/features/task-entry';
+import { createFakeTaskEntryServices } from '../../src/renderer/features/task-entry/testing';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
 import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
 import { UsagePricingServicesProvider, type UsagePricingServices } from '../../src/renderer/features/usage';
@@ -144,6 +146,7 @@ const noop = () => undefined;
 
 // Both halves open a native file dialog, which a story has none of. Cancelled is
 // the outcome that leaves the page exactly as it was.
+const taskEntryServices = createFakeTaskEntryServices();
 const sessionBundleServices: SessionBundleServices = {
   exportBundle: async () => ({ ok: false, reason: 'canceled' }),
   importBundle: async () => ({ ok: false, reason: 'canceled' }),
@@ -2029,7 +2032,9 @@ function SettingsStory(props: SettingsStoryProps) {
       <DiagnosticsServicesProvider services={settingsDiagnosticsServices}>
         <AppUpdateServicesProvider services={settingsAppUpdateServices}>
           <AppUpdateProvider>
-            <SettingsStoryFrame {...props} />
+            <TaskEntryServicesProvider services={taskEntryServices}>
+              <SettingsStoryFrame {...props} />
+            </TaskEntryServicesProvider>
           </AppUpdateProvider>
         </AppUpdateServicesProvider>
       </DiagnosticsServicesProvider>

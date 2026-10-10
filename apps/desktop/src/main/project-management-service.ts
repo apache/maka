@@ -31,7 +31,8 @@ type DirectoryActionResult =
   | { ok: false; reason: 'cancelled' };
 type SelectedDirectoryActionResult =
   | { ok: true; project: ProjectRecord; path: string }
-  | { ok: false; reason: 'cancelled' };
+  | { ok: false; reason: 'cancelled' }
+  | { ok: false; reason: 'archived'; projectId: string };
 
 export interface ProjectManagementService {
   current(): Promise<CurrentProjectSelection>;
@@ -129,6 +130,9 @@ export function createProjectManagementService(deps: {
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
       const registered = await deps.catalog.register(path);
+      if (registered.archivedAt !== undefined) {
+        return { ok: false, reason: 'archived', projectId: registered.id };
+      }
       // Rename before selecting, so the value the caller reads back (and the
       // one the selection records) is the name the user typed, not the folder
       // basename it was registered under. A blank name is not a name: it leaves

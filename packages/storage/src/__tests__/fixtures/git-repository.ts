@@ -18,11 +18,70 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+
+export const BROKEN_GIT_DIRECTORY_SHAPES = [
+  'missing-head',
+  'head-directory',
+  'head-garbage',
+  'head-symref-no-refs-prefix',
+  'missing-objects-and-refs',
+  'missing-objects',
+  'missing-refs',
+  'objects-file',
+  'refs-file',
+] as const;
+
+export const BROKEN_GIT_SHAPES = [...BROKEN_GIT_DIRECTORY_SHAPES, 'gitfile-garbage-head'] as const;
+
+export type BrokenGitShape = (typeof BROKEN_GIT_SHAPES)[number];
+
+/** Writes structurally broken Git metadata (a `.git` entry or its target) into root. */
+export async function createBrokenGitMetadata(root: string, shape: BrokenGitShape): Promise<void> {
+  await execFileAsync('git', ['init', '--quiet'], { cwd: root });
+  switch (shape) {
+    case 'missing-head':
+      await rm(join(root, '.git', 'HEAD'));
+      return;
+    case 'head-directory':
+      await rm(join(root, '.git', 'HEAD'));
+      await mkdir(join(root, '.git', 'HEAD'));
+      return;
+    case 'head-garbage':
+      await writeFile(join(root, '.git', 'HEAD'), 'gk\n', 'utf8');
+      return;
+    case 'gitfile-garbage-head':
+      await rm(join(root, '.git'), { recursive: true });
+      await writeFile(join(root, '.git'), 'gitdir: stub\n', 'utf8');
+      await mkdir(join(root, 'stub'));
+      await execFileAsync('git', ['init', '--bare', '--quiet', join(root, 'stub')]);
+      await writeFile(join(root, 'stub', 'HEAD'), 'gk\n', 'utf8');
+      return;
+    case 'head-symref-no-refs-prefix':
+      await writeFile(join(root, '.git', 'HEAD'), 'ref: gk\n', 'utf8');
+      return;
+    case 'missing-objects-and-refs':
+      await rm(join(root, '.git', 'objects'), { recursive: true });
+      await rm(join(root, '.git', 'refs'), { recursive: true });
+      return;
+    case 'missing-objects':
+    case 'missing-refs':
+      await rm(join(root, '.git', shape === 'missing-objects' ? 'objects' : 'refs'), {
+        recursive: true,
+      });
+      return;
+    case 'objects-file':
+    case 'refs-file': {
+      const path = join(root, '.git', shape === 'objects-file' ? 'objects' : 'refs');
+      await rm(path, { recursive: true });
+      await writeFile(path, 'not a directory\n');
+    }
+  }
+}
 
 export async function createGitRepositoryWithWorktree(
   repository: string,

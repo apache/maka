@@ -10246,6 +10246,138 @@ describe('AiSdkBackend tool availability diagnostics', () => {
   });
 });
 
+describe('AiSdkBackend Anthropic prompt caching', () => {
+  type AnthropicBlock = Record<string, unknown> & { cache_control?: unknown };
+  type AnthropicBody = {
+    cache_control?: unknown;
+    messages: Array<{ role: string; content: AnthropicBlock[] }>;
+  };
+  const sse = (events: ReadonlyArray<readonly [string, Record<string, unknown>]>) =>
+    events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+  const responseEvents = (step: number) =>
+    sse([
+      [
+        'message_start',
+        {
+          message: {
+            id: `msg-${step}`,
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-sonnet-4-5-20250929',
+            content: [],
+            stop_reason: null,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        },
+      ],
+      ...(step === 1
+        ? ([
+            [
+              'content_block_start',
+              {
+                index: 0,
+                content_block: { type: 'tool_use', id: 'read-1', name: 'Read', input: {} },
+              },
+            ],
+            [
+              'content_block_delta',
+              {
+                index: 0,
+                delta: { type: 'input_json_delta', partial_json: '{"path":"notes.md"}' },
+              },
+            ],
+          ] as const)
+        : ([
+            ['content_block_start', { index: 0, content_block: { type: 'text', text: '' } }],
+            ['content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'done' } }],
+          ] as const)),
+      ['content_block_stop', { index: 0 }],
+      [
+        'message_delta',
+        {
+          delta: { stop_reason: step === 1 ? 'tool_use' : 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 1 },
+        },
+      ],
+      ['message_stop', {}],
+    ]);
+  const runToolTurn = async (target: LlmConnection): Promise<AnthropicBody[]> => {
+    const durable = durableTurnHarness('turn-cache', 'inspect notes');
+    const bodies: AnthropicBody[] = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as AnthropicBody);
+      return new Response(responseEvents(bodies.length).join(''), {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: target,
+      modelId: target.defaultModel,
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      systemPrompt: () => ({
+        contexts: [{ name: 'test.request-context', text: 'REQUEST_ONLY_CONTEXT' }],
+        sourceRevisions: [],
+      }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(bodies.length, 2);
+    return bodies;
+  };
+  const blocks = (body: AnthropicBody) =>
+    body.messages.flatMap(({ role, content }) => content.map((block) => ({ role, block })));
+  const withoutCacheControl = ({ role, block }: { role: string; block: AnthropicBlock }) => {
+    const { cache_control: _cacheControl, ...rest } = block;
+    return { role, block: rest };
+  };
+
+  test('keeps the cache breakpoint on durable history before request-only context', async () => {
+    const bodies = await runToolTurn(connection());
+
+    const breakpoints = bodies.map((body) => {
+      const flat = blocks(body);
+      const marked = flat.flatMap(({ block }, index) =>
+        block.cache_control !== undefined ? [index] : [],
+      );
+      assert.equal(marked.length, 1, JSON.stringify(body.messages));
+      const breakpoint = marked[0]!;
+      assert.deepEqual(flat[breakpoint]!.block.cache_control, body.cache_control);
+      assert.deepEqual(
+        flat.slice(breakpoint + 1).map(({ block }) => block.text),
+        ['REQUEST_ONLY_CONTEXT'],
+      );
+      return breakpoint;
+    });
+    const cachedPrefix = blocks(bodies[0]!)
+      .slice(0, breakpoints[0]! + 1)
+      .map(withoutCacheControl);
+    assert.deepEqual(
+      blocks(bodies[1]!).slice(0, cachedPrefix.length).map(withoutCacheControl),
+      cachedPrefix,
+    );
+  });
+
+  test('adds no cache breakpoint on Anthropic-protocol connections without automatic caching', async () => {
+    const bodies = await runToolTurn({
+      ...connection(),
+      slug: 'anthropic-relay',
+      name: 'Anthropic Relay',
+      providerType: 'custom',
+      defaultApiProtocol: 'anthropic-messages',
+      baseUrl: 'https://anthropic-relay.invalid',
+    });
+
+    for (const body of bodies) {
+      assert.equal(body.cache_control, undefined);
+      assert.equal(
+        blocks(body).some(({ block }) => block.cache_control !== undefined),
+        false,
+      );
+    }
+  });
+});
+
 describe('AiSdkBackend context budget and prompt attribution', () => {
   test('replay hands the model a bounded summary for an Edit file_diff result, not the diff', () => {
     const diff = ['--- a/a.ts', '+++ b/a.ts', '@@ -1,2 +1,2 @@', ' keep', '-old', '+new'].join(

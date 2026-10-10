@@ -47,6 +47,7 @@ import {
 } from '../operator/managed-deployment.js';
 import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-package-evidence.js';
 import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
+import type { OwnedCandidateAttempt } from '../client/launcher.js';
 import { runtimeHostStartupError } from '../client/startup-error.js';
 import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
 import {
@@ -468,6 +469,127 @@ test('managed reconnection classifies an unresponsive endpoint without authorizi
     );
   }
   assert.equal(launches, 0);
+});
+
+const LOST_ATTEMPT_ID = '00000000-0000-4000-8000-000000000003';
+
+function losingCandidateAttempt(): OwnedCandidateAttempt {
+  return {
+    pid: 4242,
+    startupAttemptId: LOST_ATTEMPT_ID,
+    exited: Promise.resolve({
+      code: 2,
+      signal: null,
+      stderr: '',
+      stderrTruncated: false,
+    }),
+    startupFailure: Promise.resolve({
+      reason: 'launch_election_lost',
+      startupAttemptId: LOST_ATTEMPT_ID,
+    }),
+    releaseToEnvironment() {},
+    async settle() {
+      return false;
+    },
+  };
+}
+
+// Issue #5843: a large transcript store makes the winning Candidate take longer
+// than the election window to register. Every other candidate that is launched
+// during that window loses the launch election and exits 2, and the Host never
+// comes up. Losing the election is evidence that an owner is starting, so the
+// election must spend its window waiting for that owner instead of reporting
+// the loss as the Host's failure.
+test('a candidate that loses the launch election is waited on, not replaced', async (t) => {
+  const input = await fixture(t);
+  let launches = 0;
+  let connectCalls = 0;
+  const startedAt = performance.now();
+  const result = await connectOrSpawnRuntimeHostWithDependencies(
+    {
+      rootPath: input.capability.canonicalPath,
+      protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      candidateEntrypoint: 'candidate.js',
+      electionDeadlineMs: 300,
+    },
+    {
+      managedDeploymentAuthority: input.authority,
+      connectHost: async () => {
+        connectCalls += 1;
+        return { kind: 'unavailable', reason: 'not_registered', endpointConnected: false };
+      },
+      launchCandidate: () => {
+        launches += 1;
+        return { spawned: Promise.resolve(losingCandidateAttempt()) };
+      },
+      random: () => 0.5,
+    },
+  );
+  const elapsedMs = performance.now() - startedAt;
+
+  // Which of the two exits a lost election reaches depends on when the loser's
+  // diagnostic resolves relative to the window, so assert only the property
+  // that must hold on both: the loss never decides the outcome.
+  assert.equal(result.kind, 'failed');
+  if (result.kind !== 'failed') throw new Error('Expected the election to end in a failure');
+  assert.notEqual(
+    result.reason,
+    'launch_election_lost',
+    `election ended on another candidate's loss after ${Math.round(elapsedMs)}ms`,
+  );
+  assert.ok(launches >= 1);
+});
+
+test('a candidate that never wins is not permanent proof of a starting owner', async (t) => {
+  const input = await fixture(t);
+  let launches = 0;
+  const result = await connectOrSpawnRuntimeHostWithDependencies(
+    {
+      rootPath: input.capability.canonicalPath,
+      protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      candidateEntrypoint: 'candidate.js',
+      // Re-launching is floored at MIN_CANDIDATE_INTERVAL_MS, so the window has
+      // to be long enough for a second launch to be possible at all.
+      electionDeadlineMs: 900,
+    },
+    {
+      managedDeploymentAuthority: input.authority,
+      connectHost: async () => ({
+        kind: 'unavailable',
+        reason: 'not_registered',
+        endpointConnected: false,
+      }),
+      launchCandidate: () => {
+        launches += 1;
+        // A candidate that starts and never reports an election loss is the
+        // normal path: this client must keep launching it, not wait forever on
+        // an owner that does not exist.
+        return {
+          spawned: Promise.resolve({
+            pid: 9999,
+            exited: Promise.resolve({
+              code: 1,
+              signal: null,
+              stderr: '',
+              stderrTruncated: false,
+            }),
+            releaseToEnvironment() {},
+            async settle() {
+              return false;
+            },
+          }),
+        };
+      },
+      random: () => 0.5,
+    },
+  );
+
+  assert.equal(result.kind, 'failed');
+  if (result.kind !== 'failed') throw new Error('Expected the election to end in a failure');
+  assert.equal(result.reason, 'startup_timeout');
+  assert.ok(launches > 1, 'an election with no owner must still launch a Host');
 });
 
 test('concurrent install and unmanaged launch cannot both cross the authority boundary', async (t) => {

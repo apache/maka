@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.6.3` (195 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 333 files — blocker 0, reimplementation 0, polish 4, aligned 329.
+**Totals:** 334 files — blocker 0, reimplementation 0, polish 4, aligned 330.
 
 ## Exclusions (explicit)
 
@@ -130,6 +130,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/storage-usage/ui/storage-usage-section.tsx` | other | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/features/storage-usage/ui/task-storage-size.tsx` | other | Text | aligned — uses Astryx (Text) | aligned |
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/task-entry/ui/project-registration-boundary.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/usage/pricing-services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |

@@ -1629,6 +1629,7 @@ export class AiSdkTurn {
             result = await this.deps.modelAdapter.startStream({
               model,
               messages: dispatchMessages,
+              historyMessageCount: attemptMessages.length,
               tools: modelTools,
               activeTools: activeToolsForRequest,
               onStreamActivity: () => requestWatchdog?.markActivity(),

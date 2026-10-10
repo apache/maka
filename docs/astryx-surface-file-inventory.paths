@@ -100,6 +100,7 @@ apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-section.ts
 apps/desktop/src/renderer/features/storage-usage/ui/storage-usage-section.tsx
 apps/desktop/src/renderer/features/storage-usage/ui/task-storage-size.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
+apps/desktop/src/renderer/features/task-entry/ui/project-registration-boundary.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx
 apps/desktop/src/renderer/features/usage/pricing-services-context.tsx

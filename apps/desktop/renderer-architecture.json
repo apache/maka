@@ -513,7 +513,7 @@
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-chrome-actions.tsx": {
-        "importDeclarations": 1,
+        "importDeclarations": 0,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -528,7 +528,7 @@
           "./shell/window-titlebar": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 1,
+        "importSpecifiers": 0,
         "nonTriviaTokens": 122
       },
       "src/renderer/app-shell-command-actions.ts": {
@@ -618,7 +618,7 @@
         "nonTriviaTokens": 843
       },
       "src/renderer/app-shell-overlays.tsx": {
-        "importDeclarations": 5,
+        "importDeclarations": 4,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.addEventListener": 1,
@@ -644,11 +644,11 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 8,
+        "importSpecifiers": 7,
         "nonTriviaTokens": 858
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 35,
+        "importDeclarations": 34,
         "bridgePaths": {},
         "environmentCapabilities": {
           "window.requestAnimationFrame": 3
@@ -736,11 +736,11 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 52,
+        "importSpecifiers": 43,
         "nonTriviaTokens": 7330
       },
       "src/renderer/use-app-shell-session-list.ts": {
-        "importDeclarations": 4,
+        "importDeclarations": 3,
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
@@ -763,7 +763,7 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 5,
+        "importSpecifiers": 4,
         "nonTriviaTokens": 479
       },
       "src/renderer/use-app-shell-session-workspace.ts": {
@@ -1550,6 +1550,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "./application/contracts/operation-diagnostics.js": 1,
+          "./features/task-entry/index.js": 1,
           "./locales/shell-copy.js": 1,
           "@astryxdesign/core/Button": 1,
           "@astryxdesign/core/Dialog": 1,
@@ -2278,6 +2279,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "../features/task-entry/index.js": 1,
           "../locales/settings-projects-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
           "../project-path-display.js": 1,

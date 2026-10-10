@@ -31,6 +31,7 @@ export interface TaskEntryHostModel {
   acceptRegisteredProject(
     project: ProjectRecord,
     host: TaskEntryHostRef,
+    restored?: boolean,
   ): Promise<void>;
 }
 
@@ -45,8 +46,8 @@ export function TaskEntryHostView({ model }: { model: TaskEntryHostModel }) {
       host={model.directoryHost}
       returnFocusTo={model.directoryOpener}
       onClose={model.closeDirectoryPicker}
-      onRegistered={(project, host) => {
-        void model.acceptRegisteredProject(project, host);
+      onRegistered={(project, host, restored) => {
+        void model.acceptRegisteredProject(project, host, restored);
       }}
     />
     {model.newProjectDialog ? (
