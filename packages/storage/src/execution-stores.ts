@@ -22,6 +22,7 @@ import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-even
 import type {
   RuntimeContinuationAuthorityStore,
   RuntimeInvocationRecoveryInventoryEntry,
+  RuntimeSessionEventSnapshot,
 } from '@maka/core/runtime-event-store';
 import type { ImmutableRuntimePrefixProofV1 } from '@maka/core/runtime-boundary';
 import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
@@ -141,6 +142,10 @@ export type {
 export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
 export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
+  ArchiveRetentionCandidate,
+  ArchiveRetentionCandidateCount,
+  ArchiveRetentionCandidateQuery,
+  ArchiveRetentionCandidateRow,
   CreateStableSessionRequest,
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
@@ -175,6 +180,16 @@ export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore &
     listUnsettledToolOperations(
       sessionIds: string | readonly string[],
     ): Promise<UnsettledToolOperationRecord[]>;
+    ensureRecoveredTerminalRuntimeEventDurable(
+      sessionId: string,
+      runId: string,
+      event: RuntimeEvent,
+      unsettledOperationIds: readonly string[],
+    ): Promise<void>;
+    /** Rebuild one Session's disposable tool projections from its immutable events. */
+    rebuildToolProjectionsForSession?(sessionId: string): Promise<void>;
+    /** Repair terminal projections for selected Sessions without decoding their full histories. */
+    rebuildTerminalToolProjectionsForSessions(sessionIds: readonly string[]): Promise<void>;
     appendRuntimePartialBatch(
       sessionId: string,
       runId: string,
@@ -248,6 +263,7 @@ export interface ExecutionAgentRunReader {
 }
 
 export interface ExecutionRuntimeEventReader {
+  readSessionRuntimeSnapshot?(sessionId: string): Promise<RuntimeSessionEventSnapshot>;
   /**
    * A Session's run inventory, read from its canonical events. This is the
    * definition of the inventory, not a cache of it, so nothing writes or
@@ -514,7 +530,7 @@ async function createExecutionStoresForWrite(
           Reflect.apply(persistence.graphControlStore[name], persistence.graphControlStore, args),
         ),
     ]),
-  ) as Omit<ExecutionGraphStore, 'close'>;
+  ) as Pick<ExecutionGraphStore, (typeof EXECUTION_GRAPH_METHODS)[number]>;
   const graphControlStore: ExecutionGraphStore = Object.freeze({
     ...graphMethods,
     ...(persistence.graphControlStore.listAgentGraphScheduleRecoveryGraphIds
@@ -553,11 +569,16 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
-      readActiveWorkHubAssignmentsByTarget: (targetSessionIds, maxAssignmentsPerTarget) =>
+      readActiveWorkHubAssignmentsByTarget: (
+        targetSessionIds,
+        maxAssignmentsPerTarget,
+        includeStopped,
+      ) =>
         run(() =>
           sessionStore.readActiveWorkHubAssignmentsByTarget(
             targetSessionIds,
             maxAssignmentsPerTarget,
+            includeStopped,
           ),
         ),
       readWorkHubReplacement: (delegationId) =>
@@ -566,10 +587,10 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
       readWorkHubSupersession: (delegationId) =>
         run(() => sessionStore.readWorkHubSupersession(delegationId)),
-      readWorkHubStopRequest: (delegationId) =>
-        run(() => sessionStore.readWorkHubStopRequest(delegationId)),
-      readWorkHubStopResolution: (delegationId) =>
-        run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      readWorkHubStopRequest: (delegationId, actionId) =>
+        run(() => sessionStore.readWorkHubStopRequest(delegationId, actionId)),
+      readWorkHubStopResolution: (delegationId, actionId) =>
+        run(() => sessionStore.readWorkHubStopResolution(delegationId, actionId)),
       claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
       readWorkHubActionClaim: (actionId) =>
         run(() => sessionStore.readWorkHubActionClaim(actionId)),
@@ -681,6 +702,11 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
+      listArchiveRetentionCandidates: (query) =>
+        run(() => sessionStore.listArchiveRetentionCandidates(query)),
+      countArchiveRetentionCandidates: (enabledAt) =>
+        run(() => sessionStore.countArchiveRetentionCandidates(enabledAt)),
+      readLatestSessionMetadataTime: () => run(() => sessionStore.readLatestSessionMetadataTime()),
       close,
     },
     agentRunStore: {
@@ -730,8 +756,23 @@ async function createExecutionStoresForWrite(
         run(() => runtimeEventStore.importConversationCopyRuntimeEvents(sessionId, batches)),
       ensureTerminalRuntimeEventDurable: (sessionId, runId, event) =>
         run(() => runtimeEventStore.ensureTerminalRuntimeEventDurable(sessionId, runId, event)),
+      ensureRecoveredTerminalRuntimeEventDurable: (sessionId, runId, event, operationIds) =>
+        run(() =>
+          runtimeEventStore.ensureRecoveredTerminalRuntimeEventDurable(
+            sessionId,
+            runId,
+            event,
+            operationIds,
+          ),
+        ),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      ...(runtimeEventStore.readSessionRuntimeSnapshot
+        ? {
+            readSessionRuntimeSnapshot: (sessionId: string) =>
+              run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
+          }
+        : {}),
       scanRuntimeEvents: (sessionId, runId, budget, visit) =>
         run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, budget, visit)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
@@ -811,6 +852,12 @@ async function createExecutionStoresForWrite(
         run(() => runtimePersistence.runtimeCommitStore.commitToolOutcome(input)),
       listUnsettledToolOperations: (sessionIds) =>
         run(() => runtimePersistence.runtimeCommitStore.listUnsettledToolOperations(sessionIds)),
+      rebuildTerminalToolProjectionsForSessions: (sessionIds) =>
+        run(() =>
+          runtimePersistence.runtimeCommitStore.rebuildTerminalToolProjectionsForSessions(
+            sessionIds,
+          ),
+        ),
     },
   };
   freezeExecutionStoresFacade(stores);
@@ -891,6 +938,12 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
     runtimeEventStore: {
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      ...(runtimeEventStore.readSessionRuntimeSnapshot
+        ? {
+            readSessionRuntimeSnapshot: (sessionId: string) =>
+              run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
+          }
+        : {}),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>

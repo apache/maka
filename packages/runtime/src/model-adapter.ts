@@ -25,6 +25,7 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
 import type {
@@ -167,11 +168,9 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // Verified against @ai-sdk/open-responses@2.0.34: replay preserves
-      // item order and IDs, but a provider-executed result embedded in the
-      // assistant message (Maka's provider-tool chronology) is still dropped,
-      // leaving a dangling function_call on the wire. Fail closed until the
-      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
+      // General Open Responses provider tool replay remains unsupported.
+      // AiSdkMessageProjection admits only DeepSeek calls with a paired,
+      // original web_search_call item through its narrower per-item check.
       providerExecutedTools:
         this.runtime.reasoningReplay.kind !== 'responses' ||
         this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
@@ -198,6 +197,15 @@ export class ModelAdapter {
     };
   }
 
+  supportsDeepSeekWebSearchReplay(): boolean {
+    return (
+      this.input.connection.providerType === 'deepseek' &&
+      this.runtime.wire === 'openai-responses' &&
+      this.runtime.reasoningReplay.kind === 'responses' &&
+      this.runtime.reasoningReplay.contract.adapter === 'open-responses'
+    );
+  }
+
   resolveModel(): unknown {
     if (providerAuthRequiresSecret(this.input.connection.providerType) && !this.input.apiKey) {
       throw new Error(`No API key stored for connection "${this.input.connection.slug}"`);
@@ -217,7 +225,17 @@ export class ModelAdapter {
     });
   }
 
+  /**
+   * Whether a request to this connection may carry an output-token limit at
+   * all. When it may not, no limit is sent: neither a configured per-model
+   * limit nor the context-recovery cap.
+   */
+  acceptsOutputTokenLimit(): boolean {
+    return providerAcceptsOutputTokenLimit(this.input.connection.providerType);
+  }
+
   maxOutputTokens(): number | undefined {
+    if (!this.acceptsOutputTokenLimit()) return undefined;
     return selectedModelMaxOutputTokens(
       this.input.connection,
       this.input.modelId,
@@ -274,14 +292,18 @@ export class ModelAdapter {
       wrapLanguageModel: (input: Record<string, unknown>) => unknown;
     };
 
-    const maxOutputTokens =
-      input.maxOutputTokens ??
-      selectedModelMaxOutputTokens(
-        this.input.connection,
-        this.input.modelId,
-        this.input.providerOptions,
-        this.runtime,
-      );
+    // The one place a main-turn output limit reaches the wire. A provider that
+    // rejects any limit gets none, whether it came from the caller (overflow
+    // recovery, a resumed request) or from the configured model limit.
+    const maxOutputTokens = this.acceptsOutputTokenLimit()
+      ? (input.maxOutputTokens ??
+        selectedModelMaxOutputTokens(
+          this.input.connection,
+          this.input.modelId,
+          this.input.providerOptions,
+          this.runtime,
+        ))
+      : undefined;
     let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
     const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
@@ -304,7 +326,14 @@ export class ModelAdapter {
     const runtimeToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_PROVIDER_NAME ? TOOL_SEARCH_NAME : name;
     const sdkTools = lowerModelTools(input.tools);
-    if (usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined) {
+    // Prose names the alias only when the provider can call it. In Code Mode
+    // tool_search is nested inside exec under its runtime name, so the
+    // catalog prompt must keep that name.
+    const providerExposesToolSearch =
+      usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined;
+    const providerTextToolName = (name: string): string =>
+      providerExposesToolSearch ? providerToolName(name) : name;
+    if (providerExposesToolSearch) {
       sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
       delete sdkTools[TOOL_SEARCH_NAME];
     }
@@ -320,9 +349,13 @@ export class ModelAdapter {
           this.openAiResponsesTransportState.semanticBaseline(responsesLane),
         )
       : { messages: fullMessages };
-    const providerMessages = remapModelMessageToolNames(continuation.messages, providerToolName);
+    const providerMessages = remapModelMessageToolNames(
+      continuation.messages,
+      providerToolName,
+      providerTextToolName,
+    );
     const providerSystem = input.system
-      ? remapProviderToolNamesInText(input.system, providerToolName)
+      ? remapProviderToolNamesInText(input.system, providerTextToolName)
       : undefined;
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
@@ -1273,6 +1306,7 @@ function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] 
 function remapModelMessageToolNames(
   messages: readonly ModelMessage[],
   providerToolName: (name: string) => string,
+  providerTextToolName: (name: string) => string,
 ): ModelMessage[] {
   const remapContent = <T extends { type: string }>(content: readonly T[]): T[] =>
     content.map((part) => {
@@ -1291,7 +1325,7 @@ function remapModelMessageToolNames(
           ) {
             remapped.output = {
               ...remapped.output,
-              value: remapProviderToolNamesInText(remapped.output.value, providerToolName),
+              value: remapProviderToolNamesInText(remapped.output.value, providerTextToolName),
             };
           }
         }

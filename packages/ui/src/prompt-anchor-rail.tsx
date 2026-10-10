@@ -85,6 +85,7 @@ export function observeActivePromptRailVisibility(
 export interface PromptAnchorRailTurn {
   /** Optional host identity color; ordinary Session ticks remain neutral. */
   accentColor?: string;
+  accentBackground?: string;
   highlighted?: boolean;
   turnId: string;
   label: string;
@@ -381,6 +382,7 @@ const PromptRailTick = memo(function PromptRailTick({
         onBlur={() => onHighlight?.(undefined)}
         style={{
           color: turn.accentColor,
+          '--maka-prompt-rail-background': turn.accentBackground,
           '--maka-prompt-rail-index': index,
           '--maka-prompt-rail-scale': scale,
         } as CSSProperties}

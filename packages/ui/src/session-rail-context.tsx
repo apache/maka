@@ -66,6 +66,8 @@ export interface SessionRailData {
   groupVariant: SessionViewMode;
   /** Human-readable project identity for a session hover card. */
   sessionProjectName?(session: SessionSummary): string | undefined;
+  /** Session's location path, shown only when its project has multiple locations. */
+  sessionLocation?(session: SessionSummary): string | undefined;
   sessionMeta?(session: SessionSummary): string | undefined;
   sessionBadge?(session: SessionSummary): ReactNode;
   onSelectSession(sessionId: string): void;
@@ -89,6 +91,9 @@ export interface SessionRailData {
    * the scoped key the rows carry for their own actions, because the Host whose
    * project it is has never seen that key. The shell answers this per Session so
    * a task is never offered a project from a Host that does not hold it.
+   * The provider excludes the current project (including aliases) and includes
+   * the null exit only for known membership, even if that project is archived
+   * or unavailable. Consumers use these targets without re-deriving membership.
    */
   moveTargets?(sessionId: string): readonly SessionMoveTarget[];
   /**

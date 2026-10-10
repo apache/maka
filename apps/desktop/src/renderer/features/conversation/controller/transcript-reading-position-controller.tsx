@@ -42,7 +42,7 @@ export interface TranscriptTurnIndex {
 
 export interface TranscriptReadingPositionCommands {
   prepareSend(sessionId: string): boolean;
-  captureAnchor(turnId?: string): void;
+  captureAnchor(sessionId: string, turnId?: string): void;
   loadEarlier(throughSequence?: number): Promise<void>;
 }
 
@@ -51,7 +51,7 @@ export function TranscriptReadingPositionController(props: {
   commands: Ref<TranscriptReadingPositionCommands>;
   sessionId?: string;
   profileId?: string;
-  currentSessionId: { current: string | undefined };
+  currentSessionId: { readonly current: string | undefined };
   rangeController: { current: RangeController | undefined };
   messages: readonly StoredMessage[];
   searchTarget: Parameters<typeof restoreSessionTranscriptRange>[0]['searchTarget'];
@@ -84,9 +84,8 @@ export function TranscriptReadingPositionController(props: {
         followLatest: props.sessionUi.transcriptViewportNavigation.followLatest,
       });
     },
-    captureAnchor(turnId) {
-      const { sessionId } = props;
-      if (!sessionId || props.currentSessionId.current !== sessionId) return;
+    captureAnchor(sessionId, turnId) {
+      if (props.sessionId !== sessionId || props.currentSessionId.current !== sessionId) return;
       props.sessionUi.setTranscriptRestoreUnavailable(sessionId, undefined);
       props.sessionUi.setTranscriptReadingAnchor(sessionId, turnId ? { turnId } : undefined);
     },

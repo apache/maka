@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { useState } from 'react';
-import { ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
+import { useMemo, useState } from 'react';
+import { ComposerPromptSuggestionProvider, ToastProvider, LocaleProvider, AstryxLocaleProvider, ChatSurfaceLayout } from '@maka/ui';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { StoredMessage, SessionSummary } from '@maka/core/session';
 import type { Meta, StoryObj } from '@storybook/react-vite';
@@ -47,7 +47,7 @@ const repairChoices = [
   providerType: 'openai' as const, providerLabel: connectionName, model, label,
   contextWindow: 100_000, isDefault: index === 0, thinkingLevels: [] as ThinkingLevel[],
 }));
-function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false, repairModel = false): WorkHubServices {
+function makeServices(failFirst: boolean, withHistory: boolean | 'usage', coloredHistory: boolean, selectTarget = false, question = false, progress = false, repairModel = false, suggestions = false): WorkHubServices {
   let failures = failFirst ? 1 : 0;
   let session: SessionSummary & { revision: number } = {
     id: sessionId, name: 'WorkHub', revision: 1, isFlagged: false, isArchived: false, labels: [], hasUnread: false,
@@ -101,9 +101,10 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
       subscribeSessionEvents: () => () => {},
       subscribeUsageChanges: () => () => {},
     },
-    retractQueueEntry: async () => {}, promoteQueueEntry: async () => {},
-    updateQueueEntry: async () => {}, reorderQueueEntries: async () => {},
+    retractQueueEntry: async () => {}, promoteQueueEntry: async () => {}, updateQueueEntry: async () => {},
+    reorderQueueEntries: async () => {},
     enqueueMessage: async () => 'admitted',
+    queryMessageExecutions: async () => ({ resolutions: [] }),
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
     presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right', togglePosition: 'edge' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, openSettings: async () => {}, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
@@ -112,11 +113,6 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     getSession: async () => session,
     listSessions: async () => coloredHistory ? [target, secondTarget] : [target], subscribeSessions: (handler) => { updateSessions = handler; return () => { updateSessions = undefined; }; }, modelChoices: async () => repairModel ? repairChoices : choices,
     setDefaultModel: async () => {},
-    delegationFeedback: async (references) => references.map(({ id }) => ({
-      id,
-      state: coloredHistory && id === 'link-1' ? 'waiting_for_user' as const : coloredHistory && id === 'link-2' ? 'running' as const : 'completed' as const,
-      resultPreview: '重复投递测试已通过，支付回调保持同一响应。',
-    })),
     attachments: { pickFiles: async () => ({ ok: true, files: [{ approvalId: 'file-1', name: 'requirements.txt', size: 12, mimeType: 'text/plain' }] }), previewApproval: async () => ({ ok: false, reason: 'not-image' }) },
     readAttachmentBytes: async () => { throw new Error('Not an image'); },
     prepareAttachments: async (id, items) => { writes.upload(id, items); return [{ name: 'requirements.txt', kind: 'other', mimeType: 'text/plain', bytes: 12, ref: { kind: 'session_file', sessionId: 'maka_workhub_coordination', relativePath: 'artifact-1' } }]; },
@@ -158,6 +154,12 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
         publish(); return { kind: 'admitted', turnId: input.turnId };
       }
       if (failures-- > 0) throw new Error('Temporary Host failure');
+      if (suggestions) {
+        session = { ...session, runningTurnIds: [input.turnId] }; updateSessions?.();
+        // Model transport is mocked; let the real controller observe an in-flight reply.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        session = { ...session, runningTurnIds: [] }; updateSessions?.();
+      }
       messages = [...messages, { type: 'user', id: input.turnId, turnId: input.turnId, ts: 4, text: input.text, attachments: input.attachments }, { type: 'assistant', id: `${input.turnId}-answer`, turnId: input.turnId, ts: 5, modelId: 'model-a', text: '已收到。' }, { type: 'turn_state', id: `${input.turnId}-done`, turnId: input.turnId, ts: 6, status: 'completed' }];
       publish(); return { kind: 'admitted', turnId: input.turnId };
     },
@@ -183,16 +185,21 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
 
   };
 }
-function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false, repairModel = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean; repairModel?: boolean }) {
+function Surface({ failFirst = false, history = false, colors = false, selectTarget = false, question = false, progress = false, repairModel = false, suggestions = false }: { failFirst?: boolean; history?: boolean | 'usage'; colors?: boolean; selectTarget?: boolean; question?: boolean; progress?: boolean; repairModel?: boolean; suggestions?: boolean }) {
   const [progressHeight, setProgressHeight] = useState(112);
   const [services] = useState(() => {
-    const services = makeServices(failFirst, history, colors, selectTarget, question, progress, repairModel);
+    const services = makeServices(failFirst, history, colors, selectTarget, question, progress, repairModel, suggestions);
     // Storybook has no BrowserWindow: honor the production renderer's native
     // height request and use the native progress card's 360px width.
     if (progress) services.presentation.resizeProgress = async (_request, height) => { setProgressHeight(height); };
     return services;
   });
-  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+  const [suggestionsEnabled, setSuggestionsEnabled] = useState(suggestions);
+  const prediction = useMemo(() => suggestions ? {
+    enabled: suggestionsEnabled, setEnabled: setSuggestionsEnabled,
+    generate: async () => '继续补充并发回调、重复投递和异常恢复的测试，确认所有边界条件都能正确处理，然后整理测试结果。',
+  } : undefined, [suggestions, suggestionsEnabled]);
+  return <LocaleProvider locale="zh-CN"><AstryxLocaleProvider><ToastProvider><ComposerPromptSuggestionProvider service={prediction}><WorkHubServicesProvider services={services}><div style={{ height: progress ? progressHeight : '100dvh', width: progress ? 360 : undefined, maxWidth: '100%' }}><WorkHubRoot /></div></WorkHubServicesProvider></ComposerPromptSuggestionProvider></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }
 const meta = { title: 'Product/WorkHub', parameters: { layout: 'fullscreen' }, beforeEach: () => {
   Object.values(writes).forEach((spy) => spy.mockClear());
@@ -206,8 +213,11 @@ export const FullConversationAndWorkIdentity: Story = {
     Object.values(writes).forEach((spy) => spy.mockClear());
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/END_OF_FULL_RESPONSE/)).toBeInTheDocument());
-    await waitFor(() => expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成'));
-    expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
+    const meta = canvasElement.querySelector<HTMLElement>('.maka-user-message .maka-message-meta')!;
+    await waitFor(() => expect(getComputedStyle(meta).opacity).toBe('0'));
+    meta.querySelector<HTMLButtonElement>('button[data-message-id]')!.focus();
+    await waitFor(() => expect(getComputedStyle(meta).opacity).toBe('1'));
+    (document.activeElement as HTMLElement).blur();
     await userEvent.click(canvasElement.querySelector('.workhub-turn-label') as HTMLElement);
     await waitFor(() => expect(writes.open).toHaveBeenCalledWith(targetId));
     await userEvent.hover(canvasElement.querySelector('.maka-user-message .workhub-message-rail') as HTMLElement);
@@ -287,9 +297,28 @@ export const ProgressModelPicker: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelector('.workHubLive')).toHaveAttribute('data-progress', 'true'));
+    const card = canvasElement.querySelector('.workHubProgressCard.maka-progress-card');
+    expect(card).toBeVisible();
+    expect(card?.querySelector('.maka-progress-card-summary')).toBeVisible();
     expect(canvas.queryByRole('combobox', { name: /思考级别/ })).toBeNull();
+    const status = card?.querySelector('[role="status"]');
+    expect(status).toBeVisible();
+    expect(status?.closest('button')).toBeNull();
     const editor = canvasElement.querySelector('[contenteditable="true"]') as HTMLElement;
+    const assertCompactLineBox = () => {
+      expect(editor.closest('.workHubLive')).toHaveAttribute('data-conversation-expanded', 'false');
+      const style = getComputedStyle(editor);
+      expect(style.paddingTop).toBe('6px');
+      expect(style.paddingBottom).toBe('6px');
+      // Compact WorkHub has larger padding and initially requests maxRows=1.
+      // Even then, its scrolling editor must leave a full line for the caret.
+      expect(editor.clientHeight).toBeGreaterThanOrEqual(
+        Number.parseFloat(style.lineHeight) + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom),
+      );
+    };
+    await waitFor(assertCompactLineBox);
     await userEvent.click(editor);
+    assertCompactLineBox();
     await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
     const trigger = await canvas.findByRole('button', { name: /切换当前任务模型/ });
     await userEvent.click(trigger);
@@ -302,6 +331,14 @@ export const ProgressModelPicker: Story = {
     expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeGreaterThanOrEqual(230);
     expect(pixels.getImageData(0, 0, 1, 1).data[3]).toBeLessThan(255);
     expect(editor).toHaveTextContent('Keep this draft readable while choosing a model.');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.clear(editor);
+    await waitFor(() => expect(editor.textContent).toBe(''));
+    assertCompactLineBox();
+    // Restore this story's named final state: a draft with the model wheel open.
+    await userEvent.type(editor, 'Keep this draft readable while choosing a model.');
+    await userEvent.click(trigger);
+    await waitFor(() => expect(canvas.getByRole('listbox')).toHaveFocus());
   },
 };
 export const ComposerRetainsFailedAttachment: Story = {
@@ -331,20 +368,27 @@ export const ComposerRetainsFailedAttachment: Story = {
 async function expectPromptRailClearance(canvasElement: HTMLElement) {
   await waitFor(() => {
     const rail = canvasElement.querySelector<HTMLElement>('.maka-prompt-rail')!;
-    expect(rail).toBeVisible();
-    const box = rail.getBoundingClientRect();
-    const edge = canvasElement.querySelector('.maka-workbar-edge')!.getBoundingClientRect();
-    const scroller = canvasElement.querySelector('[data-chat-scroll-container]')!.getBoundingClientRect();
-    const composer = canvasElement.querySelector('.maka-composer')!.getBoundingClientRect();
-    expect(box.width).toBeGreaterThan(0);
-    expect(box.right).toBeLessThan(edge.left);
-    expect(box.top).toBeGreaterThanOrEqual(scroller.top);
-    expect(box.bottom).toBeLessThanOrEqual(composer.top);
+    expect(rail).not.toBeNull();
     const ticks = rail.querySelectorAll<HTMLElement>('[data-prompt-turn-id]');
     expect(ticks).toHaveLength(4);
-    for (const tick of ticks) {
-      const hit = tick.getBoundingClientRect();
-      expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
+    if (window.innerWidth < 825) {
+      expect(rail.closest('.maka-prompt-rail-host')).toHaveStyle({ display: 'none' });
+      expect(rail).not.toBeVisible();
+      expect(rail.getClientRects()).toHaveLength(0);
+    } else {
+      expect(rail).toBeVisible();
+      const box = rail.getBoundingClientRect();
+      const edge = canvasElement.querySelector('.maka-workbar-edge')!.getBoundingClientRect();
+      const scroller = canvasElement.querySelector('[data-chat-scroll-container]')!.getBoundingClientRect();
+      const composer = canvasElement.querySelector('.maka-composer')!.getBoundingClientRect();
+      expect(box.width).toBeGreaterThan(0);
+      expect(box.right).toBeLessThan(edge.left);
+      expect(box.top).toBeGreaterThanOrEqual(scroller.top);
+      expect(box.bottom).toBeLessThanOrEqual(composer.top);
+      for (const tick of ticks) {
+        const hit = tick.getBoundingClientRect();
+        expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
+      }
     }
     const body = canvasElement.querySelector('.workHubHistory')!;
     expect(body.scrollWidth - body.clientWidth).toBeLessThanOrEqual(1);
@@ -378,13 +422,12 @@ export const ColoredWorkHistory: Story = {
     expect(turns[0]!.querySelector('.workhub-turn-label')).toHaveTextContent('maka / 支付回调幂等性');
     expect(turns[1]!.querySelector('.workhub-turn-label')).toHaveTextContent('desktop / 发布检查清单');
     expect(canvasElement.querySelector('[data-transcript-turn-id="unlinked-turn"]')).not.toHaveAttribute('data-turn-accent');
-    for (const [index, turn] of turns.entries()) {
+    for (const turn of turns) {
       expect(turn.querySelectorAll('.workhub-turn-label')).toHaveLength(1);
       expect(turn.querySelector('.maka-assistant-answer .workhub-turn-label')).toBeNull();
-      const status = turn.querySelector('.maka-user-message .workhub-delegation-status')!;
-      await waitFor(() => expect(status).toHaveTextContent(['已完成', '等待用户', '进行中'][index]!));
-      expect(turn.querySelector('.maka-assistant-answer .workhub-delegation-status')).toBeNull();
-      expect(canvasElement.querySelector('.workhub-result-card')).toBeNull();
+      expect(turn.querySelector('.maka-user-message .maka-message-status-time')).toBeNull();
+      expect(turn.querySelector('.maka-turn-footer [data-action="copy"]')).not.toBeNull();
+      expect(turn.querySelector('.maka-turn-footer [data-action="branch"]')).toBeNull();
       const label = getComputedStyle(turn.querySelector('.workhub-turn-label span')!);
       const time = getComputedStyle(turn.querySelector('.maka-user-message .maka-message-meta')!);
       expect(label.fontSize).toBe(time.fontSize);
@@ -430,7 +473,6 @@ export const TargetSelection: Story = {
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelector('.maka-form-interaction-prompt')).toBeInTheDocument());
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
   },
 };
 
@@ -494,7 +536,6 @@ export const QuestionLifecycle: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByRole('heading', { name: '首批发布范围选哪个？' })).toBeInTheDocument());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
     expect(canvasElement.querySelector('.maka-turn-processing')).toBeNull();
     // The panel's digit/Enter shortcuts live on its own keydown, so focus must
     // have landed there before keys are sent.
@@ -505,7 +546,6 @@ export const QuestionLifecycle: Story = {
     await waitFor(() => expect(within(prompt).getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true'));
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeNull());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('已完成');
     expect(canvas.getByText('按公开测试安排发布。')).toBeInTheDocument();
     expect(writes.question).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ requestId: 'question-request' }));
   },
@@ -517,7 +557,6 @@ export const QuestionPending: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByRole('heading', { name: '首批发布范围选哪个？' })).toBeInTheDocument());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('等待');
   },
 };
 
@@ -528,7 +567,6 @@ export const QuestionStopped: Story = {
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: '停止' }));
     await waitFor(() => expect(canvasElement.querySelector('.maka-user-question-prompt')).toBeNull());
-    expect(canvasElement.querySelector('.workhub-delegation-status')).toHaveTextContent('中止');
   },
 };
 
@@ -647,12 +685,56 @@ export const RetryWhileWorkFiltered: Story = {
     await userEvent.click(editor);
     await userEvent.keyboard('FILTERED_RETRY_PROBE{Enter}');
     await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
-    await userEvent.click(canvasElement.querySelector('.workhub-message-rail') as HTMLElement);
+    // The send follows the latest Turn, and the virtualized transcript may still
+    // be unmounting older Turns when the failure lands. Clicking the first rail
+    // could target a node that detaches between hover and press (#5995); the
+    // newest linked Turn's rail stays mounted while following the latest Turn.
+    const rails = canvasElement.querySelectorAll<HTMLElement>('.workhub-message-rail');
+    await userEvent.click(rails[rails.length - 1]!);
     await waitFor(() => expect(canvas.getByRole('button', { name: '显示全部对话' })).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: /^重试$/ }));
     await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(canvas.getByText('已收到。')).toBeInTheDocument());
     expect(canvas.getByText('FILTERED_RETRY_PROBE', { selector: '.maka-user-message *' })).toBeInTheDocument();
     expect(canvas.queryByRole('button', { name: '显示全部对话' })).toBeNull();
+  },
+};
+
+// Real path: WorkHub → enable next-prompt suggestions → send a request → completed reply.
+// Uses the production WorkHubRoot/controller/Composer; only service transport/model output are mocked.
+export const NextPromptSuggestion: Story = {
+  render: () => <Surface suggestions />,
+  play: async ({ canvasElement }) => {
+    const input = await within(canvasElement).findByRole('textbox');
+    const suggestion = () => canvasElement.querySelector('.maka-composer-next-prompt') as HTMLElement | null;
+    await userEvent.click(input);
+    await userEvent.type(input, '请继续检查支付回调。');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(suggestion()).not.toBeNull());
+    const metrics = (element: Element) => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      const style = getComputedStyle(element);
+      return { rects: [...range.getClientRects()].map(({ x, y, width, height }) => ({ x, y, width, height })),
+        font: style.font, letterSpacing: style.letterSpacing, whiteSpace: style.whiteSpace, wordBreak: style.wordBreak };
+    };
+    expect(getComputedStyle(suggestion()!).pointerEvents).toBe('none');
+    await userEvent.click(input);
+    expect(input).toHaveTextContent('');
+    const offered = metrics(suggestion()!.querySelector('.maka-composer-next-prompt-text')!);
+    const text = suggestion()!.textContent;
+    expect(input).toHaveTextContent('');
+    await userEvent.keyboard('{Tab}');
+    await waitFor(() => expect(input).toHaveTextContent(text!));
+    expect(metrics(input)).toEqual(offered);
+    expect(writes.answer).toHaveBeenCalledTimes(1);
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(2));
+    expect(writes.answer.mock.calls[1][1].text).toBe(text);
+    await waitFor(() => expect(suggestion()).not.toBeNull());
+    await userEvent.keyboard('{Escape}');
+    expect(suggestion()).toBeNull();
+    await userEvent.type(input, '请总结验证结果。');
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(suggestion()).not.toBeNull());
   },
 };

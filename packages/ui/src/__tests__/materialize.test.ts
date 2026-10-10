@@ -226,20 +226,35 @@ describe("steering timeline", () => {
 });
 
 describe("materializeTurns message metadata", () => {
-  test("renders neutral provider dropping guidance for new and legacy records", () => {
-    const base = {
-      type: "system_note" as const,
-      id: "drop",
-      turnId: "t1",
-      ts: 1,
-      kind: "context_provider_dropping" as const,
-      data: { inputTokens: 98_247, priorInputTokens: 124_832 },
-    };
-    const current = materializeTurns([base], "en")[0]?.notes[0]?.text;
-    const legacy = materializeTurns([{ ...base, data: undefined }], "en")[0]?.notes[0]?.text;
-    assert.match(current ?? "", /may have been truncated or rewritten/);
-    assert.match(legacy ?? "", /may have been truncated or rewritten/);
-    assert.doesNotMatch(current ?? "", /Declare a context window|compact first/);
+  test("carries a renderer Stop abort source into the turn view model", () => {
+    const [turn] = materializeTurns([
+      userMsg("t-stop", 1, "continue the interrupted work"),
+      {
+        type: "turn_state",
+        id: "stop-state",
+        turnId: "t-stop",
+        ts: 2,
+        status: "aborted",
+        abortSource: "renderer.stop_button",
+      },
+    ], "en");
+
+    assert.equal(turn?.status, "aborted");
+    assert.equal(turn?.abortSource, "renderer.stop_button");
+  });
+
+  test("hides a retired provider dropping note that an old session still carries", () => {
+    const turns = materializeTurns([
+      {
+        type: "system_note",
+        id: "drop",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_provider_dropping",
+        data: { inputTokens: 99_398, priorInputTokens: 134_460 },
+      },
+    ], "en");
+    assert.deepEqual(turns.flatMap((turn) => turn.notes), []);
   });
 
   test("localizes visible system notes", () => {

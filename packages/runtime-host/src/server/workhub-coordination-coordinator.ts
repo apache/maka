@@ -235,14 +235,20 @@ export class HostWorkHubCoordinationCoordinator {
       readAssignment: (actionId) => this.#stores.readWorkHubAssignment(actionId),
       // This lookup is advisory. Stop and replacement both repeat their exact
       // proof under the Coordination and target admissions before writing.
-      listActiveAssignments: (targetSessionId) =>
-        this.#stores.readActiveWorkHubAssignmentsByTarget([targetSessionId]),
+      listActiveAssignments: (targetSessionId, includeStopped) =>
+        this.#stores.readActiveWorkHubAssignmentsByTarget(
+          [targetSessionId],
+          undefined,
+          includeStopped,
+        ),
       readReplacement: (delegationId) => this.#stores.readWorkHubReplacement(delegationId),
       readReplacementAbort: (delegationId) =>
         this.#stores.readWorkHubReplacementAbort(delegationId),
       readSupersession: (delegationId) => this.#stores.readWorkHubSupersession(delegationId),
-      readStopRequest: (delegationId) => this.#stores.readWorkHubStopRequest(delegationId),
-      readStopResolution: (delegationId) => this.#stores.readWorkHubStopResolution(delegationId),
+      readStopRequest: (delegationId, actionId) =>
+        this.#stores.readWorkHubStopRequest(delegationId, actionId),
+      readStopResolution: (delegationId, actionId) =>
+        this.#stores.readWorkHubStopResolution(delegationId, actionId),
 
       assign: options.sessionActions.assign,
       prepareReplacement: (input) => this.#prepareReplacement(input),
@@ -340,7 +346,7 @@ export class HostWorkHubCoordinationCoordinator {
   async #prepareStop(
     input: Parameters<WorkHubActionGateEffects['prepareStop']>[0],
   ): Promise<WorkHubDelegationStopRequestedMessage> {
-    const suffix = workHubDestructiveClaimIdentitySuffix(input.stopsDelegationId);
+    let suffix: string;
     return this.#commitCoordinationFact({
       // Only the two Sessions this stop can change: the one whose delegation
       // ends, and the Coordination Session that records it. Holding a lane for
@@ -348,7 +354,16 @@ export class HostWorkHubCoordinationCoordinator {
       // delegation traffic behind one stop, and the proof below needs no lane
       // it does not already hold.
       admissionSessionIds: [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
-      read: () => this.#stores.readWorkHubStopRequest(input.stopsDelegationId),
+      read: async () => {
+        // Choose the slot from the same admitted snapshot as the write.
+        const first = await this.#stores.readWorkHubStopRequest(input.stopsDelegationId);
+        suffix = workHubDestructiveClaimIdentitySuffix(
+          first && first.actionId !== input.actionId
+            ? JSON.stringify([input.stopsDelegationId, input.actionId])
+            : input.stopsDelegationId,
+        );
+        return this.#stores.readWorkHubStopRequest(input.stopsDelegationId, input.actionId);
+      },
       build: (existing) => ({
         type: 'workhub_coordination',
         id: `whq_${suffix}`,
@@ -372,7 +387,11 @@ export class HostWorkHubCoordinationCoordinator {
         const [replacement, supersession, activeAssignments] = await Promise.all([
           this.#stores.readWorkHubReplacement(input.stopsDelegationId),
           this.#stores.readWorkHubSupersession(input.stopsDelegationId),
-          this.#stores.readActiveWorkHubAssignmentsByTarget([input.targetSessionId]),
+          this.#stores.readActiveWorkHubAssignmentsByTarget(
+            [input.targetSessionId],
+            undefined,
+            true,
+          ),
         ]);
         if (replacement || supersession) {
           throw new WorkHubActionGateFailure(
@@ -415,9 +434,12 @@ export class HostWorkHubCoordinationCoordinator {
     input: Parameters<WorkHubActionGateEffects['resolveStop']>[0],
   ): Promise<WorkHubDelegationStopResolvedMessage> {
     const request = input.request;
-    const suffix = workHubDestructiveClaimIdentitySuffix(request.stopsDelegationId);
+    const suffix = workHubDestructiveClaimIdentitySuffix(
+      JSON.stringify([request.stopsDelegationId, request.actionId]),
+    );
     return this.#commitCoordinationFact({
-      read: () => this.#stores.readWorkHubStopResolution(request.stopsDelegationId),
+      read: () =>
+        this.#stores.readWorkHubStopResolution(request.stopsDelegationId, request.actionId),
       build: (existing) => ({
         type: 'workhub_coordination',
         id: `whz_${suffix}`,
@@ -434,9 +456,26 @@ export class HostWorkHubCoordinationCoordinator {
         outcome: input.outcome,
         ...(input.targetTurnId ? { targetTurnId: input.targetTurnId } : {}),
       }),
+      additionalMessages: async (resolved) => {
+        const primary = await this.#stores.readWorkHubStopResolution(request.stopsDelegationId);
+        // Keep immutable per-action receipts; the delegation slot aggregates only
+        // terminal knowledge. Upgrade not_owned at a distinct immutable identity;
+        // appendMessages never replaces an existing identity.
+        if (primary && (primary.outcome !== 'not_owned' || resolved.outcome === 'not_owned'))
+          return [];
+        return [
+          {
+            ...resolved,
+            id: `${primary ? 'whzt_' : 'whz_'}${workHubDestructiveClaimIdentitySuffix(request.stopsDelegationId)}`,
+          },
+        ];
+      },
       conflictMessage: 'WorkHub stop already has a different resolution',
       beforeAppend: async () => {
-        const durable = await this.#stores.readWorkHubStopRequest(request.stopsDelegationId);
+        const durable = await this.#stores.readWorkHubStopRequest(
+          request.stopsDelegationId,
+          request.actionId,
+        );
         if (!durable || !isDeepStrictEqual(durable, request)) {
           throw new WorkHubActionGateFailure(
             'action_conflict',
@@ -490,6 +529,7 @@ export class HostWorkHubCoordinationCoordinator {
     readonly admissionSessionIds?: readonly string[];
     readonly read: () => Promise<T | undefined>;
     readonly build: (existing: T | undefined) => T;
+    readonly additionalMessages?: (requested: T) => Promise<StoredMessage[]>;
     readonly conflictMessage: string;
     readonly beforeAppend: (lease: SessionAdmissionLease) => Promise<void>;
     readonly unknownOutcomeMessage: string;
@@ -507,7 +547,10 @@ export class HostWorkHubCoordinationCoordinator {
         }
         await options.beforeAppend(lease);
         try {
-          await this.#stores.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [requested]);
+          await this.#stores.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [
+            requested,
+            ...((await options.additionalMessages?.(requested)) ?? []),
+          ]);
           await this.#continuity.refreshCanonical(WORKHUB_COORDINATION_SESSION_ID, lease);
           return requested;
         } catch {
@@ -533,6 +576,7 @@ export class HostWorkHubCoordinationCoordinator {
           await this.#stores.readActiveWorkHubAssignmentsByTarget(
             result.candidates.map(({ sessionId }) => sessionId),
             1,
+            true,
           )
         ).map((assignment) => [assignment.targetSessionId, assignment.actionId]),
       );

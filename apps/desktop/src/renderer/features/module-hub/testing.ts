@@ -18,8 +18,6 @@
  */
 
 import type { ModuleHubServices } from "./ports.js";
-import type { NavSelection } from "@maka/ui";
-import type { ModuleHubHostModel } from "./controller/use-module-hub-controller.js";
 
 export { ModuleHubServicesProvider } from "./services-context.js";
 export type { ModuleHubServices } from "./ports.js";
@@ -41,12 +39,10 @@ export {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  mcpWriteFailureMessage,
+  mcpConfigFailureMessage,
+  unwrapMcpIpcResult,
 } from "./model/mcp-page-model.js";
-export {
-  useModuleHubController,
-  type ModuleHubHostModel,
-} from "./controller/use-module-hub-controller.js";
+export { useModuleHubController } from "./controller/use-module-hub-controller.js";
 export {
   createDailyReviewBridge,
   useDailyReviewController,
@@ -76,68 +72,6 @@ const notConfigured = (operation: string): never => {
   throw new Error(`Fake ${operation} is not configured`);
 };
 
-/** Environment-free Host model for route composition tests and Storybook. */
-export function createFakeModuleHubHostModel(
-  selection: NavSelection,
-  overrides: Partial<ModuleHubHostModel> = {},
-): ModuleHubHostModel {
-  return {
-    selection,
-    selectModule: () => undefined,
-    skills: {
-      skills: [],
-      skillLocations: [],
-      managedSkillSources: [],
-      bundledSkillCatalog: [],
-      onRefreshSkills: async () => undefined,
-      onUseSkill: () => undefined,
-      onRefreshManagedSkillSources: async () => undefined,
-      onImportManagedSkillSource: async () => undefined,
-      onInstallManagedSkill: async () => undefined,
-      onRefreshBundledSkillCatalog: async () => undefined,
-      onInstallBundledSkill: async () => undefined,
-      onPreviewManagedSkillUpdate: async () => null,
-      onUpdateManagedSkill: async () => false,
-      onSetSkillEnabled: async () => undefined,
-      onSetSkillPinned: async () => undefined,
-      onDeleteSkill: async () => undefined,
-    },
-    scheduledTasks: {
-      scheduledTasks: [],
-      createRequestNonce: 0,
-      openCreate: () => undefined,
-      handleCreateRequest: () => undefined,
-      refresh: async () => undefined,
-      refreshSurface: async () => undefined,
-      create: async () => false,
-      update: async () => false,
-      toggle: async () => undefined,
-      triggerNow: async () => undefined,
-      snooze: async () => undefined,
-      clearRunHistory: async () => undefined,
-      delete: async () => undefined,
-    },
-    keepSystemAwake: {
-      supported: false,
-      keepSystemAwake: undefined,
-      setKeepSystemAwake: async () => undefined,
-    },
-    dailyReview: {
-      bridge: {
-        fetchDay: async () => notConfigured("dailyReview.fetchDay"),
-      },
-      copyMarkdown: async () => undefined,
-      appendMarkdown: () => undefined,
-      saveMarkdown: async () => undefined,
-      copyToday: async () => undefined,
-      pasteToday: async () => undefined,
-      saveToday: async () => undefined,
-    },
-    openSession: () => undefined,
-    ...overrides,
-  };
-}
-
 /** Environment-free Module Hub defaults for focused tests and Storybook. */
 export function createFakeModuleHubServices(
   overrides: Partial<ModuleHubServices> = {},
@@ -155,6 +89,8 @@ export function createFakeModuleHubServices(
       login: async () => notConfigured("mcp.login"),
       logout: async () => notConfigured("mcp.logout"),
       cancelLogin: async () => false,
+      chromeStatus: async () => ({ command: "/opencli-mcp", connected: false }),
+      connectChrome: async () => notConfigured("mcp.connectChrome"),
       subscribeChanges: noopSubscription,
     },
 

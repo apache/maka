@@ -19,6 +19,16 @@
 
 @import 'katex/dist/katex.min.css';
 
+.maka-progress-card { box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; padding: 11px 13px 7px; color: var(--foreground); }
+.maka-progress-card-header { display: flex; align-items: center; gap: 9px; min-height: 18px; }
+.maka-progress-card-brand { display: flex; opacity: 0.7; }
+.maka-progress-card-status { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; font-size: 12px; font-weight: normal; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.maka-progress-card-status i { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--muted-foreground); }
+.maka-progress-card-status i[data-active='true'] { background: var(--maka-brand); }
+.maka-progress-card .maka-progress-card-primary { width: 28px; height: 28px; min-width: 28px; padding: 0; -webkit-app-region: no-drag; color: var(--muted-foreground); }
+.maka-progress-card .maka-progress-card-action { width: 28px; height: 28px; min-width: 28px; padding: 0; -webkit-app-region: no-drag; color: var(--muted-foreground); }
+.maka-progress-card-summary { margin: 0; height: 36px; font-size: 13px; line-height: 18px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+
 .maka-model-wheel-anchor { display: inline-flex; min-width: 0; max-width: 100%; }
 .maka-model-wheel-anchor > button { min-width: 0; max-width: 100%; }
 .maka-model-wheel-anchor[data-open='true'] > button { visibility: hidden; }
@@ -33,6 +43,7 @@
 .maka-model-wheel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted-foreground); transform: scale(0.96); transform-origin: left center; transition: transform 180ms ease-out, color 180ms ease-out; }
 .maka-model-wheel-option[data-active='true'] .maka-model-wheel-label { font-weight: 600; color: var(--foreground); transform: scale(1); }
 .maka-model-wheel-viewport[aria-disabled='true'] { opacity: 0.5; overflow-y: hidden; }
+
 @media (prefers-reduced-motion: reduce) { .maka-model-wheel-label { transition: none; } }
 .maka-model-wheel-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--muted-foreground); }
 .maka-model-wheel-check { position: absolute; right: 8px; top: 50%; translate: 0 -50%; color: var(--muted-foreground); }
@@ -43,6 +54,31 @@
 /* Retained tool evidence is not proof of current execution. Hide activity via
    Astryx's public spinner target without inventing a completed/failed tool. */
 .maka-tool-activity-card[data-activity-observed='false'] .astryx-spinner { display: none; }
+
+/* Fade the transcript's top scroll edge, matching the composer's frosted dock
+   at the bottom (same blur, same per-density ramp: 24/36/48px). The ChatLayout
+   root is the scroller, so a sticky ::before pinned at top:0 works — negative
+   margin-top keeps it zero-layout. `flex: none` is required: this flex column
+   shrinks overflowing items to height:0. The mask must live on ::before, not
+   the scroller — a mask on the ancestor breaks the dock's backdrop-filter. */
+.maka-chat-layout.compact { --_transcript-top-fade: 24px; }
+.maka-chat-layout.balanced { --_transcript-top-fade: 36px; }
+.maka-chat-layout.spacious { --_transcript-top-fade: 48px; }
+.maka-chat-layout::before {
+  content: '';
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  flex: none;
+  height: var(--_transcript-top-fade, 36px);
+  margin-top: calc(-1 * var(--_transcript-top-fade, 36px));
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
 
 /* An Item row draws a focus ring for ITS OWN tab stop, never for a control
    that already draws one.
@@ -100,11 +136,6 @@
   }
 }
 
-.maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
-.maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
-.maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
-
-
 /* One shape. The tone and emphasis modifiers that used to sit here — a filled
    plate, four tinted borders, four value inks, a dimmed zero — were reachable
    only from this package's own story; the product's single call site renders
@@ -148,50 +179,45 @@
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
 
-.maka-quote-chip { display: inline-flex; gap: 4px; padding-left: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
-.maka-quote-chip-expanded { width: 100%; max-width: 100%; align-items: flex-start; padding-block: 4px; border-radius: var(--radius-surface); }
+.maka-quote-chip { background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
+.maka-quote-chip-expanded { border-radius: var(--radius-surface); }
 /* #1879: measured 24px natural — a 20px line box plus 2 x 2px padding — and
    `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
    the next time a leading moves. This is the collapsed state only; the
    expanded twin above wraps to many lines and must keep growing. The chip's
-   type lives on `.maka-quote-chip-text`, which is why the derived scan needed
-   two arms rather than three to see it at all. */
-.maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
-.maka-quote-chip-removable { padding-right: 2px; }
-.maka-quote-chip-readonly { padding-right: 8px; }
+   type lives on the Button under `.maka-quote-chip`, which is why the
+   derived scan needed two arms rather than three to see it at all. */
+.maka-quote-chip-collapsed { height: var(--h-control-sm); border-radius: var(--radius-pill); }
 .maka-quote-chip-icon { width: var(--icon-meta); height: var(--icon-meta); flex: 0 0 auto; color: var(--muted-foreground); }
 .maka-quote-chip-icon-expanded { margin-top: 2px; }
-.maka-quote-chip-text {
+/* The chip's text is a ghost Button kept only for clickability. `ghost`
+   already owns the transparent rest, borderless edge and shadow-less paint,
+   so what remains is the product delta: supporting type, muted ink, no
+   padding or size pin, and `min-width:0`/`flex:1` so the label can shrink
+   and clip inside the pill. The target is the published `.astryx-button`
+   theme class scoped by the chip, not a parallel product hook (#5793 P3.1). */
+.maka-quote-chip .astryx-button {
   font: var(--maka-text-supporting);
   min-width: 0;
-  min-height: 0;
   flex: 1;
   height: auto;
-  border: 0;
   padding: 0;
   color: var(--muted-foreground);
-  background: transparent;
   text-align: left;
-  box-shadow: none;
 }
 .maka-quote-chip-text-body {
   display: block;
   min-width: 0;
   max-width: 100%;
 }
-.maka-quote-chip-text-expanded { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
+.maka-quote-chip .astryx-button[aria-expanded="true"] { max-height: 128px; overflow-y: auto; overflow-wrap: break-word; white-space: pre-wrap; }
 .maka-quote-chip-text-clipped { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-quote-chip-label { color: var(--muted-foreground); }
-.maka-quote-chip-remove {
-  width: 16px;
-  height: 16px;
-  min-width: 16px;
-  min-height: 16px;
-  border-radius: 50%;
-  padding: 0;
-}
-.maka-quote-chip-remove > svg,
-.maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
+
+.maka-quote-hover-card { max-width: 360px; }
+.maka-quote-comment-panel { width: 320px; max-width: 100%; }
+/* Painted rather than selected: the note input takes the DOM selection. */
+::highlight(maka-quote-mark) { background-color: var(--selection); }
 
 .maka-session-todo-empty {
   margin: 0;
@@ -215,9 +241,9 @@
   gap: 6px;
   min-width: 0;
   padding-block: var(--space-0-5);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-soft);
   color: var(--muted-foreground);
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
   font-variant-numeric: tabular-nums;
 }
 .maka-turn-statusbar[data-turn-status='failed'] {
@@ -228,12 +254,11 @@
   flex: 1;
   padding-block: 0 var(--space-1-5);
 }
-.maka-turn-statusbar-text { font-weight: var(--font-weight-medium); }
-.maka-turn-footer-meta-model {
-  color: var(--muted-foreground);
-}
-.maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
-.maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+/* local: VStack owns the column and gap; this is only the flex-child floor
+   that lets long diagnostics shrink inside the ChatMessage column. */
+.maka-assistant-answer-content { min-width: 0; }
+/* Holds the answer's place, unseen and unannounced, until the Host names the Turn. */
+.maka-pending-turn[data-awaiting-host] .maka-assistant-answer { visibility: hidden; }
 .maka-subagent-session-label,
 .maka-subagent-session-end {
   display: flex;
@@ -246,10 +271,9 @@
 .maka-subagent-session-summary { min-width: 0; flex: 1 1 auto; }
 .maka-subagent-session-end { color: var(--muted-foreground); }
 .maka-turn-processing {
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
  display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); }
 .maka-turn-indicator-text { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
@@ -272,10 +296,6 @@
 .maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-processing-sequence {
   min-width: 0;
-  /* Astryx tool rows overhang their text by 4px on each inline edge so hover
-     surfaces reach the card edge (their padding/negative-margin pair); this
-     padding is where that overhang lands inside the paint boundary. */
-  padding-inline: var(--space-1);
 }
 .maka-processing-summary {
   display: flex;
@@ -284,7 +304,7 @@
   padding-block: var(--space-0-5);
   border-radius: var(--radius-control);
   color: var(--muted-foreground);
-  font: var(--maka-text-body);
+  font: var(--maka-text-supporting);
   list-style: none;
 }
 .maka-processing-summary::-webkit-details-marker { display: none; }
@@ -298,8 +318,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 8px;
-  /* Block-axis clip for the disclosure wipe only; the rows' inline overhang
-     must reach the sequence's padding edge, so it cannot be clipped here. */
+  /* Block-axis clip for the disclosure wipe only. */
   overflow-y: clip;
 }
 /* Astryx ChatReasoning and ChatToolCalls bring their own top margin, which
@@ -503,6 +522,15 @@
   line-height: 1.6;
   text-autospace: normal;
 }
+/* Keep prose and code links visibly continuous. The browser's default
+   `text-decoration-skip-ink: auto` cuts gaps around descenders (g/p/y), which
+   looks like a broken underline on model IDs. A small em-based offset keeps
+   the continuous line clear of glyphs at both prose and inline-code sizes.
+   Scope to Markdown links; control links elsewhere keep Astryx's defaults. */
+[data-maka-contract="markdown"] .astryx-link {
+  text-decoration-skip-ink: none;
+  text-underline-offset: 0.2em;
+}
 /* Only a fenced block's own lines declare the code leading. CodeBlock wraps
    every 20 of them in a `content-visibility: auto` box whose placeholder is
    `20lh`, and `lh` there resolves against what the box inherits — this prose
@@ -660,6 +688,12 @@
   font-variant-numeric: tabular-nums;
 }
 .maka-mermaid-viewport {
+  --maka-mermaid-fit-width: min(
+    var(--maka-mermaid-natural-width),
+    max(1px, calc(100cqi - 2 * var(--space-3))),
+    calc((max(112px, min(480px, 55vh)) - 2 * var(--space-3)) * var(--maka-mermaid-ratio))
+  );
+  height: max(112px, calc(var(--maka-mermaid-fit-width) / var(--maka-mermaid-ratio) + 2 * var(--space-3)));
   position: relative;
   display: grid;
   min-width: 0;
@@ -680,7 +714,11 @@
   touch-action: none;
 }
 .maka-mermaid-viewport[data-maka-mermaid-panning="true"] { cursor: grabbing; user-select: none; }
-.maka-mermaid-canvas { min-width: 0; margin-inline: auto; }
+.maka-mermaid-canvas {
+  min-width: 0;
+  margin-inline: auto;
+  width: calc(var(--maka-mermaid-fit-width) * var(--maka-mermaid-zoom));
+}
 .maka-mermaid-svg { display: flex; width: 100%; height: 100%; min-width: 0; justify-content: center; }
 .maka-mermaid-svg > svg {
   display: block;
@@ -705,7 +743,15 @@
   padding-right: calc(var(--space-1) + var(--maka-titlebar-overlay-right-width, 0px));
 }
 .maka-mermaid-diagram-expanded .maka-mermaid-actions { -webkit-app-region: no-drag; }
-.maka-mermaid-diagram-expanded .maka-mermaid-viewport { min-height: 0; flex: 1 1 auto; }
+.maka-mermaid-diagram-expanded .maka-mermaid-viewport {
+  min-height: 0;
+  height: auto;
+  flex: 1 1 auto;
+  container-type: size;
+}
+.maka-mermaid-diagram-expanded .maka-mermaid-canvas {
+  --maka-mermaid-fit-width: min(100cqw, calc(100cqh * var(--maka-mermaid-ratio)));
+}
 .maka-mermaid-dialog { -webkit-app-region: no-drag; }
 .maka-mermaid-source {
   max-height: min(40%, 320px);
@@ -881,16 +927,13 @@
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 
 .maka-turn-host-origin {
+  /* local: HStack owns display/gap/padding/width; the chip surface (tone,
+     radius, right-edge self-alignment, rhythm) has no props to move onto. */
   font: var(--maka-text-supporting);
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
   align-self: flex-end;
-  gap: var(--space-1);
   margin-inline: 0;
   margin-bottom: var(--space-1);
   border-radius: var(--radius-control);
-  padding: var(--space-0-5) var(--space-1-5);
   background: var(--foreground-5);
   color: var(--muted-foreground);
 }
@@ -919,42 +962,41 @@
 }
 .maka-turn-failed-banner { margin-block: var(--space-1) var(--space-0-5); }
 
-.maka-turn-lineage-row,
-.maka-turn-footer {
-  display: flex;
-  width: 100%;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-0-5);
-}
-
 .maka-turn-lineage-row {
   margin-top: var(--space-0-5);
   margin-bottom: var(--space-1);
   opacity: 0.82;
+  /* Pill shape reaches the badge Buttons through the component's own derived
+     variable — Astryx's Thumbnail and Carousel retune `--_button-radius` the
+     same way — so the product rule paints tint and ink only (#5793 P3.1). */
+  --_button-radius: var(--radius-pill);
 }
 
 .maka-turn-lineage-row-reverse { margin-top: var(--space-1); }
 
-.maka-turn-lineage-badge {
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.05);
-  color: var(--muted-foreground);
-}
-
-.maka-turn-lineage-badge[data-direction="forward"] {
+.maka-turn-lineage-row .astryx-button[data-direction="forward"] {
   background: var(--color-accent-muted);
   color: var(--foreground);
 }
 
-.maka-turn-lineage-badge[data-direction="reverse"] {
+.maka-turn-lineage-row .astryx-button[data-direction="reverse"] {
   background: oklch(from var(--brand-deep) l c h / 0.06);
   color: oklch(from var(--brand-deep) calc(l - 0.04) c h);
 }
 
+/* The footer is a `ChatMessageMetadata`: flex, centering, the 4px gap and the
+   4px top margin are the primitive's own. What stays is the denser rhythm —
+   a 2px gap and 2px margin — plus wrap for narrow columns, the reserved row
+   height, and a focus-ring retune: the chat layout's scrollport clips an
+   outward ring on the first visible row's actions, so the published
+   `--focus-outline-offset` token pulls the component's own outline inside
+   the border box instead of a replacement shadow (#5793 P3.1, T5 probe). */
 .maka-turn-footer {
+  /* local: ChatMessageMetadata owns flex/centering, but has no width, wrap or gap props. */
+  width: 100%;
+  --focus-outline-offset: calc(-1 * var(--focus-outline-width));
+  flex-wrap: wrap;
+  gap: var(--space-0-5);
   min-height: var(--size-element-sm, 28px);
   margin-top: var(--space-0-5);
 }
@@ -1120,17 +1162,13 @@
   overflow-wrap: anywhere;
 }
 
-/* Turn-footer action rings go inset (T5 geometry probe): the Astryx chat
-   layout's scrollport clips an outward ring on the first visible row's
-   actions. Same idiom as the titlebar strip and workbar launcher. The
-   layout's own scroll-to-bottom control has the same clip inside vendor
-   DOM — upstream item, not fixable from product CSS. */
-.maka-turn-footer-action:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
-}
+/* Footer action rings used to be repainted as an inset shadow here (T5
+   geometry probe); `--focus-outline-offset` on `.maka-turn-footer` and
+   `.maka-message-meta` now draws the component's own outline inside the
+   border box instead. The chat layout's scroll-to-bottom control still has
+   the same clip inside vendor DOM — upstream item, not fixable from product
+   CSS. */
 
-.maka-message-status-time { display: inline-flex; align-items: center; gap: 4px; }
 
 .maka-choice-panel { outline: none; }
 

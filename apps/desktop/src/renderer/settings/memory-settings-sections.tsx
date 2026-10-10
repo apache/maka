@@ -41,8 +41,7 @@ export function MemoryPromptPreviewSection(props: {
             {props.active ? props.copy.text.willInject : props.copy.text.willNotInject}
           </span>
           <Button
-            variant="ghost"
-            size="sm"
+            variant="secondary"
             isDisabled={!props.preview || props.copyPending}
             onClick={() => void props.onCopy()}
             label={props.copyPending ? props.copy.text.copying : props.copy.text.copyContext}

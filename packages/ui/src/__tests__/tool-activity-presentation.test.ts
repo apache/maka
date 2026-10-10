@@ -28,6 +28,7 @@ import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import { getToolActivityCopy } from '../tool-activity/copy.js';
+import { formatDuration } from '../tool-activity/preview-utils.js';
 import {
   computerActionLabel,
   computerRunningLabel,
@@ -130,6 +131,25 @@ describe('tool activity presentation', () => {
       renderToStaticMarkup(createElement(ToolResultPreview, { content: result }), 'en'),
       /Wrote 42 bytes to \/tmp\/output.txt/,
     );
+  });
+
+  it('shows AskUserQuestion answers against the offered options', () => {
+    const settled = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
+        toolUseId: 'question',
+        toolName: 'AskUserQuestion',
+        status: 'completed',
+        args: {
+          questions: [{ question: 'Which client?', options: [{ label: 'claude' }, { label: 'maka' }] }],
+        },
+        result: { kind: 'json', value: { answers: [{ question: 'Which client?', answer: 'maka' }] } },
+      },
+    }))
+      .split(/<[^>]+>/)
+      .filter((text) => text.trim() !== '')
+      .join('\n');
+    assert.ok(settled.includes('Which client?\n  claude\n✓ maka'), settled);
+    assert.doesNotMatch(settled, /answers:/);
   });
 
   it('describes Computer Use proxy calls by action instead of the generic tool name', () => {
@@ -935,4 +955,12 @@ it('uses WorkHub status once in the collapsed row and retains arguments in detai
     const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
     assert.match(detail, /status/);
   }
+});
+
+it('carries rounded tool durations into the next unit', () => {
+  assert.equal(formatDuration(9_949), '9.9s');
+  assert.equal(formatDuration(9_960), '10s');
+  assert.equal(formatDuration(59_600), '1m 0s');
+  assert.equal(formatDuration(119_600), '2m 0s');
+  assert.equal(formatDuration(125_000), '2m 5s');
 });

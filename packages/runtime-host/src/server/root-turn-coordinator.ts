@@ -59,6 +59,7 @@ import {
   type RuntimeMessageRunIdentity,
 } from '@maka/runtime/message-authority';
 import {
+  isHostedInteractionRequestEvent,
   isShutdownCancelledInteractionAdmission,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
@@ -110,7 +111,11 @@ import {
   type QueueFenceResult,
   type RootFollowupBatch,
 } from './message-coordinator.js';
-import type { ConnectionContext, TurnOperationHandlerMap } from './operation-dispatcher.js';
+import {
+  capabilityInitiatingConnectionId,
+  type ConnectionContext,
+  type TurnOperationHandlerMap,
+} from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
@@ -664,6 +669,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (this.#handoffHold || this.#recoveryPlansBySession.get(sessionId)?.rootReplayAdmission)
       return undefined;
     return this.#admissions.reserve(sessionId);
+  }
+
+  hasActiveOrPendingTurn(sessionId: string): boolean {
+    return (
+      this.#admissions.has(sessionId) ||
+      this.#executions.has(sessionId) ||
+      this.#recoveryPlansBySession.get(sessionId)?.rootReplayAdmission !== undefined
+    );
   }
 
   private parkContinuationAdmission(admission: RootTurnAdmission): void {
@@ -1249,6 +1262,50 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       }
       if (disposition.kind === 'request_stop') {
         await this.deliverRuntimeStopIntent(identity.sessionId, input);
+      }
+      await disposition.active.done;
+    });
+  }
+
+  /**
+   * Activation-scoped graph stop: the same durable Host fence as `stopRoot`,
+   * but the Runtime stop reaches only this exact Run's owner, is redelivered
+   * after a failed attempt, and retries retained cleanup of a completed Run.
+   */
+  stopRootRun(identity: RuntimeMessageRunIdentity, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
+    return this.runCommand(async () => {
+      const declared = await this.sessionAdmission.run(identity.sessionId, (lease) =>
+        this.declareStopFence(
+          identity,
+          () => this.messages.commitStopFence(identity),
+          lease,
+          input,
+          true,
+        ),
+      );
+      await declared?.deliverStop();
+      await declared?.active.startSettled.promise;
+      const disposition = await this.sessionAdmission.run(identity.sessionId, (lease) =>
+        this.prepareStopDisposition(identity, () => this.messages.commitStopFence(identity), lease),
+      );
+      if (disposition.kind === 'complete') {
+        if (!disposition.outcome.ok) throwHostedStopError(identity.sessionId, disposition.outcome);
+        const logical = await readLogicalRuntimeExecutionForRun(
+          this.stores.runtimeEventStore,
+          identity,
+        );
+        await this.deliverRuntimeStopIntent(identity.sessionId, input, {
+          ...identity,
+          runId: logical?.tip.runId ?? identity.runId,
+        });
+        return;
+      }
+      if (disposition.kind === 'request_stop') {
+        await this.deliverRuntimeStopIntent(identity.sessionId, input, {
+          ...identity,
+          runId: disposition.active.continuation?.runId ?? identity.runId,
+        });
       }
       await disposition.active.done;
     });
@@ -2153,7 +2210,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         const workHubBinding = isWorkHubV2
           ? await this.clientCapabilities?.bindSession(
               request.sessionId,
-              context.connectionId,
+              capabilityInitiatingConnectionId(context),
               hostedExecutionRunProfile(header.toolProfile)!.toolNames.filter((name) =>
                 name.startsWith('mcp__'),
               ),
@@ -2166,7 +2223,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             ? undefined
             : prepared.commitCapabilityBinding
               ? await prepared.commitCapabilityBinding()
-              : await this.clientCapabilities?.bindSession(request.sessionId, context.connectionId);
+              : await this.clientCapabilities?.bindSession(
+                  request.sessionId,
+                  capabilityInitiatingConnectionId(context),
+                );
         if (binding && !binding.ok) {
           return completedStart(operationConflict(binding.message));
         }
@@ -2305,7 +2365,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       }
       const preview = await this.previewCapabilityBinding(
         input.sessionId,
-        context.connectionId,
+        capabilityInitiatingConnectionId(context),
         () => this.planTurnResume(input),
       );
       return preview.ok
@@ -2427,7 +2487,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             }
             const preview = await this.previewCapabilityBinding(
               input.sessionId,
-              context.connectionId,
+              capabilityInitiatingConnectionId(context),
               () => this.reconstructAdmittedContinuation(existing),
             );
             if (!preview.ok) {
@@ -2517,7 +2577,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
           const preview = await this.previewCapabilityBinding(
             input.sessionId,
-            context.connectionId,
+            capabilityInitiatingConnectionId(context),
             () =>
               this.manager.planAuthoritativeSafeBoundaryContinuation(input.sessionId, {
                 sourceRunId: input.sourceRunId,
@@ -2684,6 +2744,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     commitQueueFence: () => QueueFenceResult,
     admission: SessionAdmissionLease,
     stopInput: StopSessionInput = {},
+    scoped = false,
   ): Promise<DeclaredStopFence | undefined> {
     const active = this.#executions.get(input.sessionId);
     if (!active || active.turnId !== input.turnId || active.runId !== input.runId) {
@@ -2702,13 +2763,22 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       'turn_stopped',
       admission,
     );
-    const shouldDeliverStop = !active.stopRequested;
+    const shouldDeliverStop = scoped || !active.stopRequested;
     active.stopRequested = stopInput;
     return {
       active,
       deliverStop: () =>
         shouldDeliverStop
-          ? this.deliverRuntimeStopIntent(input.sessionId, stopInput)
+          ? this.deliverRuntimeStopIntent(
+              input.sessionId,
+              stopInput,
+              scoped
+                ? {
+                    ...input,
+                    runId: active.continuation?.runId ?? active.runId,
+                  }
+                : undefined,
+            )
           : Promise.resolve(),
     };
   }
@@ -3073,7 +3143,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
           } else if (isInteractionAnswerAck(event)) {
             await this.continuity.refreshCanonical(input.sessionId);
-          } else if (event.type === 'user_question_request' || event.type === 'form_request') {
+          } else if (isHostedInteractionRequestEvent(event)) {
             this.continuity.enqueueCanonicalRefresh(input.sessionId);
           }
         }
@@ -3269,6 +3339,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         active.turnId,
         active.runId,
         lease,
+        active.descriptor.kind !== 'context_compact',
       );
       if (batch.sources.length === 0) {
         this.messages.completeIdle(batch);
@@ -3359,16 +3430,20 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   private async deliverRuntimeStopIntent(
     sessionId: string,
     input: StopSessionInput = { source: 'stop_button' },
+    identity?: RuntimeMessageRunIdentity,
   ): Promise<void> {
-    await this.manager.deliverHostedRootStop(sessionId, input);
+    await this.manager.deliverHostedRootStop(sessionId, input, identity);
   }
 
   private async stopActiveTurn(sessionId: string, active: ActiveRootTurn): Promise<void> {
-    await this.stopRoot({
-      sessionId,
-      turnId: active.turnId,
-      runId: active.runId,
-    });
+    await this.stopRoot(
+      {
+        sessionId,
+        turnId: active.turnId,
+        runId: active.runId,
+      },
+      { source: 'host_shutdown' },
+    );
   }
 
   private async readCanonicalSnapshot(
@@ -3811,11 +3886,7 @@ function throwIfAborted(signal: AbortSignal): void {
 function isTerminalSnapshot(
   snapshot: TurnSnapshot,
 ): snapshot is Extract<TurnSnapshot, { status: 'completed' | 'failed' | 'cancelled' }> {
-  return (
-    snapshot.status === 'completed' ||
-    snapshot.status === 'failed' ||
-    snapshot.status === 'cancelled'
-  );
+  return (['completed', 'failed', 'cancelled'] as const).includes(snapshot.status as never);
 }
 
 function isContainableRunFailure(error: unknown): error is Error {

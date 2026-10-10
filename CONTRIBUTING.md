@@ -43,9 +43,11 @@ Every pull request to `main` needs an approving review from a committer other th
 
 Submit only work you have the right to contribute, and record third-party sources, licenses, and attribution. Contributions are licensed under the [Apache License 2.0](./LICENSE); for material AI-generated content, follow the [ASF Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html).
 
+Pending clarification of Grok's terms of use, please do not use Grok to generate contributions to Maka.
+
 ## Quick start
 
-Requires Node `>=22.19.0` and npm `11.19.0` (root `package.json`). Direct Peer or Peer Mesh Desktop development additionally needs Rust stable 1.98 or newer and Xcode Command Line Tools on macOS, or MSVC Build Tools on Windows.
+Requires Node `^22.19.0 || >=24.0.0` (Node 23 is not supported: its `node:sqlite` lacks `DatabaseSync.isTransaction`) and npm `11.19.0` (root `package.json`). Direct Peer or Peer Mesh Desktop development additionally needs Rust stable 1.98 or newer and Xcode Command Line Tools on macOS, or MSVC Build Tools on Windows.
 
 ```sh
 git clone https://github.com/apache/maka.git
@@ -59,9 +61,12 @@ npm --workspace @maka/core run test:dist
 
 ```sh
 npm run dev          # desktop app with HMR
+npm run dev:worktree # desktop HMR with a separate data directory for this checkout
 npm run cli:dev      # TUI; `npm run cli:dev -- run "…"` runs one non-interactive turn
 npm test             # all workspaces, or: npm --workspace @maka/core run test:dist
 ```
+
+Use `dev:worktree` when developing multiple checkouts or testing changes to stored data formats. It starts with a separate configuration and keeps using the same data directory for that checkout. See [worktree development profiles](./apps/desktop/README.md#worktree-development-profiles) for locations and overrides.
 
 Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`, so `test:dist` covers whatever the last build produced; rebuild before running it. `npm test` from the root does both. If `npm run build` reports compiled tests with no matching source after a pull or branch switch, run `npm run rebuild` to clear old output and incremental build state.
 

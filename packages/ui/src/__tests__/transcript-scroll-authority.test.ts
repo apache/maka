@@ -454,6 +454,7 @@ test('the reading position is the Turn the attached reader names under the offse
       turnAt: (scrollTop) => turnIds[Math.min(Math.floor((scrollTop - offset) / 1_000), turnIds.length - 1)],
       offsetOf: () => undefined,
       reveal: () => {},
+      measured: () => true,
     });
     let publications = 0;
     authority.subscribe(() => { publications += 1; });
@@ -488,6 +489,7 @@ test('the reading position is the Turn the attached reader names under the offse
 function turnList(root: FakeRoot, initial: string[]) {
   const list = {
     turnIds: initial,
+    measured: true,
     reveals: [] as Array<{ turnId: string; align: string; smooth: boolean }>,
     set(next: string[]) {
       root.scrollHeight = next.length * 1_000;
@@ -503,6 +505,7 @@ function turnList(root: FakeRoot, initial: string[]) {
       reveal: (turnId: string, options: { align: string; smooth: boolean }) => {
         list.reveals.push({ turnId, ...options });
       },
+      measured: () => list.measured,
     },
   };
   root.scrollHeight = initial.length * 1_000;
@@ -630,5 +633,43 @@ test('a transcript without a Turn reader has no reading position', () => {
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
     assert.equal(authority.getSnapshot().readingTurnId, undefined);
+  });
+});
+
+test('a list is in place once it is measured and the reader is where the last command put them', () => {
+  withObservers((resize, frame) => {
+    const root = fakeRoot();
+    const list = turnList(root, ['a', 'b', 'c']);
+    list.measured = false;
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement, list.layout);
+    let placed = 0;
+    authority.whenInPlace(() => { placed += 1; });
+    frame();
+    assert.equal(placed, 0, 'a list that has not measured its viewport is not in place');
+
+    list.measured = true;
+    root.scrollHeight = 5_000;
+    frame();
+    assert.equal(placed, 0, 'measurement grew the list under a pinned reader who is off the tail');
+    resize();
+    frame();
+    frames(frame);
+    assert.equal(placed, 1, 'called back once, when the pin has written the tail');
+
+    authority.navigate({ turnId: 'd', align: 'start' });
+    authority.whenInPlace(() => { placed += 1; });
+    frame();
+    assert.equal(placed, 1, 'a restored Turn that has not arrived is not in place');
+    list.set(['a', 'b', 'c', 'd', 'e']);
+    authority.turnsChanged('append');
+    frame();
+    assert.equal(root.scrollTop, 3_000);
+    assert.equal(placed, 2);
+
+    list.measured = false;
+    authority.whenInPlace(() => { placed += 1; });
+    frames(frame);
+    assert.equal(placed, 3, 'a list that never measures is shown after the settle budget');
   });
 });

@@ -34,7 +34,7 @@ export type DataSettingsCopy = {
     workspace: string; workspaceDetail: string; loadValueFailed: string; loading: string;
     history: string; historyDetail: string;
   };
-  actionsAria: string; opening: string; openWorkspace: string; copying: string; copyPath: string; clearing: string; clearHistory: string;
+  openWorkspace: string; copyPath: string; clearHistory: string;
   backupTitle: string; backupNotice: string; pathLoadFailed(error: string): string; configAria: string; configTitle: string; configHelp: string; categoryAria: string;
   sensitiveWarning: string; conflictAria: string; skip: string; overwrite: string;
   exportConfig: string; importConfig: string;
@@ -62,7 +62,7 @@ const SETTINGS_DATA_COPY = {
       workspace: '工作区路径', workspaceDetail: '任务、设置、凭据和技能文件都存在这个目录下。', loadValueFailed: '载入失败', loading: '正在加载…',
       history: '输入历史', historyDetail: '上箭头 / 下箭头调出的已发送提示词记录，保存在本机、重启后仍在。清空后无法恢复。',
     },
-    actionsAria: '工作区数据操作', opening: '打开中…', openWorkspace: '打开工作区文件夹', copying: '复制中…', copyPath: '复制路径', clearing: '清空中…', clearHistory: '清空输入历史',
+    openWorkspace: '打开工作区文件夹', copyPath: '复制路径', clearHistory: '清空输入历史',
     backupTitle: '备份与恢复', backupNotice: '本机数据保存在工作区。需要备份时先退出 Maka，再复制整个目录；恢复时替换同一路径后重启。模型连接凭据随工作区恢复后需要重新测试；订阅账号令牌通常需要重新登录。',
     pathLoadFailed: (error) => `无法载入工作区路径：${error}`, configAria: '配置导入导出', configTitle: '配置导入导出',
     configHelp: '勾选要导出的内容，生成一个 JSON 备份文件；换机或重装时可再导入。默认不含密钥。', categoryAria: '选择导出内容',
@@ -90,7 +90,7 @@ const SETTINGS_DATA_COPY = {
       workspace: '工作區路徑', workspaceDetail: '任務、設定、憑據和技能檔案都存在這個目錄下。', loadValueFailed: '載入失敗', loading: '正在載入…',
       history: '輸入歷史', historyDetail: '上箭頭 / 下箭頭調出的已傳送提示詞記錄，儲存在本機、重啟後仍在。清空後無法恢復。',
     },
-    actionsAria: '工作區資料操作', opening: '開啟中…', openWorkspace: '開啟工作區資料夾', copying: '複製中…', copyPath: '複製路徑', clearing: '清空中…', clearHistory: '清空輸入歷史',
+    openWorkspace: '開啟工作區資料夾', copyPath: '複製路徑', clearHistory: '清空輸入歷史',
     backupTitle: '備份與恢復', backupNotice: '本機資料儲存在工作區。需要備份時先退出 Maka，再複製整個目錄；恢復時替換同一路徑後重啟。模型連線憑據隨工作區恢復後需要重新測試；訂閱帳號權杖通常需要重新登入。',
     pathLoadFailed: (error) => `無法載入工作區路徑：${error}`, configAria: '設定匯入匯出', configTitle: '設定匯入匯出',
     configHelp: '勾選要匯出的內容，生成一個 JSON 備份檔案；換機或重灌時可再匯入。預設不含金鑰。', categoryAria: '選擇匯出內容',
@@ -118,7 +118,7 @@ const SETTINGS_DATA_COPY = {
       workspace: 'Workspace path', workspaceDetail: 'Tasks, settings, credentials, and skill files are stored in this directory.', loadValueFailed: 'Failed to load', loading: 'Loading…',
       history: 'Input history', historyDetail: 'Previously sent prompts recalled with the Up and Down arrows are kept on this machine and persist across restarts. Clearing them cannot be undone.',
     },
-    actionsAria: 'Workspace data actions', opening: 'Opening…', openWorkspace: 'Open workspace folder', copying: 'Copying…', copyPath: 'Copy path', clearing: 'Clearing…', clearHistory: 'Clear input history',
+    openWorkspace: 'Open workspace folder', copyPath: 'Copy path', clearHistory: 'Clear input history',
     backupTitle: 'Backup and restore', backupNotice: 'Local data is stored in the workspace. To back it up, quit Maka and copy the entire directory. To restore it, replace the same path and restart. Model credentials should be tested again after a restore, and subscription accounts usually need to sign in again.',
     pathLoadFailed: (error) => `Could not load workspace path: ${error}`, configAria: 'Configuration import and export', configTitle: 'Configuration import and export',
     configHelp: 'Select the content to export into a JSON backup. You can import it after moving devices or reinstalling. Secrets are excluded by default.', categoryAria: 'Select export content',

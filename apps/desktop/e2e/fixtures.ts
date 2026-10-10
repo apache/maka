@@ -213,6 +213,24 @@ async function seedRailRenderSessions(userDataDir: string): Promise<void> {
   }
 }
 
+async function seedOnboardingPerfSessions(userDataDir: string, count: number): Promise<void> {
+  const store = createSessionStore(path.join(userDataDir, 'workspaces', 'default'));
+  try {
+    for (let index = 0; index < count; index += 1) {
+      await store.create({
+        cwd: path.join(userDataDir, 'project'),
+        llmConnectionSlug: 'e2e',
+        model: 'claude-sonnet-4-5-20250929',
+        permissionMode: 'ask',
+        name: `Onboarding perf row ${index}`,
+        labels: [],
+      });
+    }
+  } finally {
+    await store.close?.();
+  }
+}
+
 async function seedParentRemovalSessions(userDataDir: string): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   const store = createSessionStore(workspaceRoot);
@@ -403,6 +421,7 @@ export async function withE2eWindow(
     gitReviewExtraFiles,
     parentRemovalSessions,
     railRenderSessions,
+    onboardingPerfSessions,
     newTaskProject,
     tracePath,
     testInfo,
@@ -421,6 +440,7 @@ export async function withE2eWindow(
     gitReviewExtraFiles?: number;
     parentRemovalSessions?: boolean;
     railRenderSessions?: boolean;
+    onboardingPerfSessions?: number;
     newTaskProject?: boolean;
     tracePath?: string;
     /** Attaches captured main/renderer console output when the test fails. */
@@ -441,6 +461,9 @@ export async function withE2eWindow(
     if (seed) await seedE2eConnection(userDataDir);
     if (parentRemovalSessions) await seedParentRemovalSessions(userDataDir);
     if (railRenderSessions) await seedRailRenderSessions(userDataDir);
+    if (onboardingPerfSessions !== undefined) {
+      await seedOnboardingPerfSessions(userDataDir, onboardingPerfSessions);
+    }
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
     if (gitReviewExtraFiles !== undefined) {
       await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);

@@ -54,6 +54,59 @@ function openAiNamespace(options: Record<string, unknown>): Record<string, unkno
 }
 
 describe('responses wire contract', () => {
+  test('decodes completed DeepSeek web search output without changing Alibaba Responses', async () => {
+    const item = {
+      type: 'web_search_call',
+      id: 'ws-1',
+      status: 'completed',
+      action: { type: 'search', queries: ['Maka'] },
+    };
+    const requests: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({
+        id: 'response-1',
+        object: 'response',
+        status: 'completed',
+        model: 'test-model',
+        output: [item],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as typeof globalThis.fetch;
+    const prompt = [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'search' }] },
+    ];
+    const deepseek = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'offline-only',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    const deepseekOutput = await deepseek.doGenerate({ prompt });
+    assert.equal(deepseekOutput.content.filter((part) => part.type === 'tool-call').length, 1);
+    assert.equal(deepseekOutput.content.filter((part) => part.type === 'tool-result').length, 1);
+    assert.equal(requests[0]?.tools, undefined);
+
+    const alibaba = getAIModel({
+      connection: {
+        ...conn('alibaba-token-plan-cn'),
+        models: [{ id: 'qwen3.8-max', apiProtocol: 'openai-responses' }],
+      },
+      apiKey: 'offline-only',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+    const alibabaOutput = await alibaba.doGenerate({ prompt });
+    assert.equal(
+      alibabaOutput.content.some((part) => part.type === 'tool-call'),
+      false,
+    );
+    assert.equal(
+      alibabaOutput.content.some((part) => part.type === 'tool-result'),
+      false,
+    );
+  });
+
   test('GPT-6 catalog thinking levels reach Responses for API and Codex OAuth', async () => {
     for (const providerType of ['openai', 'openai-codex'] as const) {
       for (const modelId of ['gpt-6-sol', 'gpt-6-luna']) {
@@ -175,6 +228,92 @@ describe('responses wire contract', () => {
     assert.equal(
       input?.find((item) => item.role === 'developer')?.content,
       'Call maka_tool_search; keep existing maka_tool_search text unchanged.',
+    );
+  });
+
+  test('keeps the runtime tool_search name in a Code Mode catalog nested inside exec', async () => {
+    const connection = conn('openai-codex', 'codex-subscription');
+    connection.defaultModel = 'gpt-5.6-sol';
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Response.json({
+        id: 'response-code-mode-tool-search',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const adapter = new ModelAdapter({
+      connection,
+      apiKey: 'test-token',
+      modelId: connection.defaultModel,
+      modelFactory: (input) =>
+        getAIModel({
+          connection,
+          apiKey: input.apiKey,
+          modelId: connection.defaultModel,
+          fetch,
+        }),
+      newId: () => 'test-id',
+      now: () => 0,
+    });
+    // exec binds nested tools as `tools.<runtime name>`; the provider never
+    // sees tool_search as a function here, so its reserved-name alias must not
+    // leak into the catalog or into exec's returned text.
+    const result = await adapter.startStream({
+      model: adapter.resolveModel(),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'exec-call',
+              toolName: 'exec',
+              input: { code: 'return await tools.tool_search({ query: "ScheduledTask" })' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: 'exec-call',
+              toolName: 'exec',
+              output: { type: 'text', value: 'tool_search activated ScheduledTask' },
+            },
+          ],
+        },
+      ],
+      tools: {
+        exec: {
+          description: 'Run JavaScript that calls Maka tools',
+          inputSchema: z.object({ code: z.string() }),
+        },
+      },
+      activeTools: ['exec'],
+      system: 'Code Mode: After tool_search, use the refreshed catalog. {"tool_search":{}}',
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+    for await (const _event of result.events) void _event;
+    const input = requestBodies[0]?.input as Array<Record<string, unknown>>;
+    assert.equal(
+      input?.find((item) => item.role === 'developer')?.content,
+      'Code Mode: After tool_search, use the refreshed catalog. {"tool_search":{}}',
+    );
+    assert.equal(
+      input?.find((item) => item.type === 'function_call_output')?.output,
+      'tool_search activated ScheduledTask',
+    );
+    const tools = requestBodies[0]?.tools as Array<{ name?: string }>;
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      ['exec'],
     );
   });
 
@@ -333,7 +472,8 @@ describe('responses wire contract', () => {
       });
     }) as unknown as typeof globalThis.fetch;
     const connection = {
-      ...conn('openai-responses-compatible'),
+      ...conn('custom'),
+      defaultApiProtocol: 'openai-responses' as const,
       baseUrl: 'https://relay.example/v1/responses',
     };
     const model = getAIModel({ connection, apiKey: '[redacted]', modelId: 'relay-model', fetch });
@@ -390,12 +530,51 @@ describe('responses wire contract', () => {
     assert.equal(moonshotGlobal.responsesReplayProfile, 'moonshot-global');
 
     const relay = resolveModelRuntime(
-      { providerType: 'openai-responses-compatible' },
+      { providerType: 'custom', defaultApiProtocol: 'openai-responses' },
       'relay-model',
     );
     assert.deepEqual(relay.reasoningReplay, {
       kind: 'responses',
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    });
+  });
+
+  test('one custom connection resolves each model on its own wire', () => {
+    const connection = {
+      providerType: 'custom' as const,
+      defaultApiProtocol: 'openai-chat' as const,
+      baseUrl: 'https://relay.example/v1',
+      models: [
+        { id: 'claude-relay', apiProtocol: 'anthropic-messages' as const },
+        { id: 'gpt-relay', apiProtocol: 'anthropic-messages' as const },
+      ],
+      modelOverrides: { 'gpt-relay': { apiProtocol: 'openai-responses' as const } },
+    };
+    const resolved = Object.fromEntries(
+      ['gpt-relay', 'claude-relay', 'plain-relay'].map((modelId) => {
+        const runtime = resolveModelRuntime(connection, modelId);
+        return [
+          modelId,
+          { wire: runtime.wire, kind: runtime.adapter.kind, baseUrl: runtime.baseUrl },
+        ];
+      }),
+    );
+    assert.deepEqual(resolved, {
+      'gpt-relay': {
+        wire: 'openai-responses',
+        kind: 'openai',
+        baseUrl: 'https://relay.example/v1',
+      },
+      'claude-relay': {
+        wire: 'anthropic-messages',
+        kind: 'anthropic',
+        baseUrl: 'https://relay.example/v1',
+      },
+      'plain-relay': {
+        wire: 'openai-chat',
+        kind: 'openai-compatible',
+        baseUrl: 'https://relay.example/v1',
+      },
     });
   });
 
@@ -414,14 +593,19 @@ describe('responses wire contract', () => {
       ).parallelToolCalls,
       false,
     );
-    assert.equal(
-      resolveModelRuntime({ providerType: 'openai-compatible' }, 'relay-model').parallelToolCalls,
-      undefined,
-    );
+    for (const defaultApiProtocol of ['openai-chat', 'openai-responses'] as const) {
+      assert.equal(
+        resolveModelRuntime({ providerType: 'custom', defaultApiProtocol }, 'relay-model')
+          .parallelToolCalls,
+        undefined,
+        defaultApiProtocol,
+      );
+    }
     assert.equal(
       resolveModelRuntime(
         {
-          providerType: 'openai-compatible',
+          providerType: 'custom',
+          defaultApiProtocol: 'openai-chat',
           models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
         },
         'relay-model',

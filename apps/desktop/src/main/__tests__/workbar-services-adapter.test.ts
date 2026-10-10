@@ -20,18 +20,20 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { ShellRunUpdate } from '@maka/core/events';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { createDesktopWorkbarServices } from '../../renderer/platform/desktop/create-workbar-services.js';
 
 type RecordedCall = { name: string; args: unknown[] };
 
-function createBridgeRecorder(): {
+function createBridgeRecorder(answerOverrides: Record<string, unknown> = {}): {
   bridge: MakaBridge;
   calls: RecordedCall[];
 } {
   const calls: RecordedCall[] = [];
   const syncMethods = new Set([
     'sessions.subscribeEvents',
+    'sessions.subscribeChanges',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
     'browser.setActiveSession',
@@ -53,6 +55,7 @@ function createBridgeRecorder(): {
       },
     ],
   ]);
+  for (const [name, answer] of Object.entries(answerOverrides)) answers.set(name, answer);
   const domain = (name: string) =>
     new Proxy({}, {
       get: (_target, property) => (...args: unknown[]) => {
@@ -133,6 +136,20 @@ describe('createDesktopWorkbarServices', () => {
     );
   });
 
+  it('keeps a classified attachment refusal on a Side Conversation follow-up (#5279)', async () => {
+    const { bridge } = createBridgeRecorder({
+      'sessions.submitMessage': { ok: false, reason: 'attachment_blocked', code: 'item_unreadable' },
+    });
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await assert.rejects(
+      services.sideChat.submitFollowUp('fork', 'current_turn', 'with a folder', 'message-folder'),
+      (error: unknown) => error instanceof AttachmentIngestBlockedError && error.code === 'item_unreadable',
+    );
+  });
+
   it('preserves the Side Conversation Stop identity kind', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const services = createDesktopWorkbarServices(bridge, {
@@ -188,6 +205,7 @@ describe('createDesktopWorkbarServices', () => {
 
     await services.review.read({ sessionId: 's', source: 'unstaged' });
     services.review.subscribeSessionEvents('s', eventHandler)();
+    services.review.subscribeSessionChanges(eventHandler)();
 
     await services.terminal.start('s');
     await services.terminal.stop({ sessionId: 's', ref: 'term' });
@@ -259,8 +277,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.queryMessageExecutions('fork', ['message-next']);
     await services.sideChat.retractQueueEntry('fork', 'entry-1');
     await services.sideChat.promoteQueueEntry('fork', 'entry-2');
-    await services.sideChat.updateQueueEntry('fork', 'entry-3', 4, 'updated');
-    await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2']);
+    await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2'], 5);
     await services.sideChat.setPermissionMode('fork', 'ask');
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
     await services.sideChat.respondToClientCapability('fork', {} as never);
@@ -273,6 +290,7 @@ describe('createDesktopWorkbarServices', () => {
       [
         'gitReview.read',
         'sessions.subscribeEvents',
+        'sessions.subscribeChanges',
         'shellRuns.start',
         'shellRuns.stop',
         'shellRuns.attach',
@@ -316,7 +334,6 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.queryMessageExecutions',
         'sessions.retractQueueEntry',
         'sessions.promoteQueueEntry',
-        'sessions.updateQueueEntry',
         'sessions.reorderQueueEntries',
         'sessions.setPermissionMode',
         'sessions.respondToSandboxBoundary',
@@ -361,6 +378,10 @@ describe('createDesktopWorkbarServices', () => {
     assert.deepEqual(
       calls.find((call) => call.name === 'sessions.queryMessageExecutions')?.args,
       ['fork', ['message-next']],
+    );
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.reorderQueueEntries')?.args,
+      ['fork', ['entry-3', 'entry-2'], 5],
     );
   });
 });

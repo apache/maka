@@ -105,6 +105,7 @@ export function workHubResultContent(
 export class HostWorkHubResultCoordinator {
   #active = false;
   #draining = false;
+  #handoffHeld = false;
   #dirty = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #timerDue = 0;
@@ -119,6 +120,25 @@ export class HostWorkHubResultCoordinator {
     this.#active = true;
     this.notify();
   }
+  holdForHandoff(): { settled(): Promise<void>; release(): void } | undefined {
+    if (this.#draining || this.#handoffHeld) return undefined;
+    this.#handoffHeld = true;
+    this.#stopTimer();
+    let released = false;
+    return {
+      // Finish an admitted poll (including delivery and residency release)
+      // before the Root coordinator freezes its execution set.
+      settled: async () => {
+        await this.#running;
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#handoffHeld = false;
+        this.notify();
+      },
+    };
+  }
   notify(sessionId?: string): void {
     if (
       !this.#active ||
@@ -129,14 +149,17 @@ export class HostWorkHubResultCoordinator {
     this.#schedule(100);
   }
   #schedule(delay: number): void {
-    if (!this.#active || this.#running) return;
+    if (!this.#active || this.#handoffHeld || this.#running) return;
     const due = Date.now() + delay;
     if (this.#timer) {
       if (this.#timerDue <= due) return;
       clearTimeout(this.#timer);
     }
     this.#timerDue = due;
-    this.#timer = setTimeout(() => {
+    const timer = setTimeout(() => {
+      // A callback queued before clearTimeout must not cross a hold, or
+      // replace the new timer installed when that hold is cancelled.
+      if (this.#timer !== timer || !this.#active || this.#handoffHeld) return;
       this.#timer = undefined;
       this.#timerDue = 0;
       const residency = this.ports.acquireResidency();
@@ -154,7 +177,8 @@ export class HostWorkHubResultCoordinator {
             this.#schedule(this.#dirty ? 100 : this.#needsRetry || retry ? 5000 : 60000);
         });
     }, delay);
-    this.#timer.unref();
+    this.#timer = timer;
+    timer.unref();
   }
   async reconcile(): Promise<void> {
     this.#dirty = false;
@@ -194,6 +218,9 @@ export class HostWorkHubResultCoordinator {
   beginDrain(): void {
     this.#draining = true;
     this.#active = false;
+    this.#stopTimer();
+  }
+  #stopTimer(): void {
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#timerDue = 0;
