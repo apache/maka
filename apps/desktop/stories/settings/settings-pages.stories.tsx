@@ -2829,13 +2829,8 @@ export const UsageLongTail: Story = {
     expect(timeCell).not.toBeNull();
     const timeText = timeCell?.firstElementChild;
     expect(timeText).toBeInstanceOf(HTMLElement);
-    const timeRange = document.createRange();
-    timeRange.selectNodeContents(timeText!);
-    const timeCellStyle = getComputedStyle(timeCell!);
-    const requiredWidth = timeRange.getBoundingClientRect().width
-      + Number.parseFloat(timeCellStyle.paddingLeft)
-      + Number.parseFloat(timeCellStyle.paddingRight);
-    expect(requiredWidth).toBeLessThanOrEqual(timeCell!.clientWidth);
+    // Compare matching DOM metrics; Range widths retain fractions that clientWidth rounds.
+    expect(timeText!.scrollWidth).toBeLessThanOrEqual(timeText!.clientWidth);
 
     const longTarget = 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking';
     const targetCellText = within(table).getByText(longTarget);
