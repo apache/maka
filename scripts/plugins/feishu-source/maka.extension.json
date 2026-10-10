@@ -26,11 +26,11 @@
       },
       "startTime": {
         "type": "number",
-        "description": "枚举起始 Unix 秒，必填"
+        "description": "CLI 日历窗口起始 Unix 秒；token 模式作为消息范围下界"
       },
       "endTime": {
         "type": "number",
-        "description": "可选结束 Unix 秒；否则固定为本次扫描开始时间"
+        "description": "CLI 日历窗口结束 Unix 秒；token 模式可选消息范围上界"
       },
       "cliPath": {
         "type": "string",
@@ -42,7 +42,7 @@
       },
       "appId": {
         "type": "string",
-        "description": "固定 CLI appId"
+        "description": "固定应用 ID；CLI 模式自动核对登录应用"
       },
       "kinds": {
         "type": "string",
@@ -58,15 +58,19 @@
       },
       "messageStartTime": {
         "type": "number",
-        "description": "消息起始 Unix 秒，默认 0，独立于日历窗口"
+        "description": "可同步消息范围下界 Unix 秒，默认 0；由 FeishuSync 显式选择具体区间。"
       },
       "messageEndTime": {
         "type": "number",
-        "description": "可选消息结束 Unix 秒，默认每次扫描开始时间，独立于日历窗口"
+        "description": "可同步消息范围上界 Unix 秒，留空不限；读取来源仅访问已发布本地缓存。"
       },
       "cliProfile": {
         "type": "string",
         "description": "固定 CLI profile 名称，避免跟随全局默认 profile 切换"
+      },
+      "dataDirectory": {
+        "type": "string",
+        "description": "持久化消息同步进度、原文版本及游标签名密钥；留空自动创建。"
       }
     }
   },

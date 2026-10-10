@@ -18,7 +18,8 @@
  */
 
 import { mkdir, copyFile, rm } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { exportExtensionBundle } from '../../memory-network/.artifacts/main-api.mjs';
 const stage = resolve('release/package');
 await rm(stage, { recursive: true, force: true });
@@ -27,6 +28,10 @@ for (const file of ['maka.extension.json', 'maka.composition.json', 'README.md',
   await copyFile(file, stage + '/' + file);
 for (const file of ['LICENSE', 'NOTICE'])
   await copyFile(resolve('../../..', file), stage + '/' + file);
+await copyFile(
+  join(dirname(fileURLToPath(import.meta.resolve('zod/package.json'))), 'LICENSE'),
+  stage + '/THIRD-PARTY-LICENSES.txt',
+);
 const target = resolve('release/feishu-source.maka-extension');
 await rm(target, { force: true });
 await exportExtensionBundle(stage, target);

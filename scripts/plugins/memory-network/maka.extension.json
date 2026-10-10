@@ -33,6 +33,11 @@
       "runTimeoutMs": {
         "type": "number",
         "default": 600000
+      },
+      "maxConcurrentJobs": {
+        "type": "number",
+        "default": 5,
+        "description": "创建、手动及定时维护共用的并发作业上限；一组索引占一个作业。"
       }
     }
   },

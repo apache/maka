@@ -113,11 +113,11 @@ export async function fixture(bundle = true, config: any = {}) {
       }
     },
     followup: async (id: string, prompt: string) => {
-      const indexId = /Organize index ([^. ]+)/.exec(prompt)![1];
       const worker = workers.get(id)!;
       worker.task = (async () => {
         await beforeWorker?.();
         if (workerRunner) return workerRunner(id, prompt);
+        const indexId = /Organize index ([^. ]+)/.exec(prompt)![1];
         const summary = await invokeAs(id, 'MemoryIndexRead', { indexId });
         const page = await invokeAs(id, 'MemoryHistory', {
           from: summary.range.from,
@@ -187,14 +187,17 @@ export async function fixture(bundle = true, config: any = {}) {
   const invokeAs = async (sessionId: string, name: string, input: any) => {
     const tool = tools.resolve(sessionId, []).tools.find((x: any) => x.name === name);
     assert.ok(tool, name);
-    const result = await tool.impl(tool.parameters.parse(name === 'MemoryIndexCreate' ? { background: false, ...input } : input), {
-      sessionId,
-      turnId: 'turn-1',
-      toolCallId: randomUUID(),
-      cwd: root,
-      abortSignal: new AbortController().signal,
-      permissionMode: 'default',
-    });
+    const result = await tool.impl(
+      tool.parameters.parse(name === 'MemoryIndexCreate' ? { background: false, ...input } : input),
+      {
+        sessionId,
+        turnId: 'turn-1',
+        toolCallId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+        permissionMode: 'default',
+      },
+    );
     assert.deepEqual(
       result,
       JSON.parse(JSON.stringify(result)),

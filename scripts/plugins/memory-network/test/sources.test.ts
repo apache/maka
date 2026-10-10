@@ -195,6 +195,9 @@ test('packaged Feishu provider uses the real plugin service and complete memory 
   const patch = JSON.parse(readFileSync(join(sourceRoot, 'maka.composition.json'), 'utf8'));
   patch[0].entry.config = {
     instanceId: 'packaged-test',
+    accountId: 'user',
+    appId: 'app',
+    dataDirectory: join(f.root, 'feishu-data'),
     containers: JSON.stringify([{ type: 'chat', id: 'oc_test' }]),
     startTime: 1,
     endTime: 20,
@@ -215,14 +218,28 @@ test('packaged Feishu provider uses the real plugin service and complete memory 
   };
   globalThis.fetch = async (url, options) => {
     requests.push(`${options?.method} ${new URL(String(url)).pathname}`);
-    return new Response(JSON.stringify({ code: 0, data: { has_more: false, items: [original] } }));
+    return new Response(
+      JSON.stringify({
+        code: 0,
+        data: new URL(String(url)).pathname.endsWith('user_info')
+          ? { open_id: 'user' }
+          : { has_more: false, items: [original] },
+      }),
+    );
   };
-  try {
-    const result = await f.platform.installPackage(bundlePath);
-    assert.deepEqual(result.failures, []);
-  } finally {
+  t.after(() => {
     globalThis.fetch = realFetch;
-  }
+  });
+  const installed = await f.platform.installPackage(bundlePath);
+  assert.deepEqual(installed.failures, []);
+  assert.equal(
+    (await f.invoke('MemorySourceQuery', { source: 'feishu.packaged-test', query: {} })).items
+      .length,
+    0,
+  );
+  const synced = await f.invoke('FeishuSync', { startTime: 1, endTime: 20 });
+  assert.equal(synced.jobs[0].status, 'complete');
+  const remoteReads = requests.filter((x) => !x.endsWith('user_info')).length;
   const sources = await f.invoke('MemorySources', {});
   assert.ok(sources.some((s) => s.id === 'feishu.packaged-test'));
   const range = await f.invoke('MemoryRange', { sources: ['maka', 'feishu.packaged-test'] });
@@ -264,7 +281,12 @@ test('packaged Feishu provider uses the real plugin service and complete memory 
     key: originalRead.backlinks[0].key,
   });
   assert.match(content.text, /设备到货/);
-  assert.ok(requests.length > 0 && requests.every((x) => x.startsWith('GET ')));
+  assert.equal(
+    requests.filter((x) => !x.endsWith('user_info')).length,
+    remoteReads,
+    'index reads do not fetch remote messages',
+  );
+  assert.ok(requests.includes('POST /open-apis/im/v1/messages/search'));
 });
 
 test('native type filters skip remote body reads and account namespaces never share refs', async (t) => {
@@ -295,7 +317,6 @@ test('native type filters skip remote body reads and account namespaces never sh
   assert.equal(second.citation, `[source](memory-original:${second.ref})`);
 });
 
-
 test('every index read refreshes external metadata; failed scans preserve observation and retry without organizing', async (t) => {
   const { f, state } = await setup(t);
   let workers = 0;
@@ -306,12 +327,19 @@ test('every index read refreshes external metadata; failed scans preserve observ
     assert.equal(info.freshness.coveredCursor, null);
     assert.match(info.freshness.notice, /coveredCursor=null.*尚无已完成/);
     await f.invokeAs(worker, 'MemoryIndexCheckpoint', {
-      indexId, rangeId: info.range.rangeId, expectedRevision: info.index.revision,
-      notes: 'Fixture deliberately produces no entries', complete: true,
+      indexId,
+      rangeId: info.range.rangeId,
+      expectedRevision: info.index.revision,
+      notes: 'Fixture deliberately produces no entries',
+      complete: true,
     });
   });
   const range = await f.invoke('MemoryRange', { sources: ['feishu.test'] });
-  const first = await f.invoke('MemoryIndexCreate', { name: 'External', instructions: 'Fixture index', cursor: range.to });
+  const first = await f.invoke('MemoryIndexCreate', {
+    name: 'External',
+    instructions: 'Fixture index',
+    cursor: range.to,
+  });
   const indexId = first.index.id;
   const readers = [
     async () => (await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === indexId),
@@ -320,14 +348,19 @@ test('every index read refreshes external metadata; failed scans preserve observ
     () => f.invoke('MemoryIndexContent', { indexId, key: 'empty' }),
   ];
   for (const [i, read] of readers.entries()) {
-    state.revision = `v${i + 2}`; state.text = `Changed version ${i}`;
+    state.revision = `v${i + 2}`;
+    state.text = `Changed version ${i}`;
     const beforeReads = state.reads;
     const result = await read();
     assert.equal(state.reads, beforeReads, 'observation enumerates metadata, not external bodies');
     assert.equal(result.freshness.coveredCursor, first.freshness.coveredCursor);
     assert.notEqual(result.freshness.observedCursor, result.freshness.coveredCursor);
     assert.equal(result.freshness.lastOrganizedAt, first.freshness.lastOrganizedAt);
-    const request = { from: result.freshness.coveredCursor, to: result.freshness.observedCursor, mode: 'messages' };
+    const request = {
+      from: result.freshness.coveredCursor,
+      to: result.freshness.observedCursor,
+      mode: 'messages',
+    };
     const delta = await f.invoke('MemoryHistory', request);
     assert.equal(delta.items.length, 1);
     assert.deepEqual((await f.invoke('MemoryHistory', request)).items, delta.items);
@@ -354,7 +387,42 @@ test('every index read refreshes external metadata; failed scans preserve observ
   assert.equal(after.index.revision, first.index.revision);
   assert.equal(after.contents.total, 0);
   state.allowed = false;
-  await assert.rejects(f.invoke('MemoryIndexRead', { indexId }), /visibility|accessible|permission|visible/i);
-  await assert.rejects(f.invoke('MemoryIndexContent', { indexId }), /visibility|accessible|permission|visible/i);
-  assert.equal((await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === indexId).unavailable, true);
+  await assert.rejects(
+    f.invoke('MemoryIndexRead', { indexId }),
+    /visibility|accessible|permission|visible/i,
+  );
+  await assert.rejects(
+    f.invoke('MemoryIndexContent', { indexId }),
+    /visibility|accessible|permission|visible/i,
+  );
+  assert.equal(
+    (await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === indexId).unavailable,
+    true,
+  );
+});
+
+test('a deleted external original is a history tombstone; an unavailable original still fails', async (t) => {
+  const f = await fixture();
+  t.after(() => f.close());
+  let deleted = true;
+  const object = { id: 'gone', locator: { id: 'gone' }, revision: 'deleted-v1', kind: 'text' };
+  f.sources.register({
+    id: 'tombstones',
+    description: 'test',
+    scope: {},
+    queryHelp: '{}',
+    enumerate: async () => ({ items: [object] }),
+    query: async () => ({ items: [object] }),
+    authorize: async () => [object.id],
+    read: async () => ({ object, status: deleted ? 'deleted' : 'unavailable' }),
+  });
+  const range = await f.invoke('MemoryRange', { sources: ['tombstones'] });
+  const history = await f.invoke('MemoryHistory', { to: range.to, mode: 'messages' });
+  assert.equal(history.items[0].message.deleted, true);
+  assert.equal(history.items[0].message.status, 'deleted');
+  deleted = false;
+  await assert.rejects(
+    f.invoke('MemoryHistory', { to: range.to, mode: 'messages' }),
+    /unavailable/,
+  );
 });

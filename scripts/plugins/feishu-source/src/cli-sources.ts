@@ -19,7 +19,6 @@
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { createCli, type CliConfig, type CliRun } from './cli.js';
-import { createFeishuSource } from './adapter.js';
 type Kind = 'documents' | 'tasks' | 'calendar';
 export type SourcesConfig = CliConfig & {
   instanceId: string;
@@ -27,6 +26,8 @@ export type SourcesConfig = CliConfig & {
   containers?: any[];
   startTime?: number;
   endTime?: number;
+  messageSource?: any;
+  signingKey?: string;
   messageStartTime?: number;
   messageEndTime?: number;
   calendarId?: string;
@@ -45,8 +46,7 @@ const id = (value: any) => {
   return value;
 };
 export function createCliSources(config: SourcesConfig, run?: CliRun) {
-  if (!/^[a-z0-9][a-z0-9._-]{0,40}$/.test(config.instanceId))
-    throw Error('Invalid instanceId');
+  if (!/^[a-z0-9][a-z0-9._-]{0,40}$/.test(config.instanceId)) throw Error('Invalid instanceId');
   const cli = createCli(config, run);
   const result: any[] = [];
   for (const kind of config.kinds ?? ['documents', 'tasks', 'calendar']) {
@@ -74,7 +74,7 @@ export function createCliSources(config: SourcesConfig, run?: CliRun) {
         ? { query: config.documentQuery ?? '', types: ['docx', 'wiki'] }
         : {}),
     };
-    const key = randomBytes(32);
+    const key = config.signingKey ?? randomBytes(32);
     const encode = (state: any) => {
       const s = Buffer.from(JSON.stringify(state)).toString('base64url');
       return s + '.' + createHmac('sha256', key).update(s).digest('hex');
@@ -101,8 +101,7 @@ export function createCliSources(config: SourcesConfig, run?: CliRun) {
           await cli.call(['api', 'GET', `/open-apis/docx/v1/documents/${identifier}`], caller)
         ).document;
       if (kind === 'tasks')
-        return (await cli.call(['task', 'tasks', 'get', '--task-guid', identifier], caller))
-          .task;
+        return (await cli.call(['task', 'tasks', 'get', '--task-guid', identifier], caller)).task;
       return await cli
         .call(
           [
@@ -145,8 +144,7 @@ export function createCliSources(config: SourcesConfig, run?: CliRun) {
         throw Error('Unsupported source query field');
       if (q.text !== undefined && typeof q.text !== 'string') throw Error('Invalid text');
       const limit = q.limit ?? 20;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 100)
-        throw Error('limit must be 1..100');
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw Error('limit must be 1..100');
       const shape = hash({ text: q.text ?? '', limit, scope });
       const state = q.cursor ? decode(q.cursor) : {};
       if (q.cursor && state.shape !== shape) throw Error('Cursor query changed');
@@ -284,85 +282,6 @@ export function createCliSources(config: SourcesConfig, run?: CliRun) {
       },
     });
   }
-  {
-    const source = createFeishuSource(
-      {
-        ...config,
-        startTime: config.messageStartTime ?? 0,
-        endTime: config.messageEndTime,
-        containers: config.containers ?? [],
-      },
-      async () => '',
-      fetch,
-      async (path, query, caller) =>
-        cli.call(
-          ['api', 'GET', '/open-apis' + path, '--params', JSON.stringify(query)],
-          caller,
-        ),
-      {
-        async chats(cursor, caller) {
-          const data = await cli.call(
-            [
-              'im',
-              '+chat-list',
-              '--types',
-              'p2p,group',
-              '--page-size',
-              '100',
-              ...(cursor ? ['--page-token', cursor] : []),
-            ],
-            caller,
-          );
-          if (
-            !Array.isArray(data.chats) ||
-            (data.has_more && (!data.page_token || data.page_token === cursor))
-          )
-            throw Error('Invalid chat listing');
-          return {
-            items: data.chats.map((c: any) => ({ type: 'chat' as const, id: id(c.chat_id) })),
-            ...(data.has_more ? { next: data.page_token } : {}),
-          };
-        },
-        async search(q, caller) {
-          const data = await cli.call(
-            [
-              'im',
-              '+messages-search',
-              '--query',
-              q.text ?? '',
-              '--page-size',
-              String(q.limit ?? 20),
-              '--no-reactions',
-              ...(q.startTime > 0
-                ? ['--start', new Date(q.startTime * 1000).toISOString().replace('.000Z', 'Z')]
-                : []),
-              '--end',
-              new Date(q.endTime * 1000).toISOString().replace('.000Z', 'Z'),
-              ...(q.chatId ? ['--chat-id', q.chatId] : []),
-              ...(q.cursor ? ['--page-token', q.cursor] : []),
-            ],
-            caller,
-          );
-          if (
-            !Array.isArray(data.messages) ||
-            (data.has_more && (!data.page_token || data.page_token === q.cursor))
-          )
-            throw Error('Invalid message search');
-          // CLI search formats timestamps/content. Resolve native records for stable references and exact originals.
-          const items = await mapReads(data.messages, async (m: any) => {
-            const found = await cli.call(
-              ['api', 'GET', '/open-apis/im/v1/messages/' + id(m.message_id)],
-              caller,
-            );
-            const raw = found.items?.find((x: any) => x.message_id === m.message_id);
-            if (!raw) throw Error('Search original unavailable');
-            return raw;
-          });
-          return { items, ...(data.has_more ? { next: data.page_token } : {}) };
-        },
-      },
-    );
-    result.push({ ...source, id: `feishu.${config.instanceId}.messages` });
-  }
+  if (config.messageSource) result.push(config.messageSource);
   return result;
 }

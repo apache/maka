@@ -272,59 +272,11 @@ test('rate limits back off and retry reads, while authorization errors fail imme
   assert.equal(denied, 1);
 });
 
-test('CLI default discovers group and p2p chats, search and enumeration share native revisions, calendar dates do not constrain messages', async () => {
-  const calls: string[][] = [];
-  const raw = {
-    message_id: 'om_one',
-    chat_id: 'oc_private',
-    create_time: '2000',
-    msg_type: 'text',
-    body: { content: '原始消息' },
-  };
-  const sources = createCliSources(
-    { ...config, kinds: [], startTime: 9999, endTime: 10000 },
-    async (args) => {
-      calls.push(args);
-      if (args[0] === 'auth') return status;
-      let data: any;
-      if (args[1] === '+chat-list')
-        data = { chats: [{ chat_id: 'oc_private' }], has_more: false };
-      else if (args[1] === '+messages-search')
-        data = {
-          messages: [{ message_id: 'om_one', create_time: 'formatted', content: 'formatted' }],
-          has_more: !args.includes('--page-token'),
-          page_token: 's2',
-        };
-      else data = { items: [raw], has_more: false };
-      return { ok: true, identity: 'user', data };
-    },
-  );
-  const source = sources.find((s) => s.id.endsWith('.messages'))!;
-  assert.equal(source.scope.startTime, 0);
-  assert.equal(source.scope.endTime, 'scan-start');
-  const page = await source.enumerate(undefined, caller());
-  assert.equal(page.items[0].id, 'om_one');
-  assert.ok(calls.some((a) => a[1] === '+chat-list' && a.includes('p2p,group')));
-  const c = caller(),
-    q = { text: '原始', chatId: 'oc_private', limit: 2 };
-  const found = await source.query(q, c);
-  assert.ok(found.next);
-  assert.equal(found.items[0].revision, page.items[0].revision);
-  assert.equal((await source.read(found.items[0], c)).content.body.content, '原始消息');
-  const next = await source.query({ ...q, cursor: found.next }, caller());
-  assert.equal(next.next, undefined);
-  await assert.rejects(
-    source.query({ ...q, text: 'changed', cursor: found.next }, caller()),
-    /query changed/,
-  );
-  const search = calls.find((a) => a[1] === '+messages-search')!;
-  assert.ok(search.includes('--chat-id'));
-  assert.ok(search.includes('--no-reactions'));
-  assert.ok(
-    !search.some((a) => a.endsWith('.000Z')),
-    'Feishu search rejects fractional-second timestamps',
-  );
-  assert.ok(!search.includes('--start'), 'Unbounded start omits the optional filter');
+test('message sources are injected local caches; other CLI sources retain their behavior', () => {
+  const local = { id: 'feishu.test.messages', query: () => ({ items: [] }) };
+  const sources = createCliSources({ ...config, kinds: [], messageSource: local });
+  assert.equal(sources[0], local);
+  assert.deepEqual(createCliSources({ ...config, kinds: [] }), []);
 });
 
 test('refreshable pinned login can read; switched identities and unusable login states cannot', async () => {
@@ -338,8 +290,7 @@ test('refreshable pinned login can read; switched identities and unusable login 
   ] as const) {
     let reads = 0;
     const cli = createCli(config, async (args) => {
-      if (args[0] === 'auth')
-        return { appId, identities: { user: { openId, status: state } } };
+      if (args[0] === 'auth') return { appId, identities: { user: { openId, status: state } } };
       reads++;
       return { ok: true, identity: 'user', data: { refreshed: true } };
     });

@@ -36,6 +36,7 @@ Shared memory over retained originals. An index is a fallible navigation aid; or
 | `MemorySources` | Discover permitted source adapters |
 | `MemoryRange` | Capture existing or incremental source boundaries without running a model |
 | `MemoryHistory` | Browse source/session records or query full messages within exact boundaries |
+| `MemoryIndexCreateGroup` | One Agent handles numbered new/existing index definitions on a source cursor |
 | `MemoryIndexCreate` | Criterion + cursor → independent Agent organization → actual results |
 | `MemoryIndexList`, `MemoryIndexRead` | Discover all indexes and inspect the full lightweight document directory, progress and coverage |
 | `MemoryIndexContent` | Read one key, multiple keys, or the full index; search keys/bodies; optional document pagination and character budget |
@@ -65,7 +66,7 @@ Full output is saved to `<dataDirectory>/extractions/<id>/result.md`, and `recei
 
 ## Sources and consistency
 
-Each adapter supplies stable record IDs, opaque content revisions, permission-checked listings and snapshots via `ctx.sessionQuery.registerHistorySource({id, description, list, read})`. Maka uses Recall visibility plus a durable ledger-head revision. Each method receives the active caller. Adapters must scope records so listing authorization covers all returned content, including historical versions. No production Feishu/mail/calendar connector is included.
+Each adapter supplies stable record IDs, opaque content revisions, permission-checked listings and snapshots via `ctx.sessionQuery.registerHistorySource({id, description, list, read})`. Maka uses Recall visibility plus a durable ledger-head revision. Each method receives the active caller. Adapters must scope records so listing authorization covers all returned content, including historical versions. External adapters such as Feishu are separate plugins.
 
 Cursors retain a manifest of exact immutable message versions per source record. Revised messages and late arrivals are incremental even when their timestamps are old. Old originals and citations remain available. A removed message in a still-visible record is reported as removed, without deleting its original. Loss of source visibility fails closed for existing ranges; it is not interpreted as proof of deletion. Reads currently use complete changed-session snapshots; streaming ingestion and query acceleration are future optimizations.
 
@@ -79,6 +80,7 @@ Background workers use ordinary persistent Maka Sessions and inherit the initiat
 
 | Configuration | Default | Meaning |
 | --- | --- | --- |
+| `maxConcurrentJobs` | 5 | Shared concurrent job bound, 1–5; a group counts once |
 | `tickMs` | 30000 | Lightweight due-time checks; does not scan sources on each tick |
 | `intervalMs` | 43200000 | Default maintenance interval (12 hours), overridable per index |
 | `threshold` | 100 | Legacy configuration accepted but ignored; scheduling is time based |
@@ -86,7 +88,7 @@ Background workers use ordinary persistent Maka Sessions and inherit the initiat
 | `runTimeoutMs` | 600000 | Timeout for each worker turn, reset on continuation |
 | `dataDirectory` | generated | Persisted plugin data location |
 
-At most two scheduled index runs start concurrently. Maintenance runs while Host/plugin are active; it does not wake a closed desktop app or automatically import new Codex histories. Model interpretation and sufficiency are not guaranteed by a completed cursor.
+`maxConcurrentJobs` defaults to 5 and accepts 1–5. Creation, manual and scheduled maintenance share this bound; one grouped Agent is one job. Capacity returns `status:"capacity", started:false`, the retained index IDs and a `MemoryIndexMaintain` retry entry. It is not silently queued; an explicit retry is required. Maintenance runs while Host/plugin are active; it does not wake a closed desktop app or automatically import new Codex histories. Model interpretation and sufficiency are not guaranteed by a completed cursor.
 
 ## Build and validation
 
@@ -119,7 +121,7 @@ Current limits: metadata enumeration is still a scoped rescan rather than an ups
 
 ## Delayed indexes and periodic maintenance
 
-`MemoryIndexList`, `MemoryIndexRead` and every form of `MemoryIndexContent` return `freshness`: completed coverage cursor, latest observed cursor, last organization time, last successful source-check time, last check and maintenance errors, known pending changes, whether partial edits exist, maintenance enabled state, interval and next check time. A reused immutable cursor does not reuse its old observation time: successful checks are recorded separately. Legacy records without a known check time report unknown freshness.
+`MemoryIndexList` returns a compact directory (id, name, instructions, essential freshness and `MemoryIndexRead` entry). It omits internal scope/revision/range structures and compacts pending counts. `MemoryIndexRead` and every form of `MemoryIndexContent` return full `freshness`: completed coverage cursor, latest observed cursor, last organization time, last successful source-check time, last check and maintenance errors, known pending changes, whether partial edits exist, maintenance enabled state, interval and next check time. A reused immutable cursor does not reuse its old observation time: successful checks are recorded separately. Legacy records without a known check time report unknown freshness.
 
 Known pending changes only describe the last successful scan. Zero is never a promise that sources have not changed since. MemoryIndexList, MemoryIndexRead and every form of MemoryIndexContent automatically refresh observations before returning, preserving visibility checks. External sources enumerate metadata without eagerly reading bodies. Callers can pass coveredCursor as from and observedCursor as to directly to `MemoryHistory`; repeated reads do not consume the delta. No preliminary MemoryRange call is required. A failed scan returns knownPending=null and preserves the last successful cursor/check time; it is not evidence that sources have no new changes. Refreshing observations never moves completed coverage or changes index contents.
 
@@ -130,3 +132,24 @@ The scheduler persists the next check and per-index override in the existing wor
 Real lifecycle tests use a separate synthetic Source and a short test-only per-index interval; they do not create or modify user content in Feishu. Controlled tests cover idle scheduling, automatic observation refresh, no-change checks, errors, in-flight arrivals, pause/resume and plugin reload recovery.
 
 Source permission checks for scoped tools are limited to the requested sources. An unrelated provider outage does not block local or other-source indexes. Listing indexes marks inaccessible ones unavailable without returning their content; original backlink traversal omits inaccessible links. Source failures never count as an empty successful scan or advance coverage.
+
+## One Agent, several indexes
+
+```json
+{
+  "cursor": "cursor-from-MemoryRange",
+  "indexes": [
+    {"number": 1, "name": "Events", "instructions": "Summarize events with original links"},
+    {"number": 2, "indexId": "existing-index-id"}
+  ],
+  "background": true
+}
+```
+
+Pass this to `MemoryIndexCreateGroup`. Numbers are identifiers, not a prescribed execution order. The single worker chooses its order and reuses reads. Each member retains independent instructions, edits/revisions, frozen range, notes and checkpoint. Group membership, numbers and worker Session are durable. `complete=false` continues that Session; completed members are preserved while unfinished members resume, including after reload. Later arrivals are not absorbed into an unfinished range. Existing indexes must have the same source scope (no restricted Session subset); already grouped indexes cannot be silently regrouped.
+
+A maintenance request for any member reuses its group's active job. `MemoryIndexMaintain({indexId, background:true})` returns admission status immediately; the default still waits for the actual result. Explicit maintenance can run paused members once without changing their schedule; scheduled maintenance includes only enabled members. A current round may finish after pause. `MemoryIndexRead.maintenance.group` identifies the persistent membership/number/Session.
+
+External enumeration stages metadata and its next page cursor on disk. Interrupted scans resume; concurrent scans of one source share work. Repeated provider cursors fail. Only a complete scan with a final permission check publishes the new source set atomically; no partial scan advances completed index coverage. Source adapters must keep their paging cursors usable across restart (Feishu does).
+
+`coveredCursor`, `observedCursor`, pending counts and status locate storage coverage and incremental reads. They are not relevance or recommendation criteria: zero increments does not imply historical information has no useful leads. The returned notice explains how to read uncovered history with `MemoryHistory` or look up originals. Only an explicit successful checkpoint advances index coverage; reads, observation refresh and text edits do not. Explicit provider deletions appear as tombstones in history, while real read failures remain failures.

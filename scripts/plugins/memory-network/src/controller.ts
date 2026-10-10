@@ -29,6 +29,7 @@ export class MemoryController {
   private heartbeat?: ReturnType<typeof setInterval>;
   private owned = false;
   private ticking?: Promise<void>;
+  private scans = new Map<string, Promise<void>>();
   private sourceReads = new Map<string, Promise<void>>();
   private runs = new Map<string, Promise<any>>();
   constructor(
@@ -57,9 +58,7 @@ export class MemoryController {
         if (!tolerateUnavailable) throw error;
       }
     };
-    for (const source of this.ctx.sessionQuery
-      .historySources()
-      .filter((s: any) => selected(s.id)))
+    for (const source of this.ctx.sessionQuery.historySources().filter((s: any) => selected(s.id)))
       await inspect(async () => {
         for (const head of await this.ctx.sessionQuery.sourceList(source.id))
           if (source.id !== 'maka' || !hidden.has(head.id))
@@ -71,9 +70,7 @@ export class MemoryController {
         const objects = [...new Map(references.map((r) => [r.object.id, r.object])).values()];
         if (!objects.length) return;
         const allowed = new Set(await this.ctx.sources.authorize(source.id, objects));
-        keys.push(
-          ...references.filter((r) => allowed.has(r.object.id)).map((r) => r.recordKey),
-        );
+        keys.push(...references.filter((r) => allowed.has(r.object.id)).map((r) => r.recordKey));
       });
     return [...new Set(keys)];
   }
@@ -98,12 +95,7 @@ export class MemoryController {
         }),
     };
   }
-  async readReference(
-    ref: string,
-    latest = false,
-    expandBacklinks = false,
-    visibility?: string[],
-  ) {
+  async readReference(ref: string, latest = false, expandBacklinks = false, visibility?: string[]) {
     const reference = this.store.reference(ref);
     if (!reference) throw Error('Unknown original reference');
     const allowed = visibility ?? (await this.visible(undefined, true));
@@ -222,7 +214,7 @@ export class MemoryController {
         if (input.since !== undefined && !(metadata.updatedAt >= input.since)) continue;
         if (input.until !== undefined && !(metadata.updatedAt <= input.until)) continue;
         const original = await this.readReference(ref, false, false, visible);
-        if (original.status !== 'ok')
+        if (original.status !== 'ok' && original.status !== 'deleted')
           throw Error(
             `Source original ${ref}: ${original.status}; refresh range or retry; coverage was not advanced`,
           );
@@ -230,12 +222,12 @@ export class MemoryController {
           id: original.object.id,
           type: original.object.kind,
           ts: original.object.updatedAt,
+          ...(original.status === 'deleted' ? { status: 'deleted', deleted: true } : {}),
           ...(typeof original.content === 'string'
             ? { text: original.content }
             : { content: original.content }),
         };
-        if (!select([message], { ...input, after: undefined, limit: 1 }).items.length)
-          continue;
+        if (!select([message], { ...input, after: undefined, limit: 1 }).items.length) continue;
         items.push({
           source: record.source,
           recordId: record.id,
@@ -256,31 +248,56 @@ export class MemoryController {
         'Remote content is read on demand. total=null means more candidates remain; no completeness claim. Types are native source kinds.',
     };
   }
+  private async scanSource(source: string) {
+    const row = this.store.db
+      .prepare('SELECT payload FROM memory_source_scans WHERE source=?')
+      .get(source);
+    const state = row
+      ? JSON.parse(String(row.payload))
+      : { seen: [], cursor: undefined, complete: false };
+    const seen = new Set<string>(state.seen);
+    while (!state.complete) {
+      this.abort.signal.throwIfAborted();
+      const page = await this.ctx.sources.enumerate(source, state.cursor);
+      if (page.next && seen.has(page.next)) throw Error('Source enumeration cursor repeated');
+      if (page.next) seen.add(page.next);
+      state.seen = [...seen];
+      state.cursor = page.next;
+      state.complete = !page.next;
+      this.store.transaction(() => {
+        const insert = this.store.db.prepare(
+          'INSERT INTO memory_source_scan_items VALUES(?,?,?) ON CONFLICT(source,id) DO UPDATE SET payload=excluded.payload',
+        );
+        for (const o of page.items) insert.run(source, o.id, JSON.stringify(o));
+        this.store.db
+          .prepare(
+            'INSERT INTO memory_source_scans VALUES(?,?) ON CONFLICT(source) DO UPDATE SET payload=excluded.payload',
+          )
+          .run(source, JSON.stringify(state));
+      });
+    }
+    // Re-check current permission after the last page; staging is never a published collection.
+    const objects = this.store.db
+      .prepare('SELECT payload FROM memory_source_scan_items WHERE source=? ORDER BY id')
+      .all(source)
+      .map((r) => JSON.parse(String(r.payload)));
+    const allowed = new Set(await this.ctx.sources.authorize(source, objects));
+    this.store.rememberExternal(
+      source,
+      objects.filter((o) => allowed.has(o.id)),
+      true,
+    );
+  }
   async sync(sources: string[], sessions: string[] = []) {
     const hidden = this.hidden();
     const remoteSources = new Set(this.ctx.sources.list().map((s) => s.id));
     for (const source of sources.filter((s) => remoteSources.has(s))) {
-      const objects: any[] = [],
-        seen = new Set<string>();
-      let cursor: string | undefined;
-      do {
-        this.abort.signal.throwIfAborted();
-        const page = await this.ctx.sources.enumerate(source, cursor);
-        objects.push(...page.items);
-        cursor = page.next;
-        if (cursor && seen.has(cursor)) throw Error('Source enumeration cursor repeated');
-        if (cursor) seen.add(cursor);
-      } while (cursor);
-      const allowed = new Set(await this.ctx.sources.authorize(source, objects));
-      const heads = this.store.rememberExternal(
-        source,
-        objects.filter((o) => allowed.has(o.id)),
-      );
-      this.store.db
-        .prepare(
-          'INSERT INTO memory_source_sets VALUES(?,?) ON CONFLICT(source) DO UPDATE SET payload=excluded.payload',
-        )
-        .run(source, JSON.stringify(heads.map((h) => h.key)));
+      let scan = this.scans.get(source);
+      if (!scan) {
+        scan = this.scanSource(source).finally(() => this.scans.delete(source));
+        this.scans.set(source, scan);
+      }
+      await scan;
     }
     for (const source of sources.filter((s) => !remoteSources.has(s)))
       for (const head of await this.ctx.sessionQuery.sourceList(source)) {
@@ -291,8 +308,7 @@ export class MemoryController {
         )
           continue;
         const key = sourceKey(source, head.id);
-        if (!head.historyRevision)
-          throw Error('Source must expose an opaque content revision');
+        if (!head.historyRevision) throw Error('Source must expose an opaque content revision');
         if (this.store.head(key)?.revision === head.historyRevision && this.store.record(key))
           continue;
         const existing = this.sourceReads.get(key);
@@ -369,15 +385,12 @@ export class MemoryController {
   }
   enabled(indexId: string) {
     const w = this.store.worker(indexId);
-    return (
-      w?.protocol === 'cursor-v1' && w.maintenanceEnabled !== false && !w.continuationStopped
-    );
+    return w?.protocol === 'cursor-v1' && w.maintenanceEnabled !== false && !w.continuationStopped;
   }
   nextCheck(indexId: string) {
     const w = this.store.worker(indexId);
     return this.enabled(indexId)
-      ? (w.nextCheckAt ??
-          (w.lastCheckedAt || w.lastSuccess || Date.now()) + this.interval(indexId))
+      ? (w.nextCheckAt ?? (w.lastCheckedAt || w.lastSuccess || Date.now()) + this.interval(indexId))
       : null;
   }
   freshness(indexId: string, visible: string[], running = this.runs.has(indexId)) {
@@ -386,12 +399,11 @@ export class MemoryController {
     const coveredCursor = this.store.boundary(indexId);
     const observedCursor = w?.latestCursor ?? work?.to ?? coveredCursor;
     const checkedAt = w?.lastCheckedAt ?? this.store.checkedAt(observedCursor);
-    const knownPending = !w?.lastCheckError && observedCursor
-      ? this.store.describe(coveredCursor, observedCursor, visible)
-      : null;
-    const pending = observedCursor
-      ? this.store.pending(indexId, observedCursor, visible)
-      : null;
+    const knownPending =
+      !w?.lastCheckError && observedCursor
+        ? this.store.describe(coveredCursor, observedCursor, visible)
+        : null;
+    const pending = observedCursor ? this.store.pending(indexId, observedCursor, visible) : null;
     return {
       coveredCursor,
       observedCursor,
@@ -423,7 +435,8 @@ export class MemoryController {
         'knownPending 表示截至 lastCheckedAt 已检查到、尚未纳入索引的变化。索引读取会自动刷新来源范围，无需先调用 MemoryRange。按需使用 MemoryHistory，以 coveredCursor 为 from、observedCursor 为 to 读取未覆盖历史，或直接查询最新原文。刷新和读取原文不会整理索引或推进覆盖范围。' +
         (w?.lastCheckError
           ? ' 本次来源检查失败，knownPending=null；observedCursor 和 lastCheckedAt 保留上次成功观察，不能据此判断当前没有增量。'
-          : ''),
+          : '') +
+        ' 游标、增量数量和状态只负责定位覆盖范围及读取位置，不是价值或推荐条件；没有增量不代表存量信息没有值得调查或交流的内容，不应据此停止调查。',
     };
   }
   control(indexId: string, action: 'pause' | 'resume' | 'configure', intervalMs?: number) {
@@ -486,6 +499,14 @@ export class MemoryController {
             lastAttempt: worker.lastAttempt,
             lastSuccess: worker.lastSuccess,
             lastError: worker.lastError,
+            startStatus: worker.startStatus ?? null,
+            group: worker.groupMembers
+              ? {
+                  members: worker.groupMembers,
+                  number: worker.groupNumber,
+                  sessionId: worker.sessionId,
+                }
+              : null,
             protocol: worker.protocol ?? 'legacy-paused',
             enabled: this.enabled(indexId),
             intervalMs: this.interval(indexId),
@@ -547,8 +568,7 @@ export class MemoryController {
     this.owned = this.store.lease(this.owner);
     this.heartbeat = setInterval(() => {
       const owned = this.store.lease(this.owner);
-      if (this.owned && !owned)
-        this.abort.abort(new Error('Memory maintenance ownership lost'));
+      if (this.owned && !owned) this.abort.abort(new Error('Memory maintenance ownership lost'));
       this.owned = owned;
     }, 10000);
     this.heartbeat.unref?.();
@@ -564,8 +584,17 @@ export class MemoryController {
       return this.ticking ?? Promise.resolve();
     this.ticking = (async () => {
       for (const index of this.store.list()) {
-        if (this.abort.signal.aborted || this.runs.size >= 2) break;
-        if (!this.enabled(index.id) || this.runs.has(index.id)) continue;
+        if (
+          this.abort.signal.aborted ||
+          new Set(this.runs.values()).size >= (this.config.maxConcurrentJobs ?? 5)
+        )
+          break;
+        if (
+          !this.enabled(index.id) ||
+          this.runs.has(index.id) ||
+          this.store.worker(index.id)?.startStatus === 'capacity'
+        )
+          continue;
         const binding = this.store.worker(index.id);
         // Persist a due time for old workers without scheduling metadata; do not scan on each tick.
         if (binding.nextCheckAt == null) {
@@ -576,22 +605,188 @@ export class MemoryController {
           continue;
         }
         if (Date.now() < binding.nextCheckAt) continue;
-        void this.maintain(index.id).catch(() => {});
+        this.launch(index.id, true);
       }
     })().finally(() => {
       this.ticking = undefined;
     });
     return this.ticking;
   }
-  maintain(indexId: string): Promise<any> {
+  launch(indexId: string, scheduled = false) {
     this.assertOwner();
-    const existing = this.runs.get(indexId);
-    if (existing) return existing;
+    const members: string[] = this.store.worker(indexId)?.groupMembers ?? [indexId];
+    // All members name the same job, even when a scheduled round excludes paused members.
+    for (const id of members) if (this.runs.has(id)) return { status: 'reused', indexId: id };
+    const selected = scheduled ? members.filter((id) => this.enabled(id)) : members;
+    if (new Set(this.runs.values()).size >= (this.config.maxConcurrentJobs ?? 5)) {
+      for (const id of members)
+        this.store.saveWorker(id, {
+          ...this.store.worker(id),
+          startStatus: 'capacity',
+          lastError: 'Maintenance capacity full; retry with MemoryIndexMaintain',
+        });
+      return {
+        status: 'capacity',
+        started: false,
+        indexId,
+        indexIds: members,
+        retry: { tool: 'MemoryIndexMaintain', indexId },
+      };
+    }
     const run = Promise.resolve()
-      .then(() => this.inOwner(indexId, () => this.run(indexId)))
-      .finally(() => this.runs.delete(indexId));
-    this.runs.set(indexId, run);
-    return run;
+      .then(() =>
+        this.inOwner<any>(indexId, () =>
+          selected.length > 1 ? this.runGroup(selected) : this.run(selected[0]),
+        ),
+      )
+      .catch((error) => {
+        for (const id of selected)
+          this.store.saveWorker(id, {
+            ...this.store.worker(id),
+            startStatus: 'failed',
+            lastError: String(error),
+            nextCheckAt: Date.now() + (this.config.retryMs ?? 60000),
+          });
+        return { status: 'failed', indexId, error: String(error) };
+      })
+      .finally(() => {
+        for (const id of selected) this.runs.delete(id);
+      });
+    for (const id of selected) {
+      this.store.saveWorker(id, { ...this.store.worker(id), startStatus: 'started' });
+      this.runs.set(id, run);
+    }
+    return { status: 'started', indexId, members: selected };
+  }
+  maintain(indexId: string): Promise<any> {
+    const started = this.launch(indexId);
+    return this.runs.get(started.indexId) ?? Promise.resolve(started);
+  }
+  async attachGroup(ids: string[], call: any) {
+    if (ids.some((id) => this.runs.has(id))) throw Error('A group member is already running');
+    const first = this.store.worker(ids[0]);
+    for (const id of ids) {
+      const old = this.store.worker(id);
+      if (old?.groupMembers && JSON.stringify(old.groupMembers) !== JSON.stringify(ids))
+        throw Error('Index already belongs to another group');
+    }
+    const agent = first?.groupMembers
+      ? { sessionId: first.sessionId }
+      : await this.ctx.agents.create({ background: true, name: 'Memory index group' });
+    this.store.db
+      .prepare('INSERT OR IGNORE INTO memory_worker_sessions VALUES(?)')
+      .run(agent.sessionId);
+    this.store.transaction(() => {
+      for (const id of ids)
+        this.store.saveWorker(id, {
+          protocol: 'cursor-v1',
+          ownerSessionId: call.sessionId,
+          cwd: call.cwd,
+          maintenanceEnabled: true,
+          nextCheckAt: Date.now() + (this.config.intervalMs ?? 43200000),
+          ...this.store.worker(id),
+          sessionId: agent.sessionId,
+          groupMembers: ids,
+        });
+    });
+  }
+  private async runGroup(ids: string[]) {
+    const resuming = ids.some((id) => {
+      const w = this.store.work(id);
+      return w && !w.completed;
+    });
+    const pending: { id: string; work: any; visible: string[] }[] = [];
+    let agent: any,
+      signal = this.abort.signal;
+    try {
+      for (const id of ids) {
+        if (resuming && this.store.work(id)?.completed) continue;
+        const index = this.store.index(id);
+        const existing = this.store.work(id);
+        const cursor =
+          existing && !existing.completed
+            ? this.store.cursor(existing.to)
+            : await this.capture(index.sources ?? ['maka'], index.sessions, id);
+        const visible = await this.indexVisible(id);
+        const work = this.store.work(id);
+        if (work?.completed && !this.store.pending(id, cursor.id, visible)) continue;
+        pending.push({
+          id,
+          work: work && !work.completed ? work : this.store.begin(id, cursor.id, visible),
+          visible,
+        });
+        this.store.saveWorker(id, {
+          ...this.store.worker(id),
+          lastAttempt: Date.now(),
+          lastError: null,
+        });
+      }
+      if (pending.length) {
+        agent = await this.ctx.agents.resume({ sessionId: this.store.worker(ids[0]).sessionId });
+        for (;;) {
+          this.assertOwner();
+          const remaining = pending.filter((x) => !this.store.work(x.id)?.completed);
+          if (!remaining.length) break;
+          signal = AbortSignal.any([
+            this.abort.signal,
+            AbortSignal.timeout(this.config.runTimeoutMs ?? 600000),
+          ]);
+          await agent.whenIdle(signal);
+          signal.throwIfAborted();
+          const before = remaining.map(
+            (x) => this.store.latestCheckpoint(x.id, x.work.id, agent.sessionId)?.id ?? 0,
+          );
+          const result = await agent.followup(
+            `Organize these independent indexes in this one Session. Choose the order and reuse reads. Preserve completed members. Each criterion and exact range must be finished separately; save incomplete progress with complete=false and continue. Current UTC: ${new Date().toISOString()}\n${JSON.stringify(remaining.map((x) => ({ indexId: x.id, number: this.store.worker(x.id).groupNumber, criterion: this.store.index(x.id).instructions, range: this.store.describe(x.work.from, x.work.to, x.visible), rangeId: x.work.id, notes: this.store.notes(x.id) })))}`,
+          );
+          if (!['turn_started', 'followup'].includes(result?.disposition))
+            throw Error('Host rejected group maintenance');
+          await agent.whenIdle(signal);
+          signal.throwIfAborted();
+          if (remaining.some((x) => this.store.work(x.id)?.id !== x.work.id))
+            throw Error('Group range changed');
+          if (remaining.every((x) => this.store.work(x.id)?.completed)) break;
+          const status = (await agent.snapshot())?.agent?.status;
+          if (status !== 'active') {
+            if (status === 'aborted')
+              for (const id of ids)
+                this.store.saveWorker(id, { ...this.store.worker(id), continuationStopped: true });
+            throw Error('Group Agent interrupted; completed members and progress retained');
+          }
+          if (
+            !remaining.some(
+              (x, n) =>
+                (this.store.latestCheckpoint(x.id, x.work.id, agent.sessionId)?.id ?? 0) >
+                before[n],
+            )
+          )
+            throw Error('Group stopped without checkpoint; retry retained work');
+        }
+      }
+      for (const id of ids)
+        this.store.saveWorker(id, {
+          ...this.store.worker(id),
+          lastSuccess: pending.some((x) => x.id === id)
+            ? Date.now()
+            : this.store.worker(id).lastSuccess,
+          lastError: null,
+          nextCheckAt: Date.now() + this.interval(id),
+        });
+    } catch (error) {
+      if (signal.aborted) await agent?.cancel().catch(() => {});
+      for (const id of ids)
+        this.store.saveWorker(id, {
+          ...this.store.worker(id),
+          lastError: String(error),
+          nextCheckAt: Date.now() + (this.config.retryMs ?? 60000),
+        });
+    }
+    return {
+      members: await Promise.all(
+        ids.map(async (id) => this.summary(id, await this.indexVisible(id), false)),
+      ),
+      backgroundFinished: true,
+    };
   }
   async wait(indexId: string, callerSignal?: AbortSignal) {
     const run = this.maintain(indexId);
@@ -604,8 +799,7 @@ export class MemoryController {
         new Promise((_, reject) => {
           onAbort = () =>
             reject(
-              callerSignal.reason ??
-                new Error('Caller stopped waiting; background task continues'),
+              callerSignal.reason ?? new Error('Caller stopped waiting; background task continues'),
             );
           callerSignal.addEventListener('abort', onAbort, { once: true });
         }),
@@ -665,8 +859,7 @@ Range ID: ${work.id}. Update existing entries and links when new evidence change
         signal.throwIfAborted();
         const before = this.store.latestCheckpoint(indexId, work.id, agent.sessionId)?.id ?? 0;
         const result = await agent.followup(prompt);
-        if (result?.disposition === 'blocked')
-          throw Error('Host rejected background maintenance');
+        if (result?.disposition === 'blocked') throw Error('Host rejected background maintenance');
         await agent.whenIdle(signal);
         signal.throwIfAborted();
         const current = this.store.work(indexId);

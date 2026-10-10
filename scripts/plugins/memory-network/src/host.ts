@@ -43,13 +43,17 @@ export default {
         if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647)
           throw Error(`Invalid ${key}`);
       }
-      if (ctx.maka?.rootId !== 'profile')
-        throw Error('Install memory-network in profile scope');
+      if (
+        !Number.isInteger(config.maxConcurrentJobs ?? 5) ||
+        (config.maxConcurrentJobs ?? 5) < 1 ||
+        (config.maxConcurrentJobs ?? 5) > 5
+      )
+        throw Error('maxConcurrentJobs must be 1..5');
+      if (ctx.maka?.rootId !== 'profile') throw Error('Install memory-network in profile scope');
       let location = await ctx.storage.get('data-directory');
       if (!location.value) {
         const path =
-          config.dataDirectory ||
-          join(homedir(), '.maka', 'plugin-data', PACKAGE_ID, randomUUID());
+          config.dataDirectory || join(homedir(), '.maka', 'plugin-data', PACKAGE_ID, randomUUID());
         if (!isAbsolute(path)) throw Error('dataDirectory must be absolute');
         try {
           await ctx.storage.set('data-directory', path, {
@@ -93,20 +97,34 @@ export default {
           impl: async (input: any, call: any) =>
             JSON.parse(JSON.stringify(await impl(input, call))),
         });
-      register('MemoryStatus', 'Read permitted source registrations and last known index maintenance status without importing, scanning sources or starting a model.', z.object({}), async () => {
+      register(
+        'MemoryStatus',
+        'Read permitted source registrations and last known index maintenance status without importing, scanning sources or starting a model.',
+        z.object({}),
+        async () => {
           await ctx.sessionQuery.historyList();
           const indexes = [];
           for (const index of store.list()) {
             try {
               const allowed = await controller.indexVisible(index.id);
               store.assertIndexVisible(index.id, allowed);
-              indexes.push({ id: index.id, name: index.name,
-                freshness: controller.freshness(index.id, allowed) });
-            } catch { indexes.push({ id: index.id, unavailable: true }); }
+              indexes.push({
+                id: index.id,
+                name: index.name,
+                freshness: controller.freshness(index.id, allowed),
+              });
+            } catch {
+              indexes.push({ id: index.id, unavailable: true });
+            }
           }
-          return { sources: [...ctx.sessionQuery.historySources(), ...ctx.sources.list()], indexes,
-            notice: '来源已注册不等于授权有效。此处显示上次检查状态；不会导入历史、刷新来源或整理索引。' };
-      });
+          return {
+            sources: [...ctx.sessionQuery.historySources(), ...ctx.sources.list()],
+            indexes,
+            notice:
+              '来源已注册不等于授权有效。此处显示上次检查状态；不会导入历史、刷新来源或整理索引。',
+          };
+        },
+      );
       register(
         'MemorySources',
         'List permitted history sources. Each source has its own opaque revisions.',
@@ -194,7 +212,7 @@ export default {
       );
       register(
         'MemoryIndexList',
-        'List ALL available indexes with their organizing criteria and covered cursors. Use MemoryIndexRead for the complete document directory, MemoryIndexContent for batch/full reading or search. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
+        'List a compact directory of ALL available index IDs, names, organizing criteria and essential freshness. Use MemoryIndexRead for the complete document directory, MemoryIndexContent for batch/full reading or search. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
         z.object({}),
         async () => {
           await ctx.sessionQuery.historyList();
@@ -203,10 +221,31 @@ export default {
             try {
               const allowed = await controller.observe(index.id);
               store.assertIndexVisible(index.id, allowed);
+              const f = controller.freshness(index.id, allowed);
               results.push({
-                ...index,
-                cursor: store.boundary(index.id),
-                freshness: controller.freshness(index.id, allowed),
+                id: index.id,
+                name: index.name,
+                instructions: index.instructions,
+                freshness: {
+                  coveredCursor: f.coveredCursor,
+                  observedCursor: f.observedCursor,
+                  knownPending: f.knownPending
+                    ? {
+                        sources: f.knownPending.sources.map((x: any) => ({
+                          source: x.source,
+                          changedRecords: x.changedRecords,
+                          newOrChangedMessages: x.newOrChangedMessages,
+                          removedMessages: x.removedMessages,
+                          removedRecords: x.removedRecords.length,
+                        })),
+                      }
+                    : null,
+                  lastOrganizedAt: f.lastOrganizedAt,
+                  lastCheckedAt: f.lastCheckedAt,
+                  status: f.status,
+                  lastCheckError: f.lastCheckError,
+                  notice: f.notice,
+                },
                 read: { tool: 'MemoryIndexRead', indexId: index.id },
               });
             } catch {
@@ -235,12 +274,100 @@ export default {
           controller.assertOwner();
           const index = store.create(input.name, input.instructions, [], cursor.sources);
           store.begin(index.id, cursor.id, allowed);
-          await controller.attach(index.id, call);
+          try {
+            await controller.attach(index.id, call);
+          } catch (error) {
+            return {
+              index,
+              job: {
+                status: 'failed',
+                indexId: index.id,
+                error: String(error),
+                retry: { tool: 'MemoryIndexMaintain', indexId: index.id },
+              },
+            };
+          }
           if (input.background !== false) {
-            void controller.maintain(index.id).catch(() => {});
-            return controller.summary(index.id, allowed);
+            const job = controller.launch(index.id);
+            return { ...controller.summary(index.id, allowed), job };
           }
           return controller.wait(index.id, call.abortSignal);
+        },
+        true,
+      );
+      register(
+        'MemoryIndexCreateGroup',
+        'Organize numbered index definitions in ONE independent Agent Session. The Agent chooses order and reuses reads; criteria, ranges and checkpoints remain independent. Existing members accept number/indexId. A group occupies one job; capacity returns unstarted IDs for explicit retry. Background by default.',
+        z.object({
+          cursor: id,
+          indexes: z
+            .array(
+              z.object({
+                number: z.number().int().positive(),
+                indexId: id.optional(),
+                name: z.string().min(1).max(160).optional(),
+                instructions: z.string().min(1).max(8000).optional(),
+              }),
+            )
+            .min(1)
+            .max(30),
+          background: z.boolean().default(true),
+        }),
+        async (input: any, call: any) => {
+          controller.assertOwner();
+          const cursor = store.cursor(input.cursor),
+            allowed = await controller.visible(cursor.sources);
+          store.assertVisible(cursor, allowed);
+          if (new Set(input.indexes.map((x: any) => x.number)).size !== input.indexes.length)
+            throw Error('Duplicate group numbers');
+          const existing = input.indexes.filter((x: any) => x.indexId);
+          if (new Set(existing.map((x: any) => x.indexId)).size !== existing.length)
+            throw Error('Duplicate group indexes');
+          for (const item of input.indexes) {
+            if (!item.indexId && (!item.name || !item.instructions))
+              throw Error('New indexes require name and instructions');
+            if (item.indexId) {
+              store.assertIndexVisible(item.indexId, await visible(item.indexId));
+              const index = store.index(item.indexId);
+              if (
+                JSON.stringify([...(index.sources ?? ['maka'])].sort()) !==
+                JSON.stringify([...cursor.sources].sort())
+              )
+                throw Error('Existing index source scope differs');
+              if (index.sessions.length)
+                throw Error(
+                  'Existing index has a restricted Session scope; maintain it separately',
+                );
+            }
+          }
+          const members = input.indexes.map((item: any) => ({
+            number: item.number,
+            indexId:
+              item.indexId ?? store.create(item.name, item.instructions, [], cursor.sources).id,
+          }));
+          const ids = members.map((x: any) => x.indexId);
+          try {
+            await controller.attachGroup(ids, call);
+            const resuming = ids.some((id: string) => {
+              const w = store.work(id);
+              return w && !w.completed;
+            });
+            for (const item of members) {
+              if (!(resuming && store.work(item.indexId)?.completed))
+                store.begin(item.indexId, cursor.id, allowed);
+              store.saveWorker(item.indexId, {
+                ...store.worker(item.indexId),
+                groupNumber: item.number,
+              });
+            }
+          } catch (error) {
+            return {
+              members,
+              job: { status: 'failed', error: String(error), retry: 'MemoryIndexMaintain' },
+            };
+          }
+          if (input.background !== false) return { members, job: controller.launch(ids[0]) };
+          return { members, result: await controller.wait(ids[0], call.abortSignal) };
         },
         true,
       );
@@ -248,17 +375,22 @@ export default {
         'MemoryIndexRead',
         'Read index criterion, exact covered/pending cursor ranges, progress notes, the COMPLETE document directory (titles, sizes and citation counts) and maintenance status. Automatically refreshes source observations before returning, updating freshness/knownPending; does not organize the index or advance coveredCursor.',
         z.object({ indexId: id }),
-        async (input: any) => controller.summary(input.indexId, await controller.observe(input.indexId)),
+        async (input: any) =>
+          controller.summary(input.indexId, await controller.observe(input.indexId)),
         false,
         'direct',
       );
       register(
         'MemoryIndexMaintain',
-        'Ask the ordinary background Agent to continue organizing this index from its exact saved range. Preserves unfinished work. Readers remain independent.',
-        z.object({ indexId: id }),
+        'Ask the ordinary background Agent to continue organizing this index from its exact saved range. A grouped member reuses its one group job. Preserves unfinished work. background=true returns admission/capacity immediately; default waits. Readers remain independent.',
+        z.object({ indexId: id, background: z.boolean().default(false) }),
         async (input: any, call: any) => {
           await visible(input.indexId);
           await controller.attach(input.indexId, call);
+          if (input.background) {
+            const job = controller.launch(input.indexId);
+            return { ...controller.summary(input.indexId, await visible(input.indexId)), job };
+          }
           return controller.wait(input.indexId, call.abortSignal);
         },
         true,
@@ -296,8 +428,7 @@ export default {
         async (input: any) => {
           const allowed = await controller.observe(input.indexId);
           const freshness = controller.freshness(input.indexId, allowed);
-          if (input.key)
-            return { ...store.content(input.indexId, input.key, allowed), freshness };
+          if (input.key) return { ...store.content(input.indexId, input.key, allowed), freshness };
           const query = input.query?.toLocaleLowerCase();
           const matches = store
             .allEntries(input.indexId, allowed)
@@ -436,8 +567,7 @@ export default {
           latest: z.boolean().default(false),
           expandBacklinks: z.boolean().default(false),
         }),
-        (input: any) =>
-          controller.readReference(input.ref, input.latest, input.expandBacklinks),
+        (input: any) => controller.readReference(input.ref, input.latest, input.expandBacklinks),
         false,
         'direct',
       );

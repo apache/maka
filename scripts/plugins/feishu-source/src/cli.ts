@@ -71,9 +71,7 @@ export function createCli(
           } catch {}
         }
         const code = detail?.code ?? error.code ?? 'invalid_response';
-        throw new FeishuCliError(
-          /^[A-Za-z0-9_]+$/.test(String(code)) ? code : 'invalid_response',
-        );
+        throw new FeishuCliError(/^[A-Za-z0-9_]+$/.test(String(code)) ? code : 'invalid_response');
       }
     });
   const invoke: CliRun = (args, signal) =>
@@ -122,11 +120,14 @@ export function createCli(
     const raw =
       args[0] === 'api' &&
       args[1] === 'GET' &&
-      /^\/open-apis\/(?:docx\/v1\/documents\/[A-Za-z0-9_-]+|im\/v1\/messages(?:\/[A-Za-z0-9_-]+)?)$/.test(
+      /^\/open-apis\/(?:docx\/v1\/documents\/[A-Za-z0-9_-]+|im\/v1\/(?:chats|messages(?:\/[A-Za-z0-9_-]+)?))$/.test(
         args[2],
       );
     if (
-      !raw &&
+      !(
+        raw ||
+        (args[0] === 'api' && args[1] === 'POST' && args[2] === '/open-apis/im/v1/messages/search')
+      ) &&
       ![args.slice(0, 2).join(' '), args.slice(0, 3).join(' ')].some((x) => safe.has(x))
     )
       throw Error('CLI command is not in the read-only allowlist');

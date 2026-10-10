@@ -44,14 +44,15 @@ export type WorkRange = {
   visibility: string[];
   completed: boolean;
 };
-const digest = (value: unknown) =>
-  createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** Opaque snapshot boundaries, independent of read pagination and index content edits. */
 export class CorpusStore extends NetworkStore {
   constructor(directory: string) {
     super(directory);
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_source_scan_items(source TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(source,id));
+      CREATE TABLE IF NOT EXISTS memory_source_scans(source TEXT PRIMARY KEY,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_source_sets(source TEXT PRIMARY KEY,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_worker_sessions(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS memory_source_records(key TEXT PRIMARY KEY,payload TEXT NOT NULL);
@@ -86,7 +87,7 @@ export class CorpusStore extends NetworkStore {
         .run(head.key, JSON.stringify({ ...head, documents: ids }));
     });
   }
-  rememberExternal(source: string, objects: readonly any[]) {
+  rememberExternal(source: string, objects: readonly any[], publish = false) {
     // Only metadata is retained here; no call to read() and no original body.
     const heads = objects.map((object) => {
       const r = this.rememberReference(source, object);
@@ -108,13 +109,20 @@ export class CorpusStore extends NetworkStore {
             'INSERT INTO memory_source_records VALUES(?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload',
           )
           .run(head.key, JSON.stringify(head));
+      if (publish) {
+        this.db
+          .prepare(
+            'INSERT INTO memory_source_sets VALUES(?,?) ON CONFLICT(source) DO UPDATE SET payload=excluded.payload',
+          )
+          .run(source, JSON.stringify(heads.map((h) => h.key)));
+        this.db.prepare('DELETE FROM memory_source_scans WHERE source=?').run(source);
+        this.db.prepare('DELETE FROM memory_source_scan_items WHERE source=?').run(source);
+      }
     });
     return heads;
   }
   record(key: string): RecordHead | undefined {
-    const row = this.db
-      .prepare('SELECT payload FROM memory_source_records WHERE key=?')
-      .get(key);
+    const row = this.db.prepare('SELECT payload FROM memory_source_records WHERE key=?').get(key);
     return row ? JSON.parse(String(row.payload)) : undefined;
   }
   capture(sources: string[], visible: string[], sessions: string[] = []): Cursor {
@@ -125,9 +133,7 @@ export class CorpusStore extends NetworkStore {
         .map((r) => [String(r.source), new Set<string>(JSON.parse(String(r.payload)))]),
     );
     const records = visible
-      .filter(
-        (key) => !sourceSets.has(sourceOf(key)) || sourceSets.get(sourceOf(key))!.has(key),
-      )
+      .filter((key) => !sourceSets.has(sourceOf(key)) || sourceSets.get(sourceOf(key))!.has(key))
       .filter(
         (key) =>
           sources.includes(sourceOf(key)) &&
@@ -188,7 +194,8 @@ export class CorpusStore extends NetworkStore {
     return JSON.parse(String(row.payload));
   }
   assertVisible(cursor: Cursor, visible: string[]) {
-    if (cursor.records.some((r) => !visible.includes(r.key)))
+    const allowed = new Set(visible);
+    if (cursor.records.some((r) => !allowed.has(r.key)))
       throw Error('Cursor source visibility changed; refresh the range');
   }
   boundary(indexId: string): string | null {
@@ -205,14 +212,17 @@ export class CorpusStore extends NetworkStore {
     const old = new Map(begin?.records.map((r) => [r.key, r]) ?? []);
     const records = end.records.map((r) => {
       const previous = new Set(old.get(r.key)?.documents ?? []);
+      const current = new Set(r.documents);
       return {
         ...r,
         delta: r.documents.filter((id) => !previous.has(id)),
-        removed: (old.get(r.key)?.documents ?? []).filter((id) => !r.documents.includes(id)),
+        removed: (old.get(r.key)?.documents ?? []).filter((id) => !current.has(id)),
       };
     });
+    const endKeys = new Set(end.records.map((r) => r.key)),
+      allowed = new Set(visible);
     const removedRecords = (begin?.records ?? []).filter(
-      (r) => !end.records.some((e) => e.key === r.key) && visible.includes(r.key),
+      (r) => !endKeys.has(r.key) && allowed.has(r.key),
     );
     return { end, records, removedRecords };
   }
@@ -241,8 +251,7 @@ export class CorpusStore extends NetworkStore {
   pending(indexId: string, to: string, visible: string[]) {
     const r = this.range(this.boundary(indexId), to, visible);
     return (
-      r.records.reduce((n, x) => n + x.delta.length + x.removed.length, 0) +
-      r.removedRecords.length
+      r.records.reduce((n, x) => n + x.delta.length + x.removed.length, 0) + r.removedRecords.length
     );
   }
   work(indexId: string): WorkRange | undefined {
@@ -292,8 +301,7 @@ export class CorpusStore extends NetworkStore {
           throw Error('Coverage changed after this checkpoint');
         return { cursor: work.to, complete: true };
       }
-      if (this.boundary(indexId) !== work.from)
-        throw Error('Coverage changed; stale checkpoint');
+      if (this.boundary(indexId) !== work.from) throw Error('Coverage changed; stale checkpoint');
       if (this.index(indexId).revision !== expectedRevision)
         throw Error('Index content changed; read it before checkpointing');
       this.db
@@ -307,20 +315,18 @@ export class CorpusStore extends NetworkStore {
           .prepare('UPDATE memory_work_ranges SET payload=? WHERE index_id=?')
           .run(JSON.stringify(work), indexId);
       }
-      this.db
-        .prepare('INSERT INTO commits(index_id,at,body) VALUES(?,?,?)')
-        .run(
-          indexId,
-          Date.now(),
-          JSON.stringify({
-            rangeId,
-            complete,
-            notes,
-            from: work.from,
-            to: work.to,
-            sessionId,
-          }),
-        );
+      this.db.prepare('INSERT INTO commits(index_id,at,body) VALUES(?,?,?)').run(
+        indexId,
+        Date.now(),
+        JSON.stringify({
+          rangeId,
+          complete,
+          notes,
+          from: work.from,
+          to: work.to,
+          sessionId,
+        }),
+      );
       return { cursor: complete ? work.to : work.from, complete };
     });
   }
@@ -338,8 +344,8 @@ export class CorpusStore extends NetworkStore {
   }
   notes(indexId: string) {
     return (
-      this.db.prepare('SELECT notes FROM memory_boundaries WHERE index_id=?').get(indexId)
-        ?.notes ?? ''
+      this.db.prepare('SELECT notes FROM memory_boundaries WHERE index_id=?').get(indexId)?.notes ??
+      ''
     );
   }
   history(
@@ -385,9 +391,7 @@ export class CorpusStore extends NetworkStore {
       }
       const ids = from ? record.delta : record.documents;
       const messages = ids.map((id) =>
-        JSON.parse(
-          String(this.db.prepare('SELECT body FROM documents WHERE id=?').get(id)!.body),
-        ),
+        JSON.parse(String(this.db.prepare('SELECT body FROM documents WHERE id=?').get(id)!.body)),
       );
       // Projection uses the standard runtime filter, never an ingestion-time type policy.
       const pages: any[] = [];
@@ -471,13 +475,7 @@ export class CorpusStore extends NetworkStore {
     refs.forEach((r) => this.fragment(String(r.ref), visible));
     return { key, text: String(row.body), revision: this.index(indexId).revision };
   }
-  write(
-    indexId: string,
-    key: string,
-    text: string,
-    expectedRevision: number,
-    visible: string[],
-  ) {
+  write(indexId: string, key: string, text: string, expectedRevision: number, visible: string[]) {
     return this.transaction(() => {
       this.assertIndexVisible(indexId, visible);
       const index = this.index(indexId);
@@ -493,8 +491,7 @@ export class CorpusStore extends NetworkStore {
           throw Error(`Citation outside index scope: ${ref}`);
       }
       this.db.prepare('DELETE FROM links WHERE index_id=? AND entry_id=?').run(indexId, key);
-      if (!text)
-        this.db.prepare('DELETE FROM entries WHERE index_id=? AND id=?').run(indexId, key);
+      if (!text) this.db.prepare('DELETE FROM entries WHERE index_id=? AND id=?').run(indexId, key);
       else {
         this.db
           .prepare(
@@ -508,11 +505,7 @@ export class CorpusStore extends NetworkStore {
       this.save(index);
       this.db
         .prepare('INSERT INTO commits(index_id,at,body) VALUES(?,?,?)')
-        .run(
-          indexId,
-          Date.now(),
-          JSON.stringify({ key, text, refs, revision: index.revision }),
-        );
+        .run(indexId, Date.now(), JSON.stringify({ key, text, refs, revision: index.revision }));
       return { key, revision: index.revision, coverageAdvanced: false };
     });
   }

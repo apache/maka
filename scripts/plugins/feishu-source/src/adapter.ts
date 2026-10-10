@@ -109,41 +109,8 @@ export function createFeishuSource(
     if (!response.ok) throw Error(`Feishu HTTP ${response.status}`);
     const data: any = await response.json();
     if (data.code !== 0)
-      throw Error(
-        `Feishu API error ${data.code}; verify token, permissions and chat membership`,
-      );
+      throw Error(`Feishu API error ${data.code}; verify token, permissions and chat membership`);
     return data.data;
-  }
-  function normalize(m: any) {
-    return {
-      message_id: m.message_id,
-      chat_id: m.chat_id,
-      root_id: m.root_id ?? '',
-      parent_id: m.parent_id ?? '',
-      thread_id: m.thread_id ?? '',
-      msg_type: m.msg_type,
-      create_time: m.create_time,
-      update_time: m.update_time ?? m.create_time,
-      deleted: !!m.deleted,
-      sender: m.sender ?? null,
-      body: m.body ?? null,
-      mentions: m.mentions ?? [],
-    };
-  }
-  function object(m: any) {
-    return {
-      id: m.message_id,
-      locator: {
-        chatId: m.chat_id,
-        messageId: m.message_id,
-        threadId: m.thread_id ?? '',
-        createdAt: Number(m.create_time),
-      },
-      revision: digest(normalize(m)),
-      kind: m.msg_type,
-      title: `${m.msg_type} · ${new Date(Number(m.create_time)).toISOString()}`,
-      updatedAt: Number(m.update_time ?? m.create_time),
-    };
   }
   function inScope(m: any, endTime = config.endTime ?? Infinity) {
     return (
@@ -206,9 +173,7 @@ export function createFeishuSource(
         container_id: current.id,
         page_size: String(query.limit ?? 50),
         sort_type: 'ByCreateTimeAsc',
-        ...(current.type === 'chat'
-          ? { start_time: '0', end_time: String(state.endTime) }
-          : {}),
+        ...(current.type === 'chat' ? { start_time: '0', end_time: String(state.endTime) } : {}),
         ...(state.page ? { page_token: state.page } : {}),
       },
       caller,
@@ -228,7 +193,7 @@ export function createFeishuSource(
       )
         continue;
       cache(caller).set(m.message_id, m);
-      items.push(object(m));
+      items.push(messageObject(m));
     }
     if (data.has_more) {
       if (!data.page_token || data.page_token === state.page)
@@ -272,10 +237,7 @@ export function createFeishuSource(
       )
         throw Error('Chat outside configured scope');
       for (const field of ['startTime', 'endTime'])
-        if (
-          query[field] !== undefined &&
-          (!Number.isSafeInteger(query[field]) || query[field] < 0)
-        )
+        if (query[field] !== undefined && (!Number.isSafeInteger(query[field]) || query[field] < 0))
           throw Error('Invalid time query');
       if (
         query.limit !== undefined &&
@@ -328,7 +290,7 @@ export function createFeishuSource(
         );
         for (const m of items) cache(caller).set(m.message_id, m);
         page = {
-          items: items.map(object),
+          items: items.map(messageObject),
           ...(found.next ? { next: encode({ ...state, page: found.next }) } : {}),
         };
       } else page = await scan(cursor, caller, shape);
@@ -339,7 +301,7 @@ export function createFeishuSource(
             (!query.types || query.types.includes(o.kind)) &&
             (!query.text ||
               providerSearch ||
-              JSON.stringify(normalize(cache(caller).get(o.id)))
+              JSON.stringify(normalizeMessage(cache(caller).get(o.id)))
                 .toLowerCase()
                 .includes(query.text.toLowerCase())),
         ),
@@ -382,14 +344,48 @@ export function createFeishuSource(
     async read(o: any, caller: any) {
       const m = await message(o.id, caller);
       if (!inScope(m)) throw Error('Message is outside configured source scope');
-      if (m.deleted) return { status: 'deleted' as const, object: object(m) };
+      if (m.deleted) return { status: 'deleted' as const, object: messageObject(m) };
       if (
         JSON.stringify(m.body ?? '').includes(
           'The message has exceeded the retention period and has been deleted.',
         )
       )
-        return { status: 'unavailable' as const, object: object(m) };
-      return { status: 'ok' as const, object: object(m), content: m };
+        return { status: 'unavailable' as const, object: messageObject(m) };
+      return { status: 'ok' as const, object: messageObject(m), content: m };
     },
+  };
+}
+
+export function normalizeMessage(m: any) {
+  return {
+    message_id: m.message_id,
+    chat_id: m.chat_id,
+    root_id: m.root_id ?? '',
+    parent_id: m.parent_id ?? '',
+    thread_id: m.thread_id ?? '',
+    msg_type: m.msg_type,
+    create_time: m.create_time,
+    update_time: m.update_time ?? m.create_time,
+    deleted: !!m.deleted,
+    sender: m.sender ?? null,
+    body: m.body ?? null,
+    mentions: m.mentions ?? [],
+  };
+}
+export function messageObject(m: any) {
+  return {
+    id: m.message_id,
+    locator: {
+      chatId: m.chat_id,
+      messageId: m.message_id,
+      threadId: m.thread_id ?? '',
+      createdAt: Number(m.create_time),
+    },
+    revision: createHash('sha256')
+      .update(JSON.stringify(normalizeMessage(m)))
+      .digest('hex'),
+    kind: m.msg_type,
+    title: `${m.msg_type} · ${new Date(Number(m.create_time)).toISOString()}`,
+    updatedAt: Number(m.update_time ?? m.create_time),
   };
 }
