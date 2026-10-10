@@ -306,6 +306,7 @@ describe('App Update feature boundary', () => {
       'src/renderer/platform/desktop/create-app-update-services.ts: AppUpdateServices',
       'src/renderer/settings/about-settings-page.tsx: AppUpdateAboutProjection',
       'src/renderer/settings/about-settings-page.tsx: AppUpdateAboutProjectionConsumer',
+      'src/renderer/settings/about-settings-page.tsx: appUpdateErrorMessage',
     ]);
   });
 

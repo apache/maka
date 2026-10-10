@@ -525,9 +525,10 @@ describe('generalizedErrorMessageForLocale zh-CN', () => {
   test('maps provider failures to Chinese categories without leaking secrets', () => {
     for (const [raw, expected] of [
       ['Request timeout after 30s', '请求超时'],
-      ['HTTP 429 Too Many Requests', '触发模型速率限制'],
-      ['OpenAI rate limit reached for model gpt-4', '触发模型速率限制'],
-      ['rate exceeded', '触发模型速率限制'],
+      ['HTTP 429 Too Many Requests', '触发速率限制'],
+      ['OpenAI rate limit reached for model gpt-4', '触发速率限制'],
+      ['rate exceeded', '触发速率限制'],
+      ['Too Many Requests', '触发速率限制'],
       ['401 Unauthorized', '鉴权失败'],
       ['HTTP 403 forbidden', '鉴权失败'],
       ['Authentication failed', '鉴权失败'],
@@ -550,6 +551,23 @@ describe('generalizedErrorMessageForLocale zh-CN', () => {
       generalizedErrorMessageForLocale('non-Error string input', '操作失败', 'zh-CN'),
       '操作失败',
     );
+  });
+
+  test('does not mistake ordinary words and numbers for rate limits or auth failures', () => {
+    for (const raw of [
+      'failed to separate the update channel',
+      'failed to generate a response',
+      'failed to operate on the file',
+      'strategy lookup failed',
+      'operation not permitted',
+      'unexpected status 14290',
+      'connect to port 4010',
+    ]) {
+      assert.equal(
+        generalizedErrorMessageForLocale(new Error(raw), '操作失败', 'zh-CN'),
+        '操作失败',
+      );
+    }
   });
 
   test('uses a caller-supplied Chinese fallback for unknown errors', () => {
@@ -589,7 +607,7 @@ describe('localized generalized error messages', () => {
   test('uses Taiwan terminology for Traditional Chinese categories', () => {
     for (const [raw, expected] of [
       ['Request timeout after 30s', '請求逾時'],
-      ['HTTP 429 Too Many Requests', '已達模型速率限制'],
+      ['HTTP 429 Too Many Requests', '觸發速率限制'],
       ['401 Unauthorized', '驗證失敗'],
       ['HTTP 500 Internal Server Error', '模型服務傳回錯誤'],
       ['network unreachable', '網路錯誤'],

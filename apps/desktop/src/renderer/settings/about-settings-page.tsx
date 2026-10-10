@@ -30,6 +30,7 @@ import {
 } from '@maka/ui';
 import {
   AppUpdateAboutProjectionConsumer,
+  appUpdateErrorMessage,
   type AppUpdateAboutProjection,
 } from '../features/app-update/index.js';
 import {
@@ -84,7 +85,7 @@ function AboutUpdateStatusRow(props: {
   const { update, copy, locale, toast, mountedRef } = props;
   const checkUpdateGuard = useActionGuard<'check'>();
   const row = aboutUpdateRow(update.status, copy, {
-    errorDetail: (message) => settingsActionErrorMessage(message, locale),
+    errorDetail: (status) => appUpdateErrorMessage(status, locale),
   });
 
   async function checkForUpdates() {
@@ -94,12 +95,12 @@ function AboutUpdateStatusRow(props: {
       if (status.state === 'error') {
         toast.error(
           copy.updateFailed[status.operation],
-          settingsActionErrorMessage(status.message, locale),
+          appUpdateErrorMessage(status, locale),
         );
       }
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.updateFailed.check, settingsActionErrorMessage(error, locale));
+        toast.error(copy.updateFailed.check, appUpdateErrorMessage(error, locale));
       }
     } finally {
       checkUpdateGuard.finish();

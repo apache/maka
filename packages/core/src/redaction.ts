@@ -272,6 +272,12 @@ export type GeneralizedErrorClass =
   | 'provider_error'
   | 'network_error';
 
+/** Rate-limit evidence only. A bare `rate`/`429`/`401` substring is not
+ * evidence: `separate`, `generate`, `operate`, `strategy`, `14290` and
+ * `port 4010` all contain one, yet describe unrelated failures. */
+const RATE_LIMIT_PATTERN = /\b429\b|\brate[ _-]?limit|\brate exceeded|\btoo many requests\b/;
+const AUTH_FAILED_PATTERN = /\b401\b|\b403\b/;
+
 /**
  * Keyword classification shared by the localized message helpers and by
  * producers that emit a stable machine code instead of prose.
@@ -280,7 +286,7 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
   const message = error instanceof Error ? error.message : String(error);
   const lower = redactSecrets(message).toLowerCase();
   if (lower.includes('timeout')) return 'timeout';
-  if (lower.includes('429') || lower.includes('rate')) return 'rate_limited';
+  if (RATE_LIMIT_PATTERN.test(lower)) return 'rate_limited';
   // builder-util-runtime appends generic authentication-token advice to HTTP
   // 404 errors. electron-updater has already classified this particular case
   // as a missing channel artifact, so it is not evidence of bad credentials.
@@ -291,8 +297,7 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
     error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
   )
     return undefined;
-  if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
-    return 'auth_failed';
+  if (AUTH_FAILED_PATTERN.test(lower) || isAuthenticationErrorText(lower)) return 'auth_failed';
   if (/\b5\d\d\b/.test(lower)) return 'provider_error';
   if (
     lower.includes('network') ||
@@ -313,14 +318,14 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
 export const GENERALIZED_ERROR_COPY = {
   'zh-CN': {
     timeout: '请求超时',
-    rate_limited: '触发模型速率限制',
+    rate_limited: '触发速率限制',
     auth_failed: '鉴权失败',
     provider_error: '模型服务返回错误',
     network_error: '网络错误',
   },
   'zh-TW': {
     timeout: '請求逾時',
-    rate_limited: '已達模型速率限制',
+    rate_limited: '觸發速率限制',
     auth_failed: '驗證失敗',
     provider_error: '模型服務傳回錯誤',
     network_error: '網路錯誤',

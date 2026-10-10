@@ -54,3 +54,5 @@ export function createFakeAppUpdateServices(
     ...overrides,
   };
 }
+
+export { appUpdateErrorMessage } from './locales/app-update-copy.js';

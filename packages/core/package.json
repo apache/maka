@@ -115,6 +115,7 @@
     "./onboarding-milestone": "./dist/onboarding-milestone.js",
     "./text-file-import": "./dist/text-file-import.js",
     "./redaction": "./dist/redaction.js",
+    "./app-update-error": "./dist/app-update-error.js",
     "./display-redaction": "./dist/display-redaction.js",
     "./diagnostic-log": "./dist/diagnostic-log.js",
     "./node-diagnostic-log": "./dist/node-diagnostic-log.js",
