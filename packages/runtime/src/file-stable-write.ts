@@ -162,14 +162,14 @@ async function openExistingNoTruncate(path: string): Promise<FileHandle> {
  * only after the identity was validated on the fd. Write-step failures
  * (ENOSPC/EIO/EDQUOT/EFBIG) can leave the file truncated or half-written, so
  * they surface as `outcome_unknown` — the file's state is genuinely unknown.
- * 短写会继续补齐剩余字节；写入不再前进时同样报告 outcome_unknown。
+ * Short writes complete the remaining bytes; zero progress also reports outcome_unknown.
  */
 export async function writeThroughHandle(handle: FileHandle, content: string): Promise<void> {
   const bytes = Buffer.from(content, 'utf8');
   try {
     await handle.truncate(0);
-    // 每次写入都指定从零累计的文件偏移，避免前一次 readFile 留在 EOF
-    // 的 fd 游标导致文件前缀出现稀疏空洞。
+    // Use an explicit offset from zero: a previous readFile may leave the fd at
+    // EOF, where an implicit write would create a sparse prefix.
     // A successful write may consume only part of the buffer. Keep byte
     // offsets (not string indices) so a short write inside UTF-8 is lossless.
     let offset = 0;
