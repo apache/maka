@@ -138,6 +138,7 @@ import {
   readWithFallback,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
+import { auxiliaryWindowRegistry } from "./auxiliary-window-registry.js";
 import type { DesktopRuntimeHostProfileChangedEvent } from "../preload/bridge-contract.js";
 import {
   defaultRuntimeHostRecoveryDialog,
@@ -187,7 +188,8 @@ import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
 import { ManagedArtifactPreview } from './managed-artifact-preview.js';
-import { buildManagedArtifactPreviewTools } from './managed-artifact-preview-tools.js';
+import { buildArtifactPreviewOfferTools } from './managed-artifact-preview-tools.js';
+import { createPreviewPreflightAuthority } from './preview-preflight-probes.js';
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import type {
   DesktopRuntimeHostCandidateControls,
@@ -237,6 +239,7 @@ import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js
 import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
 import { registerExternalAgentSetupIpc } from "./external-agent-setup-ipc-main.js";
+import { selectAntigravityExecutable } from './external-agent-executable-selection.js';
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -409,6 +412,7 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
 });
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
+  revealMode,
   locale: desktopLocale,
   keepSystemAwake,
   mainWindow: mainWindowController,
@@ -432,6 +436,7 @@ const releaseDesktopInteractionSession = (sessionId: string): void => {
 };
 const permissionOverlay = createPermissionOverlayMain({
   resolveLocale: () => desktopLocale.resolve(),
+  revealMode,
 });
 mainWindowDelegates.onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
@@ -562,6 +567,9 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
     if (!state) return undefined;
     return {
       readiness: state.readiness,
+      connectionEpoch: state.readiness === 'ready'
+        ? JSON.stringify([state.epoch, state.candidate.client.hostEpoch])
+        : state.epoch,
       ...(state.readiness !== 'ready' && state.error ? { error: state.error } : {}),
       ...(state.readiness === 'ready' && state.candidate.client.peerPath
         ? { peerPath: state.candidate.client.peerPath }
@@ -766,7 +774,8 @@ const workHubControl = createWorkHubControl({
     if (!window) throw new Error('Maka window is unavailable');
     return window.webContents;
   },
-  authorizedRenderer: (contents) => mainWindowController.ownsRenderer(contents),
+  authorizedRenderer: (contents) =>
+    mainWindowController.isMainRenderer(contents) || auxiliaryWindowRegistry.rendererParent(contents) !== undefined,
   send: (channel, payload) => mainWindowController.send(channel, payload),
   readSettings: () => settingsStore.get(),
   client: (scope) => requireWorkHubTarget(scope).client,
@@ -775,6 +784,7 @@ const workHubControl = createWorkHubControl({
 });
 const browserIpc = registerBrowserIpc({
   mainWindowController,
+  auxiliaryWindowRegistry,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
 });
 let workHubEnabled = false;
@@ -791,7 +801,7 @@ const workHubPresentation = createWorkHubPresentation({
   mainModuleDirectory: import.meta.dirname,
   viteDevServerUrl: process.env.VITE_DEV_SERVER_URL,
   preloadPath: join(import.meta.dirname, '..', 'preload', 'preload.cjs'),
-  onViewCreated: (contents, container) => mainWindowController.registerAuxiliaryRenderer(contents, container),
+  onViewCreated: (contents, container) => auxiliaryWindowRegistry.registerRenderer(contents, container),
   onVisibilityChanged: () => browserIpc.refreshVisibility(),
 });
 workHubPresentation.registerIpc();
@@ -1051,12 +1061,22 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
           {
             offerId: 'desktop_artifact_preview',
             label: 'HTML Artifact preview',
-            description: 'Prepare an isolated, temporary HTTP preview of a generated HTML Artifact.',
-            tools: buildManagedArtifactPreviewTools(async (sessionId, artifactId, signal) => {
-              if (!scope || !runtimeHostManager?.ownsScope(scope)) throw new Error('Preview target is unavailable');
-              const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
-              if (!target?.isActive()) throw new Error('Preview target is no longer active');
-              return managedArtifactPreview.prepare(scope.targetEpoch, target.client, sessionId, artifactId, signal);
+            description: 'Check what this client can preview locally, and prepare an isolated, temporary HTTP preview of a generated HTML Artifact.',
+            // The preflight lives in this offer, not the Browser one, for two
+            // reasons. Every Browser tool is admitted against an Origin read
+            // from the view's current URL, so a capability check there would
+            // need a page already loaded and would fail with the very
+            // "requires an HTTP origin" error it exists to explain. And the
+            // route it hands off to is ArtifactPreview, so the two must be
+            // granted together or the handoff names a tool the caller lacks.
+            tools: buildArtifactPreviewOfferTools({
+              preflight: createPreviewPreflightAuthority(),
+              prepare: async (sessionId, artifactId, signal) => {
+                if (!scope || !runtimeHostManager?.ownsScope(scope)) throw new Error('Preview target is unavailable');
+                const target = runtimePolicyTargetsByEpoch.get(scope.targetEpoch);
+                if (!target?.isActive()) throw new Error('Preview target is no longer active');
+                return managedArtifactPreview.prepare(scope.targetEpoch, target.client, sessionId, artifactId, signal);
+              },
             }),
           },
           {
@@ -1183,6 +1203,7 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
     onTargetStateChanged: (state) => {
       const localTarget = localSessionTarget(state);
       if (localTarget) {
+        sessionLocal.connectionChanged(localTarget);
         sessionLocalStore.bindAuthority(localTarget.profileId, localTarget.partition);
         if (state.readiness === 'unavailable' && state.error instanceof RuntimeHostProfileConnectionError && state.error.reason === 'credential_rejected') sessionLocal.purge(localTarget);
       }
@@ -1619,10 +1640,9 @@ function registerHostClientIpc(
   });
   registerExternalAgentSetupIpc({ ipcMain: scopedIpc, client, presentation: oauthPresentation,
     onCatalogChanged: () => sendToRenderer('external-agents:catalog-changed'),
-    selectExecutable: async () => {
-      const result = await mainWindowController.showOpenDialog({ properties: ['openFile'] });
-      return result.canceled ? undefined : result.filePaths[0];
-    },
+    selectExecutable: () => selectAntigravityExecutable(
+      (options) => mainWindowController.showOpenDialog(options),
+    ),
   });
   registerRuntimeHostOAuthIpc({
     ipcMain: scopedIpc,

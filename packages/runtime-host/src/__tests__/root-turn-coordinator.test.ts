@@ -27,6 +27,9 @@ import {
 } from '@maka/runtime/goal-continuation';
 import { HostGoalExecutionCoordinator } from '../server/goal-execution-coordinator.js';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import type { AgentGraphIntentClaim } from '@maka/core/agent-graph-control';
+import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
+import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import {
   readLogicalRuntimeExecution,
@@ -3364,6 +3367,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       executeRoot: (input) =>
         executeHostedExecutionToSettlement(requireCoordinator(coordinator), input),
       stopRoot: (identity, input) => requireCoordinator(coordinator).stopRoot(identity, input),
+      stopRootRun: (identity, input) =>
+        requireCoordinator(coordinator).stopRootRun(identity, input),
       stopSession: (sessionId, input) =>
         requireCoordinator(coordinator).stopSession(sessionId, input),
     };
@@ -5963,6 +5968,379 @@ test('public turn.stop takes over an earlier closure claim queued behind its lea
   }
 });
 
+for (const mode of ['scoped', 'session', 'retry'] as const) {
+  const scoped = mode !== 'session';
+  test(`Hosted graph ${mode === 'retry' ? 'scoped stop redelivers after failure while preserving Host drain' : scoped ? 'scoped stop preserves queued work' : 'Session stop cancels queued work'}`, {
+    timeout: 10_000,
+  }, async () => {
+    const graphClaims: AgentGraphIntentClaim[] = [];
+    const gates = [deferred<void>(), deferred<void>(), deferred<void>()];
+    const entered = [deferred<void>(), deferred<void>(), deferred<void>()];
+    let sends = 0;
+    let stops = 0;
+    let current = -1;
+    const fixture = await createFailureFixture({
+      graphClaims,
+      withInteractions: true,
+      childTools: IMPLEMENTATION_AGENT_DEFINITION.tools.map(testTool),
+      registerBackend: (backends) =>
+        backends.register(
+          'ai-sdk',
+          (context) =>
+            new (class extends FakeBackend {
+              override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+                const index = sends++;
+                current = index;
+                entered[index]!.resolve();
+                yield {
+                  type: 'text_delta',
+                  id: randomUUID(),
+                  turnId: input.turnId,
+                  ts: Date.now(),
+                  messageId: randomUUID(),
+                  text: `result-${index}`,
+                };
+                await gates[index]!.promise;
+                yield {
+                  type: 'complete',
+                  id: randomUUID(),
+                  turnId: input.turnId,
+                  ts: Date.now(),
+                  stopReason: 'end_turn',
+                };
+              }
+              override async stop(): Promise<void> {
+                stops += 1;
+                gates[current]?.resolve();
+              }
+            })(context),
+        ),
+    });
+    if (mode === 'retry') {
+      const deliver = fixture.manager.deliverHostedRootStop.bind(fixture.manager);
+      let failDelivery = true;
+      fixture.manager.deliverHostedRootStop = async (...args) => {
+        if (failDelivery) {
+          failDelivery = false;
+          throw new Error('temporary stop delivery failure');
+        }
+        return deliver(...args);
+      };
+    }
+    let releaseFence: (() => void) | undefined;
+    try {
+      const { child, makeInput } = await createHostedGraphChild(fixture, graphClaims);
+      const a = makeInput(0);
+      const b = makeInput(1);
+      const first = fixture.manager.runClaimedAgentGraphIntent(a.input);
+      await entered[0]!.promise;
+      const second = fixture.manager.runClaimedAgentGraphIntent(b.input);
+      const settled = Promise.allSettled([first, second]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const identity = {
+        sessionId: child.id,
+        runId: a.claim.targetRunId,
+        turnId: a.claim.targetTurnId,
+      };
+      const fenceEntered = deferred<void>();
+      const fenceRelease = deferred<void>();
+      releaseFence = () => fenceRelease.resolve();
+      const fence = fixture.sessionAdmission.run(child.id, async () => {
+        fenceEntered.resolve();
+        await fenceRelease.promise;
+      });
+      await fenceEntered.promise;
+      const stopping = scoped
+        ? fixture.manager.stopAgentGraphActivation(identity, {
+            source: 'graph_supervisor',
+          })
+        : fixture.manager.stopSession(child.id, { source: 'stop_button' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(stops, 0, 'Runtime stop must wait for the Host admission fence');
+      fenceRelease.resolve();
+      await fence;
+      if (mode === 'retry') {
+        await assert.rejects(stopping, /temporary stop delivery failure/);
+        assert.equal(sends, 1);
+        await fixture.manager.stopAgentGraphActivation(identity, { source: 'graph_supervisor' });
+      } else await stopping;
+      gates[1]!.resolve();
+      const outcomes = await settled;
+      assert.equal(outcomes[0]!.status, 'fulfilled');
+      if (outcomes[0]!.status === 'fulfilled') assert.equal(outcomes[0]!.value.status, 'cancelled');
+      assert.equal(outcomes[1]!.status, mode === 'scoped' ? 'fulfilled' : 'rejected');
+      if (mode === 'scoped' && outcomes[1]!.status === 'fulfilled')
+        assert.equal(outcomes[1]!.value.status, 'completed');
+      assert.equal(sends, mode === 'scoped' ? 2 : 1);
+      if (mode === 'scoped') {
+        const c = makeInput(2);
+        const third = fixture.manager.runClaimedAgentGraphIntent(c.input);
+        await entered[2]!.promise;
+        await fixture.manager.stopAgentGraphActivation(identity, {
+          source: 'graph_supervisor',
+        });
+        assert.equal(stops, 1);
+        gates[2]!.resolve();
+        assert.equal((await third).status, 'completed');
+        assert.equal(
+          runtimeInvocationOutcome(
+            (await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).find(
+              (run) => run.runId === c.claim.targetRunId,
+            )!,
+          ),
+          'completed',
+        );
+      }
+      assert.equal(fixture.drainRequested(), mode === 'retry');
+    } finally {
+      releaseFence?.();
+      gates.forEach((gate) => gate.resolve());
+      await fixture.coordinator.close();
+      await fixture.messages.close();
+      await fixture.interactions?.close();
+      await fixture.dispose();
+    }
+  });
+}
+
+test('public turn.stop cancels a root Turn whose Run attaches after the stop', {
+  timeout: 10_000,
+}, async () => {
+  const attachEntered = deferred<void>();
+  const releaseAttach = deferred<void>();
+  let holdAttach = true;
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    resolveFreshTurnToolMode: async () => {
+      if (holdAttach) {
+        holdAttach = false;
+        attachEntered.resolve();
+        await releaseAttach.promise;
+      }
+      return undefined;
+    },
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  try {
+    const turnId = 'turn-stop-before-run-attach';
+    const starting = fixture.interactiveTurns.handlers['turn.start'](
+      { sessionId: fixture.sessionId, turnId, content: { text: HOLD_EXTERNAL_PROMPT } },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    await completesWithin(attachEntered.promise, 2_000, 'Host activation before Run attach');
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      turnId,
+    );
+    assert.ok(admission);
+    const delivered = deferred<void>();
+    const deliver = fixture.manager.deliverHostedRootStop.bind(fixture.manager);
+    fixture.manager.deliverHostedRootStop = (...args) => {
+      const delivery = deliver(...args);
+      delivered.resolve();
+      return delivery;
+    };
+    const stopping = fixture.turnControl.handlers['turn.stop'](
+      { sessionId: fixture.sessionId, turnId, runId: admission.runId },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    await completesWithin(delivered.promise, 2_000, 'Runtime stop delivery before attach');
+    releaseAttach.resolve();
+    const stopped = await completesWithin(stopping, 2_000, 'stop of a Run attached after it');
+    assert.equal(stopped.ok, true);
+    await completesWithin(starting, 2_000, 'stopped Turn start');
+    const run = await readInvocation(fixture.stores, fixture.sessionId, admission.runId);
+    const terminal = classifyTerminalRuntimeLedger(
+      run,
+      await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
+        fixture.sessionId,
+        admission.runId,
+      ),
+    );
+    assert.equal(terminal.kind, 'fact');
+    if (terminal.kind === 'fact') assert.equal(terminal.fact.runStatus, 'cancelled');
+  } finally {
+    releaseAttach.resolve();
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Hosted graph stop before durable admission refuses the submitted activation', {
+  timeout: 10_000,
+}, async () => {
+  const graphClaims: AgentGraphIntentClaim[] = [];
+  const submitted = deferred<void>();
+  const releaseSubmission = deferred<void>();
+  let sends = 0;
+  const fixture = await createFailureFixture({
+    graphClaims,
+    beforeExecuteRoot: async () => {
+      submitted.resolve();
+      await releaseSubmission.promise;
+    },
+    childTools: IMPLEMENTATION_AGENT_DEFINITION.tools.map(testTool),
+    registerBackend: (backends) =>
+      backends.register(
+        'ai-sdk',
+        (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              sends += 1;
+              yield* super.send(input);
+            }
+          })(context),
+      ),
+  });
+  let running: Promise<unknown> | undefined;
+  try {
+    const { child, makeInput } = await createHostedGraphChild(fixture, graphClaims);
+    const stoppedInput = makeInput(0);
+    running = fixture.manager
+      .runClaimedAgentGraphIntent(stoppedInput.input)
+      .catch((error) => error);
+    await completesWithin(submitted.promise, 2_000, 'Host submission');
+    const stopping = fixture.manager.stopAgentGraphActivation(
+      {
+        sessionId: child.id,
+        runId: stoppedInput.claim.targetRunId,
+        turnId: stoppedInput.claim.targetTurnId,
+      },
+      { source: 'graph_supervisor' },
+    );
+    // Let a Host stop that cannot see the pending admission settle before the
+    // submission reaches the Host gate; a local stop stays pending until then.
+    await Promise.race([
+      stopping.catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 100)),
+    ]);
+    releaseSubmission.resolve();
+    await completesWithin(stopping, 2_000, 'stop before durable admission');
+    assert.match(String(await running), /cancelled before Runtime admission/);
+    assert.equal(sends, 0);
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        child.id,
+        stoppedInput.claim.targetTurnId,
+      ),
+      undefined,
+    );
+    const next = makeInput(1);
+    assert.equal(
+      (await fixture.manager.runClaimedAgentGraphIntent(next.input)).status,
+      'completed',
+    );
+    assert.equal(sends, 1);
+  } finally {
+    releaseSubmission.resolve();
+    await running;
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+/** A linked graph child whose claims the Hosted fixture resolves from `graphClaims`. */
+async function createHostedGraphChild(
+  fixture: Awaited<ReturnType<typeof createFailureFixture>>,
+  graphClaims: AgentGraphIntentClaim[],
+) {
+  const parent = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+  const { header: child } = await fixture.stores.sessionStore.createSubagent({
+    cwd: parent.cwd,
+    llmConnectionId: parent.llmConnectionId,
+    llmConnectionSlug: 'fake',
+    model: 'fake-model',
+    permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+    subagentParent: {
+      kind: 'subagent',
+      parentSessionId: parent.id,
+      spawnedBy: {
+        parentRunId: 'parent-run',
+        parentTurnId: 'parent-turn',
+        toolCallId: 'graph-create',
+      },
+      lifecycle: 'foreground',
+    },
+    subagentRuntime: {
+      schemaVersion: 1,
+      definitionVersion: IMPLEMENTATION_AGENT_DEFINITION.definitionVersion,
+      agentId: IMPLEMENTATION_AGENT_DEFINITION.id,
+      agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+      profile: 'implementation',
+      systemPrompt: IMPLEMENTATION_AGENT_DEFINITION.systemPrompt,
+      toolNames: [...IMPLEMENTATION_AGENT_DEFINITION.tools],
+      categoryPolicy: {},
+    },
+    subagentSpawn: {
+      schemaVersion: 1,
+      requestFingerprint: 'c'.repeat(64),
+      initialTurnId: 'scoped-turn-0',
+      initialRunId: 'scoped-run-0',
+    },
+  });
+  const makeInput = (index: number) => {
+    const char = String(index + 1);
+    const prompt = `bounded task ${index}`;
+    const intent: AgentGraphRunnableIntent = {
+      schemaVersion: 1,
+      graphId: 'host-scoped-graph',
+      intentId: `graph_intent_${char.repeat(32)}`,
+      readinessContextFingerprint: `sha256:${'a'.repeat(64)}`,
+      policyFingerprint: `sha256:${'b'.repeat(64)}`,
+      readinessId: `work-${index}`,
+      operatorId: 'operator',
+      targetSessionId: child.id,
+      policyKind: 'map',
+      triggerRouteIds: [],
+      triggerRecordIds: [],
+    };
+    const claim: AgentGraphIntentClaim = {
+      schemaVersion: 1,
+      claimId: `graph_claim_${char.repeat(32)}`,
+      graphId: intent.graphId,
+      intentId: intent.intentId,
+      intentFingerprint: fingerprintAgentGraphRunnableIntent({
+        intent,
+        executionInput: { prompt },
+      }),
+      readinessContextFingerprint: intent.readinessContextFingerprint,
+      targetOperatorId: 'operator',
+      targetSessionId: child.id,
+      targetTurnId: `scoped-turn-${index}`,
+      targetRunId: `scoped-run-${index}`,
+      claimedAt: Date.now(),
+    };
+    graphClaims.push(claim);
+    return {
+      claim,
+      input: {
+        intent,
+        graphId: claim.graphId,
+        intentId: claim.intentId,
+        prompt,
+        claimStore: {
+          readAgentGraphIntentClaim: async () => claim,
+          listAgentGraphIntentClaims: async () => [claim],
+          claimAgentGraphIntent: async () => {
+            throw new Error('already claimed');
+          },
+        },
+      },
+    };
+  };
+  return { child, makeInput };
+}
+
 function executeClaimedGraphRoot(
   fixture: Awaited<ReturnType<typeof createFailureFixture>>,
   input: {
@@ -6636,6 +7014,10 @@ for (const decision of ['cancel', 'resume', 'detach', 'blocked'] as const) {
 }
 
 async function createFailureFixture(options: {
+  graphClaims?: AgentGraphIntentClaim[];
+  beforeExecuteRoot?(): Promise<void>;
+  /** Runtime calls this in `startTurn` after the Host activated the Turn, before Run attach. */
+  resolveFreshTurnToolMode?(): Promise<undefined>;
   registerBackend(backends: BackendRegistry): void;
   afterHandoffSeal?(): Promise<void>;
   directoryHostId?: string;
@@ -6822,9 +7204,47 @@ async function createFailureFixture(options: {
       : stores.runtimeEventStore,
     backends,
     ...(options.childTools ? { childTools: options.childTools } : {}),
+    ...(options.resolveFreshTurnToolMode
+      ? { resolveFreshTurnToolMode: options.resolveFreshTurnToolMode }
+      : {}),
     newId: randomUUID,
     now: Date.now,
-    messageAuthority: options.wrapMessageAuthority?.(messages) ?? messages,
+    messageAuthority: options.graphClaims
+      ? {
+          bindRun: messages.bindRun.bind(messages),
+          executeRoot: async (input: Parameters<RuntimeHostedRootAuthority['executeRoot']>[0]) => {
+            await options.beforeExecuteRoot?.();
+            return executeHostedExecutionToSettlement(requireCoordinator(coordinator), input);
+          },
+          stopRoot: (...args: Parameters<RuntimeHostedRootAuthority['stopRoot']>) =>
+            requireCoordinator(coordinator).stopRoot(...args),
+          stopRootRun: (...args: Parameters<RuntimeHostedRootAuthority['stopRootRun']>) =>
+            requireCoordinator(coordinator).stopRootRun(...args),
+          stopSession: (
+            sessionId: string,
+            input: Parameters<RuntimeHostedRootAuthority['stopSession']>[1],
+          ) => requireCoordinator(coordinator).stopSession(sessionId, input),
+        }
+      : (options.wrapMessageAuthority?.(messages) ?? messages),
+    ...(options.graphClaims
+      ? {
+          hostedAgentGraphExecution: {
+            readAgentGraphIntentClaim: async (graphId: string, intentId: string) =>
+              options.graphClaims!.find(
+                (claim) => claim.graphId === graphId && claim.intentId === intentId,
+              ),
+            readRootTurnAdmissionIdentity: async (sessionId: string, turnId: string) => {
+              const admission = await stores.agentRunStore.readRootTurnAdmission(sessionId, turnId);
+              return admission
+                ? {
+                    runId: admission.runId,
+                    userMessageId: admission.userMessageId,
+                  }
+                : undefined;
+            },
+          },
+        }
+      : {}),
     ...(options.continuationSafety
       ? {
           safeBoundaryResumeEnabled: true,

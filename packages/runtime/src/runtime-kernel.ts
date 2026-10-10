@@ -183,6 +183,10 @@ export interface RuntimeKernelLike {
   compactSession(sessionId: string, input?: CompactSessionInput): AsyncIterable<SessionEvent>;
   preflightContextCompaction(sessionId: string): Promise<void>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
+  stopExecution?(claim: RuntimeExecutionClaim, input?: StopSessionInput): Promise<void>;
+  waitForExecutionStop?(claim: RuntimeExecutionClaim): Promise<void>;
+  stopRun?(identity: RuntimeMessageRunIdentity, input?: StopSessionInput): Promise<void>;
+  hasPendingRunStop?(identity: RuntimeMessageRunIdentity): boolean;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
@@ -359,6 +363,9 @@ interface StopOperation {
   statusProjected: boolean;
   targets: Map<number, StopTarget>;
   queue: Promise<void>;
+  completion: Promise<void>;
+  resolveCompletion(): void;
+  rejectCompletion(error: unknown): void;
 }
 
 interface SessionStopIntent {
@@ -383,6 +390,7 @@ interface PendingExecutionClaim {
   backendHeaderSnapshot?: { invalidated: boolean };
   backendPreparation?: PreparedBackendActivation;
   stopIntent?: SessionStopIntent;
+  scopedStopAttempt?: Promise<void>;
   finalization?: ExecutionClaimOutcome;
 }
 
@@ -1933,6 +1941,130 @@ export class RuntimeKernel implements RuntimeKernelLike {
     ];
   }
 
+  /** Stop one captured owner without cancelling other queued executions in its Session. */
+  stopExecution(claim: RuntimeExecutionClaim, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
+    const execution = this.executionClaimStates.get(claim);
+    if (!execution) throw new Error('Runtime execution claim belongs to another owner');
+    if (execution.scopedStopAttempt) return execution.scopedStopAttempt;
+    const run = execution.run;
+    const active =
+      run &&
+      this.backendGenerationsFor(execution.sessionId).find(
+        (candidate) => candidate.activeRuns.get(run.runId) === run,
+      );
+    if (!active && (execution.phase === 'released' || execution.phase === 'failed')) {
+      return run
+        ? this.retryStoppedRun(
+            {
+              sessionId: execution.sessionId,
+              runId: run.runId,
+              turnId: run.turnId,
+            },
+            input,
+          )
+        : Promise.resolve();
+    }
+    if (active && run) this.assertScopedStopGeneration(active, run);
+    // Validate first, then capture the capability synchronously. A pending
+    // owner carries the stop through attach/reserve without a Session fence.
+    execution.stopIntent ??= { input, claims: new Set([execution]) };
+    if (active && run) this.captureScopedRunStop(active, run, input);
+    else run?.stop(input.source, input.workHubActionId);
+    execution.abortController.abort(execution.cancellation);
+    const attempt = this.stopCapturedExecution(execution, input).finally(() => {
+      if (execution.scopedStopAttempt === attempt) execution.scopedStopAttempt = undefined;
+    });
+    execution.scopedStopAttempt = attempt;
+    return attempt;
+  }
+
+  /** A failed cleanup attempt keeps its captured owner parked until a successful retry. */
+  waitForExecutionStop(claim: RuntimeExecutionClaim): Promise<void> {
+    const run = this.executionClaimStates.get(claim)?.run;
+    const operation =
+      run &&
+      this.retainedRunStopOperation({
+        sessionId: claim.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+      });
+    return operation ? operation.completion : Promise.resolve();
+  }
+
+  /** Whether a retained stop operation still owns cleanup for this exact Run. */
+  hasPendingRunStop(identity: RuntimeMessageRunIdentity): boolean {
+    return this.retainedRunStopOperation(identity) !== undefined;
+  }
+
+  private retainedRunStopOperation(identity: RuntimeMessageRunIdentity): StopOperation | undefined {
+    const operation = this.stopOperations.get(identity.sessionId);
+    return operation &&
+      [...operation.targets.values()].some(
+        (target) => target.runs.get(identity.runId)?.turnId === identity.turnId,
+      )
+      ? operation
+      : undefined;
+  }
+
+  /** Exact identity lookup never redirects a completed Run's stop to its successor. */
+  stopRun(identity: RuntimeMessageRunIdentity, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
+    const execution = [...(this.executionClaims.get(identity.sessionId) ?? [])].find(
+      (candidate) =>
+        candidate.run?.runId === identity.runId && candidate.run.turnId === identity.turnId,
+    );
+    if (execution) return this.stopExecution(execution.handle, input);
+    for (const active of this.backendGenerationsFor(identity.sessionId)) {
+      const run = active.activeRuns.get(identity.runId);
+      if (!run || run.turnId !== identity.turnId) continue;
+      this.assertScopedStopGeneration(active, run);
+      this.captureScopedRunStop(active, run, input);
+      return this.retryStoppedRun(identity, input);
+    }
+    return this.retryStoppedRun(identity, input);
+  }
+
+  private assertScopedStopGeneration(active: BackendGeneration, run: AgentRun): void {
+    if ([...active.activeRuns.values()].some((other) => other !== run && !other.isStopped())) {
+      throw new Error('Cannot stop one Run while its backend generation owns another active Run');
+    }
+  }
+
+  private captureScopedRunStop(
+    active: BackendGeneration,
+    run: AgentRun,
+    input: StopSessionInput,
+  ): void {
+    const operation = this.claimRunForStop(active.sessionId, input, active, run);
+    if (operation && active.phase === 'active') active.phase = 'stopping';
+  }
+
+  private async stopCapturedExecution(
+    execution: PendingExecutionClaim,
+    input: StopSessionInput,
+  ): Promise<void> {
+    await execution.settled;
+    if (execution.run) {
+      await this.retryStoppedRun(
+        {
+          sessionId: execution.sessionId,
+          runId: execution.run.runId,
+          turnId: execution.run.turnId,
+        },
+        input,
+      );
+    }
+  }
+
+  private async retryStoppedRun(
+    identity: RuntimeMessageRunIdentity,
+    input: StopSessionInput,
+  ): Promise<void> {
+    const operation = this.retainedRunStopOperation(identity);
+    if (operation) await this.enqueueStopOperation(identity.sessionId, operation, input, true);
+  }
+
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
     normalizeStopSessionSource(input.source, input.workHubActionId);
     const existing = this.stopAttempts.get(sessionId);
@@ -2037,12 +2169,22 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private buildStopOperation(input: StopSessionInput): StopOperation {
     const abortSource = normalizeStopSessionSource(input.source, input.workHubActionId);
     const ts = this.deps.now();
+    let resolveCompletion!: () => void;
+    let rejectCompletion!: (error: unknown) => void;
+    const completion = new Promise<void>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    void completion.catch(() => undefined);
     return {
       abortSource,
       ts,
       statusProjected: false,
       targets: new Map(),
       queue: Promise.resolve(),
+      completion,
+      resolveCompletion,
+      rejectCompletion,
     };
   }
 
@@ -2162,7 +2304,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     for (const target of operation.targets.values()) {
       if (target.delivery.kind === 'failed') failures.add(target.delivery.error);
     }
-    failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
+    try {
+      failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
+      if (completed) operation.resolveCompletion();
+    } catch (error) {
+      if (completed) operation.rejectCompletion(error);
+      throw error;
+    }
   }
 
   async respondToSandboxBoundary(
@@ -2836,7 +2984,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private releaseStoppedRunReferences(operation: StopOperation, run: AgentRun): void {
     for (const target of operation.targets.values()) {
       const stoppedRun = target.runs.get(run.runId);
-      if (stoppedRun?.run === run) stoppedRun.run = undefined;
+      // A failed terminal append still needs this captured Run on retry, even
+      // after its stream exits. Drop it only once stop settlement succeeded.
+      if (stoppedRun?.run === run && stoppedRun.stopCompleted) stoppedRun.run = undefined;
       if (
         target.active &&
         target.delivery.kind !== 'pending' &&
@@ -2878,7 +3028,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const ownsCurrentStop =
       execution.phase === 'attached' &&
       execution.stopIntent !== undefined &&
-      this.stopIntents.get(sessionId) === execution.stopIntent;
+      execution.stopIntent.claims.has(execution);
     if (this.stopOperations.has(sessionId) && !ownsCurrentStop) {
       throw new Error(`Session ${sessionId} is quarantined by a retained stop operation`);
     }

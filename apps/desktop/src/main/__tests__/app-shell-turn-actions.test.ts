@@ -20,7 +20,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
-import { createAppShellTurnActions } from '../../renderer/app-shell-turn-actions.js';
+import { createTurnActions } from '../../renderer/features/conversation/testing.js';
+import { windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import { deriveTurnFooterActions } from '../../renderer/application/contracts/turn-footer-actions.js';
 
 test('footer no longer exposes Regenerate', () => {
@@ -58,7 +59,8 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
   });
   const pending = new Set<string>();
   const opened: string[] = [];
-  const actions = createAppShellTurnActions({
+  const actions = createTurnActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en',
     activeIdRef: { current: 'branch-action-source' },
     captureSelection: () => {

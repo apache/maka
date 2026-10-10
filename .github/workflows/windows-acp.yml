@@ -45,6 +45,7 @@ concurrency:
 jobs:
   windows_acp:
     name: windows_acp
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: windows-2025
     timeout-minutes: 45
     steps:

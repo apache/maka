@@ -306,6 +306,12 @@ class SqliteTelemetryRepo implements TelemetryRepo {
       if (query.providerId && row.providerId !== query.providerId) return false;
       if (query.modelId && row.modelId !== query.modelId) return false;
       if (query.status && query.status !== 'all' && row.status !== query.status) return false;
+      if (
+        query.callKinds !== undefined &&
+        (row.callKind === undefined || !query.callKinds.includes(row.callKind))
+      ) {
+        return false;
+      }
       return true;
     });
   }

@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { RunHandoffGate } from '../run-handoff-gate.js';
-import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import {
+  buildModelProjectionTransition,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -78,6 +81,7 @@ import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../model-history.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
+import { compatibilityToolResultProjection } from '../durable-tool-result-projection.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import {
@@ -3515,6 +3519,188 @@ describe('AiSdkBackend model history', () => {
     assert.equal(JSON.stringify(prompt).includes('tool-result'), false);
   });
 
+  test('persists a completed DeepSeek web_search_call and replays its original item once', async () => {
+    const item = {
+      type: 'web_search_call',
+      id: 'ws-deepseek-1',
+      status: 'completed',
+      action: {
+        type: 'search',
+        queries: ['latest Maka'],
+        sources: [{ type: 'url', url: 'https://maka.example/' }],
+      },
+    };
+    const durable = durableTurnHarness('turn-search', 'search', { runId: 'run-search' });
+    const requests: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(body);
+      const responseId = `response-${requests.length}`;
+      const output =
+        requests.length === 1
+          ? [
+              {
+                type: 'reasoning',
+                id: 'reasoning-before-search',
+                status: 'completed',
+                content: [{ type: 'reasoning_text', text: 'Search for the latest Maka release.' }],
+                summary: [],
+              },
+              item,
+              {
+                type: 'message',
+                id: 'msg-search',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'Maka result.', annotations: [] }],
+              },
+            ]
+          : [
+              {
+                type: 'message',
+                id: 'msg-followup',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'Done.', annotations: [] }],
+              },
+            ];
+      const response = {
+        id: responseId,
+        object: 'response',
+        created_at: 1,
+        model: 'deepseek-v4-flash',
+        status: 'completed',
+        output,
+        usage: { input_tokens: 5, output_tokens: 3 },
+      };
+      return new Response(
+        [
+          { type: 'response.created', response: { id: responseId } },
+          ...output.flatMap((entry, output_index) =>
+            entry.type === 'reasoning'
+              ? [
+                  {
+                    type: 'response.output_item.added',
+                    output_index,
+                    item: { ...entry, status: 'in_progress', content: [] },
+                  },
+                  {
+                    type: 'response.reasoning_text.delta',
+                    output_index,
+                    item_id: entry.id,
+                    content_index: 0,
+                    delta: 'Search for the latest Maka release.',
+                  },
+                  { type: 'response.output_item.done', output_index, item: entry },
+                ]
+              : entry.type === 'message'
+                ? [
+                    {
+                      type: 'response.output_item.added',
+                      output_index,
+                      item: { ...entry, status: 'in_progress', content: [] },
+                    },
+                    {
+                      type: 'response.output_text.delta',
+                      output_index,
+                      item_id: entry.id,
+                      content_index: 0,
+                      delta: requests.length === 1 ? 'Maka result.' : 'Done.',
+                    },
+                    { type: 'response.output_item.done', output_index, item: entry },
+                  ]
+                : [{ type: 'response.output_item.done', output_index, item: entry }],
+          ),
+          { type: 'response.completed', response },
+        ]
+          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+          .join('') + 'data: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof globalThis.fetch;
+    const options = {
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek' as const,
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'offline-only',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: (input: Parameters<typeof getAIModel>[0]) => getAIModel({ ...input, fetch }),
+      tools: [],
+    };
+    const first = createBackend({
+      ...options,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    const firstEvents = await drainDurably(first.send(durable.input()), durable);
+    assert.equal(
+      firstEvents.some((event) => event.type === 'error'),
+      false,
+      JSON.stringify(firstEvents),
+    );
+    const call = durable.ledger.find((event) => event.content?.kind === 'function_call');
+    assert.equal(
+      call?.content?.kind === 'function_call' ? call.content.providerExecuted : false,
+      true,
+    );
+    assert.deepEqual(
+      call?.content?.kind === 'function_call'
+        ? (call.content.providerOptions?.deepseek as Record<string, unknown> | undefined)
+            ?.makaWebSearchItem
+        : undefined,
+      item,
+    );
+    const results = durable.ledger.filter((event) => event.content?.kind === 'function_response');
+    assert.equal(results.length, 1);
+    assert.equal(
+      results[0]?.content?.kind === 'function_response'
+        ? results[0].content.providerExecuted
+        : false,
+      true,
+    );
+
+    const second = createBackend(options);
+    const secondEvents: SessionEvent[] = [];
+    for await (const event of second.send({
+      turnId: 'turn-followup',
+      text: 'summarize',
+      context: [],
+      runtimeContext: JSON.parse(JSON.stringify(durable.ledger)) as RuntimeEvent[],
+      ...sameRouteReplayProvenance('deepseek-v4-flash', 'run-search'),
+    }))
+      secondEvents.push(event);
+    assert.equal(
+      secondEvents.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]?.tools, undefined);
+    assert.equal(requests[1]?.tools, undefined);
+    const replay = requests[1]?.input as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      replay.filter((entry) => entry.type === 'web_search_call'),
+      [item],
+    );
+    const reasoningIndex = replay.findIndex((entry) => entry.type === 'reasoning');
+    const searchIndex = replay.findIndex((entry) => entry.type === 'web_search_call');
+    const answerIndex = replay.findIndex(
+      (entry) => entry.type === 'message' && entry.role === 'assistant',
+    );
+    assert.equal(replay.filter((entry) => entry.type === 'reasoning').length, 1);
+    assert.match(JSON.stringify(replay[reasoningIndex]), /Search for the latest Maka release/);
+    assert.ok(reasoningIndex >= 0 && reasoningIndex < searchIndex);
+    assert.ok(searchIndex < answerIndex);
+    assert.equal(
+      replay.some((entry) => entry.type === 'function_call_output'),
+      false,
+    );
+    assert.ok(
+      replay.findIndex((entry) => entry.type === 'web_search_call') <
+        replay.findIndex((entry) => entry.type === 'message' && entry.role === 'assistant'),
+    );
+  });
+
   test('keeps unrelated client tool history when degrading a hosted tool pair', async () => {
     const model = completionModel();
     const backend = createBackend({
@@ -5050,6 +5236,123 @@ describe('AiSdkBackend model history', () => {
     assert.deepEqual(result.outcome, { kind: 'unchanged', reason: 'already_compacted' });
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'unchanged');
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.reason, 'already_compacted');
+  });
+
+  test('manual compactHistory re-folds when a transition drifted the covered effective history (#5929)', async () => {
+    // The reuse fast path matches the RAW prefix; a projection transition
+    // committed after the fold rewrites a covered event's effective view
+    // without touching the raw ledger. Reuse must also require the pinned
+    // effective digest to still match — the same currency gate the pre-send
+    // path applies — or the stale checkpoint survives as already_compacted.
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const summarizerInputs: string[] = [];
+    const resultContent = {
+      kind: 'function_response' as const,
+      id: 'tool-drift-1',
+      name: 'Read',
+      result: { body: 'RAW_DRIFTED_TOOL_BODY' },
+      isError: false,
+    };
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'manual-drift-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'manual drift user text',
+      }),
+      runtimeEvent({
+        id: 'manual-drift-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-drift-1',
+          name: 'Read',
+          args: { path: 'big.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'manual-drift-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: resultContent,
+      }),
+    ];
+    const previous = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: priorEvents,
+      summary: sectionedSummary('MANUAL_DRIFT_PREVIOUS_SUMMARY'),
+      charsPerToken: 1,
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      contextBudget: { name: 'manual-drift-test', charsPerToken: 1 },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1) ?? previous,
+      summarizeHistoryCompact: async (input) => {
+        const echoed = `ECHO ${input.source.foldedRuntimeEvents
+          .map((event) => JSON.stringify(event.content))
+          .join(' ')}`;
+        summarizerInputs.push(echoed);
+        return structuredSummary(echoed);
+      },
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+    });
+    const compact = (runId: string) =>
+      backend.compactHistory({
+        turnId: 'turn-compact',
+        runId,
+        runtimeContext: structuredClone(priorEvents),
+      });
+
+    // A projection transition committed after the fold rewrites the covered
+    // result's effective view; the raw ledger is untouched.
+    const sourceProjection = compatibilityToolResultProjection(resultContent, 'session-1');
+    assert.ok(sourceProjection);
+    transitions.push(
+      buildModelProjectionTransition({
+        sessionId: 'session-1',
+        target: {
+          runtimeEventId: 'manual-drift-result',
+          part: 'tool_result',
+          toolCallId: 'tool-drift-1',
+          toolName: 'Read',
+        },
+        sourceProjection,
+        replacement: { version: 1, kind: 'text', text: 'EFFECTIVE_DRIFTED_RESULT' },
+        now: 1,
+      }),
+    );
+
+    // The raw prefix still matches but the pinned digest is stale: manual
+    // compaction must re-fold from the current effective view instead of
+    // reporting already_compacted.
+    const first = await compact('run-compact-1');
+    assert.equal(first.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+    assert.equal(summarizerInputs.length, 1);
+    assert.match(summarizerInputs[0]!, /EFFECTIVE_DRIFTED_RESULT/);
+    assert.doesNotMatch(summarizerInputs[0]!, /RAW_DRIFTED_TOOL_BODY/);
+
+    // With the current effective view pinned by the fresh checkpoint, a repeat
+    // is a true no-op again — a live ledger must not spuriously invalidate it.
+    const second = await compact('run-compact-2');
+    assert.deepEqual(second.outcome, { kind: 'unchanged', reason: 'already_compacted' });
+    assert.equal(summarizerInputs.length, 1);
+    assert.equal(recorded.length, 1);
   });
 
   test('manual compactHistory reports output-length exhaustion instead of empty_summary', async () => {
@@ -8159,9 +8462,9 @@ describe('AiSdkBackend error surfaces', () => {
       { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
     );
 
-    // In-turn result folds in a bounded tail of stderr/stdout so
-    // the model can see *why* the command failed (the full structured content
-    // still goes to session history, asserted below).
+    // The direct caller receives a short error with a bounded tail of
+    // stderr/stdout. The model-visible result is the structured terminal
+    // content asserted below, not this return value.
     assert.deepEqual(result, {
       error: [
         '命令退出码 2',
@@ -9940,6 +10243,138 @@ describe('AiSdkBackend tool availability diagnostics', () => {
     assert.ok(nextTurnRequest.length > toolCallPrefix.length);
     assert.deepEqual(nextTurnRequest.slice(0, firstRequest.length), firstRequest);
     assert.deepEqual(nextTurnRequest.slice(0, toolCallPrefix.length), toolCallPrefix);
+  });
+});
+
+describe('AiSdkBackend Anthropic prompt caching', () => {
+  type AnthropicBlock = Record<string, unknown> & { cache_control?: unknown };
+  type AnthropicBody = {
+    cache_control?: unknown;
+    messages: Array<{ role: string; content: AnthropicBlock[] }>;
+  };
+  const sse = (events: ReadonlyArray<readonly [string, Record<string, unknown>]>) =>
+    events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+  const responseEvents = (step: number) =>
+    sse([
+      [
+        'message_start',
+        {
+          message: {
+            id: `msg-${step}`,
+            type: 'message',
+            role: 'assistant',
+            model: 'claude-sonnet-4-5-20250929',
+            content: [],
+            stop_reason: null,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        },
+      ],
+      ...(step === 1
+        ? ([
+            [
+              'content_block_start',
+              {
+                index: 0,
+                content_block: { type: 'tool_use', id: 'read-1', name: 'Read', input: {} },
+              },
+            ],
+            [
+              'content_block_delta',
+              {
+                index: 0,
+                delta: { type: 'input_json_delta', partial_json: '{"path":"notes.md"}' },
+              },
+            ],
+          ] as const)
+        : ([
+            ['content_block_start', { index: 0, content_block: { type: 'text', text: '' } }],
+            ['content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'done' } }],
+          ] as const)),
+      ['content_block_stop', { index: 0 }],
+      [
+        'message_delta',
+        {
+          delta: { stop_reason: step === 1 ? 'tool_use' : 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 1 },
+        },
+      ],
+      ['message_stop', {}],
+    ]);
+  const runToolTurn = async (target: LlmConnection): Promise<AnthropicBody[]> => {
+    const durable = durableTurnHarness('turn-cache', 'inspect notes');
+    const bodies: AnthropicBody[] = [];
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as AnthropicBody);
+      return new Response(responseEvents(bodies.length).join(''), {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof globalThis.fetch;
+    const backend = createBackend({
+      connection: target,
+      modelId: target.defaultModel,
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      systemPrompt: () => ({
+        contexts: [{ name: 'test.request-context', text: 'REQUEST_ONLY_CONTEXT' }],
+        sourceRevisions: [],
+      }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(bodies.length, 2);
+    return bodies;
+  };
+  const blocks = (body: AnthropicBody) =>
+    body.messages.flatMap(({ role, content }) => content.map((block) => ({ role, block })));
+  const withoutCacheControl = ({ role, block }: { role: string; block: AnthropicBlock }) => {
+    const { cache_control: _cacheControl, ...rest } = block;
+    return { role, block: rest };
+  };
+
+  test('keeps the cache breakpoint on durable history before request-only context', async () => {
+    const bodies = await runToolTurn(connection());
+
+    const breakpoints = bodies.map((body) => {
+      const flat = blocks(body);
+      const marked = flat.flatMap(({ block }, index) =>
+        block.cache_control !== undefined ? [index] : [],
+      );
+      assert.equal(marked.length, 1, JSON.stringify(body.messages));
+      const breakpoint = marked[0]!;
+      assert.deepEqual(flat[breakpoint]!.block.cache_control, body.cache_control);
+      assert.deepEqual(
+        flat.slice(breakpoint + 1).map(({ block }) => block.text),
+        ['REQUEST_ONLY_CONTEXT'],
+      );
+      return breakpoint;
+    });
+    const cachedPrefix = blocks(bodies[0]!)
+      .slice(0, breakpoints[0]! + 1)
+      .map(withoutCacheControl);
+    assert.deepEqual(
+      blocks(bodies[1]!).slice(0, cachedPrefix.length).map(withoutCacheControl),
+      cachedPrefix,
+    );
+  });
+
+  test('adds no cache breakpoint on Anthropic-protocol connections without automatic caching', async () => {
+    const bodies = await runToolTurn({
+      ...connection(),
+      slug: 'anthropic-relay',
+      name: 'Anthropic Relay',
+      providerType: 'custom',
+      defaultApiProtocol: 'anthropic-messages',
+      baseUrl: 'https://anthropic-relay.invalid',
+    });
+
+    for (const body of bodies) {
+      assert.equal(body.cache_control, undefined);
+      assert.equal(
+        blocks(body).some(({ block }) => block.cache_control !== undefined),
+        false,
+      );
+    }
   });
 });
 
@@ -13304,9 +13739,11 @@ describe('AiSdkBackend thinking persistence', () => {
               type: record.type ?? (typeof record.role === 'string' ? 'message' : undefined),
               role: record.role,
               text:
-                firstContent && typeof firstContent === 'object' && !Array.isArray(firstContent)
-                  ? (firstContent as Record<string, unknown>).text
-                  : undefined,
+                typeof record.content === 'string'
+                  ? record.content
+                  : firstContent && typeof firstContent === 'object' && !Array.isArray(firstContent)
+                    ? (firstContent as Record<string, unknown>).text
+                    : undefined,
               callId: record.call_id,
               name: record.name,
               arguments: record.arguments,
@@ -15841,7 +16278,12 @@ describe('AiSdkBackend steering durability and identity', () => {
     const prompt = JSON.stringify(model.doStreamCalls[0]);
     assert.match(prompt, /provider-call-1/);
     assert.match(prompt, /outcome_unknown/);
-    assert.match(prompt, /may or may not have happened/);
+    assert.match(prompt, /no durable result was recorded/);
+    assert.doesNotMatch(
+      prompt,
+      /A prior execution was interrupted/,
+      'the unknown outcome travels in the tool result alone; the system prompt must stay byte-stable',
+    );
     assert.match(prompt, /check whether the marker exists/);
     assert.doesNotMatch(
       prompt,
@@ -15886,7 +16328,8 @@ describe('AiSdkBackend steering durability and identity', () => {
     const checkpointedPrompt = JSON.stringify(checkpointedModel.doStreamCalls[0]);
     assert.match(checkpointedPrompt, /provider-call-1/);
     assert.match(checkpointedPrompt, /outcome_unknown/);
-    assert.match(checkpointedPrompt, /may or may not have happened/);
+    assert.match(checkpointedPrompt, /no durable result was recorded/);
+    assert.doesNotMatch(checkpointedPrompt, /A prior execution was interrupted/);
     assert.doesNotMatch(checkpointedPrompt, /checkpoint omitted the unresolved provider call/);
 
     const inconsistentModel = textCompletionModel('must not be sent');
@@ -16035,11 +16478,9 @@ describe('AiSdkBackend steering durability and identity', () => {
     );
     assert.equal(automatedModel.doStreamCalls.length, 1);
     assert.equal(
-      JSON.stringify(automatedModel.doStreamCalls[0]?.prompt).includes(
-        'A prior execution was interrupted',
-      ),
+      JSON.stringify(automatedModel.doStreamCalls[0]?.prompt).includes('outcome_unknown'),
       false,
-      'a retired unknown must not be projected again',
+      'a retired unknown must not be projected again, as notice or as tool result',
     );
 
     // An explicit turn that failed never projected a usable answer, so the

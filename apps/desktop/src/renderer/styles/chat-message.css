@@ -290,10 +290,14 @@
    The row's own box is 28px — the height of the action buttons, not of the
    12px time beside them — so it reads tighter against the bubble than its
    4px top margin suggests. Astryx's default is nudged one step to 6px to give
-   the row back some air without opening a visible gap. */
+   the row back some air without opening a visible gap. Flex direction and
+   centering are the primitive's own; what stays here is only that nudge.
+
+   `--focus-outline-offset` pulls each action's ring inside its border box:
+   the chat layout's scrollport clips an outward ring on the first visible
+   row. Same retune as `.maka-turn-footer` (#5793 P3.1). */
 .maka-message-meta {
-  display: inline-flex;
-  align-items: center;
+  --focus-outline-offset: calc(-1 * var(--focus-outline-width));
   gap: var(--space-1-5);
   margin-top: var(--space-1-5);
 }

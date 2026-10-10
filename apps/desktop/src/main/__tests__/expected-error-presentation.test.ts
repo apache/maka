@@ -22,15 +22,14 @@ import test from 'node:test';
 import { getWorkBoardErrorCopy } from '../../renderer/locales/work-board-error-copy.js';
 import { workBoardActionErrorText } from '../../renderer/work-board-panel.js';
 import { ExpectedOperationError, reportUnexpectedError } from '../../renderer/application/contracts/operation-diagnostics.js';
+import { transcriptErrorMessage, transcriptRefreshTitle } from '../../renderer/application/contracts/transcript-copy.js';
 import { getSessionCollaborationCopy } from '../../renderer/locales/session-collaboration-copy.js';
 import { sessionCollaborationImportErrorMessage } from '../../renderer/features/session-collaboration/testing.js';
 import {
   commandPaletteActionErrorMessage,
   commandPaletteConnectionTestFailureMessage,
-  messageReadErrorMessage,
-  messageRefreshErrorMessage,
-  openPathActionErrorMessage,
 } from '../../renderer/app-shell-copy.js';
+import { folderOpenFailure } from '../../renderer/features/task-entry/testing.js';
 import {
   getShellCopy,
   localizedShellErrorMessage,
@@ -140,8 +139,8 @@ test('routes structured collaboration failures through each locale catalog', () 
 test('shell errors keep the generalized classifier over raw text', (context) => {
   context.mock.method(console, 'error', () => undefined);
   const raw = new Error('timeout 401 网络失败 MAKA_SESSION_READ_MESSAGES_ERROR: 后端中文');
-  assert.equal(messageReadErrorMessage(raw, 'en'), 'Request timed out');
-  assert.equal(messageReadErrorMessage(raw, 'zh-CN'), '请求超时');
+  assert.equal(transcriptErrorMessage(raw, 'en', 'read'), 'Request timed out');
+  assert.equal(transcriptErrorMessage(raw, 'zh-CN', 'read'), '请求超时');
   assert.equal(
     commandPaletteActionErrorMessage(raw, 'English fallback', 'en'),
     'Request timed out',
@@ -159,7 +158,7 @@ test('shell errors keep the generalized classifier over raw text', (context) => 
   assert.equal(localizedShellErrorMessage(unclassifiable, 'English fallback', 'en'), 'English fallback');
   assert.equal(commandPaletteActionErrorMessage(unclassifiable, 'English fallback', 'en'), 'English fallback');
   assert.equal(
-    messageReadErrorMessage(unclassifiable, 'zh-CN'),
+    transcriptErrorMessage(unclassifiable, 'zh-CN', 'read'),
     '任务内容暂时无法读取，请稍后重试。',
   );
 });
@@ -170,12 +169,15 @@ test('every shell error-copy entry classifies, and keeps its contextual fallback
   const opaque = new Error('no category here');
   const copy = getShellCopy('zh-CN');
 
-  assert.equal(messageRefreshErrorMessage(timeout, 'zh-CN'), '请求超时');
-  assert.equal(messageRefreshErrorMessage(opaque, 'zh-CN'), copy.errors.messageRefresh);
+  assert.equal(transcriptErrorMessage(timeout, 'zh-CN', 'refresh'), '请求超时');
+  assert.equal(transcriptErrorMessage(opaque, 'zh-CN', 'refresh'), '任务内容暂时无法刷新，请稍后重试。');
 
-  assert.equal(openPathActionErrorMessage(timeout, 'workspace', 'zh-CN'), '请求超时');
   assert.equal(
-    openPathActionErrorMessage(opaque, 'workspace', 'zh-CN'),
+    folderOpenFailure('workspace', { kind: 'failed', error: timeout }, 'zh-CN')?.description,
+    '请求超时',
+  );
+  assert.equal(
+    folderOpenFailure('workspace', { kind: 'failed', error: opaque }, 'zh-CN')?.description,
     copy.errors.openPath(copy.paths.workspace),
   );
 
@@ -190,6 +192,26 @@ test('every shell error-copy entry classifies, and keeps its contextual fallback
     copy.commandActions.connectionFailures.rateLimit,
   );
   assert.equal(errors.mock.callCount(), logged, 'a classified connection failure logs no diagnostic');
+});
+
+test('production transcript copy keeps per-locale read/refresh fallbacks and diagnostic scopes', (context) => {
+  const errors = context.mock.method(console, 'error', () => undefined);
+  const cases = [
+    ['en', 'Request timed out', 'Task content is temporarily unavailable. Try again later.', 'Task content could not be refreshed. Try again later.', 'Could not refresh task'],
+    ['zh-CN', '请求超时', '任务内容暂时无法读取，请稍后重试。', '任务内容暂时无法刷新，请稍后重试。', '刷新任务失败'],
+    ['zh-TW', '請求逾時', '任務內容暫時無法讀取，請稍後重試。', '任務內容暫時無法重新整理，請稍後重試。', '重新整理任務失敗'],
+  ] as const;
+  for (const [locale, timeout, read, refresh, title] of cases) {
+    for (const [kind, fallback] of [['read', read], ['refresh', refresh]] as const) {
+      const before = errors.mock.callCount();
+      assert.equal(transcriptErrorMessage(new Error('request timeout'), locale, kind), timeout);
+      assert.equal(errors.mock.callCount(), before);
+      assert.equal(transcriptErrorMessage(new Error('opaque transcript failure'), locale, kind), fallback);
+      assert.equal(errors.mock.callCount(), before + 1);
+      assert.equal(errors.mock.calls.at(-1)!.arguments[0], `[message-${kind}] operation failed:`);
+    }
+    assert.equal(transcriptRefreshTitle(locale), title);
+  }
 });
 
 test('one failure yields one diagnostic however many layers format it', (context) => {

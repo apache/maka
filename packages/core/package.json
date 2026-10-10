@@ -144,6 +144,7 @@
     "./project": "./dist/project.js",
     "./pty-output-view": "./dist/pty-output-view.js",
     "./relative-time": "./dist/relative-time.js",
+    "./archive-retention": "./dist/archive-retention.js",
     "./run-composition": "./dist/run-composition.js",
     "./runtime-event-store": "./dist/runtime-event-store.js",
     "./side-conversation": "./dist/side-conversation.js",

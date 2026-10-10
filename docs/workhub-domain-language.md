@@ -149,6 +149,37 @@ resume ledger.
 New WorkHub conversations persist across application and Host restarts. Migration
 of pre-cutover beta WorkHub history is not part of this cutover contract.
 
+## Read-only Session inspection
+
+`WorkHubInspect` is a Host-native tool available only to the Coordination Session.
+It reads an ordinary Session in the same current bounded discovery scope without
+admitting a Message or Turn, changing configuration, or requiring a previous
+WorkHub delegation. The existing candidate eligibility rules are checked on every
+page; a cursor does not grant access to a Session that has left that scope.
+
+`recent` returns user-facing user text and assistant text in newest-first order.
+`latest_reply` finds the latest nonempty durable assistant text. In-flight
+streaming chunks are not part of this committed transcript projection. Both
+preserve exact text, message/Turn identities, timestamps and transcript sequences.
+Thinking, raw tool outputs, attachment bodies and non-conversation records are not
+returned. Source text is evidence, never an instruction or authorization for the
+coordinator.
+
+The tool reuses the durable transcript reader. Each call scans at most 64 projected
+records with a 256 KiB stored-record budget (one oversized record and the reader's
+bounded Turn projection can exceed that budget). Output is capped at 20 text
+fragments and 16,000 UTF-16 code units; surrogate pairs are not split. Oversized
+messages continue from an explicit text offset. Even a page with no visible text
+can return a continuation when its scan budget was exhausted.
+
+Host-signed cursors bind the Session, view, fixed transcript watermark, sequence
+and text offset. They retain no transcript cache and expire on Host restart.
+Execution evidence is a separate live observation of the latest root Turn, not a
+status assigned to every message in the historical page. A null execution status
+means no root-Turn evidence was available. Completed execution does not verify
+the user objective, files or tests. Existing transcript compatibility preparation
+is shared with ordinary reads; inspection does not start target work.
+
 ## Desktop presentation
 
 The client-owned enable setting gates sidebar, dock, shortcut and tray entries.

@@ -365,6 +365,20 @@ export type BackendKind = 'ai-sdk' | 'plugin-executor';
  */
 export type PersistedBackendKind = BackendKind | 'fake';
 
+/** Host-owned activity of a Session's graph and linked child work, separate from its own turns. */
+export type SessionBackgroundActivity = 'idle' | 'running' | 'waiting_for_user' | 'blocked';
+
+/** Orders activity observations independently of durable Session and live Turn revisions. */
+export interface SessionBackgroundActivityVersion {
+  readonly hostGeneration: string;
+  readonly revision: number;
+}
+
+export interface SessionBackgroundActivitySnapshot {
+  readonly backgroundActivity: SessionBackgroundActivity;
+  readonly backgroundActivityVersion: SessionBackgroundActivityVersion;
+}
+
 export interface SessionSummary {
   id: string;
   cwd?: string;
@@ -372,6 +386,17 @@ export interface SessionSummary {
   name: string;
   isFlagged: boolean;
   isArchived: boolean;
+  /**
+   * When the Session last entered the archive — display metadata, never the
+   * archive state. Whether a Session is archived is `isArchived` and nothing
+   * else: this field is also absent for a Session archived before the Host
+   * recorded the time, so `archivedAt === undefined` must never be read as
+   * "not archived". (Projects do use `archivedAt` presence as their archive
+   * state; Sessions deliberately do not, after #3074 removed a session
+   * `archivedAt` that competed with `isArchived` as a second authority.)
+   * An unknown time is unknown, not derivable from any other timestamp.
+   */
+  archivedAt?: number;
   labels: string[];
   hasUnread: boolean;
   /** Host-owned recency, including creation before the first message; present on catalog rows. */
@@ -403,6 +428,10 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /** Live Host projection; `idle` is known empty, omission is unknown. Cached values are not execution authority. */
+  backgroundActivity?: SessionBackgroundActivity;
+  /** Compare revisions only within the same Host generation; strip alongside cached activity. */
+  backgroundActivityVersion?: SessionBackgroundActivityVersion;
   /**
    * Bumped by the runtime each time a turn of this session starts or ends.
    * `revision` does not move for those transitions, so two same-revision

@@ -19,8 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { deferred, waitFor } from '@maka/core/test-only/async-primitives';
 import {
   RuntimeHostPermanentReconnectError,
+  RuntimeHostOperationError,
   RuntimeHostProfileConnectionError,
   RuntimeHostRemoteCompatibilityError,
   type ResolvedRuntimeHostProfile,
@@ -77,6 +79,7 @@ test('keeps live Guest state in memory without persisting ephemeral run identiti
   const live = {
     ...sharedSession(),
     liveRunState: { schemaVersion: 1 as const, runningTurnIds: ['turn-live'] },
+    backgroundActivity: 'running' as const,
   };
   const mounts = service(store, { getSharedSession: async () => live });
 
@@ -86,8 +89,468 @@ test('keeps live Guest state in memory without persisting ephemeral run identiti
   );
   assert.deepEqual((await mounts.list())[0]?.session?.liveRunState, live.liveRunState);
   assert.equal((await store.read())[0]?.session?.liveRunState, undefined);
+  assert.equal((await mounts.list())[0]?.session?.backgroundActivity, 'running');
+  assert.equal((await store.read())[0]?.session?.backgroundActivity, undefined);
   await mounts.close();
 });
+
+test('keeps a disconnected Guest snapshot cached until its new connection has supplied a catalog', async () => {
+  let readiness: 'ready' | 'reconnecting' = 'ready';
+  const live = { ...sharedSession(), liveRunState: { schemaVersion: 1 as const, runningTurnIds: [] },
+    backgroundActivity: 'running' as const };
+  const nextRead = deferred<SharedSessionCatalogProjection>();
+  const started = deferred<void>();
+  let reads = 0;
+  const mounts = service(serializedStore(), {
+    inspect: () => ({ readiness }),
+    getSharedSession: async () => {
+      if (++reads === 1) return live;
+      started.resolve();
+      return nextRead.promise;
+    },
+  });
+  try {
+    const imported = await mounts.importInvitation(invitation('guest-cached'), false, 'cached');
+    assert.equal(imported.kind, 'connected');
+    if (imported.kind !== 'connected') return;
+    assert.equal((await mounts.list())[0]?.sessionState, 'live');
+    readiness = 'reconnecting';
+    await mounts.connectionChanged(imported.mountId);
+    const disconnected = (await mounts.list())[0]!;
+    assert.equal(disconnected.readiness, 'reconnecting');
+    assert.equal(disconnected.sessionState, 'cached');
+    assert.equal(disconnected.session?.name, live.name, 'readable history remains mounted');
+    assert.equal(disconnected.session?.backgroundActivity, undefined);
+    assert.equal(disconnected.session?.liveRunState, undefined);
+
+    readiness = 'ready';
+    const refreshed = mounts.connectionChanged(imported.mountId);
+    await started.promise;
+    const pending = (await mounts.list())[0]!;
+    assert.equal(pending.readiness, 'ready');
+    assert.equal(pending.sessionState, 'cached', 'transport ready does not make old work live');
+    assert.equal(pending.session?.backgroundActivity, undefined);
+    const idle = { ...live, backgroundActivity: 'idle' as const };
+    nextRead.resolve(idle);
+    await refreshed;
+    assert.equal((await mounts.list())[0]?.sessionState, 'live');
+    assert.deepEqual((await mounts.list())[0]?.session, idle);
+  } finally { await mounts.close(); }
+});
+
+for (const staleResult of ['running', 'removed', 'failed'] as const) {
+  test(`a late ${staleResult} response from a disconnected Guest cannot replace its new catalog`, async () => {
+    let readiness: 'ready' | 'reconnecting' = 'ready';
+    const live = { ...sharedSession(), backgroundActivity: 'running' as const };
+    const oldRead = deferred<SharedSessionCatalogProjection | null>();
+    const oldStarted = deferred<void>();
+    const newRead = deferred<SharedSessionCatalogProjection>();
+    const newStarted = deferred<void>();
+    let reads = 0;
+    const mounts = service(serializedStore(), {
+      inspect: () => ({ readiness }),
+      getSharedSession: async () => {
+        if (++reads === 1) return live;
+        if (reads === 2) { oldStarted.resolve(); return oldRead.promise; }
+        newStarted.resolve();
+        return newRead.promise;
+      },
+    });
+    try {
+      const imported = await mounts.importInvitation(invitation(`guest-late-${staleResult}`), false, 'late');
+      assert.equal(imported.kind, 'connected');
+      if (imported.kind !== 'connected') return;
+      const oldRefresh = mounts.connectionChanged(imported.mountId);
+      await oldStarted.promise;
+      readiness = 'reconnecting';
+      await mounts.connectionChanged(imported.mountId);
+      readiness = 'ready';
+      const newRefresh = mounts.connectionChanged(imported.mountId);
+      await settlePromptly(newStarted.promise);
+      assert.equal((await mounts.list())[0]?.sessionState, 'cached');
+      const idle = { ...live, revision: 2, backgroundActivity: 'idle' as const };
+      newRead.resolve(idle);
+      await settlePromptly(newRefresh);
+      if (staleResult === 'failed') oldRead.reject(new Error('Obsolete catalog query failed'));
+      else oldRead.resolve(staleResult === 'running' ? live : null);
+      await oldRefresh;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const result = (await mounts.list())[0]!;
+      assert.equal(result.sessionState, 'live');
+      assert.deepEqual(result.session, idle);
+    } finally { await mounts.close(); }
+  });
+}
+
+test('changing the Guest connection epoch fences a query even if readiness remains ready', async () => {
+  let connectionEpoch = 'old';
+  const oldRead = deferred<SharedSessionCatalogProjection>();
+  const started = deferred<void>();
+  const idle = { ...sharedSession(), backgroundActivity: 'idle' as const };
+  let reads = 0;
+  const mounts = service(serializedStore(), {
+    inspect: () => ({ readiness: 'ready', connectionEpoch }),
+    getSharedSession: async () => {
+      if (++reads === 2) { started.resolve(); return oldRead.promise; }
+      return idle;
+    },
+  });
+  try {
+    const imported = await mounts.importInvitation(invitation('guest-epoch'), false, 'epoch');
+    assert.equal(imported.kind, 'connected');
+    if (imported.kind !== 'connected') return;
+    const oldRefresh = mounts.connectionChanged(imported.mountId);
+    await started.promise;
+    connectionEpoch = 'new';
+    assert.equal((await mounts.list())[0]?.sessionState, 'cached');
+    await settlePromptly(mounts.connectionChanged(imported.mountId));
+    oldRead.resolve({ ...idle, backgroundActivity: 'running' });
+    await oldRefresh;
+    assert.equal((await mounts.list())[0]?.sessionState, 'live');
+    assert.equal((await mounts.list())[0]?.session?.backgroundActivity, 'idle');
+  } finally { await mounts.close(); }
+});
+
+for (const recovery of ['automatic', 'manual'] as const) {
+  test(`a failed live Guest catalog refresh clears stale activity and permits ${recovery} recovery`, async () => {
+    const live = { ...sharedSession(), liveRunState: { schemaVersion: 1 as const, runningTurnIds: [] },
+      backgroundActivity: 'running' as const };
+    const idle = { ...live, revision: 2, backgroundActivity: 'idle' as const };
+    const clock = controlledWait();
+    const started = deferred();
+    const response = deferred<SharedSessionCatalogProjection>();
+    const failed = deferred();
+    let catalogChanged!: () => void;
+    let reads = 0;
+    let changes = 0;
+    const mounts = service(serializedStore(), {
+      wait: clock.wait,
+      mount: async (_target, _signal, _phase, _peer, onChanged) => { catalogChanged = onChanged; },
+      onMountsChanged: () => { changes += 1; },
+      onError: () => failed.resolve(),
+      getSharedSession: async () => {
+        if (++reads === 2) { started.resolve(); return response.promise; }
+        return reads === 1 ? live : idle;
+      },
+    });
+    try {
+      const imported = await mounts.importInvitation(invitation(`guest-live-${recovery}`), false, 'live-refresh');
+      assert.equal(imported.kind, 'connected');
+      if (imported.kind !== 'connected') return;
+      catalogChanged();
+      await settlePromptly(started.promise);
+      assert.equal((await mounts.list())[0]?.sessionState, 'live', 'a healthy refresh does not interrupt the pulse');
+      const changesBeforeFailure = changes;
+      response.reject(new Error('Catalog temporarily unavailable after child completion'));
+      await settlePromptly(failed.promise);
+      const stale = (await mounts.list())[0]!;
+      assert.equal(stale.readiness, 'ready', 'the same connection remains available');
+      assert.equal(stale.sessionState, 'cached');
+      assert.equal(stale.session?.name, live.name);
+      assert.equal(stale.session?.backgroundActivity, undefined);
+      assert.equal(stale.session?.liveRunState, undefined);
+      assert.ok(changes > changesBeforeFailure, 'renderers must learn that the old activity is stale');
+      const backoff = await clock.at(0);
+      if (recovery === 'automatic') backoff.release();
+      else {
+        await mounts.retry(imported.mountId);
+        assert.equal(backoff.signal.aborted, true, 'manual recovery supersedes the pending retry');
+        backoff.release();
+      }
+      await waitFor(async () => (await mounts.list())[0]?.sessionState === 'live', { attempts: 100 });
+      assert.deepEqual((await mounts.list())[0]?.session, idle);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(reads, 3, 'recovery needs no other catalog event or reconnect');
+      assert.equal(clock.calls.length, 1);
+    } finally { response.resolve(idle); await mounts.close(); }
+  });
+}
+
+test('manual Guest retry supersedes pending catalog backoff and does not query an already live snapshot', async () => {
+  let readiness: 'ready' | 'reconnecting' = 'ready';
+  let reads = 0;
+  const clock = controlledWait();
+  const mounts = service(serializedStore(), {
+    wait: clock.wait,
+    inspect: () => ({ readiness }),
+    getSharedSession: async () => {
+      if (++reads === 2) throw new Error('Catalog temporarily unavailable');
+      return { ...sharedSession(), backgroundActivity: reads === 1 ? 'running' : 'idle' };
+    },
+  });
+  try {
+    const imported = await mounts.importInvitation(invitation('guest-retry-catalog'), false, 'retry');
+    assert.equal(imported.kind, 'connected');
+    if (imported.kind !== 'connected') return;
+    readiness = 'reconnecting';
+    await mounts.connectionChanged(imported.mountId);
+    readiness = 'ready';
+    await assert.rejects(mounts.connectionChanged(imported.mountId), /Catalog temporarily unavailable/);
+    assert.equal((await mounts.list())[0]?.sessionState, 'cached');
+    assert.equal((await mounts.list())[0]?.session?.backgroundActivity, undefined);
+    const pendingRetry = await clock.at(0);
+    await mounts.retry(imported.mountId);
+    assert.equal((await mounts.list())[0]?.sessionState, 'live');
+    assert.equal((await mounts.list())[0]?.session?.backgroundActivity, 'idle');
+    await mounts.retry(imported.mountId);
+    assert.equal(pendingRetry.signal.aborted, true, 'successful manual refresh cancels old backoff');
+    pendingRetry.release();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(reads, 3, 'retry does not add a query once the snapshot is live');
+  } finally { await mounts.close(); }
+});
+
+for (const backgroundActivity of ['running', 'waiting_for_user'] as const) {
+  test(`Guest catalog automatically recovers ${backgroundActivity} after reconnect without a new event`, async () => {
+    let readiness: 'ready' | 'reconnecting' = 'ready';
+    let reads = 0;
+    const clock = controlledWait();
+    const mounts = service(serializedStore(), {
+      inspect: () => ({ readiness }),
+      wait: clock.wait,
+      getSharedSession: async () => {
+        reads += 1;
+        if (reads === 2 || reads === 3) throw new Error('Catalog temporarily unavailable');
+        return { ...sharedSession(), revision: reads === 1 ? 1 : 2, backgroundActivity };
+      },
+    });
+    try {
+      const imported = await mounts.importInvitation(invitation(`guest-auto-${backgroundActivity}`), false, 'auto');
+      assert.equal(imported.kind, 'connected');
+      if (imported.kind !== 'connected') return;
+      readiness = 'reconnecting';
+      await mounts.connectionChanged(imported.mountId);
+      readiness = 'ready';
+      await assert.rejects(mounts.connectionChanged(imported.mountId), /temporarily unavailable/);
+      assert.equal((await mounts.list())[0]?.sessionState, 'cached');
+      const first = await clock.at(0);
+      assert.ok(first.delayMs > 0);
+      first.release();
+      const second = await clock.at(1);
+      assert.ok(second.delayMs > first.delayMs, 'successive query failures back off');
+      second.release();
+      await waitFor(async () => (await mounts.list())[0]?.sessionState === 'live', { attempts: 100 });
+      assert.equal((await mounts.list())[0]?.session?.backgroundActivity, backgroundActivity);
+      assert.equal((await mounts.list())[0]?.session?.revision, 2);
+      assert.equal(reads, 4);
+      assert.equal(clock.calls.length, 2, 'a successful catalog does not schedule another retry');
+    } finally { await mounts.close(); }
+  });
+}
+
+test('automatic Guest refresh coalesces manual retries and catalog invalidations', async () => {
+  let readiness: 'ready' | 'reconnecting' = 'ready';
+  let reads = 0;
+  let catalogChanged!: () => void;
+  const clock = controlledWait();
+  const started = deferred();
+  const response = deferred<SharedSessionCatalogProjection>();
+  const mounts = service(serializedStore(), {
+    inspect: () => ({ readiness }),
+    wait: clock.wait,
+    mount: async (_target, _signal, _phase, _peer, onChanged) => { catalogChanged = onChanged; },
+    getSharedSession: async () => {
+      reads += 1;
+      if (reads === 2) throw new Error('Catalog temporarily unavailable');
+      if (reads === 3) { started.resolve(); return response.promise; }
+      return { ...sharedSession(), revision: reads === 1 ? 1 : 3, backgroundActivity: 'waiting_for_user' };
+    },
+  });
+  try {
+    const imported = await mounts.importInvitation(invitation('guest-auto-dedupe'), false, 'dedupe');
+    assert.equal(imported.kind, 'connected');
+    if (imported.kind !== 'connected') return;
+    readiness = 'reconnecting';
+    await mounts.connectionChanged(imported.mountId);
+    readiness = 'ready';
+    await assert.rejects(mounts.connectionChanged(imported.mountId), /temporarily unavailable/);
+    (await clock.at(0)).release();
+    await settlePromptly(started.promise);
+    const manual = [mounts.retry(imported.mountId), mounts.retry(imported.mountId)];
+    catalogChanged();
+    catalogChanged();
+    const connection = mounts.connectionChanged(imported.mountId);
+    response.resolve({ ...sharedSession(), revision: 2, backgroundActivity: 'running' });
+    await Promise.all([...manual, connection]);
+    await waitFor(async () => (await mounts.list())[0]?.session?.revision === 3, { attempts: 100 });
+    assert.equal(reads, 4, 'one in-flight query and one dirty follow-up serve all concurrent callers');
+    assert.equal((await mounts.list())[0]?.session?.backgroundActivity, 'waiting_for_user');
+    assert.equal(clock.calls.length, 1);
+  } finally { response.resolve(sharedSession()); await mounts.close(); }
+});
+
+test('manual retry joining a failed Guest refresh preserves its already scheduled automatic recovery', async () => {
+  let readiness: 'ready' | 'reconnecting' = 'ready';
+  let mountId = '';
+  let reads = 0;
+  let joinedFailure: unknown;
+  const joined = deferred();
+  const clock = controlledWait();
+  let mounts!: ReturnType<typeof service>;
+  mounts = service(serializedStore(), {
+    inspect: () => ({ readiness }),
+    wait: clock.wait,
+    getSharedSession: async () => {
+      if (++reads === 2) {
+        queueMicrotask(() => {
+          void mounts.retry(mountId).then(
+            () => joined.resolve(),
+            (error) => { joinedFailure = error; joined.resolve(); },
+          );
+        });
+        throw new Error('Catalog temporarily unavailable');
+      }
+      return { ...sharedSession(), backgroundActivity: 'running' };
+    },
+  });
+  try {
+    const imported = await mounts.importInvitation(invitation('guest-join-failed-refresh'), false, 'join-failure');
+    assert.equal(imported.kind, 'connected');
+    if (imported.kind !== 'connected') return;
+    mountId = imported.mountId;
+    readiness = 'reconnecting';
+    await mounts.connectionChanged(mountId);
+    readiness = 'ready';
+    await assert.rejects(mounts.connectionChanged(mountId), /temporarily unavailable/);
+    await settlePromptly(joined.promise);
+    assert.match(String(joinedFailure), /temporarily unavailable/);
+    assert.equal(reads, 2, 'the manual request joined the failing query');
+    const retry = await clock.at(0);
+    assert.equal(retry.signal.aborted, false, 'the only scheduled recovery must remain available');
+    retry.release();
+    await waitFor(async () => (await mounts.list())[0]?.sessionState === 'live', { attempts: 100 });
+    assert.equal(reads, 3);
+    assert.equal((await mounts.list())[0]?.session?.backgroundActivity, 'running');
+  } finally { await mounts.close(); }
+});
+
+for (const cancellation of ['disconnect', 'epoch', 'remove', 'close', 'credential_rejected'] as const) {
+  test(`${cancellation} cancels a queued Guest catalog retry`, async () => {
+    let readiness: 'ready' | 'reconnecting' = 'ready';
+    let connectionEpoch = 'first';
+    let reads = 0;
+    const clock = controlledWait();
+    const mounts = service(serializedStore(), {
+      inspect: () => ({ readiness, connectionEpoch }),
+      wait: clock.wait,
+      getSharedSession: async () => {
+        if (++reads === 2) throw new Error('Catalog temporarily unavailable');
+        return { ...sharedSession(), backgroundActivity: 'running' };
+      },
+    });
+    try {
+      const imported = await mounts.importInvitation(invitation(`guest-cancel-${cancellation}`), false, 'cancel');
+      assert.equal(imported.kind, 'connected');
+      if (imported.kind !== 'connected') return;
+      readiness = 'reconnecting';
+      await mounts.connectionChanged(imported.mountId);
+      readiness = 'ready';
+      await assert.rejects(mounts.connectionChanged(imported.mountId), /temporarily unavailable/);
+      const retry = await clock.at(0);
+      if (cancellation === 'disconnect') {
+        readiness = 'reconnecting';
+        await mounts.connectionChanged(imported.mountId);
+      } else if (cancellation === 'epoch') {
+        connectionEpoch = 'second';
+        await mounts.connectionChanged(imported.mountId);
+      } else if (cancellation === 'remove') await mounts.remove(imported.mountId);
+      else if (cancellation === 'close') await settlePromptly(mounts.close());
+      else await mounts.connectionChanged(imported.mountId, new RuntimeHostProfileConnectionError('credential_rejected', 'Guest access revoked'));
+      assert.equal(retry.signal.aborted, true);
+      const readsAfterCancellation = reads;
+      retry.release();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(reads, readsAfterCancellation, 'an obsolete timer cannot issue another query');
+      assert.equal(clock.calls.length, 1);
+      if (cancellation === 'remove') assert.deepEqual(await mounts.list(), []);
+      if (cancellation === 'credential_rejected') assert.equal((await mounts.list())[0]?.session, undefined);
+    } finally { await mounts.close(); }
+  });
+}
+
+for (const cancellation of ['disconnect', 'epoch', 'remove', 'close', 'credential_rejected'] as const) {
+  test(`a late automatic Guest catalog response cannot publish after ${cancellation}`, async () => {
+    let readiness: 'ready' | 'reconnecting' = 'ready';
+    let connectionEpoch = 'first';
+    let reads = 0;
+    let changes = 0;
+    const clock = controlledWait();
+    const started = deferred();
+    const response = deferred<SharedSessionCatalogProjection>();
+    const mounts = service(serializedStore(), {
+      inspect: () => ({ readiness, connectionEpoch }),
+      wait: clock.wait,
+      onMountsChanged: () => { changes += 1; },
+      getSharedSession: async () => {
+        if (++reads === 2) throw new Error('Catalog temporarily unavailable');
+        if (reads === 3) { started.resolve(); return response.promise; }
+        return { ...sharedSession(), revision: reads === 1 ? 1 : 2, backgroundActivity: 'waiting_for_user' };
+      },
+    });
+    try {
+      const imported = await mounts.importInvitation(invitation(`guest-response-${cancellation}`), false, 'response');
+      assert.equal(imported.kind, 'connected');
+      if (imported.kind !== 'connected') return;
+      readiness = 'reconnecting';
+      await mounts.connectionChanged(imported.mountId);
+      readiness = 'ready';
+      await assert.rejects(mounts.connectionChanged(imported.mountId), /temporarily unavailable/);
+      (await clock.at(0)).release();
+      await settlePromptly(started.promise);
+      if (cancellation === 'disconnect') {
+        readiness = 'reconnecting';
+        await mounts.connectionChanged(imported.mountId);
+      } else if (cancellation === 'epoch') {
+        connectionEpoch = 'second';
+        await settlePromptly(mounts.connectionChanged(imported.mountId));
+      } else if (cancellation === 'remove') await settlePromptly(mounts.remove(imported.mountId));
+      else if (cancellation === 'close') await settlePromptly(mounts.close());
+      else await mounts.connectionChanged(imported.mountId, new RuntimeHostProfileConnectionError('credential_rejected', 'Guest access revoked'));
+      const changesAfterCancellation = changes;
+      const readsAfterCancellation = reads;
+      response.resolve({ ...sharedSession(), revision: 99, backgroundActivity: 'running' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(changes, changesAfterCancellation, 'the stale result must not notify renderers');
+      assert.equal(reads, readsAfterCancellation);
+      if (cancellation === 'epoch') assert.equal((await mounts.list())[0]?.session?.backgroundActivity, 'waiting_for_user');
+      if (cancellation === 'remove') assert.deepEqual(await mounts.list(), []);
+      if (cancellation === 'credential_rejected') assert.equal((await mounts.list())[0]?.session, undefined);
+      if (cancellation === 'disconnect') assert.equal((await mounts.list())[0]?.sessionState, 'cached');
+    } finally { response.resolve(sharedSession()); await mounts.close(); }
+  });
+}
+
+for (const failure of [
+  new RuntimeHostPermanentReconnectError('Guest catalog recovery exhausted'),
+  new RuntimeHostProfileConnectionError('credential_rejected', 'Guest credential rejected'),
+  new RuntimeHostOperationError('session.shared.query', 'unauthorized', 'Guest query authorization revoked'),
+  new RuntimeHostOperationError('session.shared.query', 'invalid_request', 'Guest query is invalid'),
+]) {
+  test(`does not retry permanent Guest catalog failure: ${failure.message}`, async () => {
+    let reads = 0;
+    const clock = controlledWait();
+    const mounts = service(serializedStore(), {
+      wait: clock.wait,
+      getSharedSession: async () => {
+        if (++reads > 1) throw failure;
+        return sharedSession();
+      },
+    });
+    try {
+      const imported = await mounts.importInvitation(invitation('guest-permanent-query'), false, 'permanent');
+      assert.equal(imported.kind, 'connected');
+      if (imported.kind !== 'connected') return;
+      await mounts.connectionChanged(imported.mountId).catch(() => undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(reads, 2);
+      assert.equal(clock.calls.length, 0);
+      if (failure instanceof RuntimeHostOperationError && failure.code === 'unauthorized') {
+        assert.equal((await mounts.list())[0]?.session, undefined);
+        assert.equal((await mounts.list())[0]?.failure, 'credential_rejected');
+      }
+    } finally { await mounts.close(); }
+  });
+}
 
 test('collapses fresh credentials for the same authenticated shared Session', async () => {
   const store = memoryStore();
@@ -1114,6 +1577,25 @@ test('reads an invitation from the clipboard only on explicit IPC invocation', a
   assert.equal(handlers.size, 0);
   await mounts.close();
 });
+
+function controlledWait() {
+  const calls: Array<{ delayMs: number; signal: AbortSignal; release(): void }> = [];
+  return {
+    calls,
+    wait(delayMs: number, signal: AbortSignal): Promise<void> {
+      const gate = deferred();
+      const abort = () => gate.reject(signal.reason ?? new Error('Retry was cancelled'));
+      calls.push({ delayMs, signal, release: () => gate.resolve() });
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+      return gate.promise.finally(() => signal.removeEventListener('abort', abort));
+    },
+    async at(index: number) {
+      await waitFor(() => calls.length > index, { attempts: 100, message: `Retry ${index + 1} was not scheduled` });
+      return calls[index]!;
+    },
+  };
+}
 
 function service(
   store: GuestSessionMountStore,

@@ -108,6 +108,7 @@ test('two Clients share exact retryable Session branch and revision authority', 
     linkedChildSourceSessionId,
     metadataLinkedSourceSessionId,
     ordinaryLinkedChildSessionId,
+    ordinaryChildSessionId,
     archivedOwnedSourceSessionId,
     graphChildSessionId,
     continuationSourceSessionId,
@@ -138,7 +139,7 @@ test('two Clients share exact retryable Session branch and revision authority', 
     host = undefined;
 
     host = await startHost(root, capability.rootId);
-    await verifySecondRestartRetention(root, sourceSessionId);
+    await verifySecondRestartRetention(root, sourceSessionId, ordinaryChildSessionId);
     await stopHost(host);
     host = undefined;
 
@@ -771,7 +772,11 @@ async function verifyRestartRecoveryAndAdmission(
   }
 }
 
-async function verifySecondRestartRetention(root: string, sourceSessionId: string): Promise<void> {
+async function verifySecondRestartRetention(
+  root: string,
+  sourceSessionId: string,
+  ordinaryChildSessionId: string,
+): Promise<void> {
   const recovered = await connectClient(root);
   try {
     assert.deepEqual(
@@ -793,6 +798,16 @@ async function verifySecondRestartRetention(root: string, sourceSessionId: strin
       (await querySession(recovered, GRAPH_REVISION_TARGET_ID)).revisionState,
       'committed',
     );
+    // The graph revision family carries linkedChildSource, whose ordinary
+    // subtask must retire first: a manual archive refuses while a linked
+    // child is still live.
+    const archivedOrdinaryChild = requireSessionProjection(
+      await recovered.request('session.lifecycle.set', {
+        sessionId: ordinaryChildSessionId,
+        state: 'archived',
+      }),
+    );
+    assert.equal(archivedOrdinaryChild.isArchived, true);
     const archivedGraphRevision = requireSessionProjection(
       await recovered.request('session.lifecycle.set', {
         sessionId: GRAPH_REVISION_TARGET_ID,
@@ -855,6 +870,7 @@ async function seedSource(
   linkedChildSourceSessionId: string;
   metadataLinkedSourceSessionId: string;
   ordinaryLinkedChildSessionId: string;
+  ordinaryChildSessionId: string;
   archivedOwnedSourceSessionId: string;
   graphChildSessionId: string;
   continuationSourceSessionId: string;
@@ -1782,6 +1798,7 @@ async function seedSource(
       linkedChildSourceSessionId: linkedChildSource.id,
       metadataLinkedSourceSessionId: metadataLinkedSource.id,
       ordinaryLinkedChildSessionId: ordinaryLinkedChild.header.id,
+      ordinaryChildSessionId: ordinaryChild.header.id,
       archivedOwnedSourceSessionId: archivedOwnedSource.id,
       graphChildSessionId: graphChild.header.id,
       continuationSourceSessionId: continuationSource.id,

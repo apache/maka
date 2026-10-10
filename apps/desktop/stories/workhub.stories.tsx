@@ -106,7 +106,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     enqueueMessage: async () => 'admitted',
     queryMessageExecutions: async () => ({ resolutions: [] }),
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right', togglePosition: 'edge' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, openSettings: async () => {}, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right', togglePosition: 'edge' } }), setHost: async () => {}, captureBackdrop: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, openSettings: async () => {}, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     bindBrowserSession: () => {},
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
@@ -368,20 +368,27 @@ export const ComposerRetainsFailedAttachment: Story = {
 async function expectPromptRailClearance(canvasElement: HTMLElement) {
   await waitFor(() => {
     const rail = canvasElement.querySelector<HTMLElement>('.maka-prompt-rail')!;
-    expect(rail).toBeVisible();
-    const box = rail.getBoundingClientRect();
-    const edge = canvasElement.querySelector('.maka-workbar-edge')!.getBoundingClientRect();
-    const scroller = canvasElement.querySelector('[data-chat-scroll-container]')!.getBoundingClientRect();
-    const composer = canvasElement.querySelector('.maka-composer')!.getBoundingClientRect();
-    expect(box.width).toBeGreaterThan(0);
-    expect(box.right).toBeLessThan(edge.left);
-    expect(box.top).toBeGreaterThanOrEqual(scroller.top);
-    expect(box.bottom).toBeLessThanOrEqual(composer.top);
+    expect(rail).not.toBeNull();
     const ticks = rail.querySelectorAll<HTMLElement>('[data-prompt-turn-id]');
     expect(ticks).toHaveLength(4);
-    for (const tick of ticks) {
-      const hit = tick.getBoundingClientRect();
-      expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
+    if (window.innerWidth < 825) {
+      expect(rail.closest('.maka-prompt-rail-host')).toHaveStyle({ display: 'none' });
+      expect(rail).not.toBeVisible();
+      expect(rail.getClientRects()).toHaveLength(0);
+    } else {
+      expect(rail).toBeVisible();
+      const box = rail.getBoundingClientRect();
+      const edge = canvasElement.querySelector('.maka-workbar-edge')!.getBoundingClientRect();
+      const scroller = canvasElement.querySelector('[data-chat-scroll-container]')!.getBoundingClientRect();
+      const composer = canvasElement.querySelector('.maka-composer')!.getBoundingClientRect();
+      expect(box.width).toBeGreaterThan(0);
+      expect(box.right).toBeLessThan(edge.left);
+      expect(box.top).toBeGreaterThanOrEqual(scroller.top);
+      expect(box.bottom).toBeLessThanOrEqual(composer.top);
+      for (const tick of ticks) {
+        const hit = tick.getBoundingClientRect();
+        expect(tick.contains(document.elementFromPoint(hit.x + hit.width / 2, hit.y + hit.height / 2))).toBe(true);
+      }
     }
     const body = canvasElement.querySelector('.workHubHistory')!;
     expect(body.scrollWidth - body.clientWidth).toBeLessThanOrEqual(1);
@@ -678,7 +685,12 @@ export const RetryWhileWorkFiltered: Story = {
     await userEvent.click(editor);
     await userEvent.keyboard('FILTERED_RETRY_PROBE{Enter}');
     await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
-    await userEvent.click(canvasElement.querySelector('.workhub-message-rail') as HTMLElement);
+    // The send follows the latest Turn, and the virtualized transcript may still
+    // be unmounting older Turns when the failure lands. Clicking the first rail
+    // could target a node that detaches between hover and press (#5995); the
+    // newest linked Turn's rail stays mounted while following the latest Turn.
+    const rails = canvasElement.querySelectorAll<HTMLElement>('.workhub-message-rail');
+    await userEvent.click(rails[rails.length - 1]!);
     await waitFor(() => expect(canvas.getByRole('button', { name: '显示全部对话' })).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: /^重试$/ }));
     await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(2));

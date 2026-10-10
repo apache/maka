@@ -282,6 +282,33 @@ test('yields the docked native view to main-window overlays without replacing th
   h.controller.dispose();
 });
 
+test('prepares a backdrop without yielding input or blocking later presentation commands', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  assert.equal(h.views.length, 0, 'preparation does not create a renderer');
+  await h.command(h.main.webContents, 'host', host);
+  h.main.show();
+  const view = h.views[0]!;
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  await h.command(view.webContents, 'ready');
+  await assert.rejects(h.command(view.webContents, 'capture-backdrop'), /Only the main window/);
+  const started = deferred<void>();
+  const capture = deferred<{ toDataURL(): string }>();
+  view.webContents.capturePage = () => { started.resolve(); return capture.promise; };
+  const preparation = h.command(h.main.webContents, 'capture-backdrop');
+  await started.promise;
+  assert.equal(h.container.visible, true);
+  await h.command(h.main.webContents, 'host', { ...host, visible: false });
+  assert.equal(h.container.visible, false, 'a pending capture does not hold the command queue');
+  capture.resolve({ toDataURL: () => 'data:image/png;base64,frame' });
+  assert.equal(await preparation, 'data:image/png;base64,frame');
+  assert.equal(h.container.visible, false, 'a late capture cannot restore or replace the renderer');
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  assert.equal(h.views.length, 1);
+  h.controller.dispose();
+});
+
 test('yields and restores the conversation when its compositor frame is unavailable', async () => {
   const h = await harness();
   const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
@@ -598,13 +625,20 @@ test('rejects unowned/subframe IPC and buffers navigation until main subscribes'
   h.controller.dispose();
 });
 
-test('application broadcasts reach registered auxiliaries once and stop after release or destruction', async () => {
+test('application broadcasts include registered auxiliary renderers', async () => {
   const entry = fileURLToPath(new URL('../../../src/main/main-window.ts', import.meta.url));
   const output = await build({ entryPoints: [entry], bundle: false, write: false, format: 'cjs', platform: 'node', define: { 'import.meta.dirname': JSON.stringify('/app/dist/main') } });
   const module = { exports: {} as { createMainWindowController: typeof createMainWindowController } };
+  const auxiliaries = new Set<Electron.WebContents>();
   runInNewContext(output.outputFiles[0]!.text, {
     module, exports: module.exports, process,
-    require: () => ({ createWindowRevealGate: () => ({}) }),
+    require: (specifier: string) => specifier.endsWith('/auxiliary-window-registry.js')
+      ? {
+        auxiliaryWindowRegistry: {
+          renderers: () => [...auxiliaries],
+        },
+      }
+      : { createWindowRevealGate: () => ({}) },
   });
   const controller = module.exports.createMainWindowController({
     workspaceRoot: '/workspace', e2eFixture: null, revealMode: 'hidden',
@@ -616,20 +650,10 @@ test('application broadcasts reach registered auxiliaries once and stop after re
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
   }) as unknown as Electron.WebContents;
-  const parent = {} as Electron.View;
-  const release = controller.registerAuxiliaryRenderer(renderer, parent);
-  assert.equal(controller.ownsRenderer(renderer), true);
-  assert.equal(controller.browserParentForRenderer(renderer), parent);
+  auxiliaries.add(renderer);
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
-  release();
-  controller.send('settings:changed');
-  assert.deepEqual(messages, ['settings:changed']);
-  assert.equal(controller.ownsRenderer(renderer), false);
-  assert.equal(controller.browserParentForRenderer(renderer), undefined);
-  controller.registerAuxiliaryRenderer(renderer);
-  renderer.emit('destroyed');
-  assert.equal(controller.ownsRenderer(renderer), false);
+  auxiliaries.delete(renderer);
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);
 });

@@ -17,17 +17,15 @@
  * under the License.
  */
 
-import { useUiLocale } from '@maka/ui';
+import { useUiLocale, type RevisionStagedContext } from '@maka/ui';
 import { useComposerAttachments as useSharedComposerAttachments } from '@maka/ui/use-composer-attachments';
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
 import { localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { useComposerQuotes } from './use-composer-quotes.js';
-export type { ComposerAttachmentService } from '@maka/ui/use-composer-attachments';
 
 /** Desktop staging surface for everything the composer carries into a send:
- * attachments, directory picks, and staged transcript quotes. One hook keeps
- * the quote bucket out of AppShell's hook-call ledger; all three share the
- * same draft key. */
+ * attachments, directory picks, and staged transcript quotes. Called only by
+ * ComposerStagingProvider; all three share the same draft key. */
 export function useComposerAttachments(options: Omit<Parameters<typeof useSharedComposerAttachments>[0], 'copy' | 'formatError'>) {
   const locale = useUiLocale();
   const attachments = useSharedComposerAttachments({
@@ -36,5 +34,14 @@ export function useComposerAttachments(options: Omit<Parameters<typeof useShared
     formatError: (error, fallback) => localizedShellErrorMessage(error, fallback, locale),
   });
   const quotes = useComposerQuotes({ draftKey: options.draftKey });
-  return { ...attachments, ...quotes };
+  // The revision lifecycle reads its staged plates through this getter (see
+  // RevisionStagedContext). It is assembled here, beside the hooks that own
+  // the buckets, so the frozen shell only forwards one member.
+  const stagedContext = (): RevisionStagedContext => ({
+    quotes: quotes.pendingQuotes,
+    attachments: attachments.submittableAttachments ?? [],
+    restoreQuotes: quotes.restoreQuotes,
+    clearQuotes: quotes.clearQuotes,
+  });
+  return { ...attachments, ...quotes, stagedContext };
 }

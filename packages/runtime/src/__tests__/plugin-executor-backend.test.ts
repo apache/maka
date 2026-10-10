@@ -23,7 +23,100 @@ import type { HostedFormSettlement } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { PluginExecutorBackend } from '../plugin-executor-backend.js';
 import { Context } from '../plugin-kernel.js';
-import { PluginExecutorService } from '../plugin-executor-service.js';
+import { PluginExecutorService, type PluginExecutorResult } from '../plugin-executor-service.js';
+
+for (const result of [
+  { status: 'completed', text: 'done' },
+  { status: 'cancelled', providerStopReason: 'cancelled' },
+  { status: 'failed', message: 'Agent refused the request' },
+] satisfies PluginExecutorResult[]) {
+  for (const detached of [false, true]) {
+    test(`Plugin acknowledgement for ${result.status} requires terminal consumption (detached: ${detached})`, async () => {
+      const root = new Context();
+      const service = new PluginExecutorService(root);
+      const acknowledgements: string[] = [];
+      const abandonments: string[] = [];
+      root
+        .extend({
+          maka: { rootId: 'profile', packageId: 'fixture', entryId: 'provider', generation: 1 },
+        })
+        .executors.register({
+          id: 'remote',
+          execute: async () => result,
+          acknowledgeExecution: async (conversationKey, turnId) => {
+            acknowledgements.push(`${conversationKey}/${turnId}`);
+          },
+          abandonExecution: async (conversationKey, turnId) => {
+            abandonments.push(`${conversationKey}/${turnId}`);
+          },
+        });
+      const backend = new PluginExecutorBackend({
+        sessionId: 'session-a',
+        cwd: '/workspace',
+        binding: service.bind('session-a', 'remote'),
+      });
+      try {
+        const iterator = backend.send({ turnId: 'turn-a', text: 'task' })[Symbol.asyncIterator]();
+        assert.equal(
+          (await iterator.next()).value?.type,
+          result.status === 'completed'
+            ? 'text_complete'
+            : result.status === 'cancelled'
+              ? 'abort'
+              : 'error',
+        );
+        assert.deepEqual(acknowledgements, []);
+        assert.equal((await iterator.next()).value?.type, 'complete');
+        assert.deepEqual(
+          acknowledgements,
+          [],
+          'terminal delivery is not itself an acknowledgement',
+        );
+        if (detached) {
+          await iterator.return?.();
+          assert.deepEqual(
+            acknowledgements,
+            [],
+            'an unconsumed terminal event cannot be acknowledged',
+          );
+          assert.deepEqual(abandonments, ['session-a/turn-a']);
+        } else {
+          assert.equal((await iterator.next()).done, true);
+          assert.deepEqual(acknowledgements, ['session-a/turn-a']);
+          assert.deepEqual(abandonments, []);
+        }
+      } finally {
+        await backend.dispose();
+        await root.fiber.dispose();
+      }
+    });
+  }
+}
+
+test('failed Plugin acknowledgement abandons the settled external execution', async () => {
+  const { root, binding } = fixture(async () => ({ status: 'completed', text: 'done' }));
+  const abandoned: string[] = [];
+  const backend = new PluginExecutorBackend({
+    sessionId: 'session-a',
+    cwd: '/workspace',
+    binding: {
+      ...binding,
+      acknowledgeExecution: async () => {
+        throw new Error('checkpoint unavailable');
+      },
+      abandonExecution: async (conversationKey, turnId) => {
+        abandoned.push(`${conversationKey}/${turnId}`);
+      },
+    },
+  });
+  try {
+    await collect(backend.send({ turnId: 'turn-a', text: 'task' }));
+    assert.deepEqual(abandoned, ['session-a/turn-a']);
+  } finally {
+    await backend.dispose();
+    await root.fiber.dispose();
+  }
+});
 
 test('executor backend converts plugin output and result to ordinary Session events', async () => {
   const { root, binding } = fixture(async (request, context) => {

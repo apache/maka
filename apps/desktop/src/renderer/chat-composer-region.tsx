@@ -29,6 +29,7 @@ import {
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
+import { StagedComposer, type ComposerStagingProp } from './features/conversation/index.js';
 import type { ComposerHandle } from '@maka/ui';
 export { selectLatestRequestUsage } from './application/contracts/session-inspector/latest-request-usage.js';
 import { useComposerMentionsContext } from './composer-mentions.js';
@@ -100,9 +101,7 @@ interface ChatComposerRegionProps
     | 'pendingSessionReferences'
     | 'onRemovePendingSessionReference'
     | 'waitForSessionReference'
-    | 'pendingDirectories'
-    | 'onRemoveDirectory'
-    | 'onPickDirectory'
+    | ComposerStagingProp
   > {
   composerRef: RefObject<ComposerHandle | null>;
   /** Set while the active Session is a Guest's: the same Composer sends Turn requests. */
@@ -116,7 +115,7 @@ interface ChatComposerRegionProps
   newTaskDraftKey: string;
   /** True from the moment a new-task send starts until it has settled. */
   newTaskSendPending: boolean;
-  stopPendingBySession: Record<string, boolean>;
+  stopPending: boolean;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
@@ -155,10 +154,8 @@ interface ChatComposerRegionProps
       usage: { readonly usageTokens: number; readonly contextWindow?: number } | undefined,
     ) => ReactNode;
   }>;
-  directoryComposerProps: Pick<
-    ComponentProps<typeof Composer>,
-    'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
-  >;
+  canStageContext: boolean;
+  contextPickEnabled: boolean;
   directoryPickerEnabled: boolean;
 }
 
@@ -172,7 +169,7 @@ export function ChatComposerRegion({
   contextUsageSessionId,
   newTaskDraftKey,
   newTaskSendPending,
-  stopPendingBySession,
+  stopPending,
   respondToSandboxBoundary,
   respondToClientCapability,
   respondToUserQuestion,
@@ -182,7 +179,8 @@ export function ChatComposerRegion({
   latestRequestUsageTokens,
   onOpenContextUsage,
   LiveContextUsageProbe,
-  directoryComposerProps,
+  canStageContext,
+  contextPickEnabled,
   directoryPickerEnabled,
   ...composerRest
 }: ChatComposerRegionProps) {
@@ -275,7 +273,11 @@ export function ChatComposerRegion({
   ) => (
     <ComposerGoalProjectionConsumer>
       {(goalProjection) => (
-        <Composer
+        <StagedComposer
+          stagingEnabled={!guest}
+          canStageContext={canStageContext}
+          contextPickEnabled={contextPickEnabled}
+          directoryPickerEnabled={directoryPickerEnabled}
           ref={composerRef}
           {...(guest ? guestComposerProps(composerRest, guest) : {
             ...composerRest,
@@ -299,9 +301,7 @@ export function ChatComposerRegion({
             pendingSessionReferences: mentions?.pendingSessionReferences,
             onRemovePendingSessionReference: mentions?.onRemovePendingSessionReference,
             waitForSessionReference: mentions?.waitForSessionReference,
-            ...directoryComposerProps,
-            onPickDirectory: directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined,
-            stopPending: activeId ? stopPendingBySession[activeId] === true : false,
+            stopPending: stopPending,
             goalActive: goalProjection.goalActive,
             onSetGoal: goalProjection.onSetGoal,
           })}
@@ -367,7 +367,7 @@ export function ChatComposerRegion({
             request={activeQuestion}
             onRespond={respondToUserQuestion}
             onStop={stop}
-            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+            stopPending={stopPending}
           />
         )}
         {activeForm && (

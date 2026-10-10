@@ -46,6 +46,7 @@ import {
   MessagesSquare,
   Network,
   Pencil,
+  Play,
   Plus,
   Square,
   Sparkles,
@@ -507,6 +508,18 @@ export const Composer = forwardRef<
     workspacePicker?: WorkspacePickerModel;
     /** Host actions that share the composer's existing footer. */
     footerAccessory?: ReactNode;
+    /**
+     * The Host-confirmed offer to resume the session's latest interrupted
+     * Turn (#5903). While offered and the draft holds nothing sendable, the
+     * send slot renders Resume instead of Send; typing or staging context
+     * brings Send back, and Stop always outranks it. The click re-runs the
+     * full safe-boundary admission, so a stale offer can only park, never
+     * resume the wrong thing.
+     */
+    resumeAction?: {
+      pending: boolean;
+      onResume(): void;
+    };
     /**
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
@@ -1636,8 +1649,9 @@ export const Composer = forwardRef<
     importActionBusy,
     noModelConnection,
     streaming: props.streaming,
+    resumeOffered: props.resumeAction !== undefined,
   });
-  const { sendDisabled, stopShown } = sendPolicy;
+  const { sendDisabled, stopShown, resumeShown } = sendPolicy;
   // Hosts can explain a disabled Send without adding a second visible notice;
   // other disabled reasons (empty draft, in-flight import) keep the neutral label.
   const sendTitle = props.sendBlocked && props.sendBlockedReason?.trim()
@@ -2600,6 +2614,21 @@ export const Composer = forwardRef<
                 void props.onStop();
               }}
               icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
+            />
+          ) : resumeShown && props.resumeAction ? (
+            <IconButton
+              variant="primary"
+              type="button"
+              isDisabled={props.resumeAction.pending}
+              label={props.resumeAction.pending ? copy.resumePending : copy.resumeLabel}
+              aria-busy={props.resumeAction.pending ? 'true' : undefined}
+              data-pending={props.resumeAction.pending ? 'true' : undefined}
+              tooltip={props.resumeAction.pending ? copy.resumePending : copy.resumeTitle}
+              onClick={() => {
+                if (props.resumeAction?.pending) return;
+                props.resumeAction?.onResume();
+              }}
+              icon={<Play size={ICON_SIZE.chrome} aria-hidden="true" />}
             />
           ) : (
             <IconButton

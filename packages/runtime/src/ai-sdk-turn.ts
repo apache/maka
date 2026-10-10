@@ -127,6 +127,7 @@ import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
   SANDBOX_BOUNDARY_DENIED_FOR_TURN,
   SANDBOX_BOUNDARY_FINALIZATION_PROMPT,
+  requiredSandboxBoundaryToolNames,
 } from './sandbox-boundary-tool.js';
 import {
   buildRuntimeEventModelReplayPlan,
@@ -197,6 +198,7 @@ export interface AiSdkTurnDependencies {
     hostTools: readonly MakaTool[];
     runtime: ToolAvailabilityRuntime;
   };
+  sessionActiveTools: Map<string, string>;
   codeCellAdmission: AdmissionLimiter;
   resolvedProviderOptions: Record<string, unknown>;
   session: AiSdkSessionState;
@@ -607,12 +609,14 @@ function providerRetryDelayMs(failedAttempt: number, retryAfterMs?: number): num
  *
  * Each turn owns its ToolRuntime for the same reason: gating, the loop gate,
  * the subagent and child-run limiters, durable attempts, and step admission are
- * all per-turn facts.
+ * all per-turn facts. Deferred-tool activation is the exception: it lives on
+ * the Session backend so later Turns — and concurrent Runs on the same
+ * backend — keep the same provider tool list.
  */
 
 export class AiSdkTurn {
   readonly abortController = new AbortController();
-  readonly activeTools = new Map<string, string>();
+  readonly activeTools: Map<string, string>;
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;
@@ -646,6 +650,7 @@ export class AiSdkTurn {
       request.orchestration ??
       resolveEffectiveOrchestration(deps.backend.header.orchestrationMode, undefined);
     this.toolRuntime = deps.createToolRuntime(this);
+    this.activeTools = deps.sessionActiveTools;
   }
 
   async *run(): AsyncIterable<SessionEvent> {
@@ -1102,7 +1107,7 @@ export class AiSdkTurn {
 
     // --- Build the provider-visible schema set. Tool execution stays in Runtime. ---
     // Each logical step freezes its own scoped catalog and search projection.
-    // Mutable activation belongs to this turn and follows contribution identity.
+    // Mutable activation is the Session backend map and follows contribution identity.
     const requiredOrchestrationTools =
       this.orchestration.mode === 'swarm'
         ? new Set([
@@ -1133,7 +1138,11 @@ export class AiSdkTurn {
       if (toolMode === 'code_mode' && snapshot.hostTools.some((tool) => tool.name === 'exec')) {
         throw new Error('Tool name "exec" is reserved for Code Mode.');
       }
-      const basePlan = snapshot.runtime.prepare(this.activeTools, requiredOrchestrationTools);
+      const requiredTools = new Set([
+        ...requiredOrchestrationTools,
+        ...requiredSandboxBoundaryToolNames(snapshot.hostTools),
+      ]);
+      const basePlan = snapshot.runtime.prepare(this.activeTools, requiredTools);
       const nestedTools = nestableToolSnapshot(basePlan.providerTools, basePlan.activeTools);
       const plan = projectToolModePlan(basePlan, toolMode, codeModeExecTool);
       const modelTools: ModelToolSet = {};
@@ -1501,9 +1510,6 @@ export class AiSdkTurn {
           }
           const requestSystemPromptBase = joinPromptFragments([
             systemPrompt,
-            priorUnknownProjection.kind === 'projected'
-              ? priorUnknownProjection.systemNotice
-              : undefined,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
@@ -1623,6 +1629,7 @@ export class AiSdkTurn {
             result = await this.deps.modelAdapter.startStream({
               model,
               messages: dispatchMessages,
+              historyMessageCount: attemptMessages.length,
               tools: modelTools,
               activeTools: activeToolsForRequest,
               onStreamActivity: () => requestWatchdog?.markActivity(),

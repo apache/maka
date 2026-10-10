@@ -38,6 +38,7 @@ import { useActionGuard } from './use-action-guard';
 import { getDataSettingsCopy, type DataSettingsCopy } from '../locales/settings-data-copy';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { StorageUsageSection } from '../features/storage-usage/index.js';
 
 const CONFIG_CATEGORY_IDS: readonly ConfigCategory[] = ['connections', 'settings', 'memory', 'credentials'];
 
@@ -263,16 +264,14 @@ export function DataSettingsPage(props: {
           action={(
             <>
               <Button
-                variant="ghost"
-                size="sm"
+                variant="secondary"
                 onClick={() => void openWorkspace()}
                 isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
                 isLoading={isDataActionPending('workspace:open')}
                 label={copy.openWorkspace}
               />
               <Button
-                variant="ghost"
-                size="sm"
+                variant="secondary"
                 onClick={() => void copyPath()}
                 isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
                 isLoading={isDataActionPending('workspace:path:copy')}
@@ -295,7 +294,6 @@ export function DataSettingsPage(props: {
           action={(
             <Button
               variant="secondary"
-              size="sm"
               onClick={() => void clearInputHistory()}
               isDisabled={dataActionDisabled}
               isLoading={isDataActionPending('input-history:clear')}
@@ -305,6 +303,9 @@ export function DataSettingsPage(props: {
         />
         <SettingRow title={copy.backupTitle} detail={copy.backupNotice} />
       </SettingsSection>
+      {runtimeHostAvailable ? (
+        <StorageUsageSection hostVerified={props.runtimeHostTargetVerified} />
+      ) : null}
       {runtimeHostAvailable ? <SettingsSection
         title={copy.configTitle}
         description={copy.configHelp}
