@@ -5355,6 +5355,129 @@ describe('AiSdkBackend model history', () => {
     assert.equal(recorded.length, 1);
   });
 
+  test('manual compactHistory survives its own tool-result archive projection (#6048)', async () => {
+    // /compact summarizes an oversized tool result no transition has archived
+    // yet, so the checkpoint's pinned effective digest describes the full
+    // body. The next send's prune archives that body BEFORE it validates the
+    // checkpoint, the digest drifts, and the just-written summary is silently
+    // discarded while the raw history replays (#6048). The fold must commit
+    // the same archives first, so the summary and its digest are built on the
+    // effective view the validator will fold.
+    const transitions: ModelProjectionTransition[] = [];
+    const recorded: HistoryCompactCheckpoint[] = [];
+    const summarizerInputs: string[] = [];
+    const bigBody = 'ARCHIVED_6048_TOOL_BODY_'.repeat(400) + 'TAIL_BEYOND_ARCHIVE_PAGE_6048';
+    const priorEvents = [
+      runtimeTextEvent({
+        id: 'manual-6048-user',
+        turnId: 'turn-old',
+        role: 'user',
+        author: 'user',
+        text: 'manual 6048 old user text',
+      }),
+      runtimeEvent({
+        id: 'manual-6048-call',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'tool-6048',
+          name: 'Read',
+          args: { path: 'big.ts' },
+        },
+      }),
+      runtimeEvent({
+        id: 'manual-6048-result',
+        turnId: 'turn-old',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'tool-6048',
+          name: 'Read',
+          result: { body: bigBody },
+          isError: false,
+        },
+      }),
+      runtimeTextEvent({
+        id: 'manual-6048-model',
+        turnId: 'turn-old',
+        role: 'model',
+        author: 'agent',
+        text: 'manual 6048 old model text',
+      }),
+    ];
+    const model = completionModel();
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      contextBudget: {
+        name: 'manual-prune-order-test',
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+        toolResultPrune: { enabled: true },
+      },
+      summarizeHistoryCompact: async (input) => {
+        summarizerInputs.push(
+          input.source.foldedRuntimeEvents.map((event) => JSON.stringify(event.content)).join(' '),
+        );
+        return structuredSummary('MANUAL_PRUNE_ORDER_SUMMARY');
+      },
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+      loadHistoryCompactCheckpoint: () => recorded.at(-1),
+      toolResultArchive: testToolResultArchive({
+        archiveToolResult: async (event) => ({ artifactId: `artifact-${event.runtimeEventId}` }),
+      }),
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
+      }),
+      recordModelProjectionTransition: async (transition) => {
+        transitions.push(transition);
+      },
+    });
+
+    const compact = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-compact',
+      runtimeContext: structuredClone(priorEvents),
+    });
+    assert.equal(compact.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 1);
+    // The archive the next send's prune would commit is committed here, so
+    // the pinned digest describes the post-archive effective view.
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0]?.target.runtimeEventId, 'manual-6048-result');
+    // The summarizer read the archived placeholder — a bounded page of the
+    // body, never its unarchived tail — the same effective-view policy every
+    // send applies.
+    assert.ok(summarizerInputs[0]);
+    assert.match(summarizerInputs[0], /maka\.archived_tool_result/);
+    assert.doesNotMatch(summarizerInputs[0], /TAIL_BEYOND_ARCHIVE_PAGE_6048/);
+
+    // The next send re-prunes (nothing new to archive) and validates the
+    // checkpoint: the compact block replays and the covered span stays folded.
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: structuredClone(priorEvents),
+      }),
+    );
+    const prompt = JSON.stringify(compactPrompt(model));
+    assert.match(prompt, /MANUAL_PRUNE_ORDER_SUMMARY/);
+    assert.equal(prompt.includes('manual 6048 old user text'), false);
+    assert.equal(prompt.includes(bigBody), false);
+    assert.equal(summarizerInputs.length, 1);
+  });
+
   test('manual compactHistory reports output-length exhaustion instead of empty_summary', async () => {
     const backend = createBackend({
       connection: connection(),
