@@ -32,6 +32,7 @@ import {
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_REGISTRY,
+  isModelExplicitlyUnsupportedForChat,
   providerDefaultsOf,
   providerFallbackModelIds,
   providerSupportsModelDiscovery,
@@ -460,40 +461,9 @@ function withinWireLimit(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : value.slice(0, maxLength);
 }
 
-/**
- * Whether a declared output modality rules the model out of chat.
- *
- * A model that answers only in images or only in audio cannot hold a
- * conversation, and this is the form that fact actually arrives in: the
- * generated metadata records `modalities.output` for every such model and has
- * never set `capabilities.imageGeneration` for any of them, so the capability
- * check below could not fire on bundled data.
- *
- * An EMPTY list is not evidence. A provider that declared no output modality
- * and a generator bug that dropped them produce the same shape. Only a
- * non-empty list says something, and what it says is what it lists.
- */
-function declaresNoTextOutput(model: ModelInfo): boolean {
-  const output = model.modalities?.output;
-  if (output === undefined || output.length === 0) return false;
-  return !output.includes('text');
-}
-
-export function isModelExplicitlyUnsupportedForChat(model: ModelInfo): boolean {
-  const caps = model.capabilities;
-  if (caps?.chat === false) return true;
-  // Only an explicit `chat: true` outranks the modality. `reasoning` and
-  // `functionCalling` do not: a TTS model carrying `reasoning: true` is
-  // describing how it composes speech, and it still cannot answer in text.
-  if (caps?.chat !== true && declaresNoTextOutput(model)) return true;
-  if (!caps) return false;
-  return (
-    caps.imageGeneration === true &&
-    caps.chat !== true &&
-    caps.reasoning !== true &&
-    caps.functionCalling !== true
-  );
-}
+// Defined beside `ModelInfo` so the connection-test probe can share it without
+// an import cycle; re-exported here for every existing caller.
+export { isModelExplicitlyUnsupportedForChat };
 
 function normalizedIdSet(ids: Iterable<string | undefined | null> | undefined): Set<string> {
   const result = new Set<string>();

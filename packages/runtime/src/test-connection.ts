@@ -23,8 +23,7 @@ import {
   effectiveBaseUrl,
   providerDefaultsOf,
   providerFallbackModelIds,
-  connectionModelsEnumerateAccount,
-  connectionEnabledModelIds,
+  connectionTestModelId,
   type ConnectionTestErrorClass,
   type ConnectionTestResult,
   type LlmConnection,
@@ -59,16 +58,8 @@ export interface ConnectionTestOptions extends ConnectionEffectFetchOptions {
 }
 
 /**
- * Prefer an explicit model, then a still-live configured model. Legacy
- * connections without a discovered inventory keep the historical
- * default/fallback order.
- *
- * A `'live'` catalog ORDERS the user's own candidates, it does not filter
- * them: a model the provider just listed is likelier to answer, so probe that
- * one first. But no catalog removes a candidate. A snapshot would otherwise
- * redirect the probe onto a model the user never chose (#1584), and even a
- * live list can lag the account — when it does, the provider's own error is a
- * better answer than a model Maka substituted silently.
+ * Prefer an explicit model; otherwise the connection's own candidates, in the
+ * order `connectionTestModelId` owns so the settings page can preview it.
  */
 function resolveConnectionTestModel(
   connection: ConnectionEffectConnection,
@@ -77,20 +68,7 @@ function resolveConnectionTestModel(
 ): string | undefined {
   const explicitModel = model?.trim();
   if (explicitModel) return explicitModel;
-
-  const discoveredIds =
-    connection.models?.map(({ id }) => id.trim()).filter((id) => id.length > 0) ?? [];
-  const enabled = connectionEnabledModelIds(connection);
-  const listed = connectionModelsEnumerateAccount(connection) ? new Set(discoveredIds) : undefined;
-  const preferred = listed
-    ? [...enabled.filter((id) => listed.has(id)), ...enabled.filter((id) => !listed.has(id))]
-    : enabled;
-  const candidates = [...preferred, ...fallbackModels, ...discoveredIds];
-  for (const candidate of candidates) {
-    const id = candidate.trim();
-    if (id) return id;
-  }
-  return undefined;
+  return connectionTestModelId(connection, fallbackModels);
 }
 
 export async function testConnection(
