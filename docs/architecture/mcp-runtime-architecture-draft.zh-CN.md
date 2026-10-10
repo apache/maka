@@ -6,7 +6,7 @@ source_language: zh-CN
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-23
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -47,12 +47,12 @@ Maka 的 MCP 接入必须复用现有 `MakaTool` execution boundary，而不是�
 - `tools/list` pagination、tool call timeout 和 abort；legacy 使用 unsolicited `notifications/tools/list_changed`，modern 使用经 server acknowledgement 的 `subscriptions/listen`。
 - modern server 未声明 tools capability 时不发送 `tools/list`；list-change 由 Maka 做 bounded/coalesced refresh，不把 SDK auto-refresh 作为第二份 snapshot authority。
 - modern Streamable HTTP 对 SEP-2243 `x-mcp-header` 做 bounded validation；非法定义只排除对应 Tool，unsafe integer argument 在发送前本地失败。
-- text、image、audio、embedded resource、resource link content；MCP `isError` 进入 Maka error path。
+- text、image、audio、embedded resource、resource link content；MCP `isError` 进入 Maka error path。成功的工具结果同样有界：`callTool` 返回前后按 `MAX_SUCCESS_TOOL_RESULT_*` 预算双重限制，超限按 fail-closed 处理（#4915）。
 - workspace-scoped `mcp.json` 使用 version 3；version 1/2 wrapper 读取时保持各自 legacy 语义，只有显式 mutation 才迁移落盘。
 - 首页侧边栏「扩展 > MCP」模块只展示已配置连接，提供搜索、JSON import、添加、编辑、启停、测试、删除和 OAuth 登录；通过 Module Hub services/controller 接入客户端能力。
-- 页面不内置第三方服务目录或品牌资产；用户按服务文档添加本地命令或远程 URL。保存后由 mcp.json 表示连接配置；连接失败保留配置，用户显式停用或删除。
+- 页面内置建议目录（`MCP_SUGGESTIONS`：Chrome、Notion、Linear、Feishu、MCP docs 等），并随条目携带第三方品牌 SVG 资产；选择条目仅预填连接配置（Chrome 条目提供引导式连接流，#5603/#5638），不构成安装状态。用户仍可按服务文档添加本地命令或远程 URL。保存后由 mcp.json 表示连接配置；连接失败保留配置，用户显式停用或删除。
 
-若以后恢复「发现」目录，条目必须对应提供方公开文档中的 MCP endpoint，并经过实际连接、传输方式与 OAuth 验证；目录仍只预填配置，不成为安装状态。默认使用文字名称。第三方图标入库前须逐项确认来源、版权许可、发行包所需通知和商标使用条件；开源图形许可不能代替商标授权。ASF 的[第三方作品要求](https://www.apache.org/legal/src-headers.html#3party)、[第三方许可政策](https://www.apache.org/legal/resolved.html)和[项目品牌职责](https://www.apache.org/foundation/marks/responsibility)是审核依据。
+目录条目必须对应提供方公开文档中的 MCP endpoint，并经过实际连接、传输方式与 OAuth 验证；目录仍只预填配置，不成为安装状态。第三方图标入库前须逐项确认来源、版权许可、发行包所需通知和商标使用条件；开源图形许可不能代替商标授权。ASF 的[第三方作品要求](https://www.apache.org/legal/src-headers.html#3party)、[第三方许可政策](https://www.apache.org/legal/resolved.html)和[项目品牌职责](https://www.apache.org/foundation/marks/responsibility)是审核依据。
 
 当前 rollout 不包含 resources UI、resource subscription 和给 subprocess 使用的 loopback proxy。协议层保留 transport 和 content contracts，后续按独立 PR 扩展。
 
@@ -144,7 +144,7 @@ stdio `protocol` 不只是 wire-format 偏好，也是进程副作用授权：
 
 modern tool-list subscription 只有在 server 声明 capability 且 acknowledgement honor 对应 filter 时才成为 live refresh source。missing、rejected、unhonored 或 non-local close 会进入独立 subscription diagnostic，但不会伪装成 transport disconnect，也不会丢弃上一份可调用 tool snapshot。普通 client/tool 错误不能冒充 subscription 错误；refresh 与 subscription diagnostics 使用独立生命周期槽，成功 refresh 只清除 refresh failure，reconnect 才重建两者。
 
-每个 connection generation 只有一个 `ToolDiscoveryState`。initial discovery、显式 refresh、legacy notification 与 modern subscription signal 都推进同一个 change epoch，并共享同一个 in-flight promise；只有仍拥有当前 client、generation、discovery state 和最新 epoch 的 transaction 才能发布。发布结果仍是唯一的 immutable `ToolSnapshot { revision, tools }`，subscription、status 和 renderer 都不维护第二份 callable registry 或 revision。
+每个 connection generation 只有一个 `ToolRefreshState`。initial discovery、显式 refresh、legacy notification 与 modern subscription signal 都推进同一个 change epoch，并共享同一个 in-flight promise；只有仍拥有当前 client、generation、discovery state 和最新 epoch 的 transaction 才能发布。发布结果仍是唯一的 immutable `McpToolSnapshot { revision, tools }`，subscription、status 和 renderer 都不维护第二份 callable registry 或 revision。
 
 Desktop 和 TUI 共用 `updateMcpConfiguration`：先验证完整下一份配置，再在同一文件锁内退休被删除、端点变更或静态 OAuth 注册变更的凭据，最后发布配置。撤销失败则不写文件；已完成的部分撤销可以重新登录恢复。目录 durability fence 失败时，调用方重新读取配置并同步 manager，保留原始 commit-unknown 结果，不重放副作用。Desktop 还在同一进程操作 lane 内排除活跃 OAuth 登录与配置变更的交错；TUI 保留自己的配置 revision 和 Host publication 语义。
 

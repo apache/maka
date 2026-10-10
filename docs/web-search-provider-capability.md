@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -137,6 +137,14 @@ display projection. Provider-native results are not partially archived: history
 compaction removes the complete old turn instead of archiving only `result`
 while accidentally retaining an unbounded `providerOutput`.
 
+> **Status note (2026-10-10):** DeepSeek native WebSearch execution is
+> currently disabled — `model-web-search.ts` marks DeepSeek
+> `implemented: false` since #2972 (2026-08-19), because DeepSeek ignores
+> built-in `web_search` in Responses requests. Only historical
+> `web_search_call` items replay through the message projection (#5824).
+> The live verification below is retained as historical evidence of the
+> provider capability; re-enabling execution is tracked in #3689.
+
 DeepSeek live verification on 2026-08-04 completed one real Maka `AiSdkBackend`
 turn with two provider-executed WebSearch calls and a final answer in the same
 stream. DeepSeek returned search actions but no structured source rows or URL
@@ -180,28 +188,28 @@ request. The selected connection wire is authoritative:
 
 For a provider that supports both, an explicit connection/model `apiProtocol`
 wins. An ambiguous standard DeepSeek V4 connection defaults to Responses;
-using the CC wire requires an explicit Anthropic-compatible connection. Maka
+using the CC wire requires a `custom` connection whose resolved
+`defaultApiProtocol`/model `apiProtocol` is `anthropic-messages`. Maka
 does not retry a failed native search over the other protocol.
 
-A single same-prompt DeepSeek V4 Flash comparison on 2026-08-04 observed:
+A single same-prompt DeepSeek V4 Flash comparison on 2026-08-04 observed
+(historical — native execution is disabled per the status note above):
 
 | Wire | Latency | Search calls | Visible source rows | Tokens | Estimated cost |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Responses | 9.46 s | 2 | 0 | 5,943 | $0.00046 |
 | Anthropic Messages | 3.13 s | 1 | 10 | 9,638 | $0.00134 |
 
-This is a smoke comparison, not a latency benchmark. It shows the trade-off:
+This is a smoke comparison, not a latency benchmark. It showed the trade-off:
 the CC wire provided stricter `maxUses`, lower observed latency, and structured
 source rows; Responses used much more cache, cost about one third as much, and
-matched the general Codex/coding-agent wire. The default therefore remains
-Responses, while the Anthropic-compatible route stays an explicit choice for
-search-heavy workflows that value source visibility over cache economics.
+matched the general Codex/coding-agent wire.
 
 ## Provider matrix
 
 | Provider or access path | Official hosted search surface | Model boundary | Maka state |
 | --- | --- | --- | --- |
-| DeepSeek | Responses `web_search`, server-executed | `deepseek-v4-flash` and `deepseek-v4-pro` | Integrated through `openai-responses` |
+| DeepSeek | Responses `web_search`, server-executed | `deepseek-v4-flash` and `deepseek-v4-pro` | Not executed: `implemented: false` since #2972 (DeepSeek ignores built-in `web_search`); historical `web_search_call` items replay (#5824). Re-enablement: #3689 |
 | OpenAI API | Responses `web_search` tool | Maka currently enables the native path for GPT-5 families, whose runtime wire is already Responses | Integrated through `openai-responses` |
 | Custom connection | Responses `web_search` or Messages `web_search_20250305` when explicitly declared | `custom` models whose resolved wire is `openai-responses` or `anthropic-messages` and that declare `capabilities.webSearch=true` | Integrated through the resolved wire |
 | xAI API / OAuth | Responses Agent Tools `web_search` | Maka currently enables the verified Grok 4.5 Responses route | Integrated through `openai-responses` |
