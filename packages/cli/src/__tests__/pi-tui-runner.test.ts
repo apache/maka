@@ -53,6 +53,7 @@ import type {
   MakaPreparedSessionTurn,
   MakaAttachedSessionTurn,
   MakaSessionMoveResult,
+  MakaSessionListOptions,
   MakaSessionDriver,
   MakaSideConversationParentStatus,
   MakaSessionRewindResult,
@@ -63,7 +64,10 @@ import type {
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
-import { skillInvocationBlockedMessage } from '../session-driver.js';
+import {
+  MakaSessionCatalogIncompleteError,
+  skillInvocationBlockedMessage,
+} from '../session-driver.js';
 import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders, onboardingCreateTarget } from '../onboarding-catalog.js';
 import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
@@ -4503,7 +4507,7 @@ Slug openai-work<cursor>
     assert.equal(driver.stopCalls, 0);
   });
 
-  test('Alt+Enter during a turn queues a followup and shows a pending Queued line', async () => {
+  test('Tab during a turn queues a followup and shows a pending Queued line', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -4521,7 +4525,7 @@ Slug openai-work<cursor>
     await waitFor(() => terminal.progressStates.at(-1) === true);
 
     terminal.input('do this next');
-    terminal.input('\x1b\r'); // Alt+Enter
+    terminal.input('\t'); // Tab
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('Queued: do this next'),
     );
@@ -4538,7 +4542,33 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Up takes the queued messages back into the editor', async () => {
+  test('Tab while idle stays with the editor and does not submit', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('not submitted');
+    terminal.input('\t'); // Idle Tab is the editor's completion trigger, not submit.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(driver.queuedMessages, []);
+    assert.deepEqual(driver.steered, []);
+    assert.equal(terminal.progressStates.at(-1) ?? false, false);
+
+    terminal.input('\x03'); // clear the draft
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('Shift+Left takes the queued messages back into the editor', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -4561,7 +4591,7 @@ Slug openai-work<cursor>
       plainTerminalOutput(terminal.screenOutput()).includes('Steering: reword this later'),
     );
 
-    terminal.input('\x1b[1;3A'); // Alt+Up
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     // The pending bar is cleared and the text is back in the editor.
     await waitFor(() => {
@@ -4580,7 +4610,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Up removes the exact transient rows without a subscription retraction event', async () => {
+  test('Shift+Left removes the exact transient rows without a subscription retraction event', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
     const run = runMakaPiTui({
@@ -4598,10 +4628,10 @@ Slug openai-work<cursor>
     await waitFor(() => terminal.progressStates.at(-1) === true);
 
     terminal.input('take this back');
-    terminal.input('\x1b\r');
+    terminal.input('\t'); // Tab
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('take this back'));
 
-    terminal.input('\x1b[1;3A');
+    terminal.input('\x1b[1;2D'); // Shift+Left
     await waitFor(() => driver.retractCalls === 1);
     await waitFor(() => {
       const screen = plainTerminalOutput(terminal.screenOutput());
@@ -4617,9 +4647,9 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Up in the enqueue tick retracts from the authority, not the lagging mirror', async () => {
+  test('Shift+Left in the enqueue tick retracts from the authority, not the lagging mirror', async () => {
     // Round-6 R2: the enqueue outcome arrives synchronously but the mirror
-    // updates only when the queue_update event is consumed. An Alt+Up in
+    // updates only when the queue_update event is consumed. A Shift+Left in
     // that same tick must still call the authoritative retract — gating the
     // mutation on the (empty) mirror would strand a message the runtime
     // demonstrably holds.
@@ -4641,7 +4671,7 @@ Slug openai-work<cursor>
 
     terminal.input('reword this later');
     terminal.input('\r'); // steer — queued synchronously in the driver
-    terminal.input('\x1b[1;3A'); // Alt+Up in the same tick, mirror still empty
+    terminal.input('\x1b[1;2D'); // Shift+Left in the same tick, mirror still empty
     await waitFor(() => driver.retractCalls === 1);
     await waitFor(() => {
       const screen = plainTerminalOutput(terminal.screenOutput());
@@ -4722,7 +4752,7 @@ Slug openai-work<cursor>
     );
 
     terminal.input('still queued');
-    terminal.input('\x1b\r'); // Alt+Enter queues a followup
+    terminal.input('\t'); // Tab queues a followup
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('Queued: still queued'),
     );
@@ -4753,7 +4783,7 @@ Slug openai-work<cursor>
     await run;
   });
 
-  test('Alt+Enter during a control action keeps the draft in the editor', async () => {
+  test('Tab during a control action keeps the draft in the editor', async () => {
     const terminal = new FakeTerminal();
     const driver = new DeferredControlDriver();
     const run = runMakaPiTui({
@@ -4773,7 +4803,7 @@ Slug openai-work<cursor>
     terminal.input('a draft to keep');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('a draft to keep'));
 
-    terminal.input('\x1b\r'); // Alt+Enter while a control action holds `busy`
+    terminal.input('\t'); // Tab while a control action holds `busy`
     // The submit gate runs synchronously off the input dispatch; one macrotask
     // turn (which drains every queued microtask first) is a deterministic
     // settle for the prompt check.
@@ -4852,7 +4882,7 @@ Slug openai-work<cursor>
 
     terminal.input('after stop');
     terminal.input('\r'); // Enter: submits are disabled during convergence
-    terminal.input('\x1b\r'); // Alt+Enter: gated before touching the editor
+    terminal.input('\t'); // Tab: gated before touching the editor
     // The convergence gates run synchronously off the input dispatch; one
     // macrotask turn (which drains every queued microtask first) settles them.
     await delay(0);
@@ -6035,6 +6065,680 @@ Slug openai-work<cursor>
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('/resume opens a picker containing only resumable sessions when none is attached', async () => {
+    const terminal = new FakeTerminal();
+    const resumable = fakeSessionSummary('resumable', '/repo');
+    const unavailable = fakeSessionSummary('unavailable', '/repo');
+    const driver = new BoundedResumeAvailabilityDriver([resumable, unavailable]);
+    driver.unavailableSessionIds.add(unavailable.id);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    const output = plainTerminalOutput(terminal.output());
+    assert.match(output, /resumabl/);
+    assert.doesNotMatch(output, /unavailable/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.resumeCalls === 1);
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('/resume reports when current-workspace discovery is incomplete', async () => {
+    const terminal = new FakeTerminal();
+    const partial = fakeSessionSummary('partial-resume', '/repo', 'Partial workspace session');
+    const driver = new BoundedResumeAvailabilityDriver([partial]);
+    driver.listSessions = async () => {
+      throw new MakaSessionCatalogIncompleteError(8, [partial]);
+    };
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    const visibleOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
+    await waitFor(
+      () =>
+        visibleOutput().includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice) &&
+        visibleOutput().includes('Partial workspace session'),
+    );
+    assert.doesNotMatch(visibleOutput(), /No matching sessions/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.resumeCalls === 1);
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('startup resume hint uses sessions found before catalog discovery is incomplete', async () => {
+    const terminal = new FakeTerminal();
+    const partial = fakeSessionSummary(
+      'partial-startup-resume',
+      '/repo',
+      'Partial startup session',
+    );
+    const driver = new BoundedResumeAvailabilityDriver([partial]);
+    driver.setAttachedSessionId(null);
+    let catalogReads = 0;
+    driver.listSessions = async () => {
+      catalogReads += 1;
+      throw new MakaSessionCatalogIncompleteError(8, [partial]);
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    const visibleOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
+    await waitFor(() => catalogReads > 0);
+    await waitFor(
+      () =>
+        driver.availabilityCalls > 0 &&
+        driver.activeCalls === 0 &&
+        visibleOutput().includes(getTuiPickerCopy('en').resumeAvailabilityNotice),
+    );
+    assert.doesNotMatch(visibleOutput(), /This session/);
+    assert.equal(
+      visibleOutput().includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice),
+      false,
+    );
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(
+      () =>
+        visibleOutput().includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice) &&
+        visibleOutput().includes('Partial startup session'),
+    );
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume finds current-workspace sessions beyond the global catalog prefix', async () => {
+    const terminal = new FakeTerminal();
+    const target = fakeSessionSummary('current-after-prefix', '/repo', 'Current workspace');
+    const sessions = [
+      ...Array.from({ length: 200 }, (_, index) =>
+        fakeSessionSummary(`other-${index}`, `/other/${index}`),
+      ),
+      target,
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    driver.setAttachedSessionId(null);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Current workspace'));
+    assert.deepEqual(driver.listRequests[0], { limit: 256, cwd: '/repo' });
+    assert.match(plainTerminalOutput(terminal.output()), /Current workspace/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /No matching sessions/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes(target.id));
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume checks past 200 unavailable sessions for a later resumable candidate', async () => {
+    const terminal = new FakeTerminal();
+    const unavailable = Array.from({ length: 200 }, (_, index) =>
+      fakeSessionSummary(`unavailable-${index}`, '/repo'),
+    );
+    const target = fakeSessionSummary('resumable-201', '/repo', 'Later interrupted session');
+    const driver = new BoundedResumeAvailabilityDriver([...unavailable, target]);
+    driver.availabilityDelayMs = 0;
+    for (const session of unavailable) driver.unavailableSessionIds.add(session.id);
+    driver.setAttachedSessionId(null);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Later interrupted session'),
+    );
+    assert.equal(driver.listLimits[0], 256);
+    assert.ok(driver.availabilitySessionIds.includes(target.id));
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /No matching sessions/);
+
+    terminal.input('\r');
+    await waitFor(() => driver.sessionIds.includes(target.id));
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('startup resume hint does not use a different session when the attached session is absent', async () => {
+    const terminal = new FakeTerminal();
+    const other = fakeSessionSummary('other-current-session', '/repo');
+    const driver = new BoundedResumeAvailabilityDriver([other]);
+    const attachedSessionId = 'missing-attached-session';
+    driver.setAttachedSessionId(attachedSessionId);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitFor(() => driver.completedSummaryLookups.includes(attachedSessionId));
+    await waitFor(() => driver.completedListRequests.length > 0);
+    assert.deepEqual(driver.availabilitySessionIds, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('startup resume hint looks up the attached session beyond the current workspace limit', async () => {
+    const terminal = new FakeTerminal();
+    const attached = fakeSessionSummary('attached-after-prefix', '/repo');
+    const sessions = [
+      ...Array.from({ length: 200 }, (_, index) =>
+        fakeSessionSummary(`newer-current-${index}`, '/repo'),
+      ),
+      attached,
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    driver.setAttachedSessionId(attached.id);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitFor(() => driver.availabilitySessionIds.includes(attached.id));
+    assert.deepEqual(driver.availabilitySessionIds, [attached.id]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume fails closed when candidate discovery is unavailable', async () => {
+    const terminal = new FakeTerminal();
+    const session = fakeSessionSummary('attachable-only', '/repo', 'Attachable only');
+    const driver = new SlashCommandDriver([session]);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    const output = plainTerminalOutput(terminal.output());
+    assert.doesNotMatch(output, /Attachable only/);
+    assert.match(output, /Could not check whether any sessions can be resumed/);
+    assert.doesNotMatch(output, /No matching sessions/);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume distinguishes failed candidate checks from an empty candidate list', async () => {
+    const failedTerminal = new FakeTerminal();
+    const failedSession = fakeSessionSummary('failed-check', '/repo');
+    const failingDriver = new BoundedResumeAvailabilityDriver([failedSession]);
+    failingDriver.setAttachedSessionId(null);
+    failingDriver.getSessionResumeCandidateAvailability = async () => {
+      throw new Error('temporary Runtime Host failure');
+    };
+    const failedRun = runMakaPiTui({
+      title: 'Maka',
+      driver: failingDriver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal: failedTerminal,
+    });
+
+    failedTerminal.input('/resume');
+    failedTerminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(failedTerminal.output()).includes(
+        'Could not check whether any sessions can be resumed',
+      ),
+    );
+    assert.doesNotMatch(plainTerminalOutput(failedTerminal.output()), /No matching sessions/);
+    failedTerminal.input('\x1b');
+    exitMaka(failedTerminal);
+    await failedRun;
+
+    const emptyTerminal = new FakeTerminal();
+    const unavailableSession = fakeSessionSummary('no-candidate', '/repo');
+    const unavailableDriver = new BoundedResumeAvailabilityDriver([unavailableSession]);
+    unavailableDriver.setAttachedSessionId(null);
+    unavailableDriver.availabilityDelayMs = 0;
+    unavailableDriver.unavailableSessionIds.add(unavailableSession.id);
+    const emptyRun = runMakaPiTui({
+      title: 'Maka',
+      driver: unavailableDriver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal: emptyTerminal,
+    });
+
+    emptyTerminal.input('/resume');
+    emptyTerminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(emptyTerminal.output()).includes('No matching sessions'),
+    );
+    assert.doesNotMatch(
+      plainTerminalOutput(emptyTerminal.output()),
+      /Could not check whether any sessions can be resumed/,
+    );
+    emptyTerminal.input('\x1b');
+    exitMaka(emptyTerminal);
+    await emptyRun;
+  });
+
+  test('/resume does not resume after a stale selection fails to switch', async () => {
+    const terminal = new FakeTerminal();
+    const session = fakeSessionSummary('stale', '/repo');
+    const driver = new RejectingSwitchSessionDriver([session]);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    terminal.input('\r');
+    await waitFor(() => driver.switchCalls === 1);
+    await delay(0);
+    assert.equal(driver.resumeCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume bounds concurrent resumability checks for large session catalogs', async () => {
+    const terminal = new FakeTerminal();
+    const sessions = Array.from({ length: 24 }, (_, index) =>
+      fakeSessionSummary(`session-${index}`, '/repo'),
+    );
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.equal(driver.listLimits[0], 256);
+    assert.ok(driver.availabilityCalls >= sessions.length);
+    assert.ok(driver.maxActiveCalls <= 8);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume bounds total candidate checks after switching to All', async () => {
+    const terminal = new FakeTerminal();
+    const sessions = [
+      ...Array.from({ length: 100 }, (_, index) => fakeSessionSummary(`current-${index}`, '/repo')),
+      ...Array.from({ length: 124 }, (_, index) =>
+        fakeSessionSummary(`other-${index}`, `/other/${index}`),
+      ),
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.equal(driver.availabilityCalls, 101);
+
+    terminal.input('\t');
+    await waitFor(() => driver.availabilityCalls === 225);
+    assert.equal(driver.availabilityCalls, 225);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume checks only the current cwd before rendering the default scope', async () => {
+    const terminal = new FakeTerminal();
+    const sessions = [
+      fakeSessionSummary('current-session', '/repo'),
+      fakeSessionSummary('unavailable-current-session', '/repo'),
+      ...Array.from({ length: 16 }, (_, index) =>
+        fakeSessionSummary(`other-session-${index}`, `/other/${index}`),
+      ),
+    ];
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    driver.unavailableSessionIds.add('unavailable-current-session');
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+      sessionListScope: 'all',
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.ok(driver.availabilitySessionIds.length > 0);
+    assert.ok(
+      driver.availabilitySessionIds.every(
+        (sessionId) =>
+          sessionId === 'current-session' || sessionId === 'unavailable-current-session',
+      ),
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /other-session/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.output()), /unavailable-current-session/);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume scope toggles do not change the next /session default scope', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new BoundedResumeAvailabilityDriver([
+      fakeSessionSummary('current-session', '/repo', 'Current chat'),
+      fakeSessionSummary('other-session', '/other/repo', 'Other chat'),
+    ]);
+    driver.setAttachedSessionId(null);
+    driver.availabilityDelayMs = 0;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    terminal.input('\t');
+    await waitFor(
+      () =>
+        plainTerminalOutput(terminal.output()).includes('Resume Session All') &&
+        plainTerminalOutput(terminal.output()).includes('Other chat'),
+    );
+
+    terminal.input('\x1b');
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(
+      () =>
+        plainTerminalOutput(terminal.screenOutput()).includes('Resume Session Current') &&
+        plainTerminalOutput(terminal.screenOutput()).includes('Current chat'),
+    );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Other chat/);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume excludes foreign sessions when none is attached', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver([]);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const foreignSession = {
+      source: 'claude-code' as const,
+      id: 'foreign-resume',
+      title: 'Foreign interrupted work',
+      cwd: '/repo',
+      updatedAtMs: Date.now(),
+      transcriptPath: '/home/u/.claude/projects/-repo/foreign-resume.jsonl',
+    };
+    let listSessionsCalls = 0;
+    let listSourcesCalls = 0;
+    let readDigestCalls = 0;
+    const externalSessions = {
+      listScopes: () => ['all'] as const,
+      listSources: async () => {
+        listSourcesCalls += 1;
+        return ['claude-code'] as const;
+      },
+      listSessions: async () => {
+        listSessionsCalls += 1;
+        return {
+          sessions: [
+            {
+              id: foreignSession.id,
+              name: foreignSession.title,
+              hostCwd: foreignSession.cwd,
+              importState: {
+                importedCount: 0,
+                importedSessionIds: [],
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        };
+      },
+      importSession: async () => {
+        readDigestCalls += 1;
+        throw new Error('foreign import must not run from /resume');
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+      externalSessions,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    const output = plainTerminalOutput(terminal.output());
+    assert.doesNotMatch(output, /Foreign interrupted work/);
+    assert.equal(listSourcesCalls, 0);
+    assert.equal(listSessionsCalls, 0);
+
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+    assert.equal(readDigestCalls, 0);
+    assert.equal(driver.startNewSessionCalls, 0);
+    assert.equal(driver.prompts.length, 0);
+  });
+
+  test('/session keeps attachable rows when resume discovery fails for another session', async () => {
+    const terminal = new FakeTerminal();
+    const attachable = fakeSessionSummary('attachable', '/repo');
+    const archived = fakeSessionSummary('archived', '/repo');
+    const driver = new SlashCommandDriver([attachable, archived]);
+    driver.getSessionResumeAvailability = async (session) => {
+      if (session.id === archived.id) throw new Error('session archived');
+      return { available: false, reason: 'no resumable turn' };
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.match(plainTerminalOutput(terminal.output()), /attachab/);
+
+    let switched = false;
+    try {
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.includes(attachable.id));
+      switched = true;
+    } finally {
+      exitMaka(terminal);
+      await run;
+    }
+    assert.equal(switched, true);
+  });
+
+  test('/session shows and opens rows found before catalog discovery is incomplete', async () => {
+    const terminal = new FakeTerminal();
+    const partial = fakeSessionSummary('partial-session', '/repo', 'Partial session');
+    const driver = new SlashCommandDriver([partial]);
+    driver.listSessions = async () => {
+      throw new MakaSessionCatalogIncompleteError(8, [partial]);
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
+      return (
+        output.includes(getTuiPickerCopy('en').resumeCatalogIncompleteNotice) &&
+        output.includes('Partial session')
+      );
+    });
+
+    terminal.input('\r');
+    try {
+      await waitFor(() => driver.sessionIds.includes(partial.id));
+    } finally {
+      exitMaka(terminal);
+      await run;
+    }
+  });
+
+  test('/session continues after a concurrent startup catalog scan fails', async () => {
+    const terminal = new FakeTerminal();
+    const session = fakeSessionSummary('session-after-startup-scan', '/repo', 'Current session');
+    const driver = new RejectFirstListSessionsDriver([session]);
+    driver.setAttachedSessionId(null);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    await waitFor(() => driver.listCalls === 1);
+    terminal.input('/session');
+    terminal.input('\r');
+    await delay(0);
+    driver.rejectFirstListCall();
+
+    await waitFor(() => driver.listCalls === 2);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Current session'));
+    assert.deepEqual(driver.listOptions[0], { limit: 256, cwd: '/repo' });
+    assert.deepEqual(driver.listOptions[1], {});
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('opens the latest imported task without importing another copy', async () => {
@@ -7494,6 +8198,7 @@ Slug openai-work<cursor>
     driver.releaseList();
     // The rendered picker is the observable arming signal for the Escape.
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Existing chat'));
+    assert.equal(driver.listCalls, 1);
 
     terminal.input('\x1b');
     exitMaka(terminal);
@@ -10800,7 +11505,7 @@ abstract class FakeSessionDriver implements MakaSessionDriver {
     return { cancelledMessageIds: [] };
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
+  async listSessions(_options?: MakaSessionListOptions): Promise<SessionSummary[]> {
     return [];
   }
 
@@ -11191,7 +11896,7 @@ class InterruptibleTurnDriver extends FakeSessionDriver {
 }
 
 // A parking turn plus an in-memory steering/followup mirror, so the runner's
-// keybindings (Enter steer, Alt+Enter queue, Alt+↑ retract, Esc Esc refill) can
+// keybindings (Enter steer, Tab queue, Shift+← retract, Esc Esc refill) can
 // be exercised end-to-end without a real runtime.
 class SteeringTurnDriver extends FakeSessionDriver {
   stopCalls = 0;
@@ -11868,7 +12573,7 @@ class SlashCommandDriver extends FakeSessionDriver {
     super();
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
+  async listSessions(_options?: MakaSessionListOptions): Promise<SessionSummary[]> {
     return this.sessions;
   }
 
@@ -12049,6 +12754,98 @@ class SlashCommandDriver extends FakeSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class RejectingSwitchSessionDriver extends SlashCommandDriver {
+  switchCalls = 0;
+
+  async getSessionResumeCandidateAvailability(
+    _session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    return { available: true };
+  }
+
+  override async switchSession(_sessionId: string): Promise<MakaSessionSwitchResult> {
+    this.switchCalls += 1;
+    throw new Error('session became unavailable');
+  }
+}
+
+class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
+  #sessionIdOverride: string | null | undefined;
+
+  availabilityCalls = 0;
+  availabilityDelayMs = 1;
+  readonly listLimits: Array<number | undefined> = [];
+  readonly listRequests: Array<MakaSessionListOptions> = [];
+  readonly completedListRequests: Array<MakaSessionListOptions> = [];
+  readonly completedSummaryLookups: string[] = [];
+  readonly availabilitySessionIds: string[] = [];
+  readonly unavailableSessionIds = new Set<string>();
+  activeCalls = 0;
+  maxActiveCalls = 0;
+
+  override getSessionId(): string | null {
+    return this.#sessionIdOverride === undefined ? super.getSessionId() : this.#sessionIdOverride;
+  }
+
+  setAttachedSessionId(sessionId: string | null): void {
+    this.#sessionIdOverride = sessionId;
+  }
+
+  async getSessionResumeCandidateAvailability(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    this.availabilityCalls += 1;
+    this.availabilitySessionIds.push(session.id);
+    this.activeCalls += 1;
+    this.maxActiveCalls = Math.max(this.maxActiveCalls, this.activeCalls);
+    if (this.availabilityDelayMs > 0) await delay(this.availabilityDelayMs);
+    this.activeCalls -= 1;
+    return this.unavailableSessionIds.has(session.id)
+      ? { available: false, reason: 'resume_candidate_missing' }
+      : { available: true };
+  }
+
+  override async listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]> {
+    this.listLimits.push(options?.limit);
+    this.listRequests.push(options ?? {});
+    const sessions = await super.listSessions();
+    const scoped = options?.cwd
+      ? sessions.filter((session) => session.cwd === options.cwd)
+      : sessions;
+    const result = options?.limit === undefined ? scoped : scoped.slice(0, options.limit);
+    this.completedListRequests.push(options ?? {});
+    return result;
+  }
+
+  async getSessionSummary(sessionId: string): Promise<SessionSummary | undefined> {
+    const session = (await super.listSessions()).find((candidate) => candidate.id === sessionId);
+    this.completedSummaryLookups.push(sessionId);
+    return session;
+  }
+}
+
+class RejectFirstListSessionsDriver extends BoundedResumeAvailabilityDriver {
+  listCalls = 0;
+  readonly listOptions: Array<MakaSessionListOptions | undefined> = [];
+  private rejectFirstList: (() => void) | null = null;
+
+  override listSessions(options?: MakaSessionListOptions): Promise<SessionSummary[]> {
+    this.listCalls += 1;
+    this.listOptions.push(options);
+    if (this.listCalls === 1) {
+      return new Promise<SessionSummary[]>((_resolve, reject) => {
+        this.rejectFirstList = () => reject(new Error('startup catalog read failed'));
+      });
+    }
+    return super.listSessions(options);
+  }
+
+  rejectFirstListCall(): void {
+    this.rejectFirstList?.();
+    this.rejectFirstList = null;
   }
 }
 
@@ -12778,6 +13575,12 @@ class RejectingSandboxBoundaryDriver extends FakeSessionDriver {
 class DeferredListSessionsDriver extends SlashCommandDriver {
   listCalls = 0;
   private resolveList: (() => void) | null = null;
+
+  async getSessionResumeCandidateAvailability(
+    _session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    return { available: true };
+  }
 
   override async listSessions(): Promise<SessionSummary[]> {
     this.listCalls += 1;

@@ -2084,6 +2084,428 @@ describe('SessionManager claimed graph intent execution', () => {
     assert.strictEqual((await runStore.listSessionInvocations(child.id)).length, 2);
   });
 
+  test('scoped graph stop preserves another queued claim on the same Session', {
+    timeout: 2_000,
+  }, async () => {
+    const { manager, child, runStore, first, claims } = await createQueuedGraphScenario();
+    const [firstClaim, secondClaim] = claims;
+    const second = manager.runClaimedAgentGraphIntent(
+      graphExecutionInput(secondClaim, 'queued activation'),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await manager.stopAgentGraphActivation(
+      {
+        sessionId: child.id,
+        runId: firstClaim.targetRunId,
+        turnId: firstClaim.targetTurnId,
+      },
+      { source: 'graph_supervisor' },
+    );
+    assert.strictEqual((await first).status, 'cancelled');
+    assert.strictEqual((await second).status, 'completed');
+    assert.deepStrictEqual(
+      (await runStore.listSessionInvocations(child.id)).map((run) => [
+        run.turnId,
+        runtimeInvocationOutcome(run),
+      ]),
+      [
+        [firstClaim.targetTurnId, 'cancelled'],
+        [secondClaim.targetTurnId, 'completed'],
+      ],
+    );
+  });
+
+  test('scoped graph stop cancels only a queued capability before runtime admission', {
+    timeout: 2_000,
+  }, async () => {
+    const { manager, child, runStore, activeGate, first, claims } =
+      await createQueuedGraphScenario();
+    const [firstClaim, secondClaim, thirdClaim] = claims;
+    const queued = manager.runClaimedAgentGraphIntent(
+      graphExecutionInput(secondClaim, 'queued activation'),
+    );
+    const rejected = assert.rejects(queued, /cancelled before dispatch/);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await manager.stopAgentGraphActivation({
+      sessionId: child.id,
+      runId: secondClaim.targetRunId,
+      turnId: secondClaim.targetTurnId,
+    });
+    await rejected;
+    assert.strictEqual(
+      (await readInvocation(runStore, child.id, firstClaim.targetRunId)).terminalEvent,
+      undefined,
+    );
+    activeGate.release();
+    assert.strictEqual((await first).status, 'completed');
+    assert.strictEqual(
+      (
+        await manager.runClaimedAgentGraphIntent(
+          graphExecutionInput(thirdClaim, 'third activation'),
+        )
+      ).status,
+      'completed',
+    );
+    assert.deepStrictEqual(
+      (await runStore.listSessionInvocations(child.id)).map((run) => run.turnId),
+      [firstClaim.targetTurnId, thirdClaim.targetTurnId],
+    );
+  });
+
+  test('scoped graph stop retries failed terminal persistence on its captured owner', {
+    timeout: 2_000,
+  }, async () => {
+    const store = new MemorySessionStore();
+    let rejectAbort = true;
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: (_sessionId, _runId, event) => {
+        if (rejectAbort && event.status === 'aborted')
+          throw new Error('scoped abort persistence unavailable');
+      },
+    });
+    const backends = new BackendRegistry();
+    const sendGate = makeGate();
+    const ready = makeGate();
+    backends.register('ai-sdk', (ctx) => new CountingStopBackend(ctx, sendGate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(80),
+    });
+    const parent = await manager.createSession(makeInput());
+    const child = await createGraphOperatorSession(store, parent.id);
+    const claim = graphIntentClaim({ targetSessionId: child.id }, 'retry scoped stop');
+    const running = manager.runClaimedAgentGraphIntent({
+      ...graphExecutionInput(claim, 'retry scoped stop'),
+      onReady: () => ready.release(),
+    });
+    await ready.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const identity = {
+      sessionId: child.id,
+      runId: claim.targetRunId,
+      turnId: claim.targetTurnId,
+    };
+    await assert.rejects(
+      manager.stopAgentGraphActivation(identity),
+      /scoped abort persistence unavailable/,
+    );
+    rejectAbort = false;
+    await manager.stopAgentGraphActivation(identity);
+    sendGate.release();
+    assert.strictEqual((await running).status, 'cancelled');
+    assert.strictEqual(
+      runtimeInvocationOutcome(await readInvocation(runStore, child.id, claim.targetRunId)),
+      'cancelled',
+    );
+    assert.strictEqual(
+      (await runStore.readRuntimeEvents(child.id, claim.targetRunId)).filter(
+        (event) => event.status === 'aborted',
+      ).length,
+      1,
+    );
+  });
+
+  test('a scoped graph stop whose backend delivery fails keeps the child result authoritative', {
+    timeout: 2_000,
+  }, async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const sendGate = makeGate();
+    const ready = makeGate();
+    backends.register(
+      'ai-sdk',
+      (ctx) =>
+        new (class extends TestBackend {
+          override async stop(): Promise<void> {
+            this.stopCalls += 1;
+            sendGate.release();
+            throw new Error('backend stop delivery failed');
+          }
+        })(ctx, sendGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(85),
+    });
+    const parent = await manager.createSession(makeInput());
+    const child = await createGraphOperatorSession(store, parent.id);
+    const claim = graphIntentClaim({ targetSessionId: child.id }, 'failed stop delivery');
+    const running = manager.runClaimedAgentGraphIntent({
+      ...graphExecutionInput(claim, 'failed stop delivery'),
+      onReady: () => ready.release(),
+    });
+    void running.catch(() => undefined);
+    await ready.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const identity = {
+      sessionId: child.id,
+      runId: claim.targetRunId,
+      turnId: claim.targetTurnId,
+    };
+    // The stopper owns the cleanup failure; a retry settles the retained
+    // operation as failed without delivering to the backend again.
+    await assert.rejects(manager.stopAgentGraphActivation(identity), /stop delivery failed/);
+    await assert.rejects(manager.stopAgentGraphActivation(identity), /stop delivery failed/);
+    const result = await running;
+    assert.strictEqual(result.status, 'cancelled');
+    assert.strictEqual(
+      runtimeInvocationOutcome(await readInvocation(runStore, child.id, claim.targetRunId)),
+      'cancelled',
+    );
+  });
+
+  for (const recovery of ['retry', 'session_stop'] as const) {
+    test(`scoped graph stop cleanup failure keeps the Session queue fenced until ${recovery}`, {
+      timeout: 2_000,
+    }, async () => {
+      const store = new MemorySessionStore();
+      let rejectAbort = true;
+      const runStore = new MemoryAgentRunStore({
+        beforeRuntimeEventAppend: (_sessionId, _runId, event) => {
+          if (rejectAbort && event.status === 'aborted')
+            throw new Error('scoped cleanup unavailable');
+        },
+      });
+      const backends = new BackendRegistry();
+      const sendGate = makeGate();
+      const ready = makeGate();
+      backends.register('ai-sdk', (ctx) => new CountingStopBackend(ctx, sendGate));
+      const manager = new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: runStore,
+        backends,
+        childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+        newId: nextId(),
+        now: nextNow(90),
+      });
+      const parent = await manager.createSession(makeInput());
+      const child = await createGraphOperatorSession(store, parent.id);
+      const firstClaim = graphIntentClaim({ targetSessionId: child.id }, 'stop before successor');
+      const secondClaim = graphIntentClaim(
+        {
+          targetSessionId: child.id,
+          claimId: `graph_claim_${'c'.repeat(32)}`,
+          intentId: `graph_intent_${'d'.repeat(32)}`,
+          targetRunId: 'successor-run',
+          targetTurnId: 'successor-turn',
+        },
+        'successor',
+      );
+      const first = manager.runClaimedAgentGraphIntent({
+        ...graphExecutionInput(firstClaim, 'stop before successor'),
+        onReady: () => ready.release(),
+      });
+      await ready.promise;
+      const second = manager.runClaimedAgentGraphIntent(
+        graphExecutionInput(secondClaim, 'successor'),
+      );
+      const settled = Promise.allSettled([first, second]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const identity = {
+        sessionId: child.id,
+        runId: firstClaim.targetRunId,
+        turnId: firstClaim.targetTurnId,
+      };
+      await assert.rejects(
+        manager.stopAgentGraphActivation(identity),
+        /scoped cleanup unavailable/,
+      );
+      sendGate.release();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepStrictEqual(
+        (await runStore.listSessionInvocations(child.id)).map((run) => run.turnId),
+        [firstClaim.targetTurnId],
+      );
+      rejectAbort = false;
+      if (recovery === 'retry') await manager.stopAgentGraphActivation(identity);
+      else await manager.stopSession(child.id);
+      const outcomes = await settled;
+      assert.strictEqual(
+        runtimeInvocationOutcome(await readInvocation(runStore, child.id, firstClaim.targetRunId)),
+        'cancelled',
+      );
+      assert.strictEqual(outcomes[1]!.status, recovery === 'retry' ? 'fulfilled' : 'rejected');
+      if (outcomes[1]!.status === 'fulfilled')
+        assert.strictEqual(outcomes[1]!.value.status, 'completed');
+    });
+  }
+
+  test('a retained graph stop quarantines an unrelated Turn until its cleanup succeeds', {
+    timeout: 2_000,
+  }, async () => {
+    const store = new MemorySessionStore();
+    let rejectAbort = true;
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: (_sessionId, _runId, event) => {
+        if (rejectAbort && event.status === 'aborted') throw new Error('stop cleanup unavailable');
+      },
+    });
+    const backends = new BackendRegistry();
+    const sendGate = makeGate();
+    const ready = makeGate();
+    backends.register('ai-sdk', (ctx) => new CountingStopBackend(ctx, sendGate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(97),
+    });
+    const parent = await manager.createSession(makeInput());
+    const child = await createGraphOperatorSession(store, parent.id);
+    const claim = graphIntentClaim({ targetSessionId: child.id }, 'retained stop');
+    // The stopped Run's own finalization reports the same persistence fault.
+    const running = manager
+      .runClaimedAgentGraphIntent({
+        ...graphExecutionInput(claim, 'retained stop'),
+        onReady: () => ready.release(),
+      })
+      .catch((error: unknown) => error);
+    await ready.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const identity = {
+      sessionId: child.id,
+      runId: claim.targetRunId,
+      turnId: claim.targetTurnId,
+    };
+    await assert.rejects(manager.stopAgentGraphActivation(identity), /stop cleanup unavailable/);
+    sendGate.release();
+    assert.strictEqual(manager.hasPendingAgentGraphActivationStop(identity), true);
+    // A Turn that holds no stop intent of the retained operation cannot use
+    // the stop owner's quarantine bypass.
+    await assert.rejects(
+      drain(manager.sendMessage(child.id, { turnId: 'unrelated-turn', text: 'must wait' })),
+      /quarantined by a retained stop operation/,
+    );
+    rejectAbort = false;
+    await manager.stopAgentGraphActivation(identity);
+    assert.strictEqual(manager.hasPendingAgentGraphActivationStop(identity), false);
+    await running;
+    await drain(manager.sendMessage(child.id, { turnId: 'after-cleanup', text: 'runs now' }));
+    const runs = await runStore.listSessionInvocations(child.id);
+    assert.strictEqual(
+      runtimeInvocationOutcome(runs.find((run) => run.turnId === claim.targetTurnId)!),
+      'cancelled',
+    );
+    assert.strictEqual(
+      runtimeInvocationOutcome(runs.find((run) => run.turnId === 'after-cleanup')!),
+      'completed',
+    );
+  });
+
+  test('scoped graph stop for a completed identity leaves its active successor intact', {
+    timeout: 2_000,
+  }, async () => {
+    const successorGate = makeGate();
+    const { manager, child, runStore, activeGate, first, claims } = await createQueuedGraphScenario(
+      undefined,
+      successorGate,
+    );
+    const [firstClaim, secondClaim] = claims;
+    activeGate.release();
+    assert.strictEqual((await first).status, 'completed');
+    const ready = makeGate();
+    const second = manager.runClaimedAgentGraphIntent({
+      ...graphExecutionInput(secondClaim, 'queued activation'),
+      onReady: () => ready.release(),
+    });
+    await ready.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      await manager.stopAgentGraphActivation(
+        {
+          sessionId: child.id,
+          runId: firstClaim.targetRunId,
+          turnId: firstClaim.targetTurnId,
+        },
+        { source: 'graph_supervisor' },
+      );
+      assert.strictEqual(
+        (await readInvocation(runStore, child.id, secondClaim.targetRunId)).terminalEvent,
+        undefined,
+      );
+    } finally {
+      successorGate.release();
+    }
+    assert.strictEqual((await second).status, 'completed');
+    assert.deepStrictEqual(
+      (await runStore.listSessionInvocations(child.id)).map((run) => [
+        run.turnId,
+        runtimeInvocationOutcome(run),
+      ]),
+      [
+        [firstClaim.targetTurnId, 'completed'],
+        [secondClaim.targetTurnId, 'completed'],
+      ],
+    );
+  });
+
+  for (const source of ['graph_supervisor', 'stop_button'] as const) {
+    test(`a graph operator stopped by a ${source} Session stop ${source === 'graph_supervisor' ? 'accepts' : 'refuses'} its next claim`, {
+      timeout: 2_000,
+    }, async () => {
+      const store = new MemorySessionStore();
+      const runStore = new MemoryAgentRunStore();
+      const backends = new BackendRegistry();
+      const sendGate = makeGate();
+      const ready = makeGate();
+      backends.register('ai-sdk', (ctx) => new TestBackend(ctx, sendGate));
+      const manager = new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: runStore,
+        backends,
+        childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+        newId: nextId(),
+        now: nextNow(95),
+      });
+      const parent = await manager.createSession(makeInput());
+      const child = await createGraphOperatorSession(store, parent.id);
+      const stoppedClaim = graphIntentClaim({ targetSessionId: child.id }, 'stopped activation');
+      const stopped = manager.runClaimedAgentGraphIntent({
+        ...graphExecutionInput(stoppedClaim, 'stopped activation'),
+        onReady: () => ready.release(),
+      });
+      await ready.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await manager.stopSession(child.id, { source });
+      sendGate.release();
+      assert.strictEqual((await stopped).status, 'cancelled');
+      assert.strictEqual((await store.readHeader(child.id)).status, 'aborted');
+      // A whole-graph stop keeps durable schedule facts so the supervisor can
+      // wake the same graph again; a user stop still terminates the operator.
+      const nextClaim = graphIntentClaim(
+        {
+          targetSessionId: child.id,
+          claimId: `graph_claim_${'e'.repeat(32)}`,
+          intentId: `graph_intent_${'f'.repeat(32)}`,
+          targetRunId: 'resumed-run',
+          targetTurnId: 'resumed-turn',
+        },
+        'resumed activation',
+      );
+      const next = manager.runClaimedAgentGraphIntent(
+        graphExecutionInput(nextClaim, 'resumed activation'),
+      );
+      if (source === 'graph_supervisor') assert.strictEqual((await next).status, 'completed');
+      else await assert.rejects(next, /target child session is terminated/);
+    });
+  }
+
   test('evaluates execution admission only after a claimed child-session slot is available', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -2142,69 +2564,78 @@ describe('SessionManager claimed graph intent execution', () => {
     assert.strictEqual((await runStore.listSessionInvocations(child.id)).length, 1);
   });
 
-  test('keeps a stop pending across graph admission with an idle cached backend', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    const admissionStarted = makeGate();
-    const releaseAdmission = makeGate();
-    let backend: TestBackend | undefined;
-    backends.register('ai-sdk', (ctx) => {
-      backend = new TestBackend(ctx);
-      return backend;
-    });
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
-      newId: nextId(),
-      now: nextNow(77),
-    });
-    const parent = await manager.createSession(makeInput());
-    const child = await createGraphOperatorSession(store, parent.id);
-    await drain(
-      manager.sendMessage(child.id, {
-        turnId: 'completed-before-admission',
-        text: 'warm the cached operator backend',
-      }),
-    );
-    assert.strictEqual(backend?.sendInputs?.length, 1);
-    const claim = graphIntentClaim(
-      { targetSessionId: child.id },
-      'activation stopped during admission',
-    );
-    const execution = manager.runClaimedAgentGraphIntent({
-      ...graphExecutionInput(claim, 'activation stopped during admission'),
-      async admitExecution() {
-        admissionStarted.release();
-        await releaseAdmission.promise;
-        return 'executing';
-      },
-    });
-    await admissionStarted.promise;
+  for (const scoped of [false, true])
+    test(`keeps a ${scoped ? 'scoped graph stop' : 'session stop'} pending across graph admission with an idle cached backend`, async () => {
+      const store = new MemorySessionStore();
+      const runStore = new MemoryAgentRunStore();
+      const backends = new BackendRegistry();
+      const admissionStarted = makeGate();
+      const releaseAdmission = makeGate();
+      let backend: TestBackend | undefined;
+      backends.register('ai-sdk', (ctx) => {
+        backend = new TestBackend(ctx);
+        return backend;
+      });
+      const manager = new SessionManager({
+        store,
+        runStore,
+        runtimeEventStore: runStore,
+        backends,
+        childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+        newId: nextId(),
+        now: nextNow(77),
+      });
+      const parent = await manager.createSession(makeInput());
+      const child = await createGraphOperatorSession(store, parent.id);
+      await drain(
+        manager.sendMessage(child.id, {
+          turnId: 'completed-before-admission',
+          text: 'warm the cached operator backend',
+        }),
+      );
+      assert.strictEqual(backend?.sendInputs?.length, 1);
+      const claim = graphIntentClaim(
+        { targetSessionId: child.id },
+        'activation stopped during admission',
+      );
+      const execution = manager.runClaimedAgentGraphIntent({
+        ...graphExecutionInput(claim, 'activation stopped during admission'),
+        async admitExecution() {
+          admissionStarted.release();
+          await releaseAdmission.promise;
+          return 'executing';
+        },
+      });
+      await admissionStarted.promise;
 
-    let stopSettled = false;
-    const stop = manager.stopSession(child.id, { source: 'graph_supervisor' }).finally(() => {
-      stopSettled = true;
+      let stopSettled = false;
+      const stop = (
+        scoped
+          ? manager.stopAgentGraphActivation({
+              sessionId: child.id,
+              runId: claim.targetRunId,
+              turnId: claim.targetTurnId,
+            })
+          : manager.stopSession(child.id, { source: 'graph_supervisor' })
+      ).finally(() => {
+        stopSettled = true;
+      });
+      await Promise.resolve();
+      assert.strictEqual(stopSettled, false);
+      assert.strictEqual(backend?.sendInputs?.length, 1);
+
+      releaseAdmission.release();
+      await stop;
+      const result = await execution;
+
+      assert.strictEqual(result.status, 'cancelled');
+      assert.strictEqual(backend?.stopCalls, 1);
+      assert.strictEqual(backend?.sendInputs?.length, 1);
+      assert.strictEqual(
+        runtimeInvocationOutcome(await readInvocation(runStore, child.id, claim.targetRunId)),
+        'cancelled',
+      );
     });
-    await Promise.resolve();
-    assert.strictEqual(stopSettled, false);
-    assert.strictEqual(backend?.sendInputs?.length, 1);
-
-    releaseAdmission.release();
-    await stop;
-    const result = await execution;
-
-    assert.strictEqual(result.status, 'cancelled');
-    assert.strictEqual(backend?.stopCalls, 1);
-    assert.strictEqual(backend?.sendInputs?.length, 1);
-    assert.strictEqual(
-      runtimeInvocationOutcome(await readInvocation(runStore, child.id, claim.targetRunId)),
-      'cancelled',
-    );
-  });
 
   test('runtime stop settles queued graph claims without letting their slots pass the active claim', async () => {
     const firstAbort = new AbortController();
@@ -3631,6 +4062,118 @@ describe('SessionManager child-session runtime primitive', () => {
     const [childOneResult, childTwoResult] = await Promise.all([childOne, childTwo]);
     assert.strictEqual(childOneResult.status, 'cancelled');
     assert.strictEqual(childTwoResult.status, 'cancelled');
+  });
+
+  test('scoped Hosted stop includes earlier runs in its turn and preserves other turn children', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    const childGates = [makeGate(), makeGate()];
+    let childGateIndex = 0;
+    const backendsBySession = new Map<string, TestBackend>();
+    backends.register('ai-sdk', (ctx) => {
+      const gate = ctx.header.subagentRuntime ? childGates[childGateIndex++] : parentGate;
+      const backend = new TestBackend(ctx, gate);
+      backendsBySession.set(ctx.sessionId, backend);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      isParentRunActive: (_sessionId, runId) =>
+        ['earlier-physical-run', 'other-parent-run'].includes(runId),
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(300),
+    });
+    const parent = await manager.createSession(makeInput());
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn', text: 'coordinate children' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionInvocations(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    await seedInvocationFromHeader(
+      runStore,
+      makeRunHeader({
+        sessionId: parent.id,
+        runId: 'earlier-physical-run',
+        status: 'running',
+        turnId: parentRun.turnId,
+      }),
+    );
+    await seedInvocationFromHeader(
+      runStore,
+      makeRunHeader({
+        sessionId: parent.id,
+        runId: 'other-parent-run',
+        status: 'running',
+        turnId: 'other-logical-turn',
+      }),
+    );
+    const childOneStarted = makeGate();
+    let childOneId = '';
+    const childOne = manager.spawnChildSession(parent.id, {
+      name: 'Child one',
+      spawnedBy: {
+        parentRunId: 'earlier-physical-run',
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-1',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      prompt: 'first child',
+      onReady: ({ childSessionId }) => {
+        childOneId = childSessionId;
+      },
+      onEvent: (event) => {
+        if (event.type === 'text_delta') childOneStarted.release();
+      },
+    });
+    await childOneStarted.promise;
+
+    const childTwoStarted = makeGate();
+    let childTwoId = '';
+    const childTwo = manager.spawnChildSession(parent.id, {
+      name: 'Child two',
+      spawnedBy: {
+        parentRunId: 'other-parent-run',
+        parentTurnId: 'other-logical-turn',
+        toolCallId: 'tool-call-2',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      prompt: 'second child',
+      onReady: ({ childSessionId }) => {
+        childTwoId = childSessionId;
+      },
+      onEvent: (event) => {
+        if (event.type === 'text_delta') childTwoStarted.release();
+      },
+    });
+    await childTwoStarted.promise;
+
+    await manager.deliverHostedRootStop(
+      parent.id,
+      { source: 'graph_supervisor' },
+      {
+        sessionId: parent.id,
+        runId: parentRun.runId,
+        turnId: parentRun.turnId,
+      },
+    );
+    assert.strictEqual(backendsBySession.get(parent.id)?.stopCalls, 1);
+    assert.strictEqual(backendsBySession.get(childOneId)?.stopCalls, 1);
+    assert.strictEqual(backendsBySession.get(childTwoId)?.stopCalls, 0);
+
+    parentGate.release();
+    for (const gate of childGates) gate.release();
+    while (!(await parentTurn.next()).done) {}
+    const [childOneResult, childTwoResult] = await Promise.all([childOne, childTwo]);
+    assert.strictEqual(childOneResult.status, 'cancelled');
+    assert.strictEqual(childTwoResult.status, 'completed');
   });
 
   for (const { name, stopOptions, stop } of [
@@ -14793,7 +15336,12 @@ class MemoryAgentRunStore
     sessionId: string,
     turnId: string,
   ): Promise<
-    { runId: string; userMessageId: string | null; execution: RootExecutionDescriptor } | undefined
+    | {
+        runId: string;
+        userMessageId: string | null;
+        execution: RootExecutionDescriptor;
+      }
+    | undefined
   > {
     return this.rootTurnAdmissions.get(key(sessionId, turnId));
   }
@@ -15361,6 +15909,7 @@ function hostedRootAuthority(): RuntimeHostedRootAuthority {
       }
     },
     stopRoot: async () => {},
+    stopRootRun: async () => {},
     stopSession: async () => {},
   };
 }
@@ -15501,7 +16050,7 @@ function graphRunnableIntentForClaim(claim: AgentGraphIntentClaim): AgentGraphRu
   };
 }
 
-async function createQueuedGraphScenario(firstAbortSignal?: AbortSignal) {
+async function createQueuedGraphScenario(firstAbortSignal?: AbortSignal, successorGate?: Gate) {
   const store = new MemorySessionStore();
   const runStore = new MemoryAgentRunStore();
   const backends = new BackendRegistry();
@@ -15511,6 +16060,10 @@ async function createQueuedGraphScenario(firstAbortSignal?: AbortSignal) {
   let backend!: TestBackend;
   backends.register('ai-sdk', (ctx) => {
     backend = new (class extends TestBackend {
+      override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+        if (input.turnId === 'graph-turn-2') await successorGate?.promise;
+        yield* super.send(input);
+      }
       override async stop(
         reason: 'user_stop' | 'redirect',
         mode: BackendStopMode = 'immediate',

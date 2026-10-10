@@ -21,7 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { InteractionQueues } from '@maka/ui';
 import { dequeueInteractionByRequestId } from '@maka/ui';
-import { createAppShellChatActions } from '../../renderer/app-shell-chat-actions.js';
+import { createChatActions } from '../../renderer/features/conversation/testing.js';
 import { createActionsDeps } from './app-shell-chat-actions-fixture.js';
 
 function pendingForm(): InteractionQueues {
@@ -46,7 +46,7 @@ describe('AppShell form interaction response', () => {
     deps.activeIdRef.current = 'session-1';
     let interactions = pendingForm();
     let submitted: unknown;
-    const actions = createAppShellChatActions({
+    const actions = createChatActions({
       ...deps,
       respondToUserForm: async (sessionId, response) => {
         submitted = { sessionId, response };
@@ -68,7 +68,7 @@ describe('AppShell form interaction response', () => {
     deps.activeIdRef.current = 'session-1';
     let interactions = pendingForm();
     let errors = 0;
-    const actions = createAppShellChatActions({
+    const actions = createChatActions({
       ...deps,
       respondToUserForm: async () => {
         throw new Error('Host unavailable');

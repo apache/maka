@@ -119,8 +119,10 @@ async function run() {
         const bytes = crop.toBitmap();
         colored = 0;
         menuPixels = 0;
-        for (let i = 0; i < bytes.length; i += 4) if (Math.abs(bytes[i] - 171) < 5 && Math.abs(bytes[i + 1] - 54) < 5 && Math.abs(bytes[i + 2] - 250) < 5) colored++;
-        for (let i = 0; i < bytes.length; i += 4) if (Math.abs(bytes[i] - 99) < 5 && Math.abs(bytes[i + 1] - 222) < 5 && Math.abs(bytes[i + 2] - 33) < 5) menuPixels++;
+        // Screen capture uses the display profile, not exact CSS sRGB values.
+        // In the BGRA bitmap, count distinct fixture hues but exclude neutral pixels.
+        for (let i = 0; i < bytes.length; i += 4) if (bytes[i + 2] > bytes[i + 1] + 80 && bytes[i] > bytes[i + 1] + 60) colored++;
+        for (let i = 0; i < bytes.length; i += 4) if (bytes[i + 1] > bytes[i + 2] + 80 && bytes[i + 1] > bytes[i] + 60) menuPixels++;
         if ((colored > 10_000) === expected && (!menuExpected || menuPixels > 5_000)) break;
         await wait(50);
       } while (Date.now() < deadline);
@@ -181,6 +183,18 @@ async function run() {
     await closedMainLease.ready;
     await controller.navigate(`${url}/page?main-closed`);
     const page = ownerParent.children.find((child) => 'webContents' in child && child.webContents !== owner).webContents;
+    // The view was just reparented into the floating window and navigated.
+    // Under Xvfb it may not have committed a frame (and hit-test data) in its
+    // new window yet, and Chromium drops input it cannot route. Wait for the
+    // page to load and render two frames before the single click. The timer
+    // only bounds the wait; it never adds a second click.
+    const readiness = await page.executeJavaScript(`new Promise((resolve) => {
+      const done = (via) => resolve({ via, visibility: document.visibilityState });
+      const frames = () => requestAnimationFrame(() => requestAnimationFrame(() => done('frames')));
+      setTimeout(() => done('timeout'), 2000);
+      if (document.readyState === 'complete') frames(); else addEventListener('load', frames, { once: true });
+    })`);
+    console.log(`Background page input readiness: ${readiness.via}, ${readiness.visibility}`);
     const point = await page.executeJavaScript(`(() => { const r = document.querySelector('button').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });

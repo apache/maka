@@ -30,9 +30,8 @@ import {
 import { OnboardingHero } from './onboarding-hero';
 import type { SessionHealthNoticeView, SessionUiReads } from './features/conversation/index.js';
 import type { WorkspaceReadinessRecovery } from './workspace-readiness-recovery';
-import type { TaskReadinessNotice } from './task-readiness-notice';
 import { getShellCopy } from './locales/shell-copy';
-import { PlanChatView } from './features/conversation/index.js';
+import { StagedQuoteChatView, TaskReadinessNoticeConsumer } from './features/conversation/index.js';
 import { useExternalStoreSelector } from './application/contracts/session-catalog/use-external-store-selector.js';
 import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
@@ -55,6 +54,10 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'shellRunUpdates'
   | 'goalIndicator'
   | 'conversationItems'
+  | 'handleRef'
+  | 'pendingQuotes'
+  | 'onQuoteAnnotationSubmit'
+  | 'onReadAttachmentBytes'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -65,13 +68,12 @@ interface ChatMessageSurfaceProps extends Omit<
   sessionUiReads: Pick<SessionUiReads, 'liveTurns' | 'shellRuns'>;
   /** The shell's selected session. Not derived from `activeSession`, which the shell substitutes for an unsaved chat. */
   activeSessionId: string | undefined;
+  visible?: boolean;
   /** Identifies the active session observation whose seed is visible. */
   liveContentSeedGeneration: number;
   sessionHealthNotice?: SessionHealthNoticeView;
   sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
-  taskReadinessNotice?: TaskReadinessNotice;
-  onTaskReadinessAction?: () => void;
   showOnboardingHero: boolean;
   onboardingState: OnboardingState | undefined;
   onOpenSettings: (section?: SettingsSection) => void;
@@ -96,13 +98,12 @@ function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
 
 export function ChatMessageSurface({
   sessionUiReads,
+  visible = true,
   activeSessionId,
   liveContentSeedGeneration,
   sessionHealthNotice,
   sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
-  taskReadinessNotice,
-  onTaskReadinessAction,
   showOnboardingHero,
   onboardingState,
   onOpenSettings,
@@ -134,7 +135,7 @@ export function ChatMessageSurface({
         return;
     }
   };
-  const liveTurns = useExternalStoreSelector(sessionUiReads.liveTurns, activeSessionId);
+  const liveTurns = useExternalStoreSelector(sessionUiReads.liveTurns, activeSessionId, visible);
   const liveTurn = liveTurns?.find((turn) => turn.turnId === chatViewRest.activeTurn?.turnId) ?? liveTurns?.at(-1);
   const seededLiveTurns = liveContentSeedGeneration > 0 ? liveTurns : undefined;
   const [activation, setActivation] = useState(() => ({
@@ -167,10 +168,7 @@ export function ChatMessageSurface({
   // change to any OTHER map cannot rebuild the array. Deriving it in the
   // selector would need a comparator to say the same thing, and would still
   // recompute once per store change.
-  const shellRunUpdateRecord = useExternalStoreSelector(
-    sessionUiReads.shellRuns,
-    activeSessionId,
-  );
+  const shellRunUpdateRecord = useExternalStoreSelector(sessionUiReads.shellRuns, activeSessionId, visible);
   const shellRunUpdates = useMemo(
     () => Object.values(shellRunUpdateRecord ?? {}),
     [shellRunUpdateRecord],
@@ -195,7 +193,7 @@ export function ChatMessageSurface({
     <>
       <ChatViewGoalProjectionConsumer>
         {(goalProjection) => (
-          <PlanChatView
+          <StagedQuoteChatView
             {...chatViewRest}
             liveTurns={seededLiveTurns}
               // Every branch above reseeds `sessionId` to `activeSessionId`, and a
@@ -208,15 +206,7 @@ export function ChatMessageSurface({
           />
         )}
       </ChatViewGoalProjectionConsumer>
-      {taskReadinessNotice && (
-        <ChatRecoveryNotice
-          status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
-          title={taskReadinessNotice.title}
-          description={taskReadinessNotice.description}
-          actionLabel={taskReadinessNotice.actionLabel}
-          onAction={onTaskReadinessAction}
-        />
-      )}
+      <TaskReadinessNoticeConsumer surface={ChatRecoveryNotice} />
       {workspaceReadinessRecovery && (
         <ChatRecoveryNotice
           status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}

@@ -20,8 +20,8 @@
 /**
  * Unchanged-text edit-and-resend regression (PR #5815 follow-up).
  *
- * The production fix removed the `text.trim() === revision.originalText.trim()`
- * early return from the composer's submit path. The existing
+ * The production fix removed the unchanged-text early return from the
+ * revision send path. The existing
  * `app-shell-revision-actions.test.ts` suite only calls `prepareRevisionSend()`
  * directly, so it cannot tell whether the real submit path still short-circuits
  * unchanged text. This suite mounts the real ChatComposerRegion, wires its
@@ -32,6 +32,8 @@
  * the production submit path must fail this test.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
+import { windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
@@ -39,7 +41,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { StoredMessage } from '@maka/core/session';
 import {
-  AstryxLocaleProvider,
   LocaleProvider,
   type ComposerHandle,
   type ComposerSendMetadata,
@@ -47,19 +48,19 @@ import {
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
   completeTurnRevisionCopyAttempt,
-  createAppShellRevisionActions,
+  createRevisionActions,
   type TurnRevisionDraft,
-} from '../../renderer/app-shell-revision-actions.js';
-import { parseDesktopSlashCommand } from '../../renderer/desktop-slash-command.js';
+} from '../../renderer/features/conversation/testing.js';
+import { parseDesktopSlashCommand } from '../../renderer/application/contracts/desktop-slash-command.js';
 import {
   mergeWorkspaceReferences,
   rebaseWorkspaceFileReferences,
-} from '../../renderer/follow-up-submit-routing.js';
+} from '../../renderer/features/conversation/testing.js';
 import { getDesktopConversationCopy } from '../../renderer/application/contracts/conversation-copy.js';
 import {
   createRevisionAwareOnSend,
   type RevisionSendPorts,
-} from '../../renderer/features/conversation/index.js';
+} from '../../renderer/features/conversation/testing.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 const SESSION_2 = JSON.stringify(['host-1', 'session-2']);
@@ -203,7 +204,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
   };
 
   const composer = createRef<ComposerHandle>();
-  const revisionActions = createAppShellRevisionActions({
+  const revisionActions = createRevisionActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en' as never,
     activeIdRef,
     captureSelection: () => {
@@ -212,7 +214,15 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     },
     composerRef: composer,
     readMessages: () => [userMessage('turn-1', ORIGINAL_TEXT)],
-    hasPendingAttachments: () => false,
+    staging: {
+      captureSubmission: () => ({ hasPendingContext: false }),
+      stagedContext: () => ({
+        quotes: [],
+        attachments: [],
+        restoreQuotes: () => {},
+        clearQuotes: () => [],
+      }),
+    },
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
       activeIdRef.current = sessionId;
@@ -247,13 +257,16 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     revisionDraftRef,
     composerRef: composer,
     retractedWorkspaceReferencesRef: { current: {} },
-    hasPendingContext: false,
-    hasStagedQuotes: false,
-    submittableAttachments: undefined,
-    directoryOptions: {},
-    quotesForSend: () => undefined,
-    clearSubmittedContext: () => {},
-    clearQuotes: () => {},
+    captureStaging: () => ({
+      draftKey: 'draft',
+      hasPendingContext: false,
+      hasStagedQuotes: false,
+      submittableAttachments: undefined,
+      directoryOptions: {},
+      quotesForSend: () => undefined,
+      clearSubmittedContext: () => {},
+      clearQuotes: () => {},
+    }),
     prepareRevisionSend: (text: string) => revisionActions.prepareRevisionSend(text),
     completeRevisionCopyAttempt: completeTurnRevisionCopyAttempt,
     parseSlashCommand: parseDesktopSlashCommand,
@@ -308,7 +321,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     root.render(
       createElement(LocaleProvider, {
         locale: 'en',
-        children: createElement(AstryxLocaleProvider, {
+        children: createElement(ComposerStagingFixture, {
+          draftKey: SESSION_1,
           children: createElement(ChatComposerRegion, {
             composerRef: composer,
             active: true,
@@ -325,7 +339,8 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
             respondToUserForm: () => undefined,
             stop: () => undefined,
             onOpenContextUsage: () => undefined,
-            directoryComposerProps: {},
+            canStageContext: true,
+            contextPickEnabled: true,
             directoryPickerEnabled: false,
             onSend: (text: string, metadata?: ComposerSendMetadata) => {
               submittedTexts.push(text);

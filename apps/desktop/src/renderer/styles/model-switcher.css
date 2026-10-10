@@ -45,16 +45,13 @@
    the model and thinking Selectors beside it: a Selector keeps the element
    radius and ignores the concentric --_button-radius the composer gives its
    footer buttons.
-   Geometry sizes to the project name rather than holding the model pair's
-   column width: it is the last control in a row that already wraps, so a
-   fixed width would spend space the model chip beside it needs. The cap is
-   what keeps a long directory name from pushing the send button off the
-   row. */
+   The trigger must shrink with its footer slot so long project names do not
+   paint over the send button. */
 .maka-workspace-picker {
   --_button-radius: var(--radius-element);
   min-width: 0;
   max-width: min(280px, 60vw);
-  flex: 0 0 auto;
+  flex: 0 1 auto;
 }
 
 .maka-workspace-picker-end {

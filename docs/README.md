@@ -39,6 +39,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Computer Use package](../packages/computer-use/README.md)
 - [UI package architecture](../packages/ui/README.md)
 - [Security policy](../SECURITY.md)
+- [Collect evidence for a Desktop conversation problem](./session-diagnostics.md) ([中文](./session-diagnostics.zh-CN.md))
 
 ## Blogs
 

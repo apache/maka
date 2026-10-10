@@ -19,8 +19,12 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { TaskEntryServices } from '../../features/task-entry';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 
-export type DesktopTaskEntryBridge = Pick<MakaBridge, 'newTasks' | 'projects' | 'sessions'>;
+export type DesktopTaskEntryBridge = Pick<MakaBridge, 'app' | 'newTasks' | 'projects' | 'sessions'>;
 
 /** The only Desktop-to-Task Entry adapter. */
 export function createDesktopTaskEntryServices(
@@ -35,9 +39,6 @@ export function createDesktopTaskEntryServices(
       async archiveProject(host, projectId) {
         await bridge.projects.archive(projectId, host);
       },
-      async restoreProject(host, projectId) {
-        await bridge.projects.restore(projectId, host);
-      },
     },
     sessions: {
       async relocateWorkspace(sessionId, projectId) {
@@ -45,6 +46,43 @@ export function createDesktopTaskEntryServices(
         return result.ok
           ? { ok: true as const }
           : { ok: false as const, reason: result.code };
+      },
+    },
+    folders: {
+      // A task's folder opens through the task; anything else through the
+      // default Runtime Host, which also names the profile a failure reports.
+      async openProjectFolder(sessionId) {
+        try {
+          const { value: result, diagnosticTarget } = sessionId
+            ? {
+                value: await bridge.app.openPath('project', sessionId),
+                diagnosticTarget: { sessionId },
+              }
+            : await runOnDefaultRuntimeHost((host) =>
+                bridge.app.openPath('project', undefined, host),
+              );
+          return result.ok
+            ? { kind: 'opened' as const }
+            : { kind: 'refused' as const, reason: result.reason, diagnosticTarget };
+        } catch (error) {
+          const diagnosticTarget = sessionId
+            ? { sessionId }
+            : defaultRuntimeHostDiagnosticTarget(error);
+          return { kind: 'failed' as const, error, ...(diagnosticTarget ? { diagnosticTarget } : {}) };
+        }
+      },
+      async openWorkspaceFolder() {
+        try {
+          const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+            bridge.app.openPath('workspace', undefined, host),
+          );
+          return result.ok
+            ? { kind: 'opened' as const }
+            : { kind: 'refused' as const, reason: result.reason, diagnosticTarget };
+        } catch (error) {
+          const diagnosticTarget = defaultRuntimeHostDiagnosticTarget(error);
+          return { kind: 'failed' as const, error, ...(diagnosticTarget ? { diagnosticTarget } : {}) };
+        }
       },
     },
   };

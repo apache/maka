@@ -31,8 +31,10 @@ import {
   type RuntimeHostProfileKind,
 } from '@maka/runtime-host/profile-kind';
 import {
+  type ConfirmInput,
   getConversationCopy,
   type WorkspacePickerModel,
+  useToast,
   useUiLocale,
 } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
@@ -45,9 +47,12 @@ import {
   type ReadyTaskEntryHost,
 } from '../model/task-entry-selection.js';
 import { resolveWorkBoardStartTarget, type WorkBoardStartTargetResult } from '../model/work-board-target.js';
+import { folderOpenFailure } from '../model/folder-open-failure.js';
 import type {
   TaskEntryCatalog,
   TaskEntryError,
+  TaskEntryFolder,
+  TaskEntryFolderOpenResult,
   TaskEntryHostRef,
   TaskEntryProjectMutationResult,
   TaskEntryTarget,
@@ -56,10 +61,19 @@ import type {
 import { useTaskEntryServices } from '../services-context.js';
 import type { TaskEntryHostModel } from '../ui/task-entry-host.js';
 import { runtimeHostProjectKey } from '../../../application/contracts/runtime-host-project-key.js';
+import { resolveProjectRegistration } from './resolve-project-registration.js';
+import {
+  useSessionWorkspaceRecovery,
+  type AddSessionWorkspaceInput,
+  type RelocateSessionWorkspaceInput,
+  type SessionWorkspaceRecoveryRequest,
+} from './use-session-workspace-recovery.js';
 
 export interface UseTaskEntryControllerInput {
   reportError(error: TaskEntryError): void;
   manageProjects(profileId: string): void;
+  /** Defaults to the app toast confirm dialog; injected in tests. */
+  confirm?(input: ConfirmInput): Promise<boolean>;
 }
 
 export interface TaskEntryControllerSelectors {
@@ -77,7 +91,7 @@ export interface TaskEntryControllerSelectors {
   readonly defaultProfileId: string;
   readonly usesDefaultHost: boolean;
   readonly workspacePicker: WorkspacePickerModel;
-  readonly sessionWorkspaceRecovery?: { readonly sessionId: string };
+  readonly sessionWorkspaceRecovery?: SessionWorkspaceRecoveryRequest;
   readonly canAddProject: boolean;
   /** Every ready Host's Projects, with the owning Host retained as identity. */
   readonly projectScopes: readonly TaskEntryProjectScope[];
@@ -96,20 +110,15 @@ export interface TaskEntryControllerCommands {
   openNewProject(): void;
   chooseProjectForProfile(profileId: string): Promise<void>;
   openSessionWorkspaceRecovery(sessionId: string): void;
-  closeSessionWorkspaceRecovery(): void;
-  relocateSessionWorkspace(input: {
-    sessionId: string;
-    profileId: string;
-    projectId: string;
-  }): Promise<boolean>;
-  addSessionWorkspace(input: {
-    sessionId: string;
-    profileId: string;
-    host: TaskEntryHostRef;
-    name: string;
-  }): Promise<boolean>;
+  closeSessionWorkspaceRecovery(expected?: SessionWorkspaceRecoveryRequest): void;
+  relocateSessionWorkspace(input: RelocateSessionWorkspaceInput): Promise<boolean>;
+  addSessionWorkspace(input: AddSessionWorkspaceInput): Promise<boolean>;
   resolveWorkBoardTarget(item: WorkBoardItem): WorkBoardStartTargetResult;
   prepareWorkBoardDraft(target: TaskEntryTarget, draft: string): string | undefined;
+  /** Reveals the project folder of the task `sessionId`, or the default Host's without one. */
+  openProjectFolder(sessionId?: string): Promise<void>;
+  /** Reveals the default Host's workspace folder. */
+  openWorkspaceFolder(): Promise<void>;
 }
 
 export interface TaskEntryController {
@@ -163,12 +172,12 @@ export function useTaskEntryController(
   input: UseTaskEntryControllerInput,
 ): TaskEntryController {
   const locale = useUiLocale();
+  const toast = useToast();
   const copy = getShellCopy(locale).projectActions;
-  const sessionMoveCopy = getShellCopy(locale).sessionRowActions;
   const conversationCopy = getConversationCopy(locale).workspace;
   const reportError = input.reportError;
   const manageProjects = input.manageProjects;
-  const { catalog: service, sessions: sessionService } = useTaskEntryServices();
+  const { catalog: service, folders } = useTaskEntryServices();
   const [catalog, setCatalog] = useState<TaskEntryCatalog>(EMPTY_CATALOG);
   const [selectedProfileId, setSelectedProfileId] = useState<string>();
   const [projectSelections, setProjectSelections] = useState(
@@ -177,8 +186,6 @@ export function useTaskEntryController(
   const [pending, setPending] = useState(false);
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
-  const [sessionWorkspaceRecovery, setSessionWorkspaceRecovery] =
-    useState<TaskEntryControllerSelectors['sessionWorkspaceRecovery']>();
   const [directoryHost, setDirectoryHost] = useState<DirectoryHandoff>();
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const directoryOpenerRef = useRef<HTMLElement | null>(null);
@@ -314,78 +321,21 @@ export function useTaskEntryController(
     }
   }, [copy.projectUpdateFailedFallback, copy.projectUpdateFailedTitle, locale, refresh, reportError]);
 
-  const openSessionWorkspaceRecovery = useCallback((sessionId: string): void => {
-    // A fresh request reopens the menu even if this Session is already being repaired.
-    setSessionWorkspaceRecovery({ sessionId });
-  }, []);
-
-  const closeSessionWorkspaceRecovery = useCallback((): void => {
-    setSessionWorkspaceRecovery(undefined);
-  }, []);
-
-  const relocateSessionWorkspace = useCallback(async (input: {
-    sessionId: string;
-    profileId: string;
-    projectId: string;
-  }): Promise<boolean> => {
-    try {
-      const result = await sessionService.relocateWorkspace(input.sessionId, input.projectId);
-      if (!result.ok) {
-        reportError({
-          title: sessionMoveCopy.moveFailedTitle,
-          description: sessionMoveCopy.moveFailures[result.reason],
-          profileId: input.profileId,
-        });
-        return false;
-      }
-      closeSessionWorkspaceRecovery();
-      return true;
-    } catch (cause) {
-      reportError({
-        title: copy.projectUpdateFailedTitle,
-        description: localizedShellErrorMessage(
-          cause,
-          copy.projectUpdateFailedFallback,
-          locale,
-        ),
-        profileId: input.profileId,
-      });
-      return false;
-    }
-  }, [
+  const {
+    sessionWorkspaceRecovery,
+    openSessionWorkspaceRecovery,
     closeSessionWorkspaceRecovery,
-    copy.projectUpdateFailedFallback,
-    copy.projectUpdateFailedTitle,
-    locale,
+    relocateSessionWorkspace,
+    addSessionWorkspace,
+  } = useSessionWorkspaceRecovery({
+    catalog,
+    catalogRef: committedCatalogRef,
+    mutationPendingRef: projectMutationPendingRef,
+    setPending,
+    refresh,
     reportError,
-    sessionMoveCopy,
-    sessionService,
-  ]);
-
-  const addSessionWorkspace = useCallback(async (input: {
-    sessionId: string;
-    profileId: string;
-    host: TaskEntryHostRef;
-    name: string;
-  }): Promise<boolean> => {
-    try {
-      const result = await service.addProject(input.host, input.name);
-      if (!result.ok) return false;
-      await refreshAfterProjectMutation(input.host.profileId);
-      return relocateSessionWorkspace({
-        sessionId: input.sessionId,
-        profileId: input.profileId,
-        projectId: result.project.id,
-      });
-    } catch (cause) {
-      reportError({
-        title: copy.selectDirectoryFailedTitle,
-        description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
-        profileId: input.host.profileId,
-      });
-      return false;
-    }
-  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, relocateSessionWorkspace, reportError, service]);
+    confirm: input.confirm,
+  });
 
   const addProjectForHost = useCallback(async (host: ReadyTaskEntryHost, name?: string): Promise<void> => {
     if (projectMutationPendingRef.current) return;
@@ -399,34 +349,38 @@ export function useTaskEntryController(
     projectMutationPendingRef.current = true;
     setPending(true);
     try {
-      let result: TaskEntryProjectMutationResult;
-      try {
-        result = await service.addProject(
-          {
-            profileId: host.profile.id,
-            hostId: host.hostId,
-          },
-          name,
-        );
-      } catch (cause) {
-        reportError({
-          title: copy.selectDirectoryFailedTitle,
-          description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
-          profileId: host.profile.id,
-        });
-        return;
-      }
-      if (!result.ok) return;
+      const result = await resolveProjectRegistration({
+        register: () => service.addProject({ profileId: host.profile.id, hostId: host.hostId }, name),
+        confirm: (onConfirm) => (input.confirm ?? toast.confirm)({
+          onConfirm,
+          title: copy.archivedProjectTitle,
+          description: copy.archivedProjectDescription,
+          confirmLabel: copy.archivedProjectRestore,
+          cancelLabel: copy.archivedProjectCancel,
+        }),
+        restore: (projectId) => service.restoreProject(
+          { profileId: host.profile.id, hostId: host.hostId },
+          projectId,
+        ),
+        isCurrent: () => true,
+      });
+      if (!result?.ok) return;
       setSelectedProfileId(host.profile.id);
       setProjectSelections((current) =>
         new Map(current).set(host.profile.id, result.project.id),
       );
       await refreshAfterProjectMutation(host.profile.id);
+    } catch (cause) {
+      reportError({
+        title: copy.selectDirectoryFailedTitle,
+        description: localizedShellErrorMessage(cause, copy.readPathFailedFallback, locale),
+        profileId: host.profile.id,
+      });
     } finally {
       projectMutationPendingRef.current = false;
       setPending(false);
     }
-  }, [copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, locale, refreshAfterProjectMutation, reportError, service]);
+  }, [copy.archivedProjectCancel, copy.archivedProjectDescription, copy.archivedProjectRestore, copy.archivedProjectTitle, copy.readPathFailedFallback, copy.selectDirectoryFailedTitle, input.confirm, locale, refreshAfterProjectMutation, reportError, service, toast]);
 
   const chooseProjectForProfile = useCallback(async (profileId: string): Promise<void> => {
     let next: TaskEntryCatalog | undefined;
@@ -461,6 +415,7 @@ export function useTaskEntryController(
   const acceptRegisteredProject = useCallback(async (
     project: ProjectRecord,
     registeredHost: TaskEntryHostRef,
+    restored = false,
   ): Promise<void> => {
     const host = directoryHost;
     if (
@@ -474,7 +429,8 @@ export function useTaskEntryController(
     // has no name field of its own — so the name typed before the folder was
     // picked is applied here. A failed rename must not lose the project that was
     // just created, so it falls back to the folder-derived name.
-    if (host.projectName) {
+    // Restoring preserves the archived project's name, matching local Add.
+    if (host.projectName && !restored) {
       await service
         .renameProject(registeredHost, project.id, host.projectName)
         .catch(() => undefined);
@@ -731,6 +687,15 @@ export function useTaskEntryController(
     close: () => setNewProjectOpen(false),
     submit: (name: string) => addSelectedProject(name),
   } : undefined, [newProjectOpen, addSelectedProject]);
+  const openFolder = useCallback(async (
+    folder: TaskEntryFolder,
+    open: () => Promise<TaskEntryFolderOpenResult>,
+    sessionId?: string,
+  ): Promise<void> => {
+    const failure = folderOpenFailure(folder, await open(), locale, sessionId);
+    if (failure) reportError(failure);
+  }, [locale, reportError]);
+
   return useMemo(() => ({
     host: {
       ...(directoryHost
@@ -789,6 +754,10 @@ export function useTaskEntryController(
       addSessionWorkspace,
       resolveWorkBoardTarget,
       prepareWorkBoardDraft,
+      openProjectFolder: (sessionId) =>
+        openFolder('project', () => folders.openProjectFolder(sessionId), sessionId),
+      openWorkspaceFolder: () =>
+        openFolder('workspace', () => folders.openWorkspaceFolder()),
     },
     selectors: {
       ...(target ? { target } : {}),
@@ -822,6 +791,8 @@ export function useTaskEntryController(
     closeDirectoryPicker,
     closeSessionWorkspaceRecovery,
     directoryHost,
+    folders,
+    openFolder,
     projectPath,
     projectScopes,
     openSessionWorkspaceRecovery,

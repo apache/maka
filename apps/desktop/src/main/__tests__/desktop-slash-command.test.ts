@@ -20,7 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
-import { desktopSlashCommandAvailability } from '../../renderer/desktop-slash-command.js';
+import { desktopSlashCommandAvailability } from '../../renderer/application/contracts/desktop-slash-command.js';
 
 const offered = (state: { hasSession: boolean; streaming: boolean }): readonly string[] =>
   slashCommandsForSurface('desktop')

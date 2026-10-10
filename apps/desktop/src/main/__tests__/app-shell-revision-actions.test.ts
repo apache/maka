@@ -22,10 +22,10 @@ import { describe, it } from 'node:test';
 
 import type { StoredMessage } from '@maka/core/session';
 import {
-  createAppShellRevisionActions,
+  createRevisionActions,
   type TurnRevisionDraft,
-} from '../../renderer/app-shell-revision-actions.js';
-import { installWindow } from './app-shell-chat-actions-fixture.js';
+} from '../../renderer/features/conversation/testing.js';
+import { installWindow, windowSubmissionServices } from './app-shell-chat-actions-fixture.js';
 
 const SESSION_1 = JSON.stringify(['host-1', 'session-1']);
 const SESSION_2 = JSON.stringify(['host-1', 'session-2']);
@@ -48,8 +48,15 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
   let composerText = '';
   let selectionRevision = 0;
   const activeIdRef: { current: string | undefined } = { current: SESSION_1 };
+  const staged: {
+    quotes: unknown[];
+    restoredQuotes: unknown[][];
+    restoredAttachments: unknown[][];
+    clearedKeys: string[];
+  } = { quotes: [], restoredQuotes: [], restoredAttachments: [], clearedKeys: [] };
   const revisionDraftRef: { current: unknown } = { current: null };
-  const actions = createAppShellRevisionActions({
+  const actions = createRevisionActions({
+    services: windowSubmissionServices(),
     uiLocale: 'en' as never,
     activeIdRef,
     captureSelection: () => {
@@ -70,7 +77,24 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
       } as never,
     },
     readMessages: () => input.messages,
-    hasPendingAttachments: () => false,
+    staging: {
+      captureSubmission: () => ({ hasPendingContext: false }),
+      stagedContext: () => ({
+        quotes: staged.quotes,
+        attachments: [],
+        restoreQuotes: (_ownerKey: string, quotes: unknown[]) => {
+          staged.restoredQuotes.push(quotes);
+          staged.quotes.push(...quotes);
+        },
+        restoreAttachments: (_ownerKey: string, attachments: unknown[]) => {
+          staged.restoredAttachments.push(attachments);
+        },
+        clearQuotes: (ownerKey: string) => {
+          staged.clearedKeys.push(ownerKey);
+          return staged.quotes.splice(0, staged.quotes.length);
+        },
+      }),
+    },
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
       activeIdRef.current = sessionId;
@@ -91,10 +115,18 @@ function createActions(input: { messages: StoredMessage[]; failRefresh?: boolean
   } as never);
   return Object.assign(actions, {
     drafts,
+    staged,
     errors,
     infos,
     activeIdRef,
-    composerState: { get text(): string { return composerText; } },
+    composerState: {
+      get text(): string {
+        return composerText;
+      },
+      get attachments(): unknown[] {
+        return staged.restoredAttachments.at(-1) ?? [];
+      },
+    },
   });
 }
 
@@ -134,7 +166,11 @@ describe('app-shell revision actions with structured context (#5109)', () => {
     assert.equal(h.composerState.text, 'plain follow-up');
   });
 
-  it('rejects a source message that itself carries attachments', () => {
+  it('refuses editing a message that carries attachments (#5274 review)', () => {
+    // Attachment ownership does not follow a revision copy — the copied
+    // transcript stops before the selected turn, so no target-owned refs
+    // exist client-side to restage. The edit refuses rather than silently
+    // dropping the files.
     const h = createActions({
       messages: [
         userMessage('turn-1', 'with image', {
@@ -153,7 +189,30 @@ describe('app-shell revision actions with structured context (#5109)', () => {
 
     h.beginEditUserMessage('turn-1');
 
-    assert.equal(h.drafts.at(-1), undefined, 'attachment-bearing sources stay explicitly rejected');
+    assert.equal(
+      h.drafts.at(-1),
+      undefined,
+      'a revision copy excludes the revised turn, so no target-owned attachment rewrite exists to restage',
+    );
+    assert.equal(h.composerState.text, '', 'the composer stays untouched');
+  });
+
+  it('stages a source message quotes into the composer', () => {
+    const quote = { text: 'a large pasted excerpt', sourceTurnId: 'turn-0' };
+    const h = createActions({
+      messages: [userMessage('turn-1', 'explain this', { quotes: [quote] })],
+    });
+
+    h.beginEditUserMessage('turn-1');
+
+    const draft = h.drafts.at(-1) as { originalQuotes?: unknown[] } | undefined;
+    assert.ok(draft, 'a quote-carrying source message is editable now');
+    assert.deepEqual(draft?.originalQuotes, [quote]);
+    assert.deepEqual(
+      h.staged.restoredQuotes.at(-1),
+      [quote],
+      'the source quotes stage into the composer verbatim',
+    );
   });
 });
 
@@ -242,7 +301,8 @@ describe('revision draft lifecycle over a prepared send', () => {
     const clearedDrafts: string[] = [];
     let composerText = options.composerText ?? '';
     const revisionDraftRef: { current: TurnRevisionDraft | null } = { current: null };
-    const actions = createAppShellRevisionActions({
+    const actions = createRevisionActions({
+      services: windowSubmissionServices(),
       uiLocale: 'en' as never,
       activeIdRef,
       captureSelection: () => {
@@ -262,7 +322,15 @@ describe('revision draft lifecycle over a prepared send', () => {
         },
       },
       readMessages: () => [userMessage('turn-1', 'original message')],
-      hasPendingAttachments: () => false,
+      staging: {
+        captureSubmission: () => ({ hasPendingContext: false }),
+        stagedContext: () => ({
+          quotes: [],
+          attachments: [],
+          restoreQuotes: (_ownerKey: string, _quotes: unknown[]) => {},
+          clearQuotes: (_ownerKey: string) => [],
+        }),
+      },
       openSessionInChat: (sessionId: string) => {
         selectionRevision += 1;
         activeIdRef.current = sessionId;

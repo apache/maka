@@ -41,6 +41,12 @@ export function projectSessionCatalogSummary(
       ? {}
       : { lastMessagePreview: session.lastMessagePreview }),
     status: session.status,
+    ...(session.backgroundActivity === undefined
+      ? {}
+      : { backgroundActivity: session.backgroundActivity }),
+    ...(session.backgroundActivityVersion === undefined
+      ? {}
+      : { backgroundActivityVersion: session.backgroundActivityVersion }),
     ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
     ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
     ...(session.liveRunState === undefined

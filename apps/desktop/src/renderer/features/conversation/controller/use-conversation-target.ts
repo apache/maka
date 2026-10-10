@@ -17,12 +17,26 @@
  * under the License.
  */
 
-import { useSyncExternalStore } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import { selectActiveSessionId, selectSessionById, useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
 import { shellSessionRowEqual } from '../model/conversation-catalog-row.js';
 import { useConversationOwner } from '../ui/conversation-context.js';
 import { useConversationQueueCommands } from '../ui/conversation-provider.js';
+
+/**
+ * The shell's slice of the queue surface: the plate's entry actions and named
+ * Composer edits. The editor handle and draft restoration stay in the feature.
+ */
+function shellQueueSurface(queue: ReturnType<typeof useConversationQueueCommands>) {
+  return {
+    editing: queue.editing,
+    promoteQueuedEntry: queue.promoteQueuedEntry,
+    updateQueuedEntry: queue.updateQueuedEntry,
+    deleteQueuedEntry: queue.deleteQueuedEntry,
+    reorderQueuedEntries: queue.reorderQueuedEntries,
+  };
+}
 
 /** Shell gets target identity and finite chrome facts, never a transcript projection. */
 export function useConversationTarget() {
@@ -34,23 +48,16 @@ export function useConversationTarget() {
   const activeCatalogSession = useExternalStoreSelector(catalog, selectSessionById, activeId, shellSessionRowEqual);
   const activeHostSession = activeCatalogSession?.localState !== 'pending' ? activeCatalogSession : undefined;
   const sharedSessionActive = activeCatalogSession?.shared === true;
+  const queue = useConversationQueueCommands();
+  const queueSurface = useMemo(() => shellQueueSurface(queue), [queue]);
   return {
     setActiveId: commands.setActiveId,
     startNewSession: commands.startNewSession,
     clearOwnedSessionState: commands.clearOwnedSessionState,
-    captureSelection: commands.captureSelection,
     isSessionSelected: commands.isSessionSelected,
     retiredSessionIds: commands.retiredSessionIds,
-    readSelectionRevision: commands.readSelectionRevision,
-    addTransientMessage: commands.addTransientMessage,
-    updateTransientMessage: commands.updateTransientMessage,
-    removeTransientMessage: commands.removeTransientMessage,
-    readMessages: commands.readMessages,
+    renderPublishedConversation: commands.renderPublishedConversation,
     refreshMessages: commands.refreshMessages,
-    prepareSend: commands.prepareSend,
-    clearMessageLoadError: commands.clearMessageLoadError,
-    markInteractionChanged: commands.markInteractionChanged,
-    settleInteraction: commands.settleInteraction,
     recordSessionChange: commands.recordSessionChange,
     activeId,
     activeIdRef: workspace.publishedSession,
@@ -60,8 +67,7 @@ export function useConversationTarget() {
     switchingSession: activeId !== requestedSessionId,
     transcriptEmpty: chrome.empty,
     transcriptHasHistory: chrome.hasHistory,
-    queueSurface: useConversationQueueCommands(),
+    queueSurface,
     sessionUiReads: workspace.ui.reads,
-    stopPendingClaims: workspace.ui.stopPending,
   };
 }

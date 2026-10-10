@@ -24,39 +24,60 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { NewChatModel } from './shell-chat-model-selection.js';
+import type { SessionSummary } from '@maka/core/session';
+
+/** Adopt the submitted catalog before the locally created Session becomes visible. */
+export function createExecutorSessionActivator<Session extends SessionSummary>(
+  executor: { adoptSession(session: SessionSummary): void },
+  commitSession: (session: Session) => void,
+  selectNavigation: (selection: { section: 'sessions' }) => void,
+  activateSession: (sessionId: string) => void,
+): (session: Session) => Promise<void> {
+  return async session => {
+    executor.adoptSession(session);
+    commitSession(session);
+    selectNavigation({ section: 'sessions' });
+    activateSession(session.id);
+  };
+}
 
 export interface ExecutorSubmission {
   executorSelection?: ExecutorSelection;
-  executorEntry?: Pick<ExecutorCatalogEntry, 'readiness' | 'supportsAttachments'>;
+  executorEntry?: Pick<ExecutorCatalogEntry, 'readiness' | 'supportsAttachments'> &
+    Partial<Pick<ExecutorCatalogEntry, 'models' | 'modes'>>;
 }
 
 const SUBMISSION_COPY = {
   en: {
     attachments: 'Remove unsupported attachments or select Maka. Your draft is preserved.',
     unavailable: 'Check External Agents settings or start a new task.',
+    invalid: 'The selected Agent configuration is no longer available. Choose again.',
   },
   'zh-CN': {
     attachments: '请移除不支持的附件或选择 Maka，草稿会保留。',
     unavailable: '请检查外部 Agent 设置，或新建任务。',
+    invalid: '所选 Agent 配置已失效，请重新选择。',
   },
   'zh-TW': {
     attachments: '請移除不支援的附件或選擇 Maka，草稿會保留。',
     unavailable: '請檢查外部 Agent 設定，或建立新任務。',
+    invalid: '所選 Agent 設定已失效，請重新選擇。',
   },
-} satisfies UiCatalog<{ attachments: string; unavailable: string }>;
+} satisfies UiCatalog<{ attachments: string; unavailable: string; invalid: string }>;
 
 export function executorSubmissionError(
   input: ExecutorSubmission,
   attachments: number,
   locale: UiLocale,
 ): string | undefined {
-  if (
-    !input.executorSelection ||
-    (input.executorEntry?.readiness === 'ready' &&
-      (!attachments || input.executorEntry.supportsAttachments))
-  )
-    return;
-  return SUBMISSION_COPY[locale][attachments ? 'attachments' : 'unavailable'];
+  if (!input.executorSelection) return;
+  const entry = input.executorEntry;
+  if (!entry || entry.readiness !== 'ready') return SUBMISSION_COPY[locale].unavailable;
+  if (attachments && !entry.supportsAttachments) return SUBMISSION_COPY[locale].attachments;
+  const { model, mode } = input.executorSelection.configuration;
+  if ((model && entry.models && !entry.models.some(candidate => candidate.id === model)) ||
+    (mode && !entry.modes?.some(candidate => candidate.id === mode)))
+    return SUBMISSION_COPY[locale].invalid;
 }
 
 export function newTaskConfiguration(

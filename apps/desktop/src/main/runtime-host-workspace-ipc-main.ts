@@ -37,20 +37,25 @@ export function registerRuntimeHostWorkspaceIpc(
 ): void {
   handleReconnectableRead(input.ipcMain, 'git-review:read', async (_event, raw: unknown) => {
     if (input.allowLocalWorkspace === false) {
-      return { ok: false as const, reason: 'workspace_unavailable' as const };
+      // A host-owned workspace is not missing — the Desktop simply cannot
+      // read it locally. It is a different capability state than a gone
+      // directory, so it gets its own reason: no folder to name, no retry
+      // that could help, no local-folder recovery that applies.
+      return { ok: false as const, reason: 'remote_workspace' as const };
     }
     const request = readRequest(raw);
-    const cwd = await sessionWorkspace(input.client, request.sessionId);
-    if (!cwd) return { ok: false as const, reason: 'workspace_unavailable' as const };
-    return readGitReview(cwd, request.source, undefined, request.baseBranch);
+    const session = await input.client.getSession(request.sessionId);
+    if (!session) throw new Error(`No such Session: ${request.sessionId}`);
+    // The Session record owns the task's workspace; guidance must name it,
+    // never the application default — even when the directory is gone.
+    const workspace = session.workspace.hostCwd;
+    const directory = await stat(workspace).catch(() => null);
+    if (!directory?.isDirectory()) {
+      return { ok: false as const, reason: 'workspace_unavailable' as const, workspace };
+    }
+    const result = await readGitReview(workspace, request.source, undefined, request.baseBranch);
+    return result.ok ? result : { ...result, workspace };
   });
-}
-
-async function sessionWorkspace(client: WorkspaceClient, sessionId: string): Promise<string | null> {
-  const session = await client.getSession(sessionId);
-  if (!session) throw new Error(`No such Session: ${sessionId}`);
-  const workspace = await stat(session.workspace.hostCwd).catch(() => null);
-  return workspace?.isDirectory() ? session.workspace.hostCwd : null;
 }
 
 function readRequest(value: unknown): {

@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "engines": {
-    "node": ">=22.19.0"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "packageManager": "npm@11.19.0",
   "releaseToolchain": {
@@ -108,6 +108,7 @@
     "check:model-metadata-drift": "node scripts/sync-model-metadata.mjs --drift",
     "generate:bundled-skills": "node scripts/gen-bundled-skill-catalog.mjs",
     "computer-use": "node scripts/computer-use.mjs",
+    "shots:storybook": "node scripts/storybook-visual-diff.mjs",
     "windows:inventory": "node --test scripts/windows-test-inventory.test.mjs && node scripts/windows-test-inventory.mjs --check",
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && npm run smoke:windows:dist",
@@ -128,9 +129,15 @@
     "yaml": "2.9.1"
   },
   "allowScripts": {
+    "@astryxdesign/cli@0.6.3": false,
+    "@astryxdesign/core@0.6.3": false,
+    "@jackwener/opencli@1.8.8": false,
+    "electron-winstaller@5.4.0": true,
     "esbuild@0.28.2": true,
-    "@jackwener/opencli@1.8.8": true,
-    "node-pty@1.2.0-beta.15": true
+    "fsevents@2.3.3": true,
+    "node-pty@1.2.0-beta.15": true,
+    "protobufjs@7.6.5": false,
+    "tree-sitter-javascript@0.25.0": true
   },
   "overrides": {
     "@ai-sdk/code-mode": {

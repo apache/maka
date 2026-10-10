@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import type { ReactNode, RefObject } from 'react';
-import type { ComposerHandle } from '@maka/ui';
+import type { ReactNode } from 'react';
 import {
   useGuestTurnRequests,
   type GuestComposerProjection,
@@ -31,8 +30,8 @@ import {
  */
 export function GuestTurnRequests(props: {
   readonly sessionId: string | undefined;
-  readonly composerRef: RefObject<ComposerHandle | null>;
+  readonly discardDraft: (draftKey: string) => void;
   readonly children: (guest: GuestComposerProjection | undefined) => ReactNode;
 }) {
-  return <>{props.children(useGuestTurnRequests(props.sessionId, props.composerRef))}</>;
+  return <>{props.children(useGuestTurnRequests(props.sessionId, props.discardDraft))}</>;
 }
