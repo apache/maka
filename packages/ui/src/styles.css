@@ -1172,6 +1172,17 @@
 
 .maka-choice-panel { outline: none; }
 
-.maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+/* Keep keyboard focus on an option, never around the entire picker. */
+.maka-choice-panel:focus-visible > [role='option'][aria-selected='true'],
+.maka-choice-panel:focus-visible:not(:has(> [aria-selected='true'])) > [role='option']:first-of-type {
+  background: var(--foreground-5);
+}
+@media (forced-colors: active) {
+  .maka-choice-panel:focus-visible > [role='option'][aria-selected='true'],
+  .maka-choice-panel:focus-visible:not(:has(> [aria-selected='true'])) > [role='option']:first-of-type {
+    outline: var(--focus-ring-width) solid Highlight;
+    outline-offset: calc(-1 * var(--focus-ring-width));
+  }
+}
 
 .maka-choice-hint { margin: 8px 0; }

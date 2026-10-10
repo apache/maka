@@ -198,19 +198,9 @@ export function plaintextHelpReply(): string {
 }
 
 export function formatBotMessageForSession(
-  message: Pick<BotMessageEvent, 'platform' | 'userName' | 'text'>,
+  message: Pick<BotMessageEvent, 'platform' | 'text'>,
 ): string {
-  return `[${botDisplayLabel(message.platform)}:${sanitizeBotUserName(message.userName)}] ${message.text.trim()}`;
-}
-
-function sanitizeBotUserName(value: string): string {
-  return (
-    value
-      .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
-      .replace(/[\p{Cf}]+/gu, ' ')
-      .replace(/\s+/g, ' ')
-      .trim() || 'unknown'
-  );
+  return `[${botDisplayLabel(message.platform)}] ${message.text.trim()}`;
 }
 
 /**

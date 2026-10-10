@@ -203,3 +203,5 @@ export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rai
 export { ChoicePanel, type ChoicePanelOption } from './choice-panel.js';
 export { formatCompactTokenCount } from './compact-token-count.js';
 export * from './revision-staged-context.js';
+
+export { TranscriptDisclosure } from './transcript-disclosure.js';

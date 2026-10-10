@@ -642,12 +642,6 @@ export class HostWorkHubCoordinationCoordinator {
             );
           }
           const page = await this.#actionGate.candidates();
-          if (page.candidateSetId !== input.candidateSetId) {
-            throw new WorkHubActionGateFailure(
-              'candidate_set_stale',
-              'Discover fresh candidates before requesting a target choice',
-            );
-          }
           const options = input.candidateRefs.map((ref) => {
             const candidate = page.candidates.find((item) => item.candidateRef === ref);
             if (!candidate)
@@ -679,7 +673,7 @@ export class HostWorkHubCoordinationCoordinator {
           return {
             kind: 'form',
             toolUseId: input.actionId,
-            message: 'Choose the work to continue',
+            message: 'Choose existing work or start a new task',
             requester: { name: 'WorkHub' },
             fields: [
               {
@@ -687,14 +681,55 @@ export class HostWorkHubCoordinationCoordinator {
                 name: 'target',
                 label: 'Work / Workspace',
                 required: true,
-                options,
+                options: [
+                  ...options,
+                  ...(input.create ? [{ value: 'create_new', label: 'New task' }] : []),
+                ],
               },
             ],
           };
         },
       });
       if (choice.answer.action !== 'accept') return { ok: true, result: { kind: 'cancelled' } };
+      if (
+        Date.now() - choice.createdAt > 10 * 60_000 &&
+        !(await this.#stores.readWorkHubAssignment(input.actionId))
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: 'candidate_set_stale',
+            message: 'Target choice expired; discover candidates and ask again',
+          },
+        };
+      }
       const value = choice.answer.values.target;
+      if (value === 'create_new' && input.create) {
+        const freshAuthority = await this.#executions.readActiveWorkHubRoutingRequest(input.turnId);
+        if (freshAuthority?.runId !== authority.runId)
+          return {
+            ok: false,
+            error: { code: 'operation_conflict', message: 'The selecting Run is no longer active' },
+          };
+        let title = '';
+        for (const character of input.delegationText.trim().split('\n')[0]!) {
+          if (Buffer.byteLength(title + character, 'utf8') > 512) break;
+          title += character;
+        }
+        const outcome = await this.#actFromTurn(
+          {
+            turnId: input.turnId,
+            actionId: input.actionId,
+            proposal: { disposition: 'create_new', title },
+            create: input.create,
+            delegationText: input.delegationText,
+          },
+          context,
+        );
+        return outcome.ok
+          ? { ok: true, result: { kind: 'delegated', result: outcome.result } }
+          : outcome;
+      }
       const binding: unknown = typeof value === 'string' ? JSON.parse(value) : undefined;
       if (
         !Array.isArray(binding) ||
@@ -707,18 +742,6 @@ export class HostWorkHubCoordinationCoordinator {
           error: {
             code: 'operation_conflict',
             message: 'Target choice does not belong to this operation',
-          },
-        };
-      }
-      if (
-        Date.now() - choice.createdAt > 10 * 60_000 &&
-        !(await this.#stores.readWorkHubAssignment(input.actionId))
-      ) {
-        return {
-          ok: false,
-          error: {
-            code: 'candidate_set_stale',
-            message: 'Target choice expired; discover candidates and ask again',
           },
         };
       }
@@ -791,8 +814,18 @@ export class HostWorkHubCoordinationCoordinator {
         },
       };
     }
-    const { turnId: _turnId, ...action } = input;
-    if (request.decision && !routingDecisionAllowsProposal(request.decision, action)) {
+    if ('operation' in input.proposal && input.proposal.operation === 'correct') {
+      return {
+        ok: false,
+        error: {
+          code: 'operation_unavailable',
+          message:
+            'Send steering to the existing Session, or stop and delegate as separate operations.',
+        },
+      };
+    }
+    const { turnId: _turnId, ...submittedAction } = input;
+    if (request.decision && !routingDecisionAllowsProposal(request.decision, submittedAction)) {
       return {
         ok: false,
         error: {
@@ -801,10 +834,33 @@ export class HostWorkHubCoordinationCoordinator {
         },
       };
     }
-    const carriesAttachments =
-      'disposition' in action.proposal ||
-      ('operation' in action.proposal && action.proposal.operation === 'correct');
+    const carriesAttachments = 'disposition' in submittedAction.proposal;
     try {
+      // Model and permissions are Host-owned WorkHub configuration. Desktop
+      // supplies the workspace, never a separate model for newly created work.
+      const persisted = await this.#stores.readWorkHubAssignment(input.actionId);
+      const coordination = await this.#stores.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID);
+      const creates =
+        'disposition' in input.proposal && input.proposal.disposition === 'create_new';
+      const action = {
+        ...submittedAction,
+        newWorkDefaults: persisted?.create?.defaults ?? {
+          permissionMode: persisted?.executionPermissionMode ?? coordination.permissionMode,
+          ...(creates
+            ? {
+                model: {
+                  llmConnectionId: coordination.llmConnectionId!,
+                  llmConnectionSlug: coordination.llmConnectionSlug,
+                  model: coordination.model,
+                },
+                ...(coordination.thinkingLevel
+                  ? { thinkingLevel: coordination.thinkingLevel }
+                  : {}),
+              }
+            : {}),
+        },
+      };
+
       return {
         ok: true,
         result: await this.#actionGate.act(

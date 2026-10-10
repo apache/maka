@@ -682,6 +682,53 @@ describe('SessionManager Plan terminal settlement', () => {
 });
 
 describe('SessionManager graph operator provisioning', () => {
+  test('graph provisioning restores a delegated policy after the supervisor run returns', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends: new BackendRegistry(),
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      resolveExecutionPolicy: async (_sessionId, runId) =>
+        runId === 'delegated-supervisor'
+          ? { permissionMode: 'bypass', questions: 'return' }
+          : undefined,
+      newId: nextId(),
+      now: nextNow(10),
+    });
+    const parent = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    await seedInvocationFromHeader(
+      runStore,
+      makeRunHeader({
+        sessionId: parent.id,
+        runId: 'delegated-supervisor',
+        turnId: 'delegated-supervisor-turn',
+        status: 'completed',
+        permissionMode: 'bypass',
+      }),
+    );
+    const result = await manager.provisionAgentGraphOperator({
+      graphId: 'delegated-graph',
+      workId: `graph_work_${'a'.repeat(32)}`,
+      agentId: LOCAL_READ_AGENT_ID,
+      operatorId: `graph_operator_${'b'.repeat(32)}`,
+      source: {
+        sessionId: parent.id,
+        runId: 'delegated-supervisor',
+        turnId: 'delegated-supervisor-turn',
+        toolCallId: 'schedule-delegated',
+      },
+      edges: [],
+      expectedScheduleRevision: 1,
+    });
+    assert.equal(result.header.permissionMode, 'bypass');
+    assert.equal((await store.readExecutionBoundary(result.header.id)).kind, 'bypass');
+    assert.equal((await store.readHeader(parent.id)).permissionMode, 'ask');
+    assert.equal((await store.readExecutionBoundary(parent.id)).kind, 'managed');
+  });
+
   test('provisions a graph operator before its active supervisor turn returns', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -2995,6 +3042,62 @@ describe('SessionManager child-session runtime primitive', () => {
 
     parentGate.release();
     while (!(await parentTurn.next()).done) {}
+  });
+
+  test('delegated child execution uses the parent run policy without changing saved parent permissions', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    const contexts: BackendFactoryContext[] = [];
+    backends.register('ai-sdk', (ctx) => {
+      contexts.push(ctx);
+      return new TestBackend(ctx, ctx.header.subagentRuntime ? undefined : parentGate);
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(100),
+    });
+    const parent = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    const savedBoundary = await store.readExecutionBoundary(parent.id);
+    const policy = { permissionMode: 'bypass' as const, questions: 'return' as const };
+    const parentTurn = manager
+      .sendMessage(
+        parent.id,
+        { turnId: 'delegated-parent', text: 'inspect using a child' },
+        { executionPolicy: policy },
+      )
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    try {
+      const [run] = await runStore.listSessionInvocations(parent.id);
+      assert.ok(run);
+      const result = await manager.spawnChildSession(parent.id, {
+        spawnedBy: {
+          parentRunId: run.runId,
+          parentTurnId: run.turnId,
+          toolCallId: 'delegated-child',
+        },
+        agentProfile: LOCAL_READ_AGENT_PROFILE,
+        prompt: 'inspect',
+      });
+      assert.equal(result.status, 'completed');
+      const child = contexts.find((context) => context.sessionId === result.childSessionId)!;
+      assert.deepEqual(child.executionPolicy, policy);
+      assert.equal(child.header.permissionMode, 'bypass');
+      assert.equal((await child.store.readExecutionBoundary(child.sessionId)).kind, 'bypass');
+      assert.equal((await store.readHeader(parent.id)).permissionMode, 'ask');
+      assert.deepEqual(await store.readExecutionBoundary(parent.id), savedBoundary);
+      assert.equal((await store.readHeader(child.sessionId)).permissionMode, 'explore');
+    } finally {
+      parentGate.release();
+      while (!(await parentTurn.next()).done) {}
+    }
   });
 
   test('creates a fresh read-only child with a session-inline first run and no parent history', async () => {
