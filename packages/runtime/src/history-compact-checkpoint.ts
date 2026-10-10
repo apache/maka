@@ -22,6 +22,11 @@ import { Buffer } from 'node:buffer';
 import type { ExecutionLogCoverage } from '@maka/core/execution-log-coverage';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { nonEmpty, sha256 } from './context-budget-helpers.js';
+import { estimateRuntimeEventChars } from './model-history.js';
+import {
+  reduceEffectiveModelProjections,
+  type LoadedModelProjectionTransitions,
+} from './model-projection-transition-ledger.js';
 import type { ModelMessage } from './model-protocol.js';
 import { stableStringify } from './request-shape.js';
 import {
@@ -651,6 +656,61 @@ export function matchHistoryCompactCheckpointPrefix(
 }
 
 /**
+ * The two-layer currency decision every checkpoint consumer shares (#5930): a
+ * checkpoint replays only when its RAW identity still matches the current
+ * RuntimeEvent prefix AND the EFFECTIVE, transition-folded view of the covered
+ * span still matches the digest pinned at creation. `raw_mismatch` carries the
+ * raw-match failure; `effective_history_changed` covers every way the folded
+ * view can drift — missing pin, too few surviving content events, a covered
+ * through-event the effective prefix never reaches, or a digest difference.
+ * Callers keep their own policy for each outcome; this function only decides.
+ */
+export type HistoryCompactCheckpointCurrency =
+  | {
+      status: 'current';
+      match: Extract<HistoryCompactCheckpointPrefixMatch, { reason?: undefined }>;
+    }
+  | {
+      status: 'raw_mismatch';
+      reason: 'invalid_checkpoint' | 'coverage_miss' | 'source_hash_mismatch';
+    }
+  | { status: 'effective_history_changed' };
+
+/**
+ * Judges a checkpoint against `events` under `projectionSnapshot` — the SAME
+ * loaded transition view the caller used to build the request being judged.
+ * The function never loads transitions: a checkpoint is only current for the
+ * snapshot it is checked with, and a record committed after that snapshot
+ * belongs to the next request's decision.
+ */
+export function checkHistoryCompactCheckpointCurrency(
+  checkpoint: HistoryCompactCheckpoint,
+  events: readonly RuntimeEvent[],
+  projectionSnapshot: LoadedModelProjectionTransitions,
+): HistoryCompactCheckpointCurrency {
+  const match = matchHistoryCompactCheckpointPrefix(checkpoint, events);
+  if (match.reason !== undefined) {
+    return { status: 'raw_mismatch', reason: match.reason };
+  }
+  const effectiveCovered = reduceEffectiveModelProjections(
+    match.coveredRuntimeEvents,
+    projectionSnapshot.transitions,
+    projectionSnapshot.unreadableTargets,
+  ).events.filter(isHistoryCompactContentEvent);
+  const pinned = checkpoint.coverage.effectiveSourceDigest;
+  if (
+    pinned === undefined ||
+    effectiveCovered.length < checkpoint.coverage.eventCount ||
+    effectiveCovered[checkpoint.coverage.eventCount - 1]?.id !==
+      checkpoint.coverage.through.runtimeEventId ||
+    historyCompactSourceDigest(effectiveCovered.slice(0, checkpoint.coverage.eventCount)) !== pinned
+  ) {
+    return { status: 'effective_history_changed' };
+  }
+  return { status: 'current', match };
+}
+
+/**
  * Deterministic RuntimeEvent projection for a checkpoint. V2 prepends its
  * text block; V3 stays out of the event list and is materialized directly at
  * the provider boundary. A `mid_turn` checkpoint re-inserts the covered head
@@ -797,6 +857,11 @@ function effectiveDigestEvent(event: RuntimeEvent): unknown {
     return { ...event, content: { ...identity, modelProjection } };
   }
   return { ...event, content: { ...identity, result } };
+}
+
+/** True when the event carries model-visible content the compact projection counts. */
+export function isHistoryCompactContentEvent(event: RuntimeEvent): boolean {
+  return event.modelVisibility !== 'hidden' && estimateRuntimeEventChars(event) > 0;
 }
 
 function validHistoryCompactProviderState(value: unknown): value is HistoryCompactProviderState {

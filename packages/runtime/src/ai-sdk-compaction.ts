@@ -52,11 +52,11 @@ import {
   type ContextBudgetPolicy,
   type ToolResultPruneStats,
 } from './context-budget.js';
-import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
-  historyCompactSourceDigest,
+  checkHistoryCompactCheckpointCurrency,
+  isHistoryCompactContentEvent,
   matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
@@ -314,6 +314,9 @@ export class AiSdkCompaction {
       }
 
       if (previousCheckpoint) {
+        // Load the transition view only when the raw prefix can replay at all:
+        // a checkpoint that cannot match never reaches for the ledger, the
+        // same as before (#5930 keeps the load point, not the check).
         const match = matchHistoryCompactCheckpointPrefix(previousCheckpoint, runtimeContext);
         if (!match.reason && match.successorRuntimeEvents.length === 0) {
           // Raw identity is not enough: a projection transition committed
@@ -322,11 +325,15 @@ export class AiSdkCompaction {
           // digest to still match — the same gate the pre-send path applies
           // (#5929). On drift, fall through to the planner, whose roll-forward
           // currency check discards the stale checkpoint and re-summarizes.
-          const effectiveCovered = await this.foldEffectiveModelHistory(match.coveredRuntimeEvents);
-          if (this.checkpointEffectiveCoverageMatches(previousCheckpoint, effectiveCovered)) {
+          const currency = checkHistoryCompactCheckpointCurrency(
+            previousCheckpoint,
+            runtimeContext,
+            await this.loadModelProjectionTransitions(),
+          );
+          if (currency.status === 'current') {
             const projectedEvents = projectHistoryCompactCheckpointReplay(
               previousCheckpoint,
-              match.coveredRuntimeEvents,
+              currency.match.coveredRuntimeEvents,
               [],
             );
             return {
@@ -380,11 +387,11 @@ export class AiSdkCompaction {
           : {}),
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
-        // The planner projects the covered span to its effective view before
+        // The planner folds the covered span through this snapshot before
         // summarizing and pins its digest as coverage.effectiveSourceDigest:
         // the summary can never quote a body a durable transition removed, and
         // a later transition invalidates the checkpoint at replay (#4845).
-        projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
+        loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
         summarize: async ({
           coveredRuntimeEvents,
           newlyFoldedRuntimeEvents,
@@ -566,28 +573,6 @@ export class AiSdkCompaction {
   }
 
   /**
-   * Whether the checkpoint's pinned effective view still is the covered
-   * prefix's effective view. The raw identity match happens later in the
-   * replay authority; this gate is about content currency: a projection
-   * transition committed after the fold changes what the model may see of the
-   * covered span without touching the raw ledger, and the checkpoint's summary
-   * or provider state must not survive that drift (#4845 review).
-   */
-  private checkpointEffectiveCoverageMatches(
-    checkpoint: HistoryCompactCheckpoint,
-    effectiveEvents: readonly RuntimeEvent[],
-  ): boolean {
-    const pinned = checkpoint.coverage.effectiveSourceDigest;
-    if (pinned === undefined) return false;
-    const covered = effectiveEvents
-      .filter(isHistoryCompactContentEvent)
-      .slice(0, checkpoint.coverage.eventCount);
-    if (covered.length !== checkpoint.coverage.eventCount) return false;
-    if (covered.at(-1)?.id !== checkpoint.coverage.through.runtimeEventId) return false;
-    return historyCompactSourceDigest(covered) === pinned;
-  }
-
-  /**
    * Apply the same bounded-result rule to current and prior events.
    *
    * This is the one seam where raw RuntimeEvents become effective model
@@ -716,16 +701,12 @@ export class AiSdkCompaction {
       // This gate is only for the case where the raw identity matches but a
       // projection transition committed after the fold changed the effective
       // view the summary (or provider state) was built from (#4845 review).
-      const rawIdentityMatch = matchHistoryCompactCheckpointPrefix(
+      const currency = checkHistoryCompactCheckpointCurrency(
         loadedCheckpoint,
         runtimeContext.filter(isHistoryCompactContentEvent),
+        prepared.projectionSnapshot,
       );
-      if (rawIdentityMatch.reason) {
-        nextPolicy = {
-          ...nextPolicy,
-          historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
-        };
-      } else if (this.checkpointEffectiveCoverageMatches(loadedCheckpoint, effective.events)) {
+      if (currency.status !== 'effective_history_changed') {
         nextPolicy = {
           ...nextPolicy,
           historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
@@ -1093,7 +1074,7 @@ export class AiSdkCompaction {
             },
           }
         : {}),
-      projectEffectiveCoverage: (covered) => this.foldEffectiveModelHistory(covered),
+      loadProjectionSnapshot: () => this.loadModelProjectionTransitions(),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
         // Same contract as the standalone path: the planner hands the
         // effective (transition-folded) view to the summarizer and pins its

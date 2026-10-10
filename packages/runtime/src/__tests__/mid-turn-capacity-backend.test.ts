@@ -41,6 +41,11 @@ import type {
   HistoryCompactCheckpoint,
   HistoryCompactProviderState,
 } from '../history-compact-checkpoint.js';
+import {
+  archiveTransitionFor,
+  EMPTY_PROJECTION_SNAPSHOT,
+} from './history-compact-test-fixtures.js';
+import type { LoadedModelProjectionTransitions } from '../model-projection-transition-ledger.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
@@ -173,6 +178,12 @@ interface MidTurnFixtureOptions {
   systemPromptChars?: number;
   /** An always-active tool whose schema dominates the request payload. */
   bigActiveTool?: boolean;
+  /**
+   * Replace the transition-ledger read. Evaluated on every load, so a test can
+   * return a record only once some later fact (e.g. a recorded checkpoint)
+   * exists — that is how a transition committed mid-send is modeled.
+   */
+  loadTransitions?: () => Promise<LoadedModelProjectionTransitions>;
   /** Enable and capture automatic Memory extraction without allowing it to settle. */
   captureMemoryExtraction?: boolean;
   memoryGate?:
@@ -642,6 +653,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       if (options.record) return options.record(checkpoint);
       recorded.push(checkpoint);
     },
+    ...(options.loadTransitions ? { loadModelProjectionTransitions: options.loadTransitions } : {}),
     loadTurnRuntimeEvents: async (turnId) => {
       fixture.ledgerReads += 1;
       // Emulate the durable read: let the event consumer's pending microtask
@@ -1194,6 +1206,56 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(thirdPrompt.includes('RAW_SPAN_TWO_'), false);
     assert.match(thirdPrompt, /artifact-archived-1/);
     assert.match(thirdPrompt, /tool_result_pruned/);
+  });
+
+  test('a covered-span transition committed after the fold drops the mid-turn block', async () => {
+    // The durable turn projection re-validates the checkpoint it replays
+    // against the SAME transition snapshot the rest of the request was built
+    // from. A record committed after the fold rewrites the covered span's
+    // effective view without touching the raw ledger, so the request after it
+    // must replay the effective events WITHOUT the stale block — its summary
+    // still quotes the removed body (#4845 review).
+    let coveredResult: RuntimeEvent | undefined;
+    const fixture = buildFixture({
+      // Three tool steps so one more request is projected after the fold.
+      toolSteps: 3,
+      // Keep the post-fold baseline inside the window so the last step does
+      // not fold again and re-mask the drift check.
+      usageByCall: { 3: { input: 60, output: 10 } },
+      loadTransitions: async () => {
+        // The record exists only once the checkpoint does: committed after
+        // the fold whose digest it invalidates.
+        const checkpoint = fixture.recorded[0];
+        if (!checkpoint) {
+          return EMPTY_PROJECTION_SNAPSHOT;
+        }
+        coveredResult ??= fixture.ledger.find(
+          (event) => event.content?.kind === 'function_response',
+        );
+        return {
+          ...EMPTY_PROJECTION_SNAPSHOT,
+          transitions: [archiveTransitionFor(coveredResult!, 'POST_FOLD_TRANSITIONED_RESULT')],
+        };
+      },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.model.doStreamCalls.length, 4);
+    // The fold ran once — during the third request's shaping — and persisted
+    // its checkpoint before the transition landed.
+    assert.equal(fixture.recorded.length, 1);
+    assert.match(promptJson(fixture, 2), /MID_TURN_SUMMARY_SENTINEL/);
+    assert.ok(coveredResult);
+    const fourthPrompt = promptJson(fixture, 3);
+    // The next durable projection judged the checkpoint against the same
+    // snapshot the request was built from: stale block dropped, raw body the
+    // transition removed stays removed, the verbatim anchor and uncovered tail
+    // replay from the effective view.
+    assert.equal(fourthPrompt.includes('maka_history_compact_checkpoint'), false);
+    assert.equal(fourthPrompt.includes('MID_TURN_SUMMARY_SENTINEL'), false);
+    assert.equal(fourthPrompt.includes('RAW_SPAN_ONE_'), false);
+    assert.match(fourthPrompt, /POST_FOLD_TRANSITIONED_RESULT/);
+    assert.equal(fourthPrompt.includes(ANCHOR_TEXT), true);
   });
 
   test('compacts at most once per step, and again once a step is accepted', async () => {

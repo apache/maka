@@ -167,12 +167,11 @@ import {
   shouldAppendContextCompactedNote,
   shouldAppendContextCompactionFailedOpenNote,
 } from './context-budget.js';
-import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
-  historyCompactSourceDigest,
+  checkHistoryCompactCheckpointCurrency,
+  isHistoryCompactContentEvent,
   isProviderHistoryCompactCheckpoint,
-  matchHistoryCompactCheckpointPrefix,
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
@@ -1342,33 +1341,26 @@ export class AiSdkTurn {
           let replayEvents = rawProjectionEvents;
           let effectiveProjectionCheckpoint = projectionCheckpoint;
           if (projectionCheckpoint) {
-            const checkpointMatch = matchHistoryCompactCheckpointPrefix(
+            const currency = checkHistoryCompactCheckpointCurrency(
               projectionCheckpoint,
               rawProjectionEvents,
+              pruned.projectionSnapshot,
             );
-            if (checkpointMatch.reason) {
-              throw new Error(`durable checkpoint projection mismatch: ${checkpointMatch.reason}`);
+            if (currency.status === 'raw_mismatch') {
+              throw new Error(`durable checkpoint projection mismatch: ${currency.reason}`);
             }
             // Content-currency guard: the raw identity still matches, but a
             // transition committed after this fold (e.g. an active-turn prune
             // in this very send) changed the effective view the block was
             // built from. Replay without the stale block — the provider
             // decides fit and overflow recovery re-folds (#4845 review).
-            const pinnedEffectiveDigest = projectionCheckpoint.coverage.effectiveSourceDigest;
-            const coveredEffective = await this.deps.compaction.foldEffectiveModelHistory(
-              checkpointMatch.coveredRuntimeEvents,
-              pruned.projectionSnapshot,
-            );
-            if (
-              pinnedEffectiveDigest === undefined ||
-              historyCompactSourceDigest(coveredEffective) !== pinnedEffectiveDigest
-            ) {
+            if (currency.status === 'effective_history_changed') {
               effectiveProjectionCheckpoint = undefined;
             } else {
               replayEvents = projectHistoryCompactCheckpointReplay(
                 projectionCheckpoint,
-                checkpointMatch.coveredRuntimeEvents,
-                checkpointMatch.successorRuntimeEvents,
+                currency.match.coveredRuntimeEvents,
+                currency.match.successorRuntimeEvents,
               );
             }
             // The checkpoint was capacity-validated before it was persisted.

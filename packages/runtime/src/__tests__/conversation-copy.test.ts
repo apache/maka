@@ -62,13 +62,11 @@ import {
 import {
   buildHistoryCompactCheckpoint,
   historyCompactSourceDigest,
+  isHistoryCompactContentEvent,
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
-import {
-  isHistoryCompactContentEvent,
-  applyRuntimeEventHistoryCompact,
-} from '../history-compaction.js';
+import { applyRuntimeEventHistoryCompact } from '../history-compaction.js';
 import { RuntimeReadModel, type RuntimeReadModelSessionView } from '../runtime-read-model.js';
 import { buildToolOperationId } from '../runtime-commit-sink.js';
 import {
