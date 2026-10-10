@@ -2832,7 +2832,10 @@ export const UsageLongTail: Story = {
     const requiredWidth = timeRange.getBoundingClientRect().width
       + Number.parseFloat(timeCellStyle.paddingLeft)
       + Number.parseFloat(timeCellStyle.paddingRight);
-    expect(requiredWidth).toBeLessThanOrEqual(timeCell!.clientWidth);
+    // Chromium measures text on fractional pixels while clientWidth is an
+    // integer. The one-pixel allowance preserves the no-clipping check
+    // without making the assertion depend on font rasterisation rounding.
+    expect(requiredWidth).toBeLessThanOrEqual(timeCell!.clientWidth + 1);
 
     const longTarget = 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking';
     const targetCellText = within(table).getByText(longTarget);
