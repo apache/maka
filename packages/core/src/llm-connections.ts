@@ -45,6 +45,8 @@ import {
   providerDefaultsOf,
   providerFallbackModelIds,
   providerMenuLabel,
+  providerSupportsApiProtocolSelection,
+  providerSupportsDefaultApiProtocol,
   type ApplyPatchProtocol,
   type ModelApiProtocol,
   type OpenResponsesCompatibilityProfile,
@@ -67,6 +69,8 @@ export {
   providerDefaultsOf,
   providerFallbackModelIds,
   providerMenuLabel,
+  providerSupportsApiProtocolSelection,
+  providerSupportsDefaultApiProtocol,
 };
 export type {
   ApplyPatchProtocol,

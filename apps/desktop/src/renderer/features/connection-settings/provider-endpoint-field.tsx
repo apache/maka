@@ -24,6 +24,7 @@ import { getProviderSettingsCopy } from './settings-provider-copy.js';
 import { openAiChatUrl, openResponsesUrl } from '@maka/core/openai-urls';
 import { normalizeCatalogConnectionBaseUrl } from '@maka/core/runtime-policy';
 import { redactSecrets } from '@maka/core/display-redaction';
+import { providerSupportsApiProtocolSelection } from '@maka/core/llm-connections';
 
 export function ProviderEndpointField(props: {
   providerType: ProviderType;
@@ -33,17 +34,43 @@ export function ProviderEndpointField(props: {
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).shared;
   const url = providerRequestUrlPreview(props.providerType, props.baseUrl, props.apiProtocol);
-  if (props.providerType !== 'custom') return props.children(undefined);
+  const supportsPreview = providerSupportsApiProtocolSelection(props.providerType);
+  if (!supportsPreview) return props.children(undefined);
   const description = url ? `${copy.requestUrlLabel} ${url}` : undefined;
+  const endpointHelpKey = providerEndpointHelpKey(props.providerType, props.apiProtocol);
+  const endpointHelp = endpointHelpKey ? copy[endpointHelpKey] : undefined;
   // Astryx's description is above the input (and hidden with its label).
   // This computed output belongs below it; pass it through aria-description
   // on the control as well, without duplicating the field's visible label.
   return (
     <div className="providerEndpointField">
       {props.children(description)}
+      {endpointHelp && <p className="providerRequestUrlPreview">{endpointHelp}</p>}
       {description && <p className="providerRequestUrlPreview" aria-hidden="true">{description}</p>}
     </div>
   );
+}
+
+export function providerEndpointHelpKey(
+  providerType: ProviderType,
+  apiProtocol?: ModelApiProtocol,
+):
+  | 'azureFoundryEndpointHelp'
+  | 'azureFoundryAnthropicEndpointHelp'
+  | 'bedrockOpenAiEndpointHelp'
+  | 'bedrockAnthropicEndpointHelp'
+  | undefined {
+  if (providerType === 'azure-foundry') {
+    return apiProtocol === 'anthropic-messages'
+      ? 'azureFoundryAnthropicEndpointHelp'
+      : 'azureFoundryEndpointHelp';
+  }
+  if (providerType === 'amazon-bedrock-api-key') {
+    return apiProtocol === 'anthropic-messages'
+      ? 'bedrockAnthropicEndpointHelp'
+      : 'bedrockOpenAiEndpointHelp';
+  }
+  return undefined;
 }
 
 /** Preview the selected protocol when adding, or the default model's protocol when editing. */
@@ -52,7 +79,10 @@ export function providerRequestUrlPreview(
   draftBaseUrl: string,
   apiProtocol: ModelApiProtocol = 'openai-chat',
 ): string | null {
-  if (providerType !== 'custom' || apiProtocol === 'anthropic-messages') {
+  if (
+    !providerSupportsApiProtocolSelection(providerType) ||
+    apiProtocol === 'anthropic-messages'
+  ) {
     return null;
   }
   // A draft must be a complete, saveable HTTP(S) address. Do not substitute
