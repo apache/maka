@@ -46,10 +46,7 @@ import type {
   RetentionRemovalOutcome,
   RetentionRemovalPlan,
 } from './session-retirement-coordinator.js';
-import {
-  ArchiveRetentionClockGuard,
-  ArchiveRetentionTickGate,
-} from './archive-retention-coordination.js';
+import { HostClockGuard, SettingTickGate } from './host-maintenance-guards.js';
 
 /** Revision families a sweep tick may delete. */
 export const ARCHIVE_RETENTION_FAMILIES_PER_TICK = 8;
@@ -129,8 +126,8 @@ export class HostArchiveRetentionCoordinator {
   #loading: Promise<ArchiveRetentionDocument> | undefined;
   /** Serializes every read-modify-write of the document. */
   #writes: Promise<unknown> = Promise.resolve();
-  readonly #clock = new ArchiveRetentionClockGuard();
-  readonly #tickGate = new ArchiveRetentionTickGate();
+  readonly #clock = new HostClockGuard();
+  readonly #tickGate = new SettingTickGate();
   #pass: SweepPass | undefined;
   #draining = false;
 
@@ -166,39 +163,37 @@ export class HostArchiveRetentionCoordinator {
       enabledAt: document.enabledAt,
     };
     const now = this.#now();
-    const { previous, observedThisRun } = this.#clock.observe(now);
     const deadline = archiveRetentionDeadline(setting.enabledAt, setting.days);
     const gap = archiveRetentionGapThreshold(setting.days);
     // A hold ends when its day is over, before or after the deadline alike.
     let hold = document.latest?.hold;
     let heartbeatCleared = false;
-    if (hold && now >= hold.until) {
+    if (this.#clock.shouldClearHold(now, hold?.until)) {
       heartbeatCleared = this.#heartbeatDue(document, now);
       await this.#clearHold(heartbeatCleared ? now : undefined);
       hold = undefined;
     }
-    // A forward jump is caught even when it lands short of the deadline. A
-    // running Host measures from what it saw; a fresh process from the
-    // persisted floor and the newest metadata time, which says when the Host
-    // last ran: one MAX query, once per process.
-    const since = observedThisRun
-      ? previous
-      : Math.max(previous, (await this.#catalog.readLatestSessionMetadataTime()) ?? 0);
-    if (this.#clock.hasForwardJump(now, since, gap)) return this.#hold(since, now);
+    const clock = await this.#clock.decideTick({
+      now,
+      gapThreshold: gap,
+      checkBackwards: now > deadline,
+      readLatestSessionMetadataTime: () => this.#catalog.readLatestSessionMetadataTime(),
+    });
+    if (clock.kind === 'hold') return this.#hold(clock.since, now);
     // A Host can run for weeks without writing session metadata. Persist a
     // coarse heartbeat so a later restart can tell that idle time was spent
     // while the Host was running, rather than treating it as a clock jump.
     const heartbeat =
-      !heartbeatCleared && now >= previous && this.#heartbeatDue(this.#document ?? document, now);
+      !heartbeatCleared &&
+      now >= clock.previous &&
+      this.#heartbeatDue(this.#document ?? document, now);
     // Nothing can be eligible before the policy itself is `days` old, and no
     // candidate is read before then.
     if (now <= deadline) {
       if (heartbeat) await this.#heartbeat(now);
       return false;
     }
-    if (now < previous) return this.#pause(now, heartbeat);
-    const newest = await this.#catalog.readLatestSessionMetadataTime();
-    if (newest !== undefined && now < newest) return this.#pause(now, heartbeat);
+    if (clock.kind === 'pause') return this.#pause(now, heartbeat);
     if (hold) return false;
 
     if (this.#pass?.revision !== setting.revision) {
@@ -455,10 +450,10 @@ export class HostArchiveRetentionCoordinator {
 
   async #set(input: StorageRetentionSetInput): Promise<OperationOutcome<'storage.retention.set'>> {
     if (this.#draining) return draining();
+    // A family admitted under the current setting finishes and is recorded
+    // before this change proceeds; the gate admits no new tick meanwhile.
     return this.#tickGate.runSettingChange(async () => {
       try {
-        // A family admitted under the current setting finishes, and is recorded,
-        // before the setting changes; nothing new is admitted meanwhile.
         return await this.#serialized(async () => {
           const current = await this.#load();
           if (current.revision !== input.expectedRevision) {
