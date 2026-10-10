@@ -1697,8 +1697,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (!mountedRef.current || !id) return;
       try {
         await sideChat.respondToUserQuestion(id, response);
-      } catch {
+      } catch (error) {
         if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+        throw error;
       }
     },
     [mountedRef, sideChat],

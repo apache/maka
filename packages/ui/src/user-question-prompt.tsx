@@ -31,7 +31,11 @@ import { ChoicePanel } from './choice-panel.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
+  clearUserQuestionWizardState,
   createQuestionDrafts,
+  createUserQuestionWizardState,
+  readUserQuestionWizardState,
+  rememberUserQuestionWizardState,
   type QuestionAnswerDraft,
 } from './user-question-prompt-state.js';
 import { useUiLocale } from './locale-context.js';
@@ -45,25 +49,48 @@ export function UserQuestionPrompt(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).questions;
   const titleId = useId();
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [drafts, setDrafts] = useState<QuestionAnswerDraft[]>(() => createQuestionDrafts(props.request.questions));
-  const [answerText, setAnswerText] = useState('');
+  const requestId = props.request.requestId;
+  const [questionIndex, setQuestionIndex] = useState(() =>
+    readUserQuestionWizardState(requestId)?.questionIndex ?? 0);
+  const [drafts, setDrafts] = useState<QuestionAnswerDraft[]>(() =>
+    readUserQuestionWizardState(requestId)?.drafts ?? createQuestionDrafts(props.request.questions));
+  const [answerText, setAnswerText] = useState(() =>
+    readUserQuestionWizardState(requestId)?.answerText ?? '');
   const [responseError, setResponseError] = useState<string>();
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
-  const activeRequestIdRef = useRef(props.request.requestId);
+  const activeRequestIdRef = useRef(requestId);
+  const skipRememberRef = useRef(false);
+  const completedRef = useRef(false);
   const inputRef = useRef<ChatComposerInputHandle>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
-    activeRequestIdRef.current = props.request.requestId;
+    activeRequestIdRef.current = requestId;
+    const restored = readUserQuestionWizardState(requestId)
+      ?? createUserQuestionWizardState(props.request.questions);
     setResponseError(undefined);
-    setQuestionIndex(0);
-    setDrafts(createQuestionDrafts(props.request.questions));
-    setAnswerText('');
+    setQuestionIndex(restored.questionIndex);
+    setDrafts(restored.drafts);
+    setAnswerText(restored.answerText);
     responsePendingRef.current = false;
     setResponsePending(false);
-  }, [props.request.requestId, props.request.questions]);
+    skipRememberRef.current = true;
+    completedRef.current = false;
+  }, [requestId, props.request.questions]);
+
+  useEffect(() => {
+    if (skipRememberRef.current) {
+      skipRememberRef.current = false;
+      return;
+    }
+    rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
+    return () => {
+      if (!completedRef.current) {
+        rememberUserQuestionWizardState(requestId, { questionIndex, drafts, answerText });
+      }
+    };
+  }, [requestId, questionIndex, drafts, answerText]);
 
   const question = props.request.questions[questionIndex];
   if (!question) return null;
@@ -119,6 +146,15 @@ export function UserQuestionPrompt(props: {
     else moveTo(questionIndex + 1, committed);
   }
 
+  async function stop() {
+    if (interactionDisabled) return;
+    try {
+      await props.onStop();
+    } catch {
+      // Adapters may reject Stop; keep wizard drafts until the Host drops the prompt.
+    }
+  }
+
   async function submit(committed: QuestionAnswerDraft[]) {
     if (responsePendingRef.current) return;
     const requestId = props.request.requestId;
@@ -127,6 +163,8 @@ export function UserQuestionPrompt(props: {
     setResponseError(undefined);
     try {
       await props.onRespond(buildUserQuestionResponse(props.request, committed));
+      completedRef.current = true;
+      clearUserQuestionWizardState(requestId);
     } catch (reason) {
       if (mountedRef.current && activeRequestIdRef.current === requestId) setResponseError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -183,7 +221,7 @@ export function UserQuestionPrompt(props: {
           <Button
             variant="ghost"
             isDisabled={props.stopPending}
-            onClick={() => void props.onStop()}
+            onClick={() => void stop()}
             label={props.stopPending ? copy.stopping : copy.stop}
           />
           {questionIndex > 0 ? (
