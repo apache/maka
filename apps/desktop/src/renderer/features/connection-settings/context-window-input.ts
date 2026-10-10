@@ -29,3 +29,20 @@ export function parseContextWindowInput(input: string): number | null {
   const value = Number(match[1] + fraction.padEnd(places, '0').slice(0, places));
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
+
+/** Parse a compaction target as tokens, a percentage of the effective window, or `off`. */
+export function parseCompactionThresholdInput(
+  input: string,
+  effectiveContextWindow: number | undefined,
+): number | null {
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'off' || normalized === '0') return 0;
+  if (normalized.endsWith('%')) {
+    if (effectiveContextWindow === undefined) return null;
+    const percentage = Number(normalized.slice(0, -1));
+    if (!Number.isFinite(percentage) || percentage <= 0 || percentage > 100) return null;
+    const value = Math.round((effectiveContextWindow * percentage) / 100);
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  return parseContextWindowInput(input);
+}

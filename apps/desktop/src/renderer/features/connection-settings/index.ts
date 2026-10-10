@@ -44,7 +44,10 @@ export type {
 } from './provider-panel-shared.js';
 
 export { GenericProviderMark } from './generic-provider-mark.js';
-export { parseContextWindowInput } from './context-window-input.js';
+export {
+  parseCompactionThresholdInput,
+  parseContextWindowInput,
+} from './context-window-input.js';
 export { CapabilityEditor } from './provider-capability-editor.js';
 export { AddModelDialog, ModelParametersDialog } from './provider-add-model-dialog.js';
 

@@ -130,6 +130,7 @@ export interface ModelOverride {
   /** Override ApplyPatch file editing. Omit to use this model's known support default. */
   readonly applyPatch?: boolean;
   readonly contextWindow?: number;
+  /** Proactive compaction target; zero explicitly disables the default. */
   readonly compactionThreshold?: number;
   readonly inputLimit?: number;
   /** Per-request output budget, including thinking tokens; not model capacity. */
@@ -241,7 +242,11 @@ function normalizeModelOverride(entry: unknown): ModelOverride | undefined {
     'maxOutputTokens',
   ] as const) {
     const value = entry[field];
-    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+    if (
+      typeof value === 'number' &&
+      Number.isSafeInteger(value) &&
+      (value > 0 || (field === 'compactionThreshold' && value === 0))
+    )
       declared[field] = value;
   }
   for (const field of ['displayName', 'description', 'knowledgeCutoff'] as const) {

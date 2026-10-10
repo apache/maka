@@ -35,7 +35,7 @@ test('context budgeting prefers a model input limit over its context window', ()
   };
 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 600);
-  assert.equal(resolveDeclaredContextWindow(connection, undefined), undefined);
+  assert.equal(resolveDeclaredContextWindow(connection, undefined), 390);
   assert.deepEqual(buildDefaultContextBudgetPolicy().historyCompact?.midTurn, { enabled: true });
 });
 
@@ -107,7 +107,7 @@ test('capacity and compaction remain independent in the execution projection', (
       { ...connection, modelOverrides: { custom: { contextWindow: 200000 } } },
       undefined,
     ),
-    undefined,
+    130_000,
   );
 });
 
@@ -120,7 +120,31 @@ test('a reported model context window is metadata, not a Maka declaration', () =
   };
 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 100_000);
-  assert.equal(resolveDeclaredContextWindow(connection, undefined), undefined);
+  assert.equal(resolveDeclaredContextWindow(connection, undefined), 65_000);
+});
+
+test('explicit compaction thresholds override the default and zero disables it', () => {
+  const connection = {
+    slug: 'openai',
+    providerType: 'openai' as const,
+    defaultModel: 'model',
+    models: [{ id: 'model', contextWindow: 100_000, inputLimit: 80_000 }],
+  };
+  assert.equal(resolveDeclaredContextWindow(connection, undefined), 52_000);
+  assert.equal(
+    resolveDeclaredContextWindow(
+      { ...connection, modelOverrides: { model: { compactionThreshold: 60_000 } } },
+      undefined,
+    ),
+    60_000,
+  );
+  assert.equal(
+    resolveDeclaredContextWindow(
+      { ...connection, modelOverrides: { model: { compactionThreshold: 0 } } },
+      undefined,
+    ),
+    undefined,
+  );
 });
 
 test('Codex OAuth pinned windows do not inherit public API input limits', () => {
@@ -136,7 +160,7 @@ test('Codex OAuth pinned windows do not inherit public API input limits', () => 
       defaultModel: modelId,
     };
     assert.equal(resolveSelectedModelContextWindow(connection, undefined), window, modelId);
-    assert.equal(resolveDeclaredContextWindow(connection, undefined), undefined);
+    assert.equal(resolveDeclaredContextWindow(connection, undefined), Math.floor(window * 0.65));
   }
 });
 
@@ -149,7 +173,7 @@ test('Codex OAuth discovered windows remain usable after model discovery', () =>
       models: [{ id, contextWindow: 272_000 }],
     };
     assert.equal(resolveSelectedModelContextWindow(connection, undefined), 272_000, id);
-    assert.equal(resolveDeclaredContextWindow(connection, undefined), undefined);
+    assert.equal(resolveDeclaredContextWindow(connection, undefined), 176_800);
     assert.equal(
       resolveSelectedModelContextWindow(
         { ...connection, modelOverrides: { [id]: { inputLimit: 262_144 } } },

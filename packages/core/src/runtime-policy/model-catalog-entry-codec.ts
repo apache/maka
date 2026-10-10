@@ -77,7 +77,7 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
           compactionThreshold: integerValue(
             item.compactionThreshold,
             'compaction threshold',
-            1,
+            0,
             Number.MAX_SAFE_INTEGER,
           ),
         }),

@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseContextWindowInput } from '../../renderer/features/connection-settings/index.js';
+import {
+  parseCompactionThresholdInput,
+  parseContextWindowInput,
+} from '../../renderer/features/connection-settings/context-window-input.js';
 
 test('context windows preserve integers and parse decimal K/M without rounding', () => {
   const cases: Array<[string, number]> = [
@@ -45,4 +48,13 @@ test('context windows reject malformed, fractional, nonpositive and unsafe value
   ]) {
     assert.equal(parseContextWindowInput(input), null, input);
   }
+});
+
+test('compaction thresholds accept percentages and an explicit off value', () => {
+  assert.equal(parseCompactionThresholdInput('65%', 1_000_000), 650_000);
+  assert.equal(parseCompactionThresholdInput('12.5%', 800_000), 100_000);
+  assert.equal(parseCompactionThresholdInput('off', 800_000), 0);
+  assert.equal(parseCompactionThresholdInput('0', 800_000), 0);
+  assert.equal(parseCompactionThresholdInput('65%', undefined), null);
+  assert.equal(parseCompactionThresholdInput('1.5M', 800_000), 1_500_000);
 });
