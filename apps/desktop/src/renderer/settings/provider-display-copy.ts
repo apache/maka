@@ -114,6 +114,11 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'Google Gemini', description: 'Google AI Studio API 連線', badge: 'API' },
     en: { name: 'Google Gemini', description: 'Google AI Studio API access.', badge: 'API' },
   },
+  meta: {
+    'zh-CN': { name: 'Meta', description: 'Meta Model API 官方接入', badge: 'API' },
+    'zh-TW': { name: 'Meta', description: 'Meta Model API 官方連線', badge: 'API' },
+    en: { name: 'Meta', description: 'Official Meta Model API access.', badge: 'API' },
+  },
   xai: {
     'zh-CN': { name: 'xAI', description: 'xAI 官方接入，Grok 系列模型', badge: 'API' },
     'zh-TW': { name: 'xAI', description: 'xAI 官方 API 連線，支援 Grok 系列模型', badge: 'API' },

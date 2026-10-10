@@ -117,6 +117,8 @@ export type ProviderModelDiscovery =
       responseShape?: 'array-or-data';
       modelProtocols?: 'commandcode';
       filter?: 'language-models' | 'tool-capable';
+      /** Provider-documented model id families that cannot use Maka's chat runtime. */
+      excludeModelIdPrefixes?: readonly string[];
     }
   | {
       kind: 'fireworks';
@@ -876,6 +878,27 @@ const providerRegistry = {
     catalogGroup: 'api',
     signupUrl: 'https://aistudio.google.com/app/apikey',
     catalogOrder: 11,
+  },
+  meta: {
+    label: 'Meta Model API',
+    menuLabel: 'Meta',
+    baseUrl: 'https://api.meta.ai/v1',
+    authKind: 'api_key',
+    // First-party Meta Model API ids are hand-curated; models.dev has no official Meta provider row.
+    fallbackModels: ['muse-spark-1.3', 'muse-spark-1.3-contributor'],
+    status: 'ready',
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+    },
+    modelDiscovery: {
+      kind: 'protocol',
+      excludeModelIdPrefixes: ['muse-image-', 'muse-voice-'],
+    },
+    category: 'overseas',
+    catalogGroup: 'api',
+    signupUrl: 'https://dev.meta.ai/',
+    catalogOrder: 11.5,
   },
   deepseek: {
     label: 'DeepSeek',
