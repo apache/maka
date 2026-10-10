@@ -286,6 +286,47 @@ describe('ClaudeCodeSessionAdapter', () => {
     });
   });
 
+  test('imports main records from a transcript containing sidechain records', async () => {
+    await withClaudeHome(async (home) => {
+      const id = 'aaaaaaaa-0000-4000-8000-000000000008';
+      await seed(home, id, [
+        userRecord('main request'),
+        { ...userRecord('sidechain request'), isSidechain: true },
+        {
+          ...assistantRecord({ text: 'sidechain reply', stopReason: 'end_turn' }),
+          isSidechain: true,
+        },
+        assistantRecord({ text: 'main reply', stopReason: 'end_turn' }),
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.equal((await adapter.listSessions())[0]?.id, id);
+      assert.deepEqual(
+        (await adapter.readSession(id)).messages
+          .filter((message) => message.type === 'user' || message.type === 'assistant')
+          .map((message) => message.text),
+        ['main request', 'main reply'],
+      );
+    });
+  });
+
+  test('rejects a transcript without a source working directory', async () => {
+    await withClaudeHome(async (home) => {
+      const id = 'aaaaaaaa-0000-4000-8000-000000000040';
+      const directory = join(home, 'projects', '-workspace-project');
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, `${id}.jsonl`),
+        `${JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: 'unbound' },
+        })}\n`,
+      );
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.deepEqual(await adapter.listSessions(), []);
+      await assert.rejects(adapter.readSession(id), /could not be read/u);
+    });
+  });
+
   test('a transcript larger than the import budget remains visible in the catalog', async () => {
     await withClaudeHome(async (home) => {
       const sessionId = 'aaaaaaaa-0000-4000-8000-000000000016';

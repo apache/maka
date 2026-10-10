@@ -484,6 +484,7 @@ async function convertCodexRollout(
 
 class CodexRolloutConverter {
   private readonly messages: StoredMessage[] = [];
+  private readonly completedItemIds = new Set<string>();
   private readonly failedTurnIds = new Set<string>();
   private activeTurnId: string | undefined;
   private activeTurnIsExplicit = false;
@@ -561,6 +562,14 @@ class CodexRolloutConverter {
       if (eventType === 'item_completed') {
         const item = asRecord(payload.item);
         const itemType = stringField(item, 'type')?.toLowerCase();
+        const itemId = stringField(item, 'id') ?? stringField(item, 'client_id');
+        if (
+          itemId !== undefined &&
+          (itemType === 'usermessage' || itemType === 'agentmessage' || itemType === 'reasoning')
+        ) {
+          if (this.completedItemIds.has(itemId)) return;
+          this.completedItemIds.add(itemId);
+        }
         const eventTurnId = stringField(payload, 'turn_id');
         if (eventTurnId) {
           this.activeTurnId = eventTurnId;
