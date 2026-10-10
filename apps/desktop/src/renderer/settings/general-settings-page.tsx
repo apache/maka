@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { JevSettingsController } from '../features/jev-settings';
+import { JevSettingsSection } from '../features/jev-settings';
 import { useEffect, useMemo, useState } from "react";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
@@ -34,7 +34,6 @@ import type {
   NetworkProxySettings,
   RuntimeHostNetworkProxySettings,
   UpdateAppSettingsResult,
-  UpdateAppSettingsInput,
 } from '@maka/core/settings';
 import type {
   IdentifiedLlmConnection,
@@ -312,9 +311,6 @@ export function GeneralSettingsPage(props: {
       ) : null}
       {runtimeHostSettingsAvailable ? (
         <>
-          {host && <RuntimeHostSettingsGenerationBoundary>
-            <JevSettingsSection settings={props.settings.jev} isInteractive={runtimeHostSettingsInteractive} onUpdate={props.onUpdate} />
-          </RuntimeHostSettingsGenerationBoundary>}
           <ShellSettingsSection
             settings={props.settings}
             isInteractive={runtimeHostSettingsInteractive}
@@ -331,6 +327,9 @@ export function GeneralSettingsPage(props: {
               testNetworkProxy={props.testNetworkProxy!}
             />
           </SettingsSection>
+          {host && <RuntimeHostSettingsGenerationBoundary>
+            <JevSettingsSection settings={props.settings.jev} isInteractive={runtimeHostSettingsInteractive} onUpdate={props.onUpdate} />
+          </RuntimeHostSettingsGenerationBoundary>}
         </>
       ) : showRuntimeHostSettingsPlaceholder ? (
         <>
@@ -396,6 +395,9 @@ function ShellSettingsSection(props: {
       await props.onUpdate({
         shell: { preference, executable: normalizedExecutable },
       });
+      // The save action disappears once the draft matches what was saved, so
+      // the confirmation has to come from somewhere else.
+      if (mountedRef.current) toast.success(copy.shellSaved);
     } catch (error) {
       if (mountedRef.current) {
         toast.error(
@@ -451,15 +453,20 @@ function ShellSettingsSection(props: {
           />
         </SettingsField>
       ) : null}
-      <SettingsActions>
-        <Button
-          variant="primary"
-          isDisabled={!canSave || !props.isInteractive}
-          isLoading={saving}
-          onClick={() => void save()}
-          label={saving ? copy.savingShell : dirty ? copy.saveShell : copy.shellSaved}
-        />
-      </SettingsActions>
+      {/* Only while there is something to save. A permanent disabled
+          "已保存" button took a row of its own under the select even in the
+          default auto mode, where there is never anything to confirm. */}
+      {dirty || saving ? (
+        <SettingsActions>
+          <Button
+            variant="secondary"
+            isDisabled={!canSave || !props.isInteractive}
+            isLoading={saving}
+            onClick={() => void save()}
+            label={saving ? copy.savingShell : copy.saveShell}
+          />
+        </SettingsActions>
+      ) : null}
     </SettingsSection>
   );
 }
@@ -929,22 +936,15 @@ function NetworkProxySection(props: {
               }
               placeholder="metaso.cn, baidu.com"
               label={copy.bypassList}
-              description={copy.bypassHelp}
+              description={copy.bypassHelp(proxyDraft.autoBypassDomains.length)}
               width="100%"
               isDisabled={!props.isInteractive}
             />
           </SettingsField>
 
-          <SettingsField>
-            <Banner
-              status="info"
-              title={copy.autoBypass(proxyDraft.autoBypassDomains.length)}
-            />
-          </SettingsField>
-
           <SettingsActions>
             <Button
-              variant="primary"
+              variant="secondary"
               isLoading={testing}
               isDisabled={!props.isInteractive}
               onClick={() => void testProxy(passwordDraft)}
@@ -981,38 +981,4 @@ function csvList(value: string): string[] {
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean);
-}
-
-function JevSettingsSection({ settings, isInteractive, onUpdate }: {
-  settings: AppSettings['jev'];
-  isInteractive: boolean;
-  onUpdate(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
-}) {
-  return <JevSettingsController isInteractive={isInteractive} onUpdate={onUpdate}>
-    {({copy, key, setKey, saving, save}) => (
-
-    <details className="jevAdvancedSettings">
-      <summary>{copy.advanced}</summary>
-      <SettingsSection title={copy.title}>
-        <SettingsRow label={copy.title} description={copy.help} align="start" end={(
-          <Switch label={copy.title} isLabelHidden value={settings.enabled}
-            isDisabled={!isInteractive || saving || !settings.apiKey}
-            onChange={(enabled) => void save({ enabled })} />
-        )} />
-        <SettingsField><FormLayout>
-          <TextInput label={copy.key} type="password" value={key}
-            placeholder={settings.apiKey ? copy.saved : 'TypeSafe API Key'}
-            description={copy.behavior} isDisabled={!isInteractive || saving}
-            onChange={setKey} />
-          <SettingsActions>
-            <Button label={saving ? copy.saving : copy.save} variant="primary"
-              isDisabled={!isInteractive || saving || !key.trim()} onClick={() => void save({ apiKey: key.trim() })} />
-            {settings.apiKey && <Button label={copy.clear} variant="secondary"
-              isDisabled={!isInteractive || saving} onClick={() => void save({ apiKey: '', enabled: false })} />}
-          </SettingsActions>
-        </FormLayout></SettingsField>
-      </SettingsSection>
-    </details>
-    )}
-  </JevSettingsController>;
 }

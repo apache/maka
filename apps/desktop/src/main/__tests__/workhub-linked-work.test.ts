@@ -20,15 +20,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import {
-  workHubLinkedWork,
-  workHubTurnResultPreview,
-} from "../../renderer/features/workhub/index.js";
+import { parseHTML } from 'linkedom';
 import { ChatSurfaceLayout, LocaleProvider } from '@maka/ui';
-import { WorkHubConversation, WorkHubDelegationStatus } from '../../renderer/features/workhub/testing.js';
+import { WorkHubConversation, workHubLinkedWork } from '../../renderer/features/workhub/testing.js';
 import { renderTranscriptMarkup } from './transcript-test-dom.js';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
+
+test('WorkHub uses the common answer footer and failure presentation without prompt status or branch actions', async () => {
+  const ts = 1_800_000_000_000;
+  const markup = await renderTranscriptMarkup(createElement(LocaleProvider, { locale: 'en', children: null },
+    createElement(ChatSurfaceLayout, { composer: null, children: null }, createElement(WorkHubConversation, {
+      activeSession: { id: 'coordination', name: 'WorkHub', status: 'active', labels: [], isFlagged: false, isArchived: false, hasUnread: false, backend: 'ai-sdk', llmConnectionSlug: 'test', connectionLocked: false, model: 'test', permissionMode: 'ask' },
+      messages: [
+        { type: 'user', id: 'ask', turnId: 'turn', ts, text: 'Check the task' },
+        { type: 'assistant', id: 'answer', turnId: 'turn', ts: ts + 1000, modelId: 'model', text: 'Partial answer' },
+        { type: 'turn_state', id: 'failed', turnId: 'turn', ts: ts + 2000, status: 'failed', errorClass: 'auth', failureMessage: 'Provider rejected this credential' },
+      ],
+      workLinks: [{ id: 'link', coordinationTurnId: 'turn', targetSessionId: 'target', targetSessionName: 'Target task' }],
+      onNew: () => {}, onOpenWork: () => {}, scrollBehavior: 'auto',
+    })),
+  ));
+  const { document } = parseHTML(markup);
+  const user = document.querySelector('.maka-user-message')!;
+  assert.equal(user.querySelectorAll('.workhub-delegation-status, .maka-message-status-time').length, 0);
+  assert.ok(user.querySelector('[data-message-id="ask"]'));
+  const footer = document.querySelector('.maka-turn-footer')!;
+  assert.ok(footer.querySelector('[data-action="copy"]'));
+  assert.ok(footer.querySelector('time'));
+  assert.equal(footer.querySelectorAll('[data-action="branch"]').length, 0);
+  assert.match(document.querySelector('.maka-turn-failed-banner')!.textContent!, /authentication|sign in|credential/i);
+});
 
 test('durable task results restore Host-scoped work links without treating failed or unrelated tools as delegations', () => {
   const target = JSON.stringify(['host-a', 'task-a']);
@@ -49,38 +70,7 @@ test('durable task results restore Host-scoped work links without treating faile
   ], [], 'Work'), []);
 });
 
-test('a completed delegation renders only its status beside the prompt timestamp', () => {
-  const target = JSON.stringify(['host-a', 'task-a']);
-  const markup = renderToStaticMarkup(createElement(WorkHubDelegationStatus, {
-    work: {
-      id: 'delegation-record',
-      coordinationTurnId: 'coordination-turn',
-      targetSessionId: target,
-      targetSessionName: 'Release checklist',
-      targetMessageId: 'delegated-message',
-      targetTurnId: 'target-turn',
-      state: 'completed',
-      resultPreview: 'All release checks passed. The report is ready.',
-    },
-    locale: 'en',
-  }));
-
-  assert.match(markup, /Completed/u);
-  assert.doesNotMatch(markup, /All release checks|Open result/u);
-});
-
-test('delegated result previews select the exact Turn and stay character-bounded', () => {
-  const preview = workHubTurnResultPreview([
-    { type: 'assistant', id: 'other-answer', turnId: 'other-turn', ts: 1, modelId: 'model', text: 'wrong result' },
-    { type: 'assistant', id: 'target-answer', turnId: 'target-turn', ts: 2, modelId: 'model', text: `  ${'界'.repeat(700)}  ` },
-  ], 'target-turn');
-
-  assert.equal(Array.from(preview ?? '').length, 600);
-  assert.equal(preview?.endsWith('…'), true);
-  assert.doesNotMatch(preview ?? '', /wrong result/u);
-});
-
-test('a shared coordination turn keeps every Work label without assigning one Work color to the whole turn', async () => {
+test('a shared coordination turn divides its clickable identity rail equally between Works', async () => {
   const markup = await renderTranscriptMarkup(createElement(LocaleProvider, { locale: 'en', children: null },
     createElement(ChatSurfaceLayout, { composer: null, children: null }, createElement(WorkHubConversation, {
       activeSession: { id: 'coordination', name: 'WorkHub', status: 'active', labels: [], isFlagged: false, isArchived: false, hasUnread: false, backend: 'ai-sdk', llmConnectionSlug: 'test', connectionLocked: false, model: 'test', permissionMode: 'ask' },
@@ -91,7 +81,11 @@ test('a shared coordination turn keeps every Work label without assigning one Wo
   ));
   assert.match(markup, /Workspace \/ Alpha/);
   assert.match(markup, /Workspace \/ Beta/);
-  assert.doesNotMatch(markup, /data-turn-accent/);
+  assert.match(markup, /data-turn-accent="true"/);
+  assert.match(markup, /inset-block-start:0%;inset-block-end:auto;height:50%/);
+  assert.match(markup, /inset-block-start:50%;inset-block-end:auto;height:50%/);
+  assert.match(markup, /Filter conversation by Work: Alpha/);
+  assert.match(markup, /Filter conversation by Work: Beta/);
 });
 
 
@@ -101,4 +95,26 @@ test('WorkHub workspace display names handle Host paths independently of rendere
   assert.equal(workspaceNameFromCwd('C:\\projects\\maka\\'), 'maka');
   assert.equal(workspaceNameFromCwd(undefined), undefined);
   assert.equal(workspaceNameFromCwd('/'), undefined);
+});
+
+
+test('stop and resume keep their scoped Session identity through pending, success and failure', () => {
+  const target = JSON.stringify(['host-a', 'task-a']);
+  const coordination = JSON.stringify(['host-a', 'maka_workhub_coordination']);
+  const catalog = [{ id: target, name: 'Login UI', cwd: '/projects/login' }, { id: JSON.stringify(['host-b', 'task-a']), name: 'Other host' }];
+  for (const operation of ['stop', 'resume'] as const) {
+    const call: ToolCallMessage = { type: 'tool_call', id: operation, turnId: 'control-turn', ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request: { operation, targetSessionId: 'task-a' } } };
+    const pending = workHubLinkedWork([call], catalog, 'Work', coordination);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.targetSessionId, target);
+    const failed: ToolResultMessage = { type: 'tool_result', id: 'failure', turnId: call.turnId, ts: 2, toolUseId: call.id, isError: true, content: { kind: 'text', text: 'Safe-boundary resume is disabled' } };
+    const link = workHubLinkedWork([call, failed], catalog, 'Work', coordination)[0]!;
+    assert.equal(link.targetSessionId, target);
+    const success: ToolResultMessage = { ...failed, isError: false, content: { kind: 'json', value: { disposition: `${operation}_work`, targetSessionKey: target, outcome: operation === 'stop' ? 'stop_delivered' : 'resume_started' } } };
+    const links = workHubLinkedWork([call, success], catalog, 'Work', coordination);
+    assert.equal(links.length, 1);
+    assert.equal(links[0]?.targetSessionId, target);
+    assert.deepEqual(workHubLinkedWork([call, failed], catalog, 'Work'), []);
+    assert.deepEqual(workHubLinkedWork([{ ...call, toolName: 'unrelated' }, success], catalog, 'Work', coordination), []);
+  }
 });

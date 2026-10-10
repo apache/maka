@@ -86,11 +86,15 @@ export function SessionBundleTasks(props: {
   // Its own label, and segment names no row action shares. `来源` is what an
   // adapter is; this switch is not that. And a row's action is called 导出 too,
   // so two controls answering to one name is a person tabbing to the wrong one.
+  //
+  // Content width, not `layout="fill"`: a full-width bar under the page title
+  // outweighed the title itself. The page header belongs to the settings
+  // surface (and its trailing slot to the runtime host selector), so the switch
+  // leads the page at the content column's start instead.
   const modeSwitch = (
     <SegmentedControl
       label={copy.modeLabel}
       value={mode}
-      layout="fill"
       size="sm"
       onChange={(next) => {
         // The note reports what the other half just did. Carrying it across
@@ -122,7 +126,9 @@ export function SessionBundleTasks(props: {
 
   return (
     <>
-      {props.renderSection({ variant: 'bare', children: modeSwitch })}
+      {/* HStack, because the section body stretches its children: the
+          control would hug its segments but still paint its track full width. */}
+      {props.renderSection({ variant: 'bare', children: <HStack>{modeSwitch}</HStack> })}
       {mode === 'export'
         ? props.renderSection({
             title: copy.exportTitle,

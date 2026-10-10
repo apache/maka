@@ -261,6 +261,62 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     await drainIterator(iterator);
   });
 
+  test('the session run epoch bumps on every turn start and end', async () => {
+    const store = memoryStore();
+    const backends = new BackendRegistry();
+    const backend = new BlockingBackend(SESSION_ID, {});
+    backends.register('ai-sdk', () => backend);
+    let id = 0;
+    const kernel = new RuntimeKernel({
+      store,
+      backends,
+      newId: () => `epoch-id-${++id}`,
+      now: () => id,
+    });
+
+    assert.equal(kernel.sessionRunEpoch(SESSION_ID), 0);
+
+    const iterator = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-epoch-1', text: 'go' })
+      [Symbol.asyncIterator]();
+    await iterator.next();
+    const afterStart = kernel.sessionRunEpoch(SESSION_ID);
+    assert.ok(afterStart >= 1, 'a turn entering the active set bumps the epoch');
+
+    backend.releaseBlockedSend();
+    await drainIterator(iterator).catch(() => undefined);
+    assert.ok(
+      kernel.sessionRunEpoch(SESSION_ID) > afterStart,
+      'the turn leaving the active set bumps the epoch again',
+    );
+  });
+
+  test('each kernel gets its own host generation; epochs restart per process (#5713 review)', () => {
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', () => new BlockingBackend(SESSION_ID, {}));
+    const first = new RuntimeKernel({
+      store: memoryStore(),
+      backends,
+      newId: () => 'unused',
+      now: () => 0,
+      hostGeneration: () => 'host-generation-1',
+    });
+    // A second kernel stands in for the restarted Host process: a fresh
+    // generation and epoch counters back to zero, even though the previous
+    // process may have left a higher epoch on a client's catalog row.
+    const second = new RuntimeKernel({
+      store: memoryStore(),
+      backends,
+      newId: () => 'unused',
+      now: () => 0,
+      hostGeneration: () => 'host-generation-2',
+    });
+    assert.equal(first.sessionHostGeneration(), 'host-generation-1');
+    assert.equal(second.sessionHostGeneration(), 'host-generation-2');
+    assert.equal(first.sessionRunEpoch(SESSION_ID), 0);
+    assert.equal(second.sessionRunEpoch(SESSION_ID), 0);
+  });
+
   test('a generation stopped after Run reservation cannot send on the stale backend', async () => {
     const store = memoryStore();
     const backends = new BackendRegistry();

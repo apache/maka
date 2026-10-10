@@ -26,7 +26,7 @@ import { build } from 'esbuild';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import type { OnboardingSnapshot } from '../onboarding-service.js';
 import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
-import { createOnboardingSnapshotPoller } from '../../renderer/use-onboarding-snapshot.js';
+import { createOnboardingSnapshotPoller } from '../../renderer/application/contracts/onboarding/onboarding-authority.js';
 
 const owners = [
   { hostId: 'local-host', targetEpoch: 'local-epoch', profileId: 'local', profileName: 'Local', profileKind: 'local', profileAccess: 'owner', readiness: 'ready' },
@@ -67,8 +67,9 @@ async function harness() {
     async invoke(channel: string, scope?: { hostId?: string }, sessionId?: string) {
       calls.push({ channel, hostId: scope?.hostId });
       switch (channel) {
-        case 'runtime-host:activeIdentity': return owners[0];
-        case 'runtime-host:identities': return [...owners, guest];
+        case 'runtime-host:identities': return [...owners, guest].map((identity) => ({
+          ...identity, epoch: identity.targetEpoch, isDefault: identity === owners[0],
+        }));
         case 'runtime-host:awaitReady': return { ready: true };
         case 'onboarding:getSnapshot':
           if (scope?.hostId === 'remote-host' && failRemote) throw new Error('remote offline');
@@ -171,8 +172,8 @@ test('a Renderer Session event crosses preload to only its owning Host update', 
       assert.equal(update.sessionId, desktopSessionKey({ hostId: 'remote-host', sessionId: 'remote-task' }));
       receiveUpdate();
     },
-    onError: (message) => assert.fail(message),
-  }, () => 'en');
+    onError: () => assert.fail('unexpected onboarding read failure'),
+  });
   await poller.pull();
   const unsubscribe = fixture.bridge.sessions.subscribeChanges((event) => {
     if (event.sessionId) void poller.pullSession(event.sessionId);

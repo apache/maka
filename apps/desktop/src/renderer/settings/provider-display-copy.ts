@@ -174,20 +174,10 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'LocalAI', description: '本機 LocalAI 服務，可選金鑰保護', badge: 'Local' },
     en: { name: 'LocalAI', description: 'Local models served by LocalAI, with optional API key.', badge: 'Local' },
   },
-  'openai-compatible': {
-    'zh-CN': { name: '自定义中转站（OpenAI Chat）', description: 'OpenAI Chat Completions 兼容中转站、代理服务或自部署网关。', badge: '中转' },
-    'zh-TW': { name: '自訂中轉站（OpenAI Chat）', description: 'OpenAI Chat Completions 相容中轉站、代理服務或自部署閘道器。', badge: '中轉' },
-    en: { name: 'Custom relay (OpenAI Chat)', description: 'OpenAI Chat Completions-compatible relay, proxy, or self-hosted gateway.', badge: 'Relay' },
-  },
-  'openai-responses-compatible': {
-    'zh-CN': { name: '自定义中转站（OpenAI Responses）', description: 'OpenAI Responses API 兼容中转站、代理服务或自部署网关。', badge: 'Responses' },
-    'zh-TW': { name: '自訂中轉站（OpenAI Responses）', description: 'OpenAI Responses API 相容中轉站、代理服務或自部署閘道器。', badge: 'Responses' },
-    en: { name: 'Custom relay (OpenAI Responses)', description: 'OpenAI Responses-compatible relay, proxy, or self-hosted gateway.', badge: 'Responses' },
-  },
-  'anthropic-compatible': {
-    'zh-CN': { name: '自定义中转站（Anthropic）', description: 'Anthropic Messages 兼容中转站、代理服务或自部署网关。', badge: 'Anthropic' },
-    'zh-TW': { name: '自訂中轉站（Anthropic）', description: 'Anthropic Messages 相容中轉站、代理服務或自部署閘道器。', badge: 'Anthropic' },
-    en: { name: 'Custom relay (Anthropic)', description: 'Anthropic Messages-compatible relay, proxy, or self-hosted gateway.', badge: 'Anthropic' },
+  custom: {
+    'zh-CN': { name: '自定义连接', description: '中转站、代理服务或自部署网关，支持 OpenAI Chat、OpenAI Responses 和 Anthropic Messages，可按模型选择协议。', badge: '自定义' },
+    'zh-TW': { name: '自訂連線', description: '中轉站、代理服務或自部署閘道器，支援 OpenAI Chat、OpenAI Responses 和 Anthropic Messages，可依模型選擇協定。', badge: '自訂' },
+    en: { name: 'Custom connection', description: 'Relay, proxy, or self-hosted gateway speaking OpenAI Chat, OpenAI Responses, or Anthropic Messages, chosen per model.', badge: 'Custom' },
   },
   'fireworks-ai': {
     'zh-CN': { name: 'Fireworks AI', description: 'Serverless 开源模型托管', badge: 'API' },

@@ -52,6 +52,11 @@ function installService(
     rename: async () => undefined,
     remove: async () => ({ disposition: 'removed', archivedSubtaskCount: 0 }),
     previewRemoval: async () => 0,
+    previewRemovals: async () => ({
+      archivableSubtaskCount: 0,
+      removedSubtaskCount: 0,
+      worktreeCount: 0,
+    }),
     moveToProject: async (sessionId: string, projectId: string | null) => {
       h.moves.push({ sessionId, projectId });
       return outcome;
@@ -62,6 +67,7 @@ function installService(
 function createActions(h: Harness, service: SessionNavigationSessionService) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
+    acquireAutomaticQueryBlock: () => ({ release: () => undefined }),
     clearSessionRendererState: () => undefined,
     pendingSessionRowActionsRef: { current: new Set<string>() },
     refreshSessions: async () => {

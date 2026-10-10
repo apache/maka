@@ -30,5 +30,5 @@ function WorkHubApplication({ children }: { children: ReactNode }) {
   const [locale, setLocale] = useState(services.initialLocale);
   useEffect(() => services.subscribeAppearance(setLocale), [services]);
   useEffect(() => { void services.presentation.ready(); }, [services]);
-  return <LocaleProvider locale={locale}><AstryxLocaleProvider><ToastProvider>{children}</ToastProvider></AstryxLocaleProvider></LocaleProvider>;
+  return <LocaleProvider locale={locale}><AstryxLocaleProvider><ToastProvider><div className="workhub-application">{children}</div></ToastProvider></AstryxLocaleProvider></LocaleProvider>;
 }

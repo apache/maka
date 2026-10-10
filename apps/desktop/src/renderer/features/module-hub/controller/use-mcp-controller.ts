@@ -25,17 +25,27 @@ import {
   type McpConfigUpdateResult,
   type McpServerConfig,
   type McpServerStatus,
+  type OpencliChromeStatus,
 } from '@maka/core/mcp';
 import { useMountedRef } from '@maka/ui';
+import type { McpIpcResult } from '../../../../shared/mcp-ipc.js';
+import { unwrapMcpIpcResult } from '../model/mcp-page-model.js';
 import { useModuleHubServices } from '../services-context.js';
 import type { ModuleHubRuntimeHostRef } from '../ports.js';
 import { isDefaultRuntimeHostCurrent, runOnDefaultRuntimeHost } from './default-runtime-host.js';
+
+const CHROME_POLL_MS = 2000;
+
+export function isChromeServer(server: McpServerConfig, chrome: OpencliChromeStatus | null): boolean {
+  return chrome !== null && 'command' in server && server.command === chrome.command;
+}
 
 export function useMcpController() {
   const { mcp, runtimeHosts } = useModuleHubServices();
   const mounted = useMountedRef();
   const [config, setConfig] = useState<McpConfigFile>(createDefaultMcpConfig);
   const [statuses, setStatuses] = useState<McpServerStatus[]>([]);
+  const [chrome, setChrome] = useState<OpencliChromeStatus | null>(null);
   const [busy, setBusy] = useState<string | null>('load');
   const [error, setError] = useState<unknown>(null);
   const operation = useRef<{ key: string; host?: ModuleHubRuntimeHostRef; cancelled?: boolean } | null>(null);
@@ -45,14 +55,17 @@ export function useMcpController() {
     const request = ++revision.current;
     try {
       const result = await runOnDefaultRuntimeHost(runtimeHosts, (host) =>
-        Promise.all([mcp.getConfig(host), mcp.listStatuses(host)]),
+        Promise.all([mcp.getConfig(host), mcp.listStatuses(host), mcp.chromeStatus(host)]),
       );
       if (
         !await isDefaultRuntimeHostCurrent(runtimeHosts, result.host) ||
         !mounted.current || request !== revision.current
       ) return;
-      setConfig(result.value[0]);
-      setStatuses(result.value[1]);
+      const nextConfig = unwrapMcpIpcResult(result.value[0]);
+      const nextStatuses = unwrapMcpIpcResult(result.value[1]);
+      setConfig(nextConfig);
+      setStatuses(nextStatuses);
+      setChrome(result.value[2]);
     } catch (failure) {
       if (mounted.current && request === revision.current) setError(failure);
     } finally {
@@ -75,7 +88,22 @@ export function useMcpController() {
     };
   }, [mcp, runtimeHosts, reload]);
 
-  async function run<T>(key: string, action: (host: ModuleHubRuntimeHostRef) => Promise<T>): Promise<T | undefined> {
+  // Chrome gives no signal when the extension connects, so a configured but
+  // unconnected Chrome server is polled while this page is open.
+  const awaitingChrome = chrome !== null && !chrome.connected &&
+    Object.values(config.mcpServers).some((server) => isChromeServer(server, chrome));
+  useEffect(() => {
+    if (!awaitingChrome) return;
+    const timer = setInterval(() => {
+      void runOnDefaultRuntimeHost(runtimeHosts, (host) => mcp.chromeStatus(host)).then(
+        (result) => { if (mounted.current) setChrome(result.value); },
+        () => undefined,
+      );
+    }, CHROME_POLL_MS);
+    return () => clearInterval(timer);
+  }, [awaitingChrome, mcp, runtimeHosts, mounted]);
+
+  async function run<T>(key: string, action: (host: ModuleHubRuntimeHostRef) => Promise<McpIpcResult<T>>): Promise<T | undefined> {
     if (operation.current) return undefined;
     const current: { key: string; host?: ModuleHubRuntimeHostRef; cancelled?: boolean } = { key };
     operation.current = current;
@@ -86,7 +114,7 @@ export function useMcpController() {
         current.host = host;
         return action(host);
       });
-      if (mounted.current && await isDefaultRuntimeHostCurrent(runtimeHosts, result.host)) return result.value;
+      if (mounted.current && await isDefaultRuntimeHostCurrent(runtimeHosts, result.host)) return unwrapMcpIpcResult(result.value);
     } catch (failure) {
       if (mounted.current && !current.cancelled) setError(failure);
     } finally {
@@ -101,6 +129,7 @@ export function useMcpController() {
   return {
     config,
     statuses,
+    chrome,
     busy,
     error,
     reload,
@@ -115,6 +144,7 @@ export function useMcpController() {
     test: (id: string) => run(`test:${id}`, (host) => mcp.test(id, host)),
     login: (id: string) => run(`login:${id}`, (host) => mcp.login(id, host)),
     logout: (id: string) => run(`logout:${id}`, (host) => mcp.logout(id, host)),
+    connectChrome: () => run('chrome', (host) => mcp.connectChrome(host)),
     async cancelLogin(id: string) {
       const current = operation.current;
       if (!current) {
@@ -124,7 +154,7 @@ export function useMcpController() {
       if (current.key !== `login:${id}` || !current.host) return;
       current.cancelled = true;
       try {
-        await mcp.cancelLogin(id, current.host);
+        unwrapMcpIpcResult(await mcp.cancelLogin(id, current.host));
       } catch (failure) {
         current.cancelled = false;
         if (mounted.current) setError(failure);

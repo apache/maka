@@ -39,6 +39,7 @@ import {
   Thumbnail,
   Timestamp,
   Token,
+  VStack,
   useLightbox,
   useMediaQuery,
 } from '@astryxdesign/core';
@@ -61,7 +62,7 @@ import {
 import { foldTimeline, reconcileFoldedEntries, type FoldedTimelineChild, type FoldedTimelineEntry } from './timeline-fold.js';
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
-import { Marker, markerVariants } from './primitives/chat.js';
+import { markerVariants } from './primitives/chat.js';
 import { ToolTrow } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
@@ -74,6 +75,7 @@ import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
 import { MakaClientSlotOutlet, useMakaClientSlotOccupied } from './client-plugin-slots.js';
+import { ProviderRetryNotice } from './provider-retry-notice.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -157,7 +159,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   editDisabled?: boolean;
   editDisabledReason?: string;
   delivery?: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const locale = useUiLocale();
   const copyText = getConversationCopy(locale).messages;
@@ -194,7 +195,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
               icon={<Icon icon={Pencil} size="sm" />}
               variant="ghost"
               size="sm"
-              className={markerVariants({ variant: 'footer-action' })}
               isDisabled={props.editDisabled === true}
               data-action="edit"
               data-message-id={props.messageId}
@@ -212,13 +212,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             dataMessageId={props.messageId}
           />
           {props.delivery?.deliveryActions?.map((action) => (
-            <UiButton key={action.label} label={action.label} variant="ghost" size="sm" onClick={action.onClick} />
+            <UiIconButton key={action.label} label={action.label} tooltip={action.label} variant="ghost" size="sm" icon={action.icon} onClick={action.onClick} />
           ))}
-          {props.status ? <span className="maka-message-status-time">
-            {props.status}
-            {timeOrDelivery ? <span aria-hidden="true">·</span> : null}
-            {timeOrDelivery}
-          </span> : timeOrDelivery}
+          {timeOrDelivery}
         </>
       }
     />
@@ -226,7 +222,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   return (
     <>
       {nonImageAttachments.length > 0 ? (
-        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachment-tokens">
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
           {nonImageAttachments.map((attachment, index) => (
             <Token
               key={`${attachment.name}-${index}`}
@@ -246,14 +242,14 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         </HStack>
       ) : null}
       {props.quotes && props.quotes.length > 0 ? (
-        <div className="maka-user-quotes">
+        <HStack gap={1} wrap="wrap" align="start" maxWidth="100%" className="maka-user-quotes">
           {props.quotes.map((quote, index) => (
             <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
           ))}
-        </div>
+        </HStack>
       ) : null}
       {imageAttachments.length > 0 ? (
-        <HStack gap={1} wrap="wrap" maxWidth="100%" className="maka-user-attachments">
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
           {imageAttachments.map((attachment, index) => (
             <AttachmentImage
               key={`${attachment.name}-${index}`}
@@ -281,30 +277,27 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  status?: ReactNode;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
   return (
-    <div data-transient-message-id={message.id}>
-      <LocalizedChatMessage
-        accessibleLabel={copy.userAriaLabel}
-        sender="user"
-        className="maka-chat-message maka-user-message"
-      >
-        <UserMessageBody
-          messageId={message.id}
-          text={message.text}
-          ts={message.ts}
-          attachments={message.attachments}
-          quotes={message.quotes}
-          directoryReferences={message.directoryReferences}
-          inlineReferences={message.inlineReferences}
-          status={props.status}
-          delivery={message}
-        />
-      </LocalizedChatMessage>
-    </div>
+    <LocalizedChatMessage
+      accessibleLabel={copy.userAriaLabel}
+      sender="user"
+      className="maka-chat-message maka-user-message"
+      data-transient-message-id={message.id}
+    >
+      <UserMessageBody
+        messageId={message.id}
+        text={message.text}
+        ts={message.ts}
+        attachments={message.attachments}
+        quotes={message.quotes}
+        directoryReferences={message.directoryReferences}
+        inlineReferences={message.inlineReferences}
+        delivery={message}
+      />
+    </LocalizedChatMessage>
   );
 }
 
@@ -357,7 +350,6 @@ function CopyButton(props: {
       icon={<Icon icon={copyPhase === 'copied' ? 'check' : 'copy'} size="sm" />}
       variant="ghost"
       size="sm"
-      className={markerVariants({ variant: 'footer-action' })}
       isDisabled={props.disabled}
       isLoading={copyPhase === 'pending'}
       data-action={props.dataAction}
@@ -368,6 +360,33 @@ function CopyButton(props: {
   );
 }
 
+/**
+ * Host-provenance note ("scheduled task", "agent graph", …): a non-interactive
+ * chip whose durable id stays in the tooltip instead of the transcript body.
+ * `aria-description` keeps that id reachable for assistive tech, matching the
+ * role `title` used to play before Astryx `Tooltip` took over the hover path.
+ */
+function HostOriginNote(props: { title: string; icon: ReactNode; label: string }) {
+  return (
+    <Tooltip content={props.title}>
+      <HStack
+        gap={1}
+        vAlign="center"
+        paddingBlock={0.5}
+        paddingInline={1.5}
+        width="fit-content"
+        className={markerVariants({ variant: 'host-origin' })}
+        data-slot="marker"
+        data-variant="host-origin"
+        role="note"
+        aria-description={props.title}
+      >
+        {props.icon}
+        <span>{props.label}</span>
+      </HStack>
+    </Tooltip>
+  );
+}
 
 /**
  * Renders one conversational turn: user message → tools used → assistant
@@ -382,7 +401,6 @@ export const TurnView = memo(function TurnView(props: {
   /** Optional accessible action on each message edge. */
   messageRail?: ReactNode;
   /** Host-owned status of the root prompt, displayed before its timestamp. */
-  promptStatus?: ReactNode;
   transientMessages?: readonly TransientUserMessageProjection[];
   userLabel?: string;
   /**
@@ -486,7 +504,7 @@ export const TurnView = memo(function TurnView(props: {
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
   const answerContext = accessibleActionContext(
     turn.user?.text ?? finalReply?.text ?? '',
-    turn.startedAt,
+    turn.startedAt > MIN_PLAUSIBLE_TURN_TS ? turn.startedAt : undefined,
     locale,
   );
   // A recorded conversational terminal turn owns presentation beyond its
@@ -503,7 +521,10 @@ export const TurnView = memo(function TurnView(props: {
     [foldedTimeline, showAssistantMessage],
   );
   return (
-    <section
+    <VStack
+      as="section"
+      gap={3}
+      width="100%"
       className="maka-turn"
       data-maka-contract="markdown-flow"
       data-turn-id={turn.turnId}
@@ -511,13 +532,21 @@ export const TurnView = memo(function TurnView(props: {
       tabIndex={props.searchHighlighted ? -1 : undefined}
     >
       {forwardBadges.length > 0 && (
-        <Marker variant="lineage-row" aria-label={copy.sourceAriaLabel}>
+        <HStack
+          gap={0.5}
+          wrap="wrap"
+          vAlign="center"
+          width="100%"
+          className={markerVariants({ variant: 'lineage-row' })}
+          data-slot="marker"
+          data-variant="lineage-row"
+          aria-label={copy.sourceAriaLabel}
+        >
           {forwardBadges.map((badge) => (
             <UiButton
               key={badge.id}
               variant="ghost"
               size="sm"
-              className={markerVariants({ variant: 'lineage-badge' })}
               data-direction="forward"
               tooltip={badge.tooltip ?? badge.label}
               onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
@@ -525,39 +554,30 @@ export const TurnView = memo(function TurnView(props: {
               label={badge.label}
             />
           ))}
-        </Marker>
+        </HStack>
       )}
       {/* Host provenance keeps non-user prompts from impersonating the user.
           Durable ids stay in tooltips instead of the transcript body. */}
       {turn.user?.hostOrigin?.kind === 'scheduled_task' && (
-        <Marker
-          variant="host-origin"
-          role="note"
+        <HostOriginNote
           title={copy.scheduledTaskTitle(turn.user.hostOrigin.scheduledTaskId)}
-        >
-          <Timer size={ICON_SIZE.meta} aria-hidden="true" />
-          <span>{copy.scheduledTaskTriggered}</span>
-        </Marker>
+          icon={<Timer size={ICON_SIZE.meta} aria-hidden="true" />}
+          label={copy.scheduledTaskTriggered}
+        />
       )}
       {turn.user?.hostOrigin?.kind === 'legacy_automation' && (
-        <Marker
-          variant="host-origin"
-          role="note"
+        <HostOriginNote
           title={copy.legacyAutomationTitle(turn.user.hostOrigin.automationId)}
-        >
-          <Timer size={ICON_SIZE.meta} aria-hidden="true" />
-          <span>{copy.legacyAutomationTriggered}</span>
-        </Marker>
+          icon={<Timer size={ICON_SIZE.meta} aria-hidden="true" />}
+          label={copy.legacyAutomationTriggered}
+        />
       )}
       {turn.user?.hostOrigin?.kind === 'goal' && (
-        <Marker
-          variant="host-origin"
-          role="note"
+        <HostOriginNote
           title={copy.goalTitle(turn.user.hostOrigin.goalId)}
-        >
-          <RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />
-          <span>{copy.goalContinued}</span>
-        </Marker>
+          icon={<RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />}
+          label={copy.goalContinued}
+        />
       )}
       {turn.user?.hostOrigin?.kind === 'workhub_result' && (
         <ChatSystemMessage
@@ -569,14 +589,11 @@ export const TurnView = memo(function TurnView(props: {
         </ChatSystemMessage>
       )}
       {turn.user?.hostOrigin?.kind === 'agent_graph' && (
-        <Marker
-          variant="host-origin"
-          role="note"
+        <HostOriginNote
           title={copy.agentGraphTitle(turn.user.hostOrigin.graphId)}
-        >
-          <GitBranch size={ICON_SIZE.meta} aria-hidden="true" />
-          <span>{copy.agentGraphTriggered}</span>
-        </Marker>
+          icon={<GitBranch size={ICON_SIZE.meta} aria-hidden="true" />}
+          label={copy.agentGraphTriggered}
+        />
       )}
       {props.transientMessages?.map((message) => (
         <TransientUserMessage key={message.id} message={message} />
@@ -594,7 +611,6 @@ export const TurnView = memo(function TurnView(props: {
           {props.messageRail}
           {props.messageHeader}
           <UserMessageBody
-            status={props.promptStatus}
             messageId={turn.user.id}
             text={turn.user.text}
             ts={turn.user.ts}
@@ -720,7 +736,7 @@ export const TurnView = memo(function TurnView(props: {
               sender="assistant"
               className="maka-chat-message maka-assistant-answer"
             >
-            <div className="maka-assistant-answer-content">
+            <VStack gap={2} width="100%" className="maka-assistant-answer-content">
               {props.messageRail}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
@@ -768,7 +784,6 @@ export const TurnView = memo(function TurnView(props: {
               {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
                 <Banner
                   status={props.failedSeverity ?? 'error'}
-                  container="section"
                   className="maka-turn-failed-banner"
                   title={props.failedReasonLabel}
                   description={
@@ -800,15 +815,23 @@ export const TurnView = memo(function TurnView(props: {
                   )}
                 </Banner>
               )}
-            </div>
+            </VStack>
             {ownsTurnChrome && reverseBadges.length > 0 && (
-              <Marker variant="lineage-row-reverse" aria-label={copy.derivativesAriaLabel}>
+              <HStack
+                gap={0.5}
+                wrap="wrap"
+                vAlign="center"
+                width="100%"
+                className={markerVariants({ variant: 'lineage-row-reverse' })}
+                data-slot="marker"
+                data-variant="lineage-row-reverse"
+                aria-label={copy.derivativesAriaLabel}
+              >
                 {reverseBadges.map((badge) => (
                   <UiButton
                     key={badge.id}
                     variant="ghost"
                     size="sm"
-                    className={markerVariants({ variant: 'lineage-badge' })}
                     data-direction="reverse"
                     tooltip={badge.tooltip ?? badge.label}
                     onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
@@ -816,7 +839,7 @@ export const TurnView = memo(function TurnView(props: {
                     label={badge.label}
                   />
                 ))}
-              </Marker>
+              </HStack>
             )}
             {ownsTurnChrome && (
               <TurnFooter
@@ -837,7 +860,7 @@ export const TurnView = memo(function TurnView(props: {
           </Fragment>
         );
       })}
-    </section>
+    </VStack>
   );
 });
 
@@ -942,6 +965,33 @@ export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnP
  */
 const MIN_PLAUSIBLE_TURN_TS = 1_000_000_000_000;
 
+// Reserve the same answer and footer rows before the transcript arrives without
+// inventing a Turn or assigning unrelated local prompts to the active Turn.
+export function PendingTurnAnswer(props: {
+  turnId?: string;
+  startedAt?: number;
+  running: boolean;
+  providerRetry?: LiveProviderRetry;
+}) {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+  const startedAt = (props.startedAt ?? 0) > MIN_PLAUSIBLE_TURN_TS ? props.startedAt : undefined;
+  const context = accessibleActionContext('', startedAt, locale);
+  return (
+    <LocalizedChatMessage
+      accessibleLabel={`${copy.assistantAriaLabel} · ${context}`}
+      sender="assistant"
+      className="maka-chat-message maka-assistant-answer"
+    >
+      <VStack gap={2} width="100%" className="maka-assistant-answer-content">
+        <TurnStatusBar status="running" running={props.running} startedAt={startedAt} providerRetry={props.providerRetry} />
+        {props.providerRetry && <ModelProviderRetryIndicator retry={props.providerRetry} />}
+      </VStack>
+      <TurnFooter turnId={props.turnId} actions={[]} live context={context} />
+    </LocalizedChatMessage>
+  );
+}
+
 /**
  * The turn's one status: the running cue while work is in flight, the settled
  * outcome (word + duration) once the turn ends. Rendered inside the status row
@@ -1002,9 +1052,8 @@ function TurnStatusRow(props: TurnStatusRowProps): ReactNode {
   return <span className="maka-turn-statusbar-text">{label}</span>;
 }
 
-/** Standalone status row for a turn with no process disclosure to carry it —
- *  and for the pre-turn cue before the transcript contains the turn. */
-export function TurnStatusBar(props: TurnStatusRowProps) {
+/** Standalone status row for a turn with no process disclosure to carry it. */
+function TurnStatusBar(props: TurnStatusRowProps) {
   return (
     <div className="maka-turn-statusbar" data-turn-status={props.status}>
       <TurnStatusRow {...props} />
@@ -1031,8 +1080,9 @@ function TurnFooter(props: {
       className={markerVariants({ variant: 'footer' })}
       role={isToolbar ? 'toolbar' : undefined}
       aria-label={isToolbar ? copy.answerActionsAriaLabel(props.context) : undefined}
+      // Live: reserves the actions' row.
       footer={
-        hasActions || props.finishedAt !== undefined ? (
+        hasActions || props.finishedAt !== undefined || props.live ? (
         <>
           {props.actions.map((action) =>
             action.id === 'copy' ? (
@@ -1053,7 +1103,6 @@ function TurnFooter(props: {
                 icon={STATUS_FOOTER_ICON[action.id]}
                 variant="ghost"
                 size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
                 data-action={action.id}
                 isDisabled={!action.enabled}
                 isLoading={action.pending === true}
@@ -1202,17 +1251,11 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
   // is the whole status, the moving text is decoration).
   const scheduledA11y = retry.phase === 'scheduled';
   return (
-    <Banner
+    <ProviderRetryNotice
       ref={rootRef}
-      status="warning"
-      container="section"
-      role="status"
-      className="maka-turn-provider-retry"
-      {...(scheduledA11y
-        ? {
-            'aria-label': `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`,
-          }
-        : {})}
+      accessibleLabel={scheduledA11y
+        ? `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`
+        : undefined}
       title={
         scheduledA11y ? (
           <span aria-hidden="true">

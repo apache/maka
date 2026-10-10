@@ -535,7 +535,7 @@ test('two UDS Clients serialize same-provider account creation through one Host 
         const results = await Promise.all(
           [desktop, tui].map((client, index) =>
             client.request('connection.onboarding.save', {
-              target: { kind: 'create', providerType: 'openai-compatible' },
+              target: { kind: 'create', providerType: 'custom', defaultApiProtocol: 'openai-chat' },
               apiKey: secrets[index]!,
               baseUrl: provider.baseUrl,
               enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
@@ -551,10 +551,7 @@ test('two UDS Clients serialize same-provider account creation through one Host 
           };
         });
         assert.notEqual(identities[0]?.connectionId, identities[1]?.connectionId);
-        assert.deepEqual(identities.map(({ slug }) => slug).sort(), [
-          'openai-compatible',
-          'openai-compatible-2',
-        ]);
+        assert.deepEqual(identities.map(({ slug }) => slug).sort(), ['custom', 'custom-2']);
       } finally {
         await Promise.allSettled([desktop.close(), tui.close()]);
         await fixture.stopHost(host);
@@ -568,7 +565,7 @@ test('two UDS Clients serialize same-provider account creation through one Host 
         const catalog = await stores.connectionCatalog.getSnapshot();
         assert.deepEqual(
           catalog.connections
-            .filter(({ providerType }) => providerType === 'openai-compatible')
+            .filter(({ providerType }) => providerType === 'custom')
             .map(({ connectionId, slug }) => ({ connectionId, slug }))
             .sort((left, right) => left.slug.localeCompare(right.slug)),
           [...identities].sort((left, right) => left.slug.localeCompare(right.slug)),

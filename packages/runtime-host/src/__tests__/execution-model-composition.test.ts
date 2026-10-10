@@ -17,7 +17,12 @@
  * under the License.
  */
 
-import { deferred, type Deferred, waitFor } from '@maka/core/test-only/async-primitives';
+import {
+  deferred,
+  type Deferred,
+  waitFor,
+  withTimeout,
+} from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -107,6 +112,7 @@ import {
   createHostGoalEvaluator,
   createHostMemoryExtractionModel,
   createHostSessionEffectModel,
+  createHostPromptSuggestionModel,
   createHostWorkHubRoutingModel,
 } from '../server/execution-model-authority.js';
 import {
@@ -128,7 +134,10 @@ import {
   OAuthExecutionCredentialError,
 } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
-import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
+import {
+  AgentGraphProviderScenario,
+  GatedSwarmProviderScenario,
+} from './fixtures/agent-graph-provider-scenario.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 
 const MODEL_ID = 'hosted-real-model';
@@ -159,7 +168,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:4bb0eb9897640ff723301f274e2b5c91ff704c65672036d7583bc2e846ed30a2';
+  'sha256:b4fd61c4eeec3ed41f22d36b61c800331e6c18a9704f5b7806acafea919945b0';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -1260,7 +1269,7 @@ test('a failed Run Composition commit can recover on a later dispatch', async ()
   }
 });
 
-test('Run Composition keeps the immutable composer Tool baseline', async () => {
+test('Run Composition keeps the Tool baseline while dispatch preserves dynamic context', async () => {
   const provider = await startProvider();
   const makeTool = (name: string): MakaTool => ({
     name,
@@ -1285,7 +1294,11 @@ test('Run Composition keeps the immutable composer Tool baseline', async () => {
           composerRevision: '1',
           tools: [initial],
           resolveTools: () => currentTools,
-          resolveSystemPrompt: async () => ({ text: 'test prompt', sourceRevisions: [] }),
+          resolveSystemPrompt: async () => ({
+            text: 'test prompt',
+            contexts: [{ name: 'test.context', text: 'HOST_DYNAMIC_CONTEXT' }],
+            sourceRevisions: [],
+          }),
         }),
         recordRunComposition: async (_runId, snapshot) => {
           committedToolNames = decodeRunCompositionSnapshot(snapshot).toolNames;
@@ -1305,6 +1318,7 @@ test('Run Composition keeps the immutable composer Tool baseline', async () => {
     }
 
     assert.deepEqual(committedToolNames, ['initial_tool']);
+    assert.match(JSON.stringify(provider.requests[0]?.body.messages), /HOST_DYNAMIC_CONTEXT/u);
     const requestTools = provider.requests[0]?.body.tools as Array<{
       function?: { name?: string };
     }>;
@@ -2402,6 +2416,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
         .slice(requestsBeforeRecovery)
         .filter((request) => Array.isArray(request.body.tools));
       assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
+      assert.equal(
+        runtimeEnvironment(requests[0]!.body).cwd,
+        (await recoveredStores.sessionStore.readHeader(sessionId)).cwd,
+      );
+      assert.match(responsesDeveloperPrompt(requests[0]!.body) ?? '', /WorkHub/u);
       for (const name of [
         'mcp__desktop_workhub__control',
         'mcp__desktop_workhub__tasks',
@@ -2869,6 +2888,14 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       /Perform the first stage of long-term-memory extraction/.test(JSON.stringify(request.body)),
     );
     assert.equal(mainRequests.length, 5);
+    const environments = mainRequests.map((request) => runtimeEnvironment(request.body));
+    for (const environment of environments) {
+      assert.equal(environment.cwd, root);
+      assert.equal(environment.platform, process.platform);
+      assert.equal(environment.timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+      assert.equal(new Date(environment.sampledAt).toISOString(), environment.sampledAt);
+    }
+    assert.equal(new Set(environments.map(({ sampledAt }) => sampledAt)).size, 5);
     assert.ok(compactRequests.length >= 1);
     assert.ok(memoryRequests.length >= 1);
     assert.ok(memoryRequests.every((memoryRequest) => toolNames(memoryRequest.body).length === 0));
@@ -2892,7 +2919,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     // Tavily is selected but no web-search credential exists, so the provider
     // must never see WebSearch in the effective root tool surface. Non-direct
-    // bound tools stay deferred behind tool_search until activated.
+    // bound tools stay deferred behind tool_search until activated, except
+    // request_sandbox_boundary which stays visible in sandboxed Sessions.
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
       'Bash',
@@ -2905,6 +2933,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'StopBackgroundTask',
       'WebFetch',
       'Write',
+      'request_sandbox_boundary',
       'tool_search',
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
@@ -3006,6 +3035,231 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(drainRequests, 0);
   } finally {
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test('production Host keeps Swarm catalog activity running across three children, yield, and synthesis', {
+  timeout: 30_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-swarm-activity-'));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  const scenario = provider.configureGatedSwarmFlow();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  let changeSubscription: { close(): void } | undefined;
+  const catalogChanges: string[] = [];
+  const context: ConnectionContext = {
+    hostEpoch: 'swarm-activity-test-epoch',
+    connectionId: 'swarm-activity-test-client',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release: () => undefined }),
+  };
+  try {
+    await mkdir(project);
+    await writeFile(join(project, 'README.md'), '# Swarm activity fixture\n');
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-swarm-provider',
+        name: 'Hosted Swarm provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0]!;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: connection.slug,
+      model: MODEL_ID,
+      permissionMode: 'bypass',
+      orchestrationMode: 'swarm',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => assert.fail('The healthy Swarm must not drain the Host'),
+    });
+    await composition.recover();
+    const host = composition;
+    assert.ok(host.hostChanges);
+    // A sidebar observes the global catalog even with no selected Session subscription.
+    changeSubscription = host.hostChanges.attachConnection(
+      context.connectionId,
+      { sessionCatalog: true },
+      {
+        send: async (frame) => {
+          if (frame.kind === 'session.catalog.changed') catalogChanges.push(frame.sessionId);
+        },
+      },
+    );
+    const readParent = async () => {
+      const queried = await host.handlers['session.catalog.query'](
+        { kind: 'get', sessionId: session.id },
+        context,
+      );
+      assert.equal(queried.ok, true);
+      if (!queried.ok || queried.result.kind !== 'session') assert.fail('Parent query failed');
+      const parent = queried.result.session;
+      assert.ok(parent && !('kind' in parent));
+      return parent;
+    };
+    const assertWaitingForChildren = async () => {
+      const parent = await readParent();
+      assert.equal(parent.backgroundActivity, 'running');
+      assert.deepEqual(parent.liveRunState?.runningTurnIds, []);
+      const listed = await host.handlers['session.catalog.query']({ kind: 'list_start' }, context);
+      assert.equal(listed.ok, true);
+      if (!listed.ok || listed.result.kind !== 'page') assert.fail('Catalog list failed');
+      const listedParent = listed.result.sessions.find((item) => item.id === session.id);
+      assert.ok(listedParent && !('kind' in listedParent));
+      assert.equal(listedParent.backgroundActivity, 'running');
+      assert.deepEqual(listedParent.liveRunState?.runningTurnIds, []);
+    };
+    const turnId = 'hosted-swarm-activity-turn';
+    const started = await host.handlers['turn.start'](
+      {
+        sessionId: session.id,
+        turnId,
+        content: { text: 'Inspect three independent areas with an asynchronous swarm.' },
+        turnOrchestration: { mode: 'swarm', source: 'host_api' },
+      },
+      context,
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok || started.result.kind !== 'started') assert.fail('Swarm turn did not start');
+    await withTimeout(
+      Promise.all(scenario.childrenStarted.map((child) => child.promise)),
+      10_000,
+      'The provider did not receive all three Swarm child requests',
+    );
+    const initialTerminal = await waitForTerminal(
+      host,
+      session.id,
+      turnId,
+      started.result.turn,
+      context,
+    );
+    assert.equal(initialTerminal.status, 'completed');
+    const initialEvents = await execution.agentRunStore.readEvents(
+      session.id,
+      initialTerminal.runId,
+    );
+    assert.ok(
+      initialEvents.some((event) => event.type === 'graph_supervisor_yielded'),
+      'The root must actually yield, leaving its three child requests gated at the provider',
+    );
+    await assertWaitingForChildren();
+    assert.ok(
+      catalogChanges.includes(session.id),
+      'Global catalog observers must see parent activity',
+    );
+
+    const children = (await execution.sessionStore.listForRecovery()).filter(
+      (candidate) => candidate.subagentParent?.parentSessionId === session.id,
+    );
+    assert.equal(children.length, 3);
+    const completedChildren = async () => {
+      const runs = await Promise.all(
+        children.map((child) => execution.runtimeEventStore.listSessionInvocations(child.id)),
+      );
+      return runs.filter((invocations) =>
+        invocations.some((run) => runtimeInvocationOutcome(run) === 'completed'),
+      ).length;
+    };
+    for (const index of [0, 1]) {
+      scenario.releaseChild(index);
+      await waitFor(async () => (await completedChildren()) === index + 1, {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: `Swarm child ${index + 1} did not finish`,
+      });
+      await assertWaitingForChildren();
+    }
+
+    const changesBeforeWake = catalogChanges.filter((id) => id === session.id).length;
+    scenario.releaseChild(2);
+    await withTimeout(
+      scenario.synthesisStarted.promise,
+      10_000,
+      'The Swarm supervisor did not finish the graph',
+    );
+    assert.equal(await completedChildren(), 3);
+    const synthesizing = await readParent();
+    assert.ok(synthesizing.liveRunState && synthesizing.liveRunState.runningTurnIds.length > 0);
+    assert.equal(synthesizing.backgroundActivity, 'running');
+    const rootRuns = await execution.runtimeEventStore.listSessionInvocations(session.id);
+    const wake = rootRuns.find((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
+    assert.ok(wake);
+    assert.ok(synthesizing.liveRunState.runningTurnIds.includes(wake.turnId));
+
+    scenario.releaseSynthesis();
+    await waitFor(
+      async () => {
+        const parent = await readParent();
+        return (
+          parent.backgroundActivity === 'idle' && parent.liveRunState?.runningTurnIds.length === 0
+        );
+      },
+      {
+        timeoutMs: 5_000,
+        pollMs: 10,
+        message: 'The completed Swarm left catalog activity running',
+      },
+    );
+    const finalPage = await host.handlers['session.catalog.query']({ kind: 'list_start' }, context);
+    assert.ok(finalPage.ok && finalPage.result.kind === 'page');
+    const finalParent = finalPage.result.sessions.find((item) => item.id === session.id);
+    assert.ok(finalParent && !('kind' in finalParent));
+    assert.equal(finalParent.backgroundActivity, 'idle');
+    assert.deepEqual(finalParent.liveRunState?.runningTurnIds, []);
+    assert.ok(
+      catalogChanges.filter((id) => id === session.id).length > changesBeforeWake,
+      'Global catalog observers must receive parent invalidation through wake and completion',
+    );
+  } catch (error) {
+    throw new Error(
+      `Swarm activity regression: ${JSON.stringify(providerRequestTrace(provider.requests))}`,
+      {
+        cause: error,
+      },
+    );
+  } finally {
+    scenario.releaseAll();
+    changeSubscription?.close();
     try {
       await composition?.close();
     } finally {
@@ -3266,6 +3520,138 @@ test('production Host executes and durably supervises an Agent Graph over a real
           JSON.stringify(request.body).includes('child_session_run'),
       ),
     );
+
+    // Reproduce edit-and-resend after the asynchronous Graph has finished.
+    // The real tools above persist agent_output as JSON, not agent_swarm.
+    const followUpTurnId = 'graph-follow-up';
+    const followUp = await composition.handlers['turn.start'](
+      {
+        sessionId: session.id,
+        turnId: followUpTurnId,
+        content: { text: 'Graph follow-up: explain the result' },
+      },
+      context,
+    );
+    assert.ok(followUp.ok && followUp.result.kind === 'started');
+    const followUpTerminal = await waitForTerminal(
+      composition,
+      session.id,
+      followUpTurnId,
+      followUp.result.turn,
+      context,
+    );
+    assert.equal(followUpTerminal.status, 'completed');
+    await waitFor(() => liveResidencies === 0, {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'follow-up turn did not release its residency',
+    });
+    const sourceRecord = await execution.sessionStore.readHeaderRecordSnapshot(session.id);
+    const revisionId = 'graph-follow-up-revision';
+    const revisionInput = {
+      sourceSessionId: session.id,
+      targetSessionId: revisionId,
+      sourceTurnId: followUpTurnId,
+      expectedSourceRevision: sourceRecord.revision,
+    };
+    let revision = await composition.handlers['session.revision.create'](revisionInput, context);
+    // Final turn projections may advance metadata after the terminal snapshot.
+    // Retry only the explicit optimistic conflict, as the Desktop client does.
+    for (
+      let attempt = 0;
+      attempt < 3 && revision.ok && revision.result.kind === 'source_revision_conflict';
+      attempt++
+    ) {
+      revisionInput.expectedSourceRevision = revision.result.actualRevision;
+      revision = await composition.handlers['session.revision.create'](revisionInput, context);
+    }
+    assert.ok(revision.ok, JSON.stringify(revision));
+    assert.equal(revision.result.kind, 'committed');
+    const revisedRuns = await execution.runtimeEventStore.listSessionInvocations(revisionId);
+    assert.ok(!revisedRuns.some((run) => run.turnId === followUpTurnId));
+    const copiedEvents = (
+      await Promise.all(
+        revisedRuns.map((run) =>
+          execution.runtimeEventStore.readRuntimeEvents(revisionId, run.runId),
+        ),
+      )
+    ).flat();
+    const sourceEvents = (
+      await Promise.all(
+        runs.map((run) => execution.runtimeEventStore.readRuntimeEvents(session.id, run.runId)),
+      )
+    ).flat();
+    const outputResults = (events: RuntimeEvent[]) =>
+      events.flatMap((event) =>
+        event.content?.kind === 'function_response' && event.content.name === 'agent_output'
+          ? [event.content.result]
+          : [],
+      );
+    assert.ok(outputResults(sourceEvents).length > 0);
+    assert.deepEqual(outputResults(copiedEvents), outputResults(sourceEvents));
+
+    const editedTurnId = 'edited-graph-follow-up';
+    const edited = await composition.handlers['turn.start'](
+      {
+        sessionId: revisionId,
+        turnId: editedTurnId,
+        content: { text: 'Graph follow-up: explain the result in more detail' },
+      },
+      context,
+    );
+    assert.ok(edited.ok && edited.result.kind === 'started');
+    assert.equal(
+      (await waitForTerminal(composition, revisionId, editedTurnId, edited.result.turn, context))
+        .status,
+      'completed',
+    );
+    assert.equal((await execution.runtimeEventStore.listSessionInvocations(child!.id)).length, 1);
+    assert.ok(
+      (await execution.runtimeEventStore.listSessionInvocations(session.id)).some(
+        (run) => run.turnId === followUpTurnId,
+      ),
+    );
+    // The shared copier must not grant an independent Side Conversation the
+    // original child's identities through its model-visible JSON projection.
+    const sideSource = await execution.sessionStore.readHeaderRecordSnapshot(session.id);
+    const sideId = 'graph-follow-up-side-conversation';
+    const side = await composition.handlers['session.branch.create'](
+      {
+        sourceSessionId: session.id,
+        targetSessionId: sideId,
+        sourceTurnId: followUpTurnId,
+        expectedSourceRevision: sideSource.revision,
+        intent: 'side_conversation',
+      },
+      context,
+    );
+    assert.ok(side.ok, JSON.stringify(side));
+    assert.equal(side.result.kind, 'committed');
+    const sideRuns = await execution.runtimeEventStore.listSessionInvocations(sideId);
+    const sideEvents = (
+      await Promise.all(
+        sideRuns.map((run) => execution.runtimeEventStore.readRuntimeEvents(sideId, run.runId)),
+      )
+    ).flat();
+    const sideOutputs = sideEvents.flatMap((event) =>
+      event.content?.kind === 'function_response' && event.content.name === 'agent_output'
+        ? [event.content]
+        : [],
+    );
+    assert.equal(sideOutputs.length, outputResults(sourceEvents).length);
+    assert.equal(sideOutputs.length, 2, 'Copy both the result and diagnostic views');
+    assert.ok(
+      sideOutputs.some((output) => JSON.stringify(output.result).includes(CHILD_AGENT_RESULT_TEXT)),
+    );
+    for (const output of sideOutputs) {
+      const decoded = decodeCanonicalToolResultContent(output.result);
+      assert.equal(decoded.kind, 'json');
+      for (const payload of [output.result, output.modelProjection]) {
+        assert.ok(payload, 'Side Conversation must retain a model projection');
+        assert.ok(!JSON.stringify(payload).includes(child!.id));
+        assert.ok(!JSON.stringify(payload).includes(childRuns[0]!.runId));
+      }
+    }
   } finally {
     graphStore?.close();
     try {
@@ -3392,6 +3778,11 @@ test('production Host executes a durable runnable child with an exact tool ceili
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(requests.length, 4);
+    const environments = requests.map((request) => runtimeEnvironment(request.body));
+    assert.ok(environments.every(({ cwd }) => cwd === project));
+    assert.deepEqual(environments[0], environments[1]);
+    assert.deepEqual(environments[0], environments[3]);
+    assert.match(JSON.stringify(requests[2]?.body.messages), /foreground local-read child agent/u);
     assert.ok(toolNames(requests[0]?.body).includes('tool_search'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
@@ -4005,6 +4396,48 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       }),
       '## Goal',
     );
+    let suggestionCall = 0;
+    const suggestionModel = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => String(++suggestionCall),
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.equal(
+        await suggestionModel(
+          {
+            sessionId: session.id,
+            turnId: 'suggestion-turn',
+            terminalEventId: 'suggestion-terminal',
+            header: session,
+            messages: [
+              {
+                type: 'user',
+                id: 'suggestion-user',
+                ts: 1,
+                turnId: 'suggestion-turn',
+                text: '先设计，再实现',
+              },
+            ],
+          },
+          new AbortController().signal,
+        ),
+        SUMMARY_TEXT,
+      );
+    }
+    const suggestionRows = (await usage.telemetry.logs({ range: 'all' })).rows.filter(
+      (row) => row.callKind === 'prompt_suggestion',
+    );
+    assert.equal(suggestionRows.length, 2);
+    assert.equal(new Set(suggestionRows.map((row) => row.callId)).size, 2);
+    const suggestionRequest = provider.requests.at(-1)!;
+    assert.equal(suggestionRequest.authorization, `Bearer ${API_KEY}`);
+    assert.equal((suggestionRequest.body as Record<string, unknown>).tools, undefined);
+    const suggestionLog = (await usage.telemetry.logs({ range: 'all' })).rows.find(
+      (row) => row.callKind === 'prompt_suggestion',
+    );
+    assert.equal(suggestionLog?.inputTokens, 7);
+    assert.equal(suggestionLog?.outputTokens, 3);
+    assert.equal(suggestionLog?.status, 'success');
     const providerRequestsBeforePluginTitle = provider.requests.length;
     assert.equal(
       await sessionEffects.generateTitle({
@@ -4375,12 +4808,36 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       });
       await closing;
       assert.equal(transportCloses, 1);
-      const abortedLogs = await usage.telemetry.logs({ range: 'all' });
+      // An aborted auxiliary call knows no token counts: it records in the
+      // canonical ledger as a usage-unknown row (#5691), never as a zero-token
+      // legacy row that reads as a free call.
+      const abortedAttempts = await usage.modelCalls.modelCallLogs(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+        0,
+        10,
+      );
       assert.ok(
-        abortedLogs.rows.some(
+        abortedAttempts.projection.rows.some(
           (row) =>
             row.callId === `goal_evaluation_${session.id}_call-2` && row.status === 'aborted',
         ),
+      );
+      const abortedSummary = await usage.modelCalls.modelCallSummary(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+      );
+      // Every failed auxiliary call above — the 401 recap, the timed-out
+      // recap, and the aborted goal evaluation — is recorded under the
+      // no-run sentinel turn, and the ledger-wide coverage still counts all
+      // three: real unknown-usage calls stay visible in the public
+      // provenance. Keeping a hosted run to its own rows is settlement's
+      // run-scoped check, not this field's job.
+      assert.equal(abortedSummary.projection.coverage.usageMissingAttempts, 3);
+      const abortedLegacyLogs = await usage.telemetry.logs({ range: 'all' });
+      assert.equal(
+        abortedLegacyLogs.rows.some((row) => row.callId === `goal_evaluation_${session.id}_call-2`),
+        false,
       );
     } finally {
       abort.abort(new DOMException('Goal evaluator test cleanup', 'AbortError'));
@@ -4393,6 +4850,198 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     await execution.sessionStore.close?.();
     await owner.close();
     await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('Host auxiliary aborts, errors and usage-unknown completions record canonical usage-unknown rows', {
+  timeout: 20_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-aux-usage-unknown-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'usage-unknown-provider',
+        name: 'Usage unknown provider',
+        providerType: 'opencode-go',
+        baseUrl: 'http://usage-unknown.test/v1',
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'usage-unknown-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    let callCounter = 0;
+    const evaluator = (
+      fetchImpl: (request: unknown, init?: { signal?: AbortSignal }) => Promise<unknown>,
+    ) =>
+      createHostGoalEvaluator({
+        runtimePolicy: policy,
+        oauthCredentials: new HostOAuthExecutionAuthority(policy),
+        usage,
+        requestDrain: () => assert.fail('Auxiliary accounting must not drain the Host'),
+        readSessionHeader: (sessionId: string) =>
+          execution.sessionStore.readHeaderSnapshot(sessionId),
+        newId: () => `call-${++callCounter}`,
+        createFetchTransport: () => ({
+          fetch: fetchImpl as unknown as ProxiedFetchTransport['fetch'],
+          close: async () => undefined,
+        }),
+      });
+    const callId = (suffix: string) => `goal_evaluation_${session.id}_${suffix}`;
+    const canonicalRow = async (suffix: string) => {
+      const logs = await usage.modelCalls.modelCallLogs(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+        0,
+        10,
+      );
+      return logs.projection.rows.find((row) => row.callId === callId(suffix));
+    };
+    const legacyGoalRows = async () => {
+      const logs = await usage.telemetry.logs({ range: 'all' });
+      return logs.rows.filter((row) => row.callKind === 'goal_evaluation');
+    };
+    const assertSummary = async (expected: {
+      requests: number;
+      missing: number;
+      errors: number;
+    }) => {
+      const summary = await usage.modelCalls.modelCallSummary(
+        { range: 'all', sessionId: session.id },
+        Date.now(),
+      );
+      assert.equal(summary.projection.totalRequests, expected.requests);
+      // The ledger-wide coverage counts every usage-unknown row it holds —
+      // the auxiliary rows under test included, each recorded under the
+      // no-run sentinel turn. Hiding them here would make an incomplete
+      // total read as complete; settlement scopes itself to the run's own
+      // rows instead.
+      assert.equal(summary.projection.coverage.usageMissingAttempts, expected.missing);
+      assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
+      assert.equal(summary.projection.errorRequests, expected.errors);
+      assert.equal(summary.projection.totalTokens.total, 0);
+      assert.equal(summary.projection.totalCostUsd, 0);
+    };
+
+    // Aborted mid-flight: usage can never be known, so the canonical row says
+    // so instead of posing as a free call in the legacy table.
+    let abortSignal: AbortSignal | undefined;
+    const abortDispatched = deferred<void>();
+    const abortReleased = deferred<void>();
+    const abortingEvaluator = evaluator(async (_request, init) => {
+      abortSignal = init?.signal ?? undefined;
+      abortDispatched.resolve();
+      await abortReleased.promise;
+      throw abortSignal?.reason ?? new DOMException('Aborted', 'AbortError');
+    });
+    const abort = new AbortController();
+    const abortedCall = abortingEvaluator.evaluate(
+      'Judge the completed Goal.',
+      session.id,
+      abort.signal,
+    );
+    await settleWithin(abortDispatched.promise);
+    abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
+    abortReleased.resolve();
+    await assert.rejects(settleWithin(abortedCall));
+    await assertSummary({ requests: 1, missing: 1, errors: 0 });
+    const abortedRow = await canonicalRow('call-1');
+    assert.ok(abortedRow);
+    assert.equal(abortedRow.status, 'aborted');
+    assert.equal(abortedRow.callKind, 'goal_evaluation');
+    assert.deepEqual(await legacyGoalRows(), []);
+
+    // A provider error without an abort is usage-unknown all the same.
+    const failingEvaluator = evaluator(async () => {
+      throw new Error('provider exploded');
+    });
+    await assert.rejects(
+      failingEvaluator.evaluate(
+        'Judge the completed Goal.',
+        session.id,
+        new AbortController().signal,
+      ),
+    );
+    await assertSummary({ requests: 2, missing: 2, errors: 1 });
+    const failedRow = await canonicalRow('call-2');
+    assert.ok(failedRow);
+    assert.equal(failedRow.status, 'error');
+    assert.equal(failedRow.errorClass, 'Error');
+    assert.deepEqual(await legacyGoalRows(), []);
+
+    // A completion the provider answered without usage stays on the legacy
+    // zero path for now: with settlement scoped to a run's own rows a
+    // canonical missing row here would no longer flip any hosted run
+    // indeterminate, so routing it to the canonical ledger is a free-standing
+    // recording question (#5691), not a settlement constraint. Aborted and
+    // failed calls above already keep their canonical usage-unknown rows.
+    const silentEvaluator = evaluator(async () =>
+      Response.json({
+        id: 'chatcmpl-usage-unknown',
+        object: 'chat.completion',
+        created: 1,
+        model: MODEL_ID,
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: RESPONSE_TEXT },
+            finish_reason: 'stop',
+          },
+        ],
+      }),
+    );
+    assert.equal(
+      await silentEvaluator.evaluate(
+        'Judge the completed Goal.',
+        session.id,
+        new AbortController().signal,
+      ),
+      RESPONSE_TEXT,
+    );
+    await assertSummary({ requests: 2, missing: 2, errors: 1 });
+    const silentLegacy = (await legacyGoalRows()).find((row) => row.callId === callId('call-3'));
+    assert.ok(silentLegacy);
+    assert.equal(silentLegacy.status, 'success');
+    assert.equal(silentLegacy.inputTokens, 0);
+    assert.equal(silentLegacy.outputTokens, 0);
+  } finally {
+    await usage.close();
+    await execution.sessionStore.close?.();
+    await owner.close();
     await rm(base, { recursive: true, force: true });
   }
 });
@@ -5409,6 +6058,26 @@ function responsesToolNames(body: Record<string, unknown> | undefined): string[]
     .sort();
 }
 
+function runtimeEnvironment(body: Record<string, unknown>): {
+  cwd: string;
+  platform: string;
+  sampledAt: string;
+  timeZone: string;
+} {
+  const messages = (body.messages ?? body.input) as Array<{
+    role?: string;
+    content?: string | Array<{ text?: string }>;
+  }>;
+  const contexts = messages
+    .filter(({ role }) => role === 'user')
+    .flatMap(({ content }) =>
+      typeof content === 'string' ? [content] : (content ?? []).map(({ text }) => text ?? ''),
+    )
+    .filter((text) => text.startsWith('Runtime Host environment for this turn'));
+  assert.equal(contexts.length, 1, JSON.stringify(body));
+  return JSON.parse(contexts[0]!.slice(contexts[0]!.indexOf('\n') + 1));
+}
+
 function responsesDeveloperPrompt(body: Record<string, unknown> | undefined): string | undefined {
   if (typeof body?.instructions === 'string') return body.instructions;
   const input = Array.isArray(body?.input) ? body.input : [];
@@ -5530,7 +6199,10 @@ type ProviderFlow =
       ptyReadCount: number;
       stopRequested: boolean;
     }
-  | { readonly kind: 'agent_graph'; readonly scenario: AgentGraphProviderScenario };
+  | {
+      readonly kind: 'agent_graph';
+      readonly scenario: AgentGraphProviderScenario | GatedSwarmProviderScenario;
+    };
 
 async function startProvider(): Promise<{
   readonly baseUrl: string;
@@ -5549,6 +6221,7 @@ async function startProvider(): Promise<{
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
+  configureGatedSwarmFlow(): GatedSwarmProviderScenario;
   configurePayloadProportionalUsage(): void;
   close(): Promise<void>;
 }> {
@@ -5617,6 +6290,12 @@ async function startProvider(): Promise<{
         kind: 'agent_graph',
         scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
       };
+    },
+    configureGatedSwarmFlow: () => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      const scenario = new GatedSwarmProviderScenario();
+      flow = { kind: 'agent_graph', scenario };
+      return scenario;
     },
     configurePayloadProportionalUsage: () => {
       usageTracksPayload = true;
@@ -5798,7 +6477,7 @@ async function handleProviderRequest(
     return;
   }
   if (flow.kind === 'agent_graph') {
-    flow.scenario.respond(body, {
+    await flow.scenario.respond(body, {
       text: (text) => respondProviderText(response, text),
       toolCall: (toolName, args) =>
         respondProviderToolCall(response, streamRequestIndex, toolName, args),
@@ -6126,3 +6805,264 @@ function closeServer(server: Server): Promise<void> {
     server.close((error) => (error ? reject(error) : resolve()));
   });
 }
+
+test('prompt suggestions use the least reasoning each model accepts, reject truncation and do not retry', async () => {
+  const MODEL_ID = 'gpt-5.2';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'goal-evaluator-provider',
+        name: 'Goal evaluator provider',
+        providerType: 'openai',
+        modelOverrides: { [MODEL_ID]: { apiProtocol: 'openai-chat' } },
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'goal-evaluator-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const evaluatorInput = {
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
+      readSessionHeader: (sessionId: string) =>
+        execution.sessionStore.readHeaderSnapshot(sessionId),
+      newId: () => 'call-1',
+    };
+
+    let fetches = 0;
+    let mode = 'length';
+    let requestBody: Record<string, unknown> = {};
+    const suggest = createHostPromptSuggestionModel({
+      ...evaluatorInput,
+      newId: () => `suggestion-${fetches}`,
+      createFetchTransport: () => ({
+        close: async () => {},
+        fetch: (async (url, init) => {
+          fetches++;
+          requestBody = JSON.parse(String(init?.body));
+          if (mode === 'failure') return new Response('unavailable', { status: 503 });
+          if (String(url).endsWith('/responses')) {
+            return Response.json({
+              id: 'reply',
+              object: 'response',
+              created_at: 1,
+              model: 'gpt-5',
+              status: 'incomplete',
+              incomplete_details: { reason: 'max_output_tokens' },
+              output: [
+                {
+                  type: 'message',
+                  id: 'message',
+                  role: 'assistant',
+                  status: 'incomplete',
+                  content: [{ type: 'output_text', text: 'partial', annotations: [] }],
+                },
+              ],
+              usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+            });
+          }
+          return Response.json({
+            id: 'reply',
+            object: 'chat.completion',
+            created: 1,
+            model: MODEL_ID,
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'partial' },
+                finish_reason: 'length',
+              },
+            ],
+            usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+          });
+        }) as typeof fetch,
+      }),
+    });
+    const source = {
+      sessionId: session.id,
+      turnId: 'turn',
+      terminalEventId: 'terminal',
+      header: session,
+      messages: [],
+    };
+    assert.equal(await suggest(source, new AbortController().signal), undefined);
+    assert.equal(requestBody.reasoning_effort, 'none');
+    assert.equal(fetches, 1);
+    mode = 'failure';
+    await assert.rejects(suggest(source, new AbortController().signal));
+    assert.equal(fetches, 2, 'a failed paid call must not retry');
+    const currentConnection = (await policy.connectionCatalog.getSnapshot()).connections.find(
+      (entry) => entry.connectionId === connection.connectionId,
+    )!;
+    const changed = await policy.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: currentConnection.revision },
+      changes: {
+        name: connection.name,
+        enabled: true,
+        enabledModelIds: ['gpt-5'],
+      },
+    });
+    assert.equal(changed.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, 'gpt-5');
+    mode = 'length';
+    assert.equal(
+      await suggest(
+        { ...source, header: { ...session, model: 'gpt-5' } },
+        new AbortController().signal,
+      ),
+      undefined,
+    );
+    assert.equal(fetches, 3);
+    assert.equal(
+      (requestBody.reasoning as { effort?: unknown } | undefined)?.effort,
+      'minimal',
+      'a model without off must be asked for its least effort, not left on the provider default',
+    );
+    assert.equal(
+      requestBody.max_output_tokens,
+      1_024,
+      'reasoning at the least effort needs room before the visible line',
+    );
+  } finally {
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('prompt suggestions ask Kimi K3 for its lowest effort instead of its default thinking', async () => {
+  const MODEL_ID = 'k3';
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-kimi-suggestion-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'kimi-coding-plan',
+        name: 'Kimi Coding Plan',
+        providerType: 'kimi-coding-plan',
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: { scope: 'connection', connectionId: connection.connectionId, kind: 'api_key' },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: 'kimi-coding-plan',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+
+    let requestBody: Record<string, unknown> = {};
+    const suggest = createHostPromptSuggestionModel({
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      usage,
+      requestDrain: () => assert.fail('prompt suggestion telemetry must not drain the Host'),
+      newId: () => 'kimi-suggestion',
+      createFetchTransport: () => ({
+        close: async () => {},
+        fetch: (async (_url, init) => {
+          requestBody = JSON.parse(String(init?.body));
+          return Response.json({
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            model: MODEL_ID,
+            content: [{ type: 'text', text: 'Yes, add the tests next.' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 7, output_tokens: 6 },
+          });
+        }) as typeof fetch,
+      }),
+    });
+
+    const text = await suggest(
+      {
+        sessionId: session.id,
+        turnId: 'turn',
+        terminalEventId: 'terminal',
+        header: session,
+        messages: [],
+      },
+      new AbortController().signal,
+    );
+
+    assert.equal(text, 'Yes, add the tests next.');
+    assert.deepEqual(
+      requestBody.thinking,
+      { type: 'adaptive' },
+      'K3 must be sent an explicit thinking mode, not left on its default',
+    );
+    assert.match(
+      JSON.stringify(requestBody),
+      /"effort":"low"/,
+      'K3 must be asked for its lowest effort, not its default maximum',
+    );
+    assert.equal(requestBody.max_tokens, 1_024);
+  } finally {
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});

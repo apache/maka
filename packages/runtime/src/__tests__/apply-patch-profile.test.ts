@@ -51,7 +51,10 @@ describe('ApplyPatch profile routing', () => {
       null,
     );
     assert.deepEqual(
-      resolveModelRuntime({ providerType: 'openai-compatible' }, 'gpt-5.6-luna').applyPatchProfile,
+      resolveModelRuntime(
+        { providerType: 'custom', defaultApiProtocol: 'openai-chat' },
+        'gpt-5.6-luna',
+      ).applyPatchProfile,
       { kind: 'portable-v4a' },
     );
   });
@@ -85,7 +88,8 @@ describe('ApplyPatch profile routing', () => {
     assert.deepEqual(
       resolveModelRuntime(
         {
-          providerType: 'openai-responses-compatible',
+          providerType: 'custom',
+          defaultApiProtocol: 'openai-responses',
           modelOverrides: { future: { applyPatch: true } },
         },
         'future',

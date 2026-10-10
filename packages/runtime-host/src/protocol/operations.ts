@@ -61,8 +61,11 @@ import { SESSION_COLLABORATION_OPERATION_SPECS } from './session-collaboration.j
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SESSION_BUNDLE_OPERATION_SPECS } from './session-bundle.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
+import { PROMPT_SUGGESTION_OPERATION_SPECS } from './prompt-suggestions.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
+import { STORAGE_RETENTION_OPERATION_SPECS } from './storage-retention.js';
+import { STORAGE_USAGE_OPERATION_SPECS } from './storage-usage.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
@@ -139,8 +142,14 @@ export type {
   TurnMessageSubmitResult,
 } from './message.js';
 export type {
+  QueueEntriesReorderInput,
+  QueueEntryPromoteInput,
+  QueueEntryRetractInput,
+  QueueEntryUpdateInput,
+  QueueMutationResult,
+} from './message.js';
+export type {
   LiveTurnSnapshot,
-  TurnProviderRetry,
   TurnQueryInput,
   TurnResumeParkReason,
   TurnResumePlan,
@@ -153,6 +162,7 @@ export type {
   TurnStartResult,
   TurnStopInput,
 } from './turn.js';
+export type { TurnProviderRetry } from './turn-provider-retry.js';
 export * from './connection-effects.js';
 export * from './access-authority.js';
 export * from './configuration.js';
@@ -181,7 +191,10 @@ export * from './session-transcript.js';
 export * from './session-turns.js';
 export * from './session-todo.js';
 export * from './session-effects.js';
+export * from './prompt-suggestions.js';
 export * from './skill-catalog.js';
+export * from './storage-retention.js';
+export * from './storage-usage.js';
 export * from './usage-pricing.js';
 export * from './web-search.js';
 export * from './recall.js';
@@ -215,12 +228,15 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SESSION_TURNS_OPERATION_SPECS,
   SESSION_CATALOG_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
+  PROMPT_SUGGESTION_OPERATION_SPECS,
   SESSION_REVISION_OPERATION_SPECS,
   SESSION_BUNDLE_OPERATION_SPECS,
   SESSION_RETIREMENT_OPERATION_SPECS,
   ARTIFACT_OPERATION_SPECS,
   SKILL_CATALOG_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,
+  STORAGE_USAGE_OPERATION_SPECS,
+  STORAGE_RETENTION_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
   OAUTH_OPERATION_SPECS,
   EXTERNAL_AGENT_SETUP_OPERATION_SPECS,
@@ -331,6 +347,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.lifecycle.set',
   'session.shared.query',
   'session.metadata.update',
+  'session.prompt-suggestion.generate',
   'session.read_marker.set',
   'session.recap.generate',
   'session.remove',
@@ -345,6 +362,10 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'skill.catalog.mutate',
   'skill.catalog.preview-update',
   'skill.catalog.query',
+  'storage.retention.query',
+  'storage.retention.set',
+  'storage.usage.query',
+  'storage.usage.sessions.query',
   'subscription.close',
   'subscription.open',
   'subscription.pty_interest.set',

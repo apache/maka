@@ -84,6 +84,7 @@ export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
 export * from './message.js';
+export * from './queue-mutation.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
@@ -103,7 +104,57 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 183 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 212 as const;
+// 212: Session catalogs carry `backgroundActivity` and `backgroundActivityVersion`
+// for Host-owned activity and generation-scoped ordering independent of Session
+// revisions and Turn epochs. Older closed decoders reject these fields.
+// 208: Usage queries filter by model call kind. Epoch-207 peers reject the
+// filter or ignore it.
+// 206: `storage.retention.query` and `storage.retention.set` read and change the
+// opt-in retention for archived tasks. An epoch-205 Client could not show or
+// turn off a Host that deletes archived tasks on its own, and an epoch-205 Host
+// rejects the unknown operations, so the pair must fail admission.
+// 205: Default-model selection can enable atomically; discovery can preserve the model selection.
+// 204: Executor catalogs and Session configuration carry opaque mode IDs;
+// catalog queries may request a provider refresh. Older peers reject these fields.
+// 202: `session.remove.preview` takes a bounded list of Sessions and reports the
+// child tasks, worktrees and optionally the bytes their removal would delete;
+// `session.remove` takes `requireArchivedForMs` and may answer `too_recent`.
+// Epoch-201 peers reject the new input and result shapes, so the pair must
+// fail admission.
+// 201: Session catalog projections may carry `archivedAt`, the time the
+// Session last entered the archive. Epoch-200 peers reject the unknown key, so
+// a newer Desktop against an older Host would lose session catalog reads.
+// 200: Agent Graph operator snapshots carry bounded output previews and metrics.
+// Older peers reject the additional `output` field on strict operator shapes.
+// 199: `storage.usage.query` and `storage.usage.sessions.query` report storage
+// usage. An epoch-198 Host rejects the unknown operation and drops the
+// connection, so the pair must fail admission instead.
+// 198: Executor readiness exposes explicit restore, restore-failed and history-gap states.
+// 197: Queue reorder requests carry the expected queue revision. Epoch-196
+// peers reject the required field or send an unfenced reorder request.
+// 196: `turn.start` carries an optional durable external-message origin; older
+// peers would drop activation provenance and misclassify automated turns.
+// 195: Session catalog live run state may carry the host generation that
+// produced it, so clients can tell same-revision reads of a restarted Host
+// apart from its predecessor's instead of ordering them by a per-process
+// epoch. Epoch-194 peers reject the unknown key.
+// 194: Session catalog live run state may carry the runtime's run epoch, which
+// lets clients order same-revision reads. Epoch-193 peers reject the unknown
+// key, so a newer Desktop against an older Host loses session catalog reads.
+// 193: Queue reorder requests require at least one entry identity. Epoch-192
+// peers can send an empty reorder request that the current Host rejects.
+// 192: Message quotes carry an optional annotation written by the user, which
+// the model reads beside the excerpt. An epoch-191 peer rejects the field.
+// 191: Session catalog change frames can carry attention events.
+// 190: ScheduledTask execution templates preserve toolMode; older peers reject it.
+// 189: Remove form_interaction transcript messages and the transcript_changed close reason.
+// 188: Session capability replacement can require an atomic idle root check;
+// complete MCP configuration identities fence conflicting providers across ACP clients.
+// 187: transcript_changed closes a subscription for automatic bounded-tail reseeding.
+// 186: Settled form/question history adds form_interaction transcript messages.
+// 185: Add the bounded next-prompt suggestion operation.
+// 184: the unified `custom` provider type and its defaultApiProtocol require matching peers.
 // 183: Jev policy snapshots, set_jev mutation and credential locator require matching peers.
 // 182: Executor catalogs expose structured model families and thinking variant IDs.
 // 181: Canonical executor models and retained provider stop reasons after cancellation.
@@ -431,8 +482,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 183 as const;
 // 41: Context compaction returns a typed terminal outcome on both Turn
 // snapshots and context.compact results. Epoch-40 peers reject these closed
 // shapes after admission, so mixed peers must fail during the handshake.
-// 40: The message queue gains per-entry mutation operations
-// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
+// 40: Queue entries become independently addressable for promotion,
+// retraction, and ordering. Epoch-39 peers do not recognize those commands.
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a

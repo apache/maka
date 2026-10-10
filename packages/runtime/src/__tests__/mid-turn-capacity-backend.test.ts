@@ -574,7 +574,11 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ...(options.bigToolGroup
       ? { toolAvailability: { groups: [{ id: 'big', toolNames: ['Big'] }] } }
       : {}),
-    ...(options.systemPromptChars ? { systemPrompt: 'S'.repeat(options.systemPromptChars) } : {}),
+    systemPrompt: () => ({
+      ...(options.systemPromptChars ? { text: 'S'.repeat(options.systemPromptChars) } : {}),
+      contexts: [{ name: 'test.request-context', text: 'ACTIVE_REQUEST_CONTEXT' }],
+      sourceRevisions: [],
+    }),
     contextBudget: options.useRuntimeDefaultPolicy
       ? buildDefaultContextBudgetPolicy({
           name: 'runtime-default-mid-turn',
@@ -739,6 +743,18 @@ function promptJson(fixture: MidTurnFixture, call: number): string {
   );
 }
 
+function assertRequestContextPreserved(fixture: MidTurnFixture): void {
+  for (const { prompt } of fixture.model.doStreamCalls) {
+    const texts = prompt.flatMap((message) =>
+      message.role === 'user'
+        ? message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+        : [],
+    );
+    assert.equal(texts.filter((text) => text === 'ACTIVE_REQUEST_CONTEXT').length, 1);
+  }
+  assert.doesNotMatch(JSON.stringify(fixture.ledger), /ACTIVE_REQUEST_CONTEXT/u);
+}
+
 function compactionDecisions(
   fixture: MidTurnFixture,
 ): NonNullable<ContextBudgetDiagnostic['compactionDecisions']> {
@@ -791,6 +807,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     // The turn ran three steps and completed normally.
     assert.equal(fixture.model.doStreamCalls.length, 3);
+    assertRequestContextPreserved(fixture);
     const complete = fixture.events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
 
@@ -953,10 +970,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
   });
 
   test('sends an over-window request no shaper could rescue, rather than ending the turn', async () => {
-    // No prior turns and a window the first step's usage already exceeds: the
-    // pool is [anchor, one open call/result pair], so no safe completed span
-    // and nothing to compact. Only the provider can say whether that request
-    // fits, so it goes out and the turn runs to its own end.
+    // No prior turns and a window the first step's usage already exceeds: at
+    // that step the pool is [anchor, one completed call/result pair], which
+    // mid-turn coverage cannot fold. Only the provider can say whether that
+    // request fits, so it goes out and the turn runs to its own end. The miss
+    // is per-step — the grown pool may still fold a later request (#5790).
     const fixture = buildFixture({
       contextWindow: 120,
       withoutPriorTurns: true,
@@ -1088,6 +1106,55 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     );
     assert.ok(failedOpen.length >= 1);
     assert.equal(failedOpen[0]?.failOpenReason, 'provider_error');
+  });
+
+  test('bounds an input-too-large rejection across later steps in the same turn (#5790 review)', async () => {
+    // No invocation proves a boundary, so the rejection is a plain summarizer
+    // failure and the Turn latches it — a later step never re-dispatches it.
+    const fixture = buildFixture({
+      toolSteps: 3,
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('input_too_large');
+      },
+    });
+
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 0);
+    const failedOpen = compactionDecisions(fixture).filter(
+      (decision) => decision.decision === 'failedOpen',
+    );
+    assert.equal(failedOpen[0]?.failOpenReason, 'input_too_large');
+  });
+
+  test('a no_safe_completed_span attempt does not suppress the fold once the pool grows (#5790)', async () => {
+    // No prior turns: at the first trigger the pool is only the anchor plus
+    // one completed tool pair, which mid-turn coverage cannot fold (the anchor
+    // alone saves nothing). The attempt fails open WITHOUT calling the
+    // summarizer — a property of the pool at that step, not a failure — so it
+    // must not latch the turn. Once the next step lands a second pair the new
+    // attempt re-reads the grown ledger and folds.
+    const fixture = buildFixture({
+      contextWindow: 150,
+      withoutPriorTurns: true,
+      toolSteps: 2,
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+    const failedOpen = compactionDecisions(fixture).find(
+      (decision) => decision.decision === 'failedOpen',
+    );
+    assert.equal(failedOpen?.failOpenReason, 'no_safe_completed_span');
+    // The grown pool folded: exactly one summarizer call, one checkpoint.
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 1);
+    const thirdPrompt = promptJson(fixture, 2);
+    assert.match(thirdPrompt, /maka_history_compact_checkpoint/);
+    assert.equal(thirdPrompt.includes('RAW_SPAN_ONE_'), false);
+    assert.equal(thirdPrompt.includes('RAW_SPAN_TWO_'), true);
   });
 
   test('fails closed before provider dispatch when the durable ledger read fails', async () => {
@@ -1784,15 +1851,17 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
 
     assert.equal(fixture.model.doStreamCalls.length, 2);
     assert.equal(fixture.model.doStreamCalls[0]?.maxOutputTokens, 8_000);
+    assertRequestContextPreserved(fixture);
     assert.notEqual(fixture.model.doStreamCalls[0]?.maxOutputTokens, 1);
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.summarizerCalls, 1);
     assert.equal(fixture.events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
-  test('an unrescuable turn under the shipped default still dispatches', async () => {
-    // No prior turns leaves no safe completed span. The request still goes out
-    // because only the provider can decide whether it fits.
+  test('a first trigger with nothing foldable still dispatches under the shipped default', async () => {
+    // No prior turns leaves the first trigger no safe completed span. The
+    // request still goes out because only the provider can decide whether it
+    // fits — and the per-step miss does not latch the turn (#5790).
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       contextWindow: 120,

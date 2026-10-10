@@ -60,3 +60,35 @@ test('Desktop conversation adapter keeps snapshot reads and catalog access on th
   services.runtimeHosts.subscribeChanges(() => undefined);
   assert.deepEqual(calls, ['snapshot:source', 'host-changes']);
 });
+
+
+test('prompt suggestion preferences observe cross-renderer changes and unsubscribe', () => {
+  const events = new EventTarget();
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: events });
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+  } });
+  try {
+    const port = createDesktopConversationServices({} as MakaBridge).promptSuggestions!;
+    let observed = false;
+    let updates = 0;
+    const unsubscribe = port.subscribeEnabled!(() => { observed = port.readEnabled(); updates++; });
+    const notify = (key: string | null) => {
+      const event = new Event('storage'); Object.defineProperty(event, 'key', { value: key }); events.dispatchEvent(event);
+    };
+    port.writeEnabled(true); notify('maka.promptSuggestions.enabled');
+    assert.equal(observed, true);
+    port.writeEnabled(false); notify('maka.promptSuggestions.enabled');
+    assert.equal(observed, false);
+    notify('unrelated'); assert.equal(updates, 2);
+    notify(null); assert.equal(updates, 3);
+    unsubscribe(); notify(null); assert.equal(updates, 3);
+  } finally {
+    if (savedWindow) Object.defineProperty(globalThis, 'window', savedWindow); else Reflect.deleteProperty(globalThis, 'window');
+    if (savedStorage) Object.defineProperty(globalThis, 'localStorage', savedStorage); else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});

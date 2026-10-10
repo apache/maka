@@ -28,8 +28,9 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ChatSurfaceLayout, Composer, ToastProvider } from '@maka/ui';
-import { WorkbarHost, WorkbarServicesProvider } from '../src/renderer/features/workbar';
-import { WorkbarSurface, useWorkbarLayoutState, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
+import { WorkbarServicesProvider } from '../src/renderer/features/workbar';
+import { SessionWorkspaceRecoveryContext } from '../src/renderer/application/contracts/session-workspace-recovery-authority';
+import { WorkbarHostView, WorkbarSurface, useWorkbarLayoutState, type WorkbarHostModel } from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -60,17 +61,16 @@ import {
 // two levels up in the shell — as is the titlebar band the collapse toggle
 // moves into. Those belong to app-shell.stories.tsx, which mounts the shell.
 //
-// Read these at a canvas of 990px or wider. The app's own breakpoint is on the
-// viewport, and Storybook's canvas IS the viewport, so a narrower window puts
-// the panel in its stacked full-width variant rather than in a column. That is
-// the real rule firing, not the story misbehaving; the render smoke mounts at
-// 1280, above it.
+// The column is a column at every window width; there is no stacked variant.
+// What narrows it in the app is the frame's cap beside the conversation, and
+// that lives on the AppShell frame, so the width stories here show the
+// column's own floor and the cap stories live in app-shell.stories.tsx.
 
 const SESSION_ID = 'session-workbar';
-const STACKED_WINDOW_VIEWPORT = {
-  makaStackedWindow: {
-    name: 'Maka window below the 990px stack point',
-    styles: { width: '900px', height: '900px' },
+const NARROW_WINDOW_VIEWPORT = {
+  makaNarrowWindow: {
+    name: 'Maka window below the Workbar compact width',
+    styles: { width: '720px', height: '900px' },
     type: 'desktop' as const,
   },
 };
@@ -354,8 +354,14 @@ const gitReviewSnapshot: GitReviewSnapshot = {
   source: 'branch',
   repositoryRoot: '/Users/reviewer/maka-agent',
   currentBranch: 'feat/git-authoritative-changes',
-  baseBranch: 'main',
-  baseBranchOptions: ['main', 'release/0.1'],
+  baseBranch: 'refs/remotes/origin/main',
+  baseBranchOptions: [
+    { label: 'origin/HEAD', value: 'refs/remotes/origin/HEAD' },
+    { label: 'origin/main', value: 'refs/remotes/origin/main' },
+    { label: 'main', value: 'refs/heads/main' },
+    { label: 'release/0.1', value: 'refs/heads/release/0.1' },
+    { label: 'origin/feature/payments-migration-2026', value: 'refs/remotes/origin/feature/payments-migration-2026' },
+  ],
   revision: 'storybook-git-review',
   additions: gitReviewFiles.reduce((total, file) => total + file.additions, 0),
   deletions: gitReviewFiles.reduce((total, file) => total + file.deletions, 0),
@@ -942,6 +948,7 @@ function bridge(options: {
         return options.review ?? { ok: true, snapshot: gitReviewSnapshot };
       },
       subscribeSessionEvents: unsubscribe,
+      subscribeSessionChanges: unsubscribe,
     },
     terminal: {
       recover: async () => ({ resources: [], closes: [] }),
@@ -1020,7 +1027,6 @@ function bridge(options: {
       }),
       retractQueueEntry: async () => undefined,
       promoteQueueEntry: async () => undefined,
-      updateQueueEntry: async () => undefined,
       reorderQueueEntries: async () => undefined,
       setPermissionMode: async (_sessionId, mode) => ({
         ...SIDE_CHAT_SESSION,
@@ -1060,7 +1066,7 @@ function bridge(options: {
 
 /**
  * The AppShell grid the workbar really lives in, with an empty conversation
- * column. Its 990px media query is what stacks the column in narrow windows.
+ * column.
  */
 function Workbar(props: {
   workspace?: 'session' | 'workhub';
@@ -1122,13 +1128,12 @@ function Workbar(props: {
     : withExtras;
   const [panels, setPanels] = useState(() => createSessionWorkbarPanelsState(tabsState));
   return (
-    <ToastProvider>
+    <SessionWorkspaceRecoveryContext.Provider value={noop}><ToastProvider>
       <div
         className="maka-detail-with-artifacts"
         data-preview-focused={focused ? props.tab : undefined}
         style={{
-          // Fill the preview viewport like AppShell fills the window; a fixed
-          // height pushes the stacked workbar below the fold in short windows.
+          // Fill the preview viewport like AppShell fills the window.
           height: '100dvh',
           // AppShell declares this on the frame that holds the plates, and the
           // workbar's own grid reserves its first row with it. Without it the
@@ -1179,7 +1184,7 @@ function Workbar(props: {
           }
         />
       </div>
-    </ToastProvider>
+    </ToastProvider></SessionWorkspaceRecoveryContext.Provider>
   );
 }
 
@@ -1190,7 +1195,9 @@ const storyResizable = {
 } as WorkbarHostModel['rightResizable'];
 
 function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boolean; streaming?: boolean; stagedFile?: boolean; frameWidth?: number; missingComposerHost?: boolean; onStop?: () => void; onOpenConversation?: (sessionId: string, turnId?: string) => void }) {
-  const layout = useWorkbarLayoutState(SESSION_ID, undefined);
+  // The focused-preview stories emulate a narrow shell by frame width, not the
+  // compact spell; the workbar stays visible per its preference here.
+  const layout = useWorkbarLayoutState(SESSION_ID, undefined, false);
   const [panels, setPanels] = useState(() => createSessionWorkbarPanelsState(
     openStaticSessionWorkbarTab(createSessionWorkbarTabsState(), props.tab),
   ));
@@ -1219,7 +1226,7 @@ function FocusedHostFlow(props: { tab: 'files' | 'browser'; realComposer?: boole
           border: '1px solid var(--border)', borderRadius: 8, background: 'var(--background)', color: 'var(--foreground)' }} />}>
       <div className="maka-chatContent">Conversation remains mounted while reading.</div>
     </ChatSurfaceLayout>}</div>
-    <WorkbarHost model={model} />
+    <WorkbarHostView model={model} />
   </div></ToastProvider>;
 }
 
@@ -1269,6 +1276,45 @@ export const Changes: Story = {
   render: () => <Workbar tab="review" />,
 };
 
+// Real path: 任务工作栏 → 变更 → open the base branch picker in a narrow
+// workbar, search a long branch name, select it, then reopen the comparison menu.
+export const ChangesBaseBranchPicker: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="review" width={320} />,
+  play: async ({ canvasElement }) => {
+    const picker = await waitFor(() => {
+      const element = canvasElement.querySelector<HTMLElement>('.maka-session-review-base-branch');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    const trigger = within(picker).getByRole('button');
+    await userEvent.click(trigger);
+    const body = within(canvasElement.ownerDocument.body);
+    const listbox = await body.findByRole('listbox');
+    const longName = 'origin/feature/payments-migration-2026';
+    const option = within(listbox).getByRole('option', { name: longName });
+    await waitFor(() => {
+      const surface = picker.querySelector<HTMLElement>('.astryx-popover-surface');
+      expect(surface).not.toBeNull();
+      expect(surface!.getBoundingClientRect().width).toBeGreaterThan(0);
+      expect(surface!.getBoundingClientRect().width).toBeLessThanOrEqual(280);
+      expect(listbox.getBoundingClientRect().height).toBeLessThanOrEqual(288);
+      const text = option.querySelector<HTMLElement>('.astryx-text');
+      expect(text).not.toBeNull();
+      expect(text!.scrollWidth).toBeGreaterThan(text!.clientWidth);
+      expect(getComputedStyle(text!).textOverflow).toBe('ellipsis');
+    });
+    const search = within(picker).getByRole('combobox');
+    await userEvent.type(search, 'payments');
+    await waitFor(() => expect(within(listbox).getAllByRole('option')).toHaveLength(1));
+    await userEvent.click(within(listbox).getByRole('option', { name: longName }));
+    await waitFor(() => expect(trigger).toHaveTextContent(longName));
+    await userEvent.click(trigger);
+    const reopened = await body.findByRole('listbox');
+    expect(within(reopened).getByRole('option', { name: longName })).toHaveAttribute('aria-selected', 'true');
+  },
+};
+
 // Real path: 变更 open, then 浏览器 and 生成文件 opened from [+]. Faces are added to
 // the right of the strip and never reordered, so this is what three of them
 // look like — one selected, two not, which is the only arrangement where the
@@ -1314,13 +1360,13 @@ export const SeveralFacesAtColumnFloor: Story = {
   },
 };
 
-// Below 991px the column stacks under the conversation at full width. The
-// wide-window ease (app-shell.stories.tsx holds that contract) must not reach
-// it: the face spans the row, and collapsing removes the row instead of
-// leaving an empty band. The smoke lane sizes stories named `narrow` to 720px.
-export const CollapseNarrowStack: Story = {
-  parameters: { viewport: { options: STACKED_WINDOW_VIEWPORT } },
-  globals: { viewport: { value: 'makaStackedWindow', isRotated: false } },
+// A narrow window eases the column shut the same way a wide one does, so the
+// sidebar and the Workbar keep one rhythm: the box closes to zero width and
+// hides once the ease is done, rather than dropping out of layout at once.
+// The smoke lane sizes stories named `narrow` to 720px.
+export const CollapseNarrowWindow: Story = {
+  parameters: { viewport: { options: NARROW_WINDOW_VIEWPORT } },
+  globals: { viewport: { value: 'makaNarrowWindow', isRotated: false } },
   decorators: [bridge()],
   render: () => <Workbar tab="review" collapsible />,
   play: async ({ canvasElement }) => {
@@ -1331,17 +1377,14 @@ export const CollapseNarrowStack: Story = {
     const panel = canvasElement.querySelector<HTMLElement>(
       '.maka-session-workbar-panel[data-overlay][data-placement="right"]',
     )!;
-    const toolbar = frame.querySelector<HTMLElement>('.maka-session-workbar-toolbar')!;
     await canvas.findByRole('region', { name: 'Git 变更' });
-    expect(window.innerWidth).toBeLessThanOrEqual(990);
-    expect(toolbar.getBoundingClientRect().width).toBe(frame.getBoundingClientRect().width);
-    expect(panel.firstElementChild!.getBoundingClientRect().width).toBe(
-      panel.getBoundingClientRect().width,
-    );
+    expect(getComputedStyle(frame).transitionProperty).toContain('width');
 
     await userEvent.click(canvas.getByRole('button', { name: '收起任务工作栏' }));
-    await waitFor(() => expect(getComputedStyle(frame).display).toBe('none'));
-    expect(getComputedStyle(panel).display).toBe('none');
+    await waitFor(() => expect(frame.getBoundingClientRect().width).toBe(0));
+    await waitFor(() => expect(getComputedStyle(frame).visibility).toBe('hidden'));
+    expect(getComputedStyle(frame).display).not.toBe('none');
+    expect(getComputedStyle(panel).visibility).toBe('hidden');
   },
 };
 
@@ -1366,16 +1409,84 @@ export const ChangesLoadFailed: Story = {
   },
 };
 
-// Real path: 任务工作栏 → 变更 when the session cwd is not a Git repository. A
-// source that cannot be read is a failure (error Banner + 重试), not an
-// absence — the other read reasons (workspace unavailable, unborn repo,
-// invalid base branch, git failed) share this branch.
+// Real path: 任务工作栏 → 变更 in a valid but non-Git task directory — the
+// projectless first-run case. A capability state, not a failure: neutral
+// guidance names this task's own directory and offers the current-task
+// recovery action; a 重试 here could only mislead.
 export const ChangesSourceNotGit: Story = {
-  decorators: [bridge({ review: { ok: false, reason: 'not_git_repository' } })],
+  decorators: [bridge({ review: {
+    ok: false, reason: 'not_git_repository', workspace: '/Users/example/tasks/plain-notes',
+  } })],
   render: () => <Workbar tab="review" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText('当前任务目录不是 Git 仓库');
+    await canvas.findByText('变更需要 Git 仓库');
+    await canvas.findByText('/Users/example/tasks/plain-notes');
+    await canvas.findByRole('button', { name: '更改任务目录' });
+    expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+    expect(canvasElement.querySelector('[role="alert"]')).toBeNull();
+  },
+};
+
+// Real path: 任务工作栏 → 变更 when the task's directory is gone — an
+// existing task whose workspace became unavailable. Recovery guidance keeps
+// this task's recorded directory, a legitimate 重试 (the folder can come
+// back), and the same current-task recovery action.
+export const ChangesWorkspaceUnavailable: Story = {
+  decorators: [bridge({ review: {
+    ok: false, reason: 'workspace_unavailable', workspace: '/Users/example/tasks/moved-away',
+  } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('当前任务目录不可用');
+    await canvas.findByText('/Users/example/tasks/moved-away');
+    await canvas.findByRole('button', { name: '更改任务目录' });
+    await canvas.findByRole('button', { name: '重试' });
+  },
+};
+
+// Real path: 任务工作栏 → 变更 in a repository with no commit yet — another
+// capability state, naming the task's directory with Refresh after a commit.
+export const ChangesUnbornRepository: Story = {
+  decorators: [bridge({ review: {
+    ok: false, reason: 'unborn_repository', workspace: '/Users/example/tasks/fresh-repo',
+  } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('Git 仓库还没有可比较的提交');
+    await canvas.findByText('/Users/example/tasks/fresh-repo');
+    expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+  },
+};
+
+// Real path: 任务工作栏 → 变更 on a session whose Runtime Host owns the
+// workspace — the Desktop cannot read it locally. A capability state with
+// neither 重试 nor 更改任务目录: no local action can help.
+export const ChangesRemoteWorkspace: Story = {
+  decorators: [bridge({ review: { ok: false, reason: 'remote_workspace' } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('该任务工作区由远程 Runtime Host 管理');
+    expect(canvas.queryByRole('button', { name: '重试' })).toBeNull();
+    expect(canvas.queryByRole('button', { name: '更改任务目录' })).toBeNull();
+  },
+};
+
+// Real path: 任务工作栏 → 变更 when the Git read itself fails. Unlike a
+// capability state it stays an error Banner: the underlying detail survives
+// and 重试 re-reads this task's workspace.
+export const ChangesGitReadFailed: Story = {
+  decorators: [bridge({ review: {
+    ok: false, reason: 'git_failed', detail: 'fatal: unable to read tree (abc1234)',
+  } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('无法读取 Git 工作区变化');
+    await canvas.findByText('fatal: unable to read tree (abc1234)');
     await canvas.findByRole('button', { name: '重试' });
   },
 };
@@ -1675,15 +1786,6 @@ export const BrowserAddressFieldTracksColumnWidth: Story = {
   },
 };
 
-// Below 990px the grid stacks the same right-placement column under the
-// conversation: full width, capped at 42dvh. Storybook-UI only: the smoke lane
-// loads iframes at 1280px, above the stack point, so it renders wide there.
-export const BrowserStacked: Story = {
-  parameters: { viewport: { options: STACKED_WINDOW_VIEWPORT } },
-  globals: { viewport: { value: 'makaStackedWindow', isRotated: false } },
-  decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
-  render: () => <Workbar tab="browser" />,
-};
 // Real path: 任务工作栏 → 浏览器 mid-history — the one nav-control combination
 // the other browser stories never show: forward enabled, not just back.
 export const BrowserCanGoForward: Story = {
@@ -2322,6 +2424,22 @@ export const SideChatAtColumnFloor: Story = {
       const sendBox = send.getBoundingClientRect();
       expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left);
       expect(sendBox.right).toBeLessThanOrEqual(cardBox.right);
+    });
+
+    // The placeholder is Astryx's absolutely positioned overlay: it paints
+    // over the input without sizing it, so a hint long enough to wrap at this
+    // width used to spill over the footer and out of the card. It must stay a
+    // rendered single line inside the editable's box — a zero-size box would
+    // satisfy the boundary check without the hint ever being visible.
+    const editor = companion.querySelector<HTMLElement>('.maka-composer-editor');
+    const placeholder = editor?.querySelector<HTMLElement>(':scope > [aria-hidden]');
+    const editable = editor?.querySelector<HTMLElement>('[contenteditable]');
+    if (!placeholder || !editable) throw new Error('composer placeholder is missing');
+    await waitFor(() => {
+      const placeholderBox = placeholder.getBoundingClientRect();
+      const editableBox = editable.getBoundingClientRect();
+      expect(placeholderBox.height).toBeGreaterThan(0);
+      expect(placeholderBox.bottom).toBeLessThanOrEqual(editableBox.bottom + 1);
     });
   },
 };

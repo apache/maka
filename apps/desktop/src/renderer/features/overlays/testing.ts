@@ -32,6 +32,11 @@ export {
 } from './model/settings-modal-state.js';
 export type { OverlaysShellProjection } from './model/overlays-projection.js';
 export type { OverlaysServices } from './ports.js';
+export {
+  createAgentGraphPanelModel,
+  reduceAgentGraphPanelModel,
+  shouldShowAgentGraphPanel,
+} from './model/agent-graph-panel-model.js';
 
 export function createFakeOverlaysServices(
   overrides: Partial<OverlaysServices> = {},
@@ -43,6 +48,13 @@ export function createFakeOverlaysServices(
     },
     settingsSection: { persist: () => undefined },
     focus: { blurActiveElement: () => undefined },
+    palette: {
+      testConnection: async () => ({ ok: true }),
+      setDefaultConnection: async () => undefined,
+      testNetworkProxy: async () => ({ ok: true, message: '' }),
+      openLocalMemoryFile: async () => ({ ok: true }),
+      saveConversationToFile: async () => ({ ok: false, reason: 'canceled' }),
+    },
     ...overrides,
   };
 }

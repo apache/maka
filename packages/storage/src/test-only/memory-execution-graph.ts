@@ -391,7 +391,10 @@ export function createMemoryGraphStore(a: MemoryExecutionAuthority): ExecutionGr
       a.write('graph.beginWake', (s) => {
         assertAgentGraphSupervisorWakeAttempt(input);
         const old = wake(s, input.graphId, input.wakeId);
-        if (old.status !== 'pending' && old.status !== 'retryable_failed')
+        if (
+          (old.status !== 'pending' && old.status !== 'retryable_failed') ||
+          (input.maxAttempts !== undefined && old.attemptCount >= input.maxAttempts)
+        )
           return { wake: old, acquired: false };
         const id = key(input.graphId, input.wakeId, input.attemptId);
         if (attempts(s).has(id))
@@ -445,6 +448,22 @@ export function createMemoryGraphStore(a: MemoryExecutionAuthority): ExecutionGr
         if (input.status !== 'waiting_permission') next.completedAt = now;
         wakes(s).set(key(input.graphId, input.wakeId), value);
         attempts(s).set(id, next);
+        return value;
+      }),
+    exhaustAgentGraphSupervisorWake: async (graphId, wakeId, failureReason) =>
+      a.write('graph.exhaustWake', (s) => {
+        reason(failureReason);
+        const old = wake(s, graphId, wakeId);
+        if (old.status === 'exhausted') return old;
+        if (old.status !== 'retryable_failed')
+          throw new SessionMetadataConflictError('Wake is not retryable');
+        const value: AgentGraphSupervisorWakeRecord = {
+          ...old,
+          status: 'exhausted',
+          failureReason,
+          updatedAt: Date.now(),
+        };
+        wakes(s).set(key(graphId, wakeId), value);
         return value;
       }),
     supersedeAgentGraphSupervisorWakes: async (input) =>

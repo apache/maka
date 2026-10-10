@@ -77,7 +77,7 @@ const internalPackageNames = workspacePackages
 const internalPackageSet = new Set(internalPackageNames);
 const buildOrder = orderWorkspaceBuilds(workspacePackages);
 const developmentGeneratedFiles = new Map([
-  ['@maka/runtime', new Set(['workers/filesystem-worker.js'])],
+  ['@maka/runtime', new Set(['workers/filesystem-worker.mjs'])],
 ]);
 const strippedInstallScripts = new Map([
   // The clean repository install has already produced every generated file and
@@ -261,8 +261,11 @@ function copyNativePrebuildInputToCleanTree(cleanRoot) {
 
 function validateNodeVersion() {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
-  if (major < 22 || (major === 22 && minor < 19)) {
-    throw new Error(`Node.js >=22.19.0 is required; found ${process.versions.node}`);
+  // Node 23 satisfies a naive `>=22.19.0` check but lacks `node:sqlite`
+  // `DatabaseSync.isTransaction` (added in 22.16 / 24.0 only), which the
+  // storage layer relies on. Accept 22.19+ and 24+, matching root `engines`.
+  if (major < 22 || (major === 22 && minor < 19) || major === 23) {
+    throw new Error(`Node.js ^22.19.0 || >=24.0.0 is required; found ${process.versions.node}`);
   }
 }
 
@@ -368,9 +371,9 @@ function copyDependencyClosure(cli) {
   };
   visit(cli, stageRoot);
 
-  const evalUndici = findDependency(cli, 'undici', '8.10.2');
+  const evalUndici = findDependency(cli, 'undici', '8.11.2');
   if (!evalUndici?.path || !existsSync(evalUndici.path)) {
-    throw new Error('The installed CLI closure does not contain undici@8.10.2');
+    throw new Error('The installed CLI closure does not contain undici@8.11.2');
   }
   copyThirdPartyPackage(realpathSync(evalUndici.path), join(stageRoot, 'node_modules/undici'));
   copiedDestinations.set(join(stageRoot, 'node_modules/undici'), realpathSync(evalUndici.path));
@@ -664,7 +667,7 @@ function writeReleaseManifest(cli, publishable) {
       `CLI manifest and installed lockfile disagree: ${source.version} vs ${cli.version}`,
     );
   }
-  const undici = findDependency(cli, 'undici', '8.10.2');
+  const undici = findDependency(cli, 'undici', '8.11.2');
   const dependencies = { ...source.dependencies, undici: undici.version };
   const updateCompatibility = source.maka?.managedRuntimeHostUpdateCompatibility;
   if (!Number.isSafeInteger(updateCompatibility) || updateCompatibility < 1) {
@@ -749,7 +752,8 @@ function validateStaging(publishable) {
     'DISCLAIMER-WIP',
     'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
     'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
-    'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime/dist/workers/filesystem-worker.mjs',
+    'node_modules/@maka/runtime/dist/owned-process-main.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/harbor-external-subject.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
@@ -786,7 +790,10 @@ function validateStaging(publishable) {
     'node_modules/node-pty/lib/unixTerminal.js',
     'CustomWriteStream.prototype._ownsFileDescriptor',
   );
-  assertPatchedFile('node_modules/@ai-sdk/provider-utils/dist/index.js', 'function absentIfBlank');
+  assertPatchedFile(
+    'node_modules/@ai-sdk/provider-utils/dist/index.js',
+    'Ambiguous streamed tool call delta.',
+  );
 
   const manifest = readJson(join(stageRoot, 'package.json'));
   for (const [name, specifier] of Object.entries(manifest.dependencies ?? {})) {
@@ -859,7 +866,8 @@ function validatePackedFiles(files, expectedDependencyManifests, publishable) {
   const requiredPacked = [
     'dist/cli.js',
     'DISCLAIMER-WIP',
-    'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime/dist/workers/filesystem-worker.mjs',
+    'node_modules/@maka/runtime/dist/owned-process-main.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
     ...(publishable || privateRuntimeHostTarget !== 'none'

@@ -37,6 +37,7 @@ import {
   type AgentGraphChangedFrame,
   type AgentGraphChangedReason,
   type SessionAssistantDelta,
+  type SessionAttention,
   type SessionContinuitySnapshot,
   type SessionDeltaFrame,
   type SessionDomainChange,
@@ -52,8 +53,6 @@ import {
   type SubscriptionFrame,
   type SubscriptionOpenInput,
   type SubscriptionOpenResult,
-  type LiveTurnSnapshot,
-  type TurnProviderRetry,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import type {
@@ -61,11 +60,17 @@ import type {
   SessionContinuityOperationHandlerMap,
 } from './operation-dispatcher.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
+import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
   type CanonicalSessionProjection,
   createSessionContinuitySnapshot,
 } from './canonical-session-projection.js';
+import {
+  carryProviderRetry,
+  clearProviderRetry,
+  recordProviderRetry,
+} from './provider-retry-projection.js';
 import type {
   SessionContinuityConnection,
   SessionContinuityFrameSink,
@@ -88,21 +93,23 @@ const ASSISTANT_BACKLOG_CHUNK_CHARACTERS = 8 * 1024;
 
 export type { CanonicalSessionProjection } from './canonical-session-projection.js';
 
+type RuntimeSessionForwardedEventType =
+  | 'text_delta'
+  | 'text_complete'
+  | 'thinking_delta'
+  | 'thinking_complete'
+  | 'tool_start'
+  | 'tool_output_delta'
+  | 'tool_progress'
+  | 'tool_result_preview'
+  | 'tool_result'
+  | 'steering_message'
+  | 'provider_retry';
+
 export type RuntimeSessionForwardedEvent = Extract<
   SessionEvent,
   {
-    type:
-      | 'text_delta'
-      | 'text_complete'
-      | 'thinking_delta'
-      | 'thinking_complete'
-      | 'tool_start'
-      | 'tool_output_delta'
-      | 'tool_progress'
-      | 'tool_result_preview'
-      | 'tool_result'
-      | 'steering_message'
-      | 'provider_retry';
+    type: RuntimeSessionForwardedEventType;
   }
 >;
 
@@ -165,7 +172,10 @@ interface Subscriber {
   queue: QueuedSubscriptionFrame[];
   queuedBytes: number;
   pumping: boolean;
-  ptyQueue: { frame: SessionRuntimeResourcePtyDataFrame; encodedBytes: number }[];
+  ptyQueue: {
+    frame: SessionRuntimeResourcePtyDataFrame;
+    encodedBytes: number;
+  }[];
   ptyQueuedBytes: number;
   ptyPumping: boolean;
   ptyInterests: Set<string>;
@@ -189,7 +199,11 @@ interface AssistantBacklog {
   /** Characters of the stream this subscriber has been sent. */
   sent: number;
   /** Set when the stream completed before the subscriber caught up. */
-  completion?: { runId: string; stream: ActiveAssistantStream; interrupted?: true };
+  completion?: {
+    runId: string;
+    stream: ActiveAssistantStream;
+    interrupted?: true;
+  };
 }
 
 interface PendingRefresh {
@@ -219,7 +233,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       if (!subscriber || !this.#canObserve(subscriber, subscriber.sessionId)) {
         return {
           ok: false,
-          error: { code: 'not_found', message: 'Session subscription was not found' },
+          error: {
+            code: 'not_found',
+            message: 'Session subscription was not found',
+          },
         };
       }
       subscriber.ptyInterests = new Set(input.refs);
@@ -247,14 +264,20 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         ? { ok: true, result: { subscriptionId: input.subscriptionId } }
         : {
             ok: false,
-            error: { code: 'not_found', message: 'Session subscription was not found' },
+            error: {
+              code: 'not_found',
+              message: 'Session subscription was not found',
+            },
           };
     },
     'subscription.ready': async (input, context) => {
       if (!this.#ownedSubscriber(context.connectionId, input.subscriptionId)) {
         return {
           ok: false,
-          error: { code: 'not_found', message: 'Session subscription was not found' },
+          error: {
+            code: 'not_found',
+            message: 'Session subscription was not found',
+          },
         };
       }
       this.#activate(context.connectionId, input.subscriptionId);
@@ -286,7 +309,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly onPublicationFailure: (error: unknown) => void = () => undefined,
     transcriptReader?: SessionTranscriptReader,
-    private readonly onCatalogChanged: (sessionId: string) => void = () => undefined,
+    private readonly onCatalogChanged: (
+      sessionId: string,
+      attention?: SessionAttention,
+    ) => void | Promise<void> = () => undefined,
     sessionAccessAuthority?: Pick<
       RuntimeHostAccessAuthority,
       'activeSessionGrant' | 'subscribeGrantRevocations'
@@ -337,8 +363,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
-  async refreshCanonical(sessionId: string, admission?: SessionAdmissionLease): Promise<void> {
-    this.onCatalogChanged(sessionId);
+  async refreshCanonical(
+    sessionId: string,
+    admission?: SessionAdmissionLease,
+    attention?: SessionAttention,
+  ): Promise<void> {
     await this.#runInSessionLane(
       sessionId,
       async () => {
@@ -353,6 +382,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       },
       admission,
     );
+    await this.onCatalogChanged(sessionId, attention);
   }
 
   /** Safe for synchronous commit hooks: this only schedules and coalesces lane work. */
@@ -483,7 +513,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   /** Publish one lightweight source invalidation to every active Session view that may inherit it. */
   enqueueRuntimeResourceChanged(update: ShellRunUpdate): void {
     if (this.#closed) return;
-    const resource = { sourceSessionId: update.sessionId, ref: update.result.ref };
+    const resource = {
+      sourceSessionId: update.sessionId,
+      ref: update.result.ref,
+    };
     const key = JSON.stringify([resource.sourceSessionId, resource.ref]);
     for (const sessionId of this.#sessions.keys()) {
       const pending = this.#pendingSessionDomainChanges.get(sessionId);
@@ -619,7 +652,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         const canonical = await this.#readCanonicalProjection(sessionId);
         if (this.#closed) throw new Error('Session continuity coordinator is closed');
         if (!canonical) throw new Error('Cannot fence a missing Session projection');
-        const rootTurn = requirePublicationFenceIdentity(canonical, sessionId, { turnId, runId });
+        const rootTurn = requirePublicationFenceIdentity(canonical, sessionId, {
+          turnId,
+          runId,
+        });
         if (isTerminalTurn(rootTurn)) {
           throw new Error(
             'Terminal publication fence identity does not match a non-terminal canonical Turn',
@@ -638,6 +674,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     turnId: string,
     runId: string,
     admission?: SessionAdmissionLease,
+    publishCompletionAttention = true,
   ): Promise<void> {
     await this.#runInSessionLane(
       sessionId,
@@ -680,12 +717,27 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
               subscriber.assistantBacklog.delete(key);
               continue;
             }
-            backlog.completion = { runId: rootTurn.runId, stream: { ...stream } };
+            backlog.completion = {
+              runId: rootTurn.runId,
+              stream: { ...stream },
+            };
           }
         }
         state.assistantStreams.clear();
         state.toolResultPreviews.clear();
         this.#broadcastProjection(state, snapshot);
+        if (publishCompletionAttention && rootTurn.status === 'completed') {
+          await this.onCatalogChanged(sessionId, {
+            kind: 'completed',
+            eventId: rootTurn.terminalEventId,
+          });
+        } else if (rootTurn.status === 'failed') {
+          await this.onCatalogChanged(sessionId, {
+            kind: 'errored',
+            eventId: rootTurn.terminalEventId,
+            ...(rootTurn.failureMessage ? { body: rootTurn.failureMessage } : {}),
+          });
+        }
         for (const subscriber of state.subscribers.values()) {
           this.#payAssistantBacklog(subscriber, state);
         }
@@ -731,11 +783,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       ) {
         throw new Error('Runtime event does not belong to the canonical active root Turn');
       }
-      if (event.type === 'provider_retry') {
-        this.#publishCanonical(state, withProviderRetry(state.canonical, event));
-        return;
-      }
-      this.#publishCanonical(state, withoutProviderRetry(state.canonical));
+      const projection =
+        event.type === 'provider_retry'
+          ? recordProviderRetry(state.canonical, event)
+          : clearProviderRetry(state.canonical);
+      this.#commitLiveProjection(state, projection);
+      if (event.type === 'provider_retry') return;
       if (event.type === 'text_delta' || event.type === 'thinking_delta') {
         const kind: SessionAssistantDelta['kind'] =
           event.type === 'text_delta' ? 'text' : 'thinking';
@@ -978,8 +1031,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             transcript = created.state;
             transcriptBootstrap = created.bootstrap;
           } catch (error) {
-            // The client can only retry, but a projection that outgrew its
-            // bounds is a Host defect and has to leave a trace here.
+            // Record the cause before the publication-failure hook can drain the Host.
+            console.error(
+              `[runtime-host] subscription.open transcript bootstrap failed: ${boundedFailureDiagnostic(error)}`,
+            );
             this.onPublicationFailure(error);
             return {
               ok: false as const,
@@ -1089,13 +1144,19 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     if (!subscriber) {
       return {
         ok: false,
-        error: { code: 'not_found', message: 'Session subscription was not found' },
+        error: {
+          code: 'not_found',
+          message: 'Session subscription was not found',
+        },
       };
     }
     if (!this.#transcriptReader || !subscriber.transcript) {
       return {
         ok: false,
-        error: { code: 'operation_unavailable', message: 'Session transcript is unavailable' },
+        error: {
+          code: 'operation_unavailable',
+          message: 'Session transcript is unavailable',
+        },
       };
     }
     const connection = this.#connections.get(connectionId);
@@ -1133,9 +1194,18 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             error: { code: 'invalid_request', message: error.message },
           };
         }
+        // The client can only retry, but a transcript page that failed for any
+        // other reason is a Host-side defect: the generic outcome the caller
+        // receives carries none of the cause, so record it here or it is lost.
+        console.error(
+          `[runtime-host] session.transcript.page failed: ${boundedFailureDiagnostic(error)}`,
+        );
         return {
           ok: false,
-          error: { code: 'persistence_failed', message: 'Session transcript is unavailable' },
+          error: {
+            code: 'persistence_failed',
+            message: 'Session transcript is unavailable',
+          },
         };
       }
     });
@@ -1337,7 +1407,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   }
 
   #canObserve(
-    identity: { readonly principalId: string; readonly principalKind: Subscriber['principalKind'] },
+    identity: {
+      readonly principalId: string;
+      readonly principalKind: Subscriber['principalKind'];
+    },
     sessionId: string,
   ): boolean {
     return (
@@ -1661,7 +1734,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   #commitCanonical(
     sessionId: string,
     canonical: CanonicalSessionProjection,
-  ): { changed: boolean; state: SessionProjectionState; value: SessionContinuitySnapshot } {
+  ): {
+    changed: boolean;
+    state: SessionProjectionState;
+    value: SessionContinuitySnapshot;
+  } {
     let state = this.#sessions.get(sessionId);
     if (state?.terminalPublicationFence) {
       const rootTurn = requirePublicationFenceIdentity(
@@ -1689,7 +1766,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       this.#sessions.set(sessionId, state);
       return { changed: true, state, value };
     }
-    canonical = preserveProviderRetry(state.canonical, canonical);
+    canonical = carryProviderRetry(state.canonical, canonical);
     const changed = !isDeepStrictEqual(state.canonical, canonical);
     if (changed) {
       if (state.canonical.rootTurn?.runId !== canonical.rootTurn?.runId) {
@@ -1709,13 +1786,11 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     };
   }
 
-  #publishCanonical(state: SessionProjectionState, canonical: CanonicalSessionProjection): void {
-    if (isDeepStrictEqual(state.canonical, canonical)) return;
-    const nextRevision = state.revision + 1;
-    const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
-    state.canonical = immutableClone(canonical);
-    state.revision = nextRevision;
-    this.#broadcastProjection(state, snapshot);
+  #commitLiveProjection(state: SessionProjectionState, next: CanonicalSessionProjection): void {
+    if (isDeepStrictEqual(state.canonical, next)) return;
+    state.revision += 1;
+    state.canonical = immutableClone(next);
+    this.#broadcastProjection(state, createSessionContinuitySnapshot(next, state.revision));
   }
 
   #broadcastProjection(state: SessionProjectionState, snapshot: SessionContinuitySnapshot): void {
@@ -1872,65 +1947,6 @@ function isTerminalTurn(turn: TurnSnapshot): boolean {
   return turn.status === 'completed' || turn.status === 'failed' || turn.status === 'cancelled';
 }
 
-function isLiveTurn(turn: TurnSnapshot): turn is LiveTurnSnapshot {
-  return !isTerminalTurn(turn);
-}
-
-function withProviderRetry(
-  canonical: CanonicalSessionProjection,
-  event: Extract<SessionEvent, { type: 'provider_retry' }>,
-): CanonicalSessionProjection {
-  const rootTurn = canonical.rootTurn;
-  if (!rootTurn || !isLiveTurn(rootTurn)) return canonical;
-  const providerRetry: TurnProviderRetry =
-    event.phase === 'scheduled'
-      ? {
-          phase: 'scheduled',
-          attempt: event.attempt,
-          maxAttempts: event.maxAttempts,
-          delayMs: event.delayMs,
-          ts: event.ts,
-          reason: event.reason,
-        }
-      : {
-          phase: 'started',
-          attempt: event.attempt,
-          maxAttempts: event.maxAttempts,
-          reason: event.reason,
-        };
-  return { ...canonical, rootTurn: { ...rootTurn, providerRetry } };
-}
-
-function withoutProviderRetry(canonical: CanonicalSessionProjection): CanonicalSessionProjection {
-  const rootTurn = canonical.rootTurn;
-  if (!rootTurn || !isLiveTurn(rootTurn) || rootTurn.providerRetry === undefined) {
-    return canonical;
-  }
-  const { providerRetry: _providerRetry, ...cleared } = rootTurn;
-  return { ...canonical, rootTurn: cleared };
-}
-
-function preserveProviderRetry(
-  current: CanonicalSessionProjection,
-  next: CanonicalSessionProjection,
-): CanonicalSessionProjection {
-  const currentTurn = current.rootTurn;
-  const nextTurn = next.rootTurn;
-  if (
-    !currentTurn ||
-    !nextTurn ||
-    !isLiveTurn(currentTurn) ||
-    !isLiveTurn(nextTurn) ||
-    currentTurn.runId !== nextTurn.runId ||
-    currentTurn.turnId !== nextTurn.turnId ||
-    currentTurn.providerRetry === undefined
-  ) {
-    return next;
-  }
-  if (nextTurn.providerRetry !== undefined) return next;
-  return { ...next, rootTurn: { ...nextTurn, providerRetry: currentTurn.providerRetry } };
-}
-
 function wireTextByteLimit(frame: SessionDeltaFrame): number {
   return RUNTIME_HOST_MAX_MESSAGE_BYTES - encodeProtocolMessage(frame).byteLength;
 }
@@ -1954,7 +1970,10 @@ function connectionIdentity(context: ConnectionContext): {
   if (!context.principalKind) {
     throw new Error('Runtime Host connection has no authenticated principal kind');
   }
-  return { principalId: context.principal, principalKind: context.principalKind };
+  return {
+    principalId: context.principal,
+    principalKind: context.principalKind,
+  };
 }
 
 function projectSessionSnapshot(
@@ -2025,10 +2044,14 @@ function projectSessionEvent(
         ...(event.activityKind === undefined ? {} : { activityKind: event.activityKind }),
         ...(event.displayName === undefined
           ? {}
-          : { displayName: boundedUtf8(event.displayName, SESSION_TOOL_NAME_MAX_BYTES) }),
+          : {
+              displayName: boundedUtf8(event.displayName, SESSION_TOOL_NAME_MAX_BYTES),
+            }),
         ...(event.intent === undefined
           ? {}
-          : { intent: boundedUtf8(event.intent, SESSION_TOOL_INTENT_MAX_BYTES) }),
+          : {
+              intent: boundedUtf8(event.intent, SESSION_TOOL_INTENT_MAX_BYTES),
+            }),
         // A correlated hidden-shell poll publishes only its correlation ref:
         // the frame is deliberately minimal (#3569), so no args preview rides
         // along. Every other live tool start names itself for compact rows.

@@ -37,6 +37,7 @@ import {
   type TaskEntryControllerSelectors,
 } from '../controller/use-task-entry-controller.js';
 import { taskEntryDraftKey } from '../model/task-entry-selection.js';
+import { SessionWorkspaceRecoveryContext } from '../../../application/contracts/session-workspace-recovery-authority.js';
 import type { TaskEntryError } from '../ports.js';
 import type { TaskEntryHostModel } from './task-entry-host.js';
 
@@ -96,6 +97,8 @@ const EMPTY_CONTROLLER: TaskEntryController = {
       _target: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[0],
       _draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
     ): ReturnType<TaskEntryControllerCommands['prepareWorkBoardDraft']> => undefined,
+    async openProjectFolder() {},
+    async openWorkspaceFolder() {},
   },
   selectors: {
     draftKey: taskEntryDraftKey(undefined),
@@ -160,6 +163,9 @@ function createTaskEntryOwner(): TaskEntryOwner & {
         draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
       ) =>
         current.commands.prepareWorkBoardDraft(target, draft),
+      openProjectFolder: (sessionId?: string) =>
+        current.commands.openProjectFolder(sessionId),
+      openWorkspaceFolder: () => current.commands.openWorkspaceFolder(),
     },
     publish(controller: TaskEntryController): void {
       if (current === controller) return;
@@ -313,8 +319,13 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   const owner = ownership.owner as ReturnType<typeof createTaskEntryOwner>;
   const toastApi = useToast();
   const reportError = useCallback(
-    ({ title, description, profileId }: TaskEntryError) => {
-      toastApi.error(title, description, undefined, { profileId });
+    ({ title, description, profileId, sessionId }: TaskEntryError) => {
+      toastApi.error(
+        title,
+        description,
+        undefined,
+        sessionId ? { sessionId } : profileId !== undefined ? { profileId } : undefined,
+      );
     },
     [toastApi],
   );
@@ -327,7 +338,9 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   const frame = useMemo(() => children(taskEntry), [children, taskEntry]);
   return (
     <TaskEntryOwnerContext.Provider value={owner}>
-      {frame}
+      <SessionWorkspaceRecoveryContext.Provider value={owner.commands.openSessionWorkspaceRecovery}>
+        {frame}
+      </SessionWorkspaceRecoveryContext.Provider>
     </TaskEntryOwnerContext.Provider>
   );
 }

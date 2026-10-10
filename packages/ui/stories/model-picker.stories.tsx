@@ -65,7 +65,7 @@ const CHOICES: ChatModelChoice[] = [
   choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-opus-4-1', 'Claude Opus 4.1'),
   choice('anthropic-team', 'anthropic', 'Anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'),
   choice('google-lab', 'google', 'Google Gemini', 'gemini-3-pro', 'Gemini 3 Pro'),
-  choice('fireworks', 'openai-compatible', 'Fireworks', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'accounts/fireworks/models/deepseek-v4-flash-0731'),
+  choice('fireworks', 'custom', 'Fireworks', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'accounts/fireworks/models/deepseek-v4-flash-0731'),
 ];
 
 // Canonical user-facing ladder when a model offers the common set.
@@ -82,7 +82,7 @@ const MANY_CHOICES: ChatModelChoice[] = (
     { slug: 'google-lab', type: 'google', label: 'Google Gemini', models: ['gemini-3-pro', 'gemini-3-flash'] },
     { slug: 'deepseek-main', type: 'deepseek', label: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'] },
     { slug: 'moonshot-main', type: 'moonshot', label: 'Moonshot', models: ['kimi-k2-0711', 'kimi-k1-8k'] },
-    { slug: 'relay', type: 'openai-compatible', label: 'Custom relay', models: ['vendor/alpha', 'vendor/beta', 'vendor/gamma'] },
+    { slug: 'relay', type: 'custom', label: 'Custom relay', models: ['vendor/alpha', 'vendor/beta', 'vendor/gamma'] },
   ] satisfies Array<{ slug: string; type: ProviderType; label: string; models: string[] }>
 ).flatMap((group) => group.models.map((model) => choice(group.slug, group.type, group.label, model, model)));
 
@@ -93,7 +93,7 @@ const LONG_CHOICES: ChatModelChoice[] = [
   {
     connectionId: 'connection-fireworks',
     connectionSlug: 'fireworks',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Fireworks',
     connectionName: 'Fireworks',
     model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
@@ -105,7 +105,7 @@ const LONG_CHOICES: ChatModelChoice[] = [
   {
     connectionId: 'connection-fireworks',
     connectionSlug: 'fireworks',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'Fireworks',
     connectionName: 'Fireworks',
     model: 'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b',
@@ -116,7 +116,7 @@ const LONG_CHOICES: ChatModelChoice[] = [
   {
     connectionId: 'connection-openrouter',
     connectionSlug: 'openrouter',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     providerLabel: 'OpenRouter',
     connectionName: 'OpenRouter',
     model: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
@@ -131,7 +131,7 @@ function providerMark(type: ProviderType) {
     openai: 'O',
     anthropic: 'A',
     google: 'G',
-    'openai-compatible': 'R',
+    'custom': 'R',
   };
   return <span style={{ fontSize: 11, fontWeight: 700 }}>{labels[type] ?? 'M'}</span>;
 }
@@ -243,8 +243,10 @@ export const ExecutorCatalogReady: Story = {
     const body = within(document.body);
     await userEvent.click(await body.findByRole('button', { name: /选择模型|Select model/ }));
     await userEvent.click(await body.findByRole('button', { name: 'Antigravity' }));
-    await expect(body.getByText('Gemini 3.8 Flash')).toBeVisible();
-    await expect(body.getByText('Gemini 3.1 Pro')).toBeVisible();
+    // Selecting the entry mounts the thinking control beside the trigger, so
+    // the footer reflows and the panel's group view lands a frame later.
+    await waitFor(() => expect(body.getByText('Gemini 3.8 Flash')).toBeVisible());
+    await waitFor(() => expect(body.getByText('Gemini 3.1 Pro')).toBeVisible());
   },
 };
 
@@ -524,32 +526,132 @@ export const ManyConnections: Story = {
   },
 };
 
-// Real path: a custom relay connection exposing verbose model identifiers with
-// a long user-set connection name — very long text in the trigger, the option
-// labels, and the descriptions at once.
+const SUFFIX_CHOICES = ['low', 'high'].map((suffix) => ({
+  ...LONG_CHOICES[0]!,
+  model: `${LONG_CHOICES[0]!.model}-${suffix}`,
+  label: `${LONG_CHOICES[0]!.label}-${suffix}`,
+}));
+
+const COMPOSER_LABEL_CHOICES = [...SUFFIX_CHOICES, { ...SUFFIX_CHOICES[0]!, model: 'gpt-5', label: 'GPT-5' }];
+
+function LongModelNameComposer({ kind }: { kind: 'existing' | 'new' | 'unified' }) {
+  const existing = kind === 'existing';
+  const [selected, setSelected] = useState(SUFFIX_CHOICES[0]!);
+  const onPick = (input: { model: string }) => {
+    const next = COMPOSER_LABEL_CHOICES.find((candidate) => candidate.model === input.model);
+    if (next) setSelected(next);
+  };
+  const target = {
+    llmConnectionId: selected.connectionId,
+    llmConnectionSlug: selected.connectionSlug,
+    model: selected.model,
+  };
+  const session = {
+    ...target,
+    id: 'storybook-long-model',
+    name: 'Long model name',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    connectionLocked: false,
+    permissionMode: 'ask',
+  } satisfies SessionSummary;
+  return (
+    <section aria-label={kind === 'unified' ? 'Unified picker' : existing ? 'Existing conversation' : 'New conversation'}>
+      <Composer
+        activeSession={existing ? session : undefined}
+        activeModelLabel={selected.label}
+        activeProviderType="custom"
+        newChatModel={target}
+        newChatProviderType="custom"
+        modelLabel={selected.label}
+        modelChoices={COMPOSER_LABEL_CHOICES}
+        executorPicker={kind === 'unified' ? {
+          catalog: [],
+          onSelect: () => undefined,
+          onSetup: () => undefined,
+          onRetry: () => undefined,
+          onNewTask: () => undefined,
+        } : undefined}
+        renderProviderMark={providerMark}
+        onModelChange={onPick}
+        onPickNewChatModel={onPick}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </section>
+  );
+}
+
+// Real path: a custom relay exposes two path-like model IDs differing only in
+// their suffix. Each panel uses the production Composer that owns the trigger's
+// width cap: an existing native session, the standalone new-chat fallback,
+// and the unified home / side-chat default picker.
+// The stacked arrangement is a review scaffold, not a single application screen.
 export const LongModelNames: Story = {
   render: () => (
-    <div style={{ width: 460, maxWidth: '100%' }}>
-      <NewChatModelPicker
-        label={LONG_CHOICES[0]!.label}
-        choices={LONG_CHOICES}
-        currentValue={choiceValue(LONG_CHOICES[0]!)}
-        currentProviderType="openai-compatible"
-        renderProviderMark={providerMark}
-        onPick={() => undefined}
-      />
+    <div style={{ width: 460, maxWidth: '100%', display: 'grid', gap: 24 }}>
+      <LongModelNameComposer kind="existing" />
+      <LongModelNameComposer kind="new" />
+      <LongModelNameComposer kind="unified" />
     </div>
   ),
   play: async ({ canvasElement }) => {
-    const trigger = within(canvasElement).getByRole('button', {
-      name: /选择新任务模型|Choose a model for the new task/,
-    });
-    await userEvent.click(trigger);
-    // Verifies the long-id model is reachable as an option; the label
-    // ellipsizing at its start inside the capped popup is a visual check.
-    await within(document.body).findByRole('option', {
-      name: /deepseek-v4-flash-0731/,
-    });
+    await document.fonts.ready;
+    for (const name of ['Existing conversation', 'New conversation', 'Unified picker']) {
+      const panel = within(canvasElement).getByRole('region', { name });
+      const trigger = within(panel).getByRole('button', {
+        name: (label) => label.includes(SUFFIX_CHOICES[0]!.label),
+      });
+      const expectEndEllipsis = async (fullName: string) => {
+        await expect(trigger).toHaveAccessibleName(new RegExp(fullName));
+        await expect(trigger.querySelector('.modelPickerProviderMark')).toBeNull();
+        const label = trigger.querySelector<HTMLElement>('.maka-composer-model-label');
+        if (!label?.firstChild) throw new Error('Missing selected model label');
+        await expect(label).toHaveTextContent(fullName);
+        await expect(label).toHaveAttribute('title', fullName);
+        const style = getComputedStyle(label);
+        await expect(style.textOverflow).toBe('ellipsis');
+        await expect(style.overflow).toBe('hidden');
+        await expect(style.direction).toBe('ltr');
+        await expect(style.textAlign).toBe('left');
+        await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+        const clip = label.getBoundingClientRect();
+        const range = document.createRange();
+        range.setStart(label.firstChild, 0);
+        range.setEnd(label.firstChild, 'accounts/'.length);
+        const prefix = range.getBoundingClientRect();
+        await expect(prefix.width).toBeGreaterThan(0);
+        await expect(prefix.left).toBeCloseTo(clip.left, 0);
+        await expect(prefix.right).toBeLessThanOrEqual(clip.right);
+        // The suffix is clipped at the right edge; hover and the accessible
+        // name still expose the complete model ID after each selection.
+        range.selectNodeContents(label);
+        await expect(range.getBoundingClientRect().right).toBeGreaterThan(clip.right);
+      };
+      await expectEndEllipsis(SUFFIX_CHOICES[0]!.label);
+      await userEvent.click(trigger);
+      await userEvent.click(await within(document.body).findByRole('option', { name: 'GPT-5' }));
+      await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+      await waitFor(() => expect(trigger.querySelector('.maka-composer-model-label')).toHaveTextContent(/^GPT-5$/));
+      await expect(trigger).toHaveAccessibleName(/GPT-5/);
+      const shortLabel = trigger.querySelector<HTMLElement>('.maka-composer-model-label')!;
+      const shortRange = document.createRange();
+      shortRange.selectNodeContents(shortLabel);
+      await expect(shortRange.getBoundingClientRect().left).toBeCloseTo(shortLabel.getBoundingClientRect().left, 0);
+      await expect(shortRange.getBoundingClientRect().right).toBeLessThanOrEqual(shortLabel.getBoundingClientRect().right + 1);
+      await userEvent.click(trigger);
+      const option = await within(document.body).findByRole('option', {
+        name: new RegExp(SUFFIX_CHOICES[1]!.label),
+      });
+      await expect(option.querySelector('.modelPickerProviderMark')).not.toBeNull();
+      await userEvent.click(option);
+      await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+      await expectEndEllipsis(SUFFIX_CHOICES[1]!.label);
+    }
   },
 };
 

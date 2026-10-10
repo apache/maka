@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { buildPromptSuggestionPrompt } from './prompt-suggestion.js';
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
@@ -24,7 +25,9 @@ import {
   PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
+import { declaredModelApiProtocol } from '@maka/core/model-thinking';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
@@ -46,7 +49,11 @@ import {
   llmCallUsageFields,
   recordLlmCallStrict,
 } from '@maka/runtime/telemetry';
-import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import {
+  buildProviderOptions,
+  getAIModel,
+  leastReasoningThinkingLevel,
+} from '@maka/runtime/model-factory';
 import { stableHash } from '@maka/runtime/request-shape';
 import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
 import {
@@ -69,6 +76,8 @@ import { resolveModelRuntime } from '@maka/runtime/model-runtime';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type GoalEvaluatorResource } from '@maka/runtime/goal-evaluator';
 import { type ModelMessage } from '@maka/runtime/model-protocol';
+import { type ModelCallAttemptStatus } from '@maka/core/model-call-attempt';
+import { NO_RUN_TURN_ID, type UsageUnknownModelCallRecord } from '@maka/storage/model-call-ledger';
 import {
   memoryExtractionMaxOutputTokens,
   type MemoryExtractionSourceSnapshot,
@@ -372,6 +381,7 @@ export function createHostDailyReviewModel(
           callKind: 'daily_review',
           callId: `daily_review_${callId}`,
           abortSignal: effectiveAbortSignal,
+          reasoning: 'least',
           buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
         });
         return {
@@ -387,6 +397,41 @@ export function createHostDailyReviewModel(
       }
     },
   });
+}
+
+const PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS = 128;
+const PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS = 1_024;
+
+export function createHostPromptSuggestionModel(input: HostSessionEffectModelInput) {
+  const authority = createAuxiliaryModelCallAuthority(input);
+  return async (
+    source: import('./prompt-suggestion.js').PromptSuggestionSource,
+    abortSignal: AbortSignal,
+  ): Promise<string | undefined> => {
+    const result = await runHostAuxiliaryModelCall(authority, {
+      transportContextId: source.sessionId,
+      telemetrySessionId: source.sessionId,
+      header: source.header,
+      callKind: 'prompt_suggestion',
+      callId: `prompt_suggestion_${source.terminalEventId}_${authority.newId()}`,
+      abortSignal,
+      reasoning: 'least',
+      buildRequest: (_target, thinkingLevel) => ({
+        prompt: buildPromptSuggestionPrompt(
+          source.messages,
+          source.header.role === 'workhub_coordination',
+        ),
+        // Reasoning tokens count against the output budget. A model that cannot
+        // turn reasoning off spends some at its lowest effort before the line.
+        maxOutputTokens:
+          thinkingLevel === 'off'
+            ? PROMPT_SUGGESTION_MAX_OUTPUT_TOKENS
+            : PROMPT_SUGGESTION_REASONING_MAX_OUTPUT_TOKENS,
+        maxRetries: 0,
+      }),
+    });
+    return result.finishReason === 'length' ? undefined : result.text;
+  };
 }
 
 /** Creates tool-free Session title and recap calls on canonical Host model authority. */
@@ -517,6 +562,9 @@ interface AuxiliaryModelCallAuthority {
       record: Parameters<InteractiveUsageStoresWriter['telemetry']['recordLlmCall']>[0],
     ): Promise<void>;
   };
+  readonly modelCalls: {
+    recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void>;
+  };
   readonly requestDrain: () => void;
   readonly now: () => number;
   readonly newId: () => string;
@@ -550,8 +598,27 @@ interface HostAuxiliaryModelCallInput {
   readonly callKind: ModelCallKind;
   readonly callId: string;
   readonly abortSignal: AbortSignal;
-  readonly buildRequest: (target: ResolvedExecutionTarget) => AuxiliaryModelRequest;
+  /**
+   * `'least'` replaces the header's thinking level with the least reasoning
+   * the resolved model accepts (see `leastReasoningThinkingLevel`). Without it
+   * the call reasons at the header's level, as the Session's own turns do.
+   */
+  readonly reasoning?: 'least';
+  readonly buildRequest: (
+    target: ResolvedExecutionTarget,
+    thinkingLevel: ThinkingLevel | undefined,
+  ) => AuxiliaryModelRequest;
 }
+
+/**
+ * Turn placeholder for canonical rows of calls no run owns: auxiliary calls
+ * happen outside any turn, and the ledger's countable rows require the column.
+ * The storage side records the rows' no-run ownership from this seam, so a
+ * failed auxiliary call cannot flip a hosted run to indeterminate (#5691) —
+ * including a hosted execution legally named like this placeholder
+ * (#5890 review).
+ */
+const AUXILIARY_TURN_ID = NO_RUN_TURN_ID;
 
 function createAuxiliaryModelCallAuthority(
   input: AuxiliaryModelCallAuthorityInput,
@@ -571,6 +638,16 @@ function createAuxiliaryModelCallAuthority(
       insertLlmCall: async (record) => {
         try {
           await input.usage.telemetry.recordLlmCall(record);
+        } catch (error) {
+          requestDrain();
+          throw error;
+        }
+      },
+    },
+    modelCalls: {
+      recordUsageUnknownAttempt: async (record) => {
+        try {
+          await input.usage.modelCalls.recordUsageUnknownAttempt(record);
         } catch (error) {
           requestDrain();
           throw error;
@@ -611,7 +688,11 @@ async function runHostAuxiliaryModelCall(
   const pricingSnapshot = await readAuxiliaryPreflight(authority, input.abortSignal, () =>
     readDuringBackendCreation(() => authority.usage.pricing.snapshot(), input.abortSignal),
   );
-  const request = input.buildRequest(target);
+  const thinkingLevel =
+    input.reasoning === 'least'
+      ? leastReasoningThinkingLevel(target.connection, target.model)
+      : input.header.thinkingLevel;
+  const request = input.buildRequest(target, thinkingLevel);
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
   const transport = authority.createFetchTransport(
     toRuntimePolicyProxy(target.networkProxy, target.proxySecret),
@@ -647,6 +728,34 @@ async function runHostAuxiliaryModelCall(
       modelId: target.model,
       startedAt,
     };
+    // Abort and error paths know no token counts: their canonical row says
+    // usage-unknown (`usageBasis: 'missing'`, no tokens) instead of posing as a
+    // free call (#5691). Auxiliary calls run outside any AgentRun, so the
+    // canonical writer is this store seam, not the run's event stream.
+    const recordUsageUnknown = async (
+      status: ModelCallAttemptStatus,
+      errorClass?: string,
+    ): Promise<void> => {
+      const completedAt = authority.now();
+      try {
+        await authority.modelCalls.recordUsageUnknownAttempt({
+          attemptId: input.callId,
+          completedAt,
+          ...(input.telemetrySessionId ? { sessionId: input.telemetrySessionId } : {}),
+          logicalCallId: input.callId,
+          turnId: AUXILIARY_TURN_ID,
+          callKind: input.callKind,
+          connectionSlug: target.connection.slug,
+          providerId: target.connection.providerType,
+          modelId: target.model,
+          latencyMs: Math.max(0, completedAt - startedAt),
+          status,
+          ...(errorClass ? { errorClass } : {}),
+        });
+      } catch (accountingError) {
+        throw new AuxiliaryModelCallLocalError('accounting', accountingError);
+      }
+    };
     let result:
       | Awaited<ReturnType<typeof generateToolFreeModelCall>>
       | Awaited<ReturnType<typeof generateProviderPrefixModelCall>>;
@@ -656,7 +765,7 @@ async function runHostAuxiliaryModelCall(
         const providerOptions = buildProviderOptions(
           target.connection,
           target.model,
-          input.header.thinkingLevel,
+          thinkingLevel,
           runtime,
         );
         const model = getAIModel({
@@ -687,21 +796,10 @@ async function runHostAuxiliaryModelCall(
       if (oauthFailure) throw oauthFailure;
     } catch (error) {
       const effectiveError = readDeferredOAuthFailure?.() ?? error;
-      try {
-        await recordLlmCallStrict(
-          { repo: authority.telemetry, lookupPricing: pricing },
-          {
-            ...baseRecord,
-            inputTokens: 0,
-            outputTokens: 0,
-            latencyMs: Math.max(0, authority.now() - startedAt),
-            status: input.abortSignal.aborted ? 'aborted' : 'error',
-            errorClass: evaluatorErrorClass(effectiveError),
-          },
-        );
-      } catch (accountingError) {
-        throw new AuxiliaryModelCallLocalError('accounting', accountingError);
-      }
+      await recordUsageUnknown(
+        input.abortSignal.aborted ? 'aborted' : 'failed',
+        evaluatorErrorClass(effectiveError),
+      );
       throw effectiveError;
     }
     try {
@@ -709,6 +807,12 @@ async function runHostAuxiliaryModelCall(
         { repo: authority.telemetry, lookupPricing: pricing },
         {
           ...baseRecord,
+          // A completion without reported usage stays on the legacy zero path:
+          // hosted execution settlement refuses any range containing
+          // usage-missing rows ('missing_attempt_usage'), so routing these
+          // rows to the canonical ledger marked every such hosted run
+          // indeterminate. The residual zero is known dishonesty, pending a
+          // ruling on that settlement coverage semantics (#5691).
           ...(result.usage
             ? llmCallUsageFields(result.usage)
             : { inputTokens: 0, outputTokens: 0 }),
@@ -909,9 +1013,14 @@ function providerStateIdentityForResolvedExecution(
     Awaited<ReturnType<RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']>>,
     { kind: 'ready' }
   >,
+  model: string,
 ): `sha256:${string}` {
   const credentialBasis = (material: typeof resolved.secretMaterial.connection) =>
     material ? { credentialId: material.credentialId, revision: material.revision } : null;
+  // Provider state from one wire cannot replay on another, so a model whose
+  // declared wire changes starts a new identity. Undeclared stays absent to
+  // keep every other identity unchanged.
+  const apiProtocol = declaredModelApiProtocol(resolved.connection, model);
   return stableHash({
     protocol: 'provider_state_identity_v1',
     connectionId: resolved.connection.connectionId,
@@ -919,6 +1028,7 @@ function providerStateIdentityForResolvedExecution(
     endpoint: new URL(effectiveBaseUrl(resolved.connection)).toString(),
     credential: credentialBasis(resolved.secretMaterial.connection),
     requestHeaders: credentialBasis(resolved.secretMaterial.requestHeaders),
+    ...(apiProtocol === undefined ? {} : { apiProtocol }),
   });
 }
 
@@ -1021,6 +1131,9 @@ export async function resolveExecutionTarget(
     slug: resolved.connection.slug,
     providerType: resolved.connection.providerType,
     ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
+    ...(resolved.connection.defaultApiProtocol === undefined
+      ? {}
+      : { defaultApiProtocol: resolved.connection.defaultApiProtocol }),
     defaultModel: model,
     models: discovered
       ? [...resolved.connection.models]
@@ -1035,7 +1148,7 @@ export async function resolveExecutionTarget(
   const requestHeaders = resolved.secretMaterial.requestHeaders
     ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
     : {};
-  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved);
+  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved, model);
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {
