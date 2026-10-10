@@ -118,6 +118,7 @@ const coveredExtensions = new Map([
   ['.md', 'html'],
   ['.mjs', 'block'],
   ['.mts', 'block'],
+  ['.nix', 'block'],
   ['.nsh', 'hash'],
   ['.ps1', 'hash'],
   ['.py', 'hash'],
@@ -231,6 +232,7 @@ export const exclusionRules = [
       'native/runtime-host-peer/Cargo.lock',
       'native/runtime-host-windows-task-launcher/Cargo.lock',
       'packages/runtime/src/bundled-skill-catalog.generated.ts',
+	  'flake.lock',
     ),
   },
   {
