@@ -311,8 +311,9 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
     return decideQQClose(code, explicitlyStopped);
   }
 
-  protected override async fetchGatewayUrl(): Promise<string | null> {
-    const token = await this.refreshTokenIfNeeded();
+  protected override async fetchGatewayUrl(isCurrent: () => boolean): Promise<string | null> {
+    const token = await this.refreshTokenIfNeeded(isCurrent);
+    if (!isCurrent()) return null;
     if (!token) {
       this.readiness = 'configured';
       this.emitStatusChange();
@@ -325,6 +326,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
         timeoutMs: 10_000,
       });
       const json = (await response.json().catch(() => null)) as { url?: unknown } | null;
+      if (!isCurrent()) return null;
       if (!response.ok || !json || typeof json.url !== 'string') {
         this.reason = `gateway-bot-${response.status}`;
         this.readiness = 'configured';
@@ -333,6 +335,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
       }
       return json.url;
     } catch (error) {
+      if (!isCurrent()) return null;
       this.recordFailure(error);
       this.readiness = 'configured';
       this.emitStatusChange();
@@ -340,8 +343,10 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
     }
   }
 
-  protected override async buildIdentifyPayload(): Promise<Record<string, unknown> | null> {
-    const token = await this.refreshTokenIfNeeded();
+  protected override async buildIdentifyPayload(
+    isCurrent: () => boolean,
+  ): Promise<Record<string, unknown> | null> {
+    const token = await this.refreshTokenIfNeeded(isCurrent);
     if (!token) return null;
     return {
       token: `QQBot ${token}`,
@@ -351,8 +356,10 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
     };
   }
 
-  protected override async buildResumePayload(): Promise<Record<string, unknown> | null> {
-    const token = await this.refreshTokenIfNeeded();
+  protected override async buildResumePayload(
+    isCurrent: () => boolean,
+  ): Promise<Record<string, unknown> | null> {
+    const token = await this.refreshTokenIfNeeded(isCurrent);
     if (!token) return null;
     return {
       token: `QQBot ${token}`,
@@ -478,7 +485,9 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
     }
   }
 
-  private async refreshTokenIfNeeded(): Promise<string | null> {
+  private async refreshTokenIfNeeded(
+    isCurrent: () => boolean = () => true,
+  ): Promise<string | null> {
     const now = Date.now();
     if (this.token && this.token.expiresAt - TOKEN_REFRESH_SKEW_MS > now) {
       return this.token.value;
@@ -497,6 +506,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
         access_token?: unknown;
         expires_in?: unknown;
       } | null;
+      if (!isCurrent()) return null;
       if (!response.ok || typeof json?.access_token !== 'string') {
         this.reason = `getAppAccessToken-${response.status}`;
         return null;
@@ -511,6 +521,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
       this.token = { value: json.access_token, expiresAt: now + expiresInSec * 1_000 };
       return this.token.value;
     } catch (error) {
+      if (!isCurrent()) return null;
       this.recordFailure(error);
       return null;
     }
