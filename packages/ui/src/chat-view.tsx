@@ -205,7 +205,7 @@ export function ChatView(props: {
    */
   emptyOverride?: ReactNode;
   /** Optional host-owned identity beside a turn; absent for ordinary transcripts. */
-  turnDecorations?: ReadonlyMap<string, { header: ReactNode; accentColor?: string; messageRail?: ReactNode }>;
+  turnDecorations?: ReadonlyMap<string, { header?: ReactNode; context?: ReactNode; accentColor?: string; messageRail?: ReactNode }>;
   /** Session-owned records anchored after a durable conversation turn. */
   conversationItems?: ReadonlyArray<{
     id: string;
@@ -979,8 +979,11 @@ export function ChatView(props: {
                           // The list's row gap does not reach inside the virtualizer.
                           // A tail transient is the next Turn before it lands, outside
                           // the virtualizer, where that gap supplies part of the space.
+                          // Result notices add no inter-turn gap; their inner gap stays 12px.
                           paddingBlockEnd: index < turns.length - 1
-                            ? 'var(--space-10)'
+                            ? turns[index + 1]?.user?.hostOrigin?.kind === 'workhub_result'
+                              ? 0
+                              : 'var(--space-10)'
                             : tailTransientMessages.length > 0 ? 'calc(var(--space-10) - var(--spacing-4))' : undefined,
                           ...(decoration?.accentColor
                             ? { '--maka-turn-accent': decoration.accentColor } as CSSProperties : undefined),
@@ -990,6 +993,7 @@ export function ChatView(props: {
                           turn={turn}
                           activityObserved={turn.turnId === props.activeTurn?.turnId}
                           messageHeader={decoration?.header}
+                          turnContext={decoration?.context}
                           messageRail={decoration?.messageRail}
                           transientMessages={inlineTransientMessagesByTurn.get(turn.turnId)}
                           userLabel={props.userLabel}

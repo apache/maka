@@ -18,15 +18,15 @@
  */
 
 import type { ReactNode } from 'react';
-import type { BotChannelSettings, BotProvider } from '@maka/core/bot-chat-settings';
+import type { BotChannelSettings, BotProvider, BotMessageHandling } from '@maka/core/bot-chat-settings';
 import type { BotStatus } from '@maka/runtime/bots';
 import { BOT_PROVIDERS } from '@maka/core/settings';
-import { EmptyState, StatusDot } from '@astryxdesign/core';
+import { EmptyState, StatusDot, Selector } from '@astryxdesign/core';
 import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';
 import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
 import { botStatusReasonMessage, getBotSettingsCopy } from '../locales/settings-bot-copy';
-import { SettingsEntryRow, SettingsPage, SettingsSection } from './settings-section';
+import { SettingsEntryRow, SettingsPage, SettingsSection, SettingsRow } from './settings-section';
 import { dotForStatus } from '@maka/ui';
 
 /**
@@ -36,6 +36,8 @@ import { dotForStatus } from '@maka/ui';
  * per-channel view rows during render.
  */
 export function BotChatOverview(props: {
+  messageHandling?: BotMessageHandling;
+  onMessageHandlingChange?(value: BotMessageHandling): void;
   channels: Record<BotProvider, BotChannelSettings>;
   statuses: Record<BotProvider, BotStatus> | null;
   statusLoadError: string | null;
@@ -83,6 +85,22 @@ export function BotChatOverview(props: {
   // as the shared StatusDot + text idiom.
   return (
     <SettingsPage>
+      <SettingsSection title={copy.messageHandlingTitle}>
+        <SettingsRow
+          label={copy.messageHandlingLabel}
+          description={copy.messageHandlingDescription}
+          end={<Selector
+            label={copy.messageHandlingLabel}
+            isLabelHidden
+            value={props.messageHandling ?? 'task'}
+            options={[
+              { value: 'task', label: copy.separateTask },
+              { value: 'workhub', label: 'WorkHub' },
+            ]}
+            onChange={(value) => props.onMessageHandlingChange?.(value as BotMessageHandling)}
+          />}
+        />
+      </SettingsSection>
       {props.statusLoadError && (
         <Banner
           status="error"

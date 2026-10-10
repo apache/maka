@@ -19,10 +19,11 @@
 import type { CSSProperties } from 'react';
 
 import { useContext, useMemo, type ComponentProps } from 'react';
-import { ChatView, useUiLocale } from '@maka/ui';
+import { ChatView, TranscriptDisclosure, useUiLocale } from '@maka/ui';
 import { Button, Link, Text } from '@astryxdesign/core';
 import { WorkHubHighlightContext, useWorkHubIdentityHue } from './workhub-work-identity.js';
 import type { WorkHubLinkedWork } from '../model/linked-work.js';
+import { workHubTurnContexts } from '../model/turn-context.js';
 import { workHubLiveCopy } from '../locales/workhub-live-copy.js';
 import { useAppShellTurnPresentation } from '../../../application/contracts/turn-presentation.js';
 
@@ -54,16 +55,16 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
       highlighted: works.some((work) => highlight.sessionId === work.targetSessionId),
     }];
   })), [worksByTurn, highlight.sessionId, workHubIdentityHue]);
-  const promptTextByTurn = new Map(chat.messages?.flatMap((message) => message.type === 'user' ? [[message.turnId, message.text.slice(0, 80)] as const] : []));
+  const promptTextByTurn = new Map(chat.messages?.flatMap((message) => message.type === 'user' && message.origin?.kind !== 'workhub_result' ? [[message.turnId, message.text.slice(0, 80)] as const] : []));
   const turnDecorations = new Map<string, NonNullable<ComponentProps<typeof ChatView>['turnDecorations']> extends ReadonlyMap<string, infer V> ? V : never>([...worksByTurn].map(([turnId, works]) => [turnId, {
     accentColor: promptRailDecorations.get(turnId)?.accentColor ?? 'transparent',
-    messageRail: <>{works.map((work, index) => <Button key={work.targetSessionId}
+    messageRail: <div className="workhub-message-rails">{works.map((work, index) => <Button key={work.targetSessionId}
       variant="ghost" isIconOnly icon={<span aria-hidden="true" />} className="workhub-message-rail"
       style={{ insetBlockStart: `${index * 100 / works.length}%`, insetBlockEnd: 'auto', height: `${100 / works.length}%`,
         '--maka-turn-accent': `oklch(var(--workhub-${highlight.sessionId === work.targetSessionId ? 'highlight' : 'tone'}) ${workHubIdentityHue(work.targetSessionId)})`,
       } as CSSProperties}
       data-work-session-id={work.targetSessionId}
-      label={`${copy.filterConversation}: ${work.targetSessionName} · ${promptTextByTurn.get(turnId) ?? turnId}`}
+      label={`${copy.filterConversation}: ${work.targetSessionName}${promptTextByTurn.has(turnId) ? ` · ${promptTextByTurn.get(turnId)}` : ''}`}
       tooltip={`${copy.filterConversation}: ${work.targetSessionName}`}
       aria-pressed={highlight.selectedWork?.sessionId === work.targetSessionId}
       data-work-highlighted={highlight.sessionId === work.targetSessionId}
@@ -72,7 +73,7 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
       onFocus={() => highlight.highlight(work.targetSessionId)}
       onBlur={() => highlight.highlight(undefined)}
       onClick={() => highlight.toggleWork({ sessionId: work.targetSessionId, name: work.targetSessionName })}
-    />)}</>,
+    />)}</div>,
     header: <div className="workhub-turn-heading">
       {works.map((work) => <Link
         key={work.targetSessionId}
@@ -80,7 +81,7 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
         className="workhub-turn-label"
         data-work-session-id={work.targetSessionId}
         data-work-highlighted={highlight.sessionId === work.targetSessionId}
-        aria-label={`${work.workspaceName ? `${work.workspaceName} / ` : ''}${work.targetSessionName} · ${promptTextByTurn.get(turnId) ?? turnId}`}
+        aria-label={`${work.workspaceName ? `${work.workspaceName} / ` : ''}${work.targetSessionName}${promptTextByTurn.has(turnId) ? ` · ${promptTextByTurn.get(turnId)}` : ''}`}
         onMouseEnter={() => highlight.highlight(work.targetSessionId)}
         onMouseLeave={() => highlight.highlight(undefined)}
         onFocus={() => highlight.highlight(work.targetSessionId)}
@@ -89,6 +90,21 @@ export function WorkHubConversation(props: ComponentProps<typeof ChatView> & { w
       >{work.workspaceName ? `${work.workspaceName} / ${work.targetSessionName}` : work.targetSessionName}</Link>)}
     </div>,
   }]));
+  const turnContexts = useMemo(() => workHubTurnContexts(chat.messages), [chat.messages]);
+  for (const [turnId, context] of turnContexts) {
+    if (context.answers.length === 0) continue;
+    turnDecorations.set(turnId, {
+      ...turnDecorations.get(turnId),
+      context: <div className="workhub-turn-context">
+        {context.answers.length > 0 && <TranscriptDisclosure className="workhub-clarification-summary" statusBar
+          label={`${copy.selectedAnswers}：${context.answers.map((answer) => answer.answer).join(' · ')}`}>
+          <dl>{context.answers.map((answer) => <div key={answer.id}>
+            <dt>{answer.question}</dt><dd>{answer.answer}</dd>
+          </div>)}</dl>
+        </TranscriptDisclosure>}
+      </div>,
+    });
+  }
   const selected = highlight.selectedWork;
   const matchingTurns = new Set([...worksByTurn].filter(([, works]) => works.some((work) => work.targetSessionId === selected?.sessionId)).map(([turnId]) => turnId));
   const messages = selected ? chat.messages.filter((message) => message.turnId !== undefined && matchingTurns.has(message.turnId)) : chat.messages;

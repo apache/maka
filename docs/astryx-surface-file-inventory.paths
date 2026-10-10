@@ -326,6 +326,7 @@ packages/ui/src/tool-activity.tsx
 packages/ui/src/tool-activity/diff-code-preview.tsx
 packages/ui/src/tool-activity/tool-code-block.tsx
 packages/ui/src/tool-activity/tool-result-preview.tsx
+packages/ui/src/transcript-disclosure.tsx
 packages/ui/src/transcript-scroll-authority.tsx
 packages/ui/src/ui.tsx
 packages/ui/src/user-question-prompt.tsx
