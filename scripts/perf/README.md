@@ -9,88 +9,40 @@
 
       http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
 -->
 
-# Renderer performance probes
+# Runtime SQLite VACUUM benchmark
 
-For the two manual CI lanes, raw reports, fixtures and their coverage limits, see [CI.md](./CI.md). Those lanes verify DOM events and consumer state; they do not use the legacy native-input helpers below.
+Run `node scripts/perf/runtime-vacuum-benchmark.mjs 100 1024 3072`. It uses Node's built-in SQLite with WAL, creates incompressible 32 KiB rows, deletes one third to leave free pages, converts with `PRAGMA auto_vacuum=INCREMENTAL; VACUUM`, and includes connection close/checkpoint time. It then verifies `auto_vacuum = 2`, an empty freelist, and `integrity_check = 'ok'`.
 
-Measuring what a session switch costs in the running Desktop app, over CDP. The
-findings in #4109 were produced with these; they live here so the next
-measurement is a command rather than a rebuild.
+This is a synthetic conversion-cost fixture, not a production database workload. It does not yet measure peak WAL size or platform-specific free-space requirements. Preserve the emitted JSON, including OS, Node and SQLite versions, with results.
 
-They are ad-hoc tools, not a benchmark suite: they attach to a dev app you
-started, and they answer "how much" only for the interaction they drive.
+## Current Windows run
 
-## Running
+Windows x64, Node v24.15.0, SQLite 3.51.3; rerun 2026-10-10:
 
-Start the dev app with the debugger open:
+| Fixture size | Source bytes before deletion | Conversion and close |
+| ---: | ---: | ---: |
+| 100 MiB | 106,504,192 | 1.384 s |
+| 1,024 MiB | 1,090,572,288 | 16.397 s |
+| 3,072 MiB | 3,271,692,288 | 64.150 s |
 
-```bash
-npm run dev -w @maka/desktop -- --remote-debugging-port=9334
-```
+All three post-close checks passed (`auto_vacuum=2`, `freelist_count=0`, `integrity_check=ok`). Earlier pre-close WAL timings were 0.58 s, 10.73 s and 140.36 s; those are superseded. The 36.18 s 3 GiB figure was from the excluded DELETE-mode run and is not a WAL result.
 
-Then, with a populated sidebar (about 30 rows is what the #4109 numbers used):
+Only Windows has been measured so far. The requested second-platform run is outstanding; a prior one-off benchmark workflow was removed from this repository. The corrected 1-to-3 GiB increase is still super-linear (16.397 s to 64.150 s); WAL/journal I/O, SQLite page-cache behavior, storage and antivirus scanning are plausible contributors, but this fixture does not isolate their individual contributions.
 
-```bash
-node scripts/perf/session-switch-commits.mjs before
-node scripts/perf/session-switch-busy-js.mjs
-```
+## Placement notes for issue #6000
 
-- `session-switch-commits.mjs` — React commits per switch, how many are
-  full-tree renders, and how many fibers actually re-rendered. Reloads the page
-  first, so `react-commit-probe.js` is in place before React boots.
-- `session-switch-busy-js.mjs` — renderer busy JS per switch, with the top
-  self-time entries. It reports the running build, one configuration. A
-  before/after needs both configurations in one instance; see below.
-- `react-commit-probe.js` — the in-page half: a minimal
-  `__REACT_DEVTOOLS_GLOBAL_HOOK__` plus a `Function.prototype.bind` wrapper that
-  catches React creating a `dispatchSetState`, so a commit can be attributed to
-  the `setState` that caused it.
-- `cdp-client.mjs` — the protocol client and the row-clicking helper.
-- `xterm-hidden-selection.mjs <port>` — functional regression for the patched
-  xterm CJS/ESM bundles in real Chromium: hidden selection updates must not
-  redraw rows, and showing the terminal must paint the latest selection without
-  another write. Use a disposable Electron fixture; the probe briefly embeds
-  its own terminal frame and bypasses CSP, then removes the frame and restores
-  CSP. This is a behavior check, not a performance score.
+- `runtime.sqlite` has one process-local owner connection; repositories borrow leases. A worker's second connection departs from that ownership model, and a Host-only gate cannot fence secondary processes using `require_current`.
+- A worker thread keeps the event loop responsive and reads available where SQLite permits. It does not remove `VACUUM`'s write lock: concurrent writers still wait or hit the configured 5 s `SQLITE_BUSY` timeout.
+- In WAL mode, reserve close to 3x the database size plus operational headroom until measured peak usage supports a tighter bound. The prior 2x estimate omitted WAL growth.
+- Under WAL with `synchronous=FULL`, a crash before the VACUUM transaction commits discards the uncommitted conversion; the original database remains. Reopen and verify integrity.
+- `VACUUM INTO` can build a staging copy while the live database stays available. Swap it on the next startup before listen; do not plan a live swap on Windows while handles are open. Maka already uses a private copy for context offload (`context-offload-snapshot.ts`).
+- The smallest first implementation is to create new `runtime.sqlite` databases with `auto_vacuum=INCREMENTAL` before schema creation and WAL activation. No full VACUUM is required for new databases. Converting existing databases is a later, separate decision.
 
-## The one rule
-
-**Never compare numbers from two app launches.** Restarting the app shifts these
-metrics by orders of magnitude, while the spread inside a single running
-instance is small. An A/B means: one instance, a `globalThis` switch to select
-the configuration, at least three repetitions per configuration, alternating,
-compared pairwise. Two runs of "before" and "after" against two launches will
-produce a confident number that means nothing.
-
-The switch is a throwaway, not a shipped affordance. Branch a worktree, put a
-`globalThis` flag in the one place that reads it — one that restores the old
-behaviour when set, so the regressed configuration is reachable without
-rebuilding the defect by hand — alternate the flag inside the running instance,
-then delete the worktree. Measurement discipline is ours; product code carries
-none of it. A flag that reaches `main` is a branch nothing executes and a
-defect replica that has to be maintained against the code it replicates.
-
-Two smaller ones that cost time to rediscover:
-
-- Clicks must be `Input.dispatchMouseEvent`. A synthesised `element.click()`
-  does not activate an Astryx `SideNavItem`, so the app does nothing and the
-  measurement describes it.
-- Disarm the commit probe (`__MAKA_PROBE__.arm = false`) before sampling. Its
-  fiber walk otherwise shows up in the profile as the app's own work;
-  `session-switch-busy-js.mjs` does this for you.
-
-## What these do not tell you
-
-The commit count is unweighted, and busy JS on this workload is spread across
-about a thousand cheap fibers rather than concentrated in one component. A
-change that lowers the commit count has not necessarily lowered the time, and a
-change that moves the top self-time entry has not necessarily lowered anything.
-Read both, and read the medians.
+No placement recommendation is made until the required second-platform measurement and owner-process fencing design are settled. The full analysis and option-by-option effects belong in the #6000 issue discussion; this README only preserves the fixture and its caveats.

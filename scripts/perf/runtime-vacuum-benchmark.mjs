@@ -59,8 +59,19 @@ try {
 
     const vacuumStart = performance.now();
     conversion.exec('VACUUM');
-    const vacuumMs = performance.now() - vacuumStart;
     conversion.close();
+    // Include close(), which checkpoints the WAL and is part of completion.
+    const conversionMs = performance.now() - vacuumStart;
+    const verified = new DatabaseSync(copy);
+    const autoVacuum = verified.prepare('PRAGMA auto_vacuum').get().auto_vacuum;
+    const freelistCount = verified.prepare('PRAGMA freelist_count').get().freelist_count;
+    const integrity = verified.prepare('PRAGMA integrity_check').get().integrity_check;
+    verified.close();
+    if (autoVacuum !== 2 || freelistCount !== 0 || integrity !== 'ok') {
+      throw new Error(
+        `post-conversion verification failed: auto_vacuum=${autoVacuum}, freelist=${freelistCount}, integrity=${integrity}`,
+      );
+    }
     console.log(
       JSON.stringify({
         platform: `${process.platform}-${process.arch}`,
@@ -70,7 +81,10 @@ try {
         sourceBytesBeforeDelete: before,
         insertedRows: inserted,
         populationMs: Math.round(populatedMs),
-        conversionVacuumMs: Math.round(vacuumMs),
+        conversionAndCloseMs: Math.round(conversionMs),
+        autoVacuum,
+        freelistCount,
+        integrity,
       }),
     );
   }
