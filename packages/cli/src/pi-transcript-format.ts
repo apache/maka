@@ -28,6 +28,7 @@ import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { ptyHumanTerminalText } from '@maka/core/pty-output-view';
 import { type ShellOutput } from '@maka/core/shell-run';
 import { ansi } from './tui-ansi.js';
+import { highlightMarkdownCode } from './tui-syntax-highlight.js';
 
 export function renderIndented(text: string, width: number, indent: number): string[] {
   const prefix = ' '.repeat(indent);
@@ -185,6 +186,7 @@ export const markdownTheme: MarkdownTheme = {
   code: ansi.yellow,
   codeBlock: (text) => text,
   codeBlockBorder: ansi.dim,
+  highlightCode: highlightMarkdownCode,
   quote: ansi.dim,
   quoteBorder: ansi.dim,
   hr: ansi.dim,
