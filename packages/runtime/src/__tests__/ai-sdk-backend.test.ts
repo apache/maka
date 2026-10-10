@@ -1646,6 +1646,87 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
 });
 
 describe('AiSdkBackend model history', () => {
+  test('materializes one PDF across current input and RuntimeEvent replay', async () => {
+    const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1, 2, 3]);
+    const pdf = {
+      kind: 'pdf' as const,
+      name: 'brief.pdf',
+      mimeType: 'application/pdf',
+      bytes: pdfBytes.length,
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'brief' },
+    };
+    const cases: Array<{ name: string; input: BackendSendInput }> = [
+      {
+        name: 'current turn',
+        input: {
+          turnId: 'turn-current',
+          text: 'read the current PDF',
+          attachments: [pdf],
+          context: [],
+          runtimeContext: [],
+        },
+      },
+      {
+        name: 'RuntimeEvent replay',
+        input: {
+          turnId: 'turn-current',
+          text: 'continue',
+          context: [],
+          runtimeContext: [
+            runtimeEvent({
+              id: 'rt-pdf',
+              turnId: 'turn-prev',
+              role: 'user',
+              author: 'user',
+              content: { kind: 'text', text: 'read the replayed PDF', attachments: [pdf] },
+            }),
+            runtimeTextEvent({
+              id: 'rt-answer',
+              turnId: 'turn-prev',
+              role: 'model',
+              author: 'agent',
+              text: 'noted',
+            }),
+          ],
+        },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const model = completionModel();
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        newId: idGenerator(),
+        now: monotonicClock(),
+        supportsNativePdfInput: true,
+        readAttachmentBytes: async () => ({
+          ok: true,
+          bytes: pdfBytes,
+          mimeType: 'application/pdf',
+        }),
+      });
+      await drain(backend.send(scenario.input));
+      const prompt = compactPrompt(model) as Array<{ content: unknown }>;
+      const pdfParts = prompt
+        .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+        .filter(
+          (part: any) =>
+            part.type === 'file' &&
+            part.mediaType === 'application/pdf' &&
+            part.filename === 'brief.pdf',
+        );
+      assert.equal(pdfParts.length, 1, `${scenario.name}: ${JSON.stringify(prompt)}`);
+      assert.deepEqual(pdfParts[0]?.data, { type: 'data', data: pdfBytes });
+    }
+  });
+
   test('records structured sandbox failure metadata on tool failure traces', async () => {
     const traces: RunTraceEvent[] = [];
     const messages: ToolResultMessage[] = [];
@@ -2824,7 +2905,7 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('counts the same attachment ref separately in replay and the current turn', async () => {
+  test('reserves the current attachment before the same ref in replay', async () => {
     const bytes = new Uint8Array(10);
     const model = completionModel();
     const backend = createBackend({
@@ -2879,14 +2960,142 @@ describe('AiSdkBackend model history', () => {
       `expected the repeated ref to consume budget twice: ${JSON.stringify(prompt)}`,
     );
     const currentUser = prompt[prompt.length - 1];
-    const currentText = (currentUser.content as Array<{ text?: string }>)
-      .map((part) => part.text ?? '')
-      .join('\n');
+    const currentParts = currentUser.content as Array<{ type: string; text?: string }>;
+    assert.equal(currentParts.filter((part) => part.type === 'file').length, 1);
+    const historicalParts = prompt[0]?.content as Array<{ text?: string }> | undefined;
+    assert.ok(historicalParts);
+    const historicalText = historicalParts.map((part) => part.text ?? '').join('\n');
     assert.match(
-      currentText,
+      historicalText,
       /1 image attachment\(s\) omitted.*image budget/,
-      `expected current attachment omission: ${currentText}`,
+      `expected historical attachment omission: ${historicalText}`,
     );
+  });
+
+  test('reserves a current PDF before an older PDF consumes the shared budget', async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1, 2, 3, 4, 5]);
+    const model = completionModel();
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      supportsNativePdfInput: true,
+      maxProviderPdfRequestBytes: 15,
+      maxProviderBinaryRequestBytes: 15,
+      readAttachmentBytes: async () => ({ ok: true, bytes }),
+    });
+    const attachment = (name: string) => ({
+      kind: 'pdf' as const,
+      name: `${name}.pdf`,
+      mimeType: 'application/pdf',
+      bytes: bytes.length,
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: name },
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'Read the new PDF',
+        attachments: [attachment('new')],
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'rt-old-pdf',
+            turnId: 'turn-old',
+            role: 'user',
+            author: 'user',
+            content: { kind: 'text', text: 'Read the old PDF', attachments: [attachment('old')] },
+          }),
+          runtimeTextEvent({
+            id: 'rt-old-answer',
+            turnId: 'turn-old',
+            role: 'model',
+            author: 'agent',
+            text: 'Old answer',
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    const historical = prompt[0]?.content as Array<{ type: string; text?: string }>;
+    const current = prompt.at(-1)?.content as Array<{ type: string; text?: string }>;
+    assert.equal(historical.filter((part) => part.type === 'file').length, 0);
+    assert.match(
+      historical.map((part) => part.text ?? '').join('\n'),
+      /PDF attachment\(s\) omitted/,
+    );
+    assert.equal(current.filter((part) => part.type === 'file').length, 1);
+  });
+
+  test('admits the newest historical PDF while preserving prompt order', async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1, 2, 3, 4, 5]);
+    const model = completionModel();
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      supportsNativePdfInput: true,
+      maxProviderPdfRequestBytes: 15,
+      maxProviderBinaryRequestBytes: 15,
+      readAttachmentBytes: async () => ({ ok: true, bytes }),
+    });
+    const historical = (id: string, turnId: string) =>
+      runtimeEvent({
+        id,
+        turnId,
+        role: 'user',
+        author: 'user',
+        content: {
+          kind: 'text',
+          text: id,
+          attachments: [
+            {
+              kind: 'pdf' as const,
+              name: `${id}.pdf`,
+              mimeType: 'application/pdf',
+              bytes: bytes.length,
+              ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: id },
+            },
+          ],
+        },
+      });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'Compare the history',
+        context: [],
+        runtimeContext: [
+          historical('old', 'turn-old'),
+          runtimeTextEvent({
+            id: 'old-answer',
+            turnId: 'turn-old',
+            role: 'model',
+            author: 'agent',
+            text: 'Old answer',
+          }),
+          historical('newer', 'turn-newer'),
+          runtimeTextEvent({
+            id: 'newer-answer',
+            turnId: 'turn-newer',
+            role: 'model',
+            author: 'agent',
+            text: 'Newer answer',
+          }),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    const oldParts = prompt[0]?.content as Array<{ type: string; text?: string }>;
+    const newerParts = prompt[2]?.content as Array<{ type: string; text?: string }>;
+    assert.match(oldParts.map((part) => part.text ?? '').join('\n'), /PDF attachment\(s\) omitted/);
+    assert.equal(newerParts.filter((part) => part.type === 'file').length, 1);
+    assert.equal(prompt[0]?.role, 'user');
+    assert.equal(prompt[2]?.role, 'user');
   });
 
   test('charges a durable current-turn image once when the first request reloads the ledger', async () => {
@@ -15723,6 +15932,7 @@ describe('AiSdkBackend steering durability and identity', () => {
       Pick<
         AiSdkBackendInput,
         | 'supportsVision'
+        | 'supportsNativePdfInput'
         | 'readAttachmentBytes'
         | 'loadTurnRuntimeEvents'
         | 'loadHistoryCompactCheckpoint'
@@ -16623,7 +16833,15 @@ describe('AiSdkBackend steering durability and identity', () => {
     // provider-native shape to text-only RuntimeEvent replay. The canonical
     // steering marker still produces one envelope with its structured id.
     const model = textCompletionModel('done');
-    const backend = steeringBackend(model);
+    const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+    const backend = steeringBackend(model, {
+      supportsNativePdfInput: true,
+      readAttachmentBytes: async () => ({
+        ok: true,
+        bytes: pdfBytes,
+        mimeType: 'application/pdf',
+      }),
+    });
     const steeredEvent = runtimeTextEvent({
       id: 'rt-steer',
       turnId: 'turn-prev',
@@ -16631,7 +16849,26 @@ describe('AiSdkBackend steering durability and identity', () => {
       author: 'user',
       text: 'steered earlier',
     });
-    (steeredEvent.content as { steering?: true }).steering = true;
+    const steeredContent = steeredEvent.content as {
+      steering?: true;
+      attachments?: Array<{
+        kind: 'pdf';
+        name: string;
+        mimeType: string;
+        bytes: number;
+        ref: { kind: 'session_file'; sessionId: string; relativePath: string };
+      }>;
+    };
+    steeredContent.steering = true;
+    steeredContent.attachments = [
+      {
+        kind: 'pdf',
+        name: 'brief.pdf',
+        mimeType: 'application/pdf',
+        bytes: pdfBytes.length,
+        ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'brief' },
+      },
+    ];
     const degradingEvent = runtimeTextEvent({
       id: 'rt-bad',
       turnId: 'turn-prev',
@@ -16666,12 +16903,24 @@ describe('AiSdkBackend steering durability and identity', () => {
       }),
     );
 
-    assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: 'original ask' }] },
-      { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
-      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
-    ]);
+    const prompt = compactPrompt(model) as Array<{
+      role: string;
+      content: Array<Record<string, unknown>>;
+    }>;
+    assert.equal(prompt.length, 4);
+    assert.deepEqual(prompt[0], {
+      role: 'user',
+      content: [{ type: 'text', text: 'original ask' }],
+    });
+    assert.equal(prompt[1]?.role, 'user');
+    assert.match(String(prompt[1]?.content[0]?.text), /steered earlier/);
+    const replayedFile = prompt[1]?.content[1];
+    assert.equal(replayedFile?.type, 'file');
+    assert.deepEqual(replayedFile?.data, { type: 'data', data: pdfBytes });
+    assert.equal(replayedFile?.mediaType, 'application/pdf');
+    assert.equal(replayedFile?.filename, 'brief.pdf');
+    assert.deepEqual(prompt[2], { role: 'assistant', content: [{ type: 'text', text: 'ok' }] });
+    assert.deepEqual(prompt[3], { role: 'user', content: [{ type: 'text', text: 'continue' }] });
   });
 
   test('a steer that equals the current prompt still injects its envelope', async () => {
