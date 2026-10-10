@@ -267,8 +267,10 @@ process.send = (message, ...rest) => {
         // The command also starts a descendant in its own session, outside the
         // supervisor's process group: only the supervisor's tree walk reaches it.
         `const { spawn } = require('node:child_process');
-        spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escapedLate)}, 'late'), 1000); setInterval(() => {}, 1000);`)}], { detached: true, stdio: 'ignore' }).unref();
-        setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 1000);
+        spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escapedLate)}, 'late'), 5000); setInterval(() => {}, 1000);`)}], { detached: true, stdio: 'ignore' }).unref();
+        // Leave enough time for an overloaded CI worker to deliver the
+        // supervisor's fault and complete its tree walk before this fires.
+        setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 5000);
         setInterval(() => {}, 1000);`,
       ],
       cwd: directory,
@@ -294,7 +296,8 @@ process.send = (message, ...rest) => {
       }
     }
     supervisor.kill('SIGKILL');
-    await rm(directory, { recursive: true, force: true });
+    // Windows can retain a handle briefly after the detached descendant exits.
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
