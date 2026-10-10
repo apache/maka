@@ -1182,7 +1182,19 @@ test('the minimum Node verifies Host and storage lifecycle fixtures after buildi
   const gate =
     "if: steps.plan.outputs.runtime_host == 'true' || contains(steps.plan.outputs.standard_workspaces, 'packages/storage')";
   assert.equal(steps.split(gate).length - 1, 2, 'setup and tests share the affected-surface gate');
-  assert.match(steps, /node-version: '22\.19\.0'/u);
+  const engines = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    .engines.node;
+  const lowerBounds = engines.split('||').map((range) => {
+    const match = /^\s*(?:\^|>=)(\d+\.\d+\.\d+)\s*$/u.exec(range);
+    assert.ok(match, `unsupported Node engine range: ${range}`);
+    return match[1];
+  });
+  lowerBounds.sort((left, right) => {
+    const a = left.split('.').map(Number);
+    const b = right.split('.').map(Number);
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  });
+  assert.equal(/node-version: '([^']+)'/u.exec(steps)?.[1], lowerBounds[0]);
   assert.match(steps, /node --test --test-concurrency=1/u);
   assert.match(steps, /packages\/runtime-host\/dist\/__tests__\/resumable-peer-stream\.test\.js/u);
   assert.match(

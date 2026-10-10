@@ -190,8 +190,8 @@ async function waitForChildReady(child: ChildProcess): Promise<void> {
       output += chunk.toString('utf8');
       if (output.includes('READY\n')) finish();
     };
-    // READY 是启动协议，stderr 也会含 Node 22 的 SQLite 实验性警告。
-    // 保留有界诊断供超时/退出失败使用，不能仅凭 stderr 判定启动失败。
+    // READY is the startup protocol; stderr may contain Node 22 SQLite warnings.
+    // Keep bounded diagnostics for exit/timeout failures without rejecting warnings.
     const onErrorData = (chunk: Buffer) => {
       diagnostics = (diagnostics + chunk.toString('utf8')).slice(-8_192);
     };
