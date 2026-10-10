@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.zh-CN.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-02
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -38,7 +38,7 @@ Tracking: [Production Write/Edit recovery #4319](https://github.com/apache/maka/
 
 This chapter is for engineers entering Maka Runtime for the first time. The first half builds intuition with an interrupted file write. The second half explains Phases 0–4, Desktop and CLI integration, T1/T2, recovery decisions, workspace checkpoints, and the recommended implementation sequence.
 
-It describes `main` as verified on 2026-07-28:
+It describes `main` as verified on 2026-10-10:
 
 - Phases 0–2 are implemented.
 - Phase 3A recovery-fact atomic write authority and the Resolver are implemented.
@@ -232,7 +232,7 @@ The API and database enforce RuntimeEvent authority:
 | `invocationId` | Which model/tool flow invocation is this? |
 | `operationId` | Which concrete tool side-effect attempt is this? |
 
-A continuation creates fresh `runId`, `invocationId`, and `turnId` values and records:
+A continuation creates fresh `runId`, `invocationId`, and `turnId` values. The legacy header shape recorded the lineage as:
 
 ```text
 continuationSource = {
@@ -242,6 +242,8 @@ continuationSource = {
   sourceRuntimeEventHighWater
 }
 ```
+
+PR B replaced that header field: the live lineage is `AgentRunLineage` (`parentRunId`, `resumedFromRunId`, `parentTurnId`), the validated replay prefix is committed through `continuation_start_v2` with a `replayManifestDigest`, and the uniqueness guarantee lives in the `runtime_continuation_claims` table. `continuationSource` survives only in the legacy run-header decoder.
 
 `providerToolCallId` still pairs provider-native calls and results. `operationId` identifies the Runtime, SQLite, and future external-idempotency attempt. They are not interchangeable.
 
@@ -418,7 +420,7 @@ The invariant is:
 
 > A Run has ended exactly when its terminal RuntimeEvent is durable, and nothing else records that it ended.
 
-There is no second commit for a crash to land between. Desktop also recovers Graph coordination. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
+There is no second commit for a crash to land between. Desktop also recovers Graph coordination and the supervisor wake. Automatic continuation is considered only after those repairs and only when the feature flag is enabled.
 
 ## Phase 1: create a new execution at a safe boundary
 
@@ -465,7 +467,6 @@ sequenceDiagram
   participant Planner as RuntimeContinuationPlanner
   participant Kernel as RuntimeKernel
   participant Run as New AgentRun
-  participant Kernel as RuntimeKernel
   participant Provider as Model provider
 
   User->>UI: click Safe resume
@@ -481,7 +482,7 @@ sequenceDiagram
   else continue
     SM->>Kernel: resumeSafeBoundaryContinuation
     Kernel->>Kernel: reread and revalidate every boundary
-    Kernel->>Run: create new Run with continuationSource
+    Kernel->>Run: create new Run, commit continuation claim + continuation_start_v2
     Run->>Kernel: return durable continuation-start proof
     Kernel->>Kernel: consume one-shot start proof
     Kernel->>Provider: replay history without duplicate user message
@@ -553,7 +554,7 @@ Authority, safety, and other recovery failures remain red errors with the raw
 reason preserved for diagnosis.
 
 Because this changes a closed protocol union, Runtime Host compatibility epoch
-57 rejects mixed old/new Client-Host pairs during handshake instead of letting
+206 rejects mixed old/new Client-Host pairs during handshake instead of letting
 a Client misclassify a recovery failure as a disabled feature. This change only
 corrects Host projection and CLI presentation; it does not move ownership of
 the planner, durable continuation claim, or feature flag.
@@ -569,7 +570,7 @@ A normal Run creates an initial user RuntimeEvent. A continuation already has a 
 
 This avoids duplicate requests and prevents a completed tool call from running merely because the system created a new Turn.
 
-Multi-generation continuation currently follows `continuationSource` through ancestor Runs and assembles legal segments oldest-first. Planned PR B will replace the current `events.length` high-water and in-process claim with immutable event-seq, domain-separated prefix digest, and a database uniqueness claim.
+Multi-generation continuation follows the durable continuation claim through ancestor Runs and assembles legal segments oldest-first. PR B replaced the former `events.length` high-water and in-process claim with immutable event-seq boundaries, a domain-separated prefix digest, and a SQLite uniqueness claim (`runtime_continuation_claims`).
 
 ## What workspace identity proves
 
@@ -585,19 +586,18 @@ A path move is diagnostic; marker identity mismatch is a hard gate. This proves 
 
 ## Phase 2: SQLite is the durable RuntimeEvent store
 
-A JSONL host without `RuntimeCommitSink` cannot declare the T1 protocol. Only when the host wires the SQLite store as both `RuntimeEventStore` and `RuntimeCommitSink` may the AiSdk tool path declare `t1_after_preflight_v1` on the first Run event.
+A host wires the SQLite store as both `RuntimeEventStore` and `RuntimeCommitSink`, so the AiSdk tool path may declare `t1_after_preflight_v1` on the first Run event.
 
 ```text
 open a RuntimeEvent writer
   → create or migrate runtime.sqlite
-  → batch-idempotently import legacy RuntimeEvent JSONL
   → write RuntimeEvents only to SQLite
 ```
 
-There is no backend-selection flag. Read-only inspection may read a legacy-only
-workspace without creating a database; the first writer performs the one-way
-import. Once `runtime.sqlite` exists, all readers use SQLite and never merge or
-fall back to stale JSONL. JSONL remains for legacy import and explicit export.
+There is no backend-selection flag. The one-time legacy JSONL import has been
+retired with the file-backed store: `runtime-event-persistence` opens the
+SQLite store directly, all readers use SQLite, and nothing merges or falls
+back to stale JSONL.
 
 ## Phase 3A: atomically commit recovery facts
 
@@ -846,13 +846,11 @@ Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to e
 
 ```mermaid
 flowchart TD
-  A["PR A<br/>Recovery persistence authority<br/>complete"] --> B["PR B<br/>Immutable cursor + durable claim"]
-  A --> C["PR C<br/>File evidence + finalize-only recovery"]
-  B --> E["PR E<br/>Checkpoint contracts"]
-  C --> E
-  E --> F["PR F<br/>Canonical checkpoint bundle"]
-  F --> G["PR G<br/>Observe-only Git carrier"]
-  G --> H["PR H<br/>Capture + retention"]
+  A["PR A<br/>Recovery persistence authority<br/>complete"] --> B["PR B<br/>Immutable cursor + durable claim<br/>merged"]
+  B --> E["PR E<br/>Checkpoint contracts<br/>future: phase3-4 design"]
+  E --> F["PR F<br/>Canonical checkpoint bundle<br/>future"]
+  F --> G["PR G<br/>Observe-only Git carrier<br/>future"]
+  G --> H["PR H<br/>Capture + retention<br/>future"]
   H --> Restore["Isolated restore"]
   H --> Rebaseline["Durable rebaseline"]
   D["PR D<br/>Host owner lifecycle"] -. "Required before default capture / auto-resume" .-> H
@@ -952,8 +950,8 @@ Current implementation does not promise:
 
 The two most important follow-ups are:
 
-1. PR B: immutable event-seq high-water, prefix digest, SQLite unique claim, and unified ancestor replay;
-2. PR C/D: production file evidence/reconciler and one complete host-owner lifecycle.
+1. PR B has landed: immutable event-seq boundaries, a domain-separated prefix digest, the SQLite unique claim (`runtime_continuation_claims`), and unified ancestor replay through `continuation_start_v2`;
+2. the remaining checkpoint ladder is tracked by the phase3-4 workspace checkpoint design (contracts, canonical bundle, capture, restore, rebaseline) together with a complete host-owner lifecycle.
 
 ## Code-reading map
 
@@ -987,7 +985,7 @@ The two most important follow-ups are:
 
 1. `apps/desktop/src/main/runtime-host-boot.ts`
 2. `apps/desktop/src/main/runtime-host-session-execution-ipc-main.ts`
-3. `apps/desktop/src/renderer/use-shell-resume.ts`
+3. `apps/desktop/src/renderer/features/conversation/controller/use-shell-resume.ts`
 4. `packages/cli/src/runtime-host-cli-context.ts`
 5. `packages/cli/src/runtime-host-session-driver.ts`
 

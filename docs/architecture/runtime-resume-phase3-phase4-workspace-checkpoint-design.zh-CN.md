@@ -333,11 +333,11 @@ canonical continuation authority 读取失败时，best-effort startup 必须隔
 退回 generic/legacy repair。否则一个暂时读不到 claim 的 host 可能把 claim-owned target 当成普通
 中断 Run 修复，重新引入双重事实源。
 
-repair 是跨 SQLite canonical RuntimeEvent 与文件型 AgentRun operational projection 的 saga：
+repair 是跨 SQLite canonical RuntimeEvent 与 SQLite AgentRun operational projection
+（`core_agent_runs` / `core_agent_run_projections`，`createSqliteAgentRunStore`）的 saga：
 start、terminal fact 与 AgentRun terminal event 使用确定性 id；若 terminal fact 已提交而 header
-或 operational projection 未完成，下一次启动会复用同一 terminal 并补齐。SQLite canonical fact
-可以幂等，但文件 append 目前没有跨进程 CAS；两个 host 同时 repair 的 exactly-once 要由后续
-lease/fencing 或 append-if-absent 解决。
+或 operational projection 未完成，下一次启动会复用同一 terminal 并补齐。单库事务保证单个写入的
+原子性，但两个 host 同时 repair 的 exactly-once 仍要由后续 owner lease/fencing 解决。
 
 #### B2/B2.1 crash matrix
 
@@ -498,8 +498,8 @@ PR D 不改变 recovery semantics。它覆盖：
 - in-flight recovery 时退出；
 - double close；
 - Desktop 与 CLI 同 workspace 的 owner 冲突策略；
-- runtime-host 的 execution-store writer facade 在同一个 storage-root lease 下拥有并暴露 SQLite
-  continuation authority，而不是继续把 `FileRuntimeEventStore` 误当成 B2 authority；
+- runtime-host 的 execution-store writer facade 已在同一个 storage-root lease 下拥有并暴露 SQLite
+  continuation authority（早期设计中的 `FileRuntimeEventStore` 已从代码库移除，不存在回退路径）；
 - production composition test 证明 plan → claim → start → provider 与 startup repair 都经过同一个
   authority 实例。
 - owner lease 的 epoch/fencing 以及 AgentRun operational projection 的 append-if-absent/CAS；
@@ -520,8 +520,9 @@ continuation claim repair
 ```
 
 generic repair 必须识别 claim-owned target 并 defer，不能用普通 `app_restarted` Run 抢占 target
-identity。当前 PR B 交付 authority-capable SessionManager 与 SQLite 协议；在 PR D 把该 authority
-接入 runtime-host 生产组合并完成 owner/ordering 测试前，不得宣称 hosted auto-resume 已启用。
+identity。当前 PR B 交付 authority-capable SessionManager 与 SQLite 协议；该 authority 已接入
+runtime-host 生产组合（execution composition 直接使用 SQLite runtimeEventStore），hosted
+auto-resume 的默认启用状态仍以 feature flag 与启动诊断为准。
 
 ## 3. Native、attached 与 managed 的能力边界
 

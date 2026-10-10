@@ -289,6 +289,12 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | `runtime-event.test.ts` | continuation-start exact shape 与 projection version 冻结 |
 | `agent-run-continuation-source.test.ts` | V2 header 非空 identity、high-water 与 manifest/boundary 一致性 |
 
+> 现状勘误（2026-10-10）：`continuation_source_v2` header lineage 现存于
+> `packages/storage/src/legacy-run-header.ts`（legacy 解码）；`packages/core/src/agent-run.ts`
+> 的现行 lineage 是 `AgentRunLineage` + durable claim。表中 `agent-run-continuation-source.test.ts`
+> 已不存在，最接近的现行契约测试是 `packages/core/src/__tests__/agent-run-event-contract.test.ts`；
+> `sqlite-recovery-concurrency-child.ts` 位于 `packages/storage/src/__tests__/fixtures/`。
+
 #### Storage
 
 | 文件 | PR B 职责 |
@@ -369,17 +375,16 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 当前 production scope 必须诚实区分：
 
 - authority-capable `SessionManager + SqliteRuntimeStore` 的协议与 production-shaped 路径已覆盖；
-- runtime-host 的 execution-store facade 当前仍以 file RuntimeEvent store 为主，尚未拥有 B2
-  continuation authority；
+- runtime-host 的 execution-store facade 已接入 SQLite continuation authority
+  （`runtime-event-persistence` 直接打开 SQLite store，不再存在 file RuntimeEvent store 路径）；
 - hosted child provider RateLimit retry 入口已经删除；历史 `linked_child_resume` /
   `linked_child_provider_retry` descriptor 只在 startup recovery 中收敛为 durable terminal
   fact，provider 调用次数为 0；早期的 `legacy_provider_retry` 兼容 lane 也已移除；
-- PR D 必须在同一 storage-root lease 下接入 SQLite authority，并锁定
-  `claim repair → historical linked-child admission closure → generic ledger repair → planning`
-  的 owner 顺序；
-- SQLite canonical terminal 可幂等提交；文件型 AgentRun projection 当前是跨存储 saga。确定性
-  event id 能让单恢复者重试收敛，但两个进程同时 repair 时还没有 append-if-absent/CAS；
-  PR D 的 lease/fencing 或 projection CAS 是宣称跨进程 exactly-once 前的硬前置；
+- storage-root lease 已落地（`bindStateRootComposition`）；`claim repair → historical
+  linked-child admission closure → generic ledger repair → planning` 的 owner 顺序测试仍是硬前置；
+- SQLite canonical terminal 可幂等提交；AgentRun operational projection 亦已 SQLite 化
+  （`core_agent_runs` / `core_agent_run_projections`）。确定性 event id 能让单恢复者重试收敛，
+  但两个进程同时 repair 的跨进程 exactly-once 仍要由 owner lease/fencing 作为硬前置；
 - 在上述 composition/owner 测试完成前，不能把当前切片描述为 hosted auto-resume 已默认可用；
   当前也不存在 child provider retry 的 live 或降级准入路径。
 
@@ -390,7 +395,8 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 - Bash retry、ShellRun reattach 或 typed branch；
 - clone conversation 时的 recovery ref 改写；
 - `ContinuationExecutionProfileV1`（model/prompt/tool schema/policy digest）；
-- runtime-host execution-store facade 的 SQLite authority/owner 接线；该项进入 PR D；
+- runtime-host execution-store facade 的 SQLite authority 接线已落地；owner lease 的
+  epoch/fencing 语义仍开放；
 - JSONL durable continuation claim；
 - Desktop 设置或默认开启自动续跑；
 - #1346 未发布实验数据库兼容。

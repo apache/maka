@@ -19,6 +19,8 @@
 
 # Runtime Resume Phase 1 Safe-Boundary Contract
 
+last_verified: 2026-10-10
+
 Phase 1 adds an explicit, fail-closed continuation path on top of the Phase 0
 `RuntimeEvent` replay projection. It can create a new Run and Invocation only
 when the committed source boundary is complete and the host supplies every
@@ -90,11 +92,14 @@ the Runtime re-reads durable state and rejects the continuation when:
 - the source replay projection no longer equals the planned replay context;
 - the target Run ID already exists.
 
-The source boundary is also an idempotency claim. A continuation Run persists
-`continuationSource` in its header before the provider is called. Repeated
-planning parks with `continuation_already_exists`; stale or concurrent plans
-are rejected before provider execution. Failure to create this durable claim is
-fail-closed.
+The source boundary is also an idempotency claim. The continuation's opening
+facts are committed through a durable SQLite claim (`runtime_continuation_claims`)
+and a `continuation_start_v2` RuntimeEvent before the provider is called.
+Repeated planning parks with `continuation_already_exists`; stale or concurrent
+plans are rejected before provider execution. Failure to create this durable
+claim is fail-closed. (The original Phase 1 draft described a `continuationSource`
+run-header field; PR B replaced it with the claim row and boundary cursor, and
+the field survives only in the legacy run-header decoder.)
 
 This is single-process ownership, not distributed fencing. Store uniqueness
 remains the final guard against duplicate target Run creation.
@@ -122,14 +127,14 @@ The source ledger is never mutated by continuation execution.
 
 ## Current storage boundary
 
-Phase 1 continues to read and write the existing RuntimeEvent and AgentRun
-stores. It does not make JSONL transactional across tool effects and events.
-Consequently, only boundaries where every tool outcome is already committed
-can continue.
+Phase 1 reads and writes the SQLite RuntimeEvent and AgentRun stores. Because
+tool effects and events commit transactionally in the SQLite tool journal
+(T1/T2), a continuation only requires that every tool outcome in the replay
+prefix is already committed.
 
-SQLite canonical storage, Tool Journal T1/T2 transactions, operation IDs,
-reconciliation, and idempotent re-execution remain later phases. Phase 1 adds
-no hashing policy, lease, fencing token, or distributed scheduler ownership.
+Operation IDs, reconciliation, and idempotent re-execution remain later
+phases. Phase 1 adds no hashing policy, lease, fencing token, or distributed
+scheduler ownership.
 
 ## Host responsibilities
 
@@ -139,10 +144,11 @@ must not expose continuation execution until it can produce those facts from
 authoritative local state. The Runtime still revalidates the durable source
 ledger and cwd immediately before execution.
 
-The local inspector canonicalizes the session cwd with `realpath` and records a
-filesystem identity derived from device, inode, and canonical path. It also
-checks ShellRun and child-run state and rebuilds the current tool catalog. The
-plan captures these facts in a safety snapshot and execution revalidates them.
+The local inspector canonicalizes the session cwd with `realpath` and records
+the workspace identity `workspace:v1:<uuid>` from the `.maka-workspace.json`
+marker (identity never rebinds based on path or inode). It also checks ShellRun
+and child-run state and rebuilds the current tool catalog. The plan captures
+these facts in a safety snapshot and execution revalidates them.
 
 ## Host entry points and observability
 

@@ -19,9 +19,12 @@
 
 # Runtime Resume Phase 0 Crash Contract
 
+last_verified: 2026-10-10
+
 Phase 0 defines replay safety for a fully committed `RuntimeEvent` prefix. It
-does not resume execution, reconcile tool side effects, or introduce the future
-SQLite tool journal.
+does not resume execution or reconcile tool side effects. The SQLite tool
+journal (T1/T2) that this contract once described as future work is now the
+canonical store it runs against.
 
 The production API is pure:
 
@@ -36,8 +39,7 @@ committed RuntimeEvent prefix
 
 `RUNTIME_RESUME_FAILPOINTS` is the machine-readable source of truth. The
 `committedPrefix` column means the last complete RuntimeEvent prefix available
-after a crash. It deliberately does not pretend that the future T1/T2 journal
-already exists.
+after a crash: the last row that committed in the SQLite tool journal.
 
 | ID | Injection boundary | Last fully committed RuntimeEvent prefix |
 |---|---|---|
@@ -55,9 +57,9 @@ already exists.
 | P11 | Continuation-run creation | `after_terminal_event` |
 
 For P8, Phase 0 reasons only about the prefix before the terminal append. The
-post-terminal prefix is represented by P9. A torn JSON row is storage
-corruption, not a legal committed prefix, and must not be upgraded into a
-recovery fact.
+post-terminal prefix is represented by P9. A torn row in `runtime_events` is
+storage corruption, not a legal committed prefix, and must not be upgraded into
+a recovery fact.
 
 ## Required decisions
 
@@ -73,7 +75,8 @@ always rejected with `runtime_offset_mismatch`.
 
 ## Process harness
 
-The Phase 0 crash test must use the real file-backed `RuntimeEventStore`:
+The Phase 0 crash test must use the real SQLite-backed `RuntimeEventStore`
+(`createWorkspaceRuntimeStore`):
 
 1. Create a temporary workspace.
 2. Start a child Node.js process.
@@ -95,10 +98,11 @@ Phase 0 changes no tool execution behavior. The following remain out of scope:
 
 - automatic continuation;
 - workspace restoration;
-- T1/T2 transactional tool boundaries;
 - side-effect reconciliation;
-- idempotent tool re-execution;
-- SQLite as the canonical RuntimeEvent and tool-journal store.
+- idempotent tool re-execution.
 
-Those capabilities require later phases. Phase 0 only makes the decision over
-the evidence currently available deterministic and fail-closed.
+The T1/T2 transactional tool boundaries and the SQLite canonical RuntimeEvent
+and tool-journal store were also out of scope when this contract was written;
+both have since landed, and Phase 0 now runs against them. Phase 0 only makes
+the decision over the evidence currently available deterministic and
+fail-closed.

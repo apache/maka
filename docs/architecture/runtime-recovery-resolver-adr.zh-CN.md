@@ -98,7 +98,7 @@ Resolver 必须 fail-closed：未知组合不能退化成自动重试。Phase 3 
 
 ### 5. Journal 是可重建投影，不是第二份账本
 
-Phase 2.5 保留现有表以降低查询成本，状态缩窄为写入路径可达的集合（现为 `prepared | reconcile_observed | outcome_committed | recovery_completed | recovery_parked`，与 `ToolJournalState` 联合一致，其中 `reconcile_observed` 由 reconcile 追加事件写入）。未来新状态若需要查询表示，先定义对应 RuntimeEvent，再扩展 projector。
+Phase 2.5 保留现有表以降低查询成本，状态缩窄为写入路径可达的集合（现为 `prepared | reconcile_observed | outcome_committed | recovery_completed | recovery_parked`，另有事务放弃/中断路径写入的 `abandoned` 与 `interrupted_unknown`；完整联合见 `ToolJournalState`，其中 `reconcile_observed` 由 reconcile 追加事件写入）。未来新状态若需要查询表示，先定义对应 RuntimeEvent，再扩展 projector。
 
 新协议的重建验收标准：清空 `tool_journal_events` 与 `tool_operations` 后，从 RuntimeEvent 投影得到相同 operation identity、dispatch/result event refs、recovery mode 与 current state。
 
@@ -109,6 +109,12 @@ Phase 2.5 保留现有表以降低查询成本，状态缩窄为写入路径可�
 ```text
 [{ invocationId, runId, turnId, highWater, prefixDigest }]
 ```
+
+> 实现注记（2026-10-10）：落地时 manifest 没有放在 `actions.stateDelta.replaySources`，而是由
+> `continuation_start_v2` payload 的 `replayManifestDigest` 与 claim row 的 boundary cursor
+> （`RuntimeBoundaryCursorV1.segments`：`{protocol, identity{sessionId, invocationId, runId, turnId},
+> position{lastEventSeq, eventCount, lastEventId}, prefixDigest}`）承载。`ToolJournalState` 亦已扩展
+> `abandoned` 与 `interrupted_unknown` 两个成员。
 
 - `prefixDigest` 对原始不可变前缀做摘要：按 durable 顺序使用 event id 与完整 payload 的规范化序列化；
 - 不摘要 provider replay 投影，因为投影逻辑会随版本演进；
