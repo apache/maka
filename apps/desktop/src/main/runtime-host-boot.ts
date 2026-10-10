@@ -117,9 +117,6 @@ import { createSessionLocalChangedEmitter, DesktopSessionLocalService, desktopSe
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
-import {
-  isBrowserMessageBoxPresentationActive,
-} from "./browser-message-box.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
 import { registerDesktopDiagnosticsIpc } from "./desktop-diagnostics-ipc-main.js";
@@ -885,18 +882,15 @@ const clientSettingsTools = buildClientSettingsTools({
   confirm: async (changes) => {
     const locale = await desktopLocale.resolve();
     const copy = clientSettingsConfirmation(changes, locale);
-    const result = await showDesktopMessageBox(
-      {
-        type: "question",
-        message: copy.message,
-        detail: copy.detail,
-        buttons: copy.buttons,
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      },
-      { locale },
-    );
+    const result = await showDesktopMessageBox({
+      type: "question",
+      message: copy.message,
+      detail: copy.detail,
+      buttons: copy.buttons,
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
     return result.response === 0;
   },
 });
@@ -2081,7 +2075,7 @@ function wireLifecycle(): void {
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
-    if (process.platform !== "darwin" && !windowsAppTray.hasTray() && !isBrowserMessageBoxPresentationActive()) app.quit();
+    if (process.platform !== "darwin" && !windowsAppTray.hasTray()) app.quit();
   });
   // macOS `quitAndInstall` closes every window and then waits, silently, for
   // the window list to empty before it asks Squirrel to relaunch; only that
@@ -2107,7 +2101,7 @@ async function prepareRuntimeHostDesktopQuit(): Promise<'ready' | 'cancelled'> {
     confirmInterrupt: async () => {
       const locale = await desktopLocale.resolve();
       const dialog = buildRuntimeHostActiveQuitDialog(locale);
-      const { response } = await showDesktopMessageBox(dialog.options, { locale });
+      const { response } = await showDesktopMessageBox(dialog.options);
       return dialog.decisions[response] === 'quit';
     },
   });

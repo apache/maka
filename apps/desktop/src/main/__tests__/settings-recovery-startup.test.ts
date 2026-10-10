@@ -96,7 +96,6 @@ for (const nativeFailure of ['unsupported', 'failed', 'commit-unknown'] as const
         on: () => undefined,
       },
       ipcMain: { handle: () => undefined },
-      nativeTheme: { shouldUseDarkColors: false },
       Notification: { isSupported: () => nativeFailure === 'failed' },
       showNativeNotification: (_copy: unknown, _focus: unknown, failed: () => void) => { banners += 1; failed(); },
       isIsolatedE2e: false,
@@ -110,7 +109,6 @@ for (const nativeFailure of ['unsupported', 'failed', 'commit-unknown'] as const
       createSettingsRecoveryReporter,
       createSettingsStore,
       createDesktopLocaleAuthority: () => ({ current: () => 'en', observe: () => 'en' }),
-      isDarkAppearance: () => false,
       bootContext: {},
       createMainWindowController: (options: {
         settingsStore: { get(): Promise<AppSettings> };
@@ -138,7 +136,7 @@ for (const nativeFailure of ['unsupported', 'failed', 'commit-unknown'] as const
         },
         handleBeforeQuit: () => undefined,
       }),
-      showBrowserMessageBox: async (options: MessageBoxOptions, parent: unknown) => {
+      presentMessageBox: async (options: MessageBoxOptions, parent: unknown) => {
         assert.equal(parent, nativeFailure === 'commit-unknown' ? undefined : window);
         assert.equal(visible, nativeFailure !== 'commit-unknown');
         dialogs.push(options);
@@ -226,7 +224,6 @@ test('clicking a recovery notification reopens a closed main window and presents
       on: () => undefined,
     },
     ipcMain: { handle: () => undefined },
-    nativeTheme: { shouldUseDarkColors: false },
     Notification: { isSupported: () => true },
     showNativeNotification: (_copy: unknown, click: () => void) => { clicks.push(click); },
     isIsolatedE2e: false,
@@ -243,7 +240,6 @@ test('clicking a recovery notification reopens a closed main window and presents
       return store;
     },
     createDesktopLocaleAuthority: () => ({ current: () => 'en', observe: () => 'en' }),
-    isDarkAppearance: () => false,
     bootContext: {},
     createMainWindowController: (options: {
       settingsStore: { get(): Promise<AppSettings> };
@@ -272,7 +268,7 @@ test('clicking a recovery notification reopens a closed main window and presents
         },
       };
     },
-    showBrowserMessageBox: async (options: MessageBoxOptions, parent: unknown) => {
+    presentMessageBox: async (options: MessageBoxOptions, parent: unknown) => {
       assert.ok(window?.isVisible());
       assert.equal(parent, window);
       dialogs.push(options);

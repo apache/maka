@@ -29,7 +29,6 @@ import { parse } from '@babel/parser';
 import { transform } from 'esbuild';
 import { resolveSystemUiLocale } from '@maka/core/ui-locale';
 import { resolveStorageRoot, STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
-import type { BrowserMessageBoxAppearance } from '../browser-message-box.js';
 import { showMessageBoxWithDiagnostics } from '../native-diagnostic-dialog.js';
 import { getNativeDiagnosticDialogCopy } from '../native-diagnostic-dialog-copy.js';
 import { resolveDesktopStorageRoot } from '../storage-root-startup.js';
@@ -64,7 +63,7 @@ for (const accept of [false, true]) {
     const userData = await mkdtemp(join(tmpdir(), 'maka-startup-repair-'));
     const root = join(userData, 'workspaces', 'default');
     const stopped = new Error('boot stopped after the storage decision');
-    const dialogs: BrowserMessageBoxAppearance[] = [];
+    const dialogs: unknown[] = [];
     let settingsOpened = false;
     let quit = false;
     try {
@@ -114,8 +113,8 @@ for (const accept of [false, true]) {
         getNativeDiagnosticDialogCopy,
         showMessageBoxWithDiagnostics,
         resolveWindowRevealMode,
-        showBrowserMessageBox: async (_options: unknown, _parent: unknown, appearance: BrowserMessageBoxAppearance) => {
-          dialogs.push(appearance);
+        presentMessageBox: async (options: unknown) => {
+          dialogs.push(options);
           assert.equal(await readFile(markerPath, 'utf8'), staleMarker);
           return { response: accept ? 0 : 1, checkboxChecked: false };
         },
@@ -129,7 +128,6 @@ for (const accept of [false, true]) {
       }) as Promise<void>;
       await assert.rejects(completion, (error) => error === stopped);
       assert.equal(dialogs.length, 1);
-      assert.equal(dialogs[0]?.revealMode, 'active');
       assert.equal(quit, !accept);
       assert.equal(settingsOpened, accept);
       if (accept) {

@@ -63,7 +63,7 @@ const indexHtmlSource = readFileSync(
   'utf8',
 );
 
-test('retains process lifetime before a standalone startup dialog can close', () => {
+test('retains process lifetime before the startup window can close', () => {
   const retentionPolicy = mainSource.search(
     /app\.on\(['"]window-all-closed['"],\s*\(\)\s*=>\s*\{\s*\}\);/u,
   );
@@ -84,7 +84,7 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   );
   assert.match(
     windowAllClosed,
-    /process\.platform !== "darwin" && !windowsAppTray\.hasTray\(\) && !isBrowserMessageBoxPresentationActive\(\)/u,
+    /process\.platform !== "darwin" && !windowsAppTray\.hasTray\(\)\) app\.quit\(\)/u,
   );
 });
 

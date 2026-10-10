@@ -23,7 +23,7 @@ import {
   developmentLaunchResultFile,
   shouldShowLoserDialog,
 } from '@maka/core/dev-single-instance';
-import { app, clipboard, dialog, ipcMain, protocol } from 'electron';
+import { app, clipboard, ipcMain, protocol } from 'electron';
 import { join } from 'node:path';
 import { bootContext } from './boot-context.js';
 import { resolveBuildInfo } from './build-info.js';
@@ -46,7 +46,7 @@ import { showFatalStartupError } from './native-diagnostic-dialog.js';
 import { isIsolatedE2e, revealMode } from './startup-context.js';
 import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
-import { showBrowserMessageBox } from './browser-message-box.js';
+import { presentMessageBox } from './desktop-message-box.js';
 import { installDesktopStartupBranding } from './desktop-shell-presentation.js';
 import { MAKA_CLIENT_PLUGIN_SCHEME } from './client-plugin-transport.js';
 
@@ -70,8 +70,8 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-// Electron otherwise quits implicitly when the last BrowserWindow closes.
-// Startup and fatal-recovery surfaces can be the only window, so keep process
+// Electron otherwise quits implicitly when the last BrowserWindow closes, and
+// the main window can close while startup is still running, so keep process
 // lifetime explicit; runtime-host-boot installs the normal platform policy
 // after startup, and every early terminal path calls app.exit itself.
 app.on('window-all-closed', () => {});
@@ -106,9 +106,8 @@ if (!app.requestSingleInstanceLock()) {
     // one-shot result file. A direct launcher explicitly promises to consume
     // the exit code; a TCC launcher proves it has a consumer only when the
     // result write succeeds. Any other entry (Dock, Spotlight, Quit & Reopen)
-    // waits for ready and gets the same product-styled temporary window as
-    // startup recovery. Packaged builds keep the existing UX (double-click
-    // focuses the first window) — the gate is a semantic boundary.
+    // waits for ready and gets a dialog. Packaged builds keep the existing UX
+    // (double-click focuses the first window) — the gate is a semantic boundary.
     const resultReported = reportDevelopmentLaunchResult(process.argv, { status: 'loser' });
     if (!resultReported && shouldShowLoserDialog(process.argv)) {
       const profilePath = app.getPath('userData');
@@ -117,26 +116,18 @@ if (!app.requestSingleInstanceLock()) {
         .then(() => {
           const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
           const copy = DEV_SINGLETON_COPY[locale];
-          return showBrowserMessageBox(
-            {
-              type: 'warning',
-              title: copy.title,
-              message: copy.message,
-              detail: copy.detail(profilePath),
-              buttons: [copy.exit],
-              defaultId: 0,
-              cancelId: 0,
-            },
-            undefined,
-            { locale, revealMode },
-          );
+          return presentMessageBox({
+            type: 'warning',
+            title: copy.title,
+            message: copy.message,
+            detail: copy.detail(profilePath),
+            buttons: [copy.exit],
+            defaultId: 0,
+            cancelId: 0,
+          });
         })
         .catch((error) => {
-          console.error('[dev] styled single-instance dialog failed:', error);
-          dialog.showErrorBox(
-            'Maka Dev',
-            `Another instance holds the Maka Dev profile (${profilePath}). Quit it and retry.`,
-          );
+          console.error('[dev] single-instance dialog failed:', error);
         })
         .finally(() => {
           app.exit(DEV_LOSER_EXIT_CODE);
@@ -249,11 +240,7 @@ if (!app.requestSingleInstanceLock()) {
               }),
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
-            showMessageBox: (options) =>
-              showBrowserMessageBox(options, undefined, {
-                locale,
-                revealMode,
-              }),
+            showMessageBox: presentMessageBox,
           });
         }
       } finally {
