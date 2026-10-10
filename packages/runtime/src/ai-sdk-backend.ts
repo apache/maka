@@ -67,6 +67,7 @@ import { AiSdkCompaction } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
 import type { RunTraceRecorder } from './run-trace.js';
+import type { TurnFinishContext, TurnFinishDecision } from './plugin-turn-finish-service.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
 import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
@@ -152,6 +153,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   now?: () => number;
   /** Optional cap on tool-call steps per turn; omitted means no step cap. */
   maxSteps?: number;
+  /** Checks a natural model finish before the current turn is sealed. */
+  beforeTurnFinish?: (context: TurnFinishContext) => Promise<TurnFinishDecision>;
   /** Timeout before first SDK stream event; default 30s. */
   streamConnectTimeoutMs?: number;
   /** Timeout between SDK/tool events; paused while a tool is active. Default 120s. */

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.maka.proactive-matters",
+  "displayName": "持续跟进",
+  "description": "以状态为依据，在同一对话中按时间持续跟进目标。",
+  "runtime": { "entry": "dist/host.mjs" },
+  "client": { "entry": "dist/client.js" },
+  "configuration": {
+    "properties": {
+      "dataDirectory": {
+        "type": "string",
+        "description": "首次启用时的独立数据目录；留空自动创建。"
+      },
+      "tickMs": { "type": "number", "default": 5000 },
+      "runTimeoutMs": { "type": "number", "default": 600000 }
+    }
+  },
+  "composition": { "patch": "maka.composition.json" }
+}

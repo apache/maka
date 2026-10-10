@@ -127,6 +127,7 @@ Maka currently exposes these deliberately small, product-native seams:
 | --- | --- | --- |
 | `shell.overlay` | list / root | Frame-wide overlay surfaces. |
 | `sidebar.footer` | list / root | Additive Session-sidebar footer actions. |
+| `sidebar.navigation` | list / root | Additive primary navigation items between New Task and WorkHub. |
 | `settings.navigation` | list / root | Plugin-owned Settings navigation controls. |
 | `settings.page` | keyed / root | Full plugin Settings pages dispatched by page id. |
 | `conversation.header.actions` | list / session | Actions in the active conversation context header. |
