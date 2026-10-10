@@ -57,6 +57,7 @@ import {
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { openResponsesUrl } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
+import { deepSeekWebSearchCodec } from './deepseek-web-search-codec.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
@@ -123,6 +124,9 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       apiKey,
       url: openResponsesUrl(baseURL),
       fetch: responsesFetch,
+      ...(connection.providerType === 'deepseek'
+        ? { experimental_extensions: [deepSeekWebSearchCodec] }
+        : {}),
     })(modelId);
   };
 

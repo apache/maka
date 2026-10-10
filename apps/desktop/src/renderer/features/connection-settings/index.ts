@@ -48,4 +48,6 @@ export { parseContextWindowInput } from './context-window-input.js';
 export { CapabilityEditor } from './provider-capability-editor.js';
 export { AddModelDialog, ModelParametersDialog } from './provider-add-model-dialog.js';
 
-export { ProviderEndpointField, providerRequestUrlPreview } from './provider-endpoint-field.js';
+export { ProviderEndpointField } from './provider-endpoint-field.js';
+
+export { ConnectionDefaultAction } from './connection-default-action.js';

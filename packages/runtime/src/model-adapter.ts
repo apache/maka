@@ -122,6 +122,11 @@ export interface ModelAdapterInput {
 export interface ModelAdapterStreamInput {
   model: unknown;
   messages: ModelMessage[];
+  /**
+   * Leading messages that later requests replay unchanged; the rest is
+   * request-only context and never owns a prompt-cache breakpoint.
+   */
+  historyMessageCount?: number;
   tools: ModelToolSet;
   activeTools: string[];
   /** Observe each successfully pulled SDK stream part before semantic translation. */
@@ -168,11 +173,9 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // Verified against @ai-sdk/open-responses@2.0.34: replay preserves
-      // item order and IDs, but a provider-executed result embedded in the
-      // assistant message (Maka's provider-tool chronology) is still dropped,
-      // leaving a dangling function_call on the wire. Fail closed until the
-      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
+      // General Open Responses provider tool replay remains unsupported.
+      // AiSdkMessageProjection admits only DeepSeek calls with a paired,
+      // original web_search_call item through its narrower per-item check.
       providerExecutedTools:
         this.runtime.reasoningReplay.kind !== 'responses' ||
         this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
@@ -197,6 +200,15 @@ export class ModelAdapter {
                   }
                 : 'none',
     };
+  }
+
+  supportsDeepSeekWebSearchReplay(): boolean {
+    return (
+      this.input.connection.providerType === 'deepseek' &&
+      this.runtime.wire === 'openai-responses' &&
+      this.runtime.reasoningReplay.kind === 'responses' &&
+      this.runtime.reasoningReplay.contract.adapter === 'open-responses'
+    );
   }
 
   resolveModel(): unknown {
@@ -330,8 +342,13 @@ export class ModelAdapter {
       sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
       delete sdkTools[TOOL_SEARCH_NAME];
     }
+    const messages = withAnthropicHistoryCacheBreakpoint(
+      input.messages,
+      input.historyMessageCount,
+      this.input.providerOptions,
+    );
     const fullMessages =
-      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(input.messages) : input.messages;
+      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(messages) : messages;
     const responsesLane =
       input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.runtime)
         ? input.continuationKey
@@ -1248,6 +1265,33 @@ function translateChunk(
     default:
       return [];
   }
+}
+
+function withAnthropicHistoryCacheBreakpoint(
+  messages: ModelMessage[],
+  historyMessageCount: number | undefined,
+  providerOptions: Record<string, unknown> | undefined,
+): ModelMessage[] {
+  const cacheControl = (providerOptions?.anthropic as { cacheControl?: unknown } | undefined)
+    ?.cacheControl;
+  if (
+    cacheControl === undefined ||
+    historyMessageCount === undefined ||
+    historyMessageCount >= messages.length
+  ) {
+    return messages;
+  }
+  return messages.map((message, index) =>
+    index === historyMessageCount - 1
+      ? ({
+          ...message,
+          providerOptions: {
+            ...message.providerOptions,
+            anthropic: { ...message.providerOptions?.anthropic, cacheControl },
+          },
+        } as ModelMessage)
+      : message,
+  );
 }
 
 function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] {

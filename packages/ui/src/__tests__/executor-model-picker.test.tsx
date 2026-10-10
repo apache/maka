@@ -19,17 +19,18 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { act, useState } from 'react';
+import { act, createRef, useState } from 'react';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import {
   ExecutorModelPicker,
   ExecutorThinkingLevelSelector,
+  ExecutorModeSelector,
   type ExecutorSelection,
   type ExecutorModelPickerProps,
 } from '../executor-model-picker.js';
 import { highestExecutorModelVariant } from '../executor-model-presentation.js';
 import { NewChatModelPicker } from '../chat-model-switcher.js';
-import { Composer } from '../composer.js';
+import { Composer, type ComposerHandle } from '../composer.js';
 import { exactModelChoiceValue } from '../chat-model-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
 import { installTranscriptDom } from './transcript-test-dom.js';
@@ -76,6 +77,246 @@ const choices: ChatModelChoice[] = [
   },
 ];
 
+test('provider mode selector preserves the model and commits only a real mode ID', async () => {
+  const dom = installTranscriptDom();
+  const selections: ExecutorSelection[] = [];
+  try {
+    await dom.render(<LocaleProvider locale="zh-CN"><ExecutorModeSelector
+      catalog={[{ ...catalog[0]!, modes: [
+        { id: 'ask', name: '询问' }, { id: 'auto', name: '自动' },
+      ], currentMode: 'ask', supportsModeChange: true }]}
+      selection={{ executorId: 'antigravity', configuration: { model: 'model-0', mode: 'ask' } }}
+      onSelect={(selection) => { if (selection) selections.push(selection); }}
+      onSetup={() => {}} onRetry={() => {}} onNewTask={() => {}}
+    /></LocaleProvider>);
+    const trigger = dom.document.querySelector('.maka-executor-mode-selector');
+    assert.ok(trigger?.textContent?.includes('模式: 询问'));
+    await act(async () => { trigger!.dispatchEvent(new dom.window.Event('click', { bubbles: true })); });
+    const auto = [...dom.document.querySelectorAll('[role="option"]')].find(row => row.textContent?.includes('自动'));
+    assert.ok(auto);
+    await act(async () => { auto.dispatchEvent(new dom.window.Event('click', { bubbles: true })); });
+    assert.deepEqual(selections, [{ executorId: 'antigravity', configuration: { model: 'model-0', mode: 'auto' } }]);
+  } finally { await dom.cleanup(); }
+});
+
+for (const option of ['model', 'mode'] as const) {
+  for (const outcome of ['confirmed', 'rejected'] as const) {
+    test(`Composer preserves the draft while an executor ${option} change is ${outcome}`, async () => {
+      const dom = installTranscriptDom();
+      dom.window.getSelection = () => null;
+      dom.document.getSelection = () => null;
+      const composer = createRef<ComposerHandle>();
+      const sent: ExecutorSelection[] = [];
+      const requested: ExecutorSelection[] = [];
+      let finish!: () => void;
+      const confirmation = new Promise<void>((resolve) => { finish = resolve; });
+      const initial: ExecutorSelection = {
+        executorId: 'antigravity',
+        configuration: { model: 'model-0', mode: 'ask' },
+      };
+      const entry = {
+        ...catalog[0]!,
+        modes: [{ id: 'ask', name: 'Ask' }, { id: 'auto', name: 'Auto' }],
+        currentMode: 'ask',
+        supportsModeChange: true,
+      };
+      function Harness() {
+        const [selection, setSelection] = useState(initial);
+        return <LocaleProvider locale="en"><Composer
+          ref={composer}
+          executorPicker={{
+            catalog: [entry], selection, fixed: true,
+            onSelect: async (next) => {
+              assert.ok(next);
+              requested.push(next);
+              await confirmation;
+              if (outcome === 'rejected') throw new Error('Agent rejected configuration');
+              setSelection(previous => ({
+                ...previous,
+                configuration: { ...previous.configuration, ...next.configuration },
+              }));
+            },
+            onSetup: () => {}, onRetry: () => {}, onNewTask: () => {},
+          }}
+          onSend={() => { sent.push(selection); return true; }}
+          onStop={() => {}}
+        /></LocaleProvider>;
+      }
+      const click = async (element: Element | null | undefined) => {
+        assert.ok(element);
+        await act(async () => {
+          element.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+        });
+      };
+      const submit = async () => {
+        await act(async () => {
+          dom.document.querySelector('form')!.dispatchEvent(
+            new dom.window.Event('submit', { bubbles: true, cancelable: true }),
+          );
+        });
+      };
+      try {
+        await dom.render(<Harness />);
+        await act(async () => { composer.current!.setText('Keep this draft'); });
+        await click(dom.document.querySelector(option === 'mode'
+          ? '.maka-executor-mode-selector' : '.maka-executor-selector'));
+        await click([...dom.document.querySelectorAll('[role="option"]')].find(row =>
+          option === 'mode' ? row.textContent === 'Auto' : row.textContent?.includes('Agent model 1'),
+        ));
+        assert.equal(requested.length, 1);
+        assert.deepEqual(requested[0]!.configuration, option === 'mode'
+          ? { mode: 'auto' } : { model: 'model-1' });
+        if (option === 'mode') {
+          const modelTrigger = dom.document.querySelector('.maka-executor-selector');
+          assert.ok(modelTrigger?.hasAttribute('disabled') || modelTrigger?.getAttribute('aria-disabled') === 'true',
+            'model changes must wait for mode confirmation');
+        }
+        await submit();
+        assert.equal(sent.length, 0, 'unconfirmed configuration must block submission');
+        assert.equal(composer.current!.getText(), 'Keep this draft');
+        await act(async () => { finish(); await confirmation; });
+        assert.equal(sent.length, 0, 'settlement must not automatically send the draft');
+        assert.equal(composer.current!.getText(), 'Keep this draft');
+        if (outcome === 'rejected') assert.ok(dom.document.querySelector('[role="alert"]'));
+        await submit();
+        assert.deepEqual(sent, [{
+          ...initial,
+          configuration: outcome === 'confirmed'
+            ? { ...initial.configuration, ...requested[0]!.configuration }
+            : initial.configuration,
+        }]);
+        assert.equal(composer.current!.getText(), '');
+      } finally {
+        finish();
+        await dom.cleanup();
+      }
+    });
+  }
+}
+
+test('unmounting a pending mode selector releases the Composer configuration gate', async () => {
+  const dom = installTranscriptDom();
+  const pending: boolean[] = [];
+  let finish!: () => void;
+  const confirmation = new Promise<void>((resolve) => { finish = resolve; });
+  const onPendingChange = (value: boolean) => { pending.push(value); };
+  try {
+    await dom.render(<LocaleProvider locale="en"><ExecutorModelPicker
+      catalog={[{
+        ...catalog[0]!,
+        modes: [{ id: 'ask', name: 'Ask' }, { id: 'auto', name: 'Auto' }],
+        currentMode: 'ask', supportsModeChange: true,
+      }]}
+      selection={{ executorId: 'antigravity', configuration: { model: 'model-0', mode: 'ask' } }}
+      onPendingChange={onPendingChange}
+      onSelect={() => confirmation}
+      onSetup={() => {}} onRetry={() => {}} onNewTask={() => {}}
+    /></LocaleProvider>);
+    await act(async () => {
+      dom.document.querySelector('.maka-executor-mode-selector')!
+        .dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    });
+    await act(async () => {
+      [...dom.document.querySelectorAll('[role="option"]')].find(row => row.textContent === 'Auto')!
+        .dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    });
+    assert.equal(pending.at(-1), true);
+    await dom.render(<span>Another conversation</span>);
+    assert.equal(pending.at(-1), false);
+    await act(async () => { finish(); await confirmation; });
+    assert.equal(pending.at(-1), false, 'a late response must not lock the next conversation');
+  } finally {
+    finish();
+    await dom.cleanup();
+  }
+});
+
+for (const fixed of [false, true]) test(`${fixed ? 'fixed' : 'draft'} executor model changes drop the previous model's mode`, async () => {
+  const dom = installTranscriptDom();
+  const selections: ExecutorSelection[] = [];
+  const entry = {
+    ...catalog[0]!,
+    modes: [
+      { id: 'ask', name: 'Ask' },
+      { id: 'auto', name: 'Auto' },
+    ],
+    currentMode: 'ask',
+    supportsModeChange: true,
+  };
+  const selection = {
+    executorId: entry.id,
+    configuration: { model: 'model-0', mode: 'ask' },
+  };
+  try {
+    await dom.render(<LocaleProvider locale="en"><ExecutorModelPicker
+      catalog={[entry]}
+      selection={selection}
+      fixed={fixed}
+      onSelect={(next) => { if (next) selections.push(next); }}
+      onSetup={() => {}} onRetry={() => {}} onNewTask={() => {}}
+    /></LocaleProvider>);
+    await act(async () => {
+      dom.document.querySelector('.maka-executor-selector')!
+        .dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    });
+    const model = [...dom.document.querySelectorAll('[role="option"]')]
+      .find((row) => row.textContent?.includes('Agent model 1'));
+    assert.ok(model);
+    await act(async () => {
+      model.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    });
+
+    await dom.render(<LocaleProvider locale="en"><ExecutorModeSelector
+      catalog={[entry]}
+      selection={selection}
+      fixed
+      onSelect={(next) => { if (next) selections.push(next); }}
+      onSetup={() => {}} onRetry={() => {}} onNewTask={() => {}}
+    /></LocaleProvider>);
+    await act(async () => {
+      dom.document.querySelector('.maka-executor-mode-selector')!
+        .dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    });
+    const mode = [...dom.document.querySelectorAll('[role="option"]')]
+      .find((row) => row.textContent?.includes('Auto'));
+    assert.ok(mode);
+    await act(async () => {
+      mode.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
+    });
+    assert.deepEqual(selections, [
+      { executorId: entry.id, configuration: { model: 'model-1' } },
+      { executorId: entry.id, configuration: { mode: 'auto' } },
+    ]);
+  } finally {
+    await dom.cleanup();
+  }
+});
+
+for (const readiness of ['ready', 'authentication_required', 'unavailable'] as const) {
+  test(`the ${readiness} catalog can be refreshed from the picker`, async () => {
+    const dom = installTranscriptDom();
+    let retries = 0;
+    const render = (loading = false) => dom.render(<LocaleProvider locale="en"><ExecutorModelPicker
+      catalog={[{ ...catalog[0]!, readiness }]} loading={loading}
+      selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
+      onSelect={() => assert.fail('refresh must not change the selection')}
+      onSetup={() => {}} onRetry={() => { retries++; }} onNewTask={() => {}}
+    /></LocaleProvider>);
+    const retry = () => [...dom.document.querySelectorAll('.maka-executor-picker-rail button')]
+      .find(button => button.textContent === 'Retry');
+    try {
+      await render();
+      await act(async () => dom.document.querySelector('.maka-executor-selector')!
+        .dispatchEvent(new dom.window.Event('click', { bubbles: true })));
+      assert.ok(retry());
+      await act(async () => retry()!.dispatchEvent(new dom.window.Event('click', { bubbles: true })));
+      assert.equal(retries, 1);
+      await render(true);
+      assert.ok(retry()?.hasAttribute('disabled') || retry()?.getAttribute('aria-disabled') === 'true');
+    } finally { await dom.cleanup(); }
+  });
+}
+
 test('the picker shows a generic loading state until the executor catalog arrives', async () => {
   const dom = installTranscriptDom();
   const selections: unknown[] = [];
@@ -117,6 +358,43 @@ test('the picker shows a generic loading state until the executor catalog arrive
   } finally {
     await dom.cleanup();
   }
+});
+
+test('pending Session inspection is not reported as a failed model change', async () => {
+  const dom = installTranscriptDom();
+  const render = (loading: boolean) => dom.render(
+    <LocaleProvider locale="zh-CN"><ExecutorModelPicker
+      catalog={[]} loading={loading}
+      selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
+      onSelect={() => {}} onSetup={() => {}} onRetry={() => {}} onNewTask={() => {}}
+    /></LocaleProvider>,
+  );
+  try {
+    await render(true);
+    assert.equal(dom.document.querySelector('.maka-executor-notice'), null);
+    await render(false);
+    assert.match(dom.document.querySelector('.maka-executor-notice')?.textContent ?? '', /当前不可用/u);
+    assert.doesNotMatch(dom.document.body.textContent ?? '', /模型切换失败/u);
+  } finally { await dom.cleanup(); }
+});
+
+test('first-send admission keeps the complete model, thinking and mode controls visible', async () => {
+  const dom = installTranscriptDom();
+  const known = { ...groupedCatalog[0]!, modes: [{ id: 'default', name: 'Default' }], currentMode: 'default', supportsModeChange: true };
+  try {
+    for (const phase of ['local-pending', 'initializing', 'running', 'settled']) {
+      await dom.render(<LocaleProvider locale="zh-CN"><ExecutorModelPicker
+        catalog={[{ ...known, supportsModelChange: phase !== 'initializing', supportsModeChange: phase !== 'initializing' }]}
+        selection={{ executorId: known.id, configuration: { model: 'flash-high', mode: 'default' } }}
+        fixed loading={phase === 'local-pending'} disabled={phase !== 'settled'}
+        onSelect={() => {}} onSetup={() => {}} onRetry={() => {}} onNewTask={() => {}}
+      /></LocaleProvider>);
+      assert.match(dom.document.querySelector('.maka-executor-selector')?.textContent ?? '', /Gemini 3\.8 Flash/u, phase);
+      assert.match(dom.document.querySelector('.maka-thinking-level-selector')?.textContent ?? '', /高/u, phase);
+      assert.ok([...dom.document.querySelectorAll('button')].some(button => button.textContent?.includes('模式: Default')), phase);
+      assert.equal(dom.document.querySelector('.maka-executor-notice'), null, phase);
+    }
+  } finally { await dom.cleanup(); }
 });
 
 test('failed Antigravity discovery closes the picker before opening external-agent settings', async () => {
@@ -325,14 +603,17 @@ test('executor choice shares the native searchable list and exposes every extern
   }
 });
 
-test('history-only state keeps the executor fixed and offers a new task', async () => {
+for (const [readiness, notice] of [
+  ['history_only', '歷史仍可閱讀'],
+  ['history_gap', '進度可能超出已儲存歷史'],
+] as const) test(`${readiness} keeps the executor fixed and offers a new task`, async () => {
   const dom = installTranscriptDom();
   let newTasks = 0;
   try {
     await dom.render(
       <LocaleProvider locale="zh-TW">
         <ExecutorModelPicker
-          catalog={[{ ...catalog[0]!, readiness: 'history_only' }]}
+          catalog={[{ ...catalog[0]!, readiness }]}
           selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
           fixed
           onSelect={() => assert.fail('History cannot change executor')}
@@ -344,7 +625,7 @@ test('history-only state keeps the executor fixed and offers a new task', async 
         />
       </LocaleProvider>,
     );
-    assert.ok(dom.document.body.textContent?.includes('歷史仍可閱讀'));
+    assert.ok(dom.document.body.textContent?.includes(notice));
     const executorTrigger = dom.document.querySelector('.maka-executor-selector');
     assert.notEqual(executorTrigger?.getAttribute('aria-disabled'), 'true');
     const button = [...dom.document.querySelectorAll('button')].find(
@@ -356,6 +637,56 @@ test('history-only state keeps the executor fixed and offers a new task', async 
   } finally {
     await dom.cleanup();
   }
+});
+
+test('restorable task offers an explicit restore action without selecting a model', async () => {
+  const dom = installTranscriptDom();
+  let restores = 0;
+  try {
+    await dom.render(
+      <LocaleProvider locale="en">
+        <ExecutorModelPicker
+          catalog={[{ ...catalog[0]!, readiness: 'restorable' }]}
+          selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
+          fixed
+          onSelect={() => assert.fail('Restoration must not commit a model choice')}
+          onRestore={async () => { restores++; }}
+          onSetup={() => {}}
+          onRetry={() => {}}
+          onNewTask={() => assert.fail('The Session is restorable')}
+        />
+      </LocaleProvider>,
+    );
+    assert.match(dom.document.body.textContent ?? '', /Restore it before continuing/u);
+    const button = [...dom.document.querySelectorAll('button')].find(
+      candidate => candidate.textContent === 'Restore Session',
+    );
+    assert.ok(button);
+    await act(async () => button.dispatchEvent(new dom.window.Event('click', { bubbles: true })));
+    assert.equal(restores, 1);
+  } finally { await dom.cleanup(); }
+});
+
+test('restoring task shows progress without offering another action', async () => {
+  const dom = installTranscriptDom();
+  try {
+    await dom.render(
+      <LocaleProvider locale="en">
+        <ExecutorModelPicker
+          catalog={[{ ...catalog[0]!, readiness: 'restoring' }]}
+          selection={{ executorId: 'antigravity', configuration: { model: 'model-0' } }}
+          fixed
+          onSelect={() => assert.fail('Restoration is pending')}
+          onSetup={() => assert.fail('Setup is unavailable while restoring')}
+          onRetry={() => assert.fail('Retry is unavailable while restoring')}
+          onNewTask={() => assert.fail('New Task is unavailable while restoring')}
+        />
+      </LocaleProvider>,
+    );
+    assert.match(dom.document.body.textContent ?? '', /Restoring the external Session/u);
+    assert.equal([...dom.document.querySelectorAll('button')].some(button =>
+      ['Manage agents', 'Restore Session', 'New Task'].includes(button.textContent ?? '')), false);
+  } finally { await dom.cleanup(); }
 });
 
 test('unavailable executors can be inspected but never committed', async () => {
@@ -563,6 +894,25 @@ for (const initial of [undefined, 'flash-high', 'flash-mid']) test(`grouped exte
     await click([...dom.document.querySelectorAll('[role="option"]')].find(el => el.textContent?.includes('Unrecognized (High)')));
     assert.equal(selected.at(-1), 'opaque-unknown');
     assert.equal(thinking(), undefined, 'unknown models retain their row and have no invented levels');
+  } finally { await dom.cleanup(); }
+});
+
+test('changing draft thinking levels drops a mode tied to the previous exact model', async () => {
+  const dom = installTranscriptDom();
+  const selections: ExecutorSelection[] = [];
+  try {
+    await dom.render(<LocaleProvider locale="en"><ExecutorThinkingLevelSelector
+      catalog={groupedCatalog}
+      selection={{ executorId: 'antigravity', configuration: { model: 'flash-high', mode: 'ask' } }}
+      onSelect={next => { if (next) selections.push(next); }}
+      onSetup={() => {}} onRetry={() => {}} onNewTask={() => {}}
+    /></LocaleProvider>);
+    await act(async () => dom.document.querySelector('[aria-haspopup="listbox"]')!
+      .dispatchEvent(new dom.window.Event('click', { bubbles: true })));
+    const low = [...dom.document.querySelectorAll('[role="option"]')].find(row => row.textContent === 'Low');
+    assert.ok(low);
+    await act(async () => low.dispatchEvent(new dom.window.Event('click', { bubbles: true })));
+    assert.deepEqual(selections, [{ executorId: 'antigravity', configuration: { model: 'flash-low' } }]);
   } finally { await dom.cleanup(); }
 });
 

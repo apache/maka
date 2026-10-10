@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "engines": {
-    "node": ">=22.19.0"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "packageManager": "npm@11.19.0",
   "releaseToolchain": {
@@ -32,6 +32,7 @@
     "prepare": "npm run sync:model-metadata && node scripts/install-husky.mjs",
     "postinstall": "node scripts/apply-dependency-patches.mjs && node scripts/install-electron-with-retry.mjs",
     "lint": "biome lint .",
+    "test:startup-correctness": "node scripts/test-startup-correctness.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "check:e2e-budget": "npm --workspace @maka/desktop run check:e2e-budget",
@@ -98,8 +99,8 @@
     "package:linux": "node scripts/package-linux.mjs",
     "verify:linux": "node scripts/verify-linux.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
-    "astryx:surface-inventory": "node scripts/check-astryx-surface-inventory.mjs",
-    "astryx:surface-inventory:write": "node scripts/generate-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory": "node --enable-source-maps scripts/check-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory:write": "node --enable-source-maps scripts/generate-astryx-surface-inventory.mjs",
     "astryx:surface-inventory:test": "node --test scripts/generate-astryx-surface-inventory.test.mjs scripts/check-astryx-surface-inventory.test.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "refresh:model-metadata": "node scripts/sync-model-metadata.mjs --refresh",
@@ -107,29 +108,36 @@
     "check:model-metadata-drift": "node scripts/sync-model-metadata.mjs --drift",
     "generate:bundled-skills": "node scripts/gen-bundled-skill-catalog.mjs",
     "computer-use": "node scripts/computer-use.mjs",
+    "shots:storybook": "node scripts/storybook-visual-diff.mjs",
     "windows:inventory": "node --test scripts/windows-test-inventory.test.mjs && node scripts/windows-test-inventory.mjs --check",
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && npm run smoke:windows:dist",
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
-    "@ai-sdk/provider-utils": "5.0.40",
-    "@astryxdesign/cli": "0.6.2",
-    "@astryxdesign/core": "0.6.2",
-    "@biomejs/biome": "2.5.13",
+    "@ai-sdk/provider-utils": "5.0.51",
+    "@astryxdesign/cli": "0.6.3",
+    "@astryxdesign/core": "0.6.3",
+    "@biomejs/biome": "2.5.14",
     "@electron/asar": "4.3.0",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.3",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "knip": "^6.35.1",
+    "knip": "^6.38.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
     "yaml": "2.9.1"
   },
   "allowScripts": {
-    "esbuild@0.27.7": true,
-    "@jackwener/opencli@1.8.4": true,
-    "node-pty@1.2.0-beta.15": true
+    "@astryxdesign/cli@0.6.3": false,
+    "@astryxdesign/core@0.6.3": false,
+    "@jackwener/opencli@1.8.8": false,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true,
+    "node-pty@1.2.0-beta.15": true,
+    "protobufjs@7.6.5": false,
+    "tree-sitter-javascript@0.25.0": true
   },
   "overrides": {
     "@ai-sdk/code-mode": {
@@ -137,6 +145,9 @@
     },
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.12"
+    },
+    "@jackwener/opencli@1.8.8": {
+      "undici": "7.29.1"
     }
   }
 }

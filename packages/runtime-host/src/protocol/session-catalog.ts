@@ -27,6 +27,8 @@ import {
   isSessionToolProfile,
   SESSION_MODEL_ID_MAX_BYTES,
   type PersistedBackendKind,
+  type SessionBackgroundActivity,
+  type SessionBackgroundActivityVersion,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
@@ -115,6 +117,7 @@ const PROJECTION_REQUIRED_FIELDS = [
 ] as const;
 const PROJECTION_FIELDS = [
   ...PROJECTION_REQUIRED_FIELDS,
+  'archivedAt',
   'lastMessageAt',
   'lastMessagePreview',
   'blockedReason',
@@ -132,6 +135,8 @@ const PROJECTION_FIELDS = [
   'thinkingLevel',
   'lastReadMessageId',
   'liveRunState',
+  'backgroundActivity',
+  'backgroundActivityVersion',
 ] as const;
 
 export type SessionCatalogRevision = `sha256:${string}`;
@@ -254,6 +259,11 @@ export interface SessionCatalogProjection {
   readonly name: string;
   readonly isFlagged: boolean;
   readonly isArchived: boolean;
+  /**
+   * When the Session last entered the archive. Absent when it is not archived,
+   * and when the Host has no record of the time (archived before it was kept).
+   */
+  readonly archivedAt?: number;
   readonly labels: readonly string[];
   readonly labelsTruncated: boolean;
   readonly hasUnread: boolean;
@@ -262,6 +272,8 @@ export interface SessionCatalogProjection {
   readonly lastMessagePreview?: string;
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly backgroundActivity?: SessionBackgroundActivity;
+  readonly backgroundActivityVersion?: SessionBackgroundActivityVersion;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
   readonly parentSessionId?: string;
@@ -303,6 +315,8 @@ export interface SharedSessionCatalogProjection {
   readonly lastMessagePreview?: string;
   readonly status: SessionStatus;
   readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly backgroundActivity?: SessionBackgroundActivity;
+  readonly backgroundActivityVersion?: SessionBackgroundActivityVersion;
   readonly blockedReason?: SessionBlockedReason;
   readonly statusUpdatedAt?: number;
 }
@@ -466,7 +480,15 @@ export function decodeSharedSessionCatalogProjection(
     value,
     'shared Session catalog projection',
     ['kind', 'id', 'revision', 'createdAt', 'activityAt', 'name', 'status'],
-    ['lastMessageAt', 'lastMessagePreview', 'liveRunState', 'blockedReason', 'statusUpdatedAt'],
+    [
+      'lastMessageAt',
+      'lastMessagePreview',
+      'liveRunState',
+      'backgroundActivity',
+      'backgroundActivityVersion',
+      'blockedReason',
+      'statusUpdatedAt',
+    ],
   );
   if (exact.kind !== 'shared_session') throw invalidProtocolFrame('Invalid shared Session kind');
   return {
@@ -480,6 +502,7 @@ export function decodeSharedSessionCatalogProjection(
     ...optionalText(exact, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
     status: decodeSessionStatus(exact.status),
     ...optionalLiveRunState(exact),
+    ...optionalBackgroundActivity(exact),
     ...optionalBlockedReason(exact),
     ...optionalTimestamp(exact, 'statusUpdatedAt'),
   };
@@ -843,6 +866,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     name: sessionName(record.name),
     isFlagged: boolean(record.isFlagged, 'Session flagged state'),
     isArchived: boolean(record.isArchived, 'Session archived state'),
+    ...optionalArchivedAt(record),
     labels: labels(record.labels),
     labelsTruncated: boolean(record.labelsTruncated, 'Session labels truncated state'),
     hasUnread: boolean(record.hasUnread, 'Session unread state'),
@@ -851,6 +875,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalText(record, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
     status: decodeSessionStatus(record.status),
     ...optionalLiveRunState(record),
+    ...optionalBackgroundActivity(record),
     ...optionalBlockedReason(record),
     ...optionalTimestamp(record, 'statusUpdatedAt'),
     ...optionalEntityId(record, 'parentSessionId'),
@@ -881,6 +906,9 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
   };
   if ((projection.backend === 'plugin-executor') !== (projection.executorId !== undefined)) {
     throw invalidProtocolFrame('Session executor identity does not match its backend');
+  }
+  if (projection.archivedAt !== undefined && !projection.isArchived) {
+    throw invalidProtocolFrame('Session archive time requires an archived Session');
   }
   requireEncodedByteLimit(
     projection,
@@ -974,6 +1002,16 @@ function optionalTimestamp<Field extends 'lastMessageAt' | 'statusUpdatedAt'>(
     : {};
 }
 
+// One object type with an optional key rather than a union, so this spread
+// does not multiply the projection literal's inferred union past TS2590.
+function optionalArchivedAt(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'archivedAt'> {
+  return Object.hasOwn(record, 'archivedAt')
+    ? { archivedAt: timestamp(record.archivedAt, 'Session archivedAt') }
+    : {};
+}
+
 function optionalText<Field extends 'lastMessagePreview'>(
   record: Record<string, unknown>,
   field: Field,
@@ -1017,6 +1055,37 @@ function optionalBlockedReason(
   return { blockedReason: record.blockedReason };
 }
 
+function optionalBackgroundActivity(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'backgroundActivity' | 'backgroundActivityVersion'> {
+  const activity = record.backgroundActivity;
+  if (activity === undefined) {
+    if (record.backgroundActivityVersion !== undefined)
+      throw invalidProtocolFrame('Session background activity version requires activity');
+    return {};
+  }
+  if (
+    activity !== 'idle' &&
+    activity !== 'running' &&
+    activity !== 'waiting_for_user' &&
+    activity !== 'blocked'
+  )
+    throw invalidProtocolFrame('Invalid Session background activity');
+  if (record.backgroundActivityVersion === undefined) return { backgroundActivity: activity };
+  const version = requireExactRecord(
+    record.backgroundActivityVersion,
+    'Session background activity version',
+    ['hostGeneration', 'revision'],
+  );
+  return {
+    backgroundActivity: activity,
+    backgroundActivityVersion: {
+      hostGeneration: decodeHostGeneration(version.hostGeneration),
+      revision: requireCount(version.revision, 'Session background activity revision'),
+    },
+  };
+}
+
 function optionalLiveRunState(
   record: Record<string, unknown>,
 ): Pick<SessionCatalogProjection, 'liveRunState'> | Record<string, never> {
@@ -1055,15 +1124,6 @@ function optionalLiveRunState(
   ) {
     throw invalidProtocolFrame('Invalid Session catalog run epoch');
   }
-  if (
-    liveRunState.hostGeneration !== undefined &&
-    (typeof liveRunState.hostGeneration !== 'string' ||
-      liveRunState.hostGeneration.length === 0 ||
-      liveRunState.hostGeneration.length > SESSION_CATALOG_HOST_GENERATION_MAX_CHARS ||
-      /[\u0000-\u001f\u007f]/.test(liveRunState.hostGeneration))
-  ) {
-    throw invalidProtocolFrame('Invalid Session catalog host generation');
-  }
   return {
     liveRunState: {
       schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
@@ -1071,9 +1131,21 @@ function optionalLiveRunState(
       ...(liveRunState.runEpoch === undefined ? {} : { runEpoch: liveRunState.runEpoch }),
       ...(liveRunState.hostGeneration === undefined
         ? {}
-        : { hostGeneration: liveRunState.hostGeneration }),
+        : { hostGeneration: decodeHostGeneration(liveRunState.hostGeneration) }),
     },
   };
+}
+
+function decodeHostGeneration(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > SESSION_CATALOG_HOST_GENERATION_MAX_CHARS ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw invalidProtocolFrame('Invalid Session catalog host generation');
+  }
+  return value;
 }
 
 function optionalSubagent(

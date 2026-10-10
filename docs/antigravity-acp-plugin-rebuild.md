@@ -69,8 +69,9 @@ policy, initial model configuration, and Antigravity question/failure recognitio
 - cancellation drain with the actual provider stop reason retained in the durable runtime ledger;
 - bounded, cached model discovery and Agent-confirmed idle model changes;
 - generic initial ACP configuration validation/application;
-- durable history-only detection so a Host/Plugin restart cannot silently fork an existing external
-  conversation into a new ACP Session.
+- Plugin-private external Session identity and write-ahead prompt state; a clean
+  completed task can resume the same ACP Session after a Host/Plugin restart,
+  while uncertain history stays readable without creating a replacement Session.
 
 The Antigravity adapter owns:
 
@@ -82,6 +83,27 @@ The Antigravity adapter owns:
 The Host owns only executor visibility and binding, Maka Session/run identity, canonical event
 persistence, hosted form admission, and Plugin retirement. No ACP process, credential, or external
 Session identifier crosses the Plugin boundary.
+
+## Restoring an existing task
+
+After a restart, open the Antigravity task and choose **Restore** in the model
+menu or the notice beside the composer. Maka starts the Agent only when you
+choose to restore or continue. The Agent must support ACP `session/resume`; a
+successful restore uses the original external Session and keeps the saved task
+and model. No earlier prompt is sent again.
+
+If restoration fails, the task history remains readable. Check the installed
+Agent and helper, Google sign-in, and network access in **Settings → External
+Agents**, then retry Restore. Maka will not create a new external Session for
+that task. An executable or helper change also requires a new task because the
+saved Session is bound to the previous installation.
+
+**History gap** means a prompt may have reached the Agent before Maka finished
+saving its terminal event. Maka inspects ACP load replay separately and does
+not append possibly duplicate output to the saved history or resend that
+prompt. Start a new task if you need to continue working. Tasks created before
+this restoration version have no saved external Session ID and remain
+history-only.
 
 ## Deliberately not ported
 
@@ -135,11 +157,13 @@ This does not introduce a new application architecture or another backend.
 
 ## Scope and acceptance
 
-PR 2 covers local macOS arm64 Desktop and local Runtime Host. PR 3 alone will restore an external
-Session after process loss. PR 4 owns modes, account/directory invalidation and the expanded catalog
-lifecycle. Remote execution, OAuth forwarding, external child orchestration, steering, rollback and
+PR 2 covers local macOS arm64 Desktop and local Runtime Host. PR 3 added explicit restoration of the
+same external Session after process loss, with a visible history gap when replay cannot be aligned.
+PR 4 extends the generic executor configuration with opaque Agent modes and scopes catalog caches
+by workspace. A successful setup/login or configuration change invalidates provider discovery;
+manual refresh requests a new probe for the selected workspace. Remote execution, OAuth forwarding, external child orchestration, steering and
 cross-Agent continuation are not added here.
 
-See [PR 2 acceptance evidence](archive/antigravity-acp-pr2-acceptance.md) for controlled-process coverage,
-official Agent verification, Desktop verification and the remaining merge gate. The issue's PR 2
-checkbox stays unchecked until the PR is reviewed and merged.
+See [PR 2 acceptance evidence](archive/antigravity-acp-pr2-acceptance.md),
+[PR 3 acceptance evidence](archive/antigravity-acp-pr3-acceptance.md), and
+[PR 4 acceptance evidence](archive/antigravity-acp-pr4-acceptance.md) for the checks and their limits.

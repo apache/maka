@@ -35,7 +35,12 @@ import type {
   ConnectOrSpawnRuntimeHostInput,
   RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { RuntimeHostOperationError, runHostHandoff } from '@maka/runtime-host/client';
+import {
+  DEFAULT_ELECTION_DEADLINE_MS,
+  ELECTION_DEADLINE_MS_ENV_VAR,
+  RuntimeHostOperationError,
+  runHostHandoff,
+} from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -52,6 +57,7 @@ import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
   createDesktopRuntimeHostCandidate as createCandidate,
   formatLocalRuntimeHostProcessExitDiagnostic,
+  resolveDesktopCandidateReadyTimeoutMs,
   startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
@@ -280,6 +286,22 @@ test('does not claim a blank local Host stderr tail was truncated', () => {
   });
 
   assert.doesNotMatch(diagnostic, /stderr:|stderr truncated/);
+});
+
+test('the Desktop candidate waits on the window the client elects on', () => {
+  assert.equal(
+    resolveDesktopCandidateReadyTimeoutMs(undefined, {}),
+    DEFAULT_ELECTION_DEADLINE_MS,
+    'with no caller value the Desktop wait must land on the client default, not its own number',
+  );
+  assert.equal(
+    resolveDesktopCandidateReadyTimeoutMs(undefined, {
+      [ELECTION_DEADLINE_MS_ENV_VAR]: '90000',
+    }),
+    90_000,
+    'the operator override has to widen the Desktop wait too, or it only widens the election',
+  );
+  assert.equal(resolveDesktopCandidateReadyTimeoutMs(5_000, {}), 5_000);
 });
 
 function createDesktopRuntimeHostCandidate(
@@ -1549,25 +1571,25 @@ function continuitySnapshot(
 }
 
 const textStream = (messageId: string): SessionAssistantStreamIdentity => ({
-    kind: 'text',
-    turnId: 'turn-1',
-    messageId,
+  kind: 'text',
+  turnId: 'turn-1',
+  messageId,
 });
 
-function restorableObservation(
+type RendererRecord = Readonly<{ channel: string; payload: unknown }>;
+
+const restorableObservation = (
   overrides: {
     assistantStreams?: readonly SessionAssistantStreamIdentity[];
     subscribeFailure?: Error;
   } = {},
-) {
-  return {
-    sessionId: 'session-1',
-    subscriptionSnapshot: continuitySnapshot(),
-    ...overrides,
-  };
-}
-
-type RendererRecord = { channel: string; payload: unknown };
+) => {
+  const base = Object.fromEntries([
+    ['sessionId', 'session-1'],
+    ['subscriptionSnapshot', continuitySnapshot()],
+  ]);
+  return { ...base, ...overrides };
+};
 
 const createRendererTimeline = () => {
   const records: RendererRecord[] = [];

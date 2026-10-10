@@ -259,7 +259,8 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       completeInteractiveOAuthLogin: (ticket, secret) =>
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
-      completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
+      completeModelFetch: (ticket, result, preserveSelection) =>
+        coordinator.completeModelFetch(ticket, result, preserveSelection),
       beginConnectionOnboarding: (input) => coordinator.beginConnectionOnboarding(input),
       completeConnectionOnboarding: (ticket, input) =>
         coordinator.completeConnectionOnboarding(ticket, input),

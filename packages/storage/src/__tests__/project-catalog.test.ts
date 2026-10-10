@@ -17,12 +17,12 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
+import { strict as assert } from 'node:assert';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm as remove, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm as removeTree, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { promisify } from 'node:util';
 
 import {
@@ -30,12 +30,16 @@ import {
   type ProjectCatalog,
   ProjectPathBoundaryError,
   ProjectUnavailableError,
-  ProjectPathMismatchError,
+  ProjectPathMismatchError as PathMismatch,
   type ResolvedProjectLocation,
   resolveProjectLocation,
 } from '../project-catalog.js';
 import { createSessionStore } from '../session-store.js';
-import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
+import {
+  BROKEN_GIT_DIRECTORY_SHAPES,
+  createBrokenGitMetadata,
+  createGitRepositoryWithWorktree,
+} from './fixtures/git-repository.js';
 
 const execFileAsync = promisify(execFile);
 const trackedCatalogs = new Map<ProjectCatalog, string>();
@@ -57,7 +61,7 @@ function createProjectCatalog(
   return catalog;
 }
 
-async function rm(path: string, options?: Parameters<typeof remove>[1]): Promise<void> {
+async function rm(path: string, options?: Parameters<typeof removeTree>[1]): Promise<void> {
   const removedRoot = resolve(path);
   for (const [catalog, storageRoot] of [...trackedCatalogs].reverse()) {
     const storagePath = resolve(storageRoot);
@@ -69,7 +73,7 @@ async function rm(path: string, options?: Parameters<typeof remove>[1]): Promise
       catalog.close();
     }
   }
-  await remove(path, options);
+  await removeTree(path, options);
 }
 
 function sessionInput(cwd: string, projectId: string) {
@@ -90,8 +94,29 @@ function createNumberedCatalog(storageRoot: string): ProjectCatalog {
     now: () => 1_000,
   });
 }
+const isRegularFileResolutionFailure = (
+  error: unknown,
+  canonicalPath: string | undefined,
+): boolean =>
+  canonicalPath !== undefined &&
+  typeof error === 'object' &&
+  error !== null &&
+  TypeError.prototype.isPrototypeOf(error) &&
+  (error as TypeError).message.endsWith(`not a directory: ${canonicalPath}`);
 
-async function withNestedRepository(
+const createRegularFile = async (parent: string) => {
+  const file = join(parent, 'project.txt');
+  await writeFile(file, 'file, not a folder');
+  return Object.freeze({ file, canonical: await realpath(file) });
+};
+
+const captureFailure = async (operation: Promise<unknown>): Promise<unknown> =>
+  operation.then(
+    () => assert.fail('regular file unexpectedly resolved as a Project'),
+    (error: unknown) => error,
+  );
+
+const withNestedRepository = async (
   label: string,
   run: (layout: {
     base: string;
@@ -99,7 +124,7 @@ async function withNestedRepository(
     outside: readonly [string, string];
     repository: string;
   }) => Promise<void>,
-): Promise<void> {
+): Promise<void> => {
   const base = await mkdtemp(join(tmpdir(), `${label}-`));
   const repository = join(base, 'repository');
   const nested = [join(repository, 'nested-a'), join(repository, 'nested-b')] as const;
@@ -111,35 +136,30 @@ async function withNestedRepository(
   } finally {
     await rm(base, { recursive: true, force: true });
   }
-}
-
-test('project registration accepts directories but never regular files', async () => {
+};
+const verifyDirectoryAndRegularFilePartition = async (t: TestContext) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-path-kind-'));
-  try {
-    const gitRoot = join(base, 'repo');
-    await mkdir(gitRoot);
-    await execFileAsync('git', ['init', '--quiet'], { cwd: gitRoot });
-    const catalog = createProjectCatalog(join(base, 'catalog'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const gitRoot = join(base, 'repo');
+  await mkdir(gitRoot);
+  await execFileAsync('git', ['init', '--quiet'], { cwd: gitRoot });
+  const catalog = createProjectCatalog(join(base, 'catalog'));
 
-    for (const parent of [base, gitRoot]) {
-      const file = join(parent, 'project.txt');
-      await writeFile(file, 'file, not a folder');
-      const canonicalFile = await realpath(file);
-      await assert.rejects(
-        () => resolveProjectLocation({ path: file }),
-        (error: unknown) =>
-          error instanceof TypeError &&
-          error.message === `Project path is not a directory: ${canonicalFile}`,
-      );
-      await assert.rejects(() => catalog.register(file), TypeError);
-    }
-    assert.deepEqual(await catalog.list(), []);
-    assert.equal((await resolveProjectLocation({ path: gitRoot })).kind, 'git');
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
+  const files = await Promise.all([base, gitRoot].map(createRegularFile));
+  const resolveFailure = ({ file }: (typeof files)[number]) =>
+    captureFailure(resolveProjectLocation({ path: file }));
+  const resolutionFailures = await Promise.all(files.map(resolveFailure));
+  const failureMatchesPath = (error: unknown, index: number) =>
+    isRegularFileResolutionFailure(error, files[index]?.canonical);
+  assert.equal(resolutionFailures.every(failureMatchesPath), true);
+  await Promise.all(files.map(({ file }) => assert.rejects(catalog.register(file), TypeError)));
+  assert.deepEqual(await catalog.list(), []);
+  assert.equal((await resolveProjectLocation({ path: gitRoot })).kind, 'git');
+};
+test(
+  'project registration partitions directories from regular files',
+  verifyDirectoryAndRegularFilePartition,
+);
 test('a plain folder resolves without requiring the Git executable', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-folder-no-git-'));
   try {
@@ -151,6 +171,101 @@ test('a plain folder resolves without requiring the Git executable', async () =>
       identity: `folder:${await realpath(folder)}`,
       kind: 'folder',
     });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('an incomplete enclosing .git directory does not turn a nested folder into a repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-folder-invalid-git-'));
+  try {
+    const folder = join(base, 'folder');
+    await mkdir(join(base, '.git', 'gk'), { recursive: true });
+    await mkdir(folder);
+
+    assert.deepEqual(await resolveProjectLocation({ path: folder }), {
+      canonicalPath: await realpath(folder),
+      identity: `folder:${await realpath(folder)}`,
+      kind: 'folder',
+    });
+    const catalog = createProjectCatalog(join(base, 'state'));
+    const project = await catalog.register(folder);
+    assert.deepEqual(project.locations, [{ path: await realpath(folder), isWorktree: false }]);
+    assert.deepEqual(await catalog.list(), [project]);
+    // Missing Git is a probe failure, even for an otherwise ignorable shape.
+    await assert.rejects(resolveProjectLocationWithoutGit(folder));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('broken ancestor Git directories do not turn a nested folder into a repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-invalid-ancestor-'));
+  try {
+    for (const shape of BROKEN_GIT_DIRECTORY_SHAPES) {
+      const root = join(base, shape);
+      const folder = join(root, 'folder');
+      await mkdir(folder, { recursive: true });
+      await createBrokenGitMetadata(root, shape);
+
+      assert.deepEqual(
+        await resolveProjectLocation({ path: folder }),
+        {
+          canonicalPath: await realpath(folder),
+          identity: `folder:${await realpath(folder)}`,
+          kind: 'folder',
+        },
+        shape,
+      );
+      const catalog = createProjectCatalog(join(root, 'state'));
+      try {
+        const project = await catalog.register(folder);
+        assert.deepEqual(
+          project.locations,
+          [{ path: await realpath(folder), isWorktree: false }],
+          shape,
+        );
+        assert.deepEqual(await catalog.list(), [project]);
+      } finally {
+        catalog.close();
+      }
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a folder nested inside a repository resolves to that repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-in-repo-'));
+  try {
+    const repository = join(base, 'repository');
+    const nested = join(repository, 'sub', 'dir');
+    await mkdir(nested, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+
+    const resolved = await resolveProjectLocation({ path: nested });
+
+    assert.equal(resolved.kind, 'git');
+    assert.equal(resolved.git?.worktreeRoot, await realpath(repository));
+    await assert.rejects(resolveProjectLocationWithoutGit(nested));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a folder nested inside a linked worktree resolves to that repository', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-nested-in-worktree-'));
+  try {
+    const repository = join(base, 'repository');
+    const linkedWorktree = join(base, 'linked');
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'nested-linked');
+    const nested = join(linkedWorktree, 'nested');
+    await mkdir(nested);
+
+    const resolved = await resolveProjectLocation({ path: nested });
+
+    assert.equal(resolved.kind, 'git');
+    assert.equal(resolved.git?.isWorktree, true);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -173,54 +288,55 @@ test('a Git probe failure cannot persistently downgrade a repository to a folder
   }
 });
 
-test('a repository and its linked worktree resolve to one project identity', async () => {
+const verifyLinkedWorktreeIdentity = async (t: TestContext) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-location-'));
-  try {
-    const repository = join(base, 'repository');
-    const linkedWorktree = join(base, 'linked');
-    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'project-catalog-test');
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const repository = join(base, 'repository');
+  const linkedWorktree = join(base, 'linked');
+  await createGitRepositoryWithWorktree(repository, linkedWorktree, 'project-catalog-test');
 
-    const main = await resolveProjectLocation({ path: repository });
-    const linked = await resolveProjectLocation({ path: linkedWorktree });
+  const [main, linked] = await Promise.all(
+    [repository, linkedWorktree].map((path) => resolveProjectLocation({ path })),
+  );
 
-    assert.equal(main.kind, 'git');
-    assert.equal(linked.kind, 'git');
-    assert.equal(main.identity, linked.identity);
-    assert.notEqual(main.canonicalPath, linked.canonicalPath);
-    assert.equal(main.git?.isWorktree, false);
-    assert.equal(linked.git?.isWorktree, true);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
-test('explicit selection preserves a subfolder while historical paths retain repository identity', async () => {
+  assert.deepEqual([main.kind, linked.kind], ['git', 'git']);
+  assert.equal(main.identity, linked.identity);
+  assert.notEqual(main.canonicalPath, linked.canonicalPath);
+  assert.deepEqual([main.git?.isWorktree, linked.git?.isWorktree], [false, true]);
+};
+test(
+  'a repository and its linked worktree resolve to one project identity',
+  verifyLinkedWorktreeIdentity,
+);
+const verifySelectionIdentity = async (t: TestContext) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-selection-intent-'));
-  try {
-    const repository = join(base, 'repository');
-    const linkedWorktree = join(base, 'linked');
-    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'selection-intent-test');
-    const child = join(linkedWorktree, 'feature');
-    await mkdir(child);
-
-    const selected = await resolveProjectLocation({ path: child, intent: 'selected' });
-    const historical = await resolveProjectLocation({ path: child });
-    const worktree = await resolveProjectLocation({ path: linkedWorktree, intent: 'selected' });
-    const main = await resolveProjectLocation({ path: repository, intent: 'selected' });
-
-    assert.deepEqual(selected, {
-      canonicalPath: await realpath(child),
-      identity: `folder:${await realpath(child)}`,
-      kind: 'folder',
-    });
-    assert.equal(historical.kind, 'git');
-    assert.equal(historical.identity, worktree.identity);
-    assert.equal(worktree.identity, main.identity);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const repository = join(base, 'repository');
+  const linkedWorktree = join(base, 'linked');
+  await createGitRepositoryWithWorktree(repository, linkedWorktree, 'selection-intent-test');
+  const child = join(linkedWorktree, 'feature');
+  await mkdir(child);
+  const [selected, historical, worktree, main] = await Promise.all([
+    resolveProjectLocation({ path: child, intent: 'selected' }),
+    resolveProjectLocation({ path: child }),
+    resolveProjectLocation({ path: linkedWorktree, intent: 'selected' }),
+    resolveProjectLocation({ path: repository, intent: 'selected' }),
+  ]);
+  const canonicalChild = await realpath(child);
+  assert.deepEqual(selected, {
+    canonicalPath: canonicalChild,
+    identity: `folder:${canonicalChild}`,
+    kind: 'folder',
+  });
+  assert.deepEqual(
+    [historical.kind, historical.identity, worktree.identity],
+    ['git', worktree.identity, main.identity],
+  );
+};
+test(
+  'selection intent is the only input that splits a nested folder from repository identity',
+  verifySelectionIdentity,
+);
 test('a selected repository subdirectory owns its catalog identity and touch path', async () => {
   await withNestedRepository('maka-selected-subdirectory', async (layout) => {
     const catalog = createNumberedCatalog(join(layout.base, 'storage'));
@@ -234,8 +350,7 @@ test('a selected repository subdirectory owns its catalog identity and touch pat
     assert.equal((await catalog.touch(nestedProject.id, canonicalNested)).id, nestedProject.id);
     await assert.rejects(
       () => catalog.touch(nestedProject.id, layout.repository),
-      (error: unknown) =>
-        error instanceof ProjectPathMismatchError && error.projectId === nestedProject.id,
+      (error: unknown) => error instanceof PathMismatch && error.projectId === nestedProject.id,
     );
   });
 });
@@ -269,10 +384,10 @@ test('nested relinks preserve identity and move assigned sessions atomically', a
         layout.outside.map((path) => catalog.register(path)),
       );
       const assigned = await sessions.create(sessionInput(layout.outside[1], sessionProject.id));
-
-      const plainRelink = await catalog.relink(plainProject.id, layout.nested[0]);
-      const sessionRelink = await catalog.relinkWithSessions(sessionProject.id, layout.nested[1]);
-
+      const [plainRelink, sessionRelink] = await Promise.all([
+        catalog.relink(plainProject.id, layout.nested[0]),
+        catalog.relinkWithSessions(sessionProject.id, layout.nested[1]),
+      ]);
       assert.equal(plainRelink.id, plainProject.id);
       assert.equal(plainRelink.preferredPath, await realpath(layout.nested[0]));
       assert.equal(sessionRelink.project.id, sessionProject.id);
@@ -674,7 +789,7 @@ test('touch reports a Project that disappears before path resolution as unavaila
     await mkdir(path);
     const catalog = createProjectCatalog(join(base, 'storage'));
     const project = await catalog.register(path);
-    await remove(path, { recursive: true });
+    await removeTree(path, { recursive: true });
 
     await assert.rejects(
       () => catalog.touch(project.id, path),

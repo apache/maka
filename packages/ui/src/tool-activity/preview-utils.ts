@@ -31,20 +31,39 @@ export function capLines(text: string): { body: string; capped: number } {
   };
 }
 
-export function formatBytes(bytes: number): string {
+const BYTE_UNITS = ['KB', 'MB', 'GB', 'TB'] as const;
+
+/**
+ * Binary-scaled size (1 KB = 1024 B), one decimal above bytes. A locale only
+ * changes the decimal separator; the unit labels stay the same.
+ */
+export function formatBytes(bytes: number, locale?: UiLocale): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   if (bytes < 1024) return `${Math.round(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const number = locale
+    ? new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(
+        value,
+      )
+    : value.toFixed(1);
+  return `${number} ${BYTE_UNITS[unit]}`;
 }
 
 export function formatDuration(ms: number | undefined): string | null {
   if (ms === undefined || ms < 0) return null;
   if (ms < 1000) return `${ms} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.round((ms % 60_000) / 1000);
-  return `${minutes}m ${seconds}s`;
+  // Round once, before splitting into units, so a value just under a unit
+  // boundary carries into the next unit instead of printing `60s`.
+  const tenths = Math.round(ms / 100);
+  if (tenths < 100) return `${(tenths / 10).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
 export function formatUserVisibleToolText(text: string, locale: UiLocale): string {

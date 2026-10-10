@@ -102,6 +102,7 @@ export async function startExecutionRuntimeHostService(
   let peerEndpointOwner: RuntimeHostPeerEndpointOwner | undefined;
   let peerMesh: RuntimeHostPeerMeshComponent | undefined;
   let host: RuntimeHostKernel | undefined;
+  let kernelOwnsRoot = false;
   try {
     if (options.peer) {
       peerEndpointOwner = await openRuntimeHostPeerEndpointOwner({
@@ -145,6 +146,9 @@ export async function startExecutionRuntimeHostService(
       });
     }
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
+    // Kernel owns the root from here, including retaining it until process
+    // termination when startup or shutdown cleanup exceeds its deadline.
+    kernelOwnsRoot = true;
     host = await RuntimeHostKernel.start({
       owner,
       lifecycleMode: 'service',
@@ -186,7 +190,7 @@ export async function startExecutionRuntimeHostService(
     await host?.close().catch(() => undefined);
     await peerMesh?.close().catch(() => undefined);
     await peerEndpointOwner?.close().catch(() => undefined);
-    if (!owner.closed) await owner.close();
+    if (!kernelOwnsRoot && !owner.closed) await owner.close();
     throw error;
   }
 }

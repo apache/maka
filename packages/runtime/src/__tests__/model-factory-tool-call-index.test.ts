@@ -262,6 +262,15 @@ describe('streamed tool-call association', () => {
         { toolCallId: 'call_a', toolName: 'read_file', input: '{"path":"a"}' },
       ]);
     });
+
+    test(`rejects an unmatched blank tool name on ${providerType}`, async () => {
+      const { failure } = await collectDeltas(
+        [{ index: 0, id: 'call_a', type: 'function', function: { name: ' ', arguments: '{}' } }],
+        providerType,
+      );
+
+      assert.notEqual(failure, undefined);
+    });
   }
 
   test('mints unique usable ids when wire ids are unavailable', async () => {

@@ -22,6 +22,7 @@ import type { PlanProposal, PlanSessionState, PlanStepStatus } from '@maka/core/
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
+import { PlanServicesProvider } from '../../renderer/features/conversation/index.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, type ReactNode } from 'react';
@@ -31,7 +32,7 @@ import {
   PlanExecutionPanel,
   usePlanModeState,
   type PlanModeState,
-} from '../../renderer/plan-mode-panel.js';
+} from '../../renderer/features/conversation/testing.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -317,7 +318,7 @@ async function mountPanelFixture() {
     createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(AstryxLocaleProvider, {
-        children: createElement(ToastProvider, { children: createElement(Harness) }),
+        children: createElement(ToastProvider, { children: createElement(PlanServicesProvider, { services: window.maka.sessions, children: createElement(Harness) }) }),
       }),
     }) as ReactNode;
 

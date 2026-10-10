@@ -78,11 +78,22 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [bucket, publish]);
 
-  const clearQuotes = useCallback((): void => {
-    bucket.splice(0, bucket.length);
+  // An explicit owner key clears another draft's bucket — the revision
+  // lifecycle re-keys its restored quotes across the commit and clears both
+  // the source and the branch-child keys (#5109 review); the live draft is
+  // the default for composer flows. The removed entries come back so the
+  // cancel path can re-stage the ones the edit did not stage itself
+  // (#5274 review).
+  const clearQuotes = useCallback((ownerKey = options.draftKey): QuoteRef[] => {
+    const target = pendingByKeyRef.current[ownerKey];
+    const removed = target ? target.splice(0, target.length) : [];
     publish();
-  }, [bucket, publish]);
+    return removed;
+  }, [options.draftKey, publish]);
 
+  // The revision lifecycle re-keys the selected message's quotes onto the
+  // branch child after the copy commits; restoring them into the owner's
+  // bucket copies the refs so the plate never aliases the read model.
   const restoreQuotes = useCallback((ownerKey: string, quotes: readonly QuoteRef[]): void => {
     if (quotes.length === 0) return;
     const ownerBucket = pendingByKeyRef.current[ownerKey] ??
@@ -91,14 +102,31 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     publish();
   }, [publish]);
 
+  // A captured submission clears exactly the entries it sent (#5868); the
+  // revision lifecycle's owner-keyed clearing lives in clearQuotes above.
+  const clearSubmittedQuotes = useCallback((submitted: readonly QuoteRef[]): void => {
+    for (let index = bucket.length - 1; index >= 0; index -= 1) {
+      if (submitted.includes(bucket[index]!)) bucket.splice(index, 1);
+    }
+    publish();
+  }, [bucket, publish]);
+
+
   // The composer's token asks the transcript to open the note editor over the
   // excerpt; a synchronous false means it falls back to its own popover.
   const chatViewRef = useRef<ChatViewHandle>(null);
   const tryAnnotateQuote = (index: number): boolean =>
     chatViewRef.current?.openQuoteAnnotation(index) ?? false;
 
-  const quotesForSend = (): QuoteRef[] | undefined =>
-    bucket.length ? bucket : undefined;
+  // An in-flight send must not be bound to the render that started it: the
+  // revision lifecycle re-keys the plate onto the branch child mid-send and
+  // empties the source bucket in place (#5274 review), so the resumed send
+  // reads through the re-keyed owner key. The ref is stable across renders
+  // and buckets are mutated in place, never replaced.
+  const quotesForSend = (ownerKey = options.draftKey): QuoteRef[] | undefined => {
+    const target = pendingByKeyRef.current[ownerKey];
+    return target?.length ? target : undefined;
+  };
 
   return {
     pendingQuotes: bucket,
@@ -107,6 +135,7 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
     updateQuoteComment,
     removeQuote,
     clearQuotes,
+    clearSubmittedQuotes,
     restoreQuotes,
     quotesForSend,
     composerQuoteProps: (canStage: boolean) => ({

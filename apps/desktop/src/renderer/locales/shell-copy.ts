@@ -155,8 +155,6 @@ type ShellCopy = {
   };
   paths: Record<'workspace' | 'project', string>;
   errors: {
-    messageRead: string;
-    messageRefresh: string;
     openPath(path: string): string;
     workspaceUnavailableTitle: string;
     workspaceUnavailableDescription: string;
@@ -180,7 +178,6 @@ type ShellCopy = {
     >;
     responseFailedTitle: string;
     responseFailedFallback: string;
-    refreshFailedTitle: string;
     sessionStartFailedTitle: string;
     sessionStartFailedFallback: string;
   };
@@ -195,6 +192,10 @@ type ShellCopy = {
     projectUpdateFailedFallback: string;
     catalogUnavailable: string;
     retryCatalog: string;
+    archivedProjectTitle: string;
+    archivedProjectDescription: string;
+    archivedProjectRestore: string;
+    archivedProjectCancel: string;
     remoteDirectoryTitle(host: string): string;
     remoteDirectoryBreadcrumbs: string;
     remoteDirectoryHome: string;
@@ -271,6 +272,10 @@ type ShellCopy = {
       'session_busy' | 'operation_conflict' | 'operation_unavailable' | 'not_found',
       string
     >;
+    /** Why the Host refused an archive, keyed by the guard's refusal token. */
+    archiveRefusedDelegation: string;
+    archiveRefusedResult: string;
+    archiveRefusedSubtasks: string;
     currentConversation: string;
     deleteTitle(name: string): string;
     deleteDescription: string;
@@ -757,8 +762,6 @@ const SHELL_COPY_BY_LOCALE = {
       project: '项目目录',
     },
     errors: {
-      messageRead: '任务内容暂时无法读取，请稍后重试。',
-      messageRefresh: '任务内容暂时无法刷新，请稍后重试。',
       openPath: (path: string) => `无法打开${path}，请稍后重试。`,
       workspaceUnavailableTitle: '工作目录不可用',
       workspaceUnavailableDescription: '工作目录不存在或无法访问。请选择有效目录创建新任务。',
@@ -781,7 +784,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: '响应失败',
       responseFailedFallback: '任务操作失败，请稍后重试。',
-      refreshFailedTitle: '刷新任务失败',
       sessionStartFailedTitle: '开始任务失败',
       sessionStartFailedFallback: '任务暂时无法开始，请稍后重试。',
     },
@@ -796,6 +798,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       catalogUnavailable: 'Runtime Host 暂时不可用',
       retryCatalog: '重试加载',
+      archivedProjectTitle: '项目已归档',
+      archivedProjectDescription: '该项目已归档，是否需要恢复？',
+      archivedProjectRestore: '恢复',
+      archivedProjectCancel: '取消',
       remoteDirectoryTitle: (host: string) => `在 ${host} 上添加项目`,
       remoteDirectoryBreadcrumbs: '当前文件夹',
       remoteDirectoryHome: '主目录',
@@ -892,6 +898,9 @@ const SHELL_COPY_BY_LOCALE = {
         operation_unavailable: '当前无法移动这个任务。',
         not_found: '找不到该项目或任务。',
       },
+      archiveRefusedDelegation: 'WorkHub 仍在向该任务委派工作。先停止或更换委派，再归档。',
+      archiveRefusedResult: '委派结果还没有送达 WorkHub。请打开 WorkHub 收取结果，或停止该委派。',
+      archiveRefusedSubtasks: '该任务还有进行中的子任务。请等子任务完成或停止它们，再归档该任务。',
       currentConversation: '当前任务',
       deleteTitle: (name: string) => `删除 "${name}"`,
       deleteDescription: '任务和全部消息会从磁盘上永久移除。该操作不可撤销。',
@@ -1284,8 +1293,6 @@ const SHELL_COPY_BY_LOCALE = {
       project: '專案目錄',
     },
     errors: {
-      messageRead: '任務內容暫時無法讀取，請稍後重試。',
-      messageRefresh: '任務內容暫時無法重新整理，請稍後重試。',
       openPath: (path: string) => `無法開啟${path}，請稍後重試。`,
       workspaceUnavailableTitle: '工作目錄不可用',
       workspaceUnavailableDescription: '工作目錄不存在或無法存取。請選擇有效目錄建立新任務。',
@@ -1308,7 +1315,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: '響應失敗',
       responseFailedFallback: '任務操作失敗，請稍後重試。',
-      refreshFailedTitle: '重新整理任務失敗',
       sessionStartFailedTitle: '開始任務失敗',
       sessionStartFailedFallback: '任務暫時無法開始，請稍後重試。',
     },
@@ -1323,6 +1329,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: '暫時無法更新專案，請稍後重試。',
       catalogUnavailable: 'Runtime Host 暫時不可用',
       retryCatalog: '重試載入',
+      archivedProjectTitle: '專案已歸檔',
+      archivedProjectDescription: '該專案已歸檔，是否需要恢復？',
+      archivedProjectRestore: '恢復',
+      archivedProjectCancel: '取消',
       remoteDirectoryTitle: (host: string) => `在 ${host} 上新增專案`,
       remoteDirectoryBreadcrumbs: '目前資料夾',
       remoteDirectoryHome: '主目錄',
@@ -1419,6 +1429,9 @@ const SHELL_COPY_BY_LOCALE = {
         operation_unavailable: '目前無法移動這個任務。',
         not_found: '找不到該專案或任務。',
       },
+      archiveRefusedDelegation: 'WorkHub 仍在向該任務委派工作。先停止或更換委派，再歸檔。',
+      archiveRefusedResult: '委派結果還沒有送達 WorkHub。請開啟 WorkHub 收取結果，或停止該委派。',
+      archiveRefusedSubtasks: '該任務還有進行中的子任務。請等子任務完成或停止它們，再歸檔該任務。',
       currentConversation: '目前任務',
       deleteTitle: (name: string) => `刪除 "${name}"`,
       deleteDescription: '任務和全部訊息會從磁碟上永久移除。該操作不可撤銷。',
@@ -1811,8 +1824,6 @@ const SHELL_COPY_BY_LOCALE = {
       project: 'project folder',
     },
     errors: {
-      messageRead: 'Task content is temporarily unavailable. Try again later.',
-      messageRefresh: 'Task content could not be refreshed. Try again later.',
       openPath: (path: string) => `Could not open the ${path}. Try again later.`,
       workspaceUnavailableTitle: 'Working directory unavailable',
       workspaceUnavailableDescription:
@@ -1837,7 +1848,6 @@ const SHELL_COPY_BY_LOCALE = {
       },
       responseFailedTitle: 'Response failed',
       responseFailedFallback: 'The task action failed. Try again later.',
-      refreshFailedTitle: 'Could not refresh task',
       sessionStartFailedTitle: 'Could not start task',
       sessionStartFailedFallback: 'The task could not be started. Try again later.',
     },
@@ -1852,6 +1862,10 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       catalogUnavailable: 'Runtime Hosts unavailable',
       retryCatalog: 'Retry loading',
+      archivedProjectTitle: 'Project archived',
+      archivedProjectDescription: 'This project is archived. Restore it?',
+      archivedProjectRestore: 'Restore',
+      archivedProjectCancel: 'Cancel',
       remoteDirectoryTitle: (host: string) => `Add a project on ${host}`,
       remoteDirectoryBreadcrumbs: 'Current folder',
       remoteDirectoryHome: 'Home',
@@ -1948,6 +1962,12 @@ const SHELL_COPY_BY_LOCALE = {
         operation_unavailable: 'This task cannot be moved right now.',
         not_found: 'That project or task could not be found.',
       },
+      archiveRefusedDelegation:
+        'WorkHub still delegates work to this task. Stop or replace the delegation, then archive it.',
+      archiveRefusedResult:
+        "WorkHub has not received this task's result yet. Open WorkHub so it can collect it, or stop the delegation.",
+      archiveRefusedSubtasks:
+        'This task has subtasks still in flight. Wait for them to finish or stop them, then archive this task.',
       currentConversation: 'Current task',
       deleteTitle: (name: string) => `Delete "${name}"`,
       deleteDescription:
@@ -2383,6 +2403,21 @@ const SHELL_COPY_BY_LOCALE = {
 
 export function getShellCopy(locale: UiLocale): ShellCopy {
   return SHELL_COPY_BY_LOCALE[locale];
+}
+
+/**
+ * An `app:openPath` failure reason in this locale. Desktop's open-path guard
+ * reports a closed set; any other value reads as `unknown`, so raw text never
+ * reaches the UI.
+ */
+export function openPathFailureCopy(reason: string, locale: UiLocale): string {
+  const copy = getShellCopy(locale).projectActions.openPathFailures;
+  return reason in copy ? copy[reason as keyof typeof copy] : copy.unknown;
+}
+
+/** The folder an open-path action names, for titles such as "无法打开工作区目录". */
+export function openPathActionLabel(key: 'workspace' | 'memory' | 'project', locale: UiLocale): string {
+  return getShellCopy(locale).projectActions.openPathLabels[key];
 }
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
