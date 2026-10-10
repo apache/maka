@@ -18,7 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
+import { fireEvent, expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ResizeHandle, useResizable } from '@astryxdesign/core/Resizable';
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
@@ -2189,9 +2189,9 @@ export const TitlebarProjectFeedbackNarrow: Story = {
       expect(getComputedStyle(path).fontSize).toBe('14px');
       expect(getComputedStyle(name).fontWeight).toBe('500');
       expect(getComputedStyle(name).color).not.toBe(getComputedStyle(path).color);
-      await userEvent.click(within(menu).getByRole('menuitem', { name: '复制路径' }));
+      await fireEvent.click(within(menu).getByRole('menuitem', { name: '复制路径' }));
       await waitFor(() => expect(within(menu).getByRole('menuitem', { name: '复制失败' })).toBeVisible());
-      await userEvent.click(within(menu).getByRole('menuitem', { name: '复制失败' }));
+      await fireEvent.click(within(menu).getByRole('menuitem', { name: '复制失败' }));
       await waitFor(() => expect(within(menu).getByRole('menuitem', { name: '已复制' })).toBeVisible());
       expect(writeText).toHaveBeenCalledTimes(2);
       expect(writeText).toHaveBeenLastCalledWith('/workspace/maka-agent');
@@ -2339,14 +2339,14 @@ export const PlusMenuDuringSkillRefresh: Story = {
     const skillsRow = within(menu).getByRole('menuitem', { name: /选择技能/ });
     const height = menu.getBoundingClientRect().height;
 
-    await userEvent.click(planRow);
+    await fireEvent.click(planRow);
     await expect(planRow).toHaveAttribute('aria-checked', 'true');
     await expect(skillsRow).toHaveAttribute('aria-busy', 'true');
     await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
     await expect(menu).not.toHaveTextContent('当前没有可用技能');
     expect(Math.abs(menu.getBoundingClientRect().height - height)).toBeLessThanOrEqual(0.5);
 
-    await userEvent.click(skillsRow);
+    await fireEvent.click(skillsRow);
     await waitFor(() => expect(menu).toBeVisible(), { timeout: 5_000 });
     const editor = canvasElement.querySelector<HTMLElement>(
       '.maka-composer-editor [contenteditable="true"]',
@@ -2365,7 +2365,7 @@ export const PlusMenuDuringSkillRefresh: Story = {
     const settledRow = within(
       page.getByRole('menu', { name: '添加上下文' }),
     ).getByRole('menuitem', { name: /选择技能/ });
-    await userEvent.click(settledRow);
+    await fireEvent.click(settledRow);
     await waitFor(
       () => expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible(),
       { timeout: 5_000 },
@@ -4137,7 +4137,7 @@ export const TitlebarWithWideWorkbar: Story = {
     expect(document.activeElement).toBe(title.querySelector('.maka-titlebar-identity__segment--session')!.closest('button'));
     await userEvent.click(menuButton);
     const page = within(canvasElement.ownerDocument.body);
-    await userEvent.click(await page.findByRole('menuitem', { name: '重命名' }));
+    await fireEvent.click(await page.findByRole('menuitem', { name: '重命名' }));
     await waitFor(() => expect(document.activeElement).toBe(title.querySelector('input')));
     await userEvent.keyboard('{Escape}');
     await userEvent.click(within(title).getByRole('button', { name: '项目信息' }));
@@ -4165,7 +4165,7 @@ export const TitlebarWithWideWorkbar: Story = {
     expect(renameAgain.getAttribute('aria-label')).toContain(' — 重命名任务');
     titlebarShare.mockClear();
     await userEvent.click(menuButton);
-    await userEvent.click(await page.findByRole('menuitem', { name: '分享任务' }));
+    await fireEvent.click(await page.findByRole('menuitem', { name: '分享任务' }));
     expect(titlebarShare).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(document.activeElement).toBe(menuButton));
   },
@@ -4359,7 +4359,7 @@ export const WorkbarClearsTitlebarReserve: Story = {
     );
 
     await userEvent.click(share);
-    await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole('menuitem', { name: '分享任务' }));
+    await fireEvent.click(await within(canvasElement.ownerDocument.body).findByRole('menuitem', { name: '分享任务' }));
     expect(narrowWorkbarShare).toHaveBeenCalledOnce();
   },
 };

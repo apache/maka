@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { fireEvent, expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
 import { SessionRail, type SessionRailStoryProps } from './session-rail-harness.js';
@@ -713,7 +713,7 @@ export const ProjectGroups: Story = {
     await userEvent.keyboard('{Escape}');
     await expect(action).toHaveFocus();
     await userEvent.keyboard('{Enter}');
-    await userEvent.click(page.getByRole('menuitem', { name: '重命名' }));
+    await fireEvent.click(page.getByRole('menuitem', { name: '重命名' }));
     await expect(await page.findByRole('dialog', { name: '重命名项目' })).toBeVisible();
     await userEvent.click(page.getByRole('button', { name: '关闭' }));
     await waitFor(() => expect(action).toHaveFocus());
@@ -776,7 +776,7 @@ export const ProjectGroups: Story = {
     );
     await userEvent.hover(renameTask);
     await expect(signal).toHaveStyle({ visibility: 'hidden' });
-    await userEvent.click(renameTask);
+    await fireEvent.click(renameTask);
     await expect(await page.findByRole('dialog', { name: '重命名任务' }, {
       timeout: 5_000,
     })).toBeVisible();

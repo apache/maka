@@ -21,7 +21,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { fireEvent, expect, userEvent, waitFor, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
 import { ToastProvider, useUiLocale } from '@maka/ui';
 import type {
@@ -967,11 +967,11 @@ export const ModelParameterSave: Story = {
     const inputLimit = body.getByRole('textbox', { name: /^(输入上限|輸入上限|Input limit)$/i });
     const vision = () => body.getByRole('combobox', { name: /^(图片识别|圖片辨識|Send images to the model)$/i });
     await userEvent.click(vision());
-    await userEvent.click(await body.findByRole('option', { name: /^(支持|支援|Allow images)$/i }));
+    await fireEvent.click(await body.findByRole('option', { name: /^(支持|支援|Allow images)$/i }));
     const patch = () => body.getByRole('combobox', { name: /^ApplyPatch/ });
     expect(patch()).toHaveTextContent(/^(自动|自動|Automatic)/);
     await userEvent.click(patch());
-    await userEvent.click(await body.findByRole('option', { name: /^(启用|啟用|Enabled)$/ }));
+    await fireEvent.click(await body.findByRole('option', { name: /^(启用|啟用|Enabled)$/ }));
     const save = body.getByRole('button', { name: /^(保存|儲存|Save)$/i });
     await userEvent.clear(field);
     await userEvent.type(field, '1MB');
@@ -994,9 +994,9 @@ export const ModelParameterSave: Story = {
     expect(vision()).toHaveTextContent(/^(支持|支援|Allow images)$/i);
     expect(patch()).toHaveTextContent(/^(启用|啟用|Enabled)$/);
     await userEvent.click(patch());
-    await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Automatic)/ }));
+    await fireEvent.click(await body.findByRole('option', { name: /^(自动|自動|Automatic)/ }));
     await userEvent.click(vision());
-    await userEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
+    await fireEvent.click(await body.findByRole('option', { name: /^(自动|自動|Model information)/i }));
     await userEvent.click(body.getByRole('button', { name: /^(保存|儲存|Save)$/i }));
     await waitFor(() => expect(configure).toHaveFocus());
     await userEvent.click(configure);
