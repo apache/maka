@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { join } from 'node:path';
+import { createWorkHubRemoteBridge } from './workhub-remote-bridge.js';
+import type { BotMessageHandling } from '@maka/core/bot-chat-settings';
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
@@ -36,6 +39,9 @@ import {
   type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
   connectRuntimeHostProfile,
+  DEFAULT_ELECTION_DEADLINE_MS,
+  ELECTION_DEADLINE_MS_ENV_VAR,
+  electionDeadlineMsFromEnvironment,
   type RuntimeHostPeerClient,
   type RuntimeHostConnectionPhase,
   type RuntimeHostSshInteraction,
@@ -144,6 +150,8 @@ export interface DesktopRuntimeHostCandidateDeps {
   };
   readonly nativeCapabilities: DesktopNativeCapabilityProviderInput;
   readonly botRegistry: BotRegistry;
+  readonly readBotMessageHandling?: () => Promise<BotMessageHandling>;
+  readonly botWorkHubStateDirectory?: string;
   readonly resolveBotCreateTarget: (
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<{ readonly workspace: WorkspaceTarget }>;
@@ -492,6 +500,19 @@ function redactRuntimeHostStderr(stderr: string): string {
   return redacted.replace(/\S+/gu, (token) => redactSecrets(token));
 }
 
+// Resolved from the client's own constant and env channel: a Desktop-only
+// fallback let the readiness wait expire inside a still-valid election window.
+export function resolveDesktopCandidateReadyTimeoutMs(
+  electionDeadlineMs: number | undefined,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  return (
+    electionDeadlineMs ??
+    electionDeadlineMsFromEnvironment(environment[ELECTION_DEADLINE_MS_ENV_VAR]) ??
+    DEFAULT_ELECTION_DEADLINE_MS
+  );
+}
+
 async function startProfileDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput["profileTarget"]>,
@@ -511,7 +532,7 @@ async function startProfileDesktopRuntimeHostCandidate(
     ...(input.handshakeTimeoutMs === undefined
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-    readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+    readyTimeoutMs: resolveDesktopCandidateReadyTimeoutMs(input.electionDeadlineMs),
     ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
     ...(input.refreshPeerRoutes === undefined
       ? {}
@@ -958,6 +979,14 @@ export async function createDesktopRuntimeHostCandidate(
     const botIncoming = target.access === 'owner'
       ? createBotIncomingMainService({
           botRegistry: deps.botRegistry,
+          ...(deps.readBotMessageHandling && deps.botWorkHubStateDirectory ? {
+            workHub: createWorkHubRemoteBridge({
+              client, botRegistry: deps.botRegistry, readMode: deps.readBotMessageHandling,
+              statePath: join(deps.botWorkHubStateDirectory, `${createHash('sha256').update(client.hostId).digest('hex')}.json`),
+              onError: reportError,
+              isActive: deps.isTargetActive,
+            }),
+          } : {}),
           sessions: createRuntimeHostBotSessionAdapter({
             client,
             resolveCreateTarget: () => deps.resolveBotCreateTarget(target),

@@ -688,6 +688,12 @@
   font-variant-numeric: tabular-nums;
 }
 .maka-mermaid-viewport {
+  --maka-mermaid-fit-width: min(
+    var(--maka-mermaid-natural-width),
+    max(1px, calc(100cqi - 2 * var(--space-3))),
+    calc((max(112px, min(480px, 55vh)) - 2 * var(--space-3)) * var(--maka-mermaid-ratio))
+  );
+  height: max(112px, calc(var(--maka-mermaid-fit-width) / var(--maka-mermaid-ratio) + 2 * var(--space-3)));
   position: relative;
   display: grid;
   min-width: 0;
@@ -708,7 +714,11 @@
   touch-action: none;
 }
 .maka-mermaid-viewport[data-maka-mermaid-panning="true"] { cursor: grabbing; user-select: none; }
-.maka-mermaid-canvas { min-width: 0; margin-inline: auto; }
+.maka-mermaid-canvas {
+  min-width: 0;
+  margin-inline: auto;
+  width: calc(var(--maka-mermaid-fit-width) * var(--maka-mermaid-zoom));
+}
 .maka-mermaid-svg { display: flex; width: 100%; height: 100%; min-width: 0; justify-content: center; }
 .maka-mermaid-svg > svg {
   display: block;
@@ -733,7 +743,15 @@
   padding-right: calc(var(--space-1) + var(--maka-titlebar-overlay-right-width, 0px));
 }
 .maka-mermaid-diagram-expanded .maka-mermaid-actions { -webkit-app-region: no-drag; }
-.maka-mermaid-diagram-expanded .maka-mermaid-viewport { min-height: 0; flex: 1 1 auto; }
+.maka-mermaid-diagram-expanded .maka-mermaid-viewport {
+  min-height: 0;
+  height: auto;
+  flex: 1 1 auto;
+  container-type: size;
+}
+.maka-mermaid-diagram-expanded .maka-mermaid-canvas {
+  --maka-mermaid-fit-width: min(100cqw, calc(100cqh * var(--maka-mermaid-ratio)));
+}
 .maka-mermaid-dialog { -webkit-app-region: no-drag; }
 .maka-mermaid-source {
   max-height: min(40%, 320px);
@@ -1154,6 +1172,17 @@
 
 .maka-choice-panel { outline: none; }
 
-.maka-choice-panel:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: var(--focus-ring-offset); }
+/* Keep keyboard focus on an option, never around the entire picker. */
+.maka-choice-panel:focus-visible > [role='option'][aria-selected='true'],
+.maka-choice-panel:focus-visible:not(:has(> [aria-selected='true'])) > [role='option']:first-of-type {
+  background: var(--foreground-5);
+}
+@media (forced-colors: active) {
+  .maka-choice-panel:focus-visible > [role='option'][aria-selected='true'],
+  .maka-choice-panel:focus-visible:not(:has(> [aria-selected='true'])) > [role='option']:first-of-type {
+    outline: var(--focus-ring-width) solid Highlight;
+    outline-offset: calc(-1 * var(--focus-ring-width));
+  }
+}
 
 .maka-choice-hint { margin: 8px 0; }

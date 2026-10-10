@@ -3105,9 +3105,8 @@ test('conversation copy rebuilds projection transitions against the copied event
     ]) {
       await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
     }
-    // Two chained transitions on one target: the copy has to remap the target,
-    // both archives and the lineage link, and re-derive each source digest
-    // against what the previous rebuilt transition left behind.
+    // Repeated archive wrappers collapse to one copied ledger archive, so its
+    // public event address reads the body rather than a wrapper pointing to itself.
     const first = sourceProjectionTransition({
       event: resultEvent,
       sourceProjection: baseToolResultProjection(resultEvent)!,
@@ -3184,21 +3183,18 @@ test('conversation copy rebuilds projection transitions against the copied event
       'session-target',
       (await runtimeEventStore.listSessionInvocations('session-target')).map((run) => run.runId),
     );
-    assert.equal(copiedTransitions.transitions.length, 2);
+    assert.equal(copiedTransitions.transitions.length, 1);
     const copiedFirst = copiedTransitions.transitions.find(
       (transition) => transition.previousTransitionId === undefined,
     );
     assert.ok(copiedFirst);
-    const copiedSecond = copiedTransitions.transitions.find(
-      (transition) => transition.previousTransitionId === copiedFirst.transitionId,
-    );
-    assert.ok(copiedSecond);
     for (const transition of copiedTransitions.transitions) {
       assert.equal(transition.sessionId, 'session-target');
       assert.equal(transition.target.runtimeEventId, targetResult.id);
       assert.equal('isError' in transition.replacement && transition.replacement.isError, true);
     }
-    // Lineage is preserved through the remapped ids, never through the source's.
+    // The copied archive uses target identities and never restores the raw body
+    // in the model-visible projection.
     assert.notEqual(copiedFirst.transitionId, first.transitionId);
     assert.doesNotMatch(
       JSON.stringify(copiedTransitions.transitions),
@@ -3210,7 +3206,7 @@ test('conversation copy rebuilds projection transitions against the copied event
     // makes a copy of an archived Session safe.
     assert.match(JSON.stringify(targetEvents), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
     const reduced = reduceEffectiveModelProjections(targetEvents, copiedTransitions.transitions);
-    assert.equal(reduced.applied.length, 2);
+    assert.equal(reduced.applied.length, 1);
     assert.equal(reduced.rejected.length, 0);
     assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
     const effective = reduced.events.find((event) => event.content?.kind === 'function_response');
@@ -3219,6 +3215,25 @@ test('conversation copy rebuilds projection transitions against the copied event
     // A legacy Artifact-backed archive is rebuilt over the copied event.
     assert.equal(effective.content.result.rewriteVersion, 2);
     assert.equal(effective.content.result.runtimeEventId, targetResult.id);
+    const records = await runStore.readEvents('session-target', targetRun.runId);
+    const reader = createLedgerArchiveResourceReader({
+      read: async () => ({
+        ok: true,
+        event: targetResult,
+        transitions: records.filter(
+          (record) => record.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+        ),
+      }),
+    });
+    const body = await reader({
+      storage: 'event',
+      runtimeEventId: targetResult.id,
+      sessionId: 'session-target',
+      maxBytes: 1024 * 1024,
+    });
+    assert.ok(body.ok);
+    assert.match(body.serializedResult, /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
+    assert.ok(!body.serializedResult.includes('maka://runtime/tool-results/'));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

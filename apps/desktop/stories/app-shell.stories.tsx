@@ -1690,6 +1690,31 @@ export const NewChatComposer: Story = {
     const modelPicker = canvasElement.querySelector<HTMLElement>('.maka-new-chat-model-selector')!;
     await expect(getComputedStyle(projectPicker).borderRadius).toBe(getComputedStyle(modelPicker).borderRadius);
     await expect(projectPicker.querySelector('.maka-workspace-picker-chevron svg')).not.toBeNull();
+
+    const leftControls = card.querySelector<HTMLElement>('.maka-composer-left-controls')!;
+    await waitFor(() => {
+      const gap = Number.parseFloat(getComputedStyle(leftControls).columnGap);
+      expect(projectPicker.getBoundingClientRect().left - modelPicker.getBoundingClientRect().right)
+        .toBeCloseTo(gap, 0);
+    });
+
+    const send = within(card).getByRole('button', { name: '发送' });
+    const originalMaxWidth = card.style.maxWidth;
+    try {
+      card.style.maxWidth = 'var(--maka-conversation-min-width)';
+      await waitFor(() => {
+        const sendBox = send.getBoundingClientRect();
+        const projectBox = projectPicker.getBoundingClientRect();
+        expect(card.getBoundingClientRect().width).toBeCloseTo(Number.parseFloat(getComputedStyle(card).maxWidth), 0);
+        expect(sendBox.right).toBeLessThanOrEqual(card.getBoundingClientRect().right);
+        expect(projectBox.width).toBeGreaterThan(0);
+        expect(modelPicker.getBoundingClientRect().right).toBeLessThanOrEqual(projectBox.left);
+        expect(projectBox.right).toBeLessThanOrEqual(sendBox.left);
+        expect(leftControls.scrollWidth).toBeLessThanOrEqual(leftControls.clientWidth + 1);
+      });
+    } finally {
+      card.style.maxWidth = originalMaxWidth;
+    }
   },
 };
 

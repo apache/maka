@@ -365,6 +365,20 @@ export type BackendKind = 'ai-sdk' | 'plugin-executor';
  */
 export type PersistedBackendKind = BackendKind | 'fake';
 
+/** Host-owned activity of a Session's graph and linked child work, separate from its own turns. */
+export type SessionBackgroundActivity = 'idle' | 'running' | 'waiting_for_user' | 'blocked';
+
+/** Orders activity observations independently of durable Session and live Turn revisions. */
+export interface SessionBackgroundActivityVersion {
+  readonly hostGeneration: string;
+  readonly revision: number;
+}
+
+export interface SessionBackgroundActivitySnapshot {
+  readonly backgroundActivity: SessionBackgroundActivity;
+  readonly backgroundActivityVersion: SessionBackgroundActivityVersion;
+}
+
 export interface SessionSummary {
   id: string;
   cwd?: string;
@@ -414,6 +428,10 @@ export interface SessionSummary {
    * the header alone and omits it.
    */
   runningTurnIds?: string[];
+  /** Live Host projection; `idle` is known empty, omission is unknown. Cached values are not execution authority. */
+  backgroundActivity?: SessionBackgroundActivity;
+  /** Compare revisions only within the same Host generation; strip alongside cached activity. */
+  backgroundActivityVersion?: SessionBackgroundActivityVersion;
   /**
    * Bumped by the runtime each time a turn of this session starts or ends.
    * `revision` does not move for those transitions, so two same-revision
@@ -1093,6 +1111,8 @@ export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMes
   kind: 'delegation_assigned';
   /** New delegations opt into Host-owned asynchronous result delivery. */
   returnResults?: true;
+  /** WorkHub permission policy captured for this execution, not a Session mutation. */
+  executionPermissionMode?: PermissionMode;
   delegationId: string;
   targetTurnId: string;
   targetMessageId: string;
@@ -1448,6 +1468,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
       'attachments',
       'targetAttachments',
       'returnResults',
+      'executionPermissionMode',
       'create',
       'steered',
       'replacesActionId',
@@ -1864,6 +1885,8 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetSessionName === 'string' &&
     message.targetSessionName.trim().length > 0 &&
     (message.returnResults === undefined || message.returnResults === true) &&
+    (message.executionPermissionMode === undefined ||
+      isPermissionMode(message.executionPermissionMode)) &&
     (message.steered === undefined || message.steered === true) &&
     ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
       message.replacesActionId === undefined &&

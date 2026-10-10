@@ -92,6 +92,7 @@ export function createFakeWorkbarServices(
         throw new Error('Fake review.read is not configured');
       },
       subscribeSessionEvents: noopSubscription,
+      subscribeSessionChanges: noopSubscription,
     },
     terminal: {
       recover: async () => ({ resources: [], closes: [] }),

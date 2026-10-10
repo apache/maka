@@ -6,7 +6,7 @@ source_language: zh-CN
 implementation_status: partial
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-23
+last_verified: 2026-09-30
 owners:
   - maka-backend
 ---
@@ -158,7 +158,7 @@ Maka 自己的 Electron renderer 也是 Computer Use 的目标。它不能依赖
 | Occlusion、无自动前台/裸 pixel 回退 | 部分验证 | Cua 拒绝码映射与 Runtime fail-closed tests | 前台同意与真实窗口 sentinel |
 | Fresh postcondition、effect verification | PARTIAL | mutation 后 fresh observation；5 轮 primary oracle=1、slider 业务值/readback=42、scroll tree delta + oracle=76 | 继续补 secondary action 与跨窗口业务 oracle |
 | Per-session queue、generation lease | PARTIAL | session queue/frame claim；lease 修复尚在本地 | concurrent-session 与 intervention-before-dispatch tests |
-| Physical intervention、lock、stop | FAIL | 有状态机原型，无 Desktop production event producer | 真实 host wiring 与 transition tests |
+| Physical intervention、lock、stop | PARTIAL | Desktop producer 已接线：`createDesktopPhysicalInputGuard`（idle-time，经 `powerMonitor.getSystemIdleTime`，装配于 `apps/desktop/src/main/desktop-native-capability-assembly.ts`）与 `createComputerUseScreenLockGuard`；Cua backend 拒绝 `user_intervened`，Runtime 工具拒绝 `screen_locked`。仍无可归因的 macOS event-tap producer | 真实 host wiring 与 transition tests |
 | Service recovery、unknown outcome | PARTIAL | 本地 service abstraction 与 unit tests | restart reset、attestation、child-crash、cleanup E2E |
 | Approval semantics | FAIL | 旧实现是整 turn scope | 分级 lease、脱敏 permission event、sensitive-target tests |
 | Privacy、telemetry | FAIL | 旧 observation/tool args 可含敏感内容 | persistence/redaction tests；allowlist report schema |

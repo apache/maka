@@ -45,6 +45,68 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 describe('Host Memory coordinator', () => {
+  test('approves a fenced template without splitting its stored content or prompt projection', async () => {
+    await withCoordinator(async ({ coordinator, memoryStore, policyStores, context }) => {
+      await setMemoryPolicy(policyStores, true, true);
+      await coordinator.recover();
+      const initial = await state(coordinator, context);
+      const content = [
+        'Use this README template:',
+        '```md',
+        '## Installation',
+        'npm install',
+        '```',
+        'Keep the final instruction.',
+      ].join('\n');
+      const proposed = await mutate(
+        coordinator,
+        {
+          kind: 'propose',
+          expectedRevision: initial.revision,
+          title: 'README template',
+          content,
+          scope: { kind: 'workspace' },
+          sourceTurnId: 'turn-template',
+        },
+        context,
+      );
+      const proposals = await query(
+        coordinator,
+        { kind: 'entries_start', view: 'proposals' },
+        context,
+      );
+      assert.ok(proposals.kind === 'entries_page');
+      assert.equal(proposals.items.length, 1);
+      assert.equal(proposals.items[0]?.content, content);
+      const proposalId = proposals.items[0]?.proposalId;
+      assert.ok(proposalId);
+      const approved = await mutate(
+        coordinator,
+        {
+          kind: 'approve',
+          expectedRevision: mutationRevision(proposed),
+          proposalId,
+        },
+        context,
+      );
+      assert.equal(approved.kind, 'committed');
+      const snapshot = await memoryStore.read();
+      assert.ok(snapshot.memory.kind === 'document');
+      assert.ok(snapshot.pending.kind === 'document');
+      const entries = parseLocalMemoryMarkdown(
+        new TextDecoder().decode(snapshot.memory.bytes),
+      ).entries;
+      assert.equal(entries.find((entry) => entry.proposalId === proposalId)?.content, content);
+      const pending = parseLocalMemoryMarkdown(new TextDecoder().decode(snapshot.pending.bytes));
+      assert.equal(pending.entries.length, 0);
+      const prompt = await coordinator.readPromptProjection(
+        'session-template',
+        await policyStores.runtimePolicy.getSnapshot(),
+      );
+      assert.equal(prompt.body?.includes(content), true);
+    });
+  });
+
   test('entry queries preserve the maximal byte-limited prefix across continuations', async () => {
     await withCoordinator(async ({ coordinator, memoryStore, context }) => {
       await coordinator.recover();

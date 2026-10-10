@@ -21,6 +21,7 @@ import { createElement, useMemo, useSyncExternalStore, type ComponentType, type 
 import { ChatView, useUiLocale, type ComposerInteraction, type ComposerProps as UiComposerProps } from '@maka/ui';
 import type { SessionStatus, StoredMessage } from '@maka/core/session';
 import type { SessionUiReads } from '../model/session-ui-reads.js';
+import { useSnapshotReader } from '../../../application/contracts/snapshot-reader.js';
 import { useSessionUiRead } from '../controller/use-session-ui-read.js';
 import { transcriptRestoreTarget } from '../controller/transcript-reading-position.js';
 import { useConversationOwner } from './conversation-context.js';
@@ -37,8 +38,8 @@ import { executorComposerProps } from '../model/executor-composer.js';
 import { liveTurnFlags } from '../model/live-turn-flags.js';
 
 /** The displayed Session's Turn, read at chrome frequency. */
-function useDisplayedTurn(reads: SessionUiReads, sessionId: string | undefined) {
-  const summary = useSessionUiRead(reads, 'summary', sessionId);
+function useDisplayedTurn(reads: SessionUiReads, sessionId: string | undefined, visible = true) {
+  const summary = useSessionUiRead(reads, 'summary', sessionId, visible);
   return { execution: summary.activeExecution, ...liveTurnFlags(summary.activeLiveTurnSnapshot, summary.activeExecution) };
 }
 
@@ -49,7 +50,7 @@ type TranscriptProps = Pick<ChatProps,
   'onLoadTranscriptTurn' | 'restoreTargetTurn' | 'onReadingAnchorChange' | 'viewportNavigation' |
   'deriveTurnPresentation' | 'safeResumeAction'
 > & {
-  activeSessionId: string | undefined; liveContentSeedGeneration: number; sessionUiReads: SessionUiReads;
+  visible: boolean; activeSessionId: string | undefined; liveContentSeedGeneration: number; sessionUiReads: SessionUiReads;
   activeTurn: ReturnType<typeof chatTurnActivity>;
   sessionHealthModelPickerAvailable: boolean;
 };
@@ -57,13 +58,14 @@ type TranscriptProps = Pick<ChatProps,
 type TranscriptGateInputs = {
   /** The owner Session's execution boundary admits local interaction. */
   localInteractionAvailable: boolean;
+  visible?: boolean;
 };
 
 /** The actual transcript reader. Shell supplies presentation and navigation only. */
 export function ConversationTranscriptRegion<P extends object>(
   props: { surface: ComponentType<P> } & TranscriptGateInputs & Omit<P, keyof TranscriptProps>,
 ) {
-  const { surface, localInteractionAvailable, ...presentation } = props;
+  const { surface, localInteractionAvailable, visible = true, ...presentation } = props;
   const { workspace, commands, readingCommands } = useConversationOwner();
   // The narrow reader: a send or an edit draft does not repaint the transcript.
   const turnReader = useComposerTurnReader();
@@ -74,12 +76,13 @@ export function ConversationTranscriptRegion<P extends object>(
     pendingTurnActions: turnReader.pendingTurnActions,
     uiLocale: useUiLocale(),
   });
-  const turn = useDisplayedTurn(workspace.ui.reads, turnReader.activeId);
-  const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
-  const load = useSessionUiRead(workspace.ui.reads, 'load', view.sessionId);
-  const retryPending = useSessionUiRead(workspace.ui.reads, 'retry', view.sessionId);
+  const turn = useDisplayedTurn(workspace.ui.reads, turnReader.activeId, visible);
+  const view = useSnapshotReader(workspace.publication, visible);
+  const load = useSessionUiRead(workspace.ui.reads, 'load', view.sessionId, visible);
+  const retryPending = useSessionUiRead(workspace.ui.reads, 'retry', view.sessionId, visible);
   const sessionId = view.sessionId;
   const owned: TranscriptProps = {
+    visible,
     activeSessionId: sessionId,
     activeTurn: chatTurnActivity(turn.execution),
     onStreamingSettled: sessionId ? (messageId) => commands.settleAssistantStreaming(sessionId, messageId) : undefined,
@@ -96,14 +99,18 @@ export function ConversationTranscriptRegion<P extends object>(
     transcriptTurnIndex: view.turnIndex?.sessionId === sessionId ? view.turnIndex?.turns : undefined,
     onLoadTranscriptTurn: (turn) => readingCommands.current?.loadEarlier(turn.sequence),
     restoreTargetTurn: transcriptRestoreTarget(sessionId ? workspace.ui.transcriptReadingAnchorBySessionRef.current[sessionId] : undefined, load.unavailableTranscriptRestore),
-    onReadingAnchorChange: sessionId ? (turnId) => readingCommands.current?.captureAnchor(turnId) : undefined,
+    onReadingAnchorChange: sessionId ? (turnId) => readingCommands.current?.captureAnchor(sessionId, turnId) : undefined,
     deriveTurnPresentation,
     safeResumeAction: turnReader.safeResumeAction,
     // The notice's picker is held while a Turn runs, as the Composer's is;
     // `useShellChatModel` holds it for the Session's status.
     sessionHealthModelPickerAvailable: localInteractionAvailable && !turn.turnActive,
   };
-  return createElement(surface, { ...presentation, ...owned } as unknown as P);
+  // Keep parent updates from handing a covered transcript fresh props.
+  return useMemo(
+    () => createElement(surface, { ...presentation, ...owned } as unknown as P),
+    [surface, visible, visible ? presentation : null, visible ? owned : null],
+  );
 }
 
 type SubmissionProps = Pick<ComposerSubmissionReader,

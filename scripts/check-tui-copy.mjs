@@ -102,7 +102,6 @@ export const ALLOWED_VISIBLE_LITERALS = {
     'Recap failed: ${…}',
     'Recap: ${…}',
     'Compacting context…',
-    'Resuming from the latest safe boundary…',
     'Permissions: ${…}',
     'Keep Auto',
     'Turn on full access',

@@ -19,9 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { createSecureServer as createHttp2Server } from 'node:http2';
+import tls from 'node:tls';
 import net from 'node:net';
 import { getEventListeners } from 'node:events';
-import { Agent, fetch as undiciFetch } from 'undici';
+import { Agent, ProxyAgent, fetch as undiciFetch } from 'undici';
 import { waitFor, withTimeout } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import { PROXY_DEFAULTS, type ProxySettings } from '@maka/core/settings/network-settings';
@@ -43,12 +46,18 @@ import { buildAbortableConnector } from '../abortable-connector.js';
 describe('connection effect network transport', () => {
   for (const type of ['direct', 'http', 'socks5'] as const) {
     test(`closed successful connections do not accumulate abort listeners (${type})`, async () => {
+      let targetHits = 0;
       const server = createServer((_request, response) => {
+        targetHits += 1;
         response.writeHead(200, { connection: 'close' });
         response.end('proxy-ok');
       });
       const port = await listen(server);
       const socks = type === 'socks5' ? await startStalledProxy('socks-http') : undefined;
+      // Since undici 8 (#1247), plain-HTTP targets are forwarded to the proxy
+      // in absolute form instead of tunneled via CONNECT. Relay the bytes to a
+      // real target so the success path is proven end to end.
+      const forward = type === 'http' ? await startForwardProxy(port) : undefined;
       const controller = new AbortController();
       const dispatcher =
         type === 'direct'
@@ -59,7 +68,8 @@ describe('connection effect network transport', () => {
                 enabled: true,
                 type,
                 host: '127.0.0.1',
-                port: socks?.port ?? port,
+                port: socks?.port ?? forward?.port ?? port,
+                ...(type === 'http' ? { username: 'proxy-user', password: 'proxy-password' } : {}),
                 bypassList: [],
               },
               controller.signal,
@@ -67,12 +77,29 @@ describe('connection effect network transport', () => {
       try {
         for (let index = 0; index < 25; index++) {
           const response = await undiciFetch(
-            type === 'direct'
-              ? `http://127.0.0.1:${port}/models`
-              : 'http://provider.invalid/models',
+            type === 'socks5'
+              ? 'http://provider.invalid/models'
+              : `http://127.0.0.1:${port}/models`,
             { dispatcher },
           );
           assert.equal(await response.text(), 'proxy-ok');
+          if (forward) {
+            assert.equal(
+              forward.requestLines[index],
+              `GET http://127.0.0.1:${port}/models HTTP/1.1`,
+              'plain-HTTP targets must reach the proxy as an absolute-form forward',
+            );
+            assert.equal(
+              forward.requestHeaders[index]?.['proxy-authorization'],
+              `Basic ${Buffer.from('proxy-user:proxy-password').toString('base64')}`,
+              'configured proxy credentials must ride the forward request',
+            );
+            assert.equal(
+              targetHits,
+              index + 1,
+              'the proxy must relay the forward request to the real target',
+            );
+          }
           // Socket close is delivered after the body. Wait for I/O, not GC.
           await waitFor(() => getEventListeners(controller.signal, 'abort').length === 0, {
             timeoutMs: 1_000,
@@ -83,6 +110,7 @@ describe('connection effect network transport', () => {
         controller.abort();
         await dispatcher.destroy();
         await socks?.close();
+        await forward?.close();
         await closeServer(server);
       }
     });
@@ -474,6 +502,56 @@ describe('connection effect network transport', () => {
     }
   });
 
+  for (const protocol of ['http/1.1', 'h2'] as const) {
+    for (const stalledDestroy of [false, true]) {
+      test(`close settles after a successful ${protocol} CONNECT request (destroy stalled: ${stalledDestroy})`, async (t) => {
+        const body = modelPayload('proxy-model');
+        const originalConnect = tls.connect;
+        t.mock.method(tls, 'connect', (options: tls.ConnectionOptions, callback?: () => void) =>
+          originalConnect({ ...options, ca: CONNECT_TEST_CERT }, callback),
+        );
+        const proxy = await startSuccessfulTlsConnectProxy(body, protocol);
+        const transport = createConnectionEffectFetchTransport({
+          ...PROXY_DEFAULTS,
+          enabled: true,
+          type: 'http',
+          host: '127.0.0.1',
+          port: proxy.port,
+          bypassList: [],
+        });
+        try {
+          const response = await transport.fetch('https://provider.invalid/v1/models');
+          assert.equal(response.status, 200);
+          assert.equal(await response.text(), body);
+          assert.equal(proxy.httpVersion, protocol === 'h2' ? '2.0' : '1.1');
+          assert.equal(proxy.sockets.size, 2);
+          const socketsClosed = Promise.all([...proxy.sockets].map(waitForSocketClose));
+          if (stalledDestroy) {
+            // Reproduce the dispatcher completion failure independently of Undici/Node version.
+            t.mock.method(ProxyAgent.prototype, 'destroy', () => new Promise<void>(() => {}));
+          }
+          const closed = transport.close();
+          assert.equal(transport.close(), closed);
+          await withTimeout(
+            closed,
+            stalledDestroy ? 2_000 : 750,
+            'completed CONNECT tunnel blocked transport.close()',
+          );
+          await withTimeout(socketsClosed, 1_000, 'CONNECT tunnel survived transport.close()');
+          assert.equal(proxy.sockets.size, 0);
+          await assert.rejects(
+            transport.fetch('https://provider.invalid/v1/models'),
+            /transport is closed/,
+          );
+        } finally {
+          // Also release the server if a regression leaves dispatcher teardown pending.
+          void transport.close();
+          await proxy.close();
+        }
+      });
+    }
+  }
+
   test('close terminates owned proxy resources and rejects later fetches', async () => {
     const proxy = await startConnectProxy(() => {
       const body = modelPayload('stream-model');
@@ -778,6 +856,54 @@ describe('connection effect network transport', () => {
   });
 });
 
+async function startSuccessfulTlsConnectProxy(body: string, protocol: 'http/1.1' | 'h2') {
+  const sockets = new Set<net.Socket>();
+  const track = (socket: net.Socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+  };
+  let httpVersion: string | undefined;
+  const options = { key: CONNECT_TEST_KEY, cert: CONNECT_TEST_CERT };
+  const target =
+    protocol === 'h2'
+      ? createHttp2Server(options, (req, res) => {
+          httpVersion = req.httpVersion;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(body);
+        })
+      : createHttpsServer(options, (req, res) => {
+          httpVersion = req.httpVersion;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(body);
+        });
+  const targetPort = await listen(target);
+  const proxy = createServer();
+  proxy.on('connect', (request, socket, head) => {
+    assert.equal(request.url, 'provider.invalid:443');
+    track(socket as net.Socket);
+    const tunnel = net.connect(targetPort, '127.0.0.1', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) tunnel.write(head);
+      socket.pipe(tunnel).pipe(socket);
+    });
+    track(tunnel);
+    socket.once('close', () => tunnel.destroy());
+    tunnel.once('close', () => socket.destroy());
+  });
+  return {
+    port: await listen(proxy),
+    sockets,
+    get httpVersion() {
+      return httpVersion;
+    },
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await Promise.all([closeServer(proxy), closeServer(target)]);
+    },
+  };
+}
+
 async function startStalledProxy(stage: string, rejectTls = false) {
   const sockets = new Set<net.Socket>();
   let started!: () => void;
@@ -952,6 +1078,60 @@ async function startConnectProxy(
   };
 }
 
+interface ForwardProxy {
+  readonly port: number;
+  readonly requestLines: string[];
+  readonly requestHeaders: Record<string, string>[];
+  close(): Promise<void>;
+}
+
+// A real forwarding proxy for plain-HTTP targets: since undici 8 (#1247) the
+// dispatcher sends the request in absolute form, and this helper records the
+// request line and headers as the bytes flow through, then relays everything
+// to the target over a raw TCP pipe. It never answers on its own, so a
+// response can only have come from the target.
+async function startForwardProxy(targetPort: number): Promise<ForwardProxy> {
+  const requestLines: string[] = [];
+  const requestHeaders: Record<string, string>[] = [];
+  let pending = '';
+  const server = net.createServer((clientSocket) => {
+    const upstream = net.connect(targetPort, '127.0.0.1');
+    clientSocket.pipe(upstream);
+    upstream.pipe(clientSocket);
+    clientSocket.on('data', (chunk) => {
+      pending += chunk.toString('latin1');
+      while (true) {
+        const headerEnd = pending.indexOf('\r\n\r\n');
+        if (headerEnd < 0) return;
+        const requestHead = pending.slice(0, headerEnd);
+        pending = pending.slice(headerEnd + 4);
+        const [line = '', ...headerLines] = requestHead.split('\r\n');
+        requestLines.push(line);
+        const headers: Record<string, string> = {};
+        for (const headerLine of headerLines) {
+          const separator = headerLine.indexOf(':');
+          if (separator !== -1) {
+            headers[headerLine.slice(0, separator).trim().toLowerCase()] = headerLine
+              .slice(separator + 1)
+              .trim();
+          }
+        }
+        requestHeaders.push(headers);
+      }
+    });
+    clientSocket.on('error', () => upstream.destroy());
+    upstream.on('error', () => clientSocket.destroy());
+    clientSocket.on('close', () => upstream.destroy());
+    upstream.on('close', () => clientSocket.destroy());
+  });
+  return {
+    port: await listen(server),
+    requestLines,
+    requestHeaders,
+    close: () => closeServer(server),
+  };
+}
+
 function listen(server: net.Server): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -973,3 +1153,55 @@ function waitForSocketClose(socket: net.Socket): Promise<void> {
   if (socket.destroyed) return Promise.resolve();
   return new Promise((resolve) => socket.once('close', () => resolve()));
 }
+
+// Self-signed provider.invalid certificate/key generated solely for this loopback test.
+const CONNECT_TEST_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQComV5/ZCsvuz3k
+WLFXGECmg4HUM1fw9gdNjJOKf1jpupmeeG1RHwaI0CM+hdhVbzwUPKd9s8dU/y4o
+jl9enwSuuu5ypPzxlnkCBje1xGL3XHw4KGE+F6ytyZFu2/3649GqYW8lzuFIvcPE
+gzshEYa/3miliQz1Xyb77X9gjHXZawnokOM+Ci6lLHwvS7K4/hOUVWT43HcFdKzc
+xEoiktcuSAm/klImsZodxwUy9V+E+PXzz0aDhyLOb1PfYmycPUY5WTUSl14+/iSB
+01/hCqQ0lua8SsxNQyTxe7CpBvhX+dyBFY8PNHIayW6CcKSENUmsgbxnRg2hXgAo
+Qp0LN1YZAgMBAAECggEAE26AyA8yFIlgueSYhOSeT+q8gAnuXu7mOtOCzj288ExR
+yARSehzoroRJqZs4yqj8PEtc1QWvSc4y4lj9aC0M97wC/zrhjdEVT4zKpzQUIXUa
++oh547OMEwgWL1gi2sOe3sOl0S5Zw/3eFjQ3UImB9bNzLXABKrcdqb/O1GB/9S+7
+enh7eyk2tz3pEPPtLQeKYuDOH3WwyGRsM2oGDnFiFOWHfU/SRxp8olipgX35jO93
+USrxJDDrj52ZY31w4SQdETqSOf9/poypI9gEFrSC4eDeKNpNb/EcYdurt/LmtuCD
+p3nTvaVy2Zyi5L4BKdo2YTy78lW4MDWlGNSYsXONoQKBgQDYJHhIO/VjRiP2C375
+iDQ7v9lMHxuuThefiE0wblIfXz57zLMZMv4NamoaX16QB5k9QmNvd6/gx/f3iZsr
+NcPZBju3eivCFx1/p/DfrnhKlWP75DQBtA3e6G2ziiU9fw6CY5wtxQ1dqmDh/KeT
+5FGl1zCZtIvJGiZB7m0SAysjIQKBgQDHsH/TXJVk0cIU2f7e9NWbRHzPC7U6Iiv8
+XkPhxUBzRPT+ih88yMjy3IX8osbQIwET3NL1hgLth+yusbVDXymOkmKyFEnZL3aJ
+x5T7t+mj+xBC6NmX83t+3XRxK/XGmTYZnU/Je8OqdehpOmIS/TlQzsawO82ORpDQ
+XP/I24fL+QKBgCTIaBPa6FLBsAMCR9SNYl48su0qahqKvahvmLtCOwWNvuNwnZYP
+QH7l+jKMwln+gQyUzLk+hBbb0Q42Q8rhtnergOQjjWjVaDa+TNa0KVKAA+jtGBCm
+JKonoeuo+ddyVPTJoN2FKFYlVaF/zsDzXRW8/k9aE2Pg6FvWCIfFNEUhAoGAc51E
+5OLdvBmV/OyaHAw1AEiO2nE05AuU2/DX7Id/4T0ze4wMueymK7Zx/OthoHAj15Qq
+r+x/FXd1GU/aWr9mGB249tG4T/6i6vKa14KLy1049QRLtyZJghJFsKB7FBjwsbPa
+1hTKHI9XmFUtI0FpRdfyQWbehFlmzryJe4le/kECgYB9NWJTa47W0/KE03JI3KUQ
+Ga0TPYefBTDXCGi8HzNrBBDgwsCmCgncAYc8Hb+L+YTxCvbG45eu6F/3Ym54YRNf
+QjBjGRxfQX3M8mykrEcV2VD/xMGgkdwnXlqMFmE/fIPMbeA4YQ0QAfrvIZILJE+x
+TzrYqGDRj7/vlxLscj4Rbw==
+-----END PRIVATE KEY-----
+`;
+const CONNECT_TEST_CERT = `-----BEGIN CERTIFICATE-----
+MIIDNDCCAhygAwIBAgIULLN0aB3T8d6+sj6swhRA4veyodYwDQYJKoZIhvcNAQEL
+BQAwGzEZMBcGA1UEAwwQcHJvdmlkZXIuaW52YWxpZDAeFw0yNjEwMDEwNzU1MTda
+Fw0zNjA5MjgwNzU1MTdaMBsxGTAXBgNVBAMMEHByb3ZpZGVyLmludmFsaWQwggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQComV5/ZCsvuz3kWLFXGECmg4HU
+M1fw9gdNjJOKf1jpupmeeG1RHwaI0CM+hdhVbzwUPKd9s8dU/y4ojl9enwSuuu5y
+pPzxlnkCBje1xGL3XHw4KGE+F6ytyZFu2/3649GqYW8lzuFIvcPEgzshEYa/3mil
+iQz1Xyb77X9gjHXZawnokOM+Ci6lLHwvS7K4/hOUVWT43HcFdKzcxEoiktcuSAm/
+klImsZodxwUy9V+E+PXzz0aDhyLOb1PfYmycPUY5WTUSl14+/iSB01/hCqQ0lua8
+SsxNQyTxe7CpBvhX+dyBFY8PNHIayW6CcKSENUmsgbxnRg2hXgAoQp0LN1YZAgMB
+AAGjcDBuMB0GA1UdDgQWBBQhSN1Ow2MLml8BFyHRvnqsomeSrzAfBgNVHSMEGDAW
+gBQhSN1Ow2MLml8BFyHRvnqsomeSrzAPBgNVHRMBAf8EBTADAQH/MBsGA1UdEQQU
+MBKCEHByb3ZpZGVyLmludmFsaWQwDQYJKoZIhvcNAQELBQADggEBAHyHZiTYdiZK
+4FholNf4qw+HnXB9gtAP99G8fa6Go5nYXAmfn+gvDTyPHvKhH8b/GdNG+ivHqPlX
+i8ilvMmPETic/k75Ub4uKiijLLe+bm8eOU/1qPhsnXgzRlGXPqcTSI1bvnqTFSoW
+TnFR4JSLQ51gQGf8SQhv13QTrsp1rB1g3Y/ILkzX5oO0AtdS4GUp8PSYCHl4/z5f
+uXdlwwa+MHGng49TJtMQsLnwDPHnrzvCdifWru1PZKFVfTGXd57oYKAtbAA9Bx50
+ggFE7DhPHh4yy4ZA1DjAy4+Ik5CbFknSS/sb/Gfy82UguZvmz78XpqN94B3m+1tC
+Jp8uW4O2VDU=
+-----END CERTIFICATE-----
+`;

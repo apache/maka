@@ -42,12 +42,24 @@ import type {
 import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 
 import {
-  buildRequestSandboxBoundaryTool,
+  REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
   SANDBOX_BOUNDARY_UNAVAILABLE,
+  buildRequestSandboxBoundaryTool,
+  requiredSandboxBoundaryToolNames,
 } from '../sandbox-boundary-tool.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
+
+describe('required sandbox boundary tool names', () => {
+  test('follows Host binding and stays empty when the widening tool is absent', () => {
+    assert.deepEqual([...requiredSandboxBoundaryToolNames([{ name: 'Read' }])], []);
+    assert.deepEqual(
+      [...requiredSandboxBoundaryToolNames([{ name: REQUEST_SANDBOX_BOUNDARY_TOOL_NAME }])],
+      [REQUEST_SANDBOX_BOUNDARY_TOOL_NAME],
+    );
+  });
+});
 
 describe('ToolRuntime session sandbox boundary', () => {
   test('inherits explicit denial without inheriting correction budgets or replacing live authority', async () => {

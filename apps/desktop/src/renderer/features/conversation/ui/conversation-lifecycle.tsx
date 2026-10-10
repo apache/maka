@@ -108,7 +108,7 @@ export function ConversationLifecycle(props: {
     services: services.observation, uiLocale, toastApi,
     activeId: requested?.localState !== 'pending' ? requested?.id : undefined,
     observationAuthorityRevision: authority.current.generation,
-    activeIdRef, transcriptRangeRef,
+    activeIdRef, transcriptRangeRef, observationRef: workspace.observationRef,
     handleEvent: handlers.handleEvent,
     publishTranscript: workspace.publishTranscript,
     commitTranscript: workspace.commitTranscript,

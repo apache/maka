@@ -165,6 +165,7 @@ export function createSessionNavigationRowActions(deps: {
     actionId: 'flag' | 'archive' | 'rename' | 'delete' | 'move',
     errorTitle: string,
     action: () => Promise<void>,
+    describeError?: (error: unknown) => string | undefined,
   ): Promise<void> {
     const sessionPrefix = `${sessionId}:`;
     if (Array.from(pendingSessionRowActionsRef.current).some((key) => key.startsWith(sessionPrefix))) return;
@@ -175,13 +176,30 @@ export function createSessionNavigationRowActions(deps: {
     } catch (error) {
       toastApi.error(
         errorTitle,
-        localizedShellErrorMessage(error, copy.actionFallback, uiLocale),
+        describeError?.(error) ?? localizedShellErrorMessage(error, copy.actionFallback, uiLocale),
         undefined,
         { sessionId },
       );
     } finally {
       pendingSessionRowActionsRef.current.delete(key);
     }
+  }
+
+  /**
+   * Archive refusals worth explaining arrive re-keyed by the main process as
+   * `session_archive_refused: <reason>` — Electron IPC strips the error class,
+   * so the guard's session_busy message cannot carry it any other way. Each
+   * token names the action that unblocks the archive; anything else keeps the
+   * generic failure line.
+   */
+  function archiveRefusalDescription(error: unknown): string | undefined {
+    const reason = (error instanceof Error ? error.message : String(error)).match(
+      /session_archive_refused: (\S+)/,
+    )?.[1];
+    if (reason === 'workhub_delegation') return copy.archiveRefusedDelegation;
+    if (reason === 'workhub_result') return copy.archiveRefusedResult;
+    if (reason === 'linked_child') return copy.archiveRefusedSubtasks;
+    return undefined;
   }
 
   async function flagSession(sessionId: string, flagged: boolean) {
@@ -192,13 +210,19 @@ export function createSessionNavigationRowActions(deps: {
   }
 
   async function archiveSession(sessionId: string) {
-    return runSessionRowAction(sessionId, 'archive', copy.archiveFailedTitle, async () => {
-      await withAutomaticQueryBlock(sessionId, async (familyIds) => {
-        await service.archive(sessionId, { revisionFamily: true });
-        for (const id of familyIds) clearSessionRendererState(id);
-        await refreshSessions();
-      });
-    });
+    return runSessionRowAction(
+      sessionId,
+      'archive',
+      copy.archiveFailedTitle,
+      async () => {
+        await withAutomaticQueryBlock(sessionId, async (familyIds) => {
+          await service.archive(sessionId, { revisionFamily: true });
+          for (const id of familyIds) clearSessionRendererState(id);
+          await refreshSessions();
+        });
+      },
+      archiveRefusalDescription,
+    );
   }
 
   async function unarchiveSession(sessionId: string) {
@@ -495,6 +519,12 @@ export function createSessionNavigationRowActions(deps: {
    * the delete sweep's shape, which would carry a `restored` field that can
    * never be anything but empty.
    *
+   * A selection can hold a parent picked before its own subtask; the Host
+   * refuses that first call while the subtask is still live. One retry after
+   * the sweep settles the order inside the selection without teaching the rail
+   * about subtask links — and a refusal that was never about ordering fails
+   * once more, exactly as before.
+   *
    * Like the sweep, it raises no toast per task: one action is one message, and
    * a run of them is what a sweep exists to avoid.
    */
@@ -503,18 +533,17 @@ export function createSessionNavigationRowActions(deps: {
       new Set(sessionIds.flatMap((sessionId) => revisionFamilySessionIds(sessionsRef.current, sessionId))),
     );
     return withAutomaticQueryBlockOn(familyIds, async () => {
-      const failed: string[] = [];
-      let firstFailure: SessionArchiveOutcome['firstFailure'];
       let archived = 0;
-      for (const sessionId of sessionIds) {
+      const failures = new Map<string, { error?: unknown }>();
+      const attempt = async (sessionId: string): Promise<void> => {
         const key = `${sessionId}:archive`;
         if (
           Array.from(pendingSessionRowActionsRef.current).some((pending) =>
             pending.startsWith(`${sessionId}:`),
           )
         ) {
-          failed.push(sessionId);
-          continue;
+          failures.set(sessionId, {});
+          return;
         }
         pendingSessionRowActionsRef.current.add(key);
         try {
@@ -522,17 +551,27 @@ export function createSessionNavigationRowActions(deps: {
           await service.archive(sessionId, { revisionFamily: true });
           for (const id of rowFamilyIds) clearSessionRendererState(id);
           archived += 1;
+          failures.delete(sessionId);
         } catch (error) {
-          failed.push(sessionId);
-          firstFailure ??= { error, sessionId };
+          failures.set(sessionId, { error });
         } finally {
           pendingSessionRowActionsRef.current.delete(key);
         }
-      }
+      };
+      for (const sessionId of sessionIds) await attempt(sessionId);
+      for (const sessionId of [...failures.keys()]) await attempt(sessionId);
+      const failed = [...failures.keys()];
+      const firstFailedId = failed.find((sessionId) => failures.get(sessionId)?.error !== undefined);
       // Once, after the whole sweep. Refreshing per task would re-render the rail
       // under the user's cursor for every id in the selection.
       await refreshSessions();
-      return { archived, failed, firstFailure };
+      return {
+        archived,
+        failed,
+        firstFailure: firstFailedId
+          ? { error: failures.get(firstFailedId)!.error, sessionId: firstFailedId }
+          : undefined,
+      };
     });
   }
 
@@ -561,7 +600,8 @@ export function createSessionNavigationRowActions(deps: {
     toastApi.error(
       copy.bulkArchiveFailedTitle,
       outcome.firstFailure
-        ? localizedShellErrorMessage(outcome.firstFailure.error, copy.actionFallback, uiLocale)
+        ? archiveRefusalDescription(outcome.firstFailure.error) ??
+            localizedShellErrorMessage(outcome.firstFailure.error, copy.actionFallback, uiLocale)
         : copy.bulkFailedBody(outcome.failed.length),
       undefined,
       outcome.firstFailure ? { sessionId: outcome.firstFailure.sessionId } : undefined,

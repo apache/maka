@@ -64,7 +64,7 @@ Agent harness 的本职就是把任务做完。衡量它的标准只有一条：
 
 ### 环境要求
 
-- Node.js 22.19 或更高（CI 使用 Node.js 24）；
+- Node.js 22.19 或更高的 22.x 版本，或 Node.js 24 及以上（CI 使用 Node.js 24；不支持 Node.js 23）；
 - npm（仓库 lockfile 和 scripts 以 npm 为准，`packageManager` 当前为 npm 11）；
 - Git；
 - `ripgrep`，供 Runtime 的 `Grep` 工具使用。
@@ -170,7 +170,7 @@ packages/eval/         Experiment cell、attempt、result 与 executor/subject a
 packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
 packages/cli/          TUI 和非交互 CLI
 packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
-native/                Rust：Runtime Host 的 direct-peer addon 与 gitoxide helper
+native/                Rust：Runtime Host 的 direct-peer addon 与 Windows task launcher，以及 gitoxide helper
 website/               maka.apache.org 的 Astro 源码
 
 docs/                  架构、产品、安全、隐私和测试契约

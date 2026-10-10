@@ -65,8 +65,13 @@ export type GitReviewReadResult =
       ok: false;
       /** Available even when computing the selected branch diff fails. */
       branches?: GitReviewBranchContext;
+      /** The Session's recorded workspace, so guidance names its directory. */
+      workspace?: string;
+      /** Underlying read detail for `git_failed`; absent for capability states. */
+      detail?: string;
       reason:
         | 'workspace_unavailable'
+        | 'remote_workspace'
         | 'not_git_repository'
         | 'unborn_repository'
         | 'invalid_base_branch'

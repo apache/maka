@@ -1,0 +1,9 @@
+{
+  "epoch": 201,
+  "files": [
+    "packages/runtime-host/src/protocol/message.ts",
+    "packages/runtime-host/src/protocol/session-continuity.ts",
+    "packages/runtime-host/src/protocol/turn.ts"
+  ],
+  "reason": "Consolidates three byte-identical private requireEncodedByteLimit copies onto the shared codec implementation. Accept/reject behavior, the error type and the invalid_frame code are unchanged; the only observable difference is the over-limit error message wording (Invalid <label> becomes <label> exceeds byte limit), which no test or consumer pins. No wire shape, field, key, error code, or accepted value changes."
+}

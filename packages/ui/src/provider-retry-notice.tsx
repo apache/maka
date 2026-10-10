@@ -29,7 +29,6 @@ export const ProviderRetryNotice = forwardRef<HTMLDivElement, {
     <Banner
       ref={ref}
       status="warning"
-      container="section"
       role="status"
       className="maka-turn-provider-retry"
       {...(props.accessibleLabel ? { 'aria-label': props.accessibleLabel } : {})}
