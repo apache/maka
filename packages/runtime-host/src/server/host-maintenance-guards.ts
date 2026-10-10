@@ -17,7 +17,6 @@
  * under the License.
  */
 
-
 export type HostClockDecision =
   | { readonly kind: 'ok'; readonly previous: number; readonly observedThisRun: boolean }
   | { readonly kind: 'pause'; readonly previous: number; readonly observedThisRun: boolean }
