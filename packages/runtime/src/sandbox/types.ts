@@ -55,6 +55,12 @@ export interface SandboxPathContext {
   }[];
   /** Profile roots observed as unavailable while preparing this invocation. */
   unavailableProfilePaths?: readonly string[];
+  /**
+   * Windows-only recursive read root whose operation contract does not
+   * follow reparse points. The broker may split this root into narrower
+   * physical ACL grants while omitting nested reparse entries.
+   */
+  windowsNonFollowingReadRoot?: string;
   /** Profile roots pinned by open host descriptors until sandbox launch. */
   pinnedProfilePaths?: readonly {
     path: string;

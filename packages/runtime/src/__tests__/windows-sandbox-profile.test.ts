@@ -121,6 +121,50 @@ test('compiles an exact file grant as a non-recursive broker root', () => {
   assert.deepEqual(policy.exactWriteRoots, []);
 });
 
+test('admits one recursive read root for non-following broker decomposition', () => {
+  const recursiveRead: PermissionProfileManaged = {
+    ...createReadOnlyPermissionProfile(),
+    fileSystem: {
+      kind: 'restricted',
+      entries: [{ kind: 'path', access: 'read', path: String.raw`C:\work\repo`, match: 'subtree' }],
+    },
+  };
+  const input = command(recursiveRead);
+  input.pathContext.windowsNonFollowingReadRoot = String.raw`C:\work\repo`;
+
+  const policy = compileWindowsSandboxPolicy(input);
+
+  assert.equal(policy.nonFollowingReadRoot, String.raw`C:\work\repo`);
+});
+
+test('rejects invalid non-following read-root combinations', () => {
+  const recursiveRead: PermissionProfileManaged = {
+    ...createReadOnlyPermissionProfile(),
+    fileSystem: {
+      kind: 'restricted',
+      entries: [{ kind: 'path', access: 'read', path: String.raw`C:\work\repo`, match: 'subtree' }],
+    },
+  };
+  const outside = command(recursiveRead);
+  outside.pathContext.windowsNonFollowingReadRoot = String.raw`C:\outside`;
+  assert.throws(() => compileWindowsSandboxPolicy(outside), /not a declared read root/);
+
+  const exact: PermissionProfileManaged = {
+    ...recursiveRead,
+    fileSystem: {
+      kind: 'restricted',
+      entries: [{ kind: 'path', access: 'read', path: String.raw`C:\work\repo`, match: 'exact' }],
+    },
+  };
+  const exactInput = command(exact);
+  exactInput.pathContext.windowsNonFollowingReadRoot = String.raw`C:\work\repo`;
+  assert.throws(() => compileWindowsSandboxPolicy(exactInput), /must be recursive/);
+
+  const writable = command(createWorkspaceWritePermissionProfile());
+  writable.pathContext.windowsNonFollowingReadRoot = String.raw`C:\work\repo`;
+  assert.throws(() => compileWindowsSandboxPolicy(writable), /read-only sandbox profile/);
+});
+
 test('rejects noncanonical paths and case-insensitive duplicate environment names', () => {
   const invalidPath = command(createWorkspaceWritePermissionProfile());
   invalidPath.pathContext = { workspaceRoots: ['C:/work/repo'] };
