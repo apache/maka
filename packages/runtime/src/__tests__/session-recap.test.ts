@@ -23,6 +23,28 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { buildSessionRecapMessages, SESSION_RECAP_INSTRUCTION } from '../session-recap.js';
 
+test('session recap drops a repaired Assistant prefix before its provider request', () => {
+  const repairedAssistant = {
+    ...textEvent('repaired-assistant', 'turn-0', 'model', 'Recovered opening answer.'),
+    refs: { storedMessageId: 'stored-assistant' },
+  };
+  const messages = buildSessionRecapMessages({
+    events: [
+      repairedAssistant,
+      textEvent('first-user', 'turn-1', 'user', 'Continue from this question.'),
+    ],
+    connection: connection(),
+    modelId: 'gpt-4',
+  });
+
+  assert.deepEqual(
+    messages.map((message) => message.role),
+    ['user', 'user'],
+  );
+  assert.doesNotMatch(JSON.stringify(messages), /Recovered opening answer/);
+  assert.match(JSON.stringify(messages), /Continue from this question/);
+});
+
 test('session recap bounds its request to the newest complete turns', () => {
   const events: RuntimeEvent[] = [];
   for (let index = 0; index < 20; index += 1) {
@@ -117,7 +139,7 @@ test('session recap budgets only the evidence it sends', () => {
     connection: {
       ...connection(),
       defaultModel: 'declared-16k-model',
-      relayModelProfiles: { 'declared-16k-model': { contextWindow: 16_384 } },
+      models: [{ id: 'declared-16k-model', contextWindow: 16_384 }],
     },
     modelId: 'declared-16k-model',
   });
@@ -125,6 +147,29 @@ test('session recap budgets only the evidence it sends', () => {
 
   assert.equal(serialized.includes(earlierSentinel), true);
   assert.equal(serialized.includes(oversizedArgs), false);
+});
+
+test('session recap carries the quoted excerpt of a structured-only message', () => {
+  const quotedText = 'QUOTED-EXCERPT-SENTINEL the deploy failed at step three';
+  const messages = buildSessionRecapMessages({
+    events: [
+      {
+        ...textEvent('quoted-user', 'turn-1', 'user', ''),
+        content: {
+          kind: 'text',
+          text: '',
+          quotes: [{ text: quotedText, sourceTurnId: 'turn-0' }],
+        },
+      },
+    ],
+    connection: connection(),
+    modelId: 'gpt-4',
+  });
+  const serialized = JSON.stringify(messages);
+
+  assert.equal(serialized.includes(quotedText), true);
+  assert.equal(serialized.includes('<quoted_excerpt>'), true);
+  assert.equal(serialized.includes('[message carried'), false);
 });
 
 test('session recap excludes model-hidden tool outcomes', () => {
@@ -144,7 +189,7 @@ test('session recap excludes model-hidden tool outcomes', () => {
     connection: {
       ...connection(),
       defaultModel: 'declared-4k-model',
-      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+      models: [{ id: 'declared-4k-model', contextWindow: 4_096 }],
     },
     modelId: 'declared-4k-model',
   });
@@ -171,7 +216,7 @@ test('session recap treats a zero evidence budget as no evidence, not unbounded 
     connection: {
       ...connection(),
       defaultModel: 'declared-4k-model',
-      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+      models: [{ id: 'declared-4k-model', contextWindow: 4_096 }],
     },
     modelId: 'declared-4k-model',
   });

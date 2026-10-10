@@ -23,7 +23,9 @@ import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { build } from 'esbuild';
-import type { MakaBridge } from '../../preload/bridge-contract.js';
+import { deferred } from '@maka/core/test-only/async-primitives';
+import type { DesktopSessionSummary, MakaBridge } from '../../preload/bridge-contract.js';
+import { normalizeSessionSummaryForDisplay } from '../../renderer/application/contracts/session-status-presentation.js';
 
 test('onboarding and workspace search never fan out Owner IPC to a ready Guest', async () => {
   const owner = {
@@ -35,15 +37,23 @@ test('onboarding and workspace search never fan out Owner IPC to a ready Guest',
     profileName: 'Shared', profileKind: 'remote', profileAccess: 'session_guest', readiness: 'ready',
   };
   const calls: { channel: string; hostId?: string }[] = [];
+  const pendingSearch = deferred<never>();
+  const searchStarted = deferred<void>();
+  let searchRequestId: unknown;
+  let cancelRequestId: unknown;
   const ipcRenderer = {
     on() {}, off() {}, send() {},
-    async invoke(channel: string, scope?: { hostId?: string }) {
+    async invoke(channel: string, scope?: { hostId?: string }, payload?: unknown, requestId?: unknown) {
       calls.push({ channel, hostId: scope?.hostId });
       // A missing Guest handler must not hold up either aggregate.
       if (scope?.hostId === guest.hostId) throw new Error('Guest has no Owner handler');
       switch (channel) {
-        case 'runtime-host:activeIdentity': return owner;
-        case 'runtime-host:identities': return [owner, guest];
+        case 'runtime-host:identities': return [
+          { ...owner, epoch: owner.targetEpoch, isDefault: true },
+          { ...guest, epoch: guest.targetEpoch, isDefault: false },
+        ];
+        case 'runtime-host:awaitReady': return { ready: true };
+        case 'session-local:catalog': return [{ scope: owner, sessions: [], authoritative: true }];
         case 'onboarding:getSnapshot': return {
           state: { kind: 'ready_empty' }, milestones: [], sessions: [], connections: [],
           defaultSlug: null, chatModelChoices: [], sessionSendOutcomes: {},
@@ -55,8 +65,14 @@ test('onboarding and workspace search never fan out Owner IPC to a ready Guest',
             createdAt: 1, activityAt: 1, name: 'Shared Session', status: 'active',
           },
         }];
-        case 'sessions:list':
-        case 'search:thread': return [];
+        case 'sessions:list': return [];
+        case 'search:recall':
+          searchRequestId = requestId;
+          searchStarted.resolve();
+          return pendingSearch.promise;
+        case 'search:recall:cancel':
+          cancelRequestId = payload;
+          return;
         default: throw new Error('Unexpected channel: ' + channel);
       }
     },
@@ -82,9 +98,82 @@ test('onboarding and workspace search never fan out Owner IPC to a ready Guest',
   assert.equal(snapshot.sessions.length, 1);
   assert.equal(snapshot.sessions[0]!.shared, true);
   assert.equal(snapshot.sessions[0]!.name, 'Shared Session');
-  await bridge.search.thread({ query: 'hello', limit: 10, source: 'thread' });
+  const search = bridge.search.recall({ terms: ['hello'], limit: 10 }, 'search-owner');
+  await searchStarted.promise;
+  await bridge.search.cancelRecall('search-owner');
+  assert.equal((await search as { reason: string }).reason, 'aborted');
+  assert.equal(searchRequestId, 'search-owner');
+  assert.equal(cancelRequestId, searchRequestId);
   assert.equal(calls.some(call => call.hostId === guest.hostId), false);
-  for (const channel of ['onboarding:getSnapshot', 'search:thread']) {
+  for (const channel of ['onboarding:getSnapshot', 'search:recall', 'search:recall:cancel']) {
     assert.equal(calls.filter(call => call.channel === channel && call.hostId === owner.hostId).length, 1);
   }
+});
+
+test('the actual Guest preload preserves cached history without projecting its old running state', async () => {
+  const owner = { hostId: 'owner', targetEpoch: 'epoch', profileId: 'local', profileName: 'Local',
+    profileKind: 'local', profileAccess: 'owner', readiness: 'ready' };
+  let readiness = 'ready';
+  let sessionState: 'live' | 'cached' | undefined = 'live';
+  const session = {
+    kind: 'shared_session', id: 'shared', revision: 1, createdAt: 1, activityAt: 1,
+    name: 'Shared graph', status: 'running', backgroundActivity: 'running',
+    liveRunState: { schemaVersion: 1, runningTurnIds: ['own-turn'] },
+  };
+  const ipcRenderer = {
+    on() {}, off() {}, send() {},
+    async invoke(channel: string) {
+      switch (channel) {
+        case 'runtime-host:identities': return [{ ...owner, epoch: owner.targetEpoch, isDefault: true }];
+        case 'session-local:catalog': return [{ scope: owner, sessions: [], authoritative: true }];
+        case 'session-collaboration:mount:list': return [{
+          mountId: 'guest', name: 'Guest', hostId: 'guest-host', readiness, sessionState, session,
+        }];
+        default: throw new Error(`Unexpected channel: ${channel}`);
+      }
+    },
+  };
+  let bridge: MakaBridge | undefined;
+  const bundle = await build({
+    entryPoints: [fileURLToPath(new URL('../../../src/preload/preload.ts', import.meta.url))],
+    bundle: true, write: false, platform: 'node', format: 'cjs', external: ['electron'],
+  });
+  const require = createRequire(import.meta.url);
+  runInNewContext(bundle.outputFiles[0]!.text, {
+    require: (id: string) => id === 'electron' ? {
+      ipcRenderer,
+      contextBridge: { exposeInMainWorld: (name: string, value: MakaBridge) => {
+        if (name === 'maka') bridge = value;
+      } },
+    } : require(id),
+    process: { env: {} }, Buffer, console, setTimeout, clearTimeout, TextEncoder, TextDecoder,
+    crypto: globalThis.crypto,
+  });
+  assert.ok(bridge);
+  const live = (await bridge.sessions.list())[0]!;
+  assert.equal(live.backgroundActivity, 'running');
+  assert.equal(live.runningTurnIds?.[0], 'own-turn');
+  assert.equal(live.localState, undefined);
+  for (const state of [
+    { readiness: 'reconnecting', sessionState: 'live' as const },
+    { readiness: 'ready', sessionState: 'cached' as const },
+    { readiness: 'unavailable', sessionState: 'cached' as const },
+    { readiness: 'ready', sessionState: undefined },
+  ]) {
+    readiness = state.readiness;
+    sessionState = state.sessionState;
+    const cached: DesktopSessionSummary = normalizeSessionSummaryForDisplay((await bridge.sessions.list())[0]!);
+    assert.equal(cached.name, 'Shared graph');
+    assert.equal(cached.localState, 'cached');
+    assert.equal(cached.backgroundActivity, undefined);
+    assert.equal(cached.runningTurnIds, undefined);
+    assert.equal(cached.status, 'active', 'cached persisted running cannot supply the fallback pulse');
+  }
+  readiness = 'ready';
+  sessionState = 'live';
+  session.backgroundActivity = 'idle';
+  session.liveRunState.runningTurnIds = [];
+  const settled = (await bridge.sessions.list())[0]!;
+  assert.equal(settled.localState, undefined);
+  assert.equal(settled.backgroundActivity, 'idle', 'only a live snapshot can assert completion');
 });

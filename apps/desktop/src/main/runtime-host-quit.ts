@@ -19,24 +19,21 @@
 
 import type { RuntimeHostDesktopManager } from './runtime-host-desktop-manager.js';
 
-type ActivityProbeOwner = Pick<RuntimeHostDesktopManager, 'probeOwnedLocalHostActivity'>;
+type QuitOwner = Pick<RuntimeHostDesktopManager, 'prepareOwnedLocalHostQuit'>;
 
 export interface RuntimeHostQuitPrompts {
   confirmInterrupt(): Promise<boolean>;
 }
 
-/**
- * Quit never drives retirement: the launch-owner guard closes an owned
- * ephemeral Host once the Desktop process exits. The probe only feeds the
- * interruption-consent dialog, and a Host that cannot answer it is still
- * closed by the guard — quit is never held hostage to the Host.
- */
+/** Stop Host admission before Desktop cleanup can race a new background job. */
 export async function prepareRuntimeHostQuit(
-  owner: ActivityProbeOwner | undefined,
+  owner: QuitOwner | undefined,
   prompts: RuntimeHostQuitPrompts,
 ): Promise<'ready' | 'cancelled'> {
   if (!owner) return 'ready';
-  const probe = await owner.probeOwnedLocalHostActivity();
-  if (probe.kind !== 'active_tasks') return 'ready';
-  return (await prompts.confirmInterrupt()) ? 'ready' : 'cancelled';
+  const result = await owner.prepareOwnedLocalHostQuit('refuse_active_work');
+  if (result === 'ready') return 'ready';
+  if (!await prompts.confirmInterrupt()) return 'cancelled';
+  await owner.prepareOwnedLocalHostQuit('interrupt_active_work');
+  return 'ready';
 }

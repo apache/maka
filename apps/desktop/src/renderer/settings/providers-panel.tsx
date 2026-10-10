@@ -22,18 +22,13 @@ import {
   Badge,
   Banner,
   Button,
-  Divider,
   EmptyState,
-  Heading,
   HStack,
-  List,
-  ListItem,
   Skeleton,
   StatusDot,
-  Text,
   VStack,
 } from '@astryxdesign/core';
-import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
+import { ICON_SIZE, Cpu } from '@maka/ui/icons';
 import {
   connectionEnabledModelIds,
   type IdentifiedLlmConnection,
@@ -42,7 +37,6 @@ import {
 } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { dotForStatus, useMountedRef, useUiLocale } from '@maka/ui';
-import { settingsActionErrorMessage } from './settings-error-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import {
   CATALOG_INITIAL_FILTER,
@@ -60,6 +54,7 @@ import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
 import {
   getProviderSettingsCopy,
+  ConnectionDefaultAction,
   providerPanelActionErrorMessage,
   ConnectionSaveUncertaintyObserver,
   type ApiKeyOnboardingBridge,
@@ -68,8 +63,10 @@ import {
 } from '../features/connection-settings';
 import {
   RuntimeHostSettingsGenerationBoundary,
+  SettingsEntryRow,
+  SettingsSection,
   useRuntimeHostSettingsErrorReporter,
-} from './runtime-host-settings-target.js';
+} from '../application/contracts/settings-presentation/index.js';
 
 export type { ConnectionsBridge } from '../features/connection-settings';
 
@@ -354,7 +351,13 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
         // the standard SPA answer to "where does focus go when the page
         // swaps", and it draws no ring.
         (<VStack gap={5} tabIndex={-1} role="region" aria-labelledby={detailTitleId} className="settingsRouteLevel" data-maka-contract="connection-detail">
-          <SettingsRouteHeader
+          <ConnectionDefaultAction
+            key={selected.connectionId}
+            connection={selected}
+            bridge={bridge}
+            onChanged={async () => { await reload(); }}
+          >
+          {(defaultAction) => <SettingsRouteHeader
             onBack={goToList}
             backLabel={copy.backToList}
             logo={<ProviderLogo type={selected.providerType} compact />}
@@ -368,30 +371,17 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
             badge={isRetiredProvider(selected.providerType)
               ? null
               : selected.slug === defaultSlug
-              ? <Badge variant="neutral" label={copy.default} />
-              : (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  label={copy.setDefault}
-                  tooltip={copy.setDefaultTitle}
-                  clickAction={async () => {
-                    try {
-                      await bridge.setDefault({ connectionId: selected.connectionId, slug: selected.slug });
-                      await reload();
-                    } catch (error) {
-                      // The state is unchanged on failure, so the Badge stays
-                      // where it was and the button remains the way to retry.
-                      reportHostError(
-                        copy.setDefaultFailed,
-                        settingsActionErrorMessage(error, locale),
-                      );
-                    }
-                  }}
+              ? (
+                <Badge
+                  className="settingsActionSlotBadge"
+                  variant="neutral"
+                  label={copy.default}
                 />
-              )}
+              )
+              : defaultAction}
             subtitle={connectionSubtitle(selected, locale)}
-          />
+          />}
+          </ConnectionDefaultAction>
           <ConnectionDetail
             key={selected.connectionId ?? selected.slug}
             bridge={bridge}
@@ -542,30 +532,20 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
               endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
             />
           ) : null}
-          {/* The list is a labeled group like every other settings page: what
-              it holds, why it matters, and the one group-level action. This is
-              SettingsSection's header written out: the architecture ledger
-              freezes this file's dependency list, so the section kit cannot be
-              imported here until the panel moves to its feature owner. */}
-          <section className="settingsSection">
-            <HStack gap={3} align="start" justify="between" wrap="wrap">
-              <VStack gap={0.5}>
-                <Heading level={3}>{copy.connections}</Heading>
-                <Text type="supporting" size="sm" color="secondary">{copy.connectionsHelp}</Text>
-              </VStack>
-              <div>
-                <Button
-                  ref={addButtonRef}
-                  variant="primary"
-                  label={copy.addConnection}
-                  onClick={openCatalog}
-                  isDisabled={addBlocked}
-                  data-maka-contract="add-connection"
-                />
-              </div>
-            </HStack>
-            <Divider />
-            <div className="settingsSectionBody">
+          <SettingsSection
+            title={copy.connections}
+            description={copy.connectionsHelp}
+            action={(
+              <Button
+                ref={addButtonRef}
+                variant="primary"
+                label={copy.addConnection}
+                onClick={openCatalog}
+                isDisabled={addBlocked}
+                data-maka-contract="add-connection"
+              />
+            )}
+          >
             {connections.length === 0 && !loadError ? (
               <EmptyState
                 isCompact
@@ -575,45 +555,39 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
                 actions={<Button variant="secondary" size="sm" label={copy.browseAll} onClick={openCatalog} isDisabled={addBlocked} />}
               />
             ) : (
-              <List hasDividers>
+              <>
                 {connections.map((connection) => {
                   const status = connectionChipStatus(connection, locale);
                   const isDefault = connection.slug === defaultSlug;
                   return (
-                    <ListItem
+                    <SettingsEntryRow
                       key={connection.connectionId ?? connection.slug}
                       className="connectionRow"
                       data-connection-id={connection.connectionId}
                       data-connection-slug={connection.slug}
                       data-disabled={connection.enabled ? undefined : 'true'}
-                      startContent={<ProviderLogo type={connection.providerType} compact />}
-                      label={(
-                        <HStack gap={2} vAlign="center">
-                          {/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/}
-                          <span aria-label={chipAriaLabel(connection, isDefault)}>{connectionDisplayName(connection, connections)}</span>
+                      icon={<ProviderLogo type={connection.providerType} compact />}
+                      label={connectionDisplayName(connection, connections)}
+                      labelAriaLabel={chipAriaLabel(connection, isDefault)}
+                      status={(isDefault || status) ? (
+                        <>
                           {isDefault && <Badge variant="neutral" label={copy.default} />}
-                        </HStack>
-                      )}
-                      description={connectionSubtitle(connection, locale)}
-                      endContent={(
-                        <HStack gap={2} vAlign="center">
                           {status && (
                             <span className="settingsStatus">
                               <StatusDot variant={dotForStatus(status.tone)} label={status.label} />
                               <span>{status.label}</span>
                             </span>
                           )}
-                          <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
-                        </HStack>
-                      )}
+                        </>
+                      ) : undefined}
+                      description={connectionSubtitle(connection, locale)}
                       onClick={() => openDetail(connection)}
                     />
                   );
                 })}
-              </List>
+              </>
             )}
-            </div>
-          </section>
+          </SettingsSection>
           {connections.length === 0 && !loadError && (
             /* First run: the providers most people connect, one click from
                their form. The full catalog is one more click away above. */

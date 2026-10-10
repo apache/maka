@@ -278,6 +278,18 @@ test('entitlement refuses an account the provider proved ineligible', async () =
   // provider refusing this account rather than failing to answer.
   const proofs: ReadonlyArray<() => Response> = [
     () => copilotModelsResponse([]),
+    () =>
+      Response.json({
+        data: [
+          {
+            id: 'policy-blocked',
+            model_picker_enabled: true,
+            supported_endpoints: ['/responses'],
+            policy: { state: 'unconfigured' },
+            capabilities: { supports: { tool_calls: true } },
+          },
+        ],
+      }),
     () => new Response(null, { status: 401 }),
     () => new Response(null, { status: 403 }),
   ];

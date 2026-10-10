@@ -31,7 +31,6 @@ describe('renderer session read state', () => {
     let listCalls = 0;
     let currentSessions: SessionSummary[] = [];
     const refresher = createSessionListRefresher({
-      captureRequestContext: () => undefined,
       listSessions: async () => {
         const result = listResults[listCalls];
         listCalls += 1;
@@ -66,7 +65,6 @@ describe('renderer session read state', () => {
     const errors: unknown[] = [];
     let currentSessions = original;
     const refresher = createSessionListRefresher({
-      captureRequestContext: () => undefined,
       listSessions: async () => {
         throw new Error('list failed');
       },
@@ -86,35 +84,12 @@ describe('renderer session read state', () => {
     assert.equal(errors.length, 1);
   });
 
-  it('commits the renderer context captured before the accepted authority read', async () => {
-    const listed = deferred<SessionSummary[]>();
-    let requestContext = 'before';
-    let committedContext: string | undefined;
-    const refresher = createSessionListRefresher({
-      captureRequestContext: () => requestContext,
-      listSessions: () => listed.promise,
-      currentSessions: () => [],
-      commitSessions: (_sessions, context) => {
-        committedContext = context;
-      },
-      onError: () => {},
-    });
-
-    const refresh = refresher.refresh();
-    requestContext = 'after';
-    listed.resolve([]);
-    await refresh;
-
-    assert.equal(committedContext, 'before');
-  });
-
   it('does not lose a refresh admitted while the previous task is settling', async () => {
     const firstList = deferred<SessionSummary[]>();
     let listCalls = 0;
     let currentSessions: SessionSummary[] = [];
     const current = session({ id: 'current', lastMessageAt: 2 });
     const refresher = createSessionListRefresher({
-      captureRequestContext: () => undefined,
       listSessions: () => {
         listCalls += 1;
         return listCalls === 1 ? firstList.promise : Promise.resolve([current]);

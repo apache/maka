@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelCallAttemptStatus, ModelCallCoverage } from './model-call-attempt.js';
+import type { ModelCallCoverage } from './model-call-attempt.js';
 import type { TimeRange, UsageBucket, UsageLogRow, UsageSummaryV2 } from './usage-stats/types.js';
 
 /**
@@ -63,20 +63,6 @@ export function resolveUsageRange(range: TimeRange, now: number): { from: number
     '30d': 30 * DAY_MS,
   };
   return { from: now - spans[range], to: now };
-}
-
-/**
- * Maps a physical attempt outcome onto the status vocabulary the Usage surface
- * filters by. `interrupted` joins `aborted`: both mean the call stopped short
- * without the provider reporting a failure, and collapsing it into `error`
- * would inflate the error rate with user cancellations.
- */
-export function usageStatusForAttempt(
-  status: ModelCallAttemptStatus,
-): 'success' | 'error' | 'aborted' {
-  if (status === 'completed') return 'success';
-  if (status === 'failed') return 'error';
-  return 'aborted';
 }
 
 export function clampCacheReadTokens(inputTokens: number, cacheReadTokens: number): number {

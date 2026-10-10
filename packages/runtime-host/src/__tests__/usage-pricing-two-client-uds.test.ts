@@ -17,6 +17,15 @@
  * under the License.
  */
 
+import { assertMaximalJsonPages } from './fixtures/json-pages.js';
+import {
+  USAGE_PAGE_MAX_BYTES,
+  USAGE_PAGE_MAX_ITEMS,
+  PRICING_PAGE_MAX_BYTES,
+  PRICING_PAGE_MAX_ITEMS,
+  type UsageQueryResult,
+} from '../protocol/index.js';
+
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
@@ -900,6 +909,7 @@ async function readPricing(client: RuntimeHostConnection): Promise<{
     await client.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
   );
   const entries = [...first.entries];
+  const pages = [first];
   let nextOffset = first.nextOffset;
   let pageCount = 1;
   while (nextOffset !== null) {
@@ -912,10 +922,22 @@ async function readPricing(client: RuntimeHostConnection): Promise<{
     );
     assert.equal(page.revision, first.revision);
     assert.equal(page.offset, nextOffset);
+    assert.ok(page.entries.length > 0);
     entries.push(...page.entries);
+    pages.push(page);
     nextOffset = page.nextOffset;
     pageCount += 1;
   }
+  assertMaximalJsonPages(pages, entries, {
+    maxBytes: PRICING_PAGE_MAX_BYTES,
+    maxItems: PRICING_PAGE_MAX_ITEMS,
+    items: (page) => page.entries,
+    candidate: (page, items, end) => ({
+      ...page,
+      entries: items,
+      nextOffset: end < entries.length ? end : null,
+    }),
+  });
   return { revision: first.revision, entries, pageCount };
 }
 
@@ -1053,4 +1075,123 @@ async function withUsageAuthority(
     });
     await rm(base, { recursive: true, force: true });
   }
+}
+
+test('Usage bucket pages account for provenance and preserve every group across byte-limited pages', async () => {
+  await withUsageAuthority('bucket-pages', async ({ stores }) => {
+    const providers = Array.from(
+      { length: 60 },
+      (_, index) => `provider-${String(index).padStart(3, '0')}-${'文'.repeat(270)}`,
+    );
+    for (const [index, provider] of providers.entries()) {
+      await stores.telemetry.recordLlmCall(
+        usageRecord(`usage-${index}`, index, provider, 'test-model'),
+      );
+    }
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+    );
+    const pages: Extract<UsageQueryResult, { kind: 'buckets' }>[] = [];
+    let offset = 0;
+    do {
+      const outcome = await coordinator.handlers['usage.query'](
+        {
+          kind: 'buckets',
+          query: { range: 'all' },
+          groupBy: 'provider',
+          offset,
+          limit: USAGE_PAGE_MAX_ITEMS,
+        },
+        CONNECTION_CONTEXT,
+      );
+      assert.ok(outcome.ok && outcome.result.kind === 'buckets');
+      const page = outcome.result;
+      assert.equal(page.offset, offset);
+      assert.equal(page.total, providers.length);
+      assert.ok(page.buckets.length > 0);
+      pages.push(page);
+      offset += page.buckets.length;
+      assert.equal(page.nextOffset, offset < providers.length ? offset : null);
+      if (page.nextOffset === null) break;
+    } while (offset < providers.length);
+    const items = pages.flatMap((page) => page.buckets);
+    assert.deepEqual(items.map((item) => item.key).sort(), [...providers].sort());
+    assert.ok(pages.length > 1);
+    assertMaximalJsonPages(pages, items, {
+      maxBytes: USAGE_PAGE_MAX_BYTES,
+      maxItems: USAGE_PAGE_MAX_ITEMS,
+      items: (page) => page.buckets,
+      candidate: (page, buckets, end) => ({
+        ...page,
+        buckets,
+        nextOffset: end < items.length ? end : null,
+      }),
+    });
+  });
+});
+
+for (const source of ['llm', 'tool'] as const) {
+  test(`${source} Usage log pages preserve byte-limited continuations with the source-specific header`, async () => {
+    await withUsageAuthority(`${source}-log-pages`, async ({ stores }) => {
+      const ids = Array.from(
+        { length: 60 },
+        (_, index) => `${source}-${String(index).padStart(3, '0')}`,
+      );
+      for (const [index, id] of ids.entries()) {
+        if (source === 'llm') {
+          await stores.telemetry.recordLlmCall(
+            usageRecord(id, index, '文'.repeat(270), '模'.repeat(270)),
+          );
+        } else {
+          await stores.telemetry.recordToolInvocation({
+            ...toolRecord(id, index),
+            argsSummary: '文"\\🙂'.repeat(110),
+            toolName: '具'.repeat(270),
+          });
+        }
+      }
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+      );
+      const pages: Extract<UsageQueryResult, { kind: 'logs' }>[] = [];
+      let offset = 0;
+      do {
+        const outcome = await coordinator.handlers['usage.query'](
+          { kind: 'logs', source, query: { range: 'all' }, offset, limit: USAGE_PAGE_MAX_ITEMS },
+          CONNECTION_CONTEXT,
+        );
+        assert.ok(outcome.ok && outcome.result.kind === 'logs');
+        const page = outcome.result;
+        assert.equal(page.source, source);
+        assert.equal('provenance' in page, source === 'llm');
+        assert.equal(page.offset, offset);
+        assert.equal(page.total, ids.length);
+        assert.ok(page.rows.length > 0);
+        pages.push(page);
+        offset += page.rows.length;
+        assert.equal(page.nextOffset, offset < ids.length ? offset : null);
+        if (page.nextOffset === null) break;
+      } while (offset < ids.length);
+      const items = pages.flatMap((page) => [...page.rows]);
+      assert.deepEqual(
+        items.map((item) => item.id),
+        [...ids].reverse(),
+      );
+      assert.ok(pages.length > 1);
+      assertMaximalJsonPages(pages, items, {
+        maxBytes: USAGE_PAGE_MAX_BYTES,
+        maxItems: USAGE_PAGE_MAX_ITEMS,
+        items: (page) => page.rows,
+        candidate: (page, rows, end) => ({
+          ...page,
+          rows,
+          nextOffset: end < items.length ? end : null,
+        }),
+      });
+    });
+  });
 }

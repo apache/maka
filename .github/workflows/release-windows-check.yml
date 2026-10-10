@@ -70,9 +70,14 @@ on:
       # these sources, so changes here must reach the packaged lifecycle gate.
       - 'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs'
       - 'packages/runtime/scripts/build-filesystem-worker.mjs'
+      - 'packages/runtime/src/format-json.ts'
       - 'packages/runtime/src/filesystem-worker/**'
       - 'packages/runtime/src/sandbox/**'
       - 'packages/runtime/src/path-containment.ts'
+      - 'packages/runtime/src/ripgrep-guidance.ts'
+      - 'packages/runtime/src/ripgrep-executable.ts'
+      - 'packages/runtime/src/grep-search.ts'
+      - 'packages/runtime/src/glob-search.ts'
       - 'packages/runtime/src/sandbox-boundary-path.ts'
       - 'packages/runtime/src/apply-patch-file.ts'
       - 'packages/runtime/src/child-fd-input.ts'
@@ -81,6 +86,7 @@ on:
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/image-file.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
+      - 'packages/runtime/src/read-page.ts'
       - 'packages/runtime/src/unified-diff.ts'
       - 'packages/core/src/absolute-path.ts'
       - 'packages/core/src/artifacts.ts'
@@ -118,6 +124,7 @@ concurrency:
 
 jobs:
   package:
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: windows-2025
     timeout-minutes: 45
     defaults:
@@ -152,7 +159,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Install Kache
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: kache@0.16.0
 
@@ -172,7 +179,9 @@ jobs:
         run: npm run test:windows-archives
 
       - name: Report Rust build cache
-        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -o pipefail
+          kache report --format github | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save Rust build cache
         if: github.ref_name == github.event.repository.default_branch

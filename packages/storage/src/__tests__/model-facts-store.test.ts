@@ -22,13 +22,13 @@ import { mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ModelFactsDocumentOwner } from '../model-facts-store.js';
+import { LegacyModelFactsReader } from '../model-facts-store.js';
 import { cleanupRuntimePolicyDocumentTemps } from '../runtime-policy/document-io.js';
 
 test('model facts persist and malformed documents fail closed with a bounded diagnostic', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-facts-'));
   try {
-    const owner = new ModelFactsDocumentOwner();
+    const owner = new LegacyModelFactsReader();
     assert.deepEqual((await owner.readWithDiagnostics(root)).document.overrides, {});
     await writeFile(join(root, 'model-facts.json'), '{not-json}', 'utf8');
     const result = await owner.readWithDiagnostics(root);
@@ -63,7 +63,7 @@ test('model facts temporary writes are removed by runtime policy recovery', asyn
 test('future model facts schemas fail closed without rewriting the document', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-facts-future-'));
   try {
-    const owner = new ModelFactsDocumentOwner();
+    const owner = new LegacyModelFactsReader();
     const future = JSON.stringify({
       schemaVersion: 2,
       overrides: { 'openai:o4-mini': { contextWindow: 1 } },

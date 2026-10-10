@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/session-catalog-state.js';
-import { sessionIdSetsEqual } from '../../renderer/live-turn-snapshot.js';
+import { createSessionCatalogController, selectAuthoritativeSessionIds } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { sessionIdSetsEqual } from '../../renderer/features/conversation/index.js';
+import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import {
@@ -28,7 +29,7 @@ import {
   isSessionWorkbarCollapsed,
   persistWorkbarLayout,
   persistableSessionWorkbarPanels,
-  readSessionWorkbarPanels,
+  parseSessionWorkbarPanels,
   reduceWorkbarLayout,
   reduceWorkbarPanels,
   SESSION_BOTTOM_PANEL_MAX_HEIGHT,
@@ -94,6 +95,9 @@ describe('Workbar topology', () => {
       panels: createSessionWorkbarPanelsState(),
       activeSessionId: 'session-a' as string | undefined,
       collapsedBySession: {} as Record<string, boolean>,
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: false,
       rightWidth: 480,
       bottomHeight: 300,
@@ -183,7 +187,7 @@ describe('Workbar topology', () => {
         'maka-session-workbar-tab-v1': 'browser',
       }),
     );
-    assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
+    assert.deepEqual(parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3')), createSessionWorkbarPanelsState());
   });
 
   it('drops a retired tool kind left in v3 storage', () => {
@@ -208,7 +212,7 @@ describe('Workbar topology', () => {
         }),
       }),
     );
-    const state = readSessionWorkbarPanels();
+    const state = parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3'));
     assert.deepEqual(
       state.right.tabs.map((tab) => tab.id),
       ['workbar:review'],
@@ -235,6 +239,9 @@ describe('Workbar topology', () => {
       ),
       activeSessionId: 'session-a',
       collapsedBySession: { 'session-a': false },
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: true,
       rightWidth: 544,
       bottomHeight: 388,
@@ -262,6 +269,9 @@ describe('Workbar topology', () => {
       ),
       activeSessionId: 'session-a',
       collapsedBySession: { 'session-a': false },
+      compact: false,
+      compactCollapsed: {},
+      spaceCollapsed: false,
       bottomOpen: true,
       rightWidth: 544,
       bottomHeight: 388,
@@ -282,6 +292,88 @@ describe('Workbar topology', () => {
     assert.equal(isSessionWorkbarCollapsed(loadWorkbarLayout()), true);
   });
 
+  it('restores the preference for a Workbar only hidden by the compact policy', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+  });
+
+  it('promotes a Workbar opened while compact into the per-Session preference', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: true }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    assert.equal(state.collapsedBySession['a'], false);
+  });
+
+  it('keeps a Workbar the user closed while compact closed when the window widens', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: true });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    assert.equal(state.collapsedBySession['a'], true);
+  });
+
+  it('releases a space-collapsed Workbar to its spell choice, never the preference', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+
+    // The rail taking the room suppresses the Workbar through the flag: the
+    // spell choice stays `false` and nothing reaches collapsedBySession.
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: true });
+    assert.equal(isSessionWorkbarCollapsed(state), true);
+    assert.equal(state.compactCollapsed['a'], false);
+
+    // Releasing the flag mid-spell restores the open reading.
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: true });
+
+    // Widening clears the suppression with the spell boundary and promotes the
+    // open choice — the squeeze never reaches the stored preference.
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(isSessionWorkbarCollapsed(state), false);
+    assert.equal(state.collapsedBySession['a'], false);
+  });
+
+  it('clears space suppression on an explicit collapse choice', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ a: false }),
+    }));
+    let state = loadWorkbarLayout('a');
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: true });
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: false });
+    state = reduceWorkbarLayout(state, { type: 'set-space-collapsed', collapsed: true });
+    // The user's own collapse wins over the space decision and is what
+    // promotes on widen.
+    state = reduceWorkbarLayout(state, { type: 'collapse', placement: 'right', collapsed: true });
+    assert.equal(state.spaceCollapsed, false);
+    state = reduceWorkbarLayout(state, { type: 'set-compact', compact: false });
+    assert.equal(state.collapsedBySession['a'], true);
+  });
+
   it('distinguishes an unhydrated catalog from an authoritative empty snapshot', () => {
     const catalog = createSessionCatalogController();
     const pending = selectAuthoritativeSessionIds(catalog.getState());
@@ -293,6 +385,38 @@ describe('Workbar topology', () => {
     assert.equal(sessionIdSetsEqual(empty, pending), false);
     assert.equal(sessionIdSetsEqual(pending, pending), true);
     assert.equal(sessionIdSetsEqual(empty, new Set()), true);
+  });
+
+  it('keeps other Sessions\' visibility when a row patch lands before the first list', () => {
+    cleanups.push(installMemoryLocalStorage({
+      'maka-session-workbar-collapsed-v2': JSON.stringify({ owner: false, running: false }),
+    }));
+    const row = (id: string) =>
+      ({ id, name: id, activityAt: 1, isArchived: false, revision: 1 }) as DesktopSessionSummary;
+    const catalog = createSessionCatalogController();
+    let state = loadWorkbarLayout(undefined);
+    // Mirrors useWorkbarLayoutState: retain whenever the catalog is authoritative.
+    const retain = () => {
+      const sessionIds = selectAuthoritativeSessionIds(catalog.getState());
+      if (sessionIds) state = reduceWorkbarLayout(state, { type: 'retain-sessions', sessionIds });
+    };
+    // After a reload, a still-running Session's change event can be read
+    // before the startup list; that row alone says nothing about the others.
+    catalog.commitPatch('running', row('running'));
+    retain();
+    assert.equal(selectAuthoritativeSessionIds(catalog.getState()), undefined);
+    catalog.commitSessions([row('owner'), row('running')]);
+    retain();
+    persistWorkbarLayout(state, 'right-visibility');
+    assert.equal(isSessionWorkbarCollapsed(loadWorkbarLayout('owner')), false);
+  });
+
+  it('treats a first list that matches the patched rows as authoritative', () => {
+    const row = { id: 'a', name: 'a', activityAt: 1, isArchived: false, revision: 1 } as DesktopSessionSummary;
+    const catalog = createSessionCatalogController();
+    catalog.commitPatch('a', row);
+    catalog.commitSessions([row]);
+    assert.deepEqual(selectAuthoritativeSessionIds(catalog.getState()), new Set(['a']));
   });
 
   it('evicts deleted Sessions without dropping an active Session awaiting catalog hydration', () => {
@@ -326,6 +450,6 @@ describe('Workbar topology', () => {
         'maka-session-workbar-panels-v3': '{not-json',
       }),
     );
-    assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
+    assert.deepEqual(parseSessionWorkbarPanels(localStorage.getItem('maka-session-workbar-panels-v3')), createSessionWorkbarPanelsState());
   });
 });

@@ -18,7 +18,11 @@
  */
 
 import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
-import { formatQuietJsonValue, formatToolInvocationLine } from '@maka/core/tool-quiet-preview';
+import {
+  formatQuietJsonValue,
+  formatToolInvocationLine,
+  formatUserQuestionResult,
+} from '@maka/core/tool-quiet-preview';
 import { redactSecrets } from '@maka/core/display-redaction';
 import {
   isActiveShellRunStatus,
@@ -336,6 +340,12 @@ function compactToolSummary(entry: MakaPiToolEntry): CompactToolSummary | undefi
   ) {
     return { text: linesText(readBodyLineCount(text)), protect: true };
   }
+  const status = makaPiToolPresentationStatus(entry);
+  // Error-text size is not a successful read's size. Show only the outcome,
+  // including under NO_COLOR; the full reason remains in expanded details.
+  if (status === 'error' || status === 'failed' || status === 'aborted') {
+    return { text: status === 'error' ? 'failed' : status, protect: true };
+  }
   return textResultSummary(text);
 }
 
@@ -460,12 +470,13 @@ function readInputRef(entry: MakaPiToolEntry): string | undefined {
 
 /** A Read using the filesystem branch. */
 function isFilesystemReadPath(entry: MakaPiToolEntry): boolean {
-  return readInputPath(entry) !== undefined;
+  const path = readInputPath(entry);
+  return path !== undefined && !path.startsWith('maka:');
 }
 
 /** A Read using the runtime-resource branch (background-task output, etc.). */
 function isRuntimeResourceRead(entry: MakaPiToolEntry): boolean {
-  return readInputRef(entry)?.startsWith('maka://runtime/') ?? false;
+  return (readInputPath(entry) ?? readInputRef(entry))?.startsWith('maka:') ?? false;
 }
 
 /**
@@ -593,6 +604,11 @@ function plainResultText(entry: MakaPiToolEntry): string {
   if (result?.kind === 'text') return typeof result.text === 'string' ? result.text : '';
   if (result?.kind === 'json') {
     const value = result.value;
+    const answers =
+      entry.toolName === 'AskUserQuestion'
+        ? formatUserQuestionResult(entry.input, value, 'en')
+        : undefined;
+    if (answers) return answers;
     if (value !== null && typeof value === 'object') {
       const content = (value as { content?: unknown }).content;
       if (typeof content === 'string') return content;
@@ -603,8 +619,8 @@ function plainResultText(entry: MakaPiToolEntry): string {
     // Generic json fallback: use the shared quiet-value formatter instead of
     // dumping a single-line JSON blob. It extracts headline + body from
     // known shapes (lists, text payloads, Write/Edit results, key-value) and
-    // never produces escaped JSON braces (#1065). AskUserQuestion, GoalSet,
-    // ScheduledTask, and any future tool without a custom case render
+    // never produces escaped JSON braces (#1065). GoalSet, ScheduledTask,
+    // and any future tool without a custom case render
     // human-readable text here.
     const preview = formatQuietJsonValue(value, 'en');
     return preview.headline ? `${preview.headline}\n${preview.body}` : preview.body;

@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { safeLocalStorageGet } from '../../../browser-storage.js';
 import { isPersistedWorkbarTool } from './workbar-tool-definitions.js';
 
 export type SessionWorkbarTabKind =
@@ -54,6 +53,25 @@ export interface SessionWorkbarPanelsState {
   right: SessionWorkbarTabsState;
   bottom: SessionWorkbarTabsState;
   focusedPanel: SessionWorkbarPlacement;
+}
+
+/** Visibility is a projection of the open tools, never a command to close them. */
+export function projectWorkbarPanelsForSession(
+  panels: SessionWorkbarPanelsState,
+  sessionId: string | undefined,
+  sideChatTabIds: ReadonlySet<string>,
+): SessionWorkbarPanelsState {
+  let projected = panels;
+  for (const placement of ['right', 'bottom'] as const) {
+    const hiddenIds = panels[placement].tabs.filter((tab) =>
+      (tab.kind === 'terminal' && tab.ownerSessionId !== sessionId) ||
+      (tab.kind === 'side-chat' && !sideChatTabIds.has(tab.id)),
+    ).map((tab) => tab.id);
+    if (hiddenIds.length) {
+      projected = reduceWorkbarPanels(projected, { type: 'close', placement, tabIds: hiddenIds });
+    }
+  }
+  return projected;
 }
 
 export type WorkbarPanelsAction =
@@ -427,8 +445,7 @@ export function persistableSessionWorkbarPanels(
   };
 }
 
-export function readSessionWorkbarPanels(): SessionWorkbarPanelsState {
-  const raw = safeLocalStorageGet('maka-session-workbar-panels-v3');
+export function parseSessionWorkbarPanels(raw: string | null): SessionWorkbarPanelsState {
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedSessionWorkbarPanels>;

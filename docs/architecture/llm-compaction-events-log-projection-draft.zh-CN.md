@@ -453,7 +453,9 @@ Maka 只有一套 LLM compaction 机制，以及一个相邻的 current-request 
 
 Active Tool Result Prune 仍是 deterministic、非 LLM 的 rewrite。它先归档 eligible raw Tool Result，再向 AgentRun event ledger 追加 durable projection transition，并由 effective-history reducer 生成 current request。后续 replay、restart、budgeting 与 compaction 也消费同一 reducer。Prune 既不总结 span，也不创建 checkpoint，canonical RuntimeEvents 保持不变。
 
-Placeholder 携带 bounded `maka://archive/...` 地址和 `ArchiveRead` 指令；model replay 会为 legacy placeholder 确定性补回这个地址。Runtime 不再把 archived body eager-expand 回每次请求。只有模型确实需要细节时才调用 `ArchiveRead`，Host 在返回 bounded inspect/query 结果前校验 Session、hash 与 byte size。后续 checkpoint 会用 summary 替换已覆盖的 placeholder，并且有意不携带 archive roots。完整 Tool Result 仍在 canonical RuntimeEvent ledger 中，但 model reachability 不会变成永久的 cross-checkpoint authority。
+工具结果裁剪只保留 `toolResultPrune.enabled`，当前与历史 turn 使用同一个固定体积规则。文本投影超过 7,500 个序列化字符时，保留有界首屏和 `next` 续读参数；图片沿用原有 materialization 策略。`Read` 只有必填的 `path` 和可选、零基行坐标的 `offset` / `limit`。关闭裁剪或传入大 limit 都不能绕过单次响应上限。显式 limit 定义本次读取范围，超长单行由 Harness 自动分段，并用正文校验过的地址续读。ArchiveRead、inspect/query/search 和 active/stale 调参字段直接删除，不保留别名。
+
+工具结果地址使用 `maka://runtime/tool-results/<event-id>`。Host 在调用方 Session 内解析地址，验证已接受的投影 transition，从原事件恢复模型正文；模型不必复写摘要或内部 transition 身份。先持久化 transition，再替换投影；历史重放、压缩尾部和溢出重试都经过同一个 reducer。Checkpoint 仍按不可变事件身份匹配，并校验有效覆盖内容的摘要。
 
 ## Compaction 不是什么
 

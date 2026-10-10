@@ -49,6 +49,14 @@ export interface BotOnboardingStartInput {
   brand?: BotOnboardingBrand;
 }
 
+export type BotOnboardingRetryFailureCategory = 'timeout' | 'network' | 'rate_limited' | 'server';
+
+export interface BotOnboardingRetryHealth {
+  /** Finite, renderer-safe classification. Raw provider failures never cross IPC. */
+  category: BotOnboardingRetryFailureCategory;
+  consecutiveFailures: number;
+}
+
 /**
  * Renderer-safe projection of a main-process-owned onboarding session.
  * Provider device codes and final credentials never cross the preload boundary.
@@ -61,6 +69,8 @@ export interface BotOnboardingSnapshot {
   qrCodeDataUrl?: string;
   expiresAt?: number;
   nextPollAfterMs: number;
+  /** Present only while the main-process owner is backing off after a transient failure. */
+  retryHealth?: BotOnboardingRetryHealth;
   canOpenInBrowser: boolean;
   identity?: {
     id?: string;

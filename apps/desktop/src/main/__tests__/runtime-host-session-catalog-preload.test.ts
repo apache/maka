@@ -32,6 +32,15 @@ function session(id: string, activityAt: number): DesktopSessionSummary {
   return { id, activityAt } as DesktopSessionSummary;
 }
 
+test('local pending Sessions sort by local creation without inventing Host activity', () => {
+  const existing = ownerSession('existing', 1);
+  const pending = { ...ownerSession('pending', 0), activityAt: undefined, localState: 'pending' as const, localCreatedAt: 2 };
+  assert.deepEqual(reconcileRuntimeHostSessionCatalog([], {
+    sessions: [existing, pending], completeHostIds: [], knownOwnerProfileIds: ['owner-profile'], guestSessions: [],
+  }), [pending, existing]);
+  assert.equal(pending.activityAt, undefined);
+});
+
 function ownerSession(
   id: string,
   activityAt: number,
@@ -84,6 +93,20 @@ test('starts a fresh catalog read after the previous refresh settles', async () 
   const second = refresher.refresh();
   assert.deepEqual((await second).sessions, [fresh]);
   assert.equal(reads, 2);
+});
+
+test('accepts authoritative idle and unknown without reviving an earlier background run', () => {
+  const running = { ...ownerSession('root', 1), backgroundActivity: 'running' as const };
+  for (const fresh of [
+    { ...ownerSession('root', 2), backgroundActivity: 'idle' as const },
+    ownerSession('root', 2),
+  ]) {
+    const result = reconcileRuntimeHostSessionCatalog([running], {
+      sessions: [fresh], completeHostIds: ['owner-host'], knownOwnerProfileIds: ['owner-profile'], guestSessions: [],
+    });
+    assert.deepEqual(result, [fresh]);
+    assert.equal(result[0]?.backgroundActivity, fresh.backgroundActivity);
+  }
 });
 
 test('does not commit a catalog read superseded while it is in flight', async () => {

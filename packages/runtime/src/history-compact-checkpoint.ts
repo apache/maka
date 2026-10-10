@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import type { ExecutionLogCoverage } from '@maka/core/execution-log-coverage';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { nonEmpty, sha256 } from './context-budget-helpers.js';
 import type { ModelMessage } from './model-protocol.js';
 import { stableStringify } from './request-shape.js';
 import {
@@ -29,13 +30,16 @@ import {
   type SectionedSummaryFormat,
 } from './history-compact-summary-validation.js';
 
-// v2: coverage and source digest are taken over EFFECTIVE model history (the
-// durable Tool Result projection), not raw RuntimeEvent evidence. A v1
-// checkpoint's digest was computed over a different source, so it fails the
-// shape check and its session re-summarizes rather than replaying a
-// coverage claim this policy never made.
+// v3: coverage identity and the source digest stay pinned on the RAW ledger
+// prefix — the immutable view every creation path (standalone and mid-turn)
+// and both match sites (pre-turn replay and the mid-turn durable projection)
+// share — while the model-visible summary is produced from the EFFECTIVE,
+// transition-folded prefix. A v2 checkpoint's summary could quote a Tool
+// Result body a durable projection transition had already removed, so it is
+// superseded on load and the session re-summarizes rather than replaying a
+// coverage claim whose summary this policy never audited (#4845).
 export const HISTORY_COMPACT_SOURCE_POLICY_VERSION =
-  'maka.compactable_runtime_event_projection.v2' as const;
+  'maka.compactable_runtime_event_projection.v3' as const;
 export interface HistoryCompactCheckpointSource {
   schemaVersion: 1;
   kind: 'runtime_event_projection';
@@ -53,6 +57,15 @@ export interface HistoryCompactCheckpointCoverage {
     runtimeEventId: string;
   };
   sourceDigest: string;
+  /**
+   * Digest of the EFFECTIVE (transition-folded) view of the covered prefix at
+   * creation time — the exact content the summary or provider state describes.
+   * Replay must reject the checkpoint when the current effective view no
+   * longer matches: a projection transition committed after creation changes
+   * what the model may see without touching the raw ledger, and a stale block
+   * would restore what the transition removed (#4845 review).
+   */
+  effectiveSourceDigest?: string;
 }
 
 /**
@@ -134,6 +147,13 @@ export type HistoryCompactCheckpoint =
 interface BuildHistoryCompactCheckpointBaseInput {
   sessionId: string;
   coveredRuntimeEvents: readonly RuntimeEvent[];
+  /**
+   * The effective (transition-folded) view of `coveredRuntimeEvents`, when the
+   * caller folded it. Its digest is pinned as `coverage.effectiveSourceDigest`;
+   * without it the raw coverage doubles as the effective view, which is only
+   * true when no projection transition touches the span.
+   */
+  effectiveCoveredRuntimeEvents?: readonly RuntimeEvent[];
   highWaterName?: string;
   highWaterSeq?: number;
   previousCheckpointId?: string;
@@ -245,7 +265,7 @@ export function buildHistoryCompactCheckpoint(
       anchored.turnId !== input.headAnchor.turnId ||
       anchored.turnId !== lastCovered.turnId ||
       anchored.role !== 'user' ||
-      anchored.author !== 'user'
+      (anchored.author !== 'user' && anchored.author !== 'host')
     ) {
       throw new Error(
         "Mid-turn history compact checkpoint head anchor must be the compacted turn's user event",
@@ -271,6 +291,9 @@ export function buildHistoryCompactCheckpoint(
       runtimeEventId: lastEvent.id,
     },
     sourceDigest: historyCompactSourceDigest(input.coveredRuntimeEvents),
+    effectiveSourceDigest: historyCompactSourceDigest(
+      input.effectiveCoveredRuntimeEvents ?? input.coveredRuntimeEvents,
+    ),
   };
   const highWaterName = input.highWaterName ?? 'history-compact-high-water';
   const highWaterSeq = input.highWaterSeq ?? createdAt;
@@ -455,6 +478,11 @@ export function validateHistoryCompactCheckpointShape(
     nonEmpty(through?.turnId) &&
     nonEmpty(through?.runtimeEventId) &&
     nonEmpty(coverage?.sourceDigest) &&
+    // A checkpoint minted under the current source policy pins the effective
+    // (transition-folded) view its summary or provider state describes;
+    // without the digest there is no content-currency binding at replay, so
+    // the record must not validate (#4845 review).
+    (checkpoint.source === undefined || nonEmpty(coverage?.effectiveSourceDigest)) &&
     (checkpoint.source === undefined ||
       validHistoryCompactCheckpointSource(checkpoint.source, checkpoint.sessionId, coverage)) &&
     (checkpoint.phase === undefined ||
@@ -597,7 +625,7 @@ export function matchHistoryCompactCheckpointPrefix(
       anchor.turnId !== checkpoint.headAnchor!.turnId ||
       anchor.turnId !== checkpoint.coverage.through.turnId ||
       anchor.role !== 'user' ||
-      anchor.author !== 'user'
+      (anchor.author !== 'user' && anchor.author !== 'host')
     ) {
       return {
         coveredEventCount: 0,
@@ -737,7 +765,7 @@ function sameHistoryCompactSourceCoverage(
  * response's effective projection does change the digest, so a checkpoint can
  * never be replayed over content it never covered.
  */
-function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
+export function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
   const hash = createHash('sha256');
   for (const event of events) {
     const serialized = stableStringify(effectiveDigestEvent(event));
@@ -769,14 +797,6 @@ function effectiveDigestEvent(event: RuntimeEvent): unknown {
     return { ...event, content: { ...identity, modelProjection } };
   }
   return { ...event, content: { ...identity, result } };
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-function nonEmpty(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 function validHistoryCompactProviderState(value: unknown): value is HistoryCompactProviderState {

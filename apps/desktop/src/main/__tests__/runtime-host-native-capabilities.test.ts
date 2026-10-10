@@ -31,6 +31,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
+import { buildManagedArtifactPreviewTools } from '../managed-artifact-preview-tools.js';
 import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
@@ -41,13 +42,39 @@ function jsonSchema(schema: Record<string, unknown>): {
   return { jsonSchema: schema };
 }
 
+test('Artifact preview is discoverable and admitted without a pre-existing browser origin', async () => {
+  let invoked = false;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    resolveBrowserUrl: () => { throw new Error('No browser page exists'); },
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseDesktopInteractionSession() {},
+    additionalGroups: () => [{
+      offerId: 'desktop_artifact_preview', label: 'HTML preview', description: 'Prepare HTML preview',
+      tools: buildManagedArtifactPreviewTools(async (sessionId, artifactId, signal) => {
+        assert.equal(sessionId, 'session-1');
+        assert.equal(artifactId, 'artifact-1');
+        signal.throwIfAborted();
+        invoked = true;
+        return { url: 'http://127.0.0.1:12345/token/index.html', expiresAt: 123456, reachable: true, loaded: false };
+      }),
+    }],
+  }, { nativeSessionId: (sessionId) => `native:${sessionId}` });
+  assert.doesNotThrow(() => decodeClientCapabilityReplaceInput({ registrationId: 'registration-1', offers: provider.offers() }));
+  assert.ok(provider.offers().some((offer) => offer.offerId === 'desktop_artifact_preview' && offer.tools.some((tool) => tool.name === 'ArtifactPreview')));
+  const result = await call(provider, capabilityFrame({ offerId: 'desktop_artifact_preview', serverId: 'desktop_artifact_preview', toolName: 'ArtifactPreview', arguments: { artifactId: 'artifact-1' } }));
+  assert.equal(invoked, true);
+  assert.deepEqual(result.structuredContent, { url: 'http://127.0.0.1:12345/token/index.html', expiresAt: 123456, reachable: true, loaded: false });
+});
+
 test('publishes self-described session-affine Browser and Computer Use offers', () => {
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [tool('browser_snapshot', z.object({ includeHidden: z.boolean().optional() }), async () => 'ok')],
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(async () => ({ text: 'ok' })),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
   });
 
   assert.deepEqual(
@@ -103,7 +130,7 @@ test('remote providers do not request Host paths and use a Client-owned cwd', as
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
     },
     { hostPathAccess: 'none', clientCwd: '/client/runtime-host' },
   );
@@ -124,7 +151,7 @@ test('publishes the real Computer Use schema through the Client Capability proto
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools,
-    releaseComputerUseSession: (sessionId) => computerUseTools.clearSession(sessionId),
+    releaseDesktopInteractionSession: (sessionId) => computerUseTools.clearSession(sessionId),
   });
 
   assert.doesNotThrow(() =>
@@ -150,7 +177,7 @@ test('projects and publishes jsonSchema-wrapped MCP proxy tool descriptors', () 
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -209,7 +236,7 @@ test('forwards JSON Schema native capability arguments to the MCP authority', as
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -256,7 +283,7 @@ test('skips non-object root jsonSchema tools without dropping the offer', () => 
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -300,7 +327,7 @@ test('skips malformed record-shaped schemas without dropping healthy MCP tools',
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -341,7 +368,7 @@ test('skips unsupported schema type tools without dropping the offer', () => {
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -389,7 +416,7 @@ test('skips a malformed MCP tool without dropping the other offers', async () =>
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -463,7 +490,7 @@ test('empty allOf/anyOf/oneOf are projected away so the schema still publishes',
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -520,7 +547,7 @@ test('publishes every production Desktop-owned tool schema through the protocol'
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_settings',
@@ -553,7 +580,7 @@ test('publishes and admits additional Desktop native-effect services', async () 
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalServices: (scope) => [
         {
           serviceId: 'maka_scheduled_task_native_effect',
@@ -622,7 +649,7 @@ test('validates before admission and invokes the exact offered tool with Host co
       },
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
     },
     { nativeSessionId: (sessionId) => `host-a:${sessionId}` },
   );
@@ -677,7 +704,7 @@ test('does not execute Browser work when its Origin changes while admission is p
       resolveCount++ === 0 ? 'https://first.example/page' : 'https://second.example/page',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
   });
 
   await assert.rejects(
@@ -704,11 +731,11 @@ test('watches Computer Use turns without widening Browser lifecycle', async () =
         computerUseSessionId = context.sessionId;
         return { text: 'observed' };
       }),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
     },
     {
       onSessionUsed: (sessionId) => usedSessions.push(sessionId),
-      onComputerUseTurnUsed: (sessionId, turnId) =>
+      onDesktopInteractionTurnUsed: (sessionId, turnId) =>
         computerUseTurns.push([sessionId, turnId]),
       nativeSessionId: (sessionId) => `host-a:${sessionId}`,
     },
@@ -761,7 +788,7 @@ test('projects Computer Use screenshots and releases all native resources for a 
       browserReleased.push(sessionId);
     },
     computerUseTools,
-    releaseComputerUseSession: (sessionId) => computerUseTools.clearSession(sessionId),
+    releaseDesktopInteractionSession: (sessionId) => computerUseTools.clearSession(sessionId),
   });
 
   await provider.releaseSession('manual-session');
@@ -817,7 +844,7 @@ test('does not advertise unavailable capability groups or dispatch unknown ident
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
   });
   assert.deepEqual(
     provider.offers().map((offer) => offer.offerId),
@@ -849,7 +876,7 @@ test('dispatches through the same immutable tool snapshot it advertised', async 
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => additionalGroups,
   });
   additionalGroups = [
@@ -898,7 +925,7 @@ test('chunks a dynamic capability group beyond the single-offer tool limit', asy
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: [] as never,
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp',
@@ -954,7 +981,7 @@ test('omits trailing dynamic tools beyond the manifest tool budget and keeps fix
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: [] as never,
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => [
         {
           offerId: 'desktop_mcp',
@@ -999,7 +1026,7 @@ test('omits trailing dynamic tools beyond the manifest byte budget', () => {
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: [] as never,
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => [
         {
           offerId: 'desktop_mcp',
@@ -1038,7 +1065,7 @@ test('reports dynamic tools the decoder rejects instead of dropping them silentl
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: [] as never,
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => [
         {
           offerId: 'desktop_mcp',
@@ -1073,7 +1100,7 @@ test('publishes identified tools under their real normalized MCP identity', asyn
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: [] as never,
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
     additionalGroups: () => [
       {
         offerId: 'desktop_mcp_fixture',
@@ -1140,7 +1167,7 @@ test('chunks and degrades a dynamic capability group deterministically', () => {
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: [] as never,
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
       additionalGroups: () => [
         {
           offerId: 'desktop_mcp',
@@ -1166,7 +1193,7 @@ test('fails loudly when a fixed capability group exceeds the manifest budget', (
         resolveBrowserUrl: () => 'https://example.com/',
         releaseBrowserSession() {},
         computerUseTools: [] as never,
-        releaseComputerUseSession() {},
+        releaseDesktopInteractionSession() {},
       }),
     /Invalid Client Capability offer tools/u,
   );
@@ -1180,7 +1207,7 @@ test('reports provider retirement once after its registration is released', asyn
       resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
-      releaseComputerUseSession() {},
+      releaseDesktopInteractionSession() {},
     },
     {
       onClosed: () => {
@@ -1208,7 +1235,7 @@ test('settles every native Session cleanup before reporting a release failure', 
       throw new Error('browser release failed');
     },
     computerUseTools: computerTools(),
-    async releaseComputerUseSession() {
+    async releaseDesktopInteractionSession() {
       await computerRelease;
       computerReleased = true;
     },
@@ -1243,7 +1270,7 @@ test('forwards Host cancellation to an admitted Desktop invocation', async () =>
     resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
-    releaseComputerUseSession() {},
+    releaseDesktopInteractionSession() {},
   });
   const controller = new AbortController();
   if (!provider.call) throw new Error('Expected a callable provider');
@@ -1375,3 +1402,25 @@ async function call(
     requestInteraction: async () => assert.fail('Unexpected provider interaction'),
   });
 }
+
+test('WorkHub groups receive their target epoch and join Desktop interaction turn lifecycle', async () => {
+  const scope = { hostId: 'host', targetEpoch: 'epoch' };
+  const watched: string[][] = [];
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [], resolveBrowserUrl: () => 'https://example.com/', releaseBrowserSession() {},
+    computerUseTools: computerTools(), releaseDesktopInteractionSession() {},
+    additionalGroups: received => {
+      assert.deepEqual(received, scope);
+      return [{ offerId: 'desktop_workhub', label: 'WorkHub', description: 'WorkHub', tools: [tool('control', z.object({}), async (_input, ctx) => ctx.sessionId)] }];
+    },
+  }, {
+    targetScope: scope,
+    nativeSessionId: sessionId => `native:${sessionId}`,
+    onDesktopInteractionTurnUsed: (sessionId, turnId) => { watched.push([sessionId, turnId]); },
+  });
+  const frame = capabilityFrame({ offerId: 'desktop_workhub', serverId: 'desktop_workhub', toolName: 'control', arguments: {} });
+  const result = await call(provider, frame);
+  assert.deepEqual(watched, [[frame.sessionId, frame.turnId]]);
+  assert.deepEqual(result.content, [{ type: 'text', text: frame.sessionId }], 'WorkHub authority sees the real Host Session id, not a native resource alias');
+  await provider.close();
+});

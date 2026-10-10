@@ -72,7 +72,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
-  reclaimUpgradeResidue(): Promise<void>;
+  reclaimUpgradeResidue: ArtifactAuthorityStore['reclaimUpgradeResidue'];
   listPage: ArtifactAuthorityStore['listPage'];
   listTurnArtifacts: ArtifactAuthorityStore['listTurnArtifacts'];
   getInSession: ArtifactAuthorityStore['getInSession'];
@@ -156,9 +156,6 @@ function createWriterFacade(
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,
         turnIds: Object.freeze([...input.turnIds]),
-        ...(input.excludeArtifactIds
-          ? { excludeArtifactIds: Object.freeze([...input.excludeArtifactIds]) }
-          : {}),
         ...(input.includeArtifactIds
           ? { includeArtifactIds: Object.freeze([...input.includeArtifactIds]) }
           : {}),
@@ -178,7 +175,7 @@ function createWriterFacade(
       return run(() => store.copyConversationArtifacts(acceptedInput));
     },
     purgeSessionArtifacts: (sessionId) => run(() => store.purgeSessionArtifacts(sessionId)),
-    reclaimUpgradeResidue: () => run(() => store.reclaimUpgradeResidue()),
+    reclaimUpgradeResidue: (input) => run(() => store.reclaimUpgradeResidue(input)),
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
     close: () => {

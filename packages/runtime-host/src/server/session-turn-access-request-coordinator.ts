@@ -33,7 +33,6 @@ type TurnAccessRequestAuthority = Pick<
 export class SessionTurnAccessRequestCoordinator {
   readonly #authority: TurnAccessRequestAuthority;
   readonly #startTurn: OperationHandler<'turn.start'>;
-  readonly #regenerateTurn: OperationHandler<'turn.regenerate'>;
   readonly #acquireResidency: () => OperationResidency;
   readonly #requestDrain: () => void;
   readonly #whenIdle: (sessionId: string) => Promise<void> | undefined;
@@ -45,7 +44,6 @@ export class SessionTurnAccessRequestCoordinator {
   constructor(input: {
     readonly authority: TurnAccessRequestAuthority;
     readonly startTurn: OperationHandler<'turn.start'>;
-    readonly regenerateTurn: OperationHandler<'turn.regenerate'>;
     readonly acquireResidency: () => OperationResidency;
     readonly requestDrain: () => void;
     readonly whenIdle: (sessionId: string) => Promise<void> | undefined;
@@ -53,7 +51,6 @@ export class SessionTurnAccessRequestCoordinator {
   }) {
     this.#authority = input.authority;
     this.#startTurn = input.startTurn;
-    this.#regenerateTurn = input.regenerateTurn;
     this.#acquireResidency = input.acquireResidency;
     this.#requestDrain = input.requestDrain;
     this.#whenIdle = input.whenIdle;
@@ -124,18 +121,11 @@ export class SessionTurnAccessRequestCoordinator {
   ): Promise<'started' | 'blocked' | 'failed' | undefined> {
     for (;;) {
       try {
-        if ('content' in request.intent) {
-          const outcome = await this.#startTurn(request.intent, context);
-          if (outcome.ok) return outcome.result.kind;
-          if (outcome.error.code !== 'session_busy') {
-            return this.#draining ? undefined : 'failed';
-          }
-        } else {
-          const outcome = await this.#regenerateTurn(request.intent, context);
-          if (outcome.ok) return 'started';
-          if (outcome.error.code !== 'session_busy') {
-            return this.#draining ? undefined : 'failed';
-          }
+        if (!('content' in request.intent)) return 'failed';
+        const outcome = await this.#startTurn(request.intent, context);
+        if (outcome.ok) return outcome.result.kind;
+        if (outcome.error.code !== 'session_busy') {
+          return this.#draining ? undefined : 'failed';
         }
       } catch {
         this.#requestDrain();

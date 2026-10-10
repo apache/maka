@@ -25,7 +25,7 @@ import {
   hasInFlightToolActivity,
   recordSessionEventStreamChange,
   recordSessionEventStreamEvent,
-} from '../../renderer/session-event-health.js';
+} from '../../renderer/application/contracts/session-catalog/session-event-health.js';
 
 describe('renderer session event health projection', () => {
 

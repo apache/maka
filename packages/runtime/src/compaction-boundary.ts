@@ -24,10 +24,7 @@ import type {
 
 export type CompactionStage = 'priorReplay' | 'activeStep';
 export type CompactionSourceKind = 'runtimeEvents' | 'providerMessages';
-export type CompactionBoundaryKind =
-  | 'historyCompact'
-  | 'staleToolResultPrune'
-  | 'activeToolResultPrune';
+export type CompactionBoundaryKind = 'historyCompact' | 'toolResultPrune';
 export type CompactionDecisionKind = 'unchanged' | 'replaced' | 'failedOpen';
 
 export interface CompactionCoverage {
@@ -37,46 +34,6 @@ export interface CompactionCoverage {
   contentKinds?: readonly string[];
   bodySha256?: readonly string[];
   providerMessageSourceIds?: readonly string[];
-}
-
-export interface CompactionArchiveRef {
-  kind: 'toolResult' | 'runtimeEventSource' | 'compactSource';
-  sessionId?: string;
-  turnId?: string;
-  runtimeEventId?: string;
-  toolCallId?: string;
-  toolName?: string;
-  artifactId: string;
-  bodySha256: string;
-  originalEstimatedTokens?: number;
-  originalBytes?: number;
-}
-
-export interface CompactionBoundary {
-  kind: CompactionBoundaryKind;
-  stage: CompactionStage;
-  schemaVersion: number;
-  boundaryId: string;
-  predecessorBoundaryId?: string;
-  cumulativeCoverageDigest?: string;
-  sessionId: string;
-  createdAt?: number;
-  highWaterName?: string;
-  highWaterSeq?: number;
-  coverage: CompactionCoverage;
-  preservedAnchor?: {
-    headProviderMessageSourceIds?: readonly string[];
-    headRuntimeEventIds?: readonly string[];
-    tailRuntimeEventIds?: readonly string[];
-    tailProviderMessageSourceIds?: readonly string[];
-    tailTurnIds?: readonly string[];
-  };
-  archiveRefs?: readonly CompactionArchiveRef[];
-  sourceHashes?: readonly string[];
-  renderedText?: string;
-  estimatedTokens?: number;
-  validationStatus?: 'valid' | 'invalid' | 'notValidated';
-  validationReason?: string;
 }
 
 export interface CompactionDecision {

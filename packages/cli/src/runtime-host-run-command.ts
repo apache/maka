@@ -28,11 +28,16 @@ import {
   readRuntimeHostSessions,
   readRuntimeHostProjects,
   RuntimeHostOperationError,
+  isRuntimeHostReconnectingConnection,
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
+import type {
+  InteractionPendingSnapshot,
+  SessionCatalogItem,
+  TurnResumePlan,
+} from '@maka/runtime-host/protocol';
 import {
   runMakaTextCliCore,
   type MakaRunContext,
@@ -51,6 +56,7 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriver,
 } from './runtime-host-session-driver.js';
+import { RuntimeHostRunMcp } from './runtime-host-run-mcp.js';
 import type { CreateSessionRequest, MakaPreparedSessionTurn } from './session-driver.js';
 import {
   formatRuntimeHostCliTaskBlockers,
@@ -165,6 +171,11 @@ export function createRuntimeHostRunContext(
     createDriver: createRuntimeHostMakaSessionDriver,
     ...overrides,
   };
+  const mcp =
+    (!input.hostProfileId || input.hostProfileId === 'local') &&
+    isRuntimeHostReconnectingConnection(connection)
+      ? new RuntimeHostRunMcp(input.workspaceRoot, connection)
+      : undefined;
   const driver = contextDeps.createDriver({
     connection,
     cwd: input.cwd,
@@ -176,10 +187,12 @@ export function createRuntimeHostRunContext(
         ? { kind: 'client_path' }
         : { kind: 'host' },
     ...(input.projectId ? { workspace: { kind: 'project', projectId: input.projectId } } : {}),
+    ...(mcp ? { prepareSession: (sessionId: string) => mcp.prepare(sessionId) } : {}),
   });
   const runtime = new RuntimeHostRunRuntime(
     connection,
     driver,
+    mcp,
     input.runOutcomeObserver,
     input.enableAgentGraph === true,
     input.sessionCwdOverride,
@@ -249,6 +262,7 @@ type ActiveRuntimeHostTurn = {
 class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #connection: RuntimeHostConnection;
   readonly #driver: RuntimeHostMakaSessionDriver;
+  readonly #mcp: RuntimeHostRunMcp | undefined;
   readonly #observer: ((outcome: MakaRunOutcome) => void | Promise<void>) | undefined;
   readonly #graphEnabled: boolean;
   readonly #sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'];
@@ -273,6 +287,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   constructor(
     connection: RuntimeHostConnection,
     driver: RuntimeHostMakaSessionDriver,
+    mcp: RuntimeHostRunMcp | undefined,
     observer: ((outcome: MakaRunOutcome) => void | Promise<void>) | undefined,
     graphEnabled: boolean,
     sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'],
@@ -280,6 +295,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   ) {
     this.#connection = connection;
     this.#driver = driver;
+    this.#mcp = mcp;
     this.#observer = observer;
     this.#graphEnabled = graphEnabled;
     this.#sessionCwdOverride = sessionCwdOverride;
@@ -308,6 +324,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 
   async *sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent> {
     await this.#attach(sessionId);
+    await this.#mcp?.ready();
     if (this.#stopRequested) throw new Error('Turn was cancelled before start');
     if (input.turnOrchestration?.mode === 'graph') {
       this.#graphAdmissionTurnIds = graphSupervisorTurnIds(await this.#driver.readMessages());
@@ -317,6 +334,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       turnId: input.turnId,
       ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
       ...(maxSteps !== undefined ? { maxSteps } : {}),
+      ...(input.origin !== undefined ? { origin: input.origin } : {}),
     });
     if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
     const activeTurn = {
@@ -347,8 +365,29 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 
   async resumeLatest(sessionId: string): Promise<AsyncIterable<SessionEvent> | null> {
     await this.#attach(sessionId);
+    await this.#mcp?.ready();
     const plan = await this.#connection.request('turn.resume.query', { sessionId });
-    return plan.disposition === 'ready' ? this.#driver.resumeLatest() : null;
+    return plan.disposition === 'ready' ? this.#resumeAndObserve(plan) : null;
+  }
+
+  async *#resumeAndObserve(
+    plan: Extract<TurnResumePlan, { disposition: 'ready' }>,
+  ): AsyncIterable<SessionEvent> {
+    const turn = await this.#driver.resumeLatestTurn(plan);
+    if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
+    const activeTurn: ActiveRuntimeHostTurn = {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+      outcome: new TurnOutcomeClassifier(turn.runId),
+    };
+    this.#activeTurn = activeTurn;
+    try {
+      if (this.#stopRequested) await this.#stopTurn(activeTurn);
+      yield* this.#observeTurn(turn, activeTurn);
+    } finally {
+      if (this.#activeTurn === activeTurn) this.#activeTurn = undefined;
+    }
   }
 
   async stopSession(sessionId: string): Promise<void> {
@@ -415,16 +454,17 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (outcome) await this.#observer?.(outcome);
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
     this.#closed = true;
     this.#interactions.close();
     this.#unsubscribeTranscriptReplacements();
     this.#cancelGraphTerminalWaiters(new Error('Runtime Host run context closed'));
-    return Promise.resolve();
+    await this.#mcp?.close();
   }
 
   async #attach(sessionId: string): Promise<void> {
     if (this.#sessionId === sessionId) return;
+    await this.#mcp?.prepare(sessionId);
     const switched = await this.#driver.switchSession(sessionId);
     if (
       this.#sessionCwdOverride?.sessionId === sessionId &&
@@ -502,7 +542,10 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   ): void {
     const active = this.#activeTurn;
     if (!active || active.sessionId !== sessionId || active.turnId !== turnId) return;
-    active.outcome = classifierFromStoredTurn(messages, turnId, active.runId);
+    // A read of a running Turn stops wherever the transcript has been
+    // committed, so it can restore what the live stream missed but never
+    // proves that what the stream already delivered is gone.
+    acceptStoredTurn(active.outcome, messages, turnId);
   }
 
   #waitForGraphTurnTerminal(turnId: string): Promise<readonly StoredMessage[]> {
@@ -562,7 +605,7 @@ function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): Sess
 }
 
 type TurnOutcomeObservation =
-  | { readonly kind: 'output'; readonly text: string }
+  | { readonly kind: 'output'; readonly text: string; readonly source: 'live' | 'stored' }
   | {
       readonly kind: 'terminal';
       readonly update: 'replace' | 'if_unset';
@@ -586,6 +629,7 @@ class TurnOutcomeClassifier {
   readonly #outcomeId: string;
   readonly #unresolvedSandboxFailures = new Set<string>();
   #finalOutput: string | undefined;
+  #finalOutputFromLive = false;
   #terminal: TerminalOutcomeObservation | undefined;
 
   constructor(outcomeId: string) {
@@ -597,7 +641,13 @@ class TurnOutcomeClassifier {
       case undefined:
         return;
       case 'output':
+        // A subscriber is delivered in Host order, so the stream's last answer
+        // is the Turn's last answer. A transcript read stops wherever the Host
+        // had committed, so it can supply an answer the stream never carried
+        // but can never overrule one it did.
+        if (observation.source === 'stored' && this.#finalOutputFromLive) return;
         this.#finalOutput = observation.text;
+        this.#finalOutputFromLive = observation.source === 'live';
         return;
       case 'terminal':
         if (observation.update === 'replace' || this.#terminal === undefined) {
@@ -642,7 +692,7 @@ class TurnOutcomeClassifier {
 
 function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservation | undefined {
   if (event.type === 'text_complete' && event.text.trim().length > 0) {
-    return { kind: 'output', text: event.text };
+    return { kind: 'output', text: event.text, source: 'live' };
   }
   if (event.type === 'error') {
     return {
@@ -668,7 +718,7 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
 
 function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObservation | undefined {
   if (message.type === 'assistant' && message.text.trim().length > 0) {
-    return { kind: 'output', text: message.text };
+    return { kind: 'output', text: message.text, source: 'stored' };
   }
   if (message.type === 'turn_state' && message.status === 'completed') {
     return { kind: 'terminal', update: 'replace', status: 'completed' };
@@ -767,10 +817,18 @@ function classifierFromStoredTurn(
   outcomeId: string,
 ): TurnOutcomeClassifier {
   const classifier = new TurnOutcomeClassifier(outcomeId);
+  acceptStoredTurn(classifier, messages, turnId);
+  return classifier;
+}
+
+function acceptStoredTurn(
+  classifier: TurnOutcomeClassifier,
+  messages: readonly StoredMessage[],
+  turnId: string,
+): void {
   for (const message of messages) {
     if (message.turnId === turnId) classifier.accept(observationFromStoredMessage(message));
   }
-  return classifier;
 }
 
 class NonInteractiveInteractionController {
@@ -780,8 +838,7 @@ class NonInteractiveInteractionController {
   readonly #tasks = new Set<Promise<void>>();
   readonly #unsubscribe: () => void;
   #failure: Error | undefined;
-  readonly #failureSignal: Promise<Error>;
-  #publishFailure!: (error: Error) => void;
+  readonly #failureWaiters = new Set<(error: Error) => void>();
 
   constructor(
     driver: RuntimeHostMakaSessionDriver,
@@ -789,15 +846,25 @@ class NonInteractiveInteractionController {
   ) {
     this.#driver = driver;
     this.#stop = stop;
-    this.#failureSignal = new Promise((resolve) => {
-      this.#publishFailure = resolve;
-    });
     this.#unsubscribe = driver.subscribePendingInteractions((pending) => this.#accept(pending));
   }
 
   race<T>(operation: Promise<T>): Promise<T> {
     this.throwIfFailed();
-    return Promise.race([operation, this.#failureSignal.then((error) => Promise.reject(error))]);
+    return new Promise((resolve, reject) => {
+      this.#failureWaiters.add(reject);
+      // Detach completed waits so the controller does not retain consumed event payloads.
+      operation.then(
+        (value) => {
+          this.#failureWaiters.delete(reject);
+          resolve(value);
+        },
+        (error) => {
+          this.#failureWaiters.delete(reject);
+          reject(error);
+        },
+      );
+    });
   }
 
   async settle(): Promise<void> {
@@ -844,7 +911,8 @@ class NonInteractiveInteractionController {
   #fail(error: Error): void {
     if (this.#failure) return;
     this.#failure = error;
-    this.#publishFailure(error);
+    for (const reject of this.#failureWaiters) reject(error);
+    this.#failureWaiters.clear();
   }
 }
 

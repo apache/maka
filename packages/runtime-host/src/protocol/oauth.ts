@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import { decodeConnectionSlug, RuntimePolicyDomainDecodeError } from '@maka/core/runtime-policy';
+import {
+  decodeConnectionName,
+  decodeConnectionSlug,
+  RuntimePolicyDomainDecodeError,
+} from '@maka/core/runtime-policy';
 import {
   requireEntityId,
   requireExactRecord,
@@ -45,6 +49,7 @@ export const OAUTH_LOGIN_FAILURE_CODES = [
   'capability_unavailable',
   'authorization_failed',
   'provider_rejected',
+  'slug_taken',
   'credential_changed',
   'connection_changed',
   'persistence_failed',
@@ -61,6 +66,7 @@ const COMMON_ERRORS = [
 const START_ERRORS = [
   ...COMMON_ERRORS,
   'operation_conflict',
+  'slug_taken',
   'capability_unavailable',
   'not_found',
   'persistence_failed',
@@ -107,7 +113,18 @@ export interface OAuthLoginStartInput {
 }
 
 export type OAuthLoginTarget =
-  | { readonly kind: 'create'; readonly providerType: OAuthLoginProvider }
+  | {
+      readonly kind: 'create';
+      readonly providerType: 'openai-codex';
+      readonly slug?: string;
+      readonly name?: string;
+    }
+  | {
+      readonly kind: 'create';
+      readonly providerType: Exclude<OAuthLoginProvider, 'openai-codex'>;
+      readonly slug?: never;
+      readonly name?: never;
+    }
   | { readonly kind: 'existing'; readonly connectionId: string };
 
 export interface OAuthConnectionIdentity {
@@ -223,8 +240,31 @@ export function decodeOAuthLoginProjection(value: unknown): OAuthLoginProjection
 function decodeOAuthLoginTarget(value: unknown): OAuthLoginTarget {
   const target = requireRecord(value, 'OAuth login target');
   if (target.kind === 'create') {
-    const exact = requireExactRecord(target, 'OAuth create target', ['kind', 'providerType']);
-    return { kind: 'create', providerType: oauthLoginProvider(exact.providerType) };
+    const exact = requireShapedRecord(
+      target,
+      'OAuth create target',
+      ['kind', 'providerType'],
+      ['slug', 'name'],
+    );
+    const providerType = oauthLoginProvider(exact.providerType);
+    if (providerType !== 'openai-codex') {
+      if (exact.slug !== undefined || exact.name !== undefined) {
+        throw invalidProtocolFrame(
+          'Custom OAuth Connection identity is only supported for openai-codex',
+        );
+      }
+      return { kind: 'create', providerType };
+    }
+    return {
+      kind: 'create',
+      providerType,
+      ...(exact.slug === undefined
+        ? {}
+        : { slug: decodeDomain(() => decodeConnectionSlug(exact.slug)) }),
+      ...(exact.name === undefined
+        ? {}
+        : { name: decodeDomain(() => decodeConnectionName(exact.name)) }),
+    };
   }
   if (target.kind === 'existing') {
     const exact = requireExactRecord(target, 'OAuth existing target', ['kind', 'connectionId']);
@@ -250,7 +290,8 @@ function assertOAuthStartOutput(input: OAuthLoginStartInput, output: OAuthLoginP
   assertOAuthAttemptOutput(input, output);
   if (
     (input.target.kind === 'create' &&
-      output.connection.providerType !== input.target.providerType) ||
+      (output.connection.providerType !== input.target.providerType ||
+        (input.target.slug !== undefined && output.connection.slug !== input.target.slug))) ||
     (input.target.kind === 'existing' &&
       output.connection.connectionId !== input.target.connectionId)
   ) {

@@ -31,7 +31,6 @@ import {
   type TerminalInputAction,
 } from '@maka/core/terminal-input';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
-import { redactSecrets } from '@maka/core/redaction';
 import type { ToolResultContent } from '@maka/core/events';
 import type { ToolExecutionFacts } from '@maka/core/permission';
 import type { SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
@@ -47,7 +46,6 @@ import {
   throwIfShellSetupFailed,
   type TurnShellPlan,
 } from './shell-detect.js';
-import { truncateToolOutput } from './tool-output.js';
 import {
   DEFAULT_BASH_TIMEOUT_MS,
   MAX_PTY_COLS,
@@ -694,23 +692,19 @@ export function shapeTerminalResult(input: {
   command: string;
   result: ForegroundBashResult | BoundedShellResult;
 }): TerminalToolResult {
-  const stdout = redactSecrets(input.result.stdout);
-  const stderr = redactSecrets(input.result.stderr);
-  const stdoutView = truncateToolOutput(stdout, { direction: 'tail' });
-  const stderrView = truncateToolOutput(stderr, { direction: 'tail' });
   return {
     kind: 'terminal',
     cwd: input.cwd,
-    cmd: redactSecrets(input.command),
+    cmd: input.command,
     status: terminalStatus(input.result),
     exitCode: input.result.exitCode,
     output: {
       mode: 'pipes',
-      stdout: stdoutView.content,
-      stderr: stderrView.content,
-      stdoutTruncated: Boolean(input.result.stdoutTruncated) || stdoutView.truncated,
-      stderrTruncated: Boolean(input.result.stderrTruncated) || stderrView.truncated,
-      redacted: stdout !== input.result.stdout || stderr !== input.result.stderr,
+      stdout: input.result.stdout,
+      stderr: input.result.stderr,
+      stdoutTruncated: Boolean(input.result.stdoutTruncated),
+      stderrTruncated: Boolean(input.result.stderrTruncated),
+      redacted: false,
     },
     ...(isLikelySandboxDenial({
       stdout: input.result.stdout,

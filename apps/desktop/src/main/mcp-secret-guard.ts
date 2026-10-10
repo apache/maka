@@ -308,7 +308,8 @@ function restoreRemote(
   if (next.oauth?.clientSecret !== undefined) {
     if (next.oauth.clientSecret === mcpSecretMarker('oauth')) {
       const priorSecret =
-        sameEndpoint && priorRemote.oauth?.clientId === next.oauth.clientId
+        sameEndpoint && priorRemote.oauth?.clientId === next.oauth.clientId &&
+        priorRemote.oauth?.issuer === next.oauth.issuer
           ? priorRemote.oauth?.clientSecret
           : undefined;
       if (priorSecret === undefined) {

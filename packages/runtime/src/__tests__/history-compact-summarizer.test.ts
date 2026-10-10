@@ -40,6 +40,15 @@ import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js'
 import { SUMMARY_FORMAT_TEMPLATE } from '../history-compact-summary-validation.js';
 import { sectionedSummary } from './history-compact-test-fixtures.js';
 
+// The summarization instruction rides as the request's trailing user message,
+// never as a separate system-role field (#4634).
+function trailingMessageText(options: Parameters<AiSdkGenerateTextLike>[0]): string {
+  const last = options.messages[options.messages.length - 1];
+  assert.ok(last && last.role === 'user');
+  const parts = Array.isArray(last.content) ? last.content : [];
+  return parts.map((part) => (part.type === 'text' ? part.text : '')).join('');
+}
+
 const ts = 1_700_000_000_000;
 let __seq = 0;
 function ev(overrides: Partial<RuntimeEvent> & { content?: RuntimeEventContent }): RuntimeEvent {
@@ -585,7 +594,7 @@ describe('buildLlmHistorySummarizer', () => {
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',
       generateText: async (options) => {
-        instructions.push(options.instructions);
+        instructions.push(trailingMessageText(options));
         return {
           text: VALID_SUMMARY,
           finishReason: instructions.length === 1 ? 'length' : 'stop',
@@ -627,7 +636,7 @@ describe('buildLlmHistorySummarizer', () => {
     const summarize = buildLlmHistorySummarizer({
       resolveModel: () => 'fake-model',
       generateText: async (options) => {
-        instructions.push(options.instructions);
+        instructions.push(trailingMessageText(options));
         return {
           text: instructions.length === 1 ? 'free-form incomplete summary' : VALID_SUMMARY,
           finishReason: 'stop',
@@ -642,6 +651,31 @@ describe('buildLlmHistorySummarizer', () => {
     assert.equal(result, VALID_SUMMARY);
     assert.equal(instructions.length, 2);
     assert.match(instructions[1] ?? '', /malformed_summary_missing_section/);
+  });
+
+  test('delivers the summarization instruction as the trailing user message (#4634)', async () => {
+    const seen: Parameters<AiSdkGenerateTextLike>[0][] = [];
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async (options) => {
+        seen.push(options);
+        return { text: VALID_SUMMARY };
+      },
+    });
+
+    await summarize(
+      inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+    );
+
+    assert.equal(seen.length, 1);
+    const request = seen[0];
+    assert.ok(request);
+    // A system-role instruction never reaches the wire: agentic models such
+    // as kimi k3-256k ignore it and keep answering the conversation, and a
+    // distinct system prompt forfeits the main loop's prefix cache.
+    assert.equal('instructions' in request, false);
+    assert.match(trailingMessageText(request), /context summarization assistant/);
+    assert.match(trailingMessageText(request), /Now write the structured summary/);
   });
 
   test('bounds a persistently malformed completion at two provider calls', async () => {

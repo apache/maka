@@ -29,11 +29,10 @@ import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
-  defaultEnabledModelIdsWhenOmitted,
   PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
-import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
+import { normalizeModelOverrides } from '@maka/core/model-thinking';
 import type { CredentialLocator } from '@maka/core/runtime-policy';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
@@ -135,15 +134,24 @@ export function registerRuntimeHostConnectionsIpc(
       return { names: result.names } satisfies SavedRequestHeaders;
     },
   );
-  deps.ipcMain.handle('connections:setDefault', async (_event, identity: unknown) => {
+  deps.ipcMain.handle('connections:setDefault', async (_event, identity: unknown, modelId?: unknown) => {
     const catalog = await snapshot();
+    const connection = identity === null ? null : requireConnectionIdentity(catalog, identity);
+    if (modelId !== undefined && (typeof modelId !== 'string' || !modelId.trim() || !connection)) {
+      throw new Error('Invalid default model selection');
+    }
     const target = identity === null
       ? null
-      : defaultTargetForConnection(requireConnectionIdentity(catalog, identity));
-    requireCommitted(
-      await deps.client.setDefaultConnectionTarget(catalog.revision, target),
-      'set default Connection',
+      : typeof modelId === 'string'
+        ? { connectionId: connection!.connectionId, modelId }
+        : defaultTargetForConnection(connection!);
+    const enableModel = typeof modelId === 'string' && !connection!.enabledModelIds.includes(modelId);
+    const result = await deps.client.setDefaultConnectionTarget(
+      catalog.revision, target, enableModel ? true : undefined,
     );
+    if (result.kind === 'revision_conflict') throw new Error('DEFAULT_CONNECTION_CHANGED');
+    if (result.kind === 'invalid_default_target') throw new Error('DEFAULT_MODEL_UNAVAILABLE');
+    requireCommitted(result, 'set default Connection');
     deps.emitConnectionListChanged();
   });
   deps.ipcMain.handle('connections:setDefaultBySlug', async (_event, slug: unknown) => {
@@ -202,18 +210,20 @@ export function registerRuntimeHostConnectionsIpc(
     const catalog = await snapshot();
     // Profiles ride as the typed field end to end — nothing free-form
     // crosses to the host.
-    const relayModelProfiles = input.relayModelProfiles;
+    const modelOverrides = input.modelOverrides;
     const created = await deps.client.createConnection(catalog.revision, {
       slug: input.slug,
       name: input.name,
       providerType: input.providerType,
       ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
+      ...(input.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: input.defaultApiProtocol }),
       enabled: true,
       enabledModelIds: connectionEnabledModelIds({
         defaultModel: input.defaultModel,
-        enabledModelIds: defaultEnabledModelIdsWhenOmitted(input.providerType),
       }),
-      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+      ...(modelOverrides === undefined ? {} : { modelOverrides }),
       ...(input.requestBodyOverlay === undefined
         ? {}
         : { requestBodyOverlay: input.requestBodyOverlay }),
@@ -269,9 +279,9 @@ export function registerRuntimeHostConnectionsIpc(
         // Tri-state: a patch that mentions profiles re-normalizes them (empty
         // normalization = clear); a patch without profiles omits the key
         // entirely, which the store reads as "leave the table alone".
-        ...(patch.relayModelProfiles === undefined
+        ...(patch.modelOverrides === undefined
           ? {}
-          : { relayModelProfiles: normalizeRelayModelProfiles(patch.relayModelProfiles) ?? null }),
+          : { modelOverrides: normalizeModelOverrides(patch.modelOverrides) ?? null }),
         ...(patch.requestBodyOverlay === undefined
           ? {}
           : { requestBodyOverlay: patch.requestBodyOverlay }),
@@ -333,9 +343,12 @@ export function registerRuntimeHostConnectionsIpc(
       throw new Error('Unable to delete Connection: connection_stale');
     }
   });
-  deps.ipcMain.handle('connections:fetchModels', async (_event, identity: unknown) => {
+  deps.ipcMain.handle('connections:fetchModels', async (_event, identity: unknown, options?: { preserveSelection?: unknown }) => {
     const current = requireConnectionIdentity(await snapshot(), identity);
-    const result = await deps.client.fetchConnectionModels(current.connectionId);
+    if (options?.preserveSelection !== undefined && typeof options.preserveSelection !== 'boolean') {
+      throw new Error('Invalid model discovery selection policy');
+    }
+    const result = await deps.client.fetchConnectionModels(current.connectionId, options?.preserveSelection);
     if (result.kind !== 'committed') {
       throw new Error(`Unable to fetch Connection models: ${result.kind}`);
     }
@@ -407,14 +420,17 @@ export function projectHostConnections(
       name: connection.name,
       providerType: connection.providerType,
       ...(connection.baseUrl === undefined ? {} : { baseUrl: connection.baseUrl }),
+      ...(connection.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: connection.defaultApiProtocol }),
       enabled: connection.enabled,
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],
       models: [...connection.models],
       catalogEntries: connection.catalogEntries,
-      ...(connection.relayModelProfiles === undefined
+      ...(connection.modelOverrides === undefined
         ? {}
-        : { relayModelProfiles: connection.relayModelProfiles }),
+        : { modelOverrides: connection.modelOverrides }),
       ...(connection.requestBodyOverlay === undefined
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),
@@ -583,6 +599,20 @@ function normalizeUpdateInput(
   value: unknown,
 ): UpdateConnectionInput {
   const patch = normalizeConnectionPatchSecretsForIpc(value);
+  if (patch.modelOverride !== undefined) {
+    const { modelId, expected, value: override, enable } = patch.modelOverride;
+    if (typeof modelId !== 'string' || !modelId.trim() || modelId !== modelId.trim() ||
+      typeof override !== 'object' || override === null || Array.isArray(override) ||
+      (enable !== undefined && typeof enable !== 'boolean') || patch.modelOverrides !== undefined) {
+      throw new Error('Invalid model override');
+    }
+    const normalize = (value: unknown) => normalizeModelOverrides({ model: value })?.model ?? null;
+    if (expected === undefined || JSON.stringify(normalize(expected)) !== JSON.stringify(normalize(current.modelOverrides?.[modelId]))) {
+      throw new Error('Model parameters changed. Reopen the editor before saving again.');
+    }
+    patch.modelOverrides = { ...current.modelOverrides, [modelId]: override };
+    if (enable) patch.enabledModelIds = [...new Set([...current.enabledModelIds, modelId])];
+  }
   if (patch.enabledModelIds !== undefined && !patch.enabledModelIds.every((id) => typeof id === 'string')) {
     throw new Error('Invalid enabled model list');
   }

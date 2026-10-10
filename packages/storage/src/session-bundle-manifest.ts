@@ -33,6 +33,7 @@ import {
   SessionBundleFileError,
   type SessionBundleManifestV1,
 } from './session-bundle-contract.js';
+import { stableJsonStringify } from '@maka/core/canonical-json';
 
 const MANIFEST_KEYS = ['codec', 'envelope', 'payload', 'schemaVersion', 'stateIdentity'] as const;
 const CODEC_KEYS = [
@@ -205,19 +206,11 @@ function decodePayload(value: unknown): SessionBundleManifestV1['payload'] {
 }
 
 function canonicalJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw invalidManifest();
-    return JSON.stringify(value);
+  try {
+    return stableJsonStringify(value);
+  } catch {
+    throw invalidManifest();
   }
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (!isRecord(value)) throw invalidManifest();
-  return `{${Object.keys(value)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-    .join(',')}}`;
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {

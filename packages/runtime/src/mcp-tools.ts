@@ -28,6 +28,7 @@ import type {
 } from '@maka/core/mcp';
 import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import type { PermissionMode, ToolCategory } from '@maka/core/permission';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
@@ -131,9 +132,7 @@ export function buildMcpToolsWithIdentities(
       toolName: descriptor.name,
       tool: {
         name,
-        description:
-          descriptor.description?.trim() ||
-          `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
+        description: mcpToolDescription(descriptor),
         displayName: descriptor.annotations?.title?.trim() || descriptor.name,
         activityKind: options.activityKindForDescriptor?.(descriptor) ?? 'tool',
         // MCP annotations are advisory provider claims, not a security boundary.
@@ -223,14 +222,31 @@ export function buildMcpToolsWithIdentities(
   });
 }
 
+function mcpToolDescription(descriptor: McpToolDescriptor): string {
+  const description =
+    descriptor.description?.trim() ||
+    `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`;
+  return description.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
+}
+
 export function mcpProxyToolName(serverId: string, toolName: string): string {
   const raw = `mcp__${sanitizeNamePart(serverId)}__${sanitizeNamePart(toolName)}`;
-  if (raw.length <= MAX_PROVIDER_TOOL_NAME) return raw;
+  // Preserve existing simple names; hash identities whose spelling or separators are ambiguous.
+  if (
+    raw.length <= MAX_PROVIDER_TOOL_NAME &&
+    sanitizeNamePart(serverId) === serverId &&
+    sanitizeNamePart(toolName) === toolName &&
+    !serverId.includes('__') &&
+    !toolName.includes('__')
+  )
+    return raw;
   const hash = createHash('sha256')
     .update(`${serverId}\0${toolName}`)
     .digest('hex')
     .slice(0, HASH_CHARS);
-  return `${raw.slice(0, MAX_PROVIDER_TOOL_NAME - HASH_CHARS - 2)}__${hash}`;
+  // A truncated name must not become another identity's unmodified name.
+  const hashed = `mcp_h__${sanitizeNamePart(serverId)}__${sanitizeNamePart(toolName)}`;
+  return `${hashed.slice(0, MAX_PROVIDER_TOOL_NAME - HASH_CHARS - 2)}__${hash}`;
 }
 
 function sanitizeNamePart(value: string): string {

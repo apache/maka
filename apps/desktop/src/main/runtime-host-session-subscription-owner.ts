@@ -20,6 +20,8 @@
 import {
   RuntimeHostOperationError,
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
+  subscriptionClosedError,
 } from "@maka/runtime-host/client";
 import type {
   SessionAssistantStreamIdentity,
@@ -35,9 +37,6 @@ import {
   type DesktopTranscriptReplicaOptions,
 } from './desktop-transcript-replica.js';
 
-const MAX_PENDING_FRAMES = 32;
-const MAX_PENDING_FRAME_BYTES = 256 * 1024;
-
 type SessionSubscriptionClient = Pick<DesktopRuntimeHostClient, "openSession">;
 
 export interface PreparedSessionSubscription {
@@ -49,12 +48,16 @@ export interface PreparedSessionSubscription {
 export interface RuntimeHostSessionSubscriptionOwnerDeps {
   readonly client: SessionSubscriptionClient;
   readonly sessionId: string;
-  readonly now: () => number;
   readonly transcriptReplicaOptions?: DesktopTranscriptReplicaOptions;
   prepareActivation(
     subscription: PreparedSessionSubscription,
     recovered: boolean,
   ): Promise<() => void>;
+  /**
+   * Installs a reseeded replica inside the owner's swap, synchronously and
+   * before the evicted replica closes — same atomicity activate() gets.
+   */
+  installReseededReplica(replica: DesktopTranscriptReplica): void;
   acceptFrame(frame: SubscriptionFrame): void | Promise<void>;
   recoveryStarted(error: Error): void;
   recoveryCompleted(error: Error): void;
@@ -64,17 +67,13 @@ export interface RuntimeHostSessionSubscriptionOwnerDeps {
 
 interface SubscriptionAttempt {
   readonly handle: DesktopRuntimeHostSession;
-  readonly pendingFrames: SubscriptionFrame[];
-  readonly failed: Promise<Error>;
-  pendingFrameBytes: number;
+  preparationFailure?: {
+    readonly promise: Promise<Error>;
+    readonly resolve: (error: Error) => void;
+  };
   replica?: DesktopTranscriptReplica;
-  phase: 'preparing' | 'active' | 'retiring';
   failure?: Error;
   fail(error: Error): void;
-}
-
-export class SessionRemovedSubscriptionError extends Error {
-  readonly name = "SessionRemovedSubscriptionError";
 }
 
 /** Owns exactly one replaceable Host subscription for one Desktop Session. */
@@ -83,9 +82,10 @@ export class RuntimeHostSessionSubscriptionOwner {
   #attempt?: SubscriptionAttempt;
   #candidate?: SubscriptionAttempt;
   #readyTask: Promise<void> = Promise.resolve();
-  #refreshTask?: Promise<void>;
   #started = false;
   #closed = false;
+  #ptyInterests: readonly string[] = [];
+  #ptyUpdate: Promise<void> = Promise.resolve();
 
   constructor(deps: RuntimeHostSessionSubscriptionOwnerDeps) {
     this.#deps = deps;
@@ -105,14 +105,15 @@ export class RuntimeHostSessionSubscriptionOwner {
     }
   }
 
-  refresh(): Promise<void> {
-    if (this.#refreshTask) return this.#refreshTask;
-    const task = this.#refresh();
-    const tracked = task.finally(() => {
-      if (this.#refreshTask === tracked) this.#refreshTask = undefined;
+  setPtyInterests(refs: readonly string[]): Promise<void> {
+    if (refs.length === this.#ptyInterests.length && refs.every((ref, index) => ref === this.#ptyInterests[index])) return this.#ptyUpdate;
+    this.#ptyInterests = [...refs];
+    const update = this.#ptyUpdate.catch(() => undefined).then(async () => {
+      await this.waitUntilReady();
+      if (!this.#closed) await this.#attempt?.handle.setPtyInterests?.(this.#ptyInterests);
     });
-    this.#refreshTask = tracked;
-    return tracked;
+    this.#ptyUpdate = update;
+    return update;
   }
 
   async close(): Promise<void> {
@@ -132,74 +133,69 @@ export class RuntimeHostSessionSubscriptionOwner {
     ]);
   }
 
-  async #refresh(): Promise<void> {
+  /**
+   * Rebuilds the transcript tail on the live subscription after the replica
+   * was evicted. The commit runs inside the staleness check — the caller's
+   * state moves to the new replica before the evicted one closes, so an
+   * installed replica is never a closed object. A concurrent recovery
+   * installs its own replica through activation instead.
+   */
+  async reseedTranscriptReplica(): Promise<void> {
     await this.waitUntilReady();
-    this.#assertOpen();
-    const readyTask = this.#readyTask;
-    const previous = this.#attempt;
-    if (!previous) throw ownerClosed();
-    let attempt: SubscriptionAttempt | undefined;
+    if (this.#closed) return;
+    const attempt = this.#attempt;
+    if (!attempt) return;
+    const evicted = attempt.replica;
+    if (evicted?.resident) return;
+    let replica: DesktopTranscriptReplica;
     try {
-      const prepared = await this.#prepare();
-      attempt = prepared.attempt;
-      if (attempt.failure) throw attempt.failure;
-      previous.phase = 'retiring';
-      const activate = await this.#prepareActivation(attempt, prepared.prepared, false);
-      if (attempt.failure) throw attempt.failure;
-      if (this.#closed || this.#candidate !== attempt || this.#attempt !== previous) {
-        throw ownerClosed();
-      }
-      activate();
-      this.#candidate = undefined;
-      this.#attempt = attempt;
-      previous.replica?.close();
-      await previous.handle.close().catch(() => undefined);
-      await this.#drainPendingFrames(attempt);
-      attempt.phase = 'active';
+      replica = await DesktopTranscriptReplica.reseed(
+        attempt.handle,
+        this.#deps.transcriptReplicaOptions,
+      );
     } catch (error) {
-      const failure = asError(error);
-      if (attempt && this.#attempt === attempt) {
-        this.#replaceReadyTask(this.#establish(attempt, failure));
-        await this.waitUntilReady();
-        return;
-      }
-      if (attempt && this.#candidate === attempt) this.#candidate = undefined;
-      attempt?.replica?.close();
-      await attempt?.handle.close().catch(() => undefined);
-      if (this.#attempt === previous && previous.phase === 'retiring') {
-        if (previous.failure) {
-          this.#replaceReadyTask(this.#establish(previous, previous.failure));
-          await this.waitUntilReady();
-          return;
-        }
-        previous.phase = 'active';
-        try {
-          await this.#drainPendingFrames(previous);
-        } catch (error) {
-          const recoveryError = asError(error);
-          this.#replaceReadyTask(this.#establish(previous, recoveryError));
-          await this.waitUntilReady();
-          return;
-        }
-      }
-      if (this.#readyTask !== readyTask) {
-        await this.waitUntilReady();
-        if (this.#attempt?.replica?.resident) return;
-      }
-      throw failure;
+      // A subscription-scoped read failure means this handle is dead; the
+      // attempt decides whether that means recovery or terminal, exactly like
+      // a pump-frame failure does. Unclassified failures stay the caller's
+      // transient error.
+      if (!this.#failAttempt(attempt, error, true)) throw error;
+      await this.waitUntilReady();
+      return;
     }
+    if (this.#closed || this.#attempt !== attempt || attempt.replica !== evicted) {
+      replica.close();
+      // The swap lost to an in-flight recovery or a concurrent reseed; wait
+      // for it to settle so the caller picks up the installed replica rather
+      // than erroring on the corpse it replaced.
+      await this.waitUntilReady();
+      return;
+    }
+    try {
+      this.#deps.installReseededReplica(replica);
+    } catch (error) {
+      replica.close();
+      throw error;
+    }
+    attempt.replica = replica;
+    evicted?.close();
+    // Rows committed between the reseed's fetch and this commit are still
+    // unread; the catch-up is an attempt read, so a dead handle takes the
+    // same recovery path as a pump-frame rejection.
+    void replica.advance().catch((error) => this.#failAttempt(attempt, error, true));
   }
 
   async #establish(failed?: SubscriptionAttempt, initialError?: Error): Promise<void> {
     let recoveryError = initialError;
     if (recoveryError) this.#deps.recoveryStarted(recoveryError);
     if (failed) {
+      // Detach before the first await: a concurrent reseed must observe the
+      // attempt as gone rather than swap a replica onto this corpse.
+      if (this.#attempt === failed) this.#attempt = undefined;
       const candidate = this.#candidate;
       this.#candidate = undefined;
       candidate?.fail(ownerClosed());
       candidate?.replica?.close();
       await candidate?.handle.close().catch(() => undefined);
-      if (this.#attempt === failed) this.#attempt = undefined;
       failed.replica?.close();
       await failed.handle.close().catch(() => undefined);
     }
@@ -235,8 +231,8 @@ export class RuntimeHostSessionSubscriptionOwner {
         activate();
         this.#candidate = undefined;
         this.#attempt = attempt;
-        await this.#drainPendingFrames(attempt);
-        attempt.phase = "active";
+        attempt.preparationFailure = undefined;
+        await attempt.handle.ready();
       } catch (error) {
         if (this.#candidate === attempt) this.#candidate = undefined;
         if (this.#attempt === attempt) this.#attempt = undefined;
@@ -269,20 +265,13 @@ export class RuntimeHostSessionSubscriptionOwner {
       throw ownerClosed();
     }
 
-    let fail!: (error: Error) => void;
-    const failed = new Promise<Error>((resolve) => {
-      fail = resolve;
-    });
     const attempt: SubscriptionAttempt = {
       handle,
-      pendingFrames: [],
-      failed,
-      pendingFrameBytes: 0,
-      phase: "preparing",
+      preparationFailure: createPreparationFailure(),
       fail(error) {
         if (attempt.failure) return;
         attempt.failure = error;
-        fail(error);
+        attempt.preparationFailure?.resolve(error);
       },
     };
     if (this.#candidate) {
@@ -290,6 +279,10 @@ export class RuntimeHostSessionSubscriptionOwner {
       throw new Error('Runtime Host Session replacement is already preparing');
     }
     this.#candidate = attempt;
+    handle.subscribePtyData?.((frame) => {
+      if (this.#closed || attempt.failure || (this.#candidate !== attempt && this.#attempt !== attempt)) return;
+      void Promise.resolve(this.#deps.acceptFrame(frame)).catch(() => undefined);
+    });
     void this.#pump(attempt);
 
     const replicaPreparation = DesktopTranscriptReplica.prepare(
@@ -297,12 +290,13 @@ export class RuntimeHostSessionSubscriptionOwner {
       this.#deps.transcriptReplicaOptions,
     );
     try {
+      if (this.#ptyInterests.length > 0) await handle.setPtyInterests?.(this.#ptyInterests);
       const loaded = await Promise.race([
         replicaPreparation.then(
           (replica) => ({ kind: "replica" as const, replica }),
           (error: unknown) => ({ kind: "failure" as const, error: asError(error) }),
         ),
-        failed.then((error) => ({ kind: "failure" as const, error })),
+        attempt.preparationFailure!.promise.then((error) => ({ kind: "failure" as const, error })),
       ]);
       if (loaded.kind === "failure") throw loaded.error;
       attempt.replica = loaded.replica;
@@ -335,7 +329,7 @@ export class RuntimeHostSessionSubscriptionOwner {
         (activate) => ({ kind: 'ready' as const, activate }),
         (error: unknown) => ({ kind: 'failure' as const, error: asError(error) }),
       ),
-      attempt.failed.then((error) => ({ kind: 'failure' as const, error })),
+      attempt.preparationFailure!.promise.then((error) => ({ kind: 'failure' as const, error })),
     ]);
     if (result.kind === 'failure') throw result.error;
     return result.activate;
@@ -345,40 +339,80 @@ export class RuntimeHostSessionSubscriptionOwner {
     try {
       for await (const frame of attempt.handle.events) {
         if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
-        if (frame.kind === "subscription.closed") {
-          throw subscriptionClosedError(frame.reason);
-        }
-        if (attempt.phase !== 'active') {
-          const frameBytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
-          if (
-            attempt.pendingFrames.length >= MAX_PENDING_FRAMES ||
-            attempt.pendingFrameBytes + frameBytes > MAX_PENDING_FRAME_BYTES
-          ) {
-            throw new RuntimeHostSubscriptionError(
-              'slow_consumer',
-              'Runtime Host Session transcript could not keep up with live events',
-            );
+        try {
+          if (frame.kind === "subscription.closed") {
+            throw subscriptionClosedError(frame.reason);
           }
-          attempt.pendingFrames.push(frame);
-          attempt.pendingFrameBytes += frameBytes;
-        } else {
+          if (this.#candidate === attempt) {
+            // The Host holds frames until `ready()`, so one arriving while the
+            // attempt is still a candidate is a broken contract rather than a
+            // consumer falling behind.
+            throw new Error('Runtime Host sent a Session frame before the subscriber was ready');
+          }
           await this.#deps.acceptFrame(frame);
+        } catch (error) {
+          // Leaving the iterator awaits its return() — the subscription's
+          // close handshake — so the failure has to be on its way to teardown
+          // before this loop exits, not after.
+          if (
+            this.#failAttempt(
+              attempt,
+              error,
+              frame.kind === 'subscription.transcript_advanced',
+            )
+          ) {
+            return;
+          }
         }
       }
       if (!this.#closed) {
         throw new Error("Runtime Host Session subscription ended unexpectedly");
       }
     } catch (error) {
-      if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) return;
-      const failure = asError(error);
-      if (attempt.phase !== 'active') {
-        attempt.fail(failure);
-      } else if (isRecoverableSubscriptionFailure(failure)) {
-        this.#replaceReadyTask(this.#establish(attempt, failure));
-      } else {
-        this.#deps.terminalFailure(failure);
-      }
+      this.#failAttempt(attempt, error, false);
     }
+  }
+
+  /**
+   * Routes a reported failure. `absorbUnclassified` marks read-only callers
+   * (transcript catch-up, reseed reads) whose failures are always safe to
+   * retry on the next frame. Returns false only when the failure was
+   * absorbed; every classified path leaves the attempt dead or replaced.
+   */
+  #failAttempt(
+    attempt: SubscriptionAttempt,
+    error: unknown,
+    absorbUnclassified: boolean,
+  ): boolean {
+    if (this.#closed || (this.#attempt !== attempt && this.#candidate !== attempt)) {
+      return true;
+    }
+    // A transcript read that raced the subscription's death only sees its
+    // dead-state mask ('connection_closed'); the subscription itself already
+    // recorded the real reason before the mask can fire.
+    const failure = asError(attempt.handle.deathCause ?? error);
+    if (this.#candidate === attempt) {
+      attempt.fail(failure);
+      return true;
+    }
+    if (isRecoverableSubscriptionFailure(failure)) {
+      this.#replaceReadyTask(this.#establish(attempt, failure));
+      return true;
+    }
+    if (
+      failure instanceof RuntimeHostSubscriptionError ||
+      failure instanceof SessionRemovedSubscriptionError
+    ) {
+      this.#deps.terminalFailure(failure);
+      return true;
+    }
+    // Unclassified errors carry no evidence of subscription death. A read
+    // failure is safe to absorb — the watermark is still ahead and the next
+    // frame retries it — but anything else may be a committed frame
+    // mutation that will not be replayed, so it still dies loudly.
+    if (absorbUnclassified) return false;
+    this.#deps.terminalFailure(failure);
+    return true;
   }
 
   #replaceReadyTask(task: Promise<void>): void {
@@ -389,49 +423,28 @@ export class RuntimeHostSessionSubscriptionOwner {
     });
   }
 
-  async #drainPendingFrames(attempt: SubscriptionAttempt): Promise<void> {
-    while (attempt.pendingFrames.length > 0) {
-      const frame = attempt.pendingFrames.shift()!;
-      attempt.pendingFrameBytes -= Buffer.byteLength(JSON.stringify(frame), 'utf8');
-      await this.#deps.acceptFrame(frame);
-      if (attempt.failure) throw attempt.failure;
-    }
-  }
-
   #assertOpen(): void {
     if (this.#closed) throw ownerClosed();
   }
 }
 
-function subscriptionClosedError(
-  reason: "slow_consumer" | "session_removed" | 'access_revoked',
-): Error {
-  if (reason === 'session_removed') {
-    return new SessionRemovedSubscriptionError(
-      'Runtime Host Session was removed while it was observed',
-    );
-  }
-  if (reason === 'access_revoked') {
-    return new SessionRemovedSubscriptionError(
-      'Access to the shared Runtime Host Session was revoked',
-    );
-  }
-  return new RuntimeHostSubscriptionError(
-    'slow_consumer',
-    'Runtime Host Session subscription closed for a slow consumer',
-  );
+function createPreparationFailure(): NonNullable<SubscriptionAttempt['preparationFailure']> {
+  // Keep both roots together so activation can release the completed race results.
+  // In particular, the attempt's fail method must not capture this resolver.
+  let resolve!: (error: Error) => void;
+  const promise = new Promise<Error>((settle) => { resolve = settle; });
+  return { promise, resolve };
 }
 
 function isRecoverableSubscriptionFailure(error: unknown): boolean {
   if (error instanceof RuntimeHostOperationError) {
-    return error.operation === "session.transcript.page" && error.code === "not_found";
+    return error.operation === 'session.transcript.page' && error.code === 'not_found';
   }
   if (!(error instanceof RuntimeHostSubscriptionError)) return false;
   return (
-    error.reason === "slow_consumer" ||
-    error.reason === "sequence_gap" ||
-    error.reason === "projection_revision_invalid" ||
-    error.reason === "transcript_release_failed"
+    error.reason === 'slow_consumer' ||
+    error.reason === 'sequence_gap' ||
+    error.reason === 'projection_revision_invalid'
   );
 }
 

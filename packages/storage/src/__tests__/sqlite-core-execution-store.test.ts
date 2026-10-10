@@ -333,6 +333,10 @@ describe('SQLite core execution stores', () => {
 
       const database = new DatabaseSync(join(root, 'runtime.sqlite'));
       database.exec(`
+        -- Recreate the old schema, before Usage screen invalidation referenced this column.
+        DROP TRIGGER core_agent_runs_screen_insert;
+        DROP TRIGGER core_agent_runs_screen_update;
+        DROP TRIGGER core_agent_runs_screen_delete;
         DROP INDEX core_agent_runs_model_call_high_water;
         ALTER TABLE core_agent_runs DROP COLUMN latest_model_call_sequence;
         UPDATE operational_schema_migrations SET version = 3 WHERE scope = 'core_execution';
@@ -399,7 +403,7 @@ describe('SQLite core execution stores', () => {
     });
   });
 
-  test('drops the obsolete AgentRun identity index on upgrade', async () => {
+  test('drops obsolete execution indexes on upgrade', async () => {
     await withRoot(async (root) => {
       createSqliteAgentRunStore(root).close?.();
       const path = join(root, 'runtime.sqlite');
@@ -407,6 +411,8 @@ describe('SQLite core execution stores', () => {
       legacy.exec(`
         CREATE INDEX IF NOT EXISTS core_agent_runs_identity
           ON core_agent_runs(run_id, session_id);
+        CREATE INDEX IF NOT EXISTS core_interaction_requests_by_turn
+          ON core_interaction_requests(session_id, turn_id, created_at, request_id);
         UPDATE operational_schema_migrations SET version = 5 WHERE scope = 'core_execution';
       `);
       legacy.close();
@@ -417,7 +423,7 @@ describe('SQLite core execution stores', () => {
         assert.deepEqual(
           migrated
             .prepare(
-              "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'core_agent_runs_identity'",
+              "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('core_agent_runs_identity', 'core_interaction_requests_by_turn')",
             )
             .all(),
           [],

@@ -28,7 +28,7 @@ import {
   nonTextMessageAck,
   plaintextHelpReply,
 } from '@maka/core/bot-events';
-import { generalizedErrorMessage } from '@maka/core/redaction';
+import { generalizedErrorMessageForLocale } from '@maka/core/redaction';
 import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runtime/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isBotSessionUnavailableError } from './bot-session-adapter.js';
@@ -392,7 +392,7 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       if (closed) return;
       const detail = isSessionWorkspaceUnavailableError(error)
         ? '工作目录不可用，请在桌面端选择有效目录后重试'
-        : generalizedErrorMessage(error, '机器人对话处理失败');
+        : generalizedErrorMessageForLocale(error, '机器人对话处理失败', 'zh-CN');
       const replyOptions = {
         ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
         // Error notice: same 5-minute TTL as the other transient system

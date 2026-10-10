@@ -17,15 +17,11 @@
  * under the License.
  */
 
-// Workspace-root resolution now lives in @maka/storage. This file remains
-// as a re-export so existing relative CLI importers keep working.
+// Keep the CLI compatibility path while storage owns workspace-root resolution.
+// New callers should import the storage subpath directly.
 export {
   deriveMakaDataRoots,
   resolveMakaClientDataRoot,
   resolveMakaDataRoots,
   resolveMakaWorkspaceRoot,
-  type DeriveMakaDataRootsInput,
-  type MakaDataRoots,
-  type ResolveMakaClientDataRootInput,
-  type ResolveMakaWorkspaceRootInput,
 } from '@maka/storage/workspace-root';

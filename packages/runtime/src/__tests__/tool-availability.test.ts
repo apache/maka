@@ -26,8 +26,10 @@ import {
   TOOL_SEARCH_NAME,
   ToolAvailabilityRuntime,
   toolAvailabilityHash,
+  toolAvailabilityConnectorNames,
   type ToolSearchResult,
 } from '../tool-availability.js';
+import { bindToolActivationIdentity, toolActivationKey } from '../tool-activation-identity.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
 function tool(name: string, description = name): MakaTool {
@@ -72,6 +74,17 @@ test('tool availability hash canonicalizes group members', () => {
 
 test('tool availability hash distinguishes full and search-enabled bindings', () => {
   assert.notEqual(toolAvailabilityHash(undefined), toolAvailabilityHash({}));
+});
+
+test('availability reports the synthetic connector only when Runtime generates it', () => {
+  assert.deepEqual(toolAvailabilityConnectorNames([tool('Read'), tool('docs_read')], {}), [
+    TOOL_SEARCH_NAME,
+  ]);
+  assert.deepEqual(
+    toolAvailabilityConnectorNames([tool('Read'), tool('docs_read')], undefined),
+    [],
+  );
+  assert.deepEqual(toolAvailabilityConnectorNames([tool('Read')], {}), []);
 });
 
 function runtime() {
@@ -129,6 +142,16 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(plan.activeTools, ['Skill', 'SkillSearch', TOOL_SEARCH_NAME]);
   });
 
+  test('Plan execution tools stay direct when search is enabled', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('update_plan'), tool('cancel_plan'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['cancel_plan', TOOL_SEARCH_NAME, 'update_plan']);
+    assert.doesNotMatch(searchTool(plan).description, /update_plan|cancel_plan/);
+  });
+
   test('provider-routed apply_patch inherits direct editing visibility', () => {
     const plan = new ToolAvailabilityRuntime(
       [tool('apply_patch'), tool('custom')],
@@ -169,8 +192,51 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     });
   });
 
+  test('an exact catalog name activates only that tool, not MiniSearch neighbors', async () => {
+    const active = new Map<string, string>();
+    const plan = new ToolAvailabilityRuntime(
+      [
+        tool('request_sandbox_boundary', 'Request a sandbox boundary change'),
+        tool('request_sandbox_boundary_status', 'Report sandbox boundary status'),
+        tool('mcp__memory__read_graph', 'Read the memory graph'),
+        tool('RecallMaterial', 'Recall stored material'),
+      ],
+      {},
+      invalid,
+    ).prepare(active);
+
+    assert.deepEqual(await searchTool(plan).impl({ query: 'request_sandbox_boundary' }, ctx), {
+      activated: ['request_sandbox_boundary'],
+    });
+    assert.deepEqual([...active.keys()], ['request_sandbox_boundary']);
+  });
+
+  test('a unique case-insensitive catalog name is treated as an exact match', async () => {
+    const active = new Map<string, string>();
+    const plan = new ToolAvailabilityRuntime(
+      [
+        tool('request_sandbox_boundary', 'Request a sandbox boundary change'),
+        tool('request_sandbox_boundary_status', 'Report sandbox boundary status'),
+        tool('mcp__memory__read_graph', 'Read the memory graph'),
+      ],
+      {},
+      invalid,
+    ).prepare(active);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'REQUEST_SANDBOX_BOUNDARY' }, ctx), {
+      activated: ['request_sandbox_boundary'],
+    });
+    assert.deepEqual([...active.keys()], ['request_sandbox_boundary']);
+  });
+
+  test('an exact direct tool name does not activate deferred neighbors', async () => {
+    const active = new Map<string, string>();
+    const plan = runtime().prepare(active);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'Read' }, ctx), { activated: [] });
+    assert.equal(active.size, 0);
+  });
+
   test('a successful search activates bounded matches for the next projection', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const traces: Record<string, unknown>[] = [];
     const plan = runtime().prepare(active);
     const connector = searchTool(plan);
@@ -197,6 +263,64 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(traces[0]?.activated, ['docs_edit']);
   });
 
+  test('a same-name replacement does not inherit the retired contribution activation', async () => {
+    const first = bindToolActivationIdentity(tool('plugin_weather', 'weather'), {
+      kind: 'plugin',
+      scopeId: 'profile',
+      entryId: 'weather-entry',
+      extensionId: 'weather-plugin',
+      generation: 1,
+      toolName: 'plugin_weather',
+    });
+    const active = new Map<string, string>();
+    const initial = new ToolAvailabilityRuntime(
+      [first],
+      { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
+      invalid,
+    ).prepare(active);
+    await searchTool(initial).impl({ query: 'weather' }, ctx);
+    assert.equal(active.get('plugin_weather'), toolActivationKey(first));
+
+    const replacement = bindToolActivationIdentity(tool('plugin_weather', 'weather'), {
+      kind: 'plugin',
+      scopeId: 'profile',
+      entryId: 'weather-entry',
+      extensionId: 'weather-plugin',
+      generation: 2,
+      toolName: 'plugin_weather',
+    });
+    const next = new ToolAvailabilityRuntime(
+      [replacement],
+      { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
+      invalid,
+    ).prepare(active);
+
+    assert.equal(active.has('plugin_weather'), false);
+    assert.equal(next.activeTools.includes('plugin_weather'), false);
+  });
+
+  test('an equivalent rebuilt Host wrapper keeps its activation', async () => {
+    const active = new Map<string, string>();
+    const first = tool('todo_read', 'read the session todo');
+    const initial = new ToolAvailabilityRuntime(
+      [first],
+      { groups: [{ id: 'todo', toolNames: ['todo_read'] }] },
+      invalid,
+    ).prepare(active);
+    await searchTool(initial).impl({ query: 'read todo' }, ctx);
+
+    const rebuilt = tool('todo_read', 'read the session todo');
+    assert.notEqual(rebuilt, first);
+    const next = new ToolAvailabilityRuntime(
+      [rebuilt],
+      { groups: [{ id: 'todo', toolNames: ['todo_read'] }] },
+      invalid,
+    ).prepare(active);
+
+    assert.equal(active.get('todo_read'), toolActivationKey(rebuilt));
+    assert.equal(next.activeTools.includes('todo_read'), true);
+  });
+
   test('ordinary result is thin and contains no complete schemas', async () => {
     const connector = searchTool(runtime().prepare(new Map()));
     const output = await connector.impl({ query: 'browser click' }, ctx);
@@ -208,7 +332,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('repeated and parallel searches union and deduplicate turn activation', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = runtime().prepare(active);
     const connector = searchTool(plan);
     await Promise.all([
@@ -220,7 +344,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('already-active matches do not consume a later search limit or schema budget', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const largeDescription = `Perform a calendar action ${'x'.repeat(40 * 1024)}`;
     const plan = new ToolAvailabilityRuntime(
       [tool('calendar_primary', largeDescription), tool('calendar_secondary', largeDescription)],
@@ -252,7 +376,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('reports and skips an oversized tool without hiding a smaller later match', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = new ToolAvailabilityRuntime(
       [
         tool('oversized_target', `Oversized target ${'x'.repeat(TOOL_SEARCH_MAX_SCHEMA_CHARS)}`),
@@ -288,7 +412,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
 
   test('stops at the schema ceiling instead of silently changing relevance order', async () => {
     const largeDescription = `Budget branch ${'x'.repeat(40 * 1024)}`;
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = new ToolAvailabilityRuntime(
       [
         tool('budget_branch_primary', largeDescription),
@@ -317,22 +441,32 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.equal(active.has('lower_ranked_tool'), false);
   });
 
-  test('required orchestration tools are visible without changing activation state', () => {
-    const active = new Map<string, MakaTool>();
+  test('required orchestration tools are visible without changing activation state', async () => {
+    const active = new Map<string, string>();
     const plan = runtime().prepare(active, new Set(['docs_read']));
     assert.ok(plan.activeTools.includes('docs_read'));
     assert.equal(active.size, 0);
     assert.ok(plan.projectActiveTools!().activeTools.includes('docs_read'));
+    assert.doesNotMatch(searchTool(plan).description, /- docs_read/);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'docs_read' }, ctx), { activated: [] });
   });
 
-  test('activation maps isolate overlapping and subsequent turns', async () => {
-    const first = new Map<string, MakaTool>();
+  test('distinct activation maps isolate overlapping prepares', async () => {
+    const first = new Map<string, string>();
     const firstPlan = runtime().prepare(first);
     await searchTool(firstPlan).impl({ query: 'browser click' }, ctx);
     assert.ok(firstPlan.projectActiveTools!().activeTools.includes('browser_click'));
 
     const secondPlan = runtime().prepare(new Map());
     assert.ok(!secondPlan.activeTools.includes('browser_click'));
+  });
+
+  test('a shared activation map keeps schemas visible for a later prepare', async () => {
+    const shared = new Map<string, string>();
+    const firstPlan = runtime().prepare(shared);
+    await searchTool(firstPlan).impl({ query: 'browser click' }, ctx);
+    const laterPlan = runtime().prepare(shared);
+    assert.ok(laterPlan.activeTools.includes('browser_click'));
   });
 
   test('an ungrouped bound tool is deferred by default', () => {
@@ -399,5 +533,30 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     // The explicit group claims agent_spawn; only the remaining hinted tool is family-bucketed.
     assert.deepEqual(bySource.orchestration, ['agent_spawn']);
     assert.deepEqual(bySource.agents, ['agent_list']);
+  });
+
+  test('request_sandbox_boundary stays deferred until required', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('request_sandbox_boundary')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.ok(!plan.activeTools.includes('request_sandbox_boundary'));
+    assert.match(searchTool(plan).description, /- request_sandbox_boundary/);
+  });
+
+  test('required request_sandbox_boundary is visible without changing activation state', async () => {
+    const active = new Map<string, string>();
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('request_sandbox_boundary')],
+      {},
+      invalid,
+    ).prepare(active, new Set(['request_sandbox_boundary']));
+    assert.ok(plan.activeTools.includes('request_sandbox_boundary'));
+    assert.equal(active.size, 0);
+    assert.doesNotMatch(searchTool(plan).description, /- request_sandbox_boundary/);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'request_sandbox_boundary' }, ctx), {
+      activated: [],
+    });
   });
 });

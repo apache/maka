@@ -21,7 +21,6 @@ import { isShellOutput } from '@maka/core/shell-run';
 import { type UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
-import { isConnectorTool } from './display-name.js';
 import { getToolActivityCopy } from './copy.js';
 
 export function extractErrorText(result: ToolActivityItem['result'], locale: UiLocale): string {
@@ -62,27 +61,6 @@ export function isRequiresBypassToolResult(result: ToolActivityItem['result']): 
   return result?.kind === 'text'
     && result.sandboxFailure?.reason === 'requires_bypass'
     && result.sandboxFailure.source === 'client_capability';
-}
-
-/**
- * Result kinds (or tool-specific cards) that already paint their own chrome —
- * never nest them inside the shared quiet well.
- */
-export function resultOwnsOwnPanel(item: ToolActivityItem): boolean {
-  const result = item.result;
-  if (!result) return false;
-  if (isConnectorTool(item.toolName) && result.kind === 'json') return true;
-  switch (result.kind) {
-    case 'terminal':
-    case 'shell_run':
-    case 'web_search':
-    case 'web_search_error':
-    case 'file_diff':
-    case 'rive_workflow':
-      return true;
-    default:
-      return false;
-  }
 }
 
 export function isCancelledToolResult(result: ToolActivityItem['result']): boolean {

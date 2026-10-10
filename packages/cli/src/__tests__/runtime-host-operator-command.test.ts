@@ -333,6 +333,7 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.operationGrants.includes('plugin.platform.query'), false);
       assert.equal(resolved.operationGrants.includes('plugin.package.install'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
+      assert.equal(resolved.operationGrants.includes('session.prompt-suggestion.generate'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
     }
     assert.equal(desktop.canPublishClientCapabilities, true);
@@ -474,6 +475,9 @@ describe('Runtime Host operator commands', () => {
         'collaboration.turn-request.acknowledge',
         'collaboration.turn-request.create',
         'collaboration.turn-request.withdraw',
+        'external_agents.setup.cancel',
+        'external_agents.setup.query',
+        'external_agents.setup.start',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
@@ -489,12 +493,17 @@ describe('Runtime Host operator commands', () => {
         'peer.mesh.rename',
         'peer.mesh.transit.set',
         'plugin.composition.apply',
+        'plugin.executor.query',
         'plugin.package.export',
         'plugin.package.install',
         'plugin.package.reload',
         'plugin.package.uninstall',
         'plugin.platform.query',
         'plugin.platform.reconcile',
+        // Host-path operations: they name a path on the Host's filesystem, and
+        // these presets are `canUseHostPaths: false`.
+        'session-bundle.export',
+        'session-bundle.import',
       ],
     );
   });

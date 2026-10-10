@@ -42,10 +42,27 @@ const AWS_SECRET_ACCESS_KEY_FLAG_SOURCE = posixContinuedTokenSource('--secret-ac
 const AWS_SECRET_ACCESS_KEY_ENV_SOURCE = posixContinuedTokenSource('AWS_SECRET_ACCESS_KEY');
 
 const QUOTED_SECRET_KEY_VALUE_PATTERN = /((?:"([^"\\]+)"\s*:\s*"))(?:\\.|[^"\\])*/g;
-const QUOTED_SECRET_ASSIGNMENT_PATTERN =
-  /\b(([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]|\\\r?\n)*[:=](?:[ \t]|\\\r?\n)*)("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')/g;
-const ASSIGNED_SECRET_KEY_VALUE_PATTERN =
-  /\b(([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]|\\\r?\n)*[:=](?:[ \t]|\\\r?\n)*['"]?)(?:\\\r?\n|[^\s"'&<>])+/g;
+// The prefix lookahead and the value pattern share this source, so the sticky
+// value pattern always matches where a prefix ends.
+const ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE = `${POSIX_LINE_CONTINUATION_SOURCE}|[^\\s"'&<>]`;
+// The prefix matches a whole key-character run once, and the key starts at the
+// run's first word-initial letter. Trying each such letter as its own start
+// would rescan a long hyphenated run (base64url) once per hyphen.
+const ASSIGNED_SECRET_PREFIX_PATTERN = new RegExp(
+  `(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE}['"]?(?=${ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE})`,
+  'g',
+);
+const ASSIGNED_SECRET_KEY_PATTERN = /(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_-]*/;
+const ASSIGNED_SECRET_VALUE_PATTERN = new RegExp(
+  `(?:${ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE})+`,
+  'y',
+);
+// Match each key run once, as in the unquoted scanner, before consuming a
+// complete quoted diagnostic value. Restarting at each hyphen is quadratic.
+const QUOTED_SECRET_ASSIGNMENT_PATTERN = new RegExp(
+  `(?<![A-Za-z0-9_-])(([A-Za-z0-9_-]+)${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE})("(?:\\\\[\\s\\S]|[^"\\\\])*"|'(?:\\\\[\\s\\S]|[^'\\\\])*')`,
+  'g',
+);
 const AUTHORIZATION_HEADER_PATTERN =
   /(^|[^A-Za-z0-9_])(['"]?(?:proxy[-_]?authorization|authorization)['"]?\s*:\s*['"]?(?:bearer|basic|token)\s+)[^\s"'<>]+/gim;
 const STANDALONE_BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi;
@@ -73,6 +90,7 @@ export function redactSecrets(value: string): string {
 
 function redactTextSecrets(value: string): string {
   let next = value;
+  next = redactUrlUserinfoSecrets(next);
   next = redactUrlQuerySecrets(next);
   next = next.replace(QUOTED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
     isSensitiveKey(key) ? `${prefix}[redacted]` : match,
@@ -82,11 +100,13 @@ function redactTextSecrets(value: string): string {
     (_match, boundary: string, prefix: string) => `${boundary}${prefix}[redacted]`,
   );
   next = next.replace(STANDALONE_BEARER_PATTERN, (_match, prefix: string) => `${prefix}[redacted]`);
-  // 带引号的诊断值可以包含空格；先完整遮蔽，再应用裸值和 AWS 规则，避免只遮蔽首词。
+  // Mask complete quoted values before bare-value/AWS rules can expose later words.
   next = next.replace(
     QUOTED_SECRET_ASSIGNMENT_PATTERN,
     (match, prefix: string, key: string, token: string) =>
-      isAssignmentSensitiveKey(key) ? `${prefix}${redactShellToken(token)}` : match,
+      isAssignmentSensitiveKey(ASSIGNED_SECRET_KEY_PATTERN.exec(key)?.[0] ?? '')
+        ? `${prefix}${redactShellToken(token)}`
+        : match,
   );
   next = next.replace(
     AWS_CLI_SPACE_SECRET_PATTERN,
@@ -97,9 +117,7 @@ function redactTextSecrets(value: string): string {
     AWS_SECRET_ASSIGNMENT_PATTERN,
     (_match, prefix: string) => `${prefix}[redacted]`,
   );
-  next = next.replace(ASSIGNED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
-    isAssignmentSensitiveKey(key) ? `${prefix}[redacted]` : match,
-  );
+  next = redactAssignedSecrets(next);
   for (const pattern of SECRET_PATTERNS) {
     // Each pattern's single capture group matches only the secret token, so the
     // replacement is always the full redaction marker. Never echo any part of
@@ -108,6 +126,36 @@ function redactTextSecrets(value: string): string {
     next = next.replace(pattern, () => '[redacted]');
   }
   return next;
+}
+
+function redactAssignedSecrets(value: string): string {
+  let next = '';
+  let copied = 0;
+  ASSIGNED_SECRET_PREFIX_PATTERN.lastIndex = 0;
+  for (
+    let match = ASSIGNED_SECRET_PREFIX_PATTERN.exec(value);
+    match;
+    match = ASSIGNED_SECRET_PREFIX_PATTERN.exec(value)
+  ) {
+    // The prefix stops where the value starts, so every value is still searched
+    // for a nested sensitive assignment (`excerpt: password=…`). This includes a
+    // redacted value: a key with an empty value takes the next `KEY=` as its
+    // value (`token= password="…"`), and that key's own value follows the quote.
+    const key = ASSIGNED_SECRET_KEY_PATTERN.exec(match[1] ?? '')?.[0] ?? '';
+    if (!isAssignmentSensitiveKey(key)) continue;
+    const valueStart = ASSIGNED_SECRET_PREFIX_PATTERN.lastIndex;
+    // A value that starts inside the last redacted value ends with it.
+    if (valueStart < copied) continue;
+    ASSIGNED_SECRET_VALUE_PATTERN.lastIndex = valueStart;
+    const valueMatch = ASSIGNED_SECRET_VALUE_PATTERN.exec(value);
+    // The prefix lookahead promises a value here. Should the two patterns ever
+    // disagree, skip: a failed sticky match resets lastIndex, and copying from
+    // there would echo the value after its marker.
+    if (!valueMatch) continue;
+    next += `${value.slice(copied, valueStart)}[redacted]`;
+    copied = valueStart + valueMatch[0].length;
+  }
+  return next + value.slice(copied);
 }
 
 function posixContinuedTokenSource(token: string): string {
@@ -180,6 +228,18 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
   return { value: next, changed };
 }
 
+function redactUrlUserinfoSecrets(value: string): string {
+  // Authority runs through the first `/`, `?`, `#`, whitespace, quote, or
+  // angle bracket. If it contains `@`, everything from the host-start through
+  // the last `@` is userinfo. The class matches display-redaction's
+  // streamingTerminator so a bare `https://host` followed later by an
+  // email/`@package` (including across JSON quotes) cannot swallow the gap.
+  // Known boundary: punctuation like commas can still join a bare URL to a
+  // later `@` into one fake credentialed match; a proper fix would restrict
+  // userinfo to the RFC 3986 set instead of exclusion. http(s) only for now.
+  return value.replace(/(https?:\/\/)[^\s"'<>/?#]*@/gi, '$1[redacted]@');
+}
+
 function redactUrlQuerySecrets(value: string): string {
   return value.replace(/([?&])([^=\s&?#]+)=([^&\s#]*)/g, (match, sep: string, key: string) => {
     if (!isSensitiveKey(key)) return match;
@@ -204,9 +264,12 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 function sensitiveKeySegments(key: string): string[] {
+  // The second split marks one capital per step, which keeps a long uppercase
+  // run (zero-filled base64) linear; `([A-Z]+)([A-Z][a-z])` backtracks through
+  // the run from every capital.
   return key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, '$1 ')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
@@ -234,12 +297,26 @@ export function classifyGeneralizedError(error: unknown): GeneralizedErrorClass 
   const lower = redactSecrets(message).toLowerCase();
   if (lower.includes('timeout')) return 'timeout';
   if (lower.includes('429') || lower.includes('rate')) return 'rate_limited';
+  // builder-util-runtime appends generic authentication-token advice to HTTP
+  // 404 errors. electron-updater has already classified this particular case
+  // as a missing channel artifact, so it is not evidence of bad credentials.
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
+  )
+    return undefined;
   if (lower.includes('401') || lower.includes('403') || isAuthenticationErrorText(lower))
     return 'auth_failed';
   if (/\b5\d\d\b/.test(lower)) return 'provider_error';
   if (
     lower.includes('network') ||
     lower.includes('fetch') ||
+    // Chromium network stack error codes (`net::ERR_CONNECTION_RESET`,
+    // `net::ERR_NAME_NOT_RESOLVED`, ...) never match the Node errno
+    // spellings below.
+    lower.includes('net::err') ||
     lower.includes('econn') ||
     lower.includes('enotfound')
   )
@@ -288,4 +365,30 @@ export function generalizedErrorMessage(error: unknown, fallback = 'Operation fa
 
 export function isAuthenticationErrorText(message: string): boolean {
   return message.replace(/\bauthorit\w*/g, '').includes('auth');
+}
+
+const reportedFailures = new WeakSet<object>();
+
+/** Redacted diagnostics channel for unexpected operation failures. Copy
+ * catalogs live here (bare-importable) because a depended-on copy catalog may
+ * only hold bare package runtime imports. */
+export function reportUnexpectedOperation(scope: string, error: unknown): void {
+  // One failure, one diagnostic: a rejection formatted again by an outer layer
+  // is the same defect, not a second one.
+  if (typeof error === 'object' && error !== null) {
+    if (reportedFailures.has(error)) return;
+    reportedFailures.add(error);
+  }
+  const detail =
+    error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  console.error(`[${scope}] operation failed:`, redactSecrets(detail));
+}
+
+export function unexpectedOperationFallback(
+  error: unknown,
+  fallback: string,
+  scope: string,
+): string {
+  reportUnexpectedOperation(scope, error);
+  return fallback;
 }

@@ -18,11 +18,34 @@
  */
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { realpath } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
+import { createServer, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, test } from 'node:test';
-import { RequestError, methods } from '@agentclientprotocol/sdk';
+import { methods, RequestError, type SessionNotification } from '@agentclientprotocol/sdk';
+import { waitFor } from '@maka/core/test-only/async-primitives';
+import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import {
+  buildRecoveredTerminalRuntimeEvent,
+  commitTerminalRunWithRuntimeFact,
+} from '@maka/runtime/terminal-run-commit';
+import { connectRuntimeHost } from '@maka/runtime-host/client';
+import {
+  type SessionTurnsQueryResult,
+  ARTIFACT_INGEST_CHUNK_MAX_BYTES,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+} from '@maka/runtime-host/protocol';
+import { getRuntimeHostSession } from '../runtime-host-session-update.js';
+import { AcpSessionMcp, createAcpMcpConfig } from '../acp/session-mcp.js';
+import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   pipeCapturedStdout,
   StdoutCaptureBridge,
@@ -119,7 +142,11 @@ describe('Maka ACP child process', () => {
       await harness.withClient(async ({ context }) => {
         assert.deepEqual(await context.request(methods.agent.initialize, { protocolVersion: 1 }), {
           protocolVersion: 1,
-          agentCapabilities: { sessionCapabilities: { list: {} } },
+          agentCapabilities: {
+            loadSession: true,
+            sessionCapabilities: { list: {}, resume: {}, close: {} },
+            _meta: { '_maka/goalPlan': { version: 1 } },
+          },
           authMethods: [],
           agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
         });
@@ -145,7 +172,8 @@ describe('Maka ACP child process', () => {
 
   test('serves multiple ACP Sessions through a real Runtime Host', {
     timeout: 30_000,
-  }, async () => {
+  }, async (t) => {
+    t.after(setParentProviderKeys());
     await withAcpChildProcessHarness(
       async (harness) => {
         await harness.withClient(async ({ context }) => {
@@ -154,6 +182,27 @@ describe('Maka ACP child process', () => {
             cwd: harness.workspaceRoot,
             mcpServers: [],
           });
+          assert.deepEqual(
+            (first.configOptions ?? []).map((option) => [option.id, option.currentValue]),
+            [
+              ['permission_mode', 'bypass'],
+              ['collaboration_mode', 'agent'],
+              ['orchestration_mode', 'default'],
+            ],
+          );
+          const configured = await context.request(methods.agent.session.setConfigOption, {
+            sessionId: first.sessionId,
+            configId: 'collaboration_mode',
+            value: 'plan',
+          });
+          assert.deepEqual(
+            (configured.configOptions ?? []).map((option) => [option.id, option.currentValue]),
+            [
+              ['permission_mode', 'bypass'],
+              ['collaboration_mode', 'plan'],
+              ['orchestration_mode', 'default'],
+            ],
+          );
           const second = await context.request(methods.agent.session.new, {
             cwd: harness.workspaceRoot,
             mcpServers: [],
@@ -172,14 +221,16 @@ describe('Maka ACP child process', () => {
             true,
           );
 
-          await assert.rejects(
-            context.request(methods.agent.session.close, { sessionId: first.sessionId }),
-            (error: unknown) => {
-              assert.ok(error instanceof RequestError);
-              assert.equal(error.code, -32601);
-              assert.deepEqual(error.data, { method: 'session/close' });
-              return true;
-            },
+          assert.deepEqual(
+            await context.request(methods.agent.session.close, { sessionId: first.sessionId }),
+            {},
+          );
+          const listedAfterClose = await context.request(methods.agent.session.list, {
+            cwd: harness.workspaceRoot,
+          });
+          assert.equal(
+            listedAfterClose.sessions.some((session) => session.sessionId === first.sessionId),
+            true,
           );
         });
 
@@ -194,7 +245,80 @@ describe('Maka ACP child process', () => {
           assertJsonRpcMessage(message);
         }
       },
-      { startRuntimeHost: true },
+      {
+        startRuntimeHost: true,
+        model: { id: 'relay-basic', thinkingLevels: [] },
+      },
+    );
+  });
+
+  test('configures every advertised option for a reasoning model through a real Runtime Host', {
+    timeout: 30_000,
+  }, async () => {
+    await withAcpChildProcessHarness(
+      async (harness) => {
+        await harness.withClient(async ({ context }) => {
+          await context.request(methods.agent.initialize, { protocolVersion: 1 });
+          const created = await context.request(methods.agent.session.new, {
+            cwd: harness.workspaceRoot,
+            mcpServers: [],
+          });
+          assert.deepEqual(
+            (created.configOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
+            [
+              ['permission_mode', 'bypass'],
+              ['thinking_level', 'default'],
+              ['collaboration_mode', 'agent'],
+              ['orchestration_mode', 'default'],
+            ],
+          );
+          const permission = created.configOptions?.find(({ id }) => id === 'permission_mode');
+          assert.ok(permission?.type === 'select');
+          assert.deepEqual(
+            permission.options.flatMap((option) => ('value' in option ? [option.value] : [])),
+            ['ask', 'bypass'],
+          );
+          const thinking = created.configOptions?.find(({ id }) => id === 'thinking_level');
+          assert.ok(thinking?.type === 'select');
+          assert.deepEqual(
+            thinking.options.flatMap((option) => ('value' in option ? [option.value] : [])),
+            ['default', 'low', 'high'],
+          );
+
+          let configuredOptions = created.configOptions;
+          for (const [configId, value] of [
+            ['permission_mode', 'ask'],
+            ['thinking_level', 'high'],
+            ['collaboration_mode', 'plan'],
+            ['orchestration_mode', 'swarm'],
+          ] as const) {
+            configuredOptions = (
+              await context.request(methods.agent.session.setConfigOption, {
+                sessionId: created.sessionId,
+                configId,
+                value,
+              })
+            ).configOptions;
+          }
+          assert.deepEqual(
+            (configuredOptions ?? []).map(({ id, currentValue }) => [id, currentValue]),
+            [
+              ['permission_mode', 'ask'],
+              ['thinking_level', 'high'],
+              ['collaboration_mode', 'plan'],
+              ['orchestration_mode', 'swarm'],
+            ],
+          );
+        });
+
+        await harness.closeStdin();
+        assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+        assert.equal(harness.stderr, '');
+      },
+      {
+        startRuntimeHost: true,
+        model: { id: 'relay-reasoner', thinkingLevels: ['low', 'high'] },
+      },
     );
   });
 
@@ -227,10 +351,1153 @@ describe('Maka ACP child process', () => {
         assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
         assert.equal(harness.stderr, '');
       },
-      { startRuntimeHost: true },
+      {
+        startRuntimeHost: true,
+        model: { id: 'acp-session-fixture', thinkingLevels: [] },
+      },
     );
   });
+
+  test('publishes local resource links as Session Artifacts before prompting the real Host', {
+    timeout: 30_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          const path = join(harness.workspaceRoot, 'COMPLETE_ME-notes.txt');
+          const contents = 'x'.repeat(ARTIFACT_INGEST_CHUNK_MAX_BYTES + 7);
+          await writeFile(path, contents);
+          const history: SessionNotification[] = [];
+          await harness.withClient(
+            async ({ context }) => {
+              await context.request(methods.agent.initialize, { protocolVersion: 1 });
+              const { sessionId } = await context.request(methods.agent.session.new, {
+                cwd: harness.workspaceRoot,
+                mcpServers: [],
+              });
+              assert.deepEqual(
+                await context.request(methods.agent.session.prompt, {
+                  sessionId,
+                  prompt: [
+                    {
+                      type: 'resource_link',
+                      uri: pathToFileURL(path).href,
+                      name: 'notes.txt',
+                      mimeType: 'text/plain',
+                    },
+                  ],
+                }),
+                { stopReason: 'end_turn' },
+              );
+              const connected = await connectRuntimeHost({
+                rootPath: harness.workspaceRoot,
+                protocol: {
+                  min: RUNTIME_HOST_PROTOCOL_VERSION,
+                  max: RUNTIME_HOST_PROTOCOL_VERSION,
+                },
+              });
+              if (connected.kind !== 'connected') assert.fail('Host connection unavailable');
+              try {
+                const listed = await connected.connection.request('artifact.query', {
+                  kind: 'list_start',
+                  sessionId,
+                });
+                assert.equal(listed.kind, 'page');
+                if (listed.kind !== 'page') assert.fail('Expected Artifact page');
+                assert.equal(listed.artifacts.length, 1);
+                assert.equal(listed.artifacts[0]!.name, 'notes.txt');
+                assert.equal(listed.artifacts[0]!.sizeBytes, contents.length);
+              } finally {
+                await connected.connection.close();
+              }
+              history.length = 0;
+              await context.request(methods.agent.session.load, {
+                sessionId,
+                cwd: harness.workspaceRoot,
+                mcpServers: [],
+              });
+              const users = history.filter(
+                ({ update }) => update.sessionUpdate === 'user_message_chunk',
+              );
+              assert.equal(users.length, 1);
+              const row = users[0]!.update;
+              if (row.sessionUpdate !== 'user_message_chunk' || row.content.type !== 'text')
+                assert.fail('Expected a visible attachment-only user message');
+              assert.equal(
+                row.content.text,
+                `[Attachment: notes.txt (text/plain, ${contents.length} bytes)]`,
+              );
+              assert.equal((row._meta?.['_maka/attachments'] as unknown[])?.length, 1);
+              await context.request(methods.agent.session.close, { sessionId });
+            },
+            (app) => {
+              return app.onNotification(methods.client.session.update, ({ params }) => {
+                history.push(params);
+              });
+            },
+          );
+        },
+        {
+          startRuntimeHost: true,
+          model: { id: 'attachment-fixture', thinkingLevels: [], baseUrl: model.baseUrl },
+        },
+      );
+    } finally {
+      await model.close();
+    }
+  });
+
+  test('Host admission rejects an extra attachment before starting a Turn and close releases capacity', {
+    timeout: 60_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          await harness.withClient(async ({ context }) => {
+            await context.request(methods.agent.initialize, { protocolVersion: 1 });
+            const ids: string[] = [];
+            for (let index = 0; index < 17; index += 1) {
+              ids.push(
+                (
+                  await context.request(methods.agent.session.new, {
+                    cwd: harness.workspaceRoot,
+                    mcpServers: [],
+                  })
+                ).sessionId,
+              );
+            }
+            const prompt = (sessionId: string) =>
+              context.request(methods.agent.session.prompt, {
+                sessionId,
+                prompt: [{ type: 'text', text: 'COMPLETE_ME' }],
+              });
+            // Independent Sessions can finish concurrently. All attachments must
+            // remain retained after completion before we test the next admission.
+            await Promise.all(
+              ids.slice(0, 16).map(async (id) => {
+                assert.deepEqual(await prompt(id), { stopReason: 'end_turn' });
+              }),
+            );
+            await assert.rejects(prompt(ids[16]!), (error: unknown) => {
+              assert.equal(
+                (error as { data?: { operation?: string } }).data?.operation,
+                'subscription.open',
+              );
+              return true;
+            });
+            const connected = await connectRuntimeHost({
+              rootPath: harness.workspaceRoot,
+              protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+            });
+            assert.equal(connected.kind, 'connected');
+            if (connected.kind !== 'connected') assert.fail();
+            try {
+              const untouched = await connected.connection.openSessionSubscription({
+                sessionId: ids[16]!,
+                transcript: { kind: 'none' },
+              });
+              assert.equal(
+                untouched.snapshot.rootTurn,
+                null,
+                'capacity rejection must not create a Turn',
+              );
+              await untouched.close();
+              await context.request(methods.agent.session.close, { sessionId: ids[0]! });
+              assert.ok(await getRuntimeHostSession(connected.connection, ids[0]!));
+              assert.deepEqual(await prompt(ids[16]!), { stopReason: 'end_turn' });
+            } finally {
+              await connected.connection.close();
+            }
+          });
+        },
+        {
+          startRuntimeHost: true,
+          // This operation covers 17 creates and 17 complete Turns, not one RPC.
+          timeoutMs: 45_000,
+          model: { id: 'capacity-fixture', thinkingLevels: [], baseUrl: model.baseUrl },
+        },
+      );
+    } finally {
+      await model.close();
+    }
+  });
+
+  test('streams, cancels, and closes through the real ACP and Runtime Host process boundary', {
+    timeout: 30_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          const updates: SessionNotification[] = [];
+          await harness.withClient(
+            async ({ context }) => {
+              await context.request(methods.agent.initialize, { protocolVersion: 1 });
+              const created = await context.request(methods.agent.session.new, {
+                cwd: harness.workspaceRoot,
+                mcpServers: [],
+              });
+
+              assert.deepEqual(
+                await context.request(methods.agent.session.prompt, {
+                  sessionId: created.sessionId,
+                  prompt: [{ type: 'text', text: 'COMPLETE_ME' }],
+                }),
+                { stopReason: 'end_turn' },
+              );
+              assert.equal(
+                updates.some(
+                  ({ update }) =>
+                    update.sessionUpdate === 'agent_message_chunk' &&
+                    update.content.type === 'text' &&
+                    update.content.text.includes('ACP fixture completed'),
+                ),
+                true,
+              );
+
+              // A second client mutates the Host while ACP retains its attachment.
+              const connected = await connectRuntimeHost({
+                rootPath: harness.workspaceRoot,
+                protocol: {
+                  min: RUNTIME_HOST_PROTOCOL_VERSION,
+                  max: RUNTIME_HOST_PROTOCOL_VERSION,
+                },
+              });
+              assert.equal(connected.kind, 'connected');
+              if (connected.kind !== 'connected') assert.fail('Host connection unavailable');
+              try {
+                const current = await getRuntimeHostSession(
+                  connected.connection,
+                  created.sessionId,
+                );
+                assert.ok(current);
+                const changed = await connected.connection.request('session.configuration.update', {
+                  sessionId: created.sessionId,
+                  expectedRevision: current.revision,
+                  patch: { permissionMode: 'bypass', thinkingLevel: 'low' },
+                });
+                assert.equal(changed.kind, 'committed');
+                await waitFor(
+                  () =>
+                    updates.some(
+                      ({ update }) =>
+                        update.sessionUpdate === 'config_option_update' &&
+                        update.configOptions.some(
+                          (option) =>
+                            option.id === 'permission_mode' && option.currentValue === 'bypass',
+                        ) &&
+                        update.configOptions.some(
+                          (option) =>
+                            option.id === 'thinking_level' && option.currentValue === 'low',
+                        ),
+                    ),
+                  { timeoutMs: 5000, pollMs: 10, message: 'external configuration notification' },
+                );
+              } finally {
+                await connected.connection.close();
+              }
+
+              const cancelled = context.request(methods.agent.session.prompt, {
+                sessionId: created.sessionId,
+                prompt: [{ type: 'text', text: 'CANCEL_ME' }],
+              });
+              await model.cancelStarted;
+              await context.notify(methods.agent.session.cancel, { sessionId: created.sessionId });
+              assert.deepEqual(await cancelled, { stopReason: 'cancelled' });
+              assert.deepEqual(
+                await context.request(methods.agent.session.close, {
+                  sessionId: created.sessionId,
+                }),
+                {},
+              );
+            },
+            (app) =>
+              app.onNotification(methods.client.session.update, ({ params }) => {
+                updates.push(params);
+              }),
+          );
+
+          await harness.closeStdin();
+          assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+          assert.equal(harness.stderr, '');
+        },
+        {
+          startRuntimeHost: true,
+          model: {
+            id: 'acp-stream-fixture',
+            thinkingLevels: ['low'],
+            baseUrl: model.baseUrl,
+          },
+        },
+      );
+    } finally {
+      await model.close();
+    }
+  });
+
+  test('loads a durable Session from a second ACP process and continues prompting', {
+    timeout: 45_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          const mcpFixture = fileURLToPath(import.meta.resolve('@maka/mcp/test-only/stdio-server'));
+          const sessionId = await harness.withClient(async ({ context }) => {
+            await context.request(methods.agent.initialize, { protocolVersion: 1 });
+            const created = await context.request(methods.agent.session.new, {
+              cwd: harness.workspaceRoot,
+              mcpServers: [
+                {
+                  name: 'previous-provider',
+                  command: process.execPath,
+                  args: [mcpFixture],
+                  env: [],
+                },
+              ],
+            });
+            assert.deepEqual(
+              await context.request(methods.agent.session.prompt, {
+                sessionId: created.sessionId,
+                prompt: [{ type: 'text', text: 'COMPLETE_ME' }],
+              }),
+              { stopReason: 'end_turn' },
+            );
+            return created.sessionId;
+          });
+          await harness.closeStdin();
+          assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+          const sibling = await harness.spawnSibling();
+          try {
+            const updates: SessionNotification[] = [];
+            await sibling.withClient(
+              async ({ context }) => {
+                await context.request(methods.agent.initialize, { protocolVersion: 1 });
+                const loaded = await context.request(methods.agent.session.load, {
+                  sessionId,
+                  cwd: harness.workspaceRoot,
+                  mcpServers: [
+                    {
+                      name: 'next-provider',
+                      command: process.execPath,
+                      args: [mcpFixture],
+                      env: [],
+                    },
+                  ],
+                });
+                assert.ok((loaded.configOptions ?? []).length > 0);
+                assert.ok(
+                  updates.some(
+                    ({ update }) =>
+                      update.sessionUpdate === 'user_message_chunk' &&
+                      update.content.type === 'text' &&
+                      update.content.text.includes('COMPLETE_ME'),
+                  ),
+                );
+                assert.ok(
+                  updates.some(
+                    ({ update }) =>
+                      update.sessionUpdate === 'agent_message_chunk' &&
+                      update.content.type === 'text' &&
+                      update.content.text.includes('ACP fixture completed'),
+                  ),
+                );
+                const beforeResume = updates.length;
+                const resumed = await context.request(methods.agent.session.resume, {
+                  sessionId,
+                  cwd: harness.workspaceRoot,
+                });
+                assert.ok((resumed.configOptions ?? []).length > 0);
+                assert.equal(updates.length, beforeResume);
+                const parked = (await context.request('_maka/turn/resume', { sessionId })) as {
+                  kind: string;
+                  plan?: { disposition: string };
+                };
+                assert.equal(parked.kind, 'parked');
+                assert.equal(parked.plan?.disposition, 'parked');
+                assert.deepEqual(
+                  await context.request(methods.agent.session.prompt, {
+                    sessionId,
+                    prompt: [{ type: 'text', text: 'COMPLETE_ME' }],
+                  }),
+                  { stopReason: 'end_turn' },
+                );
+                // All copy parameters come from ACP, including historical Turn IDs
+                // for plain-text prompts with no tool metadata or private Host access.
+                let position = 0;
+                let throughSequence: number | null = null;
+                let expectedSourceRevision = 0;
+                const sourceTurns: string[] = [];
+                do {
+                  const page = (await context.request('_maka/session/copy-source/query', {
+                    sessionId,
+                    throughSequence,
+                    position,
+                    maxContributions: 1,
+                  })) as SessionTurnsQueryResult & { expectedSourceRevision: number };
+                  assert.equal(page.sessionId, sessionId);
+                  assert.equal(page.contributions.length, 1);
+                  expectedSourceRevision = page.expectedSourceRevision;
+                  throughSequence = page.throughSequence;
+                  for (const contribution of page.contributions) {
+                    if (contribution.latestState?.message.status === 'completed')
+                      sourceTurns.push(contribution.turnId);
+                  }
+                  if (page.nextPosition === null) break;
+                  assert.ok(page.nextPosition > position);
+                  position = page.nextPosition;
+                } while (true);
+                assert.ok(sourceTurns.length >= 2);
+                const sourceTurnId = sourceTurns[0]!;
+                await context.request(methods.agent.session.setConfigOption, {
+                  sessionId,
+                  configId: 'permission_mode',
+                  value:
+                    loaded.configOptions?.find((option) => option.id === 'permission_mode')
+                      ?.currentValue === 'bypass'
+                      ? 'ask'
+                      : 'bypass',
+                });
+                const staleCopy = (await context.request('_maka/session/branch/create', {
+                  sourceSessionId: sessionId,
+                  targetSessionId: randomUUID(),
+                  sourceTurnId,
+                  expectedSourceRevision,
+                })) as { kind: string };
+                assert.equal(staleCopy.kind, 'source_revision_conflict');
+                const refreshed = (await context.request('_maka/session/copy-source/query', {
+                  sessionId,
+                  throughSequence: null,
+                  position: 0,
+                  maxContributions: 1,
+                })) as SessionTurnsQueryResult & { expectedSourceRevision: number };
+                assert.ok(refreshed.expectedSourceRevision > expectedSourceRevision);
+                expectedSourceRevision = refreshed.expectedSourceRevision;
+                const targetSessionId = randomUUID();
+                const branched = (await context.request('_maka/session/branch/create', {
+                  sourceSessionId: sessionId,
+                  targetSessionId,
+                  sourceTurnId,
+                  expectedSourceRevision,
+                })) as { kind: string };
+                assert.equal(branched.kind, 'committed');
+                const revisionTargetId = randomUUID();
+                const revision = (await context.request('_maka/session/revision/create', {
+                  sourceSessionId: sessionId,
+                  targetSessionId: revisionTargetId,
+                  sourceTurnId,
+                  expectedSourceRevision,
+                })) as { kind: string };
+                assert.equal(revision.kind, 'committed');
+                const unusedRevisionTargetId = randomUUID();
+                const unusedRevision = (await context.request('_maka/session/revision/create', {
+                  sourceSessionId: sessionId,
+                  targetSessionId: unusedRevisionTargetId,
+                  sourceTurnId,
+                  expectedSourceRevision,
+                })) as { kind: string };
+                assert.equal(unusedRevision.kind, 'committed');
+                assert.deepEqual(
+                  await context.request(methods.agent.session.prompt, {
+                    sessionId: revisionTargetId,
+                    prompt: [{ type: 'text', text: 'COMPLETE_ME' }],
+                  }),
+                  { stopReason: 'end_turn' },
+                );
+                assert.deepEqual(
+                  await context.request('_maka/session/revision/abandon', {
+                    targetSessionId: revisionTargetId,
+                  }),
+                  { kind: 'retained', sessionId: revisionTargetId },
+                );
+                assert.deepEqual(
+                  await context.request('_maka/session/revision/abandon', {
+                    targetSessionId: unusedRevisionTargetId,
+                  }),
+                  { kind: 'abandoned', sessionId: unusedRevisionTargetId },
+                );
+                assert.deepEqual(
+                  await context.request(methods.agent.session.prompt, {
+                    sessionId: targetSessionId,
+                    prompt: [{ type: 'text', text: 'COMPLETE_ME' }],
+                  }),
+                  { stopReason: 'end_turn' },
+                );
+                await context.request(methods.agent.session.close, { sessionId: targetSessionId });
+                await context.request(methods.agent.session.close, { sessionId: revisionTargetId });
+                await context.request(methods.agent.session.close, { sessionId });
+              },
+              (app) =>
+                app.onNotification(methods.client.session.update, ({ params }) => {
+                  updates.push(params);
+                }),
+            );
+          } finally {
+            await sibling.close();
+          }
+        },
+        {
+          startRuntimeHost: true,
+          model: { id: 'acp-stream-fixture', thinkingLevels: ['low'], baseUrl: model.baseUrl },
+          timeoutMs: 35_000,
+        },
+      );
+    } finally {
+      await model.close();
+    }
+  });
+
+  test('loads an already-live Turn and hands replay to later output without duplication', {
+    timeout: 45_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          const firstUpdates: SessionNotification[] = [];
+          await harness.withClient(
+            async ({ context }) => {
+              await context.request(methods.agent.initialize, { protocolVersion: 1 });
+              const created = await context.request(methods.agent.session.new, {
+                cwd: harness.workspaceRoot,
+                mcpServers: [],
+              });
+              const prompt = context.request(methods.agent.session.prompt, {
+                sessionId: created.sessionId,
+                prompt: [{ type: 'text', text: 'LIVE_ME' }],
+              });
+              await model.liveStarted;
+              await waitFor(
+                () =>
+                  firstUpdates.some(
+                    ({ update }) =>
+                      update.sessionUpdate === 'agent_message_chunk' &&
+                      update.content.type === 'text' &&
+                      update.content.text.includes('before'),
+                  ),
+                { timeoutMs: 5_000, pollMs: 10, message: 'first live ACP chunk' },
+              );
+              const sibling = await harness.spawnSibling();
+              try {
+                const restored: SessionNotification[] = [];
+                await sibling.withClient(
+                  async ({ context: second }) => {
+                    await second.request(methods.agent.initialize, { protocolVersion: 1 });
+                    await second.request(methods.agent.session.load, {
+                      sessionId: created.sessionId,
+                      cwd: harness.workspaceRoot,
+                      mcpServers: [],
+                    });
+                    assert.ok(
+                      restored.some(
+                        ({ update }) =>
+                          update.sessionUpdate === 'agent_message_chunk' &&
+                          update.content.type === 'text' &&
+                          update.content.text.includes('before'),
+                      ),
+                    );
+                    model.releaseLive();
+                    assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+                    await waitFor(
+                      () =>
+                        restored.some(
+                          ({ update }) =>
+                            update.sessionUpdate === 'agent_message_chunk' &&
+                            update.content.type === 'text' &&
+                            update.content.text.includes('after'),
+                        ),
+                      { timeoutMs: 5_000, pollMs: 10, message: 'restored live ACP chunk' },
+                    );
+                    assert.equal(
+                      restored
+                        .flatMap(({ update }) =>
+                          update.sessionUpdate === 'agent_message_chunk' &&
+                          update.content.type === 'text'
+                            ? [update.content.text]
+                            : [],
+                        )
+                        .join(''),
+                      'before after',
+                    );
+                    await second.request(methods.agent.session.close, {
+                      sessionId: created.sessionId,
+                    });
+                  },
+                  (app) =>
+                    app.onNotification(methods.client.session.update, ({ params }) => {
+                      restored.push(params);
+                    }),
+                );
+              } finally {
+                model.releaseLive();
+                await sibling.close();
+                await prompt.catch(() => undefined);
+              }
+            },
+            (app) =>
+              app.onNotification(methods.client.session.update, ({ params }) => {
+                firstUpdates.push(params);
+              }),
+          );
+        },
+        {
+          startRuntimeHost: true,
+          model: { id: 'acp-stream-fixture', thinkingLevels: ['low'], baseUrl: model.baseUrl },
+          timeoutMs: 35_000,
+        },
+      );
+    } finally {
+      model.releaseLive();
+      await model.close();
+    }
+  });
+
+  test('a second Host client admitting a Turn after the idle read blocks MCP replacement', {
+    timeout: 45_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    const mcpFixture = fileURLToPath(import.meta.resolve('@maka/mcp/test-only/stdio-server'));
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          await harness.withClient(async ({ context }) => {
+            await context.request(methods.agent.initialize, { protocolVersion: 1 });
+            const created = await context.request(methods.agent.session.new, {
+              cwd: harness.workspaceRoot,
+              mcpServers: [],
+            });
+            const connected = await connectRuntimeHost({
+              rootPath: harness.workspaceRoot,
+              protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+            });
+            if (connected.kind !== 'connected') assert.fail('Host connection unavailable');
+            const host = connected.connection;
+            const first = createAcpMcpConfig({
+              cwd: harness.workspaceRoot,
+              mcpServers: [
+                { name: 'fixture', command: process.execPath, args: [mcpFixture], env: [] },
+              ],
+            });
+            const changed = createAcpMcpConfig({
+              cwd: harness.workspaceRoot,
+              mcpServers: [
+                {
+                  name: 'fixture',
+                  command: process.execPath,
+                  args: [mcpFixture],
+                  env: [{ name: 'MAKA_MCP_STDIO_FIXTURE_VALUE', value: 'changed' }],
+                },
+              ],
+            });
+            const mcp = new AcpSessionMcp(created.sessionId, first, {
+              replaceClientCapabilities: host.replaceClientCapabilities.bind(host),
+              unregisterClientCapabilities: host.unregisterClientCapabilities.bind(host),
+              subscribeConnectionAvailability: (listener) => {
+                listener({
+                  kind: 'connected',
+                  hostEpoch: host.hostEpoch,
+                  connectionId: host.connectionId,
+                });
+                return () => undefined;
+              },
+            });
+            let prompt: Promise<unknown> | undefined;
+            try {
+              await mcp.prepare();
+              await assert.rejects(
+                mcp.reconfigure(changed, undefined, async () => {
+                  const idle = await getRuntimeHostSession(host, created.sessionId);
+                  assert.ok(
+                    idle && idle.status !== 'running' && idle.status !== 'waiting_for_user',
+                  );
+                  prompt = context.request(methods.agent.session.prompt, {
+                    sessionId: created.sessionId,
+                    prompt: [{ type: 'text', text: 'LIVE_ME' }],
+                  });
+                  await model.liveStarted;
+                }),
+                (error: unknown) =>
+                  error instanceof RequestError &&
+                  (error.data as { code?: string })?.code === 'session_busy',
+              );
+              assert.deepEqual(mcp.config, first);
+              await mcp.ready();
+              model.releaseLive();
+              assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+            } finally {
+              model.releaseLive();
+              await Promise.allSettled([mcp.close(), prompt]);
+              await host.close();
+              await context.request(methods.agent.session.close, { sessionId: created.sessionId });
+            }
+          });
+        },
+        {
+          startRuntimeHost: true,
+          model: { id: 'acp-stream-fixture', thinkingLevels: ['low'], baseUrl: model.baseUrl },
+          timeoutMs: 35_000,
+        },
+      );
+    } finally {
+      model.releaseLive();
+      await model.close();
+    }
+  });
+
+  test('a committed MCP replacement survives cancellation after another Host client starts a Turn', {
+    timeout: 45_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    const mcpFixture = fileURLToPath(import.meta.resolve('@maka/mcp/test-only/stdio-server'));
+    let markCommitted!: () => void;
+    const committed = new Promise<void>((resolve) => {
+      markCommitted = resolve;
+    });
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          await harness.withClient(async ({ context }) => {
+            await context.request(methods.agent.initialize, { protocolVersion: 1 });
+            const created = await context.request(methods.agent.session.new, {
+              cwd: harness.workspaceRoot,
+              mcpServers: [],
+            });
+            const connected = await connectRuntimeHost({
+              rootPath: harness.workspaceRoot,
+              protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
+            });
+            if (connected.kind !== 'connected') assert.fail('Host connection unavailable');
+            const host = connected.connection;
+            const first = createAcpMcpConfig({
+              cwd: harness.workspaceRoot,
+              mcpServers: [
+                { name: 'fixture', command: process.execPath, args: [mcpFixture], env: [] },
+              ],
+            });
+            const changed = createAcpMcpConfig({
+              cwd: harness.workspaceRoot,
+              mcpServers: [
+                {
+                  name: 'fixture',
+                  command: process.execPath,
+                  args: [mcpFixture],
+                  env: [{ name: 'MAKA_MCP_STDIO_FIXTURE_VALUE', value: 'changed' }],
+                },
+              ],
+            });
+            const publications: Array<{ requireIdleSession?: boolean }> = [];
+            const mcp = new AcpSessionMcp(created.sessionId, first, {
+              replaceClientCapabilities: async (provider, options) => {
+                publications.push(typeof options === 'object' ? options : {});
+                const result = await host.replaceClientCapabilities(provider, options);
+                if (typeof options === 'object' && options.requireIdleSession) {
+                  markCommitted();
+                  await responseGate;
+                }
+                return result;
+              },
+              unregisterClientCapabilities: host.unregisterClientCapabilities.bind(host),
+              subscribeConnectionAvailability: (listener) => {
+                listener({
+                  kind: 'connected',
+                  hostEpoch: host.hostEpoch,
+                  connectionId: host.connectionId,
+                });
+                return () => undefined;
+              },
+            });
+            const controller = new AbortController();
+            let prompt: Promise<unknown> | undefined;
+            try {
+              await mcp.prepare();
+              const replacing = mcp.reconfigure(changed, controller.signal);
+              await committed;
+              prompt = context.request(methods.agent.session.prompt, {
+                sessionId: created.sessionId,
+                prompt: [{ type: 'text', text: 'LIVE_ME' }],
+              });
+              await model.liveStarted;
+              const running = await getRuntimeHostSession(host, created.sessionId);
+              assert.ok(running?.status === 'running' || running?.status === 'waiting_for_user');
+              controller.abort();
+              releaseResponse();
+              await assert.rejects(replacing, RequestError);
+              assert.deepEqual(mcp.config, changed);
+              assert.ok(publications.slice(1).every((options) => options.requireIdleSession));
+              await mcp.ready();
+              model.releaseLive();
+              assert.deepEqual(await prompt, { stopReason: 'end_turn' });
+            } finally {
+              releaseResponse();
+              model.releaseLive();
+              await Promise.allSettled([mcp.close(), prompt]);
+              await host.close();
+              await context.request(methods.agent.session.close, { sessionId: created.sessionId });
+            }
+          });
+        },
+        {
+          startRuntimeHost: true,
+          model: { id: 'acp-stream-fixture', thinkingLevels: ['low'], baseUrl: model.baseUrl },
+          timeoutMs: 35_000,
+        },
+      );
+    } finally {
+      releaseResponse();
+      model.releaseLive();
+      await model.close();
+    }
+  });
+
+  test('explicitly resumes a ready interrupted Turn through ACP and the real Host', {
+    timeout: 45_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    let sessionId = '';
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          const updates: SessionNotification[] = [];
+          await harness.withClient(
+            async ({ context }) => {
+              await context.request(methods.agent.initialize, { protocolVersion: 1 });
+              await context.request(methods.agent.session.load, {
+                sessionId,
+                cwd: harness.workspaceRoot,
+                mcpServers: [],
+              });
+              const resumed = (await context.request('_maka/turn/resume', { sessionId })) as {
+                kind: string;
+                turn?: { turnId: string };
+              };
+              assert.equal(resumed.kind, 'started', JSON.stringify(resumed));
+              assert.ok(resumed.turn?.turnId);
+              await waitFor(
+                () =>
+                  updates.some(
+                    ({ update }) =>
+                      update.sessionUpdate === 'agent_message_chunk' &&
+                      update.content.type === 'text' &&
+                      update.content.text.includes('ACP fixture session'),
+                  ),
+                { timeoutMs: 5_000, pollMs: 10, message: 'continued ACP output' },
+              );
+              await context.request(methods.agent.session.close, { sessionId });
+            },
+            (app) =>
+              app.onNotification(methods.client.session.update, ({ params }) => {
+                updates.push(params);
+              }),
+          );
+        },
+        {
+          startRuntimeHost: true,
+          safeBoundaryResume: true,
+          model: { id: 'acp-stream-fixture', thinkingLevels: ['low'], baseUrl: model.baseUrl },
+          beforeHostStart: async ({ workspaceRoot, modelConnectionId }) => {
+            assert.ok(modelConnectionId);
+            sessionId = await seedReadyAcpContinuation(workspaceRoot, modelConnectionId);
+          },
+          timeoutMs: 35_000,
+        },
+      );
+    } finally {
+      await model.close();
+    }
+  });
+
+  test('keeps an interrupted Turn parked until the required MCP contract is restored', {
+    timeout: 45_000,
+  }, async () => {
+    const model = await startAcpModelFixture();
+    const mcpFixture = fileURLToPath(import.meta.resolve('@maka/mcp/test-only/stdio-server'));
+    let sessionId = '';
+    try {
+      await withAcpChildProcessHarness(
+        async (harness) => {
+          await harness.withClient(async ({ context }) => {
+            await context.request(methods.agent.initialize, { protocolVersion: 1 });
+            await context.request(methods.agent.session.load, {
+              sessionId,
+              cwd: harness.workspaceRoot,
+              mcpServers: [
+                { name: 'wrong', command: process.execPath, args: [mcpFixture], env: [] },
+              ],
+            });
+            const incompatible = (await context.request('_maka/turn/resume', { sessionId })) as {
+              kind: string;
+              plan?: { disposition: string; reason?: string };
+            };
+            assert.equal(incompatible.kind, 'parked');
+            assert.equal(incompatible.plan?.disposition, 'parked');
+            assert.equal(incompatible.plan.reason, 'safety_check_failed');
+            await context.request(methods.agent.session.load, {
+              sessionId,
+              cwd: harness.workspaceRoot,
+              mcpServers: [
+                { name: 'fixture', command: process.execPath, args: [mcpFixture], env: [] },
+              ],
+            });
+            const compatible = (await context.request('_maka/turn/resume', { sessionId })) as {
+              kind: string;
+              turn?: { turnId: string };
+            };
+            assert.equal(compatible.kind, 'started', JSON.stringify(compatible));
+            assert.ok(compatible.turn?.turnId);
+            await context.request(methods.agent.session.close, { sessionId });
+          });
+        },
+        {
+          startRuntimeHost: true,
+          safeBoundaryResume: true,
+          model: { id: 'acp-stream-fixture', thinkingLevels: ['low'], baseUrl: model.baseUrl },
+          beforeHostStart: async ({ workspaceRoot, modelConnectionId }) => {
+            assert.ok(modelConnectionId);
+            sessionId = await seedReadyAcpContinuation(
+              workspaceRoot,
+              modelConnectionId,
+              mcpProxyToolName('fixture', 'echo'),
+            );
+          },
+          timeoutMs: 35_000,
+        },
+      );
+    } finally {
+      await model.close();
+    }
+  });
 });
+
+async function seedReadyAcpContinuation(
+  workspaceRoot: string,
+  modelConnectionId: string,
+  requiredToolName?: string,
+): Promise<string> {
+  const cwd = await realpath(workspaceRoot);
+  const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const session = await stores.sessionStore.create({
+      cwd,
+      llmConnectionId: modelConnectionId,
+      llmConnectionSlug: 'acp-fixture-model',
+      model: 'acp-stream-fixture',
+      permissionMode: 'ask',
+    });
+    const invocationId = randomUUID();
+    const runId = randomUUID();
+    const turnId = randomUUID();
+    const openedAt = Date.now();
+    const workspace = await resolveWorkspaceIdentity({ path: cwd });
+    const run = await seedInvocation(stores.runtimeEventStore, {
+      sessionId: session.id,
+      invocationId,
+      runId,
+      turnId,
+      openedAt,
+      opening: {
+        route: {
+          provenance: 'runtime',
+          backendKind: 'ai-sdk',
+          llmConnectionId: modelConnectionId,
+          llmConnectionSlug: 'acp-fixture-model',
+          modelId: 'acp-stream-fixture',
+        },
+        configuration: {
+          cwd,
+          workspaceIdentity: workspace.workspaceIdentity,
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+      },
+    });
+    await stores.runtimeEventStore.appendRuntimeEvent(session.id, runId, {
+      id: randomUUID(),
+      sessionId: session.id,
+      invocationId,
+      runId,
+      turnId,
+      ts: openedAt,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'Continue this interrupted request.' },
+    });
+    if (requiredToolName) {
+      const toolCallId = randomUUID();
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, runId, {
+        id: randomUUID(),
+        sessionId: session.id,
+        invocationId,
+        runId,
+        turnId,
+        ts: openedAt + 1,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: toolCallId, name: requiredToolName, args: {} },
+        refs: { toolCallId },
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, runId, {
+        id: randomUUID(),
+        sessionId: session.id,
+        invocationId,
+        runId,
+        turnId,
+        ts: openedAt + 2,
+        partial: false,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: toolCallId,
+          name: requiredToolName,
+          result: { kind: 'json', value: { ok: true } },
+          isError: false,
+        },
+        refs: { toolCallId },
+      });
+    }
+    const terminalAt = openedAt + (requiredToolName ? 3 : 1);
+    await commitTerminalRunWithRuntimeFact({
+      runtimeEventStore: stores.runtimeEventStore,
+      newId: randomUUID,
+      sessionId: session.id,
+      runId,
+      turnId,
+      status: 'failed',
+      ts: terminalAt,
+      terminalEvent: buildRecoveredTerminalRuntimeEvent({
+        id: randomUUID(),
+        run,
+        status: 'failed',
+        ts: terminalAt,
+        failureClass: 'app_restarted',
+        recoveryReason: 'test_safe_boundary_source',
+      }),
+      failureClass: 'app_restarted',
+    });
+    return session.id;
+  } finally {
+    await stores.sessionStore.close?.();
+    await owner.close();
+  }
+}
+
+async function startAcpModelFixture(): Promise<{
+  readonly baseUrl: string;
+  readonly cancelStarted: Promise<void>;
+  readonly liveStarted: Promise<void>;
+  releaseLive(): void;
+  close(): Promise<void>;
+}> {
+  let markCancelStarted!: () => void;
+  const cancelStarted = new Promise<void>((resolve) => {
+    markCancelStarted = resolve;
+  });
+  let markLiveStarted!: () => void;
+  const liveStarted = new Promise<void>((resolve) => {
+    markLiveStarted = resolve;
+  });
+  let releaseLive!: () => void;
+  const liveGate = new Promise<void>((resolve) => {
+    releaseLive = resolve;
+  });
+  const server = createServer((request, response) => {
+    void readBody(request)
+      .then((body) => {
+        if (body.includes('CANCEL_ME')) {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.write(`data: ${JSON.stringify(modelChunk('partial', null))}\n\n`);
+          markCancelStarted();
+          request.once('close', () => response.end());
+          return;
+        }
+        if (body.includes('LIVE_ME')) {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.write(`data: ${JSON.stringify(modelChunk('before ', null))}\n\n`);
+          markLiveStarted();
+          void liveGate.then(() => {
+            response.write(`data: ${JSON.stringify(modelChunk('after', null))}\n\n`);
+            response.write(`data: ${JSON.stringify(modelChunk('', 'stop'))}\n\n`);
+            response.end('data: [DONE]\n\n');
+          });
+          return;
+        }
+        if (body.includes('COMPLETE_ME')) {
+          respondModelText(response, 'ACP fixture completed.');
+          return;
+        }
+        respondModelText(response, 'ACP fixture session');
+      })
+      .catch((error) => response.destroy(error as Error));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    cancelStarted,
+    liveStarted,
+    releaseLive,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  };
+}
+
+function respondModelText(response: ServerResponse, text: string): void {
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  response.write(`data: ${JSON.stringify(modelChunk(text, null))}\n\n`);
+  response.write(`data: ${JSON.stringify(modelChunk('', 'stop'))}\n\n`);
+  response.end('data: [DONE]\n\n');
+}
+
+function modelChunk(text: string, finishReason: 'stop' | null) {
+  return {
+    id: 'chatcmpl-acp-fixture',
+    object: 'chat.completion.chunk',
+    created: 1,
+    model: 'acp-stream-fixture',
+    choices: [
+      {
+        index: 0,
+        delta: finishReason === null ? { role: 'assistant', content: text } : {},
+        finish_reason: finishReason,
+      },
+    ],
+    ...(finishReason === 'stop'
+      ? { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }
+      : {}),
+  };
+}
+
+function readBody(request: import('node:http').IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+    });
+    request.on('end', () => resolve(body));
+    request.on('error', reject);
+  });
+}
 
 function assertJsonRpcMessage(message: unknown): void {
   assert.ok(message && typeof message === 'object' && !Array.isArray(message));
@@ -268,4 +1535,17 @@ function assertJsonRpcId(id: unknown): void {
     id === null || typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id)),
     'a JSON-RPC id is a string, finite number, or null',
   );
+}
+
+function setParentProviderKeys(): () => void {
+  const names = ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] as const;
+  const previous = names.map((name) => process.env[name]);
+  for (const name of names) process.env[name] = 'acp-parent-environment-key';
+  return () => {
+    for (const [index, name] of names.entries()) {
+      const value = previous[index];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
 }

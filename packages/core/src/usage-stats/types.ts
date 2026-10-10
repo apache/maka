@@ -28,8 +28,11 @@ export const MODEL_CALL_KINDS = [
   'goal_evaluation',
   'session_title',
   'session_recap',
+  'prompt_suggestion',
   'daily_review',
   'memory_extraction',
+  'workhub_intent',
+  'workhub_recall',
 ] as const;
 export type ModelCallKind = (typeof MODEL_CALL_KINDS)[number];
 
@@ -45,6 +48,13 @@ export interface UsageQuery {
   modelId?: string;
   toolName?: string;
   status?: 'success' | 'error' | 'aborted' | 'all';
+  /**
+   * Keep only calls of these kinds. Unset means every kind, which is what a
+   * Session's headline cost has always reported; `['main']` is how a consumer
+   * reads the agent loop's own spend and cache behavior without the auxiliary
+   * calls recorded alongside it (#5691).
+   */
+  callKinds?: readonly ModelCallKind[];
 }
 
 export interface UsageSummaryV2 {

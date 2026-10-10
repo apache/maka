@@ -169,6 +169,12 @@ export async function resolveDesktopRuntimeHostStartup(
     readPreferences?: () => Promise<DesktopRuntimeHostPreferences>;
   } = {},
 ): Promise<DesktopRuntimeHostStartup> {
+  // The Desktop single-instance lock is held before startup opens any stores.
+  // Reclaim only legacy directory markers here, before concurrent readers can
+  // start; current deployment writers use a process-lifetime OS lease.
+  await recoverAbandonedDesktopFileUpdateLock(
+    join(clientDataRoot, "runtime-host-deployments.json"),
+  );
   const preferencesPath = join(clientDataRoot, PREFERENCES_FILE);
   let preferences: DesktopRuntimeHostPreferences;
   let preferencesReadFailure: Error | undefined;
@@ -226,7 +232,7 @@ export async function resolveDesktopRuntimeHostStartup(
     ),
   );
   if (obsoleteProfileIds.size > 0) {
-    await recoverAbandonedProfileLock(join(clientDataRoot, PROFILE_FILE));
+    await recoverAbandonedDesktopFileUpdateLock(join(clientDataRoot, PROFILE_FILE));
   }
   for (const profileId of obsoleteProfileIds) await catalog.remove(profileId);
   if (obsoleteProfileIds.size > 0) document = await catalog.read();
@@ -297,6 +303,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
   ) => Promise<void>;
   readonly disable: (profileId: string) => Promise<void>;
+  readonly retryLocal?: () => Promise<void>;
   readonly finalizePairing: (profileId: string) => Promise<void>;
   readonly setDefault: (profileId: string) => void;
   readonly catalog?: RuntimeHostProfileCatalog;
@@ -341,7 +348,7 @@ export function createDesktopRuntimeHostProfileService(input: {
 
   const mutateProfiles = <T>(operation: () => Promise<T>): Promise<T> =>
     mutate(async () => {
-      await recoverAbandonedProfileLock(profilePath);
+      await recoverAbandonedDesktopFileUpdateLock(profilePath);
       assertPreferencesWritable();
       if (pairingReadFailure) {
         throw new Error(
@@ -399,16 +406,10 @@ export function createDesktopRuntimeHostProfileService(input: {
           enabled: isEnabled,
           isDefault: preferences.defaultProfileId === profile.id,
           readiness: isEnabled ? (state?.readiness ?? "unavailable") : "disabled",
-          ...(state?.readiness === "ready"
-            ? {
-                hostId: state.candidate.client.hostId,
-                ...(state.candidate.client.peerPath
-                  ? { peerPath: state.candidate.client.peerPath }
-                  : {}),
-              }
-            : state && "hostId" in state && state.hostId
-              ? { hostId: state.hostId }
-              : {}),
+          ...(state ? { hostId: state.hostId } : {}),
+          ...(state?.readiness === "ready" && state.candidate.client.peerPath
+            ? { peerPath: state.candidate.client.peerPath }
+            : {}),
           ...(error ? { message: error.message } : {}),
         };
       }),
@@ -919,18 +920,18 @@ export function createDesktopRuntimeHostProfileService(input: {
         }
       });
     },
-    resolveManagedService(profileId) {
-      return mutate(async () => {
-        const profile = (await catalog.read()).profiles.find(
-          (candidate) => candidate.id === profileId,
-        );
-        if (!profile) return undefined;
-        const binding = findDesktopRuntimeHostManagedServiceBinding(
-          await managedServices.read(),
-          profile,
-        );
-        return binding;
-      });
+    async resolveManagedService(profileId) {
+      // Connection may be waiting for handoff while the profile mutation queue
+      // is held. Read the persisted binding without re-entering that queue;
+      // mutation adapters revalidate the snapshot before acting on it.
+      const profile = (await catalog.read()).profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
+      if (!profile) return undefined;
+      return findDesktopRuntimeHostManagedServiceBinding(
+        await managedServices.read(),
+        profile,
+      );
     },
     resolveCollaborationConnectionTarget(profile) {
       return mutate(async () => {
@@ -1260,6 +1261,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       return mutateProfiles(async () => {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           if (!isEnabled) throw new Error("Local Runtime Host cannot be disabled");
+          await input.retryLocal?.();
           return snapshot();
         }
         if (isEnabled) {
@@ -1453,14 +1455,7 @@ function assertRootIsNotEnabled(
     ) {
       return false;
     }
-    const stateRootId = state.target.profile.kind !== 'local'
-      ? state.target.profile.rootId
-      : state.readiness === "ready"
-        ? state.candidate.client.hostId
-        : "hostId" in state
-          ? state.hostId
-          : undefined;
-    return stateRootId === rootId;
+    return state.hostId === rootId;
   });
   const duplicate = duplicateProfile ?? duplicateState?.target.profile;
   if (duplicate) {
@@ -1470,8 +1465,8 @@ function assertRootIsNotEnabled(
   }
 }
 
-async function recoverAbandonedProfileLock(profilePath: string): Promise<void> {
-  const lockPath = `${profilePath}.lock`;
+async function recoverAbandonedDesktopFileUpdateLock(targetPath: string): Promise<void> {
+  const lockPath = `${targetPath}.lock`;
   const lock = await lstat(lockPath).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;

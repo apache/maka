@@ -18,11 +18,13 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   abortable,
   decodeRemoteRuntimeHostProfile,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostOperationError,
   RuntimeHostProfileConnectionError,
   RuntimeHostRemoteCompatibilityError,
   type ResolvedRuntimeHostProfile,
@@ -58,6 +60,7 @@ const STORE_SLOT = 'desktop-guest-session-mounts';
 const MAX_MOUNTS = 128;
 const STARTUP_RETRY_MAX_MS = 30_000;
 const DEFERRED_WRITE_RETRY_MAX_MS = 30_000;
+const PROJECTION_RETRY_MAX_MS = 30_000;
 
 export interface GuestSessionMount {
   readonly mountId: string;
@@ -101,6 +104,15 @@ type LiveGuestActivation = LiveGuestImportActivation | LiveGuestStartupActivatio
 interface LiveGuestRefresh {
   dirty: boolean;
   task: Promise<void>;
+}
+
+interface GuestProjectionGeneration {
+  readonly readiness: GuestSessionMountReadiness | undefined;
+  readonly connectionEpoch: string | undefined;
+  readonly controller: AbortController;
+  live: boolean;
+  retryDelayMs?: number;
+  retry?: { controller: AbortController; task: Promise<void> };
 }
 
 interface DeferredWriteFailure {
@@ -181,6 +193,7 @@ export function createDesktopGuestSessionMountService(input: {
   readonly inspect: (mountId: string) =>
     | {
         readonly readiness: GuestSessionMountReadiness;
+        readonly connectionEpoch?: string;
         readonly peerPath?: RuntimeHostPeerConnectionPath;
         readonly error?: Error;
       }
@@ -208,20 +221,82 @@ export function createDesktopGuestSessionMountService(input: {
   let deferredWriteRetry: Promise<void> | undefined;
   const deferredWriteRetryController = new AbortController();
   const projectionLifetime = new AbortController();
+  const projectionGenerations = new Map<string, GuestProjectionGeneration>();
   let closed = false;
   const accessInvalidated = (mountId: string): boolean =>
     invalidatingAccess.has(mountId) || mounts?.get(mountId)?.accessFailure !== undefined;
 
-  const readSharedSession = (
+  const cancelProjectionRetry = (generation: GuestProjectionGeneration | undefined): void => {
+    generation?.retry?.controller.abort(new Error('Shared Session projection retry superseded'));
+    if (generation) generation.retry = undefined;
+  };
+
+  const observeConnection = (
+    mountId: string,
+    inspected = input.inspect(mountId),
+  ): GuestProjectionGeneration => {
+    const previous = projectionGenerations.get(mountId);
+    if (previous && previous.readiness === inspected?.readiness &&
+      previous.connectionEpoch === inspected?.connectionEpoch) return previous;
+    const current: GuestProjectionGeneration = {
+      readiness: inspected?.readiness,
+      connectionEpoch: inspected?.connectionEpoch,
+      controller: new AbortController(),
+      live: false,
+    };
+    projectionGenerations.set(mountId, current);
+    // A dead connection must not hold the next catalog read behind a response
+    // it may never deliver. The late underlying response cannot publish again.
+    previous?.controller.abort(new Error('Shared Session observation connection changed'));
+    return current;
+  };
+
+  const isCurrentObservation = (mountId: string, generation: GuestProjectionGeneration): boolean =>
+    !closed && mounts?.has(mountId) === true &&
+    observeConnection(mountId) === generation && generation.readiness === 'ready';
+
+  const forgetConnection = (mountId: string): void => {
+    projectionGenerations.get(mountId)?.controller.abort(new Error('Shared Session mount was removed'));
+    projectionGenerations.delete(mountId);
+  };
+
+  const readSharedSession = async (
     mountId: string,
     signal?: AbortSignal,
-  ): Promise<SharedSessionCatalogProjection | null> =>
-    abortable(
-      () => input.getSharedSession(mountId),
-      signal
-        ? AbortSignal.any([signal, projectionLifetime.signal])
-        : projectionLifetime.signal,
-    );
+  ) => {
+    const generation = observeConnection(mountId);
+    try {
+      const session = await abortable(
+        () => input.getSharedSession(mountId),
+        AbortSignal.any([
+          generation.controller.signal, projectionLifetime.signal, ...(signal ? [signal] : []),
+        ]),
+      );
+      return { session, generation };
+    } catch (error) {
+      if (generation.controller.signal.aborted) return { session: undefined, generation };
+      // Startup hydration already has its own recovery loop. Later refreshes
+      // need recovery independent of future catalog events or renderer reads.
+      if (!signal && isCurrentObservation(mountId, generation)) {
+        if (isRejectedAccessFailure(asError(error))) {
+          await clearSessionProjection(mountId, 'credential_rejected');
+        } else {
+          // A previous successful read cannot establish current activity after
+          // this refresh failed. Downgrade it so both retries can recover it.
+          if (generation.live) {
+            generation.live = false;
+            notifyMountsChanged();
+          }
+          if (isRetryableProjectionFailure(error)) {
+            scheduleProjectionRetry(mountId, generation);
+          } else {
+            cancelProjectionRetry(generation);
+          }
+        }
+      }
+      throw error;
+    }
+  };
 
   const notifyMountsChanged = (): void => {
     try {
@@ -299,6 +374,7 @@ export function createDesktopGuestSessionMountService(input: {
     // This fence is installed before the durable mutation is queued so a
     // concurrent refresh cannot restore a projection after authority loss.
     invalidatingAccess.add(mountId);
+    cancelProjectionRetry(projectionGenerations.get(mountId));
     await mutate(async () => {
       const current = await load();
       const mount = current.get(mountId);
@@ -358,10 +434,12 @@ export function createDesktopGuestSessionMountService(input: {
   const recordSharedSession = async (
     mount: GuestSessionMount,
     session: SharedSessionCatalogProjection,
-  ): Promise<void> => {
+    generation: GuestProjectionGeneration,
+  ): Promise<boolean> => {
     if (accessInvalidated(mount.mountId)) {
       throw new RuntimeHostPermanentReconnectError('Shared Session access is no longer available');
     }
+    if (!isCurrentObservation(mount.mountId, generation)) return false;
     const superseded = await mutate(async () => {
       if (accessInvalidated(mount.mountId)) {
         throw new RuntimeHostPermanentReconnectError(
@@ -369,6 +447,7 @@ export function createDesktopGuestSessionMountService(input: {
         );
       }
       const current = await load();
+      if (!isCurrentObservation(mount.mountId, generation)) return undefined;
       const retained = current.get(mount.mountId);
       if (!retained) throw new Error('Shared Session mount was removed while connecting');
       const next = new Map(current);
@@ -388,6 +467,9 @@ export function createDesktopGuestSessionMountService(input: {
       // Publish it even when the credential store is temporarily locked, then
       // retry the durable cache write without holding UI freshness.
       mounts = next;
+      generation.live = true;
+      cancelProjectionRetry(generation);
+      generation.retryDelayMs = undefined;
       notifyMountsChanged();
       const error = await persistDeferredState(next, mount);
       if (error) {
@@ -396,12 +478,15 @@ export function createDesktopGuestSessionMountService(input: {
       }
       return duplicates;
     });
+    if (!superseded) return false;
     for (const duplicate of superseded) {
+      forgetConnection(duplicate.mountId);
       void input.unmount(duplicate.mountId).catch((error) => onError(asError(error), duplicate));
     }
     if (accessInvalidated(mount.mountId)) {
       throw new RuntimeHostPermanentReconnectError('Shared Session access is no longer available');
     }
+    return isCurrentObservation(mount.mountId, generation);
   };
 
   const refreshOnce = async (mountId: string): Promise<void> => {
@@ -420,22 +505,30 @@ export function createDesktopGuestSessionMountService(input: {
     if (!mount) return;
     const inspected = input.inspect(mountId);
     if (inspected && inspected.readiness !== 'ready') return;
-    const session = await readSharedSession(mountId);
+    const { session, generation } = await readSharedSession(mountId);
+    if (!isCurrentObservation(mountId, generation)) return;
     if (removingMounts.has(mountId) || accessInvalidated(mountId)) return;
     if (!session) {
       await clearSessionProjection(mountId);
       return;
     }
-    await recordSharedSession(mount, session);
+    await recordSharedSession(mount, session, generation);
   };
 
-  const refresh = (mountId: string): Promise<void> => {
+  const refresh = (mountId: string, invalidated = true): Promise<void> => {
     if (closed) return Promise.resolve();
     const active = refreshes.get(mountId);
     if (active) {
-      active.dirty = true;
+      // A catalog event may postdate an in-flight read; manual/automatic retry
+      // can simply join that read. Keep any retry already scheduled by its
+      // failure until a replacement read is actually requested.
+      if (invalidated) {
+        cancelProjectionRetry(projectionGenerations.get(mountId));
+        active.dirty = true;
+      }
       return active.task;
     }
+    cancelProjectionRetry(projectionGenerations.get(mountId));
     const state: LiveGuestRefresh = { dirty: true, task: Promise.resolve() };
     state.task = (async () => {
       let failure: unknown;
@@ -454,6 +547,36 @@ export function createDesktopGuestSessionMountService(input: {
     });
     refreshes.set(mountId, state);
     return state.task;
+  };
+
+  const scheduleProjectionRetry = (mountId: string, generation: GuestProjectionGeneration): void => {
+    if (!isCurrentObservation(mountId, generation) || generation.live || generation.retry ||
+      removingMounts.has(mountId) || accessInvalidated(mountId)) return;
+    const retry = { controller: new AbortController(), task: Promise.resolve() };
+    const signal = AbortSignal.any([
+      retry.controller.signal, generation.controller.signal, projectionLifetime.signal,
+    ]);
+    const delayMs = generation.retryDelayMs ?? 1_000;
+    generation.retryDelayMs = Math.min(delayMs * 2, PROJECTION_RETRY_MAX_MS);
+    generation.retry = retry;
+    retry.task = (async () => {
+      try {
+        await wait(delayMs, signal);
+        if (signal.aborted || !isCurrentObservation(mountId, generation) || generation.live ||
+          removingMounts.has(mountId) || accessInvalidated(mountId)) return;
+        // Release the delay slot before reading so a new failure can schedule
+        // its next attempt, while refresh owns in-flight query deduplication.
+        if (generation.retry === retry) generation.retry = undefined;
+        await refresh(mountId, false);
+      } catch (error) {
+        const mount = mounts?.get(mountId);
+        if (!signal.aborted && isCurrentObservation(mountId, generation) && mount)
+          onError(asError(error), mount);
+      } finally {
+        if (generation.retry === retry) generation.retry = undefined;
+      }
+    })();
+    void retry.task.catch(() => undefined);
   };
 
   const activate = async (
@@ -506,15 +629,16 @@ export function createDesktopGuestSessionMountService(input: {
         if (closed || removingMounts.has(mount.mountId)) {
           return result;
         }
-        const session = await readSharedSession(mount.mountId, activation.controller.signal);
+        const { session, generation } = await readSharedSession(mount.mountId, activation.controller.signal);
         activation.controller.signal.throwIfAborted();
+        if (!isCurrentObservation(mount.mountId, generation)) return 'reconnecting';
         if (!session) {
           await clearSessionProjection(mount.mountId);
           throw new RuntimeHostPermanentReconnectError(
             'This shared Session is no longer available to the retained Guest access',
           );
         }
-        await recordSharedSession(mount, session);
+        if (!await recordSharedSession(mount, session, generation)) return 'reconnecting';
       } else {
         activation.stage = 'connecting';
       }
@@ -584,6 +708,7 @@ export function createDesktopGuestSessionMountService(input: {
 
   const remove = async (mountId: string): Promise<void> => {
     removingMounts.add(mountId);
+    cancelProjectionRetry(projectionGenerations.get(mountId));
     try {
       const matching = [...activations].filter((activation) => activation.mountId === mountId);
       for (const activation of matching) {
@@ -603,6 +728,7 @@ export function createDesktopGuestSessionMountService(input: {
         const next = new Map(current);
         next.delete(mountId);
         await persist(next);
+        forgetConnection(mountId);
         return mount;
       });
       if (!removed) return;
@@ -655,8 +781,8 @@ export function createDesktopGuestSessionMountService(input: {
     if (!retained) {
       return {
         kind: 'error',
-        reason: 'connection_failed',
-        message: `At most ${MAX_MOUNTS} shared Sessions can be retained`,
+        reason: 'mount_limit_reached',
+        params: { max: MAX_MOUNTS },
       };
     }
     let reconcile = false;
@@ -673,6 +799,8 @@ export function createDesktopGuestSessionMountService(input: {
         mountId: mount.mountId,
       };
     } catch (error) {
+      const importWasCancelled = activation.controller.signal.aborted;
+      const peerPathUnavailable = isPeerPathUnavailable(error);
       if (
         (activation.stage === 'finalizing' &&
           error instanceof RuntimeHostPairingFinalizationInterruptedError) ||
@@ -684,18 +812,28 @@ export function createDesktopGuestSessionMountService(input: {
           const next = new Map(await load());
           next.delete(mount.mountId);
           await persist(next);
+          forgetConnection(mount.mountId);
         });
         activation.controller.abort(new Error('Shared Session mount activation failed'));
         await input.unmount(mount.mountId).catch(() => undefined);
         invalidatingAccess.delete(mount.mountId);
       }
+      if (!reconcile && !importWasCancelled && !peerPathUnavailable) {
+        const diagnostic = asError(error);
+        console.error(
+          '[session-collaboration] import failed:',
+          redactSecrets(diagnostic.stack ?? diagnostic.message),
+        );
+      }
       return reconcile
         ? { kind: 'recovering', mountId: mount.mountId }
         : {
             kind: 'error',
-            reason: error instanceof RuntimeHostRemoteCompatibilityError ? 'incompatible_host'
-              : isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
-            message: asError(error).message,
+            reason: error instanceof RuntimeHostRemoteCompatibilityError
+              ? 'incompatible_host'
+              : peerPathUnavailable
+                ? 'peer_path_unavailable'
+                : 'connection_failed',
           };
     } finally {
       activations.delete(activation);
@@ -749,6 +887,7 @@ export function createDesktopGuestSessionMountService(input: {
       return [...current.values()]
         .map((mount) => {
           const inspected = input.inspect(mount.mountId);
+          const generation = observeConnection(mount.mountId, inspected);
           const activation = [...activations].find(
             (candidate) => candidate.mountId === mount.mountId,
           );
@@ -769,7 +908,9 @@ export function createDesktopGuestSessionMountService(input: {
               : inspected?.error ? { failure: connectionFailure(inspected.error) } : {}),
             ...(inspected?.peerPath ? { peerPath: inspected.peerPath } : {}),
             ...(!accessInvalidated(mount.mountId) && mount.session
-              ? { session: mount.session }
+              ? currentReadiness === 'ready' && generation.live
+                ? { session: mount.session, sessionState: 'live' as const }
+                : { session: retainedSession(mount.session), sessionState: 'cached' as const }
               : {}),
           };
         })
@@ -778,6 +919,7 @@ export function createDesktopGuestSessionMountService(input: {
 
     async connectionChanged(mountId, error) {
       if (closed) return;
+      observeConnection(mountId);
       if (error && isRejectedAccessFailure(error)) {
         await clearSessionProjection(mountId, 'credential_rejected');
         return;
@@ -811,7 +953,11 @@ export function createDesktopGuestSessionMountService(input: {
       if (!mount || accessInvalidated(mountId)) return;
       if (closed || removingMounts.has(mountId)) return;
       input.wakeConnection?.(mountId);
-      if (input.inspect(mountId)?.readiness === 'ready') return;
+      const generation = observeConnection(mountId);
+      if (generation.readiness === 'ready') {
+        if (!generation.live) await refresh(mountId, false);
+        return;
+      }
       beginStartupReconciliation(mount);
       notifyMountsChanged();
     },
@@ -842,6 +988,9 @@ export function createDesktopGuestSessionMountService(input: {
       }
       await Promise.allSettled([...activations].map((activation) => activation.task));
       await Promise.allSettled([...refreshes.values()].map((refresh) => refresh.task));
+      await Promise.allSettled([...projectionGenerations.values()].flatMap(
+        (generation) => generation.retry ? [generation.retry.task] : [],
+      ));
       if (deferredWriteRetry) await deferredWriteRetry;
       await mutationTail;
       if (deferredWriteFailure) {
@@ -852,6 +1001,7 @@ export function createDesktopGuestSessionMountService(input: {
       }
       activations.clear();
       refreshes.clear();
+      projectionGenerations.clear();
     },
   };
 }
@@ -994,14 +1144,21 @@ function decodeMount(value: unknown): GuestSessionMount {
 }
 
 function retainedSession(session: SharedSessionCatalogProjection): SharedSessionCatalogProjection {
-  const { liveRunState: _liveRunState, ...retained } = session;
+  const { liveRunState: _liveRunState, backgroundActivity: _backgroundActivity, backgroundActivityVersion: _backgroundActivityVersion, ...retained } = session;
   return retained;
 }
 
 function isRejectedAccessFailure(error: Error): boolean {
   return (
-    error instanceof RuntimeHostProfileConnectionError && error.reason === 'credential_rejected'
+    (error instanceof RuntimeHostProfileConnectionError && error.reason === 'credential_rejected') ||
+    (error instanceof RuntimeHostOperationError && error.code === 'unauthorized')
   );
+}
+
+function isRetryableProjectionFailure(error: unknown): boolean {
+  if (error instanceof RuntimeHostPermanentReconnectError) return false;
+  return !(error instanceof RuntimeHostOperationError) ||
+    ['host_not_ready', 'host_draining', 'persistence_failed', 'internal_failure'].includes(error.code);
 }
 
 function decodeAccessFailure(value: unknown): NonNullable<GuestSessionMount['accessFailure']> {

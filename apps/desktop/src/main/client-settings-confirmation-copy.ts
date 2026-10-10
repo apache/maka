@@ -30,21 +30,21 @@ type ConfirmationCopy = {
 
 const COPY = {
   'zh-CN': {
-    labels: { theme: '主题', palette: '配色', uiLocale: '界面语言', runComplete: '回答完成通知', keepSystemAwake: '保持系统唤醒' },
+    labels: { theme: '主题', palette: '配色', uiLocale: '界面语言', runComplete: '系统通知', keepSystemAwake: '保持系统唤醒' },
     on: '开启',
     off: '关闭',
     message: '允许 Maka 更新此客户端的设置吗？',
     buttons: ['应用更改', '取消'],
   },
   'zh-TW': {
-    labels: { theme: '主題', palette: '色彩配置', uiLocale: '介面語言', runComplete: '回答完成通知', keepSystemAwake: '保持系統喚醒' },
+    labels: { theme: '主題', palette: '色彩配置', uiLocale: '介面語言', runComplete: '系統通知', keepSystemAwake: '保持系統喚醒' },
     on: '開啟',
     off: '關閉',
     message: '允許 Maka 更新此用戶端的設定嗎？',
     buttons: ['套用變更', '取消'],
   },
   en: {
-    labels: { theme: 'Theme', palette: 'Palette', uiLocale: 'UI language', runComplete: 'Run-complete notifications', keepSystemAwake: 'Keep system awake' },
+    labels: { theme: 'Theme', palette: 'Palette', uiLocale: 'UI language', runComplete: 'System notifications', keepSystemAwake: 'Keep system awake' },
     on: 'true',
     off: 'false',
     message: "Allow Maka to update this client's settings?",

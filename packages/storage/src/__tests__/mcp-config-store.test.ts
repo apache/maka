@@ -19,13 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { MCP_CONFIG_VERSION, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import {
   createMcpConfigStore,
+  McpConfigSourceError,
   normalizeMcpConfig,
   normalizeMcpImport,
 } from '../mcp-config-store.js';
@@ -34,6 +35,24 @@ const roots: string[] = [];
 afterEach(async () =>
   Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))),
 );
+
+test('a subscriber hears when watching begins, then once per replacement until it unsubscribes', async () => {
+  const root = await tempRoot();
+  const reader = createMcpConfigStore(root);
+  const writer = createMcpConfigStore(root);
+  await reader.get();
+  const notifications: Array<Error | undefined> = [];
+  const unsubscribe = reader.subscribeChanges((error) => notifications.push(error));
+  await waitUntil(() => notifications.length === 1);
+  await writer.upsert('filesystem', { command: 'npx' });
+  await waitUntil(() => notifications.length > 1);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual(notifications, [undefined, undefined]);
+  unsubscribe();
+  await writer.remove('filesystem');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(notifications.length, 2);
+});
 
 test('creates and atomically updates a Claude-compatible mcp.json', async () => {
   const root = await tempRoot();
@@ -56,6 +75,15 @@ test('creates and atomically updates a Claude-compatible mcp.json', async () => 
     assert.equal((await stat(join(root, 'mcp.json'))).mode & 0o777, 0o600);
   await store.remove('filesystem');
   assert.deepEqual((await store.get()).mcpServers, {});
+});
+
+test('leaves no temp file behind after writes', async () => {
+  const root = await tempRoot();
+  const store = createMcpConfigStore(root);
+  await store.upsert('filesystem', { command: 'npx', args: ['-y', 'server'] });
+  await store.remove('filesystem');
+  const strays = (await readdir(root)).filter((entry) => entry.endsWith('.tmp'));
+  assert.deepEqual(strays, []);
 });
 
 test('reads version 1 without rewriting and persists version 3 on the next mutation', async () => {
@@ -470,13 +498,19 @@ test('normalizes and bounds the remote oauth block', async () => {
     mcpServers: {
       notion: {
         url: 'https://mcp.notion.com/mcp',
-        oauth: { clientId: 'abc', scopes: ['read', 'write'], callbackPort: 33389 },
+        oauth: {
+          issuer: 'https://auth.example/tenant',
+          clientId: 'abc',
+          scopes: ['read', 'write'],
+          callbackPort: 33389,
+        },
       },
     },
   });
   const notion = normalized.mcpServers.notion;
   assert.ok(notion && 'url' in notion);
   assert.deepEqual(notion.oauth, {
+    issuer: 'https://auth.example/tenant',
     clientId: 'abc',
     scopes: ['read', 'write'],
     callbackPort: 33389,
@@ -539,7 +573,7 @@ test('normalizes and bounds the remote oauth block', async () => {
     ['read', 'a\tb'],
     ['read"admin'],
     ['read\\admin'],
-    ['readadmin'],
+    ['read\u0001admin'],
     ['café'],
   ]) {
     assert.throws(
@@ -592,3 +626,110 @@ async function tempRoot(): Promise<string> {
   roots.push(root);
   return root;
 }
+
+async function waitUntil(condition: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+test('corrupt persisted MCP JSON has a safe actionable error and mutations cannot overwrite it', async () => {
+  const root = await tempRoot();
+  const path = join(root, 'mcp.json');
+  const secret = 'sk-live-SECRET';
+  const bytes = Buffer.from(secret);
+  assert.throws(
+    () => JSON.parse(bytes.toString('utf8')),
+    (error) => {
+      assert.ok(error instanceof SyntaxError && error.message.includes(secret));
+      return true;
+    },
+  );
+  await writeFile(path, bytes);
+  const store = createMcpConfigStore(root);
+  let transformed = false;
+  for (const operation of [
+    () => store.get(),
+    () =>
+      store.transform((config) => {
+        transformed = true;
+        return config;
+      }),
+    () => store.upsert('new', { command: 'unused' }),
+    () => store.remove('old'),
+  ]) {
+    await assert.rejects(operation(), (error) => {
+      assert.ok(error instanceof McpConfigSourceError);
+      assert.equal(error.reason, 'invalid-json');
+      assert.equal(error.path, path);
+      assert.ok(error.message.includes(path));
+      assert.match(error.message, /not modified.*back up and repair/u);
+      assert.equal(error.message.includes(secret), false);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.deepEqual(await readFile(path), bytes);
+  }
+  assert.equal(transformed, false);
+  assert.throws(
+    () => normalizeMcpImport('{bad'),
+    (error) => {
+      assert.ok(error instanceof McpConfigSourceError);
+      assert.equal(error.reason, 'invalid-json');
+      assert.equal(error.path, undefined);
+      return true;
+    },
+  );
+});
+
+for (const prefix of ['', '\uFEFF']) {
+  test(`reads MCP UTF-8 JSON ${prefix ? 'with' : 'without'} a BOM without rewriting it`, async () => {
+    const root = await tempRoot();
+    const path = join(root, 'mcp.json');
+    const config = {
+      version: 3,
+      mcpServers: { example: { command: 'node', args: ['\uFEFFdata'] } },
+    };
+    const bytes = Buffer.from(prefix + JSON.stringify(config));
+    await writeFile(path, bytes);
+    assert.deepEqual(await createMcpConfigStore(root).get(), normalizeMcpConfig(config));
+    assert.deepEqual(await readFile(path), bytes);
+    for (const source of [config, config.mcpServers]) {
+      assert.deepEqual(
+        normalizeMcpImport(prefix + JSON.stringify(source)),
+        normalizeMcpConfig(config),
+      );
+    }
+  });
+}
+
+test('a UTF-8 BOM does not bypass MCP syntax checks or permit overwriting corrupt data', async () => {
+  const root = await tempRoot();
+  const path = join(root, 'mcp.json');
+  const store = createMcpConfigStore(root);
+  for (const source of ['\uFEFF{"token":"sk-private",', '\uFEFF\uFEFF{"mcpServers":{}}']) {
+    const bytes = Buffer.from(source);
+    await writeFile(path, bytes);
+    for (const operation of [
+      () => store.get(),
+      () => store.upsert('new', { command: 'node' }),
+      () =>
+        store.transform(() => {
+          throw new Error('must not reach transform');
+        }),
+    ]) {
+      await assert.rejects(operation(), (error) => {
+        assert.ok(error instanceof McpConfigSourceError);
+        assert.equal(error.reason, 'invalid-json');
+        assert.equal(error.path, path);
+        assert.equal(error.message.includes('sk-private'), false);
+        assert.equal(error.cause, undefined);
+        return true;
+      });
+      assert.deepEqual(await readFile(path), bytes);
+    }
+    assert.throws(() => normalizeMcpImport(source), { reason: 'invalid-json', path: undefined });
+  }
+});

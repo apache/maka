@@ -106,25 +106,13 @@ export const ALLOWED = {
   },
   AppShellContent: {
     useActiveExecutionBoundary: 1,
-    useActiveSessionEvents: 1,
     useAppShellBootstrapSubscriptions: 1,
-    useAppShellComposerQuotes: 1,
     useAppShellHostEffects: 1,
     useAppShellNavRefSync: 1,
     useAppShellPersistenceEffects: 1,
     useAppShellProjectContext: 1,
-    useAppShellSessionUiReads: 1,
     useAppShellSessionWorkspace: 1,
-    useAppShellTurnPresentation: 1,
-    useCommandPalette: 1,
-    useComposerAttachments: 1,
-    useEffect: 12,
-    useKeyboardHelp: 1,
-    useLayoutEffect: 2,
-    useNewTaskChoice: 1,
-    useOnboardingSnapshot: 1,
-    usePlanModeState: 1,
-    useSessionEventHealthPolling: 1,
+    useLayoutEffect: 1,
     // Replaces `useSessionNavigationController`, which is now called inside
     // `SessionNavigationProvider`. The entry shrinks rather than disappearing,
     // because the shell body does read the rail: the command palette lists the
@@ -135,28 +123,16 @@ export const ALLOWED = {
     // replaces put three `useState`, four effects and a `useStableActions`
     // facade on this fiber.
     useSessionNavigationReads: 1,
-    useSessionCollaborationDialog: 1,
+    // A selected-Session overlay read only; SessionSettingsProvider owns the
+    // write controller. The shell still derives its model and mode controls.
     useSessionSettingIntent: 1,
-    useSettingsModal: 1,
     useShellAppearance: 1,
     useShellChatModel: 1,
     useShellConnections: 3,
-    useShellLiveTurn: 1,
     useShellMemoryPill: 1,
-    useShellResume: 1,
-    useShellRunUpdates: 1,
-    useShellSearch: 1,
-    useStableActions: 6,
-    useState: 14,
-    useTaskSubmissionReadiness: 1,
+    useStableActions: 1,
+    useState: 3,
     useToast: 1,
-    // The last of the three `useKeyedPendingRegistry` call sites this entry
-    // replaces: #4113 moved the other two onto the session UI store, which is
-    // already an external store, so their scope left this fiber entirely. This
-    // one stays because the shell body reads `keys` to build the turn footer's
-    // disabled mask.
-    useTurnActionRegistry: 1,
-    useWorkbarController: 1,
   },
 };
 

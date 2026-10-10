@@ -27,7 +27,8 @@
 // the process cannot be spawned at all. Each caller maps those facts to its own
 // contract.
 
-import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { spawnOwnedProcess } from './owned-child-process.js';
 import { buildShellSpawnPlan, defaultShellPlan, type ShellPlan } from './shell-detect.js';
 import { BashTailBuffer } from './bash-tail-buffer.js';
 import { DEFAULT_PROCESS_TERMINATION_GRACE_MS } from './process-tree-terminator.js';
@@ -36,17 +37,12 @@ import {
   manageChildProcessLifecycle,
   type ChildProcessLifecycleResult,
 } from './child-process-lifecycle.js';
-import { OUTPUT_RECOVERY_HINT } from './tool-output.js';
-import {
-  buildSpawnStdio,
-  closeChildFdSources,
-  writeChildFdInputs,
-  type ChildFdInput,
-} from './child-fd-input.js';
+import { closeChildFdSources, writeChildFdInputs, type ChildFdInput } from './child-fd-input.js';
 
 // Per-stream cap on the output RETAINED for the result (~1MB). This only bounds
-// what is kept to return. The tool layer (truncateToolOutput) trims this further
-// to the model's budget. Shared so both Bash paths retain identically.
+// what is kept to return. The tool layer preserves this result for durable
+// storage; unified result pruning bounds its model projection.
+// Shared so both Bash paths retain identically.
 export const BASH_MAX_RETAINED_CHARS = 1024 * 1024;
 
 // Per-stream cap on output forwarded LIVE via emitOutput (~1MB). The command is
@@ -63,25 +59,13 @@ export const LIVE_OUTPUT_SUPPRESSED_MARKER =
   '[live output suppressed: too much output to stream live; the command keeps ' +
   'running and its result still contains the most recent output]';
 
-// Appended to a stream when BashTailBuffer dropped an oversized line that had no
-// newline to truncate at (dropped whole for redaction safety). Without it, a
-// command whose only output was one giant line would look like it produced
-// nothing. Carries no dropped content — just a recoverable notice.
-const UNSAFE_DROP_MARKER =
-  '[a single line larger than the output limit was omitted for safety. ' +
-  OUTPUT_RECOVERY_HINT +
-  ']';
-
-export function shellTailValueWithUnsafeDropMarker(buf: BashTailBuffer): string {
-  const text = buf.value(); // value() trims first, so the drop flag is current after it
-  if (!buf.hasDroppedUnsafe()) return text;
-  // Append (not prepend) so a later tail-keeping truncateToolOutput retains it.
-  return text ? `${text}\n${UNSAFE_DROP_MARKER}` : UNSAFE_DROP_MARKER;
-}
-
 export interface BoundedShellOptions {
   cwd: string;
-  /** Hard wall-clock cap; the child is SIGTERM'd and `timedOut` is set. */
+  /**
+   * Hard wall-clock cap on the command, counted from its admission so the
+   * owning supervisor's startup does not consume it; the child is SIGTERM'd
+   * and `timedOut` is set.
+   */
   timeoutMs: number;
   /** Per-stream retained-tail cap in characters. Defaults to BASH_MAX_RETAINED_CHARS. */
   maxRetainedChars?: number;
@@ -105,7 +89,7 @@ export interface BoundedShellOptions {
 
 export interface BoundedShellResult {
   exitCode: number;
-  /** Last `maxRetainedChars` of stdout (line-aligned; see BashTailBuffer). */
+  /** Last `maxRetainedChars` of stdout. */
   stdout: string;
   /** Last `maxRetainedChars` of stderr. */
   stderr: string;
@@ -181,19 +165,18 @@ function runSpawnedProcessWithBoundedTail(
     });
   }
   return new Promise<BoundedShellResult>((resolvePromise, reject) => {
-    let child: ReturnType<typeof spawn>;
+    let child: ChildProcess;
+    let admitted: Promise<unknown>;
     try {
-      child = spawn(program, [...args], {
+      ({ child, ready: admitted } = spawnOwnedProcess({
+        program,
+        args,
         cwd: options.cwd,
         env: options.env,
         shell: useShellOption,
-        stdio: buildSpawnStdio(options.fdInputs, stdin === undefined ? 'ignore' : 'pipe'),
-        // POSIX: make the shell its own process-group leader (setsid). Termination
-        // signals the group and removes descendants visible outside it at each
-        // process-table snapshot.
-        // Windows has no process groups; taskkill /T owns the equivalent cleanup.
-        detached: process.platform !== 'win32',
-      });
+        stdin: stdin === undefined ? 'ignore' : 'pipe',
+        fdInputs: options.fdInputs,
+      }));
     } finally {
       closeChildFdSources(options.fdInputs);
     }
@@ -226,7 +209,17 @@ function runSpawnedProcessWithBoundedTail(
     );
     void lifecycle.completion.then(resolveOnce, rejectOnce);
 
-    const timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
+    // The budget is the command's, as with a direct spawn: start it once the
+    // supervisor has admitted the command. A supervisor that never admits it
+    // fails through its own startup timeout.
+    let timer: NodeJS.Timeout | undefined;
+    void admitted.then(
+      () => {
+        if (settled || termination) return;
+        timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
+      },
+      () => {},
+    );
     const abort = () => beginTermination({ aborted: true });
     if (options.abortSignal) {
       if (options.abortSignal.aborted) abort();
@@ -296,8 +289,8 @@ function runSpawnedProcessWithBoundedTail(
       if (settled) return;
       settled = true;
       cleanup();
-      const stdout = shellTailValueWithUnsafeDropMarker(stdoutBuf);
-      const stderr = shellTailValueWithUnsafeDropMarker(stderrBuf);
+      const stdout = stdoutBuf.value();
+      const stderr = stderrBuf.value();
       resolvePromise({
         exitCode: termination
           ? termination.timedOut
@@ -306,14 +299,8 @@ function runSpawnedProcessWithBoundedTail(
           : (outcome.exitCode ?? (outcome.signal ? 128 : 1)),
         stdout,
         stderr,
-        stdoutTruncated:
-          outcome.incompleteOutputs.has('stdout') ||
-          stdoutChars > stdout.length ||
-          stdoutBuf.hasDroppedUnsafe(),
-        stderrTruncated:
-          outcome.incompleteOutputs.has('stderr') ||
-          stderrChars > stderr.length ||
-          stderrBuf.hasDroppedUnsafe(),
+        stdoutTruncated: outcome.incompleteOutputs.has('stdout') || stdoutChars > stdout.length,
+        stderrTruncated: outcome.incompleteOutputs.has('stderr') || stderrChars > stderr.length,
         timedOut: !!termination?.timedOut,
         aborted: !!termination?.aborted,
       });

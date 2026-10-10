@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   PROVIDER_REGISTRY,
+  effectiveBaseUrl,
   providerDefaultsOf,
   providerFallbackModelIds,
   connectionModelsEnumerateAccount,
@@ -28,11 +29,12 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
-import { anthropicV1Url, googleApiUrl, openResponsesUrl } from './provider-urls.js';
+import { openAiChatUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
   CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
+  CONNECTION_EFFECT_JSON_BODY_MAX_BYTES,
   ConnectionEffectFetchError,
   fetchForConnectionEffect,
   type ConnectionEffectFetch,
@@ -159,6 +161,7 @@ async function testConnectionStrict(
   if (!defaults) {
     return { ok: false, errorMessage: `Unknown provider type "${connection.providerType}"` };
   }
+  if (defaults.retired) return retiredProviderTestResult(connection.providerType);
   const sessionId = connection.providerType === 'opencode-go' ? randomUUID() : undefined;
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
@@ -170,37 +173,6 @@ async function testConnectionStrict(
 
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
-  }
-  if (connection.providerType === 'opencode-free' && !model?.trim()) {
-    const candidates = [
-      ...new Set([...connectionEnabledModelIds(connection), ...providerFallbackModelIds(defaults)]),
-    ];
-    let lastFailure: ConnectionTestResult | undefined;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]!;
-      const remainingMs = timeoutMs - (Date.now() - t0);
-      if (remainingMs <= 0) {
-        return connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
-      }
-      const remainingCandidates = candidates.length - index;
-      const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / remainingCandidates));
-      try {
-        const result = await testConnectionModel(
-          connection,
-          secret,
-          candidate,
-          fetchFn,
-          t0,
-          attemptTimeoutMs,
-          sessionId,
-        );
-        if (result.ok) return result;
-        lastFailure = result;
-      } catch (error) {
-        lastFailure = connectionTestFailure(error, t0, true);
-      }
-    }
-    return lastFailure ?? connectionTestFailure(new ConnectionEffectFetchError('timeout'), t0);
   }
 
   return await testConnectionModel(
@@ -230,24 +202,15 @@ async function testConnectionModel(
   if (providerDefaultsOf(connection.providerType)?.runtimeAdapter.kind === 'unavailable') {
     return retiredProviderTestResult(connection.providerType);
   }
+  if (connection.providerType === 'github-copilot') {
+    return probeGitHubCopilot(effectiveBaseUrl(connection), secret, testModel, t0, fetchFn);
+  }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
   const requestHeaders = withOpenCodeSessionHeader(connection.providerType, sessionId);
 
   switch (adapter.kind) {
     case 'anthropic':
-      return await probeAnthropic(
-        connection,
-        baseUrl,
-        secret,
-        testModel,
-        t0,
-        fetchFn,
-        requestHeaders,
-      );
-    case 'unavailable':
-      // Unreachable: the guard above returns first. The arm keeps the switch
-      // exhaustive so a newly retired provider cannot slip past it.
-      return retiredProviderTestResult(connection.providerType);
+      return await probeAnthropic(adapter, baseUrl, secret, testModel, t0, fetchFn, requestHeaders);
     case 'openai':
       return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn, requestHeaders)
@@ -276,8 +239,6 @@ async function testConnectionModel(
             timeoutMs,
             requestHeaders,
           );
-    case 'github-copilot':
-      return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
     case 'google':
       return await probeGoogle(
         baseUrl,
@@ -367,7 +328,10 @@ function retiredProviderTestResult(providerType: string): ConnectionTestResult {
 }
 
 async function probeAnthropic(
-  connection: Pick<ConnectionEffectConnection, 'providerType'>,
+  adapter: Extract<
+    import('@maka/core/llm-connections').ProviderRuntimeAdapter,
+    { kind: 'anthropic' }
+  >,
   baseUrl: string,
   secret: string,
   model: string,
@@ -377,12 +341,15 @@ async function probeAnthropic(
 ): Promise<ConnectionTestResult> {
   const headers: Record<string, string> = {
     ...requestHeaders,
-    'x-api-key': secret,
+    ...(adapter.auth === 'bearer'
+      ? { authorization: `Bearer ${secret}` }
+      : { 'x-api-key': secret }),
     'anthropic-version': '2023-06-01',
     'content-type': 'application/json',
   };
 
-  const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
+  const url = `${stripTrailing(baseUrl)}/messages`;
+  const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -417,7 +384,7 @@ async function probeOpenAI(
     // chat with the provider error class.
     return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
   }
-  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/chat/completions`, {
+  const r = await fetchForConnectionEffect(fetchFn, openAiChatUrl(baseUrl), {
     method: 'POST',
     headers: {
       ...requestHeaders,
@@ -432,46 +399,8 @@ async function probeOpenAI(
     timeoutMs,
   });
   if (!r.ok) return httpFailure(r, t0);
-  if (connection.providerType === 'opencode-free') {
-    const body = await r.readJson<unknown>();
-    if (!isOpenAIChatCompletion(body)) {
-      return {
-        ok: false,
-        errorMessage: 'OpenCode Free returned no valid chat completion',
-        errorClass: 'provider_unavailable',
-        latencyMs: Date.now() - t0,
-        modelTested: model,
-      };
-    }
-    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-  }
   await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-}
-
-function isOpenAIChatCompletion(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const choices = (value as { choices?: unknown }).choices;
-  return (
-    Array.isArray(choices) &&
-    choices.some((choice) => {
-      if (!choice || typeof choice !== 'object') return false;
-      const message = (choice as { message?: unknown }).message;
-      if (!message || typeof message !== 'object') return false;
-      const completion = message as {
-        content?: unknown;
-        reasoning?: unknown;
-        reasoning_content?: unknown;
-        tool_calls?: unknown;
-      };
-      return (
-        typeof completion.content === 'string' ||
-        typeof completion.reasoning === 'string' ||
-        typeof completion.reasoning_content === 'string' ||
-        (Array.isArray(completion.tool_calls) && completion.tool_calls.length > 0)
-      );
-    })
-  );
 }
 
 async function probeGoogle(
@@ -482,9 +411,7 @@ async function probeGoogle(
   normalizeBaseUrl: boolean,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const url = normalizeBaseUrl
-    ? googleApiUrl(baseUrl, `/models/${encodeURIComponent(model)}:generateContent`, apiKey)
-    : `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent`;
+  const url = `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent${normalizeBaseUrl ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
   const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers: {
@@ -508,8 +435,6 @@ async function httpFailure(r: ConnectionEffectResponse, t0: number): Promise<Con
     await r.cancel();
     return {
       ok: false,
-      errorMessage:
-        'OAuth 已登录，但当前账号或 provider 正在 rate limit。请稍后重试，或先切换到其它可用模型。',
       statusCode,
       errorClass: 'provider_unavailable',
       latencyMs: Date.now() - t0,

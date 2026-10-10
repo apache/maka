@@ -40,8 +40,9 @@ export interface CodeModeToolDefinition {
  */
 export const DEFAULT_CODE_MODE_EXECUTION_POLICY: Readonly<Required<CodeModeExecutionPolicy>> =
   Object.freeze({
-    /** Sandbox invocation deadline; aborted host operations still drain before settlement. */
+    /** Cumulative VM execution budget; tool waits follow Runtime cancellation. */
     timeoutMs: 30_000,
+    timeoutMode: 'execution',
     memoryLimitBytes: 64 * 1024 * 1024,
     maxStackSizeBytes: 2 * 1024 * 1024,
     maxResultBytes: 1024 * 1024,
@@ -189,7 +190,8 @@ async function drainHostToolOperations(operations: ReadonlySet<Promise<unknown>>
 function normalizeQuickJsError(error: unknown): CodeModeDiagnostic {
   const message = error instanceof Error ? error.message : String(error);
   const isRunError =
-    error instanceof Error && (error as Error & { code?: unknown }).code === 'RUN_ERROR';
+    error instanceof Error &&
+    (error as Error & { code?: unknown }).code === 'RUN_USER_SOURCE_ERROR';
   const isSourceSyntaxRunError =
     isRunError &&
     error.name === 'SyntaxError' &&
@@ -199,8 +201,9 @@ function normalizeQuickJsError(error: unknown): CodeModeDiagnostic {
   }
   if (
     isRunError &&
-    error.name === 'InternalError' &&
-    (/^interrupted$/i.test(message) || /out of memory|stack (?:size|overflow)/i.test(message))
+    (error.name === 'InternalError' || error.name === 'RangeError') &&
+    (/^interrupted$/i.test(message) ||
+      /out of memory|stack (?:size|overflow)|maximum call stack size exceeded/i.test(message))
   ) {
     return { kind: 'limit_exceeded', message };
   }

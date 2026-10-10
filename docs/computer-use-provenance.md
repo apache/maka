@@ -1,3 +1,15 @@
+---
+doc_id: computer-use-provenance
+title: "Computer Use provenance"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-11
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -125,7 +137,7 @@ artifact, retained facts, and Maka-authored divergences are recorded in
 
 | Binary-recovered or observed fact | Informed area |
 |---|---|
-| Exact cursor geometry, center hotspot, motion configuration, close-enough thresholds, path measurement, and core scoring weights | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
+| Historical (removed by #3293): cursor geometry, center hotspot, motion configuration, close-enough thresholds, path measurement, and core scoring weights | Formerly `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts`; the #3293 replacement removed every transcribed value (the hotspot is now the glyph tip, not the center) |
 | Overlay level policy — an occluded target raises the cursor rather than hiding it | same file, and `apps/desktop/src/main/computer-use/cursor-overlay-window.ts` |
 | The observation text shape | `packages/runtime/src/computer-use-tools.ts`, corroborated by the archived capture in §2 |
 | OOP WebContent targeting, retained-element unique refetch, and renderer-generation fencing | Reimplemented in the pinned `maka-cu` source; this repository records the exact source commit and binary digest in `apps/desktop/bundled-tools.json` |

@@ -17,7 +17,10 @@
  * under the License.
  */
 
+/// <reference lib="es2023.collection" />
+
 import { Context, type Fiber, FiberState, type Inject, type Plugin } from './plugin-kernel.js';
+import { freezeCompositionEntry, walkCompositionEntry } from './plugin-internals.js';
 import {
   fiberStateName,
   type MakaCompositionEntry,
@@ -46,9 +49,6 @@ interface LiveEntry {
   diagnostic?: string;
 }
 
-const FIBER_PENDING = 0;
-const FIBER_FAILED = 3;
-
 interface LiveRoot {
   readonly id: MakaPluginRootId;
   readonly context: Context;
@@ -70,7 +70,15 @@ export class MakaCompositionLoader {
   readonly #packages = new Map<string, MakaPluginPackage>();
   readonly #roots = new Map<MakaPluginRootId, LiveRoot>();
   readonly #entries = new Map<string, LiveEntry>();
-  readonly #isolationLabels = new Map<string, symbol>();
+  // Contexts and services can outlive their entries, so intern by symbol lifetime.
+  readonly #isolationLabels = new Map<string, WeakRef<symbol>>();
+  readonly #isolationLabelFinalizer = new FinalizationRegistry<{
+    label: string;
+    reference: WeakRef<symbol>;
+  }>(({ label, reference }) => {
+    // An old finalizer must not evict a newer incarnation of the same label.
+    if (this.#isolationLabels.get(label) === reference) this.#isolationLabels.delete(label);
+  });
   readonly #transaction?: (context: Context) => MakaPluginTransaction | undefined;
   #compositionGeneration = 0;
   #fiberGeneration = 0;
@@ -255,7 +263,7 @@ export class MakaCompositionLoader {
       }
       validateCompositionEntry(entry);
       const descendantIds = new Set<string>();
-      for (const item of walk(entry)) {
+      for (const item of walkCompositionEntry(entry)) {
         if (descendantIds.has(item.id)) {
           throw new MakaPluginRuntimeError(
             'entry_exists',
@@ -271,7 +279,7 @@ export class MakaCompositionLoader {
           );
         }
       }
-      const inspection = await this.#replace(current, freezeEntry(entry));
+      const inspection = await this.#replace(current, freezeCompositionEntry(entry));
       this.#compositionGeneration += 1;
       return inspection;
     });
@@ -381,7 +389,7 @@ export class MakaCompositionLoader {
         parentContext: Context,
         ancestorDisabled: boolean,
       ): Promise<LiveEntry | undefined> => {
-        for (const item of walk(spec)) {
+        for (const item of walkCompositionEntry(spec)) {
           if (stagedIds.has(item.id)) {
             failures.push(
               Object.freeze({
@@ -392,7 +400,7 @@ export class MakaCompositionLoader {
             return undefined;
           }
         }
-        const shallow = freezeEntry({ ...spec, children: [] });
+        const shallow = freezeCompositionEntry({ ...spec, children: [] });
         let live: LiveEntry | undefined;
         try {
           validateCompositionEntry(shallow);
@@ -417,7 +425,10 @@ export class MakaCompositionLoader {
           );
           if (recovered) live.children.push(recovered);
         }
-        live.spec = freezeEntry({ ...live.spec, children: live.children.map(serialize) });
+        live.spec = freezeCompositionEntry({
+          ...live.spec,
+          children: live.children.map(serialize),
+        });
         return live;
       };
 
@@ -488,7 +499,7 @@ export class MakaCompositionLoader {
         stagedRoots.set(rootId, root);
         for (const spec of entries) {
           validateCompositionEntry(spec);
-          for (const item of walk(spec)) {
+          for (const item of walkCompositionEntry(spec)) {
             if (stagedIds.has(item.id))
               throw new MakaPluginRuntimeError(
                 'entry_exists',
@@ -687,7 +698,13 @@ export class MakaCompositionLoader {
     }
     for (const [service, config] of Object.entries(spec.intercept ?? {}))
       context = context.intercept(service, config);
-    const live: LiveEntry = { spec: freezeEntry(spec), rootId, parent, context, children: [] };
+    const live: LiveEntry = {
+      spec: freezeCompositionEntry(spec),
+      rootId,
+      parent,
+      context,
+      children: [],
+    };
     const disabled = ancestorDisabled || spec.disabled === true;
     if (!disabled && spec.packageId) {
       const pkg = this.#packages.get(spec.packageId);
@@ -696,10 +713,11 @@ export class MakaCompositionLoader {
           'package_not_found',
           `Plugin package is not installed: ${spec.packageId}`,
         );
-      if (!pkg.host)
+      const selectedPlugin = rootId === 'desktop-ui' ? pkg.client : pkg.host;
+      if (!selectedPlugin)
         throw new MakaPluginRuntimeError(
           'invalid_package',
-          `Plugin package has no Host plugin: ${spec.packageId}`,
+          `Plugin package has no ${rootId === 'desktop-ui' ? 'Client' : 'Host'} plugin: ${spec.packageId}`,
         );
       const generation = ++this.#fiberGeneration;
       const metadata: MakaPluginMetadata = Object.freeze({
@@ -710,14 +728,16 @@ export class MakaCompositionLoader {
       });
       context = context.extend({ maka: metadata });
       const transaction = this.#transaction?.(context) ?? new MakaPluginTransactionBuffer(context);
-      if (transaction) context = context.extend({ makaTransaction: transaction });
+      context = context.extend({ makaTransaction: transaction });
       live.context = context;
       live.generation = generation;
-      const plugin = entryPlugin(pkg.host, spec.inject);
+      const plugin = entryPlugin(selectedPlugin, spec.inject);
       live.fiber = context.plugin(plugin, spec.config);
       try {
         await live.fiber.await();
-        if (live.fiber.state === FIBER_FAILED) throw new Error(`Plugin Fiber failed: ${spec.id}`);
+        if (live.fiber.state === FiberState.FAILED) {
+          throw new Error(`Plugin Fiber failed: ${spec.id}`);
+        }
       } catch (error) {
         live.diagnostic = diagnostic(error);
         const cleanupErrors: unknown[] = [];
@@ -727,7 +747,7 @@ export class MakaCompositionLoader {
           cleanupErrors.push(cleanupError);
         }
         try {
-          await transaction?.rollback();
+          await transaction.rollback();
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
         }
@@ -860,7 +880,7 @@ export class MakaCompositionLoader {
     patch: Partial<Omit<MakaCompositionEntry, 'id' | 'children'>>,
   ): Promise<LiveEntry> {
     const current = this.#requireEntry(entryId);
-    const next = freezeEntry({
+    const next = freezeCompositionEntry({
       ...current.spec,
       ...patch,
       id: current.spec.id,
@@ -922,7 +942,7 @@ export class MakaCompositionLoader {
 
   #assertUniqueSubtree(entry: MakaCompositionEntry): void {
     const local = new Set<string>();
-    for (const item of walk(entry)) {
+    for (const item of walkCompositionEntry(entry)) {
       if (local.has(item.id) || this.#entries.has(item.id))
         throw new MakaPluginRuntimeError(
           'entry_exists',
@@ -948,7 +968,7 @@ export class MakaCompositionLoader {
       ? sourceInject
       : Object.keys((sourceInject as Readonly<Record<string, unknown>> | undefined) ?? {});
     const waitingFor =
-      entry.fiber?.state === FIBER_PENDING
+      entry.fiber?.state === FiberState.PENDING
         ? inject.filter((name) => entry.context.get(name) === undefined)
         : [];
     return Object.freeze({
@@ -974,10 +994,12 @@ export class MakaCompositionLoader {
   }
 
   #isolationLabel(label: string): symbol {
-    let symbol = this.#isolationLabels.get(label);
+    let symbol = this.#isolationLabels.get(label)?.deref();
     if (!symbol) {
       symbol = Symbol(label);
-      this.#isolationLabels.set(label, symbol);
+      const reference = new WeakRef(symbol);
+      this.#isolationLabels.set(label, reference);
+      this.#isolationLabelFinalizer.register(symbol, { label, reference });
     }
     return symbol;
   }
@@ -1027,22 +1049,8 @@ function freezePackage(pkg: MakaPluginPackage): MakaPluginPackage {
   return Object.freeze({ ...pkg, contributions: Object.freeze([...(pkg.contributions ?? [])]) });
 }
 
-function freezeEntry(entry: MakaCompositionEntry): MakaCompositionEntry {
-  return Object.freeze({
-    ...entry,
-    ...(entry.inject && !Array.isArray(entry.inject)
-      ? { inject: Object.freeze({ ...entry.inject }) }
-      : entry.inject
-        ? { inject: Object.freeze([...entry.inject]) }
-        : {}),
-    ...(entry.isolate ? { isolate: Object.freeze({ ...entry.isolate }) } : {}),
-    ...(entry.intercept ? { intercept: Object.freeze({ ...entry.intercept }) } : {}),
-    children: Object.freeze((entry.children ?? []).map(freezeEntry)),
-  });
-}
-
 function serialize(entry: LiveEntry): MakaCompositionEntry {
-  return freezeEntry({ ...entry.spec, children: entry.children.map(serialize) });
+  return freezeCompositionEntry({ ...entry.spec, children: entry.children.map(serialize) });
 }
 
 function shallowCompositionEqual(left: unknown, right: unknown): boolean {
@@ -1058,11 +1066,6 @@ function shallowCompositionEqual(left: unknown, right: unknown): boolean {
         Object.is(value, (right as Readonly<Record<string, unknown>>)[key]),
     )
   );
-}
-
-function* walk(entry: MakaCompositionEntry): Generator<MakaCompositionEntry> {
-  yield entry;
-  for (const child of entry.children ?? []) yield* walk(child);
 }
 
 function* walkLive(entry: LiveEntry): Generator<LiveEntry> {

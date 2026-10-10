@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { awaitSendReady, expect, test, COMPOSER_INPUT } from './fixtures';
 
 // This stays in Electron: the physical pointer leaves the renderer viewport,
 // and Chromium pointer capture must route its release back to the owning Turn.
@@ -27,6 +27,7 @@ test('a transcript drag releases outside the window through its owning Turn', as
   await page.setViewportSize({ width: 1200, height: 800 });
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('pointer capture source');
+  await awaitSendReady(page);
   await composer.press('Enter');
 
   // Select from a settled answer. Selecting from a streaming one is broken for
@@ -42,7 +43,7 @@ test('a transcript drag releases outside the window through its owning Turn', as
     .locator('[data-maka-contract="markdown"]')
     .getByText(/Fake backend received: pointer capture source/);
   await expect(reply).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
     timeout: 20_000,
   });
   await expect(page.getByRole('article', { name: '你发送的消息' }).locator('time')).toBeVisible();

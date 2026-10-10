@@ -25,6 +25,50 @@ import {
 } from '../model-history.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
+test('model history drops repaired assistant prefixes by default and diagnoses the boundary', () => {
+  const repairedAssistant = {
+    ...event({
+      id: 'repaired-assistant',
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'text' as const, text: 'Recovered opening answer' },
+    }),
+    refs: { storedMessageId: 'stored-assistant' },
+  };
+  const user = event({
+    id: 'first-user',
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: 'Continue from here' },
+  });
+
+  const ordinary = buildRuntimeEventModelReplayPlan([repairedAssistant, user]);
+  const admittedContinuation = buildRuntimeEventModelReplayPlan([repairedAssistant, user], {
+    allowRepairedAssistantPrefix: true,
+  });
+
+  assert.deepEqual(
+    ordinary.items.map((item) => item.eventId),
+    ['first-user'],
+  );
+  assert.deepEqual(
+    ordinary.diagnostics.filter(({ code }) => code === 'repaired_prefix_dropped'),
+    [
+      {
+        code: 'repaired_prefix_dropped',
+        message: 'repaired assistant prefix dropped before provider replay user boundary',
+        eventId: 'repaired-assistant',
+        turnId: 'turn-1',
+        detail: { droppedEventCount: 1 },
+      },
+    ],
+  );
+  assert.deepEqual(
+    admittedContinuation.items.map((item) => item.eventId),
+    ['repaired-assistant', 'first-user'],
+  );
+});
+
 test('model history keeps reused step ids as separate chronological segments', () => {
   const items = buildRuntimeEventModelReplayPlan([
     assistantText('text-a', 'shared-step', 'Text A'),

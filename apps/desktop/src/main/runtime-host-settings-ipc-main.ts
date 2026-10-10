@@ -20,6 +20,7 @@
 import type {
   AppSettings,
   RuntimeHostAppSettings,
+  RuntimeHostSettingsUpdateGuard,
   SettingsTestResult,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
@@ -59,8 +60,10 @@ type RuntimeHostSettingsClient = Pick<
   | "testNetworkProxy"
   | "updateNetworkProxy"
   | "updateRuntimePolicy"
+  | "updateRuntimePolicyIf"
 >;
 
+const JEV_CREDENTIAL: CredentialLocator = { scope: 'jev', kind: 'api_key' };
 const PROXY_CREDENTIAL: CredentialLocator = {
   scope: "network_proxy",
   kind: "password",
@@ -85,7 +88,10 @@ export type RuntimeHostSettingsModuleDeps = Omit<
 
 export interface RuntimeHostSettingsModule {
   get(): Promise<RuntimeHostAppSettings>;
-  update(patch: UpdateAppSettingsInput): Promise<RuntimeHostAppSettings>;
+  update(
+    patch: UpdateAppSettingsInput,
+    guard?: RuntimeHostSettingsUpdateGuard,
+  ): Promise<RuntimeHostAppSettings>;
   testNetworkProxy(input?: TestProxyInput): Promise<SettingsTestResult>;
 }
 
@@ -132,9 +138,9 @@ export function createRuntimeHostSettingsModule(
 
   const module: RuntimeHostSettingsModule = {
     get: () => enqueue(() => loadRuntimeHostSettingsWithoutLane(deps)),
-    update: (patch) =>
+    update: (patch, guard) =>
       enqueue(() =>
-        updateRuntimeHostSettingsForImportWithoutLane(deps, patch).then(
+        updateRuntimeHostSettingsForImportWithoutLane(deps, patch, guard).then(
           (result) => result.settings,
         ),
       ),
@@ -188,8 +194,9 @@ export function registerRuntimeHostSettingsIpc(
     async (
       _event,
       patch: UpdateAppSettingsInput,
+      guard?: RuntimeHostSettingsUpdateGuard,
     ): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>> => {
-      const settings = await module.update(patch);
+      const settings = await module.update(patch, guard);
       return buildSettingsUpdateResult(settings, patch);
     },
   );
@@ -256,16 +263,18 @@ async function testNetworkProxyWithoutLane(
 async function loadRuntimeHostSettingsWithoutLane(
   deps: RuntimeHostSettingsModuleDeps,
 ): Promise<RuntimeHostAppSettings> {
-  const [local, runtimePolicy, proxyCredential, webSearchCredential] =
+  const [local, runtimePolicy, proxyCredential, webSearchCredential, jevCredential] =
     await Promise.all([
       deps.settingsStore.get(),
       deps.client.queryRuntimePolicy(),
       deps.client.queryCredential(PROXY_CREDENTIAL),
       deps.client.queryCredential(WEB_SEARCH_CREDENTIAL),
+      deps.client.queryCredential(JEV_CREDENTIAL),
     ]);
   const policy = runtimePolicy.policy;
   return {
     ...local,
+    jev: { enabled: policy.jev?.enabled === true, apiKey: jevCredential?.configured ? SENSITIVE_PLACEHOLDER : '' },
     network: {
       proxy: {
         ...policy.networkProxy,
@@ -282,6 +291,7 @@ async function loadRuntimeHostSettingsWithoutLane(
     workspaceInstructions: policy.workspaceInstructions,
     privacy: policy.privacy,
     chatDefaults: policy.chatDefaults,
+    externalAgents: policy.externalAgents,
     shell: policy.shell,
     webSearch: {
       ...local.webSearch,
@@ -297,9 +307,10 @@ async function loadRuntimeHostSettingsWithoutLane(
 async function updateRuntimeHostSettingsForImportWithoutLane(
   deps: RuntimeHostSettingsModuleDeps,
   patch: UpdateAppSettingsInput,
+  guard?: RuntimeHostSettingsUpdateGuard,
 ): Promise<RuntimeHostSettingsImportResult> {
   validateProxyPatch(patch.network?.proxy);
-  const skippedCredentials = await applyHostPatchWithoutLane(deps.client, patch);
+  const skippedCredentials = await applyHostPatchWithoutLane(deps.client, patch, guard);
   const clientPatch = clientOwnedSettingsPatch(patch);
   const local = hasSettingsPatch(clientPatch)
     ? await deps.settingsStore.update(clientPatch)
@@ -336,8 +347,22 @@ function projectWebSearchCredential(
 async function applyHostPatchWithoutLane(
   client: RuntimeHostSettingsClient,
   patch: UpdateAppSettingsInput,
+  guard?: RuntimeHostSettingsUpdateGuard,
 ): Promise<number> {
   let skippedCredentials = 0;
+  if (patch.jev) {
+    const apiKey = patch.jev.apiKey;
+    const removingKey = typeof apiKey === "string" && apiKey !== SENSITIVE_PLACEHOLDER && !apiKey.trim();
+    if (apiKey !== undefined && apiKey !== SENSITIVE_PLACEHOLDER) {
+      if (apiKey.trim()) await setCredential(client, JEV_CREDENTIAL, apiKey.trim());
+      else await deleteCredential(client, JEV_CREDENTIAL);
+    }
+    if (patch.jev.enabled !== undefined || removingKey) {
+      await client.updateRuntimePolicy(() => ({
+        kind: 'set_jev', value: { enabled: removingKey ? false : patch.jev!.enabled === true },
+      }));
+    }
+  }
   if (patch.network?.proxy) {
     skippedCredentials += await updateNetworkProxy(client, patch.network.proxy);
   }
@@ -379,6 +404,22 @@ async function applyHostPatchWithoutLane(
       patch.chatDefaults,
       "set_chat_defaults",
     );
+  }
+  if (patch.externalAgents) {
+    const mutation = () => ({
+      kind: "set_external_agents" as const,
+      value: patch.externalAgents!,
+    });
+    if (guard?.expectedExternalAgentExecutable === undefined) {
+      await client.updateRuntimePolicy(mutation);
+    } else {
+      await client.updateRuntimePolicyIf(
+        (policy) =>
+          policy.externalAgents.antigravity.executable ===
+          guard.expectedExternalAgentExecutable,
+        mutation,
+      );
+    }
   }
   if (patch.shell) {
     await mergePolicy(client, "shell", patch.shell, "set_shell");

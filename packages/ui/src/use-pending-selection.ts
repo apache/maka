@@ -26,11 +26,11 @@ export interface PendingSelection {
    */
   value: string;
   /**
-   * Show `next` at once and fire the write; the pick clears when that write
-   * settles — by when the authoritative `value` has caught up on success, or
-   * falling back to it on failure.
+   * Show `next` at once and fire the write; resolves when that write settles —
+   * by when the authoritative `value` has caught up on success, or falls back
+   * to it on failure. Picking the already-displayed value is a no-op.
    */
-  onChange(next: string): void;
+  onChange(next: string): Promise<void>;
 }
 
 /**
@@ -57,18 +57,31 @@ export function usePendingSelection(
 ): PendingSelection {
   const [pending, setPending] = useState<string | null>(null);
   const tokenRef = useRef(0);
+  // Mirrors for the callback: picking the displayed value again must not fire
+  // the write — downstream "set model" writes carry required sibling fields
+  // (e.g. thinkingLevel) that a spurious re-write would reset.
+  const pendingRef = useRef<string | null>(null);
+  const authoritativeRef = useRef(authoritative);
+  authoritativeRef.current = authoritative;
   const onChange = useCallback(
     (next: string) => {
+      if (next === (pendingRef.current ?? authoritativeRef.current)) {
+        return Promise.resolve();
+      }
       const token = (tokenRef.current += 1);
+      pendingRef.current = next;
       setPending(next);
       // Clear on either outcome — success (authoritative caught up) or failure
       // (roll back to authoritative) — and only if this is still the latest
       // pick. Two-arg `then` (not `finally`) so a rejected write is consumed
       // here rather than surfacing as an unhandled rejection.
       const settle = () => {
-        if (tokenRef.current === token) setPending(null);
+        if (tokenRef.current === token) {
+          pendingRef.current = null;
+          setPending(null);
+        }
       };
-      Promise.resolve(onValueChange(next)).then(settle, settle);
+      return Promise.resolve(onValueChange(next)).then(settle, settle);
     },
     [onValueChange],
   );

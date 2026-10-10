@@ -17,11 +17,16 @@
  * under the License.
  */
 
-import { useRef } from 'react';
 import type { MessageQueueEntryProjection, ShellRunUpdate } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
-import { createObservableState } from './observable-state.js';
+import {
+  createTranscriptViewportNavigation,
+  valuesEqual,
+  type InteractionQueues,
+  type LiveTurnBuffer,
+} from '@maka/ui';
+import { createSessionUiReads } from './session-ui-reads.js';
+import type { SessionExecutionProjection } from '../../../../shared/session-execution-projection.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 type ShellRunUpdatesBySession = Record<string, Record<string, ShellRunUpdate>>;
@@ -30,16 +35,16 @@ export interface AppShellSessionUiState {
   messageLoadErrorBySession: Record<string, string>;
   messageRetryPendingBySession: Record<string, boolean>;
   stopPendingBySession: Record<string, boolean>;
-  liveTurnBySession: Record<string, LiveTurnProjection>;
+  liveTurnBySession: Record<string, LiveTurnBuffer>;
+  executionBySession: Record<string, SessionExecutionProjection>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
   transcriptRestoreUnavailableBySession: Record<string, string>;
 }
 
-// The pending plate keeps the Host revision beside its entries so edits can
-// reject stale multi-client projections instead of silently overwriting them.
 export interface MessageQueueUiState {
+  readonly ts: number;
   readonly queueRevision?: number;
   readonly entries: readonly MessageQueueEntryProjection[];
 }
@@ -60,7 +65,6 @@ export interface SessionPendingClaim {
 
 export interface TranscriptReadingAnchor {
   readonly turnId: string;
-  readonly sequence?: number;
 }
 
 const SESSION_UI_MAP_KEYS = [
@@ -68,6 +72,7 @@ const SESSION_UI_MAP_KEYS = [
   'messageRetryPendingBySession',
   'stopPendingBySession',
   'liveTurnBySession',
+  'executionBySession',
   'shellRunUpdatesBySession',
   'interactionBySession',
   'messageQueueBySession',
@@ -77,18 +82,6 @@ const SESSION_UI_MAP_KEYS = [
 type MissingSessionUiMapKey = Exclude<AppShellSessionUiStateMapKey, typeof SESSION_UI_MAP_KEYS[number]>;
 const allSessionUiMapsAreListed: Record<MissingSessionUiMapKey, never> = {};
 void allSessionUiMapsAreListed;
-
-// An authoritative session-list refresh heals a session whose turn ended while
-// its SessionEvent stream wasn't being followed, and must drop only the live
-// projection. The independently-scoped maps (message load error / retry, the
-// permission queue, stop-pending) each have
-// their own lifecycle and must survive a mere turn settle — a full
-// `clearAppShellSessionUiStateForSession` (session deletion) would wipe them too.
-// Event-stream health is scoped the same way but lives outside this state; see
-// `sessionEventHealthBySessionRef`.
-const TURN_TRANSIENT_MAP_KEYS = [
-  'liveTurnBySession',
-] as const satisfies readonly AppShellSessionUiStateMapKey[];
 
 export function createInitialAppShellSessionUiState(): AppShellSessionUiState {
   return Object.fromEntries(SESSION_UI_MAP_KEYS.map((key) => [key, {}])) as unknown as AppShellSessionUiState;
@@ -131,21 +124,19 @@ export function clearAppShellSessionUiStateForSession(
   return nextState;
 }
 
-export function clearAppShellTurnTransientForSession(
-  state: AppShellSessionUiState,
-  sessionId: string,
-): AppShellSessionUiState {
-  let nextState = state;
-  for (const key of TURN_TRANSIENT_MAP_KEYS) {
-    nextState = clearSessionUiStateMap(nextState, key, sessionId);
-  }
-  return nextState;
-}
-
 export function createAppShellSessionUiStateController(
   initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
 ) {
-  const state = createObservableState(initialState);
+  return createSessionUiState(initialState).controller;
+}
+
+/** Internal construction seam; only the testing entry exposes whole-state inspection. */
+export function createSessionUiState(
+  initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
+) {
+  let currentState = initialState;
+  const getState = () => currentState;
+  const { reads, publish } = createSessionUiReads(getState);
   const liveTurnBySessionRef = { current: initialState.liveTurnBySession };
   // Written by the event-health probes and read back by them alone. Kept off
   // the observed state so a probe never notifies a subscriber.
@@ -155,19 +146,22 @@ export function createAppShellSessionUiStateController(
   // controller still owns the same deletion lifetime as every other Session
   // UI registry.
   const transcriptReadingAnchors = createTranscriptReadingAnchorRegistry();
+  const transcriptViewportNavigation = createTranscriptViewportNavigation();
 
   // The ref mirrors whatever is about to become current, so it is already
   // correct when the synchronous notification reaches a listener that reads it.
   function replaceState(next: AppShellSessionUiState): void {
+    if (next === currentState) return;
     liveTurnBySessionRef.current = next.liveTurnBySession;
-    state.replaceState(next);
+    currentState = next;
+    publish();
   }
 
   function updateMap<K extends AppShellSessionUiStateMapKey>(
     key: K,
     updater: (current: AppShellSessionUiState[K]) => AppShellSessionUiState[K],
   ): void {
-    const latestState = state.getState();
+    const latestState = getState();
     const nextMap = updater(latestState[key]);
     if (nextMap === latestState[key]) return;
     replaceState({ ...latestState, [key]: nextMap });
@@ -192,7 +186,7 @@ export function createAppShellSessionUiStateController(
   function createPendingClaim(key: BooleanMapKey): SessionPendingClaim {
     return {
       claim(claimKey: string): boolean {
-        if (state.getState()[key][claimKey] === true) return false;
+        if (getState()[key][claimKey] === true) return false;
         updateMap(key, (current) => ({ ...current, [claimKey]: true }));
         return true;
       },
@@ -202,16 +196,30 @@ export function createAppShellSessionUiStateController(
     };
   }
 
-  return {
-    getState: state.getState,
-    subscribe: state.subscribe,
+  const controller = {
+    reads,
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef: sessionEventHealthBySession.ref,
     transcriptReadingAnchorBySessionRef: transcriptReadingAnchors.ref,
+    transcriptViewportNavigation,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
+    clearMessageLoadError: (sessionId: string) => updateMap(
+      'messageLoadErrorBySession', (current) => omitSessionKey(current, sessionId),
+    ),
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
+    setExecution: (sessionId: string, projection: SessionExecutionProjection | undefined) => {
+      updateMap('executionBySession', (current) => {
+        const previous = current[sessionId];
+        if (!projection) return previous?.available
+          ? { ...current, [sessionId]: { ...previous, available: false } } : current;
+        // The observation channel re-publishes the projection on every frame —
+        // catalog metadata writes included — with a fresh object each time.
+        if (previous !== undefined && valuesEqual(previous, projection)) return current;
+        return { ...current, [sessionId]: projection };
+      });
+    },
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),
     setInteractionBySession: createMapSetter('interactionBySession'),
     setMessageQueueBySession: createMapSetter('messageQueueBySession'),
@@ -223,54 +231,16 @@ export function createAppShellSessionUiStateController(
         return current[sessionId] === turnId ? current : { ...current, [sessionId]: turnId };
       });
     },
-    /**
-     * The authority said something about `turnId` — it started, failed to
-     * start, or ended. Drop that arm's `unconfirmed` claim so a session list
-     * may settle it again. An answer about a turn this session is not on says
-     * nothing, and leaves the state untouched.
-     */
-    confirmLiveTurn: (sessionId: string, turnId: string) => {
-      updateMap('liveTurnBySession', (current) => {
-        const armed = current[sessionId];
-        if (!armed) return current;
-        const confirmed = confirmLiveTurn(armed, turnId);
-        return confirmed === armed ? current : { ...current, [sessionId]: confirmed! };
-      });
-    },
     clearSessionUiState: (sessionId: string) => {
       sessionEventHealthBySession.clear(sessionId);
       transcriptReadingAnchors.set(sessionId, undefined);
-      replaceState(clearAppShellSessionUiStateForSession(state.getState(), sessionId));
-    },
-    clearTurnTransientStateIfCurrent: (
-      sessionId: string,
-      expected: LiveTurnProjection | undefined,
-    ) => {
-      const current = state.getState();
-      if (current.liveTurnBySession[sessionId] !== expected) return;
-      replaceState(clearAppShellTurnTransientForSession(current, sessionId));
+      replaceState(clearAppShellSessionUiStateForSession(getState(), sessionId));
     },
   };
+  return { controller, getState };
 }
 
 export type AppShellSessionUiStateController = ReturnType<typeof createAppShellSessionUiStateController>;
-
-/**
- * Owns the controller for the component's lifetime. Deliberately does NOT
- * subscribe: readers select what they need through
- * `useExternalStoreSelector`, so no single component re-renders for every
- * write to the store (#1985).
- *
- * Returns the controller itself rather than a bag of its members. The bag had
- * to name every setter, so did the workspace hook above it, and so did
- * AppShell's destructure — three places to edit for one new map, and three
- * chances for them to disagree about what the store offers.
- */
-export function useAppShellSessionUiState(): AppShellSessionUiStateController {
-  const controllerRef = useRef<AppShellSessionUiStateController | null>(null);
-  controllerRef.current ??= createAppShellSessionUiStateController();
-  return controllerRef.current;
-}
 
 function createRuntimeSessionRegistry<T>() {
   const ref: { current: Record<string, T> } = { current: {} };
@@ -299,12 +269,8 @@ function createTranscriptReadingAnchorRegistry() {
         registry.clear(sessionId);
         return;
       }
-      const next = previous?.turnId === anchor.turnId &&
-          previous.sequence !== undefined && anchor.sequence === undefined
-        ? previous
-        : anchor;
-      if (next === previous) return;
-      ref.current = { ...ref.current, [sessionId]: next };
+      if (previous?.turnId === anchor.turnId) return;
+      ref.current = { ...ref.current, [sessionId]: anchor };
     },
   };
 }

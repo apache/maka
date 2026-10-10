@@ -28,9 +28,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -53,6 +53,7 @@ import {
   SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   type ClientFrame,
   type SessionCatalogItem,
+  type SessionCatalogLiveRunState,
   type SessionCatalogProjection,
   type SessionCreateInput,
   type SubscriptionFrame,
@@ -69,7 +70,24 @@ const WIRE_OVERSIZED_MODEL_ID = '😀'.repeat(256);
 const KNOWN_EMPTY_LIVE_RUN_STATE = {
   schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   runningTurnIds: [],
+  runEpoch: 0,
 } as const;
+
+// The host generation is unique per Host process, so it cannot be spelled in
+// advance: assert its shape, then compare the known-empty remainder.
+function expectKnownEmptyLiveRunState(actual: SessionCatalogLiveRunState | undefined): void {
+  assert.ok(actual !== undefined, 'the live run state must be present');
+  const { hostGeneration, ...knownEmpty } = actual;
+  if (typeof hostGeneration !== 'string' || hostGeneration.length === 0) {
+    assert.fail('the host generation must be a non-empty string');
+  }
+  assert.deepEqual(knownEmpty, KNOWN_EMPTY_LIVE_RUN_STATE);
+}
+
+function querySessionReconciled(summary: SessionCatalogProjection): SessionCatalogProjection {
+  expectKnownEmptyLiveRunState(summary.liveRunState);
+  return { ...summary, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE };
+}
 
 test('two Clients share stable Session creation, CAS configuration, and catalog continuity', {
   skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
@@ -111,7 +129,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         createInput.sessionId,
       );
       assert.equal(created.id, createInput.sessionId);
-      assert.equal(created.permissionMode, 'ask');
+      assert.equal(created.permissionMode, 'bypass');
       assert.equal(created.labelsTruncated, false);
       assert.deepEqual(
         await desktop.request('runtime.resource.query', {
@@ -214,36 +232,40 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       });
       if ('kind' in planSession) assert.fail('Plan Session must be wire-representable');
       assert.equal(planSession.collaborationMode, 'plan');
-      const researchSession = requireSessionProjection(
+
+      const sandboxChoice = requireSessionProjection(
         await desktop.request('session.create', {
-          sessionId: 'deep-research-session',
-          workspace: { kind: 'host_path', path: root },
-          mode: 'deep_research',
-          name: 'Caller override',
-          labels: ['customer-label'],
-          modelTarget: { kind: 'default' },
-          permissionMode: 'bypass',
+          ...createInput,
+          sessionId: 'explicit-sandbox-session',
+          permissionMode: 'ask',
         }),
       );
-      assert.equal(researchSession.name, DEEP_RESEARCH_SESSION_NAME);
-      assert.deepEqual(researchSession.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
-      assert.equal(researchSession.permissionMode, 'explore');
+      assert.equal(sandboxChoice.permissionMode, 'ask');
 
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
         expectedRevision: policy.revision,
         operation: {
           kind: 'set_chat_defaults',
-          value: { permissionMode: 'bypass' },
+          value: { permissionMode: 'ask' },
         },
       });
       assert.equal(changedPolicy.kind, 'committed');
       assert.deepEqual(await tui.request('session.create', createInput), created);
 
+      const inheritedSandbox = requireSessionProjection(
+        await desktop.request('session.create', {
+          ...createInput,
+          sessionId: 'inherited-sandbox-session',
+        }),
+      );
+      assert.equal(inheritedSandbox.permissionMode, 'ask');
+
       const subscription = await tui.openSessionSubscription({
         sessionId: created.id,
         transcript: { kind: 'none' },
       });
+      await subscription.ready();
       const iterator = subscription[Symbol.asyncIterator]();
       assert.equal(subscription.snapshot.session.metadataRevision, created.revision);
       await assert.rejects(
@@ -282,7 +304,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           sessionId: created.id,
           expectedRevision: configurationRevision,
           patch: {
-            permissionMode: 'bypass',
+            permissionMode: 'ask',
             orchestrationMode: 'default',
           },
         }),
@@ -299,9 +321,11 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         assert.fail('One Session configuration must commit');
       }
       const configuredSession = requireSessionProjection(committedConfiguration.session);
-      assert.deepEqual(await querySession(desktop, created.id), {
+      assert.deepEqual(querySessionReconciled(await querySession(desktop, created.id)), {
         ...configuredSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: host.hostEpoch, revision: 0 },
       });
       const unchangedConfiguration = await desktop.request('session.configuration.update', {
         sessionId: configuredSession.id,
@@ -355,9 +379,11 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         relocatedSession.workspace.hostCwd === (await realpath(firstCwd)) ||
           relocatedSession.workspace.hostCwd === (await realpath(secondCwd)),
       );
-      assert.deepEqual(await querySession(tui, narrowedSession.id), {
+      assert.deepEqual(querySessionReconciled(await querySession(tui, narrowedSession.id)), {
         ...relocatedSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: host.hostEpoch, revision: 0 },
       });
 
       await setDefaultModel(desktop, connectionId, WIRE_OVERSIZED_MODEL_ID);
@@ -393,9 +419,11 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         (error: unknown) =>
           error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
       );
-      assert.deepEqual(await querySession(desktop, relocatedSession.id), {
+      assert.deepEqual(querySessionReconciled(await querySession(desktop, relocatedSession.id)), {
         ...relocatedSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: host.hostEpoch, revision: 0 },
       });
       await setDefaultModel(tui, connectionId, 'gpt-5');
 
@@ -476,6 +504,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         sessionId: created.id,
         transcript: { kind: 'none' },
       });
+      await retirementSubscription.ready();
       const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
       const beforeArchive = await querySession(desktop, created.id);
       assert.equal(beforeArchive.status, 'active');
@@ -780,8 +809,15 @@ test('stable Session creation survives response loss and Host restart', {
     const retrying = await connectClient(root);
     try {
       const retried = requireSessionProjection(await retrying.request('session.create', input));
-      const { liveRunState, ...persistedCommitted } = committed;
-      assert.deepEqual(liveRunState, KNOWN_EMPTY_LIVE_RUN_STATE);
+      const { liveRunState, backgroundActivity, backgroundActivityVersion, ...persistedCommitted } =
+        committed;
+      expectKnownEmptyLiveRunState(liveRunState);
+      assert.equal(backgroundActivity, 'idle');
+      assert.equal(backgroundActivityVersion?.revision, 0);
+      assert.ok(backgroundActivityVersion?.hostGeneration);
+      assert.equal(Object.hasOwn(retried, 'backgroundActivityVersion'), false);
+      assert.equal(Object.hasOwn(retried, 'liveRunState'), false);
+      assert.equal(Object.hasOwn(retried, 'backgroundActivity'), false);
       assert.deepEqual(retried, persistedCommitted);
     } finally {
       await retrying.close();
@@ -824,25 +860,45 @@ async function seedAuthority(
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    await execution.sessionStore.appendMessages(unread.id, [
-      { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'one' },
+    await seedInvocation(execution.runtimeEventStore, {
+      sessionId: unread.id,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      openedAt: 1,
+    });
+    for (const event of [
       {
-        type: 'assistant',
+        id: 'message-1',
+        ts: 1,
+        role: 'user' as const,
+        author: 'user' as const,
+        content: { kind: 'text' as const, text: 'one' },
+      },
+      {
         id: 'message-2',
-        turnId: 'turn-1',
         ts: 2,
-        text: 'two',
-        modelId: 'fake-model',
+        role: 'model' as const,
+        author: 'agent' as const,
+        content: { kind: 'text' as const, text: 'two' },
       },
       {
-        type: 'tool_call',
-        id: 'tool-1',
-        turnId: 'turn-1',
+        id: 'run-1-terminal',
         ts: 3,
-        toolName: 'Read',
-        args: {},
+        role: 'system' as const,
+        author: 'system' as const,
+        status: 'completed' as const,
+        actions: { endInvocation: true },
       },
-    ]);
+    ]) {
+      await execution.runtimeEventStore.appendRuntimeEvent(unread.id, 'run-1', {
+        sessionId: unread.id,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        partial: false,
+        ...event,
+      });
+    }
     await execution.sessionStore.updateHeader(unread.id, {
       hasUnread: true,
       lastMessageAt: 2,

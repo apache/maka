@@ -27,6 +27,7 @@
  */
 
 import * as nodeCrypto from 'node:crypto';
+import type { ModelRetryDecision } from './model-failure.js';
 import { CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS, type SessionContextRef } from './context-offload.js';
 import type {
   AdditionalPermissionRequest,
@@ -124,9 +125,31 @@ export interface QuoteRef {
   text: string;
   /** Optional label shown on the chip (e.g. the source turn's role/preview). */
   label?: string;
+  /**
+   * The user's own note about why they quoted this. Model-facing, so a "look at
+   * this" quote carries its intent instead of leaving the model to guess what
+   * the excerpt is for.
+   */
+  comment?: string;
   /** Provenance: the transcript turn the excerpt was selected from. */
   sourceTurnId?: string;
+  /** Source Session identity for a read-only cross-session snapshot. */
+  sourceSessionId?: string;
+  /** Frozen source Session display name for provenance chips and replay. */
+  sourceSessionName?: string;
+  /** Unix timestamp at which the source snapshot was captured. */
+  sourceCapturedAt?: number;
+  /** Whether the source snapshot was bounded before it was attached. */
+  sourceTruncated?: boolean;
 }
+
+/**
+ * Cap for {@link QuoteRef.comment}. A note about a quote carries intent, not
+ * content: long prose belongs in the message text, which has its own limit.
+ * The single authority for the IPC normalizer, the Runtime Host protocol and
+ * the composer's staging cap.
+ */
+export const QUOTE_COMMENT_MAX_LENGTH = 1000;
 
 /**
  * Frozen display metadata for one token embedded in a sent message's visible
@@ -166,11 +189,48 @@ const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
   ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
+
+/**
+ * A Turn message is meaningful when at least one of its four content carriers
+ * is present: inline text, an inline excerpt, an attachment reference, or a
+ * directory reference. Admission, compaction estimates, replay visibility,
+ * and recap projection must share this one predicate (#4804) — restating it
+ * per layer is how a quote-only message ends up admitted by one boundary and
+ * silently dropped by the next.
+ *
+ * The inline text is deliberately NOT trimmed. Admission asks "is this frame
+ * legal"; replay visibility asks "will the model see this already-persisted
+ * event", and that answer must stay compatible with everything admission has
+ * ever accepted — trimming here retroactively re-reads stored history as
+ * invisible and blocks replay on it (#4815 review). Surfaces that want the
+ * trimmed judgement (the desktop guard) trim at their own boundary.
+ */
+export function hasMeaningfulMessageContent(content: MessageContent): boolean {
+  return (
+    content.text.length > 0 ||
+    (content.quotes?.length ?? 0) > 0 ||
+    (content.attachments?.length ?? 0) > 0 ||
+    (content.directoryReferences?.length ?? 0) > 0
+  );
+}
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
   [],
 );
-const QUOTE_REF_SHAPE = defineObjectShape<QuoteRef>()(['text'], ['label', 'sourceTurnId']);
+const QUOTE_REF_SHAPE = defineObjectShape<QuoteRef>()(
+  ['text'],
+  [
+    'label',
+    'comment',
+    'sourceTurnId',
+    'sourceSessionId',
+    'sourceSessionName',
+    'sourceCapturedAt',
+    'sourceTruncated',
+  ],
+);
+const QUOTE_REF_SESSION_ID_MAX_LENGTH = 512;
+const QUOTE_REF_SESSION_NAME_MAX_LENGTH = 200;
 const INLINE_REFERENCE_SHAPE = defineObjectShape<InlineReference>()(
   ['kind', 'value', 'label', 'start'],
   [],
@@ -217,7 +277,24 @@ export function normalizeMessageContent(content: MessageContent): MessageContent
           quotes: content.quotes.map((quote) => ({
             text: quote.text,
             ...(quote.label !== undefined ? { label: quote.label } : {}),
+            ...(quote.comment !== undefined ? { comment: quote.comment } : {}),
             ...(quote.sourceTurnId !== undefined ? { sourceTurnId: quote.sourceTurnId } : {}),
+            ...(quote.sourceSessionId !== undefined
+              ? { sourceSessionId: quote.sourceSessionId }
+              : {}),
+            ...(quote.sourceSessionName !== undefined
+              ? { sourceSessionName: quote.sourceSessionName }
+              : {}),
+            ...(quote.sourceCapturedAt !== undefined
+              ? {
+                  sourceCapturedAt: Object.is(quote.sourceCapturedAt, -0)
+                    ? 0
+                    : quote.sourceCapturedAt,
+                }
+              : {}),
+            ...(quote.sourceTruncated !== undefined
+              ? { sourceTruncated: quote.sourceTruncated }
+              : {}),
           })),
         }
       : {}),
@@ -322,12 +399,35 @@ export function isInlineReference(value: unknown): value is InlineReference {
 }
 
 export function isQuoteRef(value: unknown): value is QuoteRef {
+  const record = isRecord(value) ? value : undefined;
+  const sourceFields = record
+    ? [
+        record.sourceSessionId,
+        record.sourceSessionName,
+        record.sourceCapturedAt,
+        record.sourceTruncated,
+      ]
+    : [];
+  const hasSourceMetadata = sourceFields.some((field) => field !== undefined);
   return (
-    isRecord(value) &&
-    hasExactShape(value, QUOTE_REF_SHAPE) &&
-    typeof value.text === 'string' &&
-    (value.label === undefined || typeof value.label === 'string') &&
-    (value.sourceTurnId === undefined || typeof value.sourceTurnId === 'string')
+    record !== undefined &&
+    hasExactShape(record, QUOTE_REF_SHAPE) &&
+    typeof record.text === 'string' &&
+    (record.label === undefined || typeof record.label === 'string') &&
+    (record.comment === undefined || typeof record.comment === 'string') &&
+    (record.sourceTurnId === undefined || typeof record.sourceTurnId === 'string') &&
+    (!hasSourceMetadata ||
+      (typeof record.sourceSessionId === 'string' &&
+        record.sourceSessionId.length > 0 &&
+        record.sourceSessionId.length <= QUOTE_REF_SESSION_ID_MAX_LENGTH &&
+        typeof record.sourceSessionName === 'string' &&
+        record.sourceSessionName.length > 0 &&
+        record.sourceSessionName.length <= QUOTE_REF_SESSION_NAME_MAX_LENGTH &&
+        typeof record.sourceCapturedAt === 'number' &&
+        Number.isFinite(record.sourceCapturedAt) &&
+        record.sourceCapturedAt >= 0 &&
+        record.sourceCapturedAt <= 8.64e15 &&
+        typeof record.sourceTruncated === 'boolean'))
   );
 }
 
@@ -489,7 +589,12 @@ function quoteRefsEqual(left: QuoteRef, right: QuoteRef): boolean {
   return (
     left.text === right.text &&
     left.label === right.label &&
-    left.sourceTurnId === right.sourceTurnId
+    left.comment === right.comment &&
+    left.sourceTurnId === right.sourceTurnId &&
+    left.sourceSessionId === right.sourceSessionId &&
+    left.sourceSessionName === right.sourceSessionName &&
+    left.sourceCapturedAt === right.sourceCapturedAt &&
+    left.sourceTruncated === right.sourceTruncated
   );
 }
 
@@ -579,7 +684,8 @@ export type SessionEvent =
   | ProviderRetryEvent
   | ErrorEvent
   | CompleteEvent
-  | AbortEvent;
+  | AbortEvent
+  | ContextCompactionStartedEvent;
 
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
@@ -591,6 +697,7 @@ export interface TextDeltaEvent extends BaseEvent {
 
 export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
+  interrupted?: true;
   messageId: string;
   text: string;
   /** Provider-owned text metadata such as Responses URL citations. */
@@ -605,8 +712,25 @@ export interface ThinkingDeltaEvent extends BaseEvent {
   text: string;
 }
 
+/**
+ * Apply a text/thinking delta to a stream that has consumed `currentEnd`
+ * source characters. Overlap with consumed text is dropped, so replayed and
+ * reseeded deltas are idempotent. A delta that starts past `currentEnd` is a
+ * gap and returns `undefined`; one without `startOffset` appends.
+ */
+export function foldAssistantDelta(
+  currentEnd: number,
+  delta: { readonly startOffset?: number; readonly text: string },
+): { tail: string; endOffset: number } | undefined {
+  const startOffset = delta.startOffset ?? currentEnd;
+  if (startOffset > currentEnd) return undefined;
+  const tail = delta.text.slice(currentEnd - startOffset);
+  return { tail, endOffset: currentEnd + tail.length };
+}
+
 export interface ThinkingCompleteEvent extends BaseEvent {
   type: 'thinking_complete';
+  interrupted?: true;
   messageId: string;
   text: string;
   /** Anthropic signed thinking — MUST be re-sent on replay. */
@@ -756,6 +880,7 @@ type ShellRunResultMetadata = {
   kind: 'shell_run';
   ref: string;
   status: ShellRunStatus;
+  pid?: number;
   cwd: string;
   cmd: string;
   startedAt: number;
@@ -834,6 +959,7 @@ export type ToolResultContent =
       toolCallId: string;
       toolName: string;
       artifactId?: string;
+      resourceRef?: string;
       bodySha256?: string;
       originalEstimatedTokens: number;
       originalBytes: number;
@@ -843,6 +969,7 @@ export type ToolResultContent =
        * (#4283), so the archived-result read model spans both reasons.
        */
       reason:
+        | 'tool_result_pruned'
         | 'stale_tool_result_pruned_before_compact'
         | 'active_current_turn_tool_result_pruned_before_next_step';
     }
@@ -1203,6 +1330,7 @@ export interface QueueUpdateEvent extends BaseEvent {
 }
 
 export type ProviderRetryReason =
+  | 'stream_truncated'
   | 'network'
   | 'provider_capacity'
   | 'provider_unavailable'
@@ -1248,6 +1376,7 @@ export interface ProviderRetryStartedEvent extends BaseEvent {
 
 export interface ErrorEvent extends BaseEvent {
   type: 'error';
+  retry?: ModelRetryDecision;
   recoverable: boolean;
   code?: string;
   /** Stable machine-readable reason for UI / telemetry routing. */
@@ -1268,6 +1397,8 @@ export interface CompleteEvent extends BaseEvent {
     | 'permission_handoff'
     | 'step_limit'
     | 'max_tokens';
+  /** External provider terminal reason, retained even when the caller cancelled the turn. */
+  providerStopReason?: string;
   /** Durable result of an explicit context-compaction execution. */
   contextCompactionOutcome?: ContextCompactionOutcome;
 }
@@ -1291,6 +1422,16 @@ export function failureClassFromCompleteStopReason(
 export interface AbortEvent extends BaseEvent {
   type: 'abort';
   reason: 'user_stop' | 'redirect' | 'timeout' | 'crash';
+}
+
+/**
+ * A host-owned explicit context-compaction Turn has started. Synthesized by the
+ * Runtime Host session projector (not the kernel) purely so a client can render
+ * a "compacting" transcript row while the Turn is in flight; it carries no
+ * durable state and is excluded from `BackendSessionEvent` like `queue_update`.
+ */
+export interface ContextCompactionStartedEvent extends BaseEvent {
+  type: 'context_compaction_started';
 }
 
 // ============================================================================

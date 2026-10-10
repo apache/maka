@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -99,6 +99,36 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     assert.equal(await readFile(target, 'utf8'), 'created');
   });
 
+  test('Glob reports unreadable subtrees and succeeds after permissions recover', async () => {
+    const root = join(workspace, 'glob-permissions');
+    const blocked = join(root, 'blocked');
+    await mkdir(blocked, { recursive: true });
+    await writeFile(join(root, 'visible.txt'), 'visible');
+    await writeFile(join(blocked, 'hidden.txt'), 'hidden');
+    const search = () =>
+      client.execute({
+        operation: { kind: 'glob', path: root, pattern: '**/*.txt', limit: 200 },
+        cwd: workspace,
+        mode: 'ask',
+      });
+    try {
+      await chmod(blocked, 0);
+      await assert.rejects(
+        search(),
+        (error: unknown) =>
+          error instanceof FilesystemWorkerClientError && error.reason === 'filesystem_denied',
+      );
+    } finally {
+      await chmod(blocked, 0o700);
+    }
+    const result = await search();
+    assert.equal(result.kind, 'glob');
+    assert.deepEqual(result.kind === 'glob' && result.files.sort(), [
+      'blocked/hidden.txt',
+      'visible.txt',
+    ]);
+  });
+
   test('deletes an entry through the absolute macOS path alias', async () => {
     const target = join(workspace, 'aliased.txt');
     const aliasedTarget = target.replace(/^\/private(?=\/)/, '');
@@ -156,7 +186,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     const sourceDirectory = join(workspace, 'src');
     const sourceFile = join(sourceDirectory, 'health.ts');
     await mkdir(sourceDirectory);
-    await writeFile(sourceFile, 'export const healthSignal = true;\n', 'utf8');
+    await writeFile(sourceFile, 'export const healthSignal = true;\n'.repeat(51), 'utf8');
 
     const fileResult = await client.execute({
       operation: grepOperation(sourceFile, 'healthSignal'),
@@ -166,7 +196,13 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     });
     assert.equal(fileResult.kind, 'grep');
     if (fileResult.kind === 'grep') {
-      assert.equal(fileResult.matches.length, 1);
+      assert.equal(fileResult.matches.length, 50);
+      assert.partialDeepStrictEqual(fileResult, {
+        matchedLines: 51,
+        returnedLines: 50,
+        omittedLines: 1,
+        truncated: true,
+      });
       assert.match(fileResult.matches[0] ?? '', /healthSignal/);
     }
 
@@ -178,7 +214,13 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     });
     assert.equal(directoryResult.kind, 'grep');
     if (directoryResult.kind === 'grep') {
-      assert.equal(directoryResult.matches.length, 1);
+      assert.equal(directoryResult.matches.length, 50);
+      assert.partialDeepStrictEqual(directoryResult, {
+        matchedLines: 51,
+        returnedLines: 50,
+        omittedLines: 1,
+        truncated: true,
+      });
       assert.match(directoryResult.matches[0] ?? '', /healthSignal/);
     }
 
@@ -188,7 +230,47 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       mode: 'ask',
       expectedIdentity: 'unchecked',
     });
-    assert.deepEqual(emptyResult, { kind: 'grep', matches: [] });
+    assert.deepEqual(emptyResult, {
+      kind: 'grep',
+      matches: [],
+      matchedLines: 0,
+      returnedLines: 0,
+      omittedLines: 0,
+      truncated: false,
+    });
+  });
+
+  test('Grep preserves authorized parent ignore rules without granting an unreadable parent', async () => {
+    const root = join(workspace, 'ignore-repository');
+    const source = join(root, 'src');
+    await mkdir(source, { recursive: true });
+    await mkdir(join(root, '.git'));
+    await writeFile(join(root, '.gitignore'), 'src/ignored.txt\n');
+    await writeFile(join(source, 'visible.txt'), 'needle\n');
+    await writeFile(join(source, 'ignored.txt'), 'needle\n');
+    const search = (allowedRoot: string) =>
+      client.execute({
+        operation: grepOperation(source, 'needle'),
+        cwd: root,
+        executionBoundary: {
+          kind: 'managed',
+          revision: 1,
+          profile: {
+            type: 'managed',
+            fileSystem: {
+              kind: 'restricted',
+              entries: [{ kind: 'path', path: allowedRoot, access: 'read', match: 'subtree' }],
+            },
+            network: { kind: 'restricted' },
+          },
+        },
+      });
+    const repository = await search(root);
+    assert.equal(repository.kind, 'grep');
+    assert.equal(repository.kind === 'grep' && repository.matchedLines, 1);
+    assert.match(repository.kind === 'grep' ? repository.matches[0]! : '', /visible.txt/);
+    const subtree = await search(source);
+    assert.equal(subtree.kind === 'grep' && subtree.matchedLines, 2);
   });
 });
 

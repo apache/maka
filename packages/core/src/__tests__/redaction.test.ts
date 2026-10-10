@@ -114,6 +114,68 @@ describe('redactSecrets', () => {
     assert.equal(text.includes('secret-value'), false);
   });
 
+  test('masks URL userinfo credentials without swallowing host or path', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'https://myuser:glpat-AbCdEf12345XyZ@gitlab.com/team/repo.git',
+        'https://[redacted]@gitlab.com/team/repo.git',
+      ],
+      [
+        'https://alice:hunter2@internal.example.com/repo.git',
+        'https://[redacted]@internal.example.com/repo.git',
+      ],
+      [
+        'https://alice:ATBBxyz123abc456@bitbucket.org/team/repo.git',
+        'https://[redacted]@bitbucket.org/team/repo.git',
+      ],
+      [
+        'fatal: unable to access https://deploy:s3cretP@ss@git.corp.example/x.git/: 403',
+        'fatal: unable to access https://[redacted]@git.corp.example/x.git/: 403',
+      ],
+      ['https://user@host.example/team/repo.git', 'https://[redacted]@host.example/team/repo.git'],
+      [
+        'origin https://alice:hunter2@internal.example.com/repo.git (fetch)',
+        'origin https://[redacted]@internal.example.com/repo.git (fetch)',
+      ],
+      [
+        'see https://alice:hunter2@internal.example.com/repo.git.',
+        'see https://[redacted]@internal.example.com/repo.git.',
+      ],
+      [
+        'clone (https://alice:hunter2@internal.example.com/repo.git)',
+        'clone (https://[redacted]@internal.example.com/repo.git)',
+      ],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+    }
+    assert.equal(
+      redactSecrets('https://api.example.com/v1?token=abc123'),
+      'https://api.example.com/v1?token=[redacted]',
+    );
+    assert.equal(
+      redactSecrets('https://ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@github.com/o/r.git'),
+      'https://[redacted]@github.com/o/r.git',
+    );
+    assert.equal(
+      redactSecrets('https://alice:hunter2@api.example.com/v1?token=abc123'),
+      'https://[redacted]@api.example.com/v1?token=[redacted]',
+    );
+    // Negatives: bare https://host must not swallow a later @ across spaces/newlines/quotes.
+    assert.equal(
+      redactSecrets('see https://example.com and mail bob@corp.com'),
+      'see https://example.com and mail bob@corp.com',
+    );
+    assert.equal(
+      redactSecrets('Fetching https://registry.example.com\nContact: support@example.com for help'),
+      'Fetching https://registry.example.com\nContact: support@example.com for help',
+    );
+    assert.equal(
+      redactSecrets('{"url":"https://example.com","contact":"me@corp.com"}'),
+      '{"url":"https://example.com","contact":"me@corp.com"}',
+    );
+  });
+
   test('masks quoted sensitive object keys in serialized JSON', () => {
     const text = redactSecrets(
       JSON.stringify({
@@ -212,6 +274,86 @@ describe('redactSecrets', () => {
       redactSecrets('# " review note\npassword=dummy-value\npython deploy.py --target production'),
       '# " review note\npassword=[redacted]\npython deploy.py --target production',
     );
+  });
+
+  test('masks sensitive assignments nested in a harmless assignment value', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'Config excerpt: password=FAKE-not-a-real-password-000',
+        'Config excerpt: password=[redacted]',
+      ],
+      ['note: token=FAKE-token-value', 'note: token=[redacted]'],
+      ['summary=api_key: FAKE-api-key-value', 'summary=api_key: [redacted]'],
+      ['user=alice;password=FAKE-password', 'user=alice;password=[redacted]'],
+      ['excerpt: "client_secret=FAKE-secret" done', 'excerpt: "client_secret=[redacted]" done'],
+      ['a=b:c=password=FAKE-password', 'a=b:c=password=[redacted]'],
+      ['flags: --password=FAKE-password', 'flags: --password=[redacted]'],
+      ['note: password=token=FAKE-token', 'note: password=[redacted]'],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+      assert.equal(redactSecrets(expected), expected);
+    }
+  });
+
+  test('keeps harmless assignment values without a nested sensitive assignment', () => {
+    for (const text of [
+      'excerpt: plain text',
+      'ratio=1:2',
+      'time=12:30:00 mode=a:b=c',
+      'url=https://example.com/docs:intro?page=2',
+      'note: cache-key=cached-result issue_key=ISSUE-1359',
+    ]) {
+      assert.equal(redactSecrets(text), text);
+    }
+  });
+
+  test('leaves a sensitive key without a value unchanged', () => {
+    for (const text of [
+      'password=',
+      'note: token: ',
+      'excerpt: api_key="',
+      'password=\nnext line',
+    ]) {
+      assert.equal(redactSecrets(text), text);
+    }
+  });
+
+  test('masks the assignment that a sensitive key without a value takes as its value', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'env: API_TOKEN= DB_PASSWORD="FAKE-not-a-real-password-000"',
+        'env: API_TOKEN= [redacted]"[redacted]"',
+      ],
+      [
+        "Usage: --token= --password='FAKE-not-a-real-password-000'",
+        "Usage: --token= [redacted]'[redacted]'",
+      ],
+      ['note: password: token: FAKE-not-a-real-token-000', 'note: password: [redacted] [redacted]'],
+    ];
+    for (const [input, expected] of cases) {
+      assert.equal(redactSecrets(input), expected);
+      assert.equal(redactSecrets(expected), expected);
+    }
+  });
+
+  test('scans long harmless assignment values within a bounded CPU budget', () => {
+    const started = process.cpuUsage();
+    for (const text of [
+      `note: ${'a:'.repeat(100_000)}`,
+      `data=${'a-'.repeat(100_000)}`,
+      `blob=${'Z'.repeat(200_000)}==`,
+      'a-'.repeat(100_000),
+    ]) {
+      assert.equal(redactSecrets(text), text);
+    }
+    const { user, system } = process.cpuUsage(started);
+    const cpuMs = (user + system) / 1_000;
+    // Rescanning the rest of the value per nested key or per hyphen, retrying a
+    // key at every hyphen of a bare run, or splitting a long uppercase key with
+    // backtracking takes seconds to tens of seconds. Count this process's CPU
+    // time so being descheduled on a busy CI runner does not spend the budget.
+    assert.ok(cpuMs < 5_000, `scanned in ${cpuMs}ms CPU, which must not rescan the value`);
   });
 
   test('preserves own __proto__ data properties while redacting serialized JSON', () => {
@@ -336,6 +478,25 @@ describe('generalizedErrorMessageForLocale', () => {
       '操作失败',
     );
   });
+
+  test('classifies Chromium network stack error codes as network errors', () => {
+    for (const raw of [
+      'net::ERR_CONNECTION_RESET',
+      'net::ERR_NAME_NOT_RESOLVED',
+      'net::ERR_CONNECTION_REFUSED',
+      'net::ERR_INTERNET_DISCONNECTED',
+    ]) {
+      assert.equal(generalizedErrorMessage(new Error(raw)), 'Network error');
+      assert.equal(
+        generalizedErrorMessageForLocale(new Error(raw), 'fallback', 'zh-CN'),
+        '网络错误',
+      );
+      assert.equal(
+        generalizedErrorMessageForLocale(new Error(raw), 'fallback', 'zh-TW'),
+        '網路錯誤',
+      );
+    }
+  });
 });
 
 describe('generalizedErrorMessage', () => {
@@ -359,6 +520,21 @@ describe('generalizedErrorMessage', () => {
         'Conversation copy failed',
       ),
       'Conversation copy failed',
+    );
+  });
+
+  test('does not mistake builder update metadata 404s for authentication failures', () => {
+    const error = new Error(`404 Not Found
+Please double check that your authentication token is correct. Due to security reasons, actual status maybe not reported, but 404.`);
+    Object.assign(error, { code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' });
+
+    assert.equal(
+      generalizedErrorMessage(error, 'Update metadata is unavailable'),
+      'Update metadata is unavailable',
+    );
+    assert.equal(
+      generalizedErrorMessageForLocale(error, '更新元数据不可用', 'zh-CN'),
+      '更新元数据不可用',
     );
   });
 

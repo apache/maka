@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { PersistedBackendKind, SessionHeader, StoredMessage } from '@maka/core/session';
+import type { PersistedBackendKind } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type {
   AgentBackend,
@@ -36,9 +36,12 @@ import {
   RuntimeInteractionInvariantError,
   type RuntimeUserQuestionClosureReason,
 } from '../interaction-authority.js';
-import type { SessionStore } from '../session-manager.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Every delta must concatenate to text_complete; `.` would silently drop
+// line terminators and make structured Markdown reflow only at completion.
+const chunkText = (text: string, large: boolean): string[] =>
+  text.match(large ? /[\s\S]{1,1024}/g : /[\s\S]{1,9}/g) ?? [text];
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 export const FAKE_ASK_USER_QUESTION_DURING_DRAIN_PROMPT = '__e2e_ask_user_question_during_drain__';
 export const FAKE_ASK_SANDBOX_BOUNDARY_PROMPT = '__e2e_ask_sandbox_boundary__';
@@ -76,14 +79,7 @@ export class FakeBackend implements AgentBackend {
   private readonly stopWaiters: Array<() => void> = [];
   private questionAdmissionWaiting = false;
 
-  constructor(
-    private readonly ctx: {
-      sessionId: string;
-      header: SessionHeader;
-      store: SessionStore;
-      appendMessage?: (message: StoredMessage) => Promise<void>;
-    },
-  ) {
+  constructor(ctx: { sessionId: string }) {
     this.sessionId = ctx.sessionId;
   }
 
@@ -111,7 +107,7 @@ export class FakeBackend implements AgentBackend {
     const isLargeSteeringResponse = input.text === FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT;
     const isSteeringScenario =
       input.text === FAKE_WAIT_FOR_STEERING_PROMPT || isLargeSteeringResponse;
-    let text = isLargeSteeringResponse
+    const text = isLargeSteeringResponse
       ? `${'Detailed response. '.repeat(1_400)}Large response complete.`
       : input.text === FAKE_MERMAID_PROMPT
         ? [
@@ -157,17 +153,11 @@ export class FakeBackend implements AgentBackend {
               '```',
             ].join('\n')
           : `Fake backend received: ${input.text}${attLine}\n\nThis proves the session stream, SQLite storage, and renderer loop are connected.`;
-    // Every delta must concatenate to text_complete; `.` would silently drop
-    // line terminators and make structured Markdown reflow only at completion.
-    const chunks = text.match(isLargeSteeringResponse ? /[\s\S]{1,1024}/g : /[\s\S]{1,9}/g) ?? [
-      text,
-    ];
-
-    // Mid-turn steering: drain the caller's pending steering at each step
-    // boundary (here, between streamed chunks), echoing every message as a
-    // `steering_message` so the ledger/transcript render the interjection, and
-    // remembering them so the fake reply acknowledges them like a real model.
-    const steered: string[] = [];
+    // Mid-turn steering: like the real Runtime, drain the caller's pending
+    // steering only at a step boundary (before the first step and after each
+    // completed one), echoing every message as a `steering_message` so the
+    // ledger/transcript render the interjection, and acknowledging it in the
+    // next step like a real model.
     // Lease accounting (backend-types contract): settlement is per LEASE,
     // never per batch. A lease is acked only after its OWN echoed event has
     // been received by the consumer — the fake has no durable ledger, so
@@ -183,27 +173,27 @@ export class FakeBackend implements AgentBackend {
       outstanding.splice(index, 1);
       input.ackSteering?.([leaseId]);
     };
-    const drainSteering = (): Array<{ leaseId: string; event: SessionEvent }> => {
-      const leases = input.pullSteering?.() ?? [];
+    const drainSteering = async (): Promise<
+      Array<{ leaseId: string; text: string; event: SessionEvent }>
+    > => {
+      const leases = (await input.pullSteering?.()) ?? [];
       if (leases.length === 0) return [];
       outstanding.push(...leases.map((lease) => lease.id));
-      return leases.map((lease) => {
-        steered.push(lease.content.text);
-        return {
-          leaseId: lease.id,
-          event: {
-            type: 'steering_message',
-            id: randomUUID(),
-            turnId,
-            ts: Date.now(),
-            messageId: lease.messageId,
-            content: lease.content,
-            ...(lease.submittedContentDigest
-              ? { submittedContentDigest: lease.submittedContentDigest }
-              : {}),
-          } satisfies SessionEvent,
-        };
-      });
+      return leases.map((lease) => ({
+        leaseId: lease.id,
+        text: lease.content.text,
+        event: {
+          type: 'steering_message',
+          id: randomUUID(),
+          turnId,
+          ts: Date.now(),
+          messageId: lease.messageId,
+          content: lease.content,
+          ...(lease.submittedContentDigest
+            ? { submittedContentDigest: lease.submittedContentDigest }
+            : {}),
+        } satisfies SessionEvent,
+      }));
     };
 
     try {
@@ -212,33 +202,52 @@ export class FakeBackend implements AgentBackend {
         const waitingPrefix = rewriteTarget
           ? 'prefix sk-123456789012345'
           : 'Fake backend waiting for the test to stop the Turn.';
+        let waitingMessageId = messageId;
         let waitingText = waitingPrefix;
         yield {
           type: 'text_delta',
           id: randomUUID(),
           turnId,
           ts: Date.now(),
-          messageId,
+          messageId: waitingMessageId,
           text: waitingText,
         };
         while (!this.stopped) {
-          const pending = drainSteering();
+          const pending = await drainSteering();
+          if (pending.length > 0 && !rewriteTarget) {
+            yield {
+              type: 'text_complete',
+              id: randomUUID(),
+              turnId,
+              ts: Date.now(),
+              messageId: waitingMessageId,
+              text: waitingText,
+            };
+          }
           for (const { leaseId, event } of pending) {
             yield event;
             settleOutstanding(leaseId);
           }
           if (pending.length > 0) {
-            const nextText = rewriteTarget
-              ? `${waitingPrefix}6 NEW streamed after the remount`
-              : `${waitingPrefix}\n\nAcknowledged steering: ${steered.join(' | ')}`;
-            const delta = nextText.slice(waitingText.length);
-            waitingText = nextText;
+            let delta: string;
+            if (rewriteTarget) {
+              // Unlike the real Runtime, this continues the same message after
+              // a steer: streaming-remount needs one secret split across a
+              // remount inside one bubble, and steering is its only trigger.
+              const nextText = `${waitingPrefix}6 NEW streamed after the remount`;
+              delta = nextText.slice(waitingText.length);
+              waitingText = nextText;
+            } else {
+              waitingMessageId = randomUUID();
+              waitingText = `Acknowledged steering: ${pending.map(({ text }) => text).join(' | ')}`;
+              delta = waitingText;
+            }
             yield {
               type: 'text_delta',
               id: randomUUID(),
               turnId,
               ts: Date.now(),
-              messageId,
+              messageId: waitingMessageId,
               text: delta,
             };
           }
@@ -255,77 +264,57 @@ export class FakeBackend implements AgentBackend {
         return;
       }
 
-      if (isSteeringScenario) {
-        let pending = drainSteering();
-        while (pending.length === 0 && !this.stopped) {
-          await sleep(5);
-          pending = drainSteering();
-        }
+      let pending = await drainSteering();
+      while (isSteeringScenario && pending.length === 0 && !this.stopped) {
+        await sleep(5);
+        pending = await drainSteering();
+      }
+      let stepMessageId = messageId;
+      let stepText = text;
+      for (;;) {
         for (const { leaseId, event } of pending) {
           yield event;
           settleOutstanding(leaseId);
         }
-      }
-
-      for (const chunk of chunks) {
-        if (this.stopped) {
-          yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+        if (pending.length > 0) {
+          const ack = `Acknowledged steering: ${pending.map(({ text }) => text).join(' | ')}`;
+          stepText = stepText ? `${stepText}\n\n${ack}` : ack;
+        }
+        for (const chunk of chunkText(stepText, isLargeSteeringResponse)) {
+          if (this.stopped) {
+            yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
+            yield {
+              type: 'complete',
+              id: randomUUID(),
+              turnId,
+              ts: Date.now(),
+              stopReason: 'user_stop',
+            };
+            return;
+          }
+          if (!isSteeringScenario) await sleep(45);
           yield {
-            type: 'complete',
+            type: 'text_delta',
             id: randomUUID(),
             turnId,
             ts: Date.now(),
-            stopReason: 'user_stop',
+            messageId: stepMessageId,
+            text: chunk,
           };
-          return;
-        }
-        if (!isSteeringScenario) await sleep(45);
-        for (const { leaseId, event } of drainSteering()) {
-          yield event;
-          settleOutstanding(leaseId);
         }
         yield {
-          type: 'text_delta',
+          type: 'text_complete',
           id: randomUUID(),
           turnId,
           ts: Date.now(),
-          messageId,
-          text: chunk,
+          messageId: stepMessageId,
+          text: stepText,
         };
+        pending = await drainSteering();
+        if (pending.length === 0) break;
+        stepMessageId = randomUUID();
+        stepText = '';
       }
-
-      // Final stranded drain (grok-build safety): a steer that landed after the
-      // last boundary still lands in this turn instead of being lost.
-      for (const { leaseId, event } of drainSteering()) {
-        yield event;
-        settleOutstanding(leaseId);
-      }
-      if (steered.length > 0) {
-        const ack = `\n\nAcknowledged steering: ${steered.join(' | ')}`;
-        text += ack;
-        yield {
-          type: 'text_delta',
-          id: randomUUID(),
-          turnId,
-          ts: Date.now(),
-          messageId,
-          text: ack,
-        };
-      }
-
-      const ts = Date.now();
-      const appendMessage =
-        this.ctx.appendMessage ??
-        ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
-      await appendMessage({
-        type: 'assistant',
-        id: messageId,
-        turnId,
-        ts,
-        text,
-        modelId: this.ctx.header.model,
-      });
-      yield { type: 'text_complete', id: randomUUID(), turnId, ts, messageId, text };
       yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
     } finally {
       if (outstanding.length > 0) input.nackSteering?.(outstanding.splice(0));
@@ -435,19 +424,7 @@ export class FakeBackend implements AgentBackend {
         options: [{ label: '是' }, { label: '否' }],
       },
     ];
-    const appendMessage =
-      this.ctx.appendMessage ??
-      ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
     const startedAt = Date.now();
-    await appendMessage({
-      type: 'tool_call',
-      id: toolUseId,
-      turnId,
-      stepId,
-      ts: startedAt,
-      toolName: 'AskUserQuestion',
-      args: { questions },
-    });
     yield {
       type: 'tool_start',
       id: randomUUID(),
@@ -519,15 +496,6 @@ export class FakeBackend implements AgentBackend {
     };
     const resultContent = { kind: 'json' as const, value: result };
     const resultTs = Date.now();
-    await appendMessage({
-      type: 'tool_result',
-      id: randomUUID(),
-      turnId,
-      ts: resultTs,
-      toolUseId,
-      isError: false,
-      content: resultContent,
-    });
     yield {
       type: 'tool_result',
       id: randomUUID(),
@@ -551,14 +519,6 @@ export class FakeBackend implements AgentBackend {
       };
     }
     const completedAt = Date.now();
-    await appendMessage({
-      type: 'assistant',
-      id: messageId,
-      turnId,
-      ts: completedAt,
-      text,
-      modelId: this.ctx.header.model,
-    });
     yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
   }
@@ -598,19 +558,7 @@ export class FakeBackend implements AgentBackend {
     const stepId = randomUUID();
     const expansion = { network: { enabled: true as const } };
     const justification = 'Connect to the deterministic fake test endpoint.';
-    const appendMessage =
-      this.ctx.appendMessage ??
-      ((message: StoredMessage) => this.ctx.store.appendMessage(this.sessionId, message));
     const startedAt = Date.now();
-    await appendMessage({
-      type: 'tool_call',
-      id: toolUseId,
-      turnId,
-      stepId,
-      ts: startedAt,
-      toolName: 'RequestSandboxBoundary',
-      args: { expansion, justification },
-    });
     yield {
       type: 'tool_start',
       id: randomUUID(),
@@ -685,15 +633,6 @@ export class FakeBackend implements AgentBackend {
       value: { decision, status: settlement.request.status },
     };
     const resultTs = Date.now();
-    await appendMessage({
-      type: 'tool_result',
-      id: randomUUID(),
-      turnId,
-      ts: resultTs,
-      toolUseId,
-      isError: decision === 'deny',
-      content: resultContent,
-    });
     yield {
       type: 'tool_result',
       id: randomUUID(),
@@ -715,14 +654,6 @@ export class FakeBackend implements AgentBackend {
       text,
     };
     const completedAt = Date.now();
-    await appendMessage({
-      type: 'assistant',
-      id: messageId,
-      turnId,
-      ts: completedAt,
-      text,
-      modelId: this.ctx.header.model,
-    });
     yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
   }

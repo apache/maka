@@ -20,106 +20,6 @@
 import { RuntimeHostStartupError } from "@maka/runtime-host/client";
 import { OperationalStateMigrationBlockedError } from '@maka/storage/operational-state-store';
 
-export type DesktopRuntimeHostStartupRepairResult =
-  | { readonly kind: "repaired" }
-  | { readonly kind: "active_tasks" }
-  | { readonly kind: "unavailable" };
-
-export interface DesktopRuntimeHostStartupRecoveryPrompt {
-  readonly startupError: Error;
-  readonly repairError?: Error;
-  readonly activeTasks: boolean;
-}
-
-export interface DesktopRuntimeHostStartupRepairAuthority {
-  readonly allowManualUpdate: boolean;
-  readonly allowInterruptActiveTasks: boolean;
-}
-
-export class DesktopRuntimeHostStartupRecoveryCancelledError extends Error {
-  readonly name = "DesktopRuntimeHostStartupRecoveryCancelledError";
-
-  constructor(options?: ErrorOptions) {
-    super("Runtime Host startup recovery was cancelled", options);
-  }
-}
-
-export async function startDesktopRuntimeHostWithRecovery<T>(input: {
-  readonly start: () => Promise<T>;
-  readonly repair: (
-    authority: DesktopRuntimeHostStartupRepairAuthority,
-  ) => Promise<DesktopRuntimeHostStartupRepairResult>;
-  readonly prompt: (
-    input: DesktopRuntimeHostStartupRecoveryPrompt,
-  ) => Promise<"repair" | "exit">;
-}): Promise<T> {
-  let startupError: Error;
-  try {
-    return await input.start();
-  } catch (error) {
-    startupError = asError(error);
-    if (!canRepairManagedRuntimeHostStartup(startupError)) throw startupError;
-  }
-
-  let activeTasks = false;
-  let repairError: Error | undefined;
-  let automatic: DesktopRuntimeHostStartupRepairResult | undefined;
-  try {
-    automatic = await input.repair({
-      allowManualUpdate: false,
-      allowInterruptActiveTasks: false,
-    });
-  } catch (error) {
-    repairError = asError(error);
-  }
-  if (automatic?.kind === "unavailable") throw startupError;
-  if (automatic?.kind === "active_tasks") activeTasks = true;
-  if (automatic?.kind === "repaired") {
-    try {
-      return await input.start();
-    } catch (error) {
-      startupError = asError(error);
-      if (!canRepairManagedRuntimeHostStartup(startupError)) throw startupError;
-    }
-  }
-
-  for (;;) {
-    const decision = await input.prompt({
-      startupError,
-      ...(repairError ? { repairError } : {}),
-      activeTasks,
-    });
-    if (decision === "exit") {
-      throw new DesktopRuntimeHostStartupRecoveryCancelledError({
-        cause: startupError,
-      });
-    }
-
-    let repaired: DesktopRuntimeHostStartupRepairResult;
-    try {
-      repaired = await input.repair({
-        allowManualUpdate: true,
-        allowInterruptActiveTasks: activeTasks,
-      });
-    } catch (error) {
-      repairError = asError(error);
-      continue;
-    }
-    if (repaired.kind === "unavailable") throw startupError;
-    if (repaired.kind === "active_tasks") {
-      activeTasks = true;
-      repairError = undefined;
-      continue;
-    }
-    try {
-      return await input.start();
-    } catch (error) {
-      startupError = asError(error);
-      if (!canRepairManagedRuntimeHostStartup(startupError)) throw startupError;
-      repairError = undefined;
-    }
-  }
-}
 
 export function canRepairManagedRuntimeHostStartup(error: Error): boolean {
   if (error instanceof OperationalStateMigrationBlockedError) {
@@ -134,8 +34,4 @@ export function canRepairManagedRuntimeHostStartup(error: Error): boolean {
       error.reason === "deployment_transition_in_progress" ||
       error.reason === "deployment_needs_repair")
   );
-}
-
-function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }

@@ -18,6 +18,7 @@
  */
 
 import type { UiLocale } from '@maka/core/ui-locale';
+import { LOCAL_RUNTIME_HOST_PROFILE } from '@maka/runtime-host/client';
 import type {
   MessageBoxOptions,
   MessageBoxReturnValue,
@@ -44,27 +45,27 @@ interface FatalStartupDiagnosticDialogDeps {
   readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
 }
 
-export interface RuntimeHostStartupRecoveryDialogInput {
-  readonly startupError: Error;
-  readonly repairError?: Error;
-  readonly activeTasks: boolean;
-}
 
 export function defaultRuntimeHostRecoveryDialog(input: {
   readonly locale: UiLocale;
+  readonly profileId: string;
   readonly profileName: string;
   readonly error: Error;
 }): { readonly options: MessageBoxOptions; readonly diagnosticDetails: string } {
   const copy = getNativeDiagnosticDialogCopy(input.locale).defaultRuntimeHostRecovery;
+  const isLocal = input.profileId === LOCAL_RUNTIME_HOST_PROFILE.id;
   return {
     options: {
       type: 'warning',
       title: copy.title,
       message: copy.connectFailed(input.profileName),
       detail: copy.detail,
-      buttons: [copy.retry, copy.useLocal, copy.keepOffline],
+      // "Use Local" is meaningless when Local itself is the one that failed.
+      buttons: isLocal
+        ? [copy.retry, copy.keepOffline]
+        : [copy.retry, copy.useLocal, copy.keepOffline],
       defaultId: 0,
-      cancelId: 2,
+      cancelId: isLocal ? 1 : 2,
       noLink: true,
     },
     diagnosticDetails: input.error.stack ?? `${input.error.name}: ${input.error.message}`,
@@ -143,33 +144,6 @@ export async function showMainRendererProcessGoneDialog(
   return result.response === 0 ? 'recover' : 'exit';
 }
 
-export async function showRuntimeHostStartupRecoveryDialog(
-  input: RuntimeHostStartupRecoveryDialogInput,
-  deps: DiagnosticDialogDeps,
-): Promise<'repair' | 'exit'> {
-  const copy = getNativeDiagnosticDialogCopy(deps.locale).runtimeHostRecovery;
-  const detail = [
-    copy.detail,
-    input.activeTasks ? copy.activeTasks : undefined,
-    input.repairError ? copy.repairFailed : undefined,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-  const result = await showMessageBoxWithDiagnostics(
-    {
-      type: 'warning',
-      title: copy.title,
-      message: copy.message,
-      detail,
-      buttons: [input.activeTasks ? copy.repairAndRestart : copy.repair, copy.exit],
-      defaultId: input.activeTasks || input.repairError ? 1 : 0,
-      cancelId: 1,
-      noLink: true,
-    },
-    deps,
-  );
-  return result.response === 0 ? 'repair' : 'exit';
-}
 
 async function copyDiagnostics(
   copy: () => void | Promise<void>,

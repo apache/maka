@@ -21,8 +21,9 @@ import { useEffect, useState } from 'react';
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import {
   Button,
+  CheckboxList,
+  CheckboxListItem,
   Selector,
-  Switch,
   clearGlobalInputHistory,
   useMountedRef,
   useToast,
@@ -30,13 +31,14 @@ import {
   Banner,
 } from '@maka/ui';
 import { openPathFailureCopy, openPathActionLabel } from '../open-path';
-import { SettingsActions, SettingsField, SettingsPage, SettingsSection } from './settings-section';
+import { SettingsActions, SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard } from './use-action-guard';
 import { getDataSettingsCopy, type DataSettingsCopy } from '../locales/settings-data-copy';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { StorageUsageSection } from '../features/storage-usage/index.js';
 
 const CONFIG_CATEGORY_IDS: readonly ConfigCategory[] = ['connections', 'settings', 'memory', 'credentials'];
 
@@ -171,15 +173,6 @@ export function DataSettingsPage(props: {
     });
   }
 
-  function toggleCategory(id: ConfigCategory) {
-    setSelectedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
   async function exportConfig() {
     if (!props.runtimeHostTargetVerified || configBusy || !host) return;
     const categories = [...selectedCategories];
@@ -220,10 +213,7 @@ export function DataSettingsPage(props: {
       if (res.ok) {
         toast.success(copy.imported, summarizeImportResult(res.result, copy));
       } else if (res.reason !== 'canceled') {
-        const detail = res.message && (locale === 'zh-CN' || !/[\u3400-\u9fff]/u.test(res.message))
-          ? res.message
-          : copy.invalidFile;
-        toast.error(copy.importFailed, detail, undefined, diagnosticTarget);
+        toast.error(copy.importFailed, copy.importFailures[res.reason], undefined, diagnosticTarget);
       }
     } catch (error) {
       toast.error(
@@ -259,6 +249,9 @@ export function DataSettingsPage(props: {
           ) : undefined}
         />
       ) : null}
+      {infoError && (
+        <Banner status="info" role="alert" title={copy.pathLoadFailed(infoError)} />
+      )}
       <SettingsSection
         title={sharedCopy.groups.dataLocation}
         description={sharedCopy.groups.dataLocationHelp}
@@ -268,6 +261,24 @@ export function DataSettingsPage(props: {
           detail={copy.rows.workspaceDetail}
           value={info?.workspacePath ?? (infoError ? copy.rows.loadValueFailed : copy.rows.loading)}
           mono
+          action={(
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => void openWorkspace()}
+                isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
+                isLoading={isDataActionPending('workspace:open')}
+                label={copy.openWorkspace}
+              />
+              <Button
+                variant="secondary"
+                onClick={() => void copyPath()}
+                isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
+                isLoading={isDataActionPending('workspace:path:copy')}
+                label={copy.copyPath}
+              />
+            </>
+          )}
         />
         {/* UX audit (owner msg `30f736ed`): the 存储引擎 row read
             「存储引擎 · 本地文件」— a privacy claim, not a setting, and the
@@ -280,94 +291,66 @@ export function DataSettingsPage(props: {
         <SettingRow
           title={copy.rows.history}
           detail={copy.rows.historyDetail}
+          action={(
+            <Button
+              variant="secondary"
+              onClick={() => void clearInputHistory()}
+              isDisabled={dataActionDisabled}
+              isLoading={isDataActionPending('input-history:clear')}
+              label={copy.clearHistory}
+            />
+          )}
         />
-        {/* Detail audit: was two wrapped rows with 打开文件夹 wearing primary
-            (a utility action) and destructive 清空输入历史 dressed neutral.
-            One row; utilities are secondary; the destructive action reads
-            destructive. Lives in the card它作用于的数据 — it was a loose
-            cluster floating on the page background before. */}
-        <SettingsActions role="group" aria-label={copy.actionsAria}>
-        <Button
-          variant="secondary"
-          onClick={() => void openWorkspace()}
-          isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
-          label={isDataActionPending('workspace:open') ? copy.opening : copy.openWorkspace}
-        />
-        <Button
-          variant="secondary"
-          onClick={() => void copyPath()}
-          isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
-          label={isDataActionPending('workspace:path:copy') ? copy.copying : copy.copyPath}
-        />
-        <Button
-          variant="destructive"
-          onClick={() => void clearInputHistory()}
-          isDisabled={dataActionDisabled}
-          label={isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
-        />
-        </SettingsActions>
+        <SettingRow title={copy.backupTitle} detail={copy.backupNotice} />
       </SettingsSection>
-      {/* Banner requires a title, and renders it semibold in the status color.
-          The three-line advisory is body copy, so it moves to `description`
-          and the title states what the advisory is about — previously the
-          whole paragraph printed as bold blue with no heading. */}
-      {/* Guidance, not an alert — a full blue Banner between sections was
-          color as texture. Quiet titled prose keeps the same content. */}
-      <div className="settingsQuietCallout">
-        <strong>{copy.backupTitle}</strong>
-        <p>{copy.backupNotice}</p>
-      </div>
-      {infoError && (
-        <Banner status="info" role="alert" title={copy.pathLoadFailed(infoError)} />
-      )}
-      {/* Was variant="bare": four Switch rows, a Selector, and a button row
-          floating directly on the page background — the only group on the
-          settings surface without a card. Same rows vocabulary as every
-          other group now; the Switch's own label/description layout IS the
-          row, so each one is a SettingsField (padded, divided) rather than
-          a re-labeled SettingsRow. */}
+      {runtimeHostAvailable ? (
+        <StorageUsageSection hostVerified={props.runtimeHostTargetVerified} />
+      ) : null}
       {runtimeHostAvailable ? <SettingsSection
         title={copy.configTitle}
         description={copy.configHelp}
       >
-        <div role="group" aria-label={copy.categoryAria} className="settingsRowsGroup">
-          {CONFIG_CATEGORY_IDS.map((id) => {
-            const option = copy.categories[id];
-            const checked = selectedCategories.has(id);
-            return (
-              <SettingsField key={id}>
-                <Switch
-                  label={option.label}
-                  description={option.detail}
-                  value={checked}
-                  width="100%"
-                  labelPosition="start"
-                  labelSpacing="spread"
-                  status={
-                    option.sensitive && checked
-                      ? { type: 'warning', message: copy.sensitiveWarning }
-                      : undefined
-                  }
-                  onChange={() => toggleCategory(id)}
-                />
-              </SettingsField>
-            );
-          })}
-        </div>
-        <SettingsField>
-          <Selector
-            value={importStrategy}
-            label={copy.conflictAria}
-            options={
-              [
-                { value: 'skip', label: copy.skip },
-                { value: 'overwrite', label: copy.overwrite },
-              ]
-            }
-            width="100%"
-            onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
-          />
-        </SettingsField>
+        {/* Checkboxes, not switches: nothing here takes effect until 导出, and
+            Astryx reserves Switch for settings that apply immediately. */}
+        <CheckboxList
+          label={copy.categoryAria}
+          isLabelHidden
+          value={[...selectedCategories]}
+          onChange={(values) => setSelectedCategories(new Set(values as ConfigCategory[]))}
+          hasDividers
+          density="compact"
+          status={
+            CONFIG_CATEGORY_IDS.some((id) => copy.categories[id].sensitive && selectedCategories.has(id))
+              ? { type: 'warning', message: copy.sensitiveWarning }
+              : undefined
+          }
+        >
+          {CONFIG_CATEGORY_IDS.map((id) => (
+            <CheckboxListItem
+              key={id}
+              value={id}
+              label={copy.categories[id].label}
+              description={copy.categories[id].detail}
+            />
+          ))}
+        </CheckboxList>
+        <SettingsRow
+          label={copy.conflictAria}
+          end={(
+            <Selector
+              value={importStrategy}
+              label={copy.conflictAria}
+              isLabelHidden
+              options={
+                [
+                  { value: 'skip', label: copy.skip },
+                  { value: 'overwrite', label: copy.overwrite },
+                ]
+              }
+              onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
+            />
+          )}
+        />
         <SettingsActions>
           {/* clickAction owns the in-flight affordance: same-tick dedupe, the
               delayed spinner, aria-busy, and the live-region announcement — a

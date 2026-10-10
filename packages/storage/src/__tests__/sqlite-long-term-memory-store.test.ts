@@ -22,7 +22,8 @@ import { createRequire } from 'node:module';
 import { chmod, link, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, describe, test } from 'node:test';
+import type { DatabaseSync } from 'node:sqlite';
+import { after, describe, test, type TestContext } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import {
   MemoryItemStoreConflictError,
@@ -415,6 +416,301 @@ describe('SqliteMemoryItemStore', () => {
       );
     });
   });
+
+  test('loads up to 100 ranked search results with a fixed number of reads', async (t) => {
+    await withStore(async ({ store, databasePath }) => {
+      const ids: string[] = [];
+      for (let index = 0; index < 101; index += 1) {
+        ids.push(
+          await createItem(
+            store,
+            `batch-search-${index}`,
+            write({
+              content: `Bulk fact ${index}.`,
+              keys: [
+                { key: `z-${index}`, keyType: 'alias', keyOrigin: 'llm' },
+                { key: 'bulk', keyType: 'exact', keyOrigin: 'user' },
+                { key: 'alpha', keyType: 'concept', keyOrigin: 'deterministic' },
+                ...(index === 100
+                  ? [{ key: 'priority', keyType: 'exact' as const, keyOrigin: 'user' as const }]
+                  : []),
+              ],
+              sources: [
+                source({ eventId: `z-event-${index}`, sessionId: `session-${index}` }),
+                source({ eventId: `a-event-${index}`, sessionId: `session-${index}` }),
+              ],
+            }),
+          ),
+        );
+      }
+      const recentId = ids[50]!;
+      const recent = await store.readItem(recentId);
+      assert.ok(recent);
+      const writer = new SqliteMemoryItemStore(databasePath, { now: () => 2_000 });
+      try {
+        await writer.applyMutations({
+          operationId: 'batch-search-recent-update',
+          mutations: [
+            {
+              type: 'update',
+              itemId: recentId,
+              expectedVersion: 1,
+              item: write({
+                content: 'A more recently updated bulk fact.',
+                keys: recent.keys,
+                sources: recent.sources,
+              }),
+            },
+          ],
+        });
+      } finally {
+        writer.close();
+      }
+      const rankedIds = [
+        ids[100]!,
+        recentId,
+        ...ids
+          .slice(0, 100)
+          .filter((id) => id !== recentId)
+          .sort(),
+      ].slice(0, 100);
+      const expected = await Promise.all(rankedIds.map((id) => store.readItem(id)));
+      assert.deepEqual(
+        expected[0]?.keys.map((key) => key.normalizedKey),
+        ['alpha', 'bulk', 'priority', 'z-100'],
+      );
+      assert.deepEqual(
+        expected[0]?.sources.map((entry) => entry.eventId),
+        ['a-event-100', 'z-event-100'],
+      );
+
+      const reads = traceMemoryReads(t);
+      for (const limit of [1, 20, 100]) {
+        for (const match of ['exact', 'prefix'] as const) {
+          reads.length = 0;
+          const results = await store.searchByKeys({
+            terms: match === 'exact' ? ['bulk', 'priority', 'BULK'] : ['bu', 'pri', 'BU'],
+            match,
+            limit,
+          });
+          assert.deepEqual(results, expected.slice(0, limit));
+          assert.equal(reads.length, 4, `${limit} ${match} results must use four reads`);
+        }
+      }
+      reads.length = 0;
+      assert.deepEqual(await store.searchByKeys({ terms: ['missing'], match: 'exact' }), []);
+      assert.equal(reads.length, 1, 'an empty search must skip detail reads');
+    });
+  });
+
+  test('keeps search details in the snapshot selected before a concurrent update', async (t) => {
+    await withStore(async ({ store, databasePath }) => {
+      const id = await createItem(store, 'snapshot-search-create', write());
+      const secondId = await createItem(store, 'snapshot-search-create-second', write());
+      const expected = await Promise.all([store.readItem(id), store.readItem(secondId)]);
+      const writer = new SqliteMemoryItemStore(databasePath, { now: () => 2_000 });
+      const Database = loadDatabaseSync();
+      const prepare = Database.prototype.prepare;
+      let writeResult: ReturnType<Store['applyMutations']> | undefined;
+      let selected = false;
+      const spy = t.mock.method(
+        Database.prototype,
+        'prepare',
+        function (this: DatabaseSync, sql: string) {
+          const statement = prepare.call(this, sql);
+          if (!sql.includes('WITH matching_keys')) return statement;
+          const all = statement.all.bind(statement);
+          t.mock.method(statement, 'all', (...args: Parameters<typeof all>) => {
+            const rows = all(...args);
+            selected = true;
+            // The second connection commits after ID selection, before detail reads.
+            writeResult = writer.applyMutations({
+              operationId: 'snapshot-search-update',
+              mutations: [
+                {
+                  type: 'update',
+                  itemId: id,
+                  expectedVersion: 1,
+                  item: write({
+                    content: 'User now prefers detailed answers.',
+                    keys: [{ key: 'detailed', keyType: 'exact', keyOrigin: 'user' }],
+                    sources: [source({ eventId: 'event-updated' })],
+                  }),
+                },
+              ],
+            });
+            return rows;
+          });
+          return statement;
+        },
+      );
+      try {
+        const results = await store.searchByKeys({ terms: ['concise'], match: 'exact' });
+        spy.mock.restore();
+        assert.equal(selected, true);
+        await writeResult;
+        assert.deepEqual(results, expected);
+        assert.deepEqual(await store.searchByKeys({ terms: ['concise'], match: 'exact' }), [
+          expected[1],
+        ]);
+        const updated = await store.searchByKeys({ terms: ['detailed'], match: 'exact' });
+        assert.equal(updated[0]?.item.version, 2);
+        assert.deepEqual(updated[0]?.sources, [source({ eventId: 'event-updated' })]);
+      } finally {
+        spy.mock.restore();
+        writer.close();
+      }
+    });
+  });
+
+  test('loads each Item at its child limits without truncating later search results', async () => {
+    await withStore(async ({ store }) => {
+      const ids: string[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        ids.push(
+          await createItem(
+            store,
+            `maximum-children-${index}`,
+            write({
+              keys: Array.from({ length: 32 }, (_, keyIndex) => ({
+                key: `key-${keyIndex.toString().padStart(2, '0')}`,
+                keyType: 'exact' as const,
+                keyOrigin: 'user' as const,
+              })).reverse(),
+              sources: Array.from({ length: 256 }, (_, sourceIndex) =>
+                source({
+                  eventId: `event-${sourceIndex.toString().padStart(3, '0')}`,
+                  sessionId: `session-${index}`,
+                }),
+              ).reverse(),
+            }),
+          ),
+        );
+      }
+      const results = await store.searchByKeys({ terms: ['key-00'], match: 'exact' });
+      assert.deepEqual(results, await Promise.all(ids.map((id) => store.readItem(id))));
+      assert.deepEqual(
+        results.map((record) => [record.keys.length, record.sources.length]),
+        [
+          [32, 256],
+          [32, 256],
+          [32, 256],
+        ],
+      );
+    });
+  });
+
+  for (const child of ['keys', 'sources'] as const) {
+    test(`rejects excessive ${child} without materializing the entire corrupt child set`, async (t) => {
+      await withStore(async ({ store, databasePath }) => {
+        const valid = await createItem(store, 'valid-before-corrupt', write());
+        const corrupt = await createItem(store, 'excessive-children', write());
+        const unrelated = await createItem(
+          store,
+          'unrelated-children',
+          write({ keys: [{ key: 'unrelated', keyType: 'exact', keyOrigin: 'user' }] }),
+        );
+        const Database = loadDatabaseSync();
+        const database = new Database(databasePath);
+        try {
+          const columns =
+            child === 'keys'
+              ? 'item_id, key_text, normalized_key, key_type, key_origin'
+              : 'item_id, session_id, run_id, turn_id, event_id';
+          const values =
+            child === 'keys'
+              ? "?, 'extra-' || n, 'extra-' || n, 'exact', 'user'"
+              : "?, 'session-extra', 'run-extra', 'turn-extra', 'extra-' || n";
+          const insert = database.prepare(`
+            WITH RECURSIVE numbers(n) AS (
+              SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 2000
+            )
+            INSERT INTO memory_item_${child}(${columns}) SELECT ${values} FROM numbers`);
+          insert.run(corrupt);
+          insert.run(unrelated);
+        } finally {
+          database.close();
+        }
+
+        const maximum = child === 'keys' ? 32 : 256;
+        const error = {
+          message: `Invalid Memory Item ${child} cardinality: expected 1..${maximum}, got ${maximum + 1}`,
+        };
+        await assert.rejects(store.readItem(corrupt), error);
+        const expected = await store.readItem(valid);
+        const reads = traceMemoryReads(t);
+        await assert.rejects(store.searchByKeys({ terms: ['concise'], match: 'exact' }), error);
+        assert.equal(reads.length, 4);
+        assert.deepEqual(
+          reads.map((read) => read.rowCount),
+          child === 'keys' ? [2, 2, 34, 2] : [2, 2, 2, 258],
+        );
+        // A rejected search must roll back its transaction and respect the next limit.
+        assert.deepEqual(
+          await store.searchByKeys({ terms: ['concise'], match: 'exact', limit: 1 }),
+          [expected],
+        );
+      });
+    });
+  }
+
+  for (const corruption of [
+    {
+      name: 'missing sources',
+      sql: 'DELETE FROM memory_item_sources WHERE item_id = ?',
+      message: 'Invalid Memory Item sources cardinality: expected 1..256, got 0',
+    },
+    {
+      name: 'content hash mismatch',
+      sql: "UPDATE memory_items SET content = 'Changed without its hash.' WHERE item_id = ?",
+      message: 'content_hash',
+    },
+    {
+      name: 'invalid key normalization',
+      sql: "UPDATE memory_item_keys SET key_text = 'Different text' WHERE item_id = ?",
+      message: 'normalized_key',
+    },
+    {
+      name: 'invalid source identifier',
+      sql: "UPDATE memory_item_sources SET session_id = ' invalid ' WHERE item_id = ?",
+      message: 'session_id',
+    },
+    {
+      name: 'binary key text',
+      sql: "UPDATE memory_item_keys SET key_text = x'61' WHERE item_id = ?",
+      message: 'key_text',
+    },
+    {
+      name: 'binary source identifier',
+      sql: "UPDATE memory_item_sources SET session_id = x'61' WHERE item_id = ?",
+      message: 'session_id',
+    },
+  ]) {
+    test(`preserves single-Item errors for search results with ${corruption.name}`, async () => {
+      await withStore(async ({ store, databasePath }) => {
+        const id = await createItem(store, 'corrupt-search', write());
+        await createItem(store, 'valid-search', write());
+        const Database = loadDatabaseSync();
+        const database = new Database(databasePath);
+        try {
+          database.prepare(corruption.sql).run(id);
+        } finally {
+          database.close();
+        }
+        let message = '';
+        await assert.rejects(store.readItem(id), (error: unknown) => {
+          assert.ok(error instanceof Error);
+          message = error.message;
+          assert.ok(message.includes(corruption.message));
+          return true;
+        });
+        await assert.rejects(store.searchByKeys({ terms: ['concise'], match: 'exact' }), {
+          message,
+        });
+        assert.deepEqual(await store.searchByKeys({ terms: ['missing'], match: 'exact' }), []);
+      });
+    });
+  }
 
   test('replays operation receipts while allowing independent duplicate assertions', async () => {
     await withStore(async ({ store }) => {
@@ -1645,6 +1941,29 @@ describe('long-term memory Storage Root authority', () => {
 });
 
 type Store = SqliteMemoryItemStore;
+
+function traceMemoryReads(t: TestContext): Array<{ sql: string; rowCount: number }> {
+  const reads: Array<{ sql: string; rowCount: number }> = [];
+  const Database = loadDatabaseSync();
+  const prepare = Database.prototype.prepare;
+  t.mock.method(Database.prototype, 'prepare', function (this: DatabaseSync, sql: string) {
+    const statement = prepare.call(this, sql);
+    const all = statement.all.bind(statement);
+    const get = statement.get.bind(statement);
+    t.mock.method(statement, 'all', (...args: Parameters<typeof all>) => {
+      const rows = all(...args);
+      reads.push({ sql, rowCount: rows.length });
+      return rows;
+    });
+    t.mock.method(statement, 'get', (...args: Parameters<typeof get>) => {
+      const row = get(...args);
+      reads.push({ sql, rowCount: row ? 1 : 0 });
+      return row;
+    });
+    return statement;
+  });
+  return reads;
+}
 
 async function withStore(
   run: (context: {

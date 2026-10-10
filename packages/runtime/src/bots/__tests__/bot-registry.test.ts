@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 import { describe, test } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/settings';
 import type { BotChatSettings, BotProvider } from '@maka/core/bot-chat-settings';
@@ -25,6 +26,58 @@ import { BotRegistry } from '../bot-registry.js';
 import type { BotStatus } from '../types.js';
 
 describe('BotRegistry', () => {
+  test('reports lazy SDK loading failures through bot status', async () => {
+    const statuses: BotStatus[] = [];
+    const registry = new BotRegistry({
+      onIncomingMessage: () => {},
+      onStatusChange: (status) => statuses.push(status),
+    });
+    const sdkNames = new Set([
+      '@slack/web-api',
+      '@larksuiteoapi/node-sdk',
+      '@wecom/aibot-node-sdk',
+    ]);
+    const hooks = registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (sdkNames.has(specifier)) throw new Error('SDK unavailable');
+        return nextResolve(specifier, context);
+      },
+    });
+    try {
+      await registry.applySettings(
+        settingsWith(
+          Object.fromEntries(
+            (['slack', 'feishu', 'wecom'] as const).map((platform) => [
+              platform,
+              {
+                enabled: true,
+                token: 'test-token',
+                appId: 'test-app',
+                appSecret: 'test-secret',
+              },
+            ]),
+          ),
+        ),
+      );
+      for (const platform of ['slack', 'feishu', 'wecom'] as const) {
+        assert.equal(registry.getStatus(platform).running, false);
+        assert.equal(registry.getStatus(platform).reason, 'connection_failed');
+        assert.equal(
+          registry.getStatus(platform).readiness,
+          platform === 'slack' ? 'degraded' : 'configured',
+        );
+        assert.ok(
+          statuses.some(
+            (status) => status.platform === platform && status.reason === 'connection_failed',
+          ),
+        );
+      }
+    } finally {
+      hooks.deregister();
+      await registry.stopAll();
+    }
+  });
+
   test('reports disabled and missing-credential statuses without opening network connections', async () => {
     const statuses: BotStatus[] = [];
     const registry = new BotRegistry({

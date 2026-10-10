@@ -21,6 +21,83 @@
 
 The Electron desktop app: `main` (Node/Electron main process) + `preload` (context bridge) + `renderer` (React UI). This file covers the three-layer split and the IPC contract. For build/test commands and the test-layer selection guide, see the top-level `README.md`; for the renderer interior, see `src/renderer/README.md`.
 
+## Managed HTML Artifact previews
+
+Generated Files → the HTML file's menu → **Open in default app** opens a
+Desktop-owned HTTP snapshot in the system browser. The session-bound
+`ArtifactPreview({ artifactId })` tool prepares the same kind of endpoint for
+browser tools without starting a shell server or relaxing the `file://` policy.
+Save As and Show in Folder still export the original, unrestricted file.
+
+Snapshots support self-contained interactive HTML: inline scripts/styles and
+embedded images/fonts. A response CSP sandbox blocks same-origin authority,
+fetch requests, remote subresources, forms, frames and popups. This is not an
+OS network sandbox: an external browser can still navigate away from the
+document. Referenced workspace files are not served. Use Save As for documents
+requiring external resources.
+
+Each snapshot gets its own loopback port and a 256-bit bearer URL. Do not share
+the URL. There is no directory listing, CORS access, persistent disk copy or
+cache. The server checks the exact Host and path, accepts GET/HEAD only, caps
+each snapshot at 8 MiB and reserves at most 16 concurrent snapshots. Listeners
+and memory are released after 30 minutes, on Artifact deletion through the
+Desktop, on host-target retirement, or when the app exits. A remote Host's
+Artifact is streamed to the Desktop through the existing authenticated client;
+the resulting URL belongs to the Desktop machine, not the Host's localhost.
+
+`reachable: true` is evidence that a bounded Desktop HTTP probe succeeded.
+`loaded: false` deliberately does **not** assert browser rendering. An OS
+launch success also does not prove page load; browser observation is required
+before reporting that the page loaded or its interaction worked (#5235).
+
+Focused regression checks (build workspace dependencies first):
+
+```sh
+npm run build:main --workspace apps/desktop
+node --test apps/desktop/dist/main/__tests__/managed-artifact-preview.test.js apps/desktop/dist/main/__tests__/runtime-host-artifacts-ipc-main.test.js
+```
+
+## Worktree development profiles
+
+Run `npm run dev:worktree` from the repository root to start desktop HMR with
+an independent data directory for this checkout. This prevents experimental
+branches from reading or writing another checkout's settings, sessions, and
+runtime policy. The first launch opens onboarding with an empty configuration;
+existing data and credentials are not copied. Only the profile is separate:
+user-level state outside it, such as skills in `~/.maka/skills` and
+`~/.agents/skills`, stays shared with every checkout.
+
+The launcher prints the selected directory before building. It uses the
+checkout's canonical path, not its branch name: restarting or switching branches
+in the same checkout reuses the profile; distinct checkouts get separate
+profiles, even when their directory names match. Symlink aliases reuse the same
+profile. Moving a checkout selects a new profile and leaves its old data intact.
+
+Profiles live in `Maka Dev Worktrees/<checkout-name>-<path-hash>` beneath:
+
+- macOS: `~/Library/Application Support`
+- Windows: `%APPDATA%` (defaults to `%USERPROFILE%\AppData\Roaming`)
+- Linux: `$XDG_CONFIG_HOME` (defaults to `~/.config`)
+
+An explicit directory takes precedence, with relative paths resolved against the
+checkout root. Both argument forms are accepted:
+
+```sh
+npm run dev:worktree -- --user-data-dir="/path/to/my profile"
+npm run dev:worktree -- --user-data-dir "/path/to/my profile"
+MAKA_DEV_TCC=1 npm run dev:worktree  # macOS permission development
+```
+
+This command uses the existing desktop launcher, including its process cleanup
+and macOS TCC support. `npm run dev`, `npm start`, and the CLI retain their
+existing profile selection. With `MAKA_DEV_TCC=1`, every launch republishes the
+profile of this checkout's app bundle, so reopening the bundle from the Dock,
+Spotlight, or a permission prompt uses the profile of the last TCC launch here:
+after a TCC `npm run dev` or `npm start`, run `dev:worktree` again before
+reopening it. Removing a Git worktree does not remove its data, and a checkout
+later created at the same path reuses it: quit the app and manually remove its
+printed profile directory when it is no longer needed.
+
 ## macOS development permissions
 
 `npm run dev` and `npm start` use the plain Electron executable on every
@@ -125,7 +202,7 @@ npm Electron bundle, which macOS will not accept as a durable grant.
 | Suffix | Role | Examples |
 |---|---|---|
 | `runtime-host-*-ipc-main.ts` | Projects one Runtime Host protocol domain onto renderer IPC | `runtime-host-connections-ipc-main`, `runtime-host-session-execution-ipc-main`, `runtime-host-settings-ipc-main` |
-| `*-ipc-main.ts` | Registers a client-local Electron or OS-facing IPC domain | `browser-ipc-main`, `notifications-ipc-main`, `workspace-search-ipc-main` |
+| `*-ipc-main.ts` | Registers a client-local Electron or OS-facing IPC domain | `browser-ipc-main`, `workspace-search-ipc-main` |
 | `*-service.ts` / `*-controller.ts` | A client-local service without direct IPC ownership | `app-update-service`, `project-management-service`, `project-root-controller` |
 | `*-guard.ts` | Validation / security boundary | `external-link-guard`, `open-path-guard`, `permission-response-guard` |
 | (other) | Window, state, platform wiring | `main.ts` (entry), `main-window`, `window-state`, `theme-source`, `credential-store`, `skills`, `attachment-*` |

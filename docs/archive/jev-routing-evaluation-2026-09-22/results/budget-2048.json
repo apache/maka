@@ -1,0 +1,960 @@
+{
+  "recordedAt": "2026-09-21T16:40:26.711Z",
+  "commit": "1c814c261",
+  "models": {
+    "jev": "jev-1.13.0",
+    "dpsk": "deepseek-v4-pro"
+  },
+  "method": "One pass per model; alternating order; same bounded synthetic inputs and existing split Intent/Recall adapters. No task execution. Jev timeout 8s; outer request timeout 45s. DPSK diagnostic control: original prompts and parser, output budget increased from 80/160 to 2048 at transport boundary. Default thinking unchanged.",
+  "cases": [
+    {
+      "id": "discuss",
+      "userText": "什么是指数退避？只解释一下原理。",
+      "expected": "answer_here",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "create",
+      "userText": "新建一个任务，实现 CSV 导出功能。",
+      "expected": "create_new",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "continue_payments",
+      "userText": "继续 Maka 工作区的 Payments retry 工作。",
+      "expected": "delegate_existing",
+      "target": "whc_payments",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "continue_docs",
+      "userText": "继续修正文档拼写错误，接着 Documentation spelling 那个任务做。",
+      "expected": "delegate_existing",
+      "target": "whc_docs",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "execute_existing",
+      "userText": "把登录表单的校验补完整，就在已有的 Login form validation 任务里做。",
+      "expected": "delegate_existing",
+      "target": "whc_login",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "execute_no_match",
+      "userText": "帮我分析火星探测器轨道数据。",
+      "expected": "clarify",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "ambiguous",
+      "userText": "继续那个任务。",
+      "expected": "clarify",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "stop",
+      "userText": "停止 WorkHub 刚才委派的工作。",
+      "expected": "stop",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "resume",
+      "userText": "恢复刚才被我停止的 WorkHub 委派。",
+      "expected": "resume",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "correct",
+      "userText": "纠正你刚才的委派：不要改样式，只修逻辑。",
+      "expected": "correct",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "create_over_match",
+      "userText": "不要继续 Payments retry；新建一个单独的支付重试任务。",
+      "expected": "create_new",
+      "transcript": [],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    },
+    {
+      "id": "contextual_continue",
+      "userText": "接着做吧。",
+      "expected": "delegate_existing",
+      "target": "whc_payments",
+      "transcript": [
+        {
+          "role": "user",
+          "text": "我们接着处理 Maka 的 Payments retry 工作。"
+        },
+        {
+          "role": "assistant",
+          "text": "可以，下一步是完善支付重试逻辑。"
+        }
+      ],
+      "candidates": [
+        {
+          "candidateRef": "whc_payments",
+          "sessionName": "Payments retry",
+          "workspaceName": "Maka",
+          "state": "idle",
+          "recency": "today"
+        },
+        {
+          "candidateRef": "whc_docs",
+          "sessionName": "Documentation spelling",
+          "workspaceName": "Docs",
+          "state": "idle",
+          "recency": "this_week"
+        },
+        {
+          "candidateRef": "whc_login",
+          "sessionName": "Login form validation",
+          "workspaceName": "Website",
+          "state": "idle",
+          "recency": "older"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "id": "discuss",
+      "model": "dpsk",
+      "expected": "answer_here",
+      "actual": "answer_here",
+      "result": {
+        "kind": "routing",
+        "disposition": "answer_here"
+      },
+      "ms": 2622,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 2606,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 209,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 171,
+            "output_tokens_details": {
+              "reasoning_tokens": 159
+            },
+            "total_tokens": 380
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "create",
+      "model": "dpsk",
+      "expected": "create_new",
+      "actual": "create_new",
+      "result": {
+        "kind": "routing",
+        "disposition": "create_new"
+      },
+      "ms": 1427,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 1422,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 208,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 80,
+            "output_tokens_details": {
+              "reasoning_tokens": 69
+            },
+            "total_tokens": 288
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "continue_payments",
+      "model": "dpsk",
+      "expected": "delegate_existing",
+      "actual": "delegate_existing",
+      "expectedTarget": "whc_payments",
+      "result": {
+        "kind": "routing",
+        "disposition": "delegate_existing",
+        "candidateRef": "whc_payments",
+        "candidateSetId": "synthetic-candidate-set"
+      },
+      "ms": 9932,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 6849,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 210,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 509,
+            "output_tokens_details": {
+              "reasoning_tokens": 498
+            },
+            "total_tokens": 719
+          },
+          "answer": null
+        },
+        {
+          "status": 200,
+          "ms": 3073,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 327,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 157,
+            "output_tokens_details": {
+              "reasoning_tokens": 129
+            },
+            "total_tokens": 484
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "continue_docs",
+      "model": "dpsk",
+      "expected": "delegate_existing",
+      "actual": "delegate_existing",
+      "expectedTarget": "whc_docs",
+      "result": {
+        "kind": "routing",
+        "disposition": "delegate_existing",
+        "candidateRef": "whc_docs",
+        "candidateSetId": "synthetic-candidate-set"
+      },
+      "ms": 12585,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 4970,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 213,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 325,
+            "output_tokens_details": {
+              "reasoning_tokens": 314
+            },
+            "total_tokens": 538
+          },
+          "answer": null
+        },
+        {
+          "status": 200,
+          "ms": 7605,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 330,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 482,
+            "output_tokens_details": {
+              "reasoning_tokens": 463
+            },
+            "total_tokens": 812
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "execute_existing",
+      "model": "dpsk",
+      "expected": "delegate_existing",
+      "actual": "fallback",
+      "expectedTarget": "whc_login",
+      "result": null,
+      "error": "Error: WorkHub routing model did not return a JSON object",
+      "ms": 27935,
+      "pass": false,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 27931,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 216,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 2048,
+            "output_tokens_details": {
+              "reasoning_tokens": 2048
+            },
+            "total_tokens": 2264
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "execute_no_match",
+      "model": "dpsk",
+      "expected": "clarify",
+      "actual": "clarify",
+      "result": {
+        "kind": "routing",
+        "disposition": "clarify"
+      },
+      "ms": 6331,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 4069,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 205,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 193,
+            "output_tokens_details": {
+              "reasoning_tokens": 182
+            },
+            "total_tokens": 398
+          },
+          "answer": null
+        },
+        {
+          "status": 200,
+          "ms": 2252,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 322,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 72,
+            "output_tokens_details": {
+              "reasoning_tokens": 66
+            },
+            "total_tokens": 394
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "ambiguous",
+      "model": "dpsk",
+      "expected": "clarify",
+      "actual": "delegate_existing",
+      "result": {
+        "kind": "routing",
+        "disposition": "delegate_existing",
+        "candidateRef": "whc_payments",
+        "candidateSetId": "synthetic-candidate-set"
+      },
+      "ms": 7050,
+      "pass": false,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 2254,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 202,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 135,
+            "output_tokens_details": {
+              "reasoning_tokens": 124
+            },
+            "total_tokens": 337
+          },
+          "answer": null
+        },
+        {
+          "status": 200,
+          "ms": 4788,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 319,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 231,
+            "output_tokens_details": {
+              "reasoning_tokens": 203
+            },
+            "total_tokens": 550
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "stop",
+      "model": "dpsk",
+      "expected": "stop",
+      "actual": "stop",
+      "result": {
+        "kind": "linked",
+        "operation": "stop"
+      },
+      "ms": 3771,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 3768,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 207,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 179,
+            "output_tokens_details": {
+              "reasoning_tokens": 169
+            },
+            "total_tokens": 386
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "resume",
+      "model": "dpsk",
+      "expected": "resume",
+      "actual": "resume",
+      "result": {
+        "kind": "linked",
+        "operation": "resume"
+      },
+      "ms": 2615,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 2612,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 209,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 150,
+            "output_tokens_details": {
+              "reasoning_tokens": 139
+            },
+            "total_tokens": 359
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "correct",
+      "model": "dpsk",
+      "expected": "correct",
+      "actual": "correct",
+      "result": {
+        "kind": "linked",
+        "operation": "correct"
+      },
+      "ms": 4194,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 4192,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 213,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 323,
+            "output_tokens_details": {
+              "reasoning_tokens": 313
+            },
+            "total_tokens": 536
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "create_over_match",
+      "model": "dpsk",
+      "expected": "create_new",
+      "actual": "create_new",
+      "result": {
+        "kind": "routing",
+        "disposition": "create_new"
+      },
+      "ms": 3371,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 3368,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 212,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 239,
+            "output_tokens_details": {
+              "reasoning_tokens": 228
+            },
+            "total_tokens": 451
+          },
+          "answer": null
+        }
+      ]
+    },
+    {
+      "id": "contextual_continue",
+      "model": "dpsk",
+      "expected": "delegate_existing",
+      "actual": "delegate_existing",
+      "expectedTarget": "whc_payments",
+      "result": {
+        "kind": "routing",
+        "disposition": "delegate_existing",
+        "candidateRef": "whc_payments",
+        "candidateSetId": "synthetic-candidate-set"
+      },
+      "ms": 6309,
+      "pass": true,
+      "calls": [
+        {
+          "status": 200,
+          "ms": 2753,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 240,
+            "input_tokens_details": {
+              "cached_tokens": 128
+            },
+            "output_tokens": 193,
+            "output_tokens_details": {
+              "reasoning_tokens": 182
+            },
+            "total_tokens": 433
+          },
+          "answer": null
+        },
+        {
+          "status": 200,
+          "ms": 3550,
+          "model": "deepseek-v4-pro",
+          "thinking": null,
+          "reasoning_effort": null,
+          "requestOptions": {
+            "model": "deepseek-v4-pro",
+            "max_output_tokens": 2048,
+            "tool_choice": "auto"
+          },
+          "usage": {
+            "input_tokens": 319,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 149,
+            "output_tokens_details": {
+              "reasoning_tokens": 121
+            },
+            "total_tokens": 468
+          },
+          "answer": null
+        }
+      ]
+    }
+  ]
+}

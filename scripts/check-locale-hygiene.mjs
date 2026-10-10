@@ -18,11 +18,8 @@
  * under the License.
  */
 
-// Ratchet for locale hygiene. Every rule below is a place where adding a
-// locale to UI_LOCALES compiles cleanly but silently renders the wrong
-// language, because the code branches on a locale literal instead of
-// indexing a `UiCatalog`. Only files the diff touches are scanned, so each
-// (file, rule) count may shrink but never grow; there is no ledger.
+// New locale shortcuts fail without forcing this PR to clean unrelated history.
+// Each touched (file, rule) count may shrink but never grow; there is no ledger.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -31,35 +28,35 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
-export const SCOPE = ['apps/desktop/src', 'packages/core/src', 'packages/ui/src'];
+export const SCOPE = [
+  'apps/desktop/src',
+  'packages/core/src',
+  'packages/ui/src',
+  'packages/runtime-host/src',
+];
 
-// Both quote styles: biome leaves apps/desktop and packages/ui unformatted, so
-// `"en"` is as permanent there as `'en'`. Every pattern is global so one line
-// with two hits counts two.
 export const RULES = {
-  // `locale === 'zh-CN' ? a : b` — a fourth locale falls into `b` unnoticed.
-  // Narrower than check-tui-copy's AST `locale-branch` (which also sees
-  // `switch (locale)` and if-statements) but runs install-free over the
-  // desktop, core, and ui trees; the two rules are deliberately distinct.
+  // This install-free subset complements check-tui-copy's TUI-only AST rule.
   'locale-literal-compare':
     /\blocale(?:\.[A-Za-z]+)?\s*(?:===|!==)\s*['"](?:zh(?:-CN|-TW)?|en)['"]|\blocale\.startsWith\(['"]zh['"]\)/gu,
-  // `locale: UiLocale = 'zh-CN'` — a caller that forgets the argument gets one language.
   'silent-locale-default': /(?<!\b(?:let|const|var)\s+)\blocale\??:\s*UiLocale\s*=\s*['"]/gu,
-  // `/[\u4e00-\u9fff]/.test(message)` — decides the language from the payload.
   'cjk-sniff': /\\u3400-\\u9fff|\\u4e00-\\u9fff|\\u3400-\\u4dbf|\[一-龥\]/giu,
-  // `'凭据已保存': '憑證已儲存'` — translating one locale's copy by string lookup.
-  'string-keyed-translation': /^\s*['"][㐀-鿿][^'"]*['"]:\s*['"]/gu,
+  'string-keyed-translation': /^\s*['"][㐀-鿿][^'"]*['"]:\s*['"]/gmu,
+  // generalizedErrorMessage always classifies into English.
+  'han-fallback-to-en-helper': /\bgeneralizedErrorMessage\([^)]*['"][^'"]*[㐀-鿿]/gu,
+  'native-dialog-literal':
+    /\bshow(?:Open|Save)Dialog\s*\(\s*\{[\s\S]{0,400}?\b(?:title|message|detail)\s*:\s*['"][A-Za-z][^'"]*['"]/gu,
 };
 
 const EXCLUDED = /(?:^|\/)(?:__tests__|stories)\/|\.(?:test|stories)\.tsx?$/u;
 
 export function scanSource(source) {
   const hits = [];
-  for (const [index, line] of source.split('\n').entries()) {
-    for (const [rule, pattern] of Object.entries(RULES)) {
-      for (const _match of line.matchAll(pattern)) {
-        hits.push({ rule, line: index + 1, text: line.trim() });
-      }
+  const lines = source.split('\n');
+  for (const [rule, pattern] of Object.entries(RULES)) {
+    for (const match of source.matchAll(pattern)) {
+      const line = source.slice(0, match.index).split('\n').length;
+      hits.push({ rule, line, text: lines[line - 1].trim() });
     }
   }
   return hits;

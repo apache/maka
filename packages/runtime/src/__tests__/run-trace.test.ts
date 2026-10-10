@@ -28,7 +28,7 @@ describe('RunTrace error diagnostics', () => {
       sessionId: 'session-1',
       turnId: 'turn-1',
       connectionSlug: 'deepseek',
-      providerId: 'openai-compatible',
+      providerId: 'custom',
       modelId: 'deepseek-v4-pro',
       newId: () => `trace-${events.length + 1}`,
       now: () => 123,
@@ -63,7 +63,7 @@ describe('RunTrace error diagnostics', () => {
       sessionId: 'session-1',
       turnId: 'turn-1',
       connectionSlug: 'deepseek',
-      providerId: 'openai-compatible',
+      providerId: 'custom',
       modelId: 'deepseek-v4-pro',
       newId: () => `trace-${events.length + 1}`,
       now: () => 123,
@@ -91,7 +91,7 @@ describe('RunTrace error diagnostics', () => {
       record: (event) => events.push(event),
     });
 
-    trace.modelStreamFailed('Other', {
+    trace.modelStreamFailed('unknown', {
       status: 502,
       code: 'upstream_reset',
       message: 'upstream stream reset',

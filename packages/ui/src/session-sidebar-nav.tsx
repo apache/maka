@@ -23,6 +23,7 @@ import { useSidebarUpdateProjection } from './sidebar-update-projection-context.
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { PlatformShortcutText } from './platform-shortcut-text.js';
+import { MakaClientSlotOutlet } from './client-plugin-slots.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
@@ -53,6 +54,7 @@ export function SessionSidebarNav() {
   return (
     <SideNavSection title={copy.mainLabel} isHeaderHidden className="maka-session-panel-top">
       <SideNavItem
+        data-maka-assistant-target="app.newTask"
         label={copy.newTask}
         icon={SquarePen}
         size="md"
@@ -83,6 +85,7 @@ export function SessionSidebarNav() {
           save that one click would be paying a permanent slot for a state the
           user is leaving anyway. */}
       <SideNavItem
+        data-maka-assistant-target="app.extensions"
         label={copy.extensions}
         icon={Blocks}
         size="md"
@@ -90,6 +93,7 @@ export function SessionSidebarNav() {
         onClick={() => props.onSelect({ section: 'extensions', module: moduleMemory.extensions })}
       />
       <SideNavItem
+        data-maka-assistant-target="app.automations"
         label={activeScheduledTaskCount > 0
           ? copy.pendingTasks(activeScheduledTaskCount)
           : copy.automations}
@@ -164,6 +168,7 @@ export function SessionSidebarFooter() {
       <div className="maka-sidebar-footer-row">
         <div className="maka-sidebar-footer-row-primary">
           <SideNavItem
+            data-maka-assistant-target="settings.open"
             label={copy.settings}
             icon={Settings}
             size="md"
@@ -192,6 +197,10 @@ export function SessionSidebarFooter() {
           </Tooltip>
         )}
       </div>
+      <MakaClientSlotOutlet
+        name="sidebar.footer"
+        owner={{ collapsed: props.collapsed }}
+      />
     </SideNavSection>
   );
 }

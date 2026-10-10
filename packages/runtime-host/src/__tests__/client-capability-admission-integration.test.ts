@@ -77,6 +77,7 @@ test('cancels managed approval owners and joiners with the canonical provider id
     const interactions = createInteractionCoordinator(store);
     const runOwner = interactions.bindRun(RUN);
     const capabilities = new HostClientCapabilityCoordinator({
+      isSessionRetired: async () => false,
       activation: new RuntimePolicyActivationGate(),
       onModelToolsChanged: () => undefined,
       interactions,
@@ -150,9 +151,9 @@ test('cancels managed approval owners and joiners with the canonical provider id
         header: sessionHeader(),
         connection: llmConnection(),
         modelId: 'model-1',
-        appendMessage: async () => undefined,
         readExecutionBoundary: async () =>
           createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+        readPermissionMode: async () => 'ask',
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
@@ -355,7 +356,8 @@ function createInteractionCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => undefined,
     onPoison: () => undefined,
-    onSandboxBoundarySettled: async () => undefined,
+    resolveSandboxBoundaryRootSession: async () => undefined,
+    onSandboxBoundaryGraphWake: async () => undefined,
   };
   return new HostInteractionCoordinator(options);
 }

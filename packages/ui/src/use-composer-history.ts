@@ -83,7 +83,12 @@ export function useComposerHistory(input: {
   /** Persist the applied value under the active draft key. */
   saveCurrentDraft(value?: string): void;
 }): ComposerHistoryApi {
-  const promptHistoryRef = useRef<ComposerHistoryState>({ entries: readGlobalInputHistory() ?? [], index: -1, savedDraft: '' });
+  const promptHistoryRef = useRef<ComposerHistoryState>(null);
+  // Capture the mount snapshot without reading/parsing a discarded initializer
+  // on every text update. The ref stays initialized for callbacks below.
+  if (promptHistoryRef.current === null) {
+    promptHistoryRef.current = { entries: readGlobalInputHistory() ?? [], index: -1, savedDraft: '' };
+  }
   // The subscription is registered once, so anything it calls must be reached
   // through the latest render rather than captured from the first. Today the
   // pieces that matter happen to be ref-backed — the text port is created once
@@ -107,7 +112,7 @@ export function useComposerHistory(input: {
     // arrow key happened to reconcile it. The pure state machine already knows
     // all of this — including when the draft is owed back.
     const { state, restoreDraft } = reconcileHistorySync(
-      promptHistoryRef.current,
+      promptHistoryRef.current!,
       readGlobalInputHistory(),
     );
     promptHistoryRef.current = state;
@@ -116,7 +121,7 @@ export function useComposerHistory(input: {
 
   function resetNavigation() {
     promptHistoryRef.current = {
-      entries: promptHistoryRef.current.entries,
+      entries: promptHistoryRef.current!.entries,
       index: -1,
       savedDraft: '',
     };
@@ -127,7 +132,7 @@ export function useComposerHistory(input: {
     // survives page reloads and is shared across all input surfaces.
     saveGlobalInputHistoryEntry(text);
     promptHistoryRef.current = {
-      entries: rememberComposerHistoryEntry(promptHistoryRef.current.entries, text),
+      entries: rememberComposerHistoryEntry(promptHistoryRef.current!.entries, text),
       index: -1,
       savedDraft: '',
     };
@@ -143,7 +148,7 @@ export function useComposerHistory(input: {
     const plainArrow = !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
     if (!plainArrow && !explicit) return false;
     const current = input.text.getValue();
-    const isNavigatingHistory = promptHistoryRef.current.index >= 0;
+    const isNavigatingHistory = promptHistoryRef.current!.index >= 0;
     const canStartHistory = !current.trim();
     if (!(explicit || isNavigatingHistory || canStartHistory)) return false;
     // Re-read global history from localStorage on every navigation so
@@ -153,7 +158,7 @@ export function useComposerHistory(input: {
     // reconcileHistorySync restores the saved draft if a clear happened
     // mid-navigation (so the user doesn't lose what they were typing).
     const synced = readGlobalInputHistory();
-    const { state, restoreDraft } = reconcileHistorySync(promptHistoryRef.current, synced);
+    const { state, restoreDraft } = reconcileHistorySync(promptHistoryRef.current!, synced);
     promptHistoryRef.current = state;
     if (restoreDraft) {
       applyValue(state.savedDraft);

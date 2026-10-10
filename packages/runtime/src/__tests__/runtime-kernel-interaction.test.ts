@@ -250,21 +250,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     );
     assert.equal(containsFailure(retryFailure, stopFailure), true);
     assert.equal(fixture.backend.stopCalls.length, 1);
-    const messages = await fixture.store.readMessages(SESSION_ID);
-    assert.equal(
-      messages.filter(
-        (message) =>
-          message.type === 'turn_state' &&
-          message.turnId === 'turn-blocked-send' &&
-          message.status === 'aborted',
-      ).length,
-      1,
-    );
-    assert.equal(
-      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
 
     const blockedActivation = fixture.kernel
       .startTurn(SESSION_ID, { turnId: 'turn-before-runner-settled', text: 'must not send' })
@@ -274,6 +259,62 @@ describe('RuntimeKernel Interaction close cleanup', () => {
 
     fixture.backend.releaseBlockedSend();
     await drainIterator(iterator);
+  });
+
+  test('the session run epoch bumps on every turn start and end', async () => {
+    const store = memoryStore();
+    const backends = new BackendRegistry();
+    const backend = new BlockingBackend(SESSION_ID, {});
+    backends.register('ai-sdk', () => backend);
+    let id = 0;
+    const kernel = new RuntimeKernel({
+      store,
+      backends,
+      newId: () => `epoch-id-${++id}`,
+      now: () => id,
+    });
+
+    assert.equal(kernel.sessionRunEpoch(SESSION_ID), 0);
+
+    const iterator = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-epoch-1', text: 'go' })
+      [Symbol.asyncIterator]();
+    await iterator.next();
+    const afterStart = kernel.sessionRunEpoch(SESSION_ID);
+    assert.ok(afterStart >= 1, 'a turn entering the active set bumps the epoch');
+
+    backend.releaseBlockedSend();
+    await drainIterator(iterator).catch(() => undefined);
+    assert.ok(
+      kernel.sessionRunEpoch(SESSION_ID) > afterStart,
+      'the turn leaving the active set bumps the epoch again',
+    );
+  });
+
+  test('each kernel gets its own host generation; epochs restart per process (#5713 review)', () => {
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', () => new BlockingBackend(SESSION_ID, {}));
+    const first = new RuntimeKernel({
+      store: memoryStore(),
+      backends,
+      newId: () => 'unused',
+      now: () => 0,
+      hostGeneration: () => 'host-generation-1',
+    });
+    // A second kernel stands in for the restarted Host process: a fresh
+    // generation and epoch counters back to zero, even though the previous
+    // process may have left a higher epoch on a client's catalog row.
+    const second = new RuntimeKernel({
+      store: memoryStore(),
+      backends,
+      newId: () => 'unused',
+      now: () => 0,
+      hostGeneration: () => 'host-generation-2',
+    });
+    assert.equal(first.sessionHostGeneration(), 'host-generation-1');
+    assert.equal(second.sessionHostGeneration(), 'host-generation-2');
+    assert.equal(first.sessionRunEpoch(SESSION_ID), 0);
+    assert.equal(second.sessionRunEpoch(SESSION_ID), 0);
   });
 
   test('a generation stopped after Run reservation cannot send on the stale backend', async () => {
@@ -366,21 +407,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     await drainIterator(first);
     assert.equal(built[0]?.disposeCalls, 1);
     assert.deepEqual(built[0]?.stopCalls, [{ reason: 'user_stop', mode: 'after_step' }]);
-    const firstMessages = await store.readMessages(SESSION_ID);
-    assert.equal(
-      firstMessages.filter(
-        (message) =>
-          message.type === 'turn_state' &&
-          message.turnId === 'turn-generation-1' &&
-          message.status === 'aborted',
-      ).length,
-      1,
-    );
-    assert.equal(
-      firstMessages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
-        .length,
-      1,
-    );
 
     const second = kernel
       .startTurn(SESSION_ID, { turnId: 'turn-generation-2', text: 'second' })
@@ -510,7 +536,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
             messageAuthority: {
               bindRun: (identity) => ({
                 ...identity,
-                pull: () => [],
+                pull: async () => [],
                 ack: () => {},
                 nack: () => {},
                 release: () => {
@@ -645,22 +671,21 @@ function memoryStore(): SessionStore {
   return {
     create: async () => header,
     createSubagent: async () => ({ header, created: false }),
-    setExecutionBoundaryKind: async () => {
-      throw new Error('not implemented');
-    },
     readExecutionBoundary: async () => {
       throw new Error('not implemented');
     },
     list: async () => [],
     readHeader: async () => header,
-    readMessages: async () => [...messages],
-    listTurns: async () => [],
-    appendMessage: async (_sessionId, message) => {
-      messages.push(message);
-    },
-    appendMessages: async (_sessionId, next) => {
-      messages.push(...next);
-    },
+    readMessagesAfter: async (
+      _sessionId: string,
+      request: { afterSequence?: number; maxMessages: number },
+    ) => ({
+      records: messages
+        .map((message, sequence) => ({ sequence, message }))
+        .filter(({ sequence }) => sequence > (request.afterSequence ?? -1))
+        .slice(0, request.maxMessages),
+      highWaterSequence: messages.length > 0 ? messages.length - 1 : null,
+    }),
     updateHeader: async (_sessionId, patch) => {
       header = { ...header, ...patch };
       return header;

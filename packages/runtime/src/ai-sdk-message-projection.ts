@@ -18,6 +18,7 @@
  */
 
 import type { AttachmentRef, DirectoryReference, QuoteRef, StorageRef } from '@maka/core/events';
+import type { AssistantThinkingPart } from '@maka/core/session';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
@@ -50,6 +51,7 @@ import type { ModelAdapter } from './model-adapter.js';
 import type {
   ModelMessage,
   ReasoningPart,
+  ToolResultContentPart,
   ToolResultOutput,
   UserContent,
 } from './model-protocol.js';
@@ -59,6 +61,10 @@ import {
   replayPlaintextResponsesProviderOptions,
 } from './responses-reasoning-state.js';
 import { toolResultOutput } from './tool-result-output.js';
+import {
+  deepSeekWebSearchReplayItem,
+  deepSeekWebSearchReplayOptions,
+} from './deepseek-web-search-codec.js';
 
 export interface AiSdkMessageProjectionInput {
   modelAdapter: ModelAdapter;
@@ -66,6 +72,42 @@ export interface AiSdkMessageProjectionInput {
   supportsVision?: boolean;
   readAttachmentBytes?: AttachmentByteReader;
   maxProviderImageRequestBytes?: number;
+}
+
+function isRedactedThinking(providerOptions: AssistantThinkingPart['providerOptions']): boolean {
+  const anthropic = providerOptions?.anthropic;
+  return (
+    !!anthropic &&
+    typeof anthropic === 'object' &&
+    !Array.isArray(anthropic) &&
+    typeof (anthropic as { redactedData?: unknown }).redactedData === 'string'
+  );
+}
+
+function encryptedResponsesReasoning(
+  providerOptions: AssistantThinkingPart['providerOptions'],
+): { itemId: string; reasoningEncryptedContent: string } | undefined {
+  const openai = providerOptions?.openai;
+  if (!openai || typeof openai !== 'object' || Array.isArray(openai)) return undefined;
+  const { itemId, reasoningEncryptedContent } = openai as {
+    itemId?: unknown;
+    reasoningEncryptedContent?: unknown;
+  };
+  return typeof itemId === 'string' &&
+    itemId.length > 0 &&
+    typeof reasoningEncryptedContent === 'string' &&
+    reasoningEncryptedContent.length > 0
+    ? { itemId, reasoningEncryptedContent }
+    : undefined;
+}
+
+export function hasFinalizedReasoning(part: AssistantThinkingPart): boolean {
+  return (
+    !!part.signature ||
+    isRedactedThinking(part.providerOptions) ||
+    decodePlaintextResponsesReasoningState(part.providerOptions).kind === 'valid' ||
+    encryptedResponsesReasoning(part.providerOptions) !== undefined
+  );
 }
 
 function isImageToolResult(
@@ -81,8 +123,8 @@ function isImageToolResult(
   );
 }
 
-function toolResultText(text: string): ToolResultOutput {
-  return { type: 'content', value: [{ type: 'text', text }] };
+function toolResultText(text: string): ToolResultContentPart {
+  return { type: 'text', text };
 }
 
 function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutput {
@@ -147,13 +189,15 @@ export class AiSdkMessageProjection {
 
   canReplayProviderNative(plan: RuntimeEventModelReplayPlan): boolean {
     const support = this.input.modelAdapter.runtimeEventReplaySupport();
+    const replayableDeepSeekPairs = this.replayableDeepSeekPairIds(plan);
     for (const item of plan.items) {
       if (item.kind === 'tool_call' && !support.toolCalls) return false;
       if (item.kind === 'tool_result' && !support.toolResults) return false;
       if (
         (item.kind === 'tool_call' || item.kind === 'tool_result') &&
         item.providerExecuted === true &&
-        !support.providerExecutedTools
+        !support.providerExecutedTools &&
+        !replayableDeepSeekPairs.has(item.eventId)
       ) {
         return false;
       }
@@ -171,16 +215,36 @@ export class AiSdkMessageProjection {
    */
   dropUnsupportedReplayItems(plan: RuntimeEventModelReplayPlan): RuntimeEventModelReplayPlan {
     const support = this.input.modelAdapter.runtimeEventReplaySupport();
+    const replayableDeepSeekPairs = this.replayableDeepSeekPairIds(plan);
     return {
       ...plan,
       items: plan.items.filter((item) => {
         if (item.kind === 'tool_call' || item.kind === 'tool_result') {
           if (!support.toolCalls || !support.toolResults) return false;
-          if (item.providerExecuted === true && !support.providerExecutedTools) return false;
+          if (
+            item.providerExecuted === true &&
+            !support.providerExecutedTools &&
+            !replayableDeepSeekPairs.has(item.eventId)
+          )
+            return false;
         }
         return true;
       }),
     };
+  }
+
+  private replayableDeepSeekPairIds(plan: RuntimeEventModelReplayPlan): ReadonlySet<string> {
+    const ids = new Set<string>();
+    if (!this.input.modelAdapter.supportsDeepSeekWebSearchReplay()) return ids;
+    for (const entry of buildRuntimeEventReplayTimeline(plan.items)) {
+      if (entry.kind !== 'assistant_step') continue;
+      for (const { call, result } of entry.calls) {
+        if (result?.providerExecuted !== true || !deepSeekWebSearchReplayItem(call)) continue;
+        ids.add(call.eventId);
+        ids.add(result.eventId);
+      }
+    }
+    return ids;
   }
 
   /**
@@ -231,13 +295,7 @@ export class AiSdkMessageProjection {
             }
           : undefined;
       }
-      const anthropic = item.providerOptions?.anthropic;
-      if (
-        anthropic &&
-        typeof anthropic === 'object' &&
-        !Array.isArray(anthropic) &&
-        typeof (anthropic as { redactedData?: unknown }).redactedData === 'string'
-      ) {
+      if (isRedactedThinking(item.providerOptions)) {
         return replaySupport.signedThinking
           ? {
               part: {
@@ -253,31 +311,18 @@ export class AiSdkMessageProjection {
         replaySupport.responsesReasoning.kind === 'plaintext-item'
       ) {
         const decoded = decodePlaintextResponsesReasoningState(item.providerOptions);
-        if (decoded.kind === 'missing') return undefined;
-        if (decoded.kind === 'unsupported-version') return undefined;
-        if (decoded.kind === 'malformed') {
-          if (
-            decoded.profile !== undefined &&
-            decoded.profile !== replaySupport.responsesReasoning.profile
-          ) {
-            return undefined;
-          }
-          throw new Error('Malformed durable plaintext Responses reasoning state');
-        }
-        const state = decoded.state;
-        if (state.profile !== replaySupport.responsesReasoning.profile) {
+        if (decoded.kind !== 'valid') return undefined;
+        if (decoded.state.profile !== replaySupport.responsesReasoning.profile) {
           return undefined;
         }
+        const providerOptions = replayPlaintextResponsesProviderOptions({
+          providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
+          state: decoded.state,
+          text: item.text,
+        });
+        if (!providerOptions) return undefined;
         return {
-          part: {
-            type: 'reasoning' as const,
-            text: item.text,
-            providerOptions: replayPlaintextResponsesProviderOptions({
-              providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
-              state,
-              text: item.text,
-            }),
-          },
+          part: { type: 'reasoning' as const, text: item.text, providerOptions },
         };
       }
       if (replaySupport.responsesReasoning === 'plaintext-content') {
@@ -285,31 +330,17 @@ export class AiSdkMessageProjection {
         return { part: { type: 'reasoning' as const, text: item.text } };
       }
       if (replaySupport.responsesReasoning === 'encrypted-content') {
-        const openai = item.providerOptions?.openai;
-        if (openai && typeof openai === 'object' && !Array.isArray(openai)) {
-          const { itemId, reasoningEncryptedContent } = openai as {
-            itemId?: unknown;
-            reasoningEncryptedContent?: unknown;
-          };
-          if (
-            typeof itemId === 'string' &&
-            itemId.length > 0 &&
-            typeof reasoningEncryptedContent === 'string' &&
-            reasoningEncryptedContent.length > 0
-          ) {
-            return {
-              part: {
-                type: 'reasoning' as const,
-                text: item.text,
-                providerOptions: {
-                  openai: {
-                    itemId,
-                    reasoningEncryptedContent,
-                  },
-                },
+        const encrypted = encryptedResponsesReasoning(item.providerOptions);
+        if (encrypted) {
+          return {
+            part: {
+              type: 'reasoning' as const,
+              text: item.text,
+              providerOptions: {
+                openai: encrypted,
               },
-            };
-          }
+            },
+          };
         }
       }
       if (!replaySupport.unsignedThinking) return undefined;
@@ -377,17 +408,20 @@ export class AiSdkMessageProjection {
     ) => {
       const calls = exchanges.map(({ call }) => call);
       const content: unknown[] = [];
+      const replayReasoning = (reasoning ?? [])
+        .map((item) => ({ eventId: item.eventId, replay: reasoningReplay(item) }))
+        .filter(
+          (entry): entry is { eventId: string; replay: ReplayReasoning } =>
+            entry.replay !== undefined,
+        );
       const eventIds = [
-        ...(reasoning ?? []).map((item) => item.eventId),
+        ...replayReasoning.map((entry) => entry.eventId),
         ...(text ? [text.eventId] : []),
         ...calls.map((call) => call.eventId),
         ...replayFacts.flatMap((fact) => fact.eventIds),
       ];
-      const replayReasoning = reasoning
-        ?.map(reasoningReplay)
-        .filter((item): item is ReplayReasoning => item !== undefined);
-      for (const item of replayReasoning ?? []) {
-        if (item.part) content.push(item.part);
+      for (const { replay } of replayReasoning) {
+        if (replay.part) content.push(replay.part);
       }
       // Provider-owned tools execute before the grounded assistant text in the
       // same provider step. Preserve that chronology for Responses item
@@ -395,12 +429,20 @@ export class AiSdkMessageProjection {
       // stay after text because their execution begins only after this step.
       for (const { call, result } of exchanges) {
         if (call.providerExecuted !== true) continue;
+        const deepSeekItem =
+          result?.providerExecuted === true &&
+          this.input.modelAdapter.supportsDeepSeekWebSearchReplay()
+            ? deepSeekWebSearchReplayItem(call)
+            : undefined;
+        const replayOptions = deepSeekItem
+          ? deepSeekWebSearchReplayOptions(deepSeekItem)
+          : call.providerOptions;
         content.push({
           type: 'tool-call',
           toolCallId: call.toolCallId,
           toolName: call.toolName,
           input: call.input,
-          ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+          ...(replayOptions !== undefined ? { providerOptions: replayOptions } : {}),
           providerExecuted: true,
         });
         if (!result || result.providerExecuted !== true) continue;
@@ -410,6 +452,7 @@ export class AiSdkMessageProjection {
           toolCallId: result.toolCallId,
           toolName: result.toolName,
           output: await materializeReplayToolResult(result, call.toolName),
+          ...(deepSeekItem ? { providerOptions: replayOptions } : {}),
         });
       }
       if (text && text.content.length > 0) {
@@ -435,9 +478,9 @@ export class AiSdkMessageProjection {
             : {}),
         });
       }
-      const replayProviderOptions = replayReasoning?.find(
-        (item) => item.providerOptions !== undefined,
-      )?.providerOptions;
+      const replayProviderOptions = replayReasoning.find(
+        (entry) => entry.replay.providerOptions !== undefined,
+      )?.replay.providerOptions;
       if (content.length > 0 || replayProviderOptions) {
         push(
           {
@@ -567,23 +610,28 @@ export class AiSdkMessageProjection {
     item: Extract<RuntimeEventModelReplayItem, { kind: 'text' }>,
   ): Promise<ModelMessage> {
     if (item.role === 'user') {
+      // Both ordinary and steered replay materialize image attachments through
+      // the same path the original request used — a steering replay that kept
+      // only the envelope text would hand a recovery turn references without
+      // the native images the first request received.
+      const content = await this.appendImageParts(
+        budget,
+        item.content,
+        item.attachments,
+        item.steering ? `steering:${item.steering.eventId}` : `runtime-event:${item.eventId}`,
+      );
       if (item.steering) {
         // Already envelope-wrapped by the plan; carry the structured identity
         // so injection dedupe recognizes the replayed message.
         return {
           role: 'user',
-          content: item.content,
+          content,
           providerOptions: steeringProviderOptions(item.steering.eventId),
         };
       }
       return {
         role: 'user',
-        content: await this.appendImageParts(
-          budget,
-          item.content,
-          item.attachments,
-          `runtime-event:${item.eventId}`,
-        ),
+        content,
       } as ModelMessage;
     }
     return {
@@ -682,18 +730,30 @@ export class AiSdkMessageProjection {
     decisionKey: string,
   ): Promise<ToolResultOutput> {
     if (isError || !isImageToolResult(output)) return toolResultOutput(output, isError);
+    return {
+      type: 'content',
+      value: [await this.materializeImage(budget, output.ref, output.mimeType, decisionKey)],
+    };
+  }
+
+  private async materializeImage(
+    budget: ProviderImageBudget,
+    ref: StorageRef,
+    mediaType: string,
+    decisionKey: string,
+  ): Promise<ToolResultContentPart> {
     if (this.input.supportsVision !== true) {
       return toolResultText('Image was read, but the selected model does not support image input.');
     }
     if (!this.input.readAttachmentBytes) {
       return toolResultText('Image was read, but its stored bytes are unavailable.');
     }
-    if (budget && budget.decisions.get(decisionKey) === false) {
+    if (budget.decisions.get(decisionKey) === false) {
       return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
     }
     let read: Awaited<ReturnType<AttachmentByteReader>>;
     try {
-      read = await this.input.readAttachmentBytes(output.ref);
+      read = await this.input.readAttachmentBytes(ref);
     } catch {
       return toolResultText('Image could not be loaded from artifact storage: read_failed.');
     }
@@ -704,18 +764,9 @@ export class AiSdkMessageProjection {
       return toolResultText(PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE);
     }
     return {
-      type: 'content',
-      value: [
-        { type: 'text', text: 'Image read successfully.' },
-        {
-          type: 'file',
-          data: {
-            type: 'data',
-            data: Buffer.from(read.bytes).toString('base64'),
-          },
-          mediaType: output.mimeType,
-        },
-      ],
+      type: 'file',
+      data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+      mediaType,
     };
   }
 
@@ -727,50 +778,16 @@ export class AiSdkMessageProjection {
     if (projection.kind !== 'content') return durableProjectionToToolResultOutput(projection);
     const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
     for (const [index, part] of projection.parts.entries()) {
-      if (part.kind === 'text') {
-        value.push({ type: 'text', text: part.text });
-        continue;
-      }
-      if (this.input.supportsVision !== true) {
-        value.push({
-          type: 'text',
-          text: 'Image was read, but the selected model does not support image input.',
-        });
-        continue;
-      }
-      if (!this.input.readAttachmentBytes) {
-        value.push({
-          type: 'text',
-          text: 'Image was read, but its stored bytes are unavailable.',
-        });
-        continue;
-      }
-      let read: Awaited<ReturnType<AttachmentByteReader>>;
-      try {
-        read = await this.input.readAttachmentBytes(part.ref);
-      } catch {
-        value.push({
-          type: 'text',
-          text: 'Image could not be loaded from artifact storage: read_failed.',
-        });
-        continue;
-      }
-      if (!read.ok) {
-        value.push({
-          type: 'text',
-          text: `Image could not be loaded from artifact storage: ${read.reason}.`,
-        });
-        continue;
-      }
-      if (!this.chargeImageBudget(budget, read.bytes.length, `${decisionKey}:artifact:${index}`)) {
-        value.push({ type: 'text', text: PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE });
-        continue;
-      }
-      value.push({
-        type: 'file',
-        data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
-        mediaType: part.mediaType,
-      });
+      value.push(
+        part.kind === 'text'
+          ? toolResultText(part.text)
+          : await this.materializeImage(
+              budget,
+              part.ref,
+              part.mediaType,
+              `${decisionKey}:artifact:${index}`,
+            ),
+      );
     }
     return { type: 'content', value };
   }

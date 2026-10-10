@@ -31,7 +31,6 @@ import type {
   RemoveCatalogConnectionInput,
   RuntimePolicySnapshot,
   SetCredentialInput,
-  MigrateSystemSeedInput,
   SetDefaultConnectionTargetInput,
   UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
@@ -114,7 +113,6 @@ export interface ConnectionCatalogWriter extends ConnectionCatalogReader {
   setDefaultTarget(
     input: SetDefaultConnectionTargetInput,
   ): Promise<ConnectionCatalogMutationResult>;
-  migrateSystemSeed(input: MigrateSystemSeedInput): Promise<ConnectionCatalogMutationResult>;
 }
 
 export interface CredentialVaultReader {
@@ -228,7 +226,6 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       update: (input) => coordinator.updateConnection(input),
       remove: (input) => coordinator.removeConnection(input),
       setDefaultTarget: (input) => coordinator.setDefaultTarget(input),
-      migrateSystemSeed: (input) => coordinator.migrateSystemSeed(input),
     },
     credentialVault: {
       getSnapshot: () => coordinator.getVaultSnapshot(),
@@ -262,7 +259,8 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       completeInteractiveOAuthLogin: (ticket, secret) =>
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
-      completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
+      completeModelFetch: (ticket, result, preserveSelection) =>
+        coordinator.completeModelFetch(ticket, result, preserveSelection),
       beginConnectionOnboarding: (input) => coordinator.beginConnectionOnboarding(input),
       completeConnectionOnboarding: (ticket, input) =>
         coordinator.completeConnectionOnboarding(ticket, input),

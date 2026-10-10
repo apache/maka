@@ -175,6 +175,7 @@ test('IPC imports only the native picker result and returns stable envelopes', a
       },
       settingsStore: createSettingsStore(stateRoot),
       now: () => 42,
+      resolveLocale: async () => 'en' as const,
     });
 
     const result = await handlers.get('pets:importLocalDirectory')?.({}, '/untrusted/path');
@@ -211,6 +212,7 @@ test('IPC returns sprite bytes, removes the pack, and emits only real mutations'
       },
       settingsStore,
       now: () => 84,
+      resolveLocale: async () => 'en' as const,
     });
     await settingsStore.update({ personalization: { selectedPetId: 'likun.missing' } });
     assert.equal(await handlers.get('pets:getSelection')?.({}), null);

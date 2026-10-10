@@ -28,9 +28,9 @@ export interface RuntimeMessageRunIdentity {
   readonly runId: string;
 }
 
-/** Synchronous lease bridge owned by the Runtime Host for one live root run. */
+/** Lease bridge owned by the Runtime Host for one live root run. */
 export interface RuntimeMessageRunOwner extends RuntimeMessageRunIdentity {
-  pull(): readonly SteeringLease[];
+  pull(): Promise<readonly SteeringLease[]>;
   ack(leaseIds: readonly string[]): void;
   nack(leaseIds: readonly string[]): void;
   /** Ends Runtime access; the Host closes admission at its terminal transition cut. */
@@ -63,7 +63,14 @@ export interface RuntimeHostedRootExecutionInput extends RuntimeMessageRunIdenti
 /** Host-only root lifecycle capability. Embedded compositions must omit it. */
 export interface RuntimeHostedRootAuthority extends RuntimeMessageAuthority {
   executeRoot(input: RuntimeHostedRootExecutionInput): Promise<void>;
+  /** Stops the Session's live execution, including a claim whose Run has not attached. */
   stopRoot(identity: RuntimeMessageRunIdentity, input?: StopSessionInput): Promise<void>;
+  /**
+   * Stops only this exact Run's Runtime owner, for an activation-scoped graph
+   * stop. Kept separate from `stopRoot` so an authority cannot satisfy it by
+   * ignoring an option and silently widening to a Session stop.
+   */
+  stopRootRun(identity: RuntimeMessageRunIdentity, input?: StopSessionInput): Promise<void>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
 }
 
@@ -83,6 +90,19 @@ export function isRuntimeHostedRootAuthority(
 
 export class RuntimeMessageAuthorityInvariantError extends Error {
   readonly name = 'RuntimeMessageAuthorityInvariantError';
+}
+
+/**
+ * The id a Root Turn's admitted prompt is durable under. A Root folded from
+ * several queued Messages carries no single Message identity, so the id comes
+ * from the Run instead — one rule, so the run that writes the prompt and the
+ * recovery that rewrites it derive the same id and the store dedupes.
+ */
+export function admittedPromptEventId(
+  runId: string,
+  userMessageId: string | null | undefined,
+): string {
+  return userMessageId ?? `${runId}-admitted-prompt`;
 }
 
 export class RuntimeHostedRootConflictError extends Error {

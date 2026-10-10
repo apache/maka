@@ -42,7 +42,6 @@ const ACTIVATION_STIMULUS_TYPES = new Set(['message', 'schedule', 'system']);
 
 export type MakaActivationStatus = 'completed' | 'blocked' | 'retryable_failure' | 'fatal_failure';
 
-export type MakaActivationBlockedReason = 'permission_denied' | 'permission_required';
 export type MakaActivationRequiredAction = 'grant_permission' | 'retry_activation';
 
 export interface MakaActivationOptions {
@@ -112,6 +111,7 @@ export interface MakaActivationRuntime {
 }
 
 export interface MakaActivationDeps {
+  automatedResumeEnabled(): boolean;
   createContext(input: MakaActivationContextInput): Promise<MakaActivationContext>;
   listSessions(stateRoot: string): Promise<SessionSummary[]>;
   workspaceRoot(): string;
@@ -511,8 +511,12 @@ export async function runMakaActivationCli(
       const stream = await activationStream(
         context.runtime,
         session.id,
-        { turnId: deps.newId(), text },
-        existing !== undefined,
+        {
+          turnId: deps.newId(),
+          text,
+          origin: { kind: 'cloud_activation', activationId: request.activationId },
+        },
+        existing !== undefined && deps.automatedResumeEnabled(),
       );
       const drain = (async () => {
         for await (const event of stream) {
@@ -744,9 +748,9 @@ async function activationStream(
   runtime: MakaActivationRuntime,
   sessionId: string,
   input: UserMessageInput,
-  allowSafeBoundaryResume: boolean,
+  allowAutomatedResume: boolean,
 ): Promise<AsyncIterable<SessionEvent>> {
-  if (allowSafeBoundaryResume && runtime.resumeLatest) {
+  if (allowAutomatedResume && runtime.resumeLatest) {
     const resumed = await runtime.resumeLatest(sessionId);
     if (resumed) return resumed;
   }
@@ -807,6 +811,10 @@ function makaActivateHelpText(): string {
 
 function defaultMakaActivationDeps(): MakaActivationDeps {
   return {
+    automatedResumeEnabled: () => {
+      const value = process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+      return value === '1' || value === 'true';
+    },
     createContext: createRuntimeHostActivationContext,
     listSessions: listRuntimeHostActivationSessions,
     workspaceRoot: () => resolve(process.cwd()),

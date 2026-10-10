@@ -91,7 +91,7 @@ export function permissionSnapshotE2eFixture(now: number): PermissionSnapshot | 
         id: 'automation',
         status: 'unsupported',
         now,
-        reason: '当前系统版本不暴露自动化授权状态。',
+        reason: 'apple_events_tcc_status_unavailable',
         canOpenSettings: false,
       }),
     },

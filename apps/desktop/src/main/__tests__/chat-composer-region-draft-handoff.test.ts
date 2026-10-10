@@ -17,24 +17,27 @@
  * under the License.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
-import { AstryxLocaleProvider, type ComposerHandle, LocaleProvider } from '@maka/ui';
+import { type ComposerHandle, LocaleProvider } from '@maka/ui';
 import { ChatComposerRegion } from '../../renderer/chat-composer-region.js';
 import {
   markNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from '../../renderer/new-task-reload-intent.js';
+} from '../../renderer/application/contracts/new-task-reload-intent.js';
 
 const originalGlobals = {
   document: globalThis.document,
   window: globalThis.window,
   HTMLElement: globalThis.HTMLElement,
   HTMLIFrameElement: globalThis.HTMLIFrameElement,
+  HTMLBRElement: globalThis.HTMLBRElement,
+  Element: globalThis.Element,
   Event: globalThis.Event,
   Node: globalThis.Node,
   sessionStorage: globalThis.sessionStorage,
@@ -68,17 +71,45 @@ async function mountRegion(): Promise<{
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   const storage = new Map<string, string>();
-  Object.assign(document, {
-    getSelection: () => ({
+  const getSelection = () =>
+    ({
+      rangeCount: 0,
+      isCollapsed: true,
+      anchorNode: null,
+      focusNode: null,
       removeAllRanges() {},
       addRange() {},
-    }),
+      getRangeAt: () => {
+        throw new Error('no range');
+      },
+    }) as unknown as Selection;
+  Object.assign(document, { getSelection });
+  Object.assign(window, {
+    getSelection,
+    getComputedStyle: () =>
+      ({
+        direction: 'ltr',
+        writingMode: 'horizontal-tb',
+        getPropertyValue: () => '',
+      }) as unknown as CSSStyleDeclaration,
+    matchMedia: () =>
+      ({ matches: false, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList,
   });
+  document.createRange = () =>
+    ({
+      selectNodeContents() {},
+      collapse() {},
+      cloneRange() {
+        return this;
+      },
+    }) as unknown as Range;
   Object.assign(globalThis, {
     document,
     window,
     HTMLElement: window.HTMLElement,
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
+    HTMLBRElement: window.HTMLBRElement,
+    Element: window.Element,
     Event: window.Event,
     Node: window.Node,
     sessionStorage: {
@@ -108,20 +139,23 @@ async function mountRegion(): Promise<{
           LocaleProvider,
           {
             locale: 'en',
-            children: createElement(AstryxLocaleProvider, {
+            children: createElement(ComposerStagingFixture, {
+              draftKey: activeId ?? 'new-task',
               children: createElement(ChatComposerRegion, {
               composerRef: composer,
               onOpenContextUsage: () => undefined,
-              directoryComposerProps: {},
+              canStageContext: true,
+              contextPickEnabled: true,
               directoryPickerEnabled: false,
 
               active: true,
               onboardingComposerHidden: false,
               activeInteraction: undefined,
               activeId,
+              contextUsageSessionId: activeId,
               newTaskDraftKey,
               newTaskSendPending,
-              stopPendingBySession: {},
+              stopPending: false,
               respondToSandboxBoundary: () => {},
               respondToClientCapability: () => {},
               respondToUserQuestion: () => {},

@@ -17,13 +17,17 @@
  * under the License.
  */
 
-import { deferred } from '@maka/core/test-only/async-primitives';
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import type { AgentGraphScheduleUpdateRequest } from '@maka/core/agent-graph-schedule';
+import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
 import type {
   FormRequestEvent,
   SandboxBoundaryRequestEvent,
@@ -38,6 +42,13 @@ import {
   type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime/interaction-authority';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
+import { stableHash } from '@maka/runtime/request-shape';
+import {
+  AgentGraphCoordinator,
+  agentGraphIdForRootSession,
+} from '@maka/runtime/stream-graph-coordinator';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   openInteractiveExecutionStoresForWrite,
   type ExecutionStoresWriter,
@@ -59,6 +70,7 @@ import {
   type HostInteractionCoordinatorOptions,
 } from '../server/interaction-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { SessionInteractionActivityProjection } from '../server/session-interaction-activity.js';
 
 const RUN = Object.freeze({
   sessionId: 'session_1',
@@ -67,9 +79,472 @@ const RUN = Object.freeze({
 });
 
 describe('HostInteractionCoordinator', () => {
+  test('graph activity waits for every canonical request in a Run, including requests answered without Runtime acknowledgements', async () => {
+    await withGraphInteractionActivity(
+      async ({ coordinator, owner, identity, graph, activity, rootId }) => {
+        const answers: string[] = [];
+        for (const requestId of ['first', 'second']) {
+          await owner.acceptFormRequest!({
+            request: formEvent(requestId, 10),
+            continuation: {
+              ...formContinuation(requestId, { answer: () => answers.push(requestId) }),
+              ...identity,
+            },
+          });
+        }
+        assert.equal(
+          activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+          2,
+        );
+        assert.equal(graph.readSessionActivity(rootId), 'waiting_for_user');
+        assert.equal(
+          activity.readTurnPendingInteractionCount(identity.sessionId, 'another-turn'),
+          0,
+        );
+
+        for (const [index, requestId] of ['first', 'second'].entries()) {
+          const answered = await coordinator.handlers['interaction.answer'](
+            {
+              sessionId: identity.sessionId,
+              interactionId: requestId,
+              answer: { kind: 'form', action: 'accept', values: { replicas: 2 } },
+            },
+            connection(),
+          );
+          assert.equal(answered.ok, true);
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            1 - index,
+          );
+          assert.equal(
+            graph.readSessionActivity(rootId),
+            index === 0 ? 'waiting_for_user' : 'running',
+          );
+        }
+        assert.deepEqual(answers, ['first', 'second']);
+      },
+    );
+  });
+
+  test('producer withdrawal refreshes graph activity from durable pending requests without form_answer_ack', async () => {
+    await withGraphInteractionActivity(
+      async ({ owner, identity, graph, activity, rootId, store }) => {
+        const closures: string[] = [];
+        for (const requestId of ['withdraw-first', 'withdraw-second']) {
+          await owner.acceptFormRequest!({
+            request: formEvent(requestId, 10),
+            continuation: {
+              ...formContinuation(requestId, {
+                closure: (reason) => closures.push(`${requestId}:${reason}`),
+              }),
+              ...identity,
+            },
+          });
+        }
+        assert.equal(graph.readSessionActivity(rootId), 'waiting_for_user');
+        for (const [index, requestId] of ['withdraw-first', 'withdraw-second'].entries()) {
+          await owner.withdrawFormRequest(requestId);
+          assert.equal((await store.readInteraction(requestId))?.outcome?.outcome.kind, 'closure');
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            1 - index,
+          );
+          assert.equal(
+            graph.readSessionActivity(rootId),
+            index === 0 ? 'waiting_for_user' : 'running',
+          );
+        }
+        assert.deepEqual(closures, [
+          'withdraw-first:producer_cancelled',
+          'withdraw-second:producer_cancelled',
+        ]);
+      },
+    );
+  });
+
+  test('graph interaction activity follows the logical Turn across physical Run handoff and ignores other Turns', async () => {
+    await withGraphInteractionActivity(
+      async ({ coordinator, identity, graph, activity, rootId }) => {
+        const resumed = { ...identity, runId: 'resumed-physical-run' };
+        const otherTurn = { ...identity, runId: 'other-physical-run', turnId: 'other-turn' };
+        const resumedOwner = coordinator.bindRun(resumed);
+        const otherOwner = coordinator.bindRun(otherTurn);
+        try {
+          await otherOwner.acceptFormRequest!({
+            request: { ...formEvent('other-turn-form', 10), turnId: otherTurn.turnId },
+            continuation: { ...formContinuation('other-turn-form'), ...otherTurn },
+          });
+          assert.equal(graph.readSessionActivity(rootId), 'running');
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            0,
+          );
+
+          await resumedOwner.acceptFormRequest!({
+            request: formEvent('resumed-run-form', 11),
+            continuation: { ...formContinuation('resumed-run-form'), ...resumed },
+          });
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, identity.turnId),
+            1,
+          );
+          assert.equal(graph.readSessionActivity(rootId), 'waiting_for_user');
+          await resumedOwner.withdrawFormRequest('resumed-run-form');
+          assert.equal(graph.readSessionActivity(rootId), 'running');
+          assert.equal(
+            activity.readTurnPendingInteractionCount(identity.sessionId, otherTurn.turnId),
+            1,
+          );
+          await otherOwner.withdrawFormRequest('other-turn-form');
+        } finally {
+          await resumedOwner.close('turn_terminal');
+          resumedOwner.release();
+          await otherOwner.close('turn_terminal');
+          otherOwner.release();
+        }
+      },
+    );
+  });
+
+  for (const source of ['interactions', 'sandboxBoundaries'] as const) {
+    test(`failed ${source} activity reads do not gate canonical answer publication or application`, async () => {
+      await withStore(async ({ store }) => {
+        const failure = new Error(`Injected ${source} activity read failure`);
+        let failRead = false;
+        const errors: unknown[] = [];
+        const calls: string[] = [];
+        const activity = new SessionInteractionActivityProjection({
+          interactions: {
+            listSessionPending: async (sessionId) => {
+              if (failRead && source === 'interactions') throw failure;
+              return store.listSessionPending(sessionId);
+            },
+          },
+          sandboxBoundaries: {
+            listPendingSandboxBoundaryRequests: async () => {
+              if (failRead && source === 'sandboxBoundaries') throw failure;
+              return [];
+            },
+          },
+          onChanged: () => calls.push('activity'),
+          onError: (_sessionId, error) => errors.push(error),
+        });
+        const admission = new SessionAdmissionGate();
+        const coordinator = createCoordinator(store, {
+          sessionAdmission: admission,
+          refreshCanonicalContinuity: async (sessionId) => {
+            await activity.refresh(sessionId);
+            calls.push('canonical');
+            admission.detach(() => calls.push('workhub'));
+          },
+        });
+        const owner = coordinator.bindRun(RUN);
+        try {
+          await owner.acceptFormRequest!({
+            request: formEvent('projection-failure', 10),
+            continuation: formContinuation('projection-failure', {
+              answer: () => calls.push('applied'),
+            }),
+          });
+          assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), 1);
+          calls.length = 0;
+          failRead = true;
+          const answered = await coordinator.handlers['interaction.answer'](
+            {
+              sessionId: RUN.sessionId,
+              interactionId: 'projection-failure',
+              answer: { kind: 'form', action: 'accept', values: { replicas: 2 } },
+            },
+            connection(),
+          );
+          assert.equal(answered.ok, true);
+          assert.equal(
+            (await store.readInteraction('projection-failure'))?.outcome?.outcome.kind,
+            'form_answer',
+          );
+          assert.deepEqual(calls, ['activity', 'canonical', 'workhub', 'applied']);
+          assert.deepEqual(errors, [failure]);
+          assert.equal(
+            activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId),
+            undefined,
+            'A failed projection must become unknown, not keep stale waiting counts',
+          );
+          calls.length = 0;
+          await activity.refresh(RUN.sessionId);
+          assert.deepEqual(
+            calls,
+            [],
+            'Repeated failures must not repeatedly invalidate the catalog',
+          );
+          assert.deepEqual(errors, [failure, failure]);
+          failRead = false;
+          await activity.refresh(RUN.sessionId);
+          assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), 0);
+          assert.deepEqual(calls, ['activity']);
+        } finally {
+          failRead = false;
+          await owner.close('turn_terminal');
+          owner.release();
+          await coordinator.close();
+        }
+      });
+    });
+  }
+
+  test('activity observers and diagnostics cannot gate canonical work', async () => {
+    const failure = new Error('Injected activity observer failure');
+    const errors: unknown[] = [];
+    let failObserver = true;
+    const activity = new SessionInteractionActivityProjection({
+      interactions: { listSessionPending: async () => [] },
+      sandboxBoundaries: { listPendingSandboxBoundaryRequests: async () => [] },
+      onChanged: () => {
+        if (failObserver) throw failure;
+      },
+      onError: (_sessionId, error) => {
+        errors.push(error);
+        throw new Error('Injected diagnostic failure');
+      },
+    });
+    await activity.refresh(RUN.sessionId);
+    assert.deepEqual(errors, [failure]);
+    assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), undefined);
+    failObserver = false;
+    await activity.refresh(RUN.sessionId);
+    assert.equal(activity.readTurnPendingInteractionCount(RUN.sessionId, RUN.turnId), 0);
+  });
+
+  test('Host-owned forms reuse durable answers and concurrent requests without rebinding the Run', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const input = {
+        ...RUN,
+        requestId: 'host-choice',
+        create: async () => ({
+          kind: 'form' as const,
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select' as const,
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [
+                { value: 'opaque-a', label: 'Same name / alpha' },
+                { value: 'opaque-b', label: 'Same name / beta' },
+              ],
+            },
+          ],
+        }),
+      };
+      const first = coordinator.requestForm(input);
+      const second = coordinator.requestForm(input);
+      await published.promise;
+      const invalid = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: input.requestId,
+          answer: { kind: 'form', action: 'accept', values: { target: 'forged' } },
+        },
+        connection(),
+      );
+      assert.equal(invalid.ok, false);
+      assert.equal((await store.listPending(RUN)).length, 1);
+      const answered = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: RUN.sessionId,
+          interactionId: input.requestId,
+          answer: { kind: 'form', action: 'accept', values: { target: 'opaque-b' } },
+        },
+        connection(),
+      );
+      assert.equal(answered.ok, true);
+      const result = await first;
+      assert.deepEqual(result.answer, { action: 'accept', values: { target: 'opaque-b' } });
+      assert.deepEqual(await second, result);
+      assert.deepEqual(
+        await coordinator.requestForm({
+          ...input,
+          create: async () => {
+            throw new Error('Must reuse offer');
+          },
+        }),
+        result,
+      );
+      assert.equal(coordinator.isPoisoned(), false);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('a rejected Host form admission settles every concurrent caller without poisoning', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store, { preflightSessionSnapshot: () => false });
+      const owner = coordinator.bindRun(RUN);
+      const input = {
+        ...RUN,
+        requestId: 'oversized-host-form',
+        create: async () => ({
+          kind: 'form' as const,
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select' as const,
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [{ value: 'a', label: 'A' }],
+            },
+          ],
+        }),
+      };
+      const outcomes = await Promise.allSettled([
+        coordinator.requestForm(input),
+        coordinator.requestForm(input),
+      ]);
+      assert.deepEqual(
+        outcomes.map((outcome) => outcome.status),
+        ['rejected', 'rejected'],
+      );
+      assert.equal(coordinator.isPoisoned(), false);
+      assert.equal((await store.listPending(RUN)).length, 0);
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('stopping the owning Run cancels its Host-owned form and closes the durable offer', async () => {
+    await withStore(async ({ store }) => {
+      const published = deferred();
+      const coordinator = createCoordinator(store, {
+        refreshCanonicalContinuity: async () => {
+          published.resolve();
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      const pending = coordinator.requestForm({
+        ...RUN,
+        requestId: 'stopped-choice',
+        create: async () => ({
+          kind: 'form',
+          toolUseId: 'select-tool',
+          message: 'Choose work',
+          requester: { name: 'WorkHub' },
+          fields: [
+            {
+              kind: 'single_select',
+              name: 'target',
+              label: 'Work',
+              required: true,
+              options: [{ value: 'a', label: 'A' }],
+            },
+          ],
+        }),
+      });
+      await published.promise;
+      await owner.close('turn_stopped');
+      assert.deepEqual((await pending).answer, { action: 'cancel' });
+      assert.equal(
+        (await store.readInteraction('stopped-choice'))?.outcome?.outcome.kind,
+        'closure',
+      );
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('WorkHub forwards a collected answer under the target admission exactly once', async () => {
+    await withStore(async ({ store }) => {
+      const gate = new SessionAdmissionGate();
+      const answers: (readonly (string | null)[])[] = [];
+      const coordinator = createCoordinator(store, { sessionAdmission: gate });
+      const owner = coordinator.bindRun(RUN);
+      try {
+        await owner.acceptUserQuestionRequest({
+          request: questionEvent('relay-question', 10),
+          continuation: questionContinuation('relay-question', {
+            answer: (value) => {
+              answers.push(value);
+            },
+          }),
+        });
+        const input = {
+          sessionId: RUN.sessionId,
+          interactionId: 'relay-question',
+          answer: { kind: 'question' as const, answers: ['Yes'] },
+        };
+        const forward = () =>
+          gate.run(RUN.sessionId, (lease) => coordinator.answerDelegatedQuestion(input, lease));
+        assert.equal((await forward()).ok, true);
+        assert.equal((await forward()).ok, true);
+        assert.deepEqual(answers, [['Yes']]);
+        assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
+        const wrongSession = await gate.run('other-session', (lease) =>
+          coordinator.answerDelegatedQuestion({ ...input, sessionId: 'other-session' }, lease),
+        );
+        assert.equal(wrongSession.ok, false);
+      } finally {
+        await owner.close('turn_terminal');
+        owner.release();
+        await coordinator.close();
+      }
+    });
+  });
+
+  test('settled target question closes only its copied WorkHub relay', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store);
+      const run = { ...RUN, sessionId: WORKHUB_COORDINATION_SESSION_ID };
+      const owner = coordinator.bindRun(run);
+      const closures: string[] = [];
+      try {
+        await owner.acceptUserQuestionRequest({
+          request: {
+            ...questionEvent('copied-question', 10),
+            turnId: run.turnId,
+            toolUseId: 'relay-tool',
+          },
+          continuation: {
+            ...questionContinuation('copied-question'),
+            applyClosure: async (reason) => {
+              closures.push(reason);
+            },
+          },
+        });
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'wrong-tool'), false);
+        assert.equal((await store.listPending(run)).length, 1);
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'relay-tool'), true);
+        assert.equal(await coordinator.closeRelayedQuestion(run.turnId, 'relay-tool'), false);
+        assert.deepEqual(closures, ['producer_cancelled']);
+        assert.equal((await store.listPending(run)).length, 0);
+        assert.equal(
+          (await store.readInteraction('copied-question'))?.outcome?.outcome.kind,
+          'closure',
+        );
+      } finally {
+        await owner.close('turn_terminal');
+        owner.release();
+        await coordinator.close();
+      }
+    });
+  });
+
   test('admits a durable question before continuity and returns one canonical answer to concurrent clients', async () => {
     await withStore(async ({ store }) => {
       const order: string[] = [];
+      const attention: unknown[] = [];
       const continuation = questionContinuation('question_1', {
         answer: (answers) => order.push(`apply:${answers.join(',')}`),
       });
@@ -80,9 +555,13 @@ describe('HostInteractionCoordinator', () => {
           assert.equal(await store.readInteraction('question_1'), undefined);
           return true;
         },
-        refreshCanonicalContinuity: async () => {
+        refreshCanonicalContinuity: async (sessionId, _admission, event) => {
           const record = await store.readInteraction('question_1');
           order.push(record?.outcome ? 'refresh:answered' : 'refresh:pending');
+          if (event) {
+            order.push('attention');
+            attention.push({ sessionId, ...event });
+          }
         },
       });
       const owner = coordinator.bindRun(RUN);
@@ -91,7 +570,15 @@ describe('HostInteractionCoordinator', () => {
         request: questionEvent('question_1', 10),
         continuation,
       });
-      assert.deepEqual(order, ['preflight', 'refresh:pending']);
+      assert.deepEqual(order, ['preflight', 'refresh:pending', 'attention']);
+      assert.deepEqual(attention, [
+        {
+          sessionId: RUN.sessionId,
+          kind: 'waiting',
+          eventId: 'question_1',
+          body: 'Continue?',
+        },
+      ]);
       assert.equal(await coordinator.hasPendingSession(RUN.sessionId), true);
 
       const answer = {
@@ -105,7 +592,14 @@ describe('HostInteractionCoordinator', () => {
       ]);
       assert.equal(first.ok, true);
       assert.equal(second.ok, true);
-      assert.deepEqual(order, ['preflight', 'refresh:pending', 'refresh:answered', 'apply:Yes']);
+      assert.deepEqual(order, [
+        'preflight',
+        'refresh:pending',
+        'attention',
+        'refresh:answered',
+        'apply:Yes',
+      ]);
+      assert.equal(attention.length, 1);
       assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
 
       const conflicting = await coordinator.handlers['interaction.answer'](
@@ -294,7 +788,8 @@ describe('HostInteractionCoordinator', () => {
           return true;
         },
         refreshCanonicalContinuity: async () => {},
-        onSandboxBoundarySettled: async (sessionId) => {
+        resolveSandboxBoundaryRootSession: async (sessionId) => sessionId,
+        onSandboxBoundaryGraphWake: async (sessionId) => {
           assert.equal(sessionId, session.id);
           graphWakes += 1;
         },
@@ -388,6 +883,208 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('does not hold Session admission while graph wake reconciliation waits', async () => {
+    await withStore(async ({ owner, store, stores }) => {
+      const workspace = join(owner.capability.canonicalPath, 'wake-workspace');
+      await mkdir(workspace);
+      const session = await stores.sessionStore.create({
+        cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const identity = { ...RUN, sessionId: session.id };
+      const wakeStarted = deferred();
+      const releaseWake = deferred();
+      const wakeFinished = deferred();
+      const resolverStarted = deferred();
+      const releaseResolver = deferred();
+      const gate = new SessionAdmissionGate();
+      let resolvedRootSessionId: string | undefined;
+      let wakeNotificationStarted = false;
+      const coordinator = new HostInteractionCoordinator({
+        store,
+        sandboxBoundaries: stores.sessionStore,
+        sessionAdmission: gate,
+        sessions: stores.sessionStore,
+        preflightSessionSnapshot: () => true,
+        refreshCanonicalContinuity: async () => {},
+        resolveSandboxBoundaryRootSession: async (sessionId) => {
+          resolvedRootSessionId = sessionId;
+          resolverStarted.resolve();
+          await releaseResolver.promise;
+          return session.id;
+        },
+        onSandboxBoundaryGraphWake: async (rootSessionId) => {
+          assert.equal(rootSessionId, session.id);
+          await gate.run(rootSessionId, async () => {
+            wakeNotificationStarted = true;
+            wakeStarted.resolve();
+          });
+          await releaseWake.promise;
+          wakeFinished.resolve();
+        },
+        onPoison: () => {},
+      });
+      const binding = coordinator.bindRun(identity);
+      const request = sandboxBoundaryEvent({
+        sessionId: session.id,
+        requestId: 'boundary_wake_wait',
+        status: 'pending',
+        baseRevision: 0,
+        turnId: identity.turnId,
+        runId: identity.runId,
+        expansion: { network: { enabled: true } },
+        justification: 'Connect to the requested service.',
+        createdAt: 1,
+      });
+      await binding.acceptSandboxBoundaryRequest({
+        request,
+        continuation: sandboxBoundaryContinuation(identity, request.requestId),
+      });
+
+      let answerSettled = false;
+      let answerResult:
+        | Awaited<ReturnType<(typeof coordinator.handlers)['interaction.answer']>>
+        | undefined;
+      const answer = coordinator.handlers['interaction.answer'](
+        {
+          sessionId: session.id,
+          interactionId: request.requestId,
+          answer: { kind: 'sandbox_boundary', decision: 'allow' },
+        },
+        connection(),
+      );
+      void answer.then(
+        (result) => {
+          answerResult = result;
+          answerSettled = true;
+        },
+        () => {
+          answerSettled = true;
+        },
+      );
+      let querySettled = false;
+      let query: ReturnType<(typeof coordinator.handlers)['interaction.query']> | undefined;
+      try {
+        await withTimeout(
+          resolverStarted.promise,
+          5_000,
+          'sandbox boundary root-session resolver did not start',
+        );
+        query = coordinator.handlers['interaction.query'](
+          { sessionId: session.id, interactionId: request.requestId },
+          connection(),
+        );
+        void query.then(
+          () => {
+            querySettled = true;
+          },
+          () => {
+            querySettled = true;
+          },
+        );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(
+          querySettled,
+          false,
+          'interaction query bypassed the resolver admission lease',
+        );
+        releaseResolver.resolve();
+        await answer;
+        assert.ok(query);
+        const queryResult = await query;
+        assert.equal(queryResult.ok, true);
+        assert.equal(querySettled, true);
+        await withTimeout(wakeStarted.promise, 5_000, 'sandbox boundary graph wake did not start');
+        assert.equal(
+          answerSettled,
+          true,
+          'interaction answer waited for graph wake reconciliation',
+        );
+        assert.equal(answerResult?.ok, true);
+        if (answerResult?.ok) assert.equal(answerResult.result.status, 'answered');
+        assert.equal(resolvedRootSessionId, session.id);
+        await binding.close('turn_terminal');
+        binding.release();
+        let closeSettled = false;
+        const closing = coordinator.close().then(() => {
+          closeSettled = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(closeSettled, false, 'close must wait for detached graph wake notification');
+        releaseWake.resolve();
+        await closing;
+      } finally {
+        releaseResolver.resolve();
+        releaseWake.resolve();
+        if (wakeNotificationStarted) await wakeFinished.promise;
+        await answer.catch(() => undefined);
+      }
+    });
+  });
+
+  test('poisons when detached graph wake notification rejects', async () => {
+    await withStore(async ({ owner, store, stores }) => {
+      const workspace = join(owner.capability.canonicalPath, 'wake-rejection-workspace');
+      await mkdir(workspace);
+      const session = await stores.sessionStore.create({
+        cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const identity = { ...RUN, sessionId: session.id };
+      const poison: RuntimeInteractionFailStopError[] = [];
+      const coordinator = new HostInteractionCoordinator({
+        store,
+        sandboxBoundaries: stores.sessionStore,
+        sessionAdmission: new SessionAdmissionGate(),
+        sessions: stores.sessionStore,
+        preflightSessionSnapshot: () => true,
+        refreshCanonicalContinuity: async () => {},
+        resolveSandboxBoundaryRootSession: async () => session.id,
+        onSandboxBoundaryGraphWake: async () => {
+          throw new Error('graph wake notification failed');
+        },
+        onPoison: (error) => poison.push(error),
+      });
+      const binding = coordinator.bindRun(identity);
+      const request = sandboxBoundaryEvent({
+        sessionId: session.id,
+        requestId: 'boundary_wake_rejection',
+        status: 'pending',
+        baseRevision: 0,
+        turnId: identity.turnId,
+        runId: identity.runId,
+        expansion: { network: { enabled: true } },
+        justification: 'Connect to the requested service.',
+        createdAt: 1,
+      });
+      await binding.acceptSandboxBoundaryRequest({
+        request,
+        continuation: sandboxBoundaryContinuation(identity, request.requestId),
+      });
+
+      const answerResult = await coordinator.handlers['interaction.answer'](
+        {
+          sessionId: session.id,
+          interactionId: request.requestId,
+          answer: { kind: 'sandbox_boundary', decision: 'allow' },
+        },
+        connection(),
+      );
+      assert.equal(answerResult.ok, true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(poison.length, 1);
+      assert.equal(coordinator.isPoisoned(), true);
+      await assert.rejects(binding.close('turn_terminal'), poison[0]);
+      await assert.rejects(coordinator.close(), poison[0]);
+    });
+  });
+
   test('a queued stop waits for sandbox boundary publication before closing its Run', async () => {
     await withStore(async ({ owner, store, stores }) => {
       const workspace = join(owner.capability.canonicalPath, 'publication-workspace');
@@ -417,7 +1114,8 @@ describe('HostInteractionCoordinator', () => {
           await releaseAdmissionRefresh.promise;
         },
         onPoison: () => {},
-        onSandboxBoundarySettled: async () => {},
+        resolveSandboxBoundaryRootSession: async () => undefined,
+        onSandboxBoundaryGraphWake: async () => {},
       });
       const binding = await bindRuntimeInteractionRun(coordinator, identity);
       const request = sandboxBoundaryEvent({
@@ -501,7 +1199,8 @@ describe('HostInteractionCoordinator', () => {
         preflightSessionSnapshot: () => false,
         refreshCanonicalContinuity: async () => {},
         onPoison: () => {},
-        onSandboxBoundarySettled: async () => {},
+        resolveSandboxBoundaryRootSession: async () => undefined,
+        onSandboxBoundaryGraphWake: async () => {},
       });
       const ownerRun = coordinator.bindRun(identity);
 
@@ -845,7 +1544,8 @@ function createCoordinator(
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => {},
     onPoison: () => {},
-    onSandboxBoundarySettled: async () => {},
+    resolveSandboxBoundaryRootSession: async () => undefined,
+    onSandboxBoundaryGraphWake: async () => {},
     ...overrides,
   });
 }
@@ -1012,6 +1712,158 @@ interface StoreContext {
   readonly owner: InteractiveRootOwner;
   readonly store: InteractiveInteractionStoreWriterFacade;
   readonly stores: ExecutionStoresWriter<'interactive'>;
+}
+
+async function withGraphInteractionActivity(
+  run: (context: {
+    coordinator: HostInteractionCoordinator;
+    owner: ReturnType<HostInteractionCoordinator['bindRun']>;
+    identity: RuntimeInteractionRunIdentity;
+    graph: AgentGraphCoordinator;
+    activity: SessionInteractionActivityProjection;
+    rootId: string;
+    store: InteractiveInteractionStoreWriterFacade;
+  }) => Promise<void>,
+): Promise<void> {
+  await withStore(async ({ owner: storageOwner, store, stores }) => {
+    const root = await stores.sessionStore.create({
+      cwd: storageOwner.capability.canonicalPath,
+      llmConnectionSlug: 'fixture',
+      permissionMode: 'ask',
+    });
+    const child = await stores.sessionStore.create({
+      cwd: storageOwner.capability.canonicalPath,
+      llmConnectionSlug: 'fixture',
+      permissionMode: 'ask',
+    });
+    const identity = { ...RUN, sessionId: child.id };
+    await seedInvocation(stores.runtimeEventStore, { ...identity, openedAt: 1 });
+    await stores.runtimeEventStore.appendRuntimeEvent(identity.sessionId, identity.runId, {
+      ...identity,
+      invocationId: identity.runId,
+      id: 'child-working',
+      ts: 2,
+      role: 'model',
+      author: 'agent',
+      partial: false,
+      content: { kind: 'text', text: 'The child remains running throughout the interaction test.' },
+    });
+    const graphId = agentGraphIdForRootSession(root.id);
+    const control = createAgentGraphControlStore(storageOwner.capability.canonicalPath);
+    const schedule: AgentGraphScheduleUpdateRequest = {
+      schemaVersion: 1,
+      updateId: `graph_update_${'4'.repeat(32)}`,
+      updateFingerprint: `sha256:${'5'.repeat(64)}`,
+      graphId,
+      source: {
+        sessionId: root.id,
+        runId: 'root-run',
+        turnId: 'root-turn',
+        toolCallId: 'schedule-work',
+      },
+      addWork: [
+        {
+          workId: `graph_work_${'6'.repeat(32)}`,
+          target: { kind: 'agent', agentId: 'local-read' },
+          instruction: 'Wait for independent Host forms.',
+          inputIds: [],
+        },
+      ],
+      stop: [],
+    };
+    await control.commitAgentGraphScheduleUpdate(schedule);
+    const provision: AgentGraphOperatorProvision = {
+      schemaVersion: 1,
+      provisionId: `graph_provision_${'1'.repeat(32)}`,
+      provisionFingerprint: `sha256:${'2'.repeat(64)}`,
+      graphId,
+      workId: schedule.addWork[0]!.workId,
+      agentId: 'local-read',
+      operatorId: `graph_operator_${'3'.repeat(32)}`,
+      initialTurnId: identity.turnId,
+      initialRunId: identity.runId,
+      edges: [],
+      targetSessionId: child.id,
+      provisionedAt: 1,
+    };
+    // A real scheduled activation owns a work-specific claim, even when its
+    // Runtime interaction events are deliberately absent from this fixture.
+    const intentHash = stableHash({ schemaVersion: 1, graphId, workId: provision.workId });
+    await control.claimAgentGraphIntent({
+      schemaVersion: 1,
+      claimId: `graph_claim_${'7'.repeat(32)}`,
+      graphId,
+      intentId: `graph_intent_${intentHash.slice('sha256:'.length, 'sha256:'.length + 32)}`,
+      intentFingerprint: `sha256:${'8'.repeat(64)}`,
+      readinessContextFingerprint: `sha256:${'9'.repeat(64)}`,
+      targetOperatorId: provision.operatorId,
+      targetSessionId: child.id,
+      targetTurnId: identity.turnId,
+      targetRunId: identity.runId,
+    });
+    const controlWithTopology = new Proxy(control, {
+      get(target, property) {
+        if (property === 'listAgentGraphOperatorProvisions') return async () => [provision];
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    let graph!: AgentGraphCoordinator;
+    const activityErrors: unknown[] = [];
+    const activity = new SessionInteractionActivityProjection({
+      interactions: store,
+      sandboxBoundaries: stores.sessionStore,
+      onChanged: (sessionId) => graph.refreshSessionInteractionActivity(sessionId),
+      onError: (_sessionId, error) => activityErrors.push(error),
+    });
+    graph = new AgentGraphCoordinator({
+      sessionStore: stores.sessionStore,
+      runtimeEventStore: stores.runtimeEventStore,
+      controlStore: controlWithTopology,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('An activity read cannot provision work');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('An activity read cannot dispatch work');
+        },
+        stopAgentGraphActivation: async () => {},
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      readTurnPendingInteractionCount: (sessionId, turnId) =>
+        activity.readTurnPendingInteractionCount(sessionId, turnId),
+    });
+    const coordinator = createCoordinator(store, {
+      // This is the production publication bridge. There are no Session subscriptions
+      // and continuations below intentionally emit no Runtime interaction acknowledgements.
+      refreshCanonicalContinuity: (sessionId) => activity.refresh(sessionId),
+    });
+    const owner = coordinator.bindRun(identity);
+    try {
+      await graph.toolsForSession(root.id);
+      await graph.getSnapshot(root.id);
+      await activity.refresh(child.id);
+      assert.equal(graph.readSessionActivity(root.id), 'running');
+      const runtimeEventsBefore = await stores.runtimeEventStore.readImmutableRuntimeEvents(
+        child.id,
+        identity.runId,
+      );
+      await run({ coordinator, owner, identity, graph, activity, rootId: root.id, store });
+      assert.deepEqual(activityErrors, []);
+      assert.deepEqual(
+        await stores.runtimeEventStore.readImmutableRuntimeEvents(child.id, identity.runId),
+        runtimeEventsBefore,
+        'Pending authority publication must drive activity without any Runtime answer event',
+      );
+    } finally {
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+      await graph.close();
+      control.close();
+    }
+  });
 }
 
 async function withStore(run: (context: StoreContext) => Promise<void>): Promise<void> {

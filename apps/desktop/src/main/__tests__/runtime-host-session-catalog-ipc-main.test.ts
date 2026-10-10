@@ -45,20 +45,53 @@ test('preserves the Session revision in Owner Desktop Host summaries', () => {
   assert.equal(toDesktopHostSessionSummary(projection({ revision: 7 })).revision, 7);
 });
 
+test('preserves Host background activity separately from the Session own running turns', () => {
+  assert.equal(Object.hasOwn(toDesktopHostSessionSummary(projection()), 'backgroundActivity'), false);
+  for (const backgroundActivity of ['idle', 'running', 'waiting_for_user', 'blocked'] as const) {
+    const summary = toDesktopHostSessionSummary(projection({
+      backgroundActivity, liveRunState: { schemaVersion: 1, runningTurnIds: [] },
+    }));
+    assert.equal(summary.backgroundActivity, backgroundActivity);
+    assert.deepEqual(summary.runningTurnIds, []);
+  }
+});
+
 test('session creation forwards the caller name for a mode that carries none', async () => {
   const creates: SessionCreateInput[] = [];
   const ipc = ipcHarness();
   registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
 
   await ipc.invoke('sessions:create', { mode: 'bot', name: '飞书 任务' });
-  await ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' });
+  await assert.rejects(
+    () => ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' }),
+    /Invalid session start mode/,
+  );
 
   assert.deepEqual(
     creates.map((input) => [input.mode, input.name]),
     [
       ['bot', '飞书 任务'],
-      ['deep_research', '飞书 任务'],
     ],
+  );
+});
+
+test('session creation forwards a plugin executor model without a native model target', async () => {
+  const creates: SessionCreateInput[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
+
+  await ipc.invoke('sessions:create', { executorId: 'codex.app-server', model: 'gpt-5' });
+
+  assert.equal(creates[0]?.executorId, 'codex.app-server');
+  assert.equal(creates[0]?.executorModel, 'gpt-5');
+  assert.equal(creates[0]?.modelTarget, undefined);
+  await assert.rejects(
+    ipc.invoke('sessions:create', {
+      executorId: 'codex',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai',
+    }),
+    /cannot include a model connection/,
   );
 });
 

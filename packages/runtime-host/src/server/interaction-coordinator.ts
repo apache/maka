@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type {
   ClientCapabilityGrantTarget,
   ClientCapabilitySessionGrant,
@@ -36,11 +37,14 @@ import {
   projectInteractionQuestionRequest,
   type InteractionCanonicalOutcome,
   type InteractionClosureReason,
+  type InteractionFormRequest,
+  type InteractionFormResult,
 } from '@maka/core/interaction';
 import type {
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
 } from '@maka/core/sandbox-boundary';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
@@ -66,7 +70,9 @@ import {
 } from '@maka/storage/interaction-store';
 import {
   INTERACTION_MAX_PENDING_PER_SESSION,
+  SESSION_ATTENTION_BODY_MAX_BYTES,
   type InteractionAnswerInput,
+  type SessionAttention,
   type SessionInteractionProjection,
 } from '../protocol/index.js';
 import {
@@ -106,9 +112,15 @@ export interface HostInteractionCoordinatorOptions {
   readonly refreshCanonicalContinuity: (
     sessionId: string,
     admission: SessionAdmissionLease,
+    attention?: SessionAttention,
   ) => Promise<void>;
   readonly onPoison: (error: RuntimeInteractionFailStopError) => void;
-  readonly onSandboxBoundarySettled: (sessionId: string) => Promise<void> | void;
+  /** Resolve the root Session while the settled Session still holds admission. */
+  readonly resolveSandboxBoundaryRootSession: (
+    sessionId: string,
+  ) => Promise<string | undefined> | string | undefined;
+  /** Notify the root graph supervisor after the answer releases admission. */
+  readonly onSandboxBoundaryGraphWake: (rootSessionId: string) => Promise<void> | void;
 }
 
 interface RunClosure {
@@ -140,6 +152,7 @@ interface LiveFormEntry extends LiveEntryBase {
   readonly kind: 'form';
   readonly request: StoredInteractionRequest;
   readonly continuation: RuntimeFormContinuation;
+  readonly hostResult?: Promise<HostFormResult>;
 }
 
 interface LiveSandboxBoundaryEntry extends LiveEntryBase {
@@ -171,6 +184,18 @@ interface CommittedEntry {
 interface SettledSandboxBoundaryEntry {
   readonly entry: LiveSandboxBoundaryEntry;
   readonly settlement: SandboxBoundarySettlement;
+}
+
+export interface HostFormResult {
+  readonly createdAt: number;
+  readonly answer: InteractionFormResult;
+}
+
+export interface HostFormInput extends RuntimeInteractionRunIdentity {
+  /** Caller-derived immutable request identity, including the operation input digest. */
+  readonly requestId: string;
+  /** Only evaluated for a new request; replay uses the durable offered options. */
+  readonly create: () => Promise<InteractionFormRequest>;
 }
 
 export interface ClientCapabilityApprovalInput {
@@ -205,9 +230,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   readonly #preflightSessionSnapshot: HostInteractionCoordinatorOptions['preflightSessionSnapshot'];
   readonly #refreshCanonicalContinuity: HostInteractionCoordinatorOptions['refreshCanonicalContinuity'];
   readonly #onPoison: HostInteractionCoordinatorOptions['onPoison'];
-  readonly #onSandboxBoundarySettled: HostInteractionCoordinatorOptions['onSandboxBoundarySettled'];
+  readonly #resolveSandboxBoundaryRootSession: HostInteractionCoordinatorOptions['resolveSandboxBoundaryRootSession'];
+  readonly #onSandboxBoundaryGraphWake: HostInteractionCoordinatorOptions['onSandboxBoundaryGraphWake'];
   readonly #runs = new Map<string, BoundRun>();
   readonly #live = new Map<string, LiveEntry>();
+  readonly #detachedNotifications = new Set<Promise<void>>();
   #accepting = true;
   #poisoned: RuntimeInteractionFailStopError | undefined;
 
@@ -220,7 +247,8 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
     this.#onPoison = options.onPoison;
-    this.#onSandboxBoundarySettled = options.onSandboxBoundarySettled;
+    this.#resolveSandboxBoundaryRootSession = options.resolveSandboxBoundaryRootSession;
+    this.#onSandboxBoundaryGraphWake = options.onSandboxBoundaryGraphWake;
   }
 
   bindRun(identity: RuntimeInteractionRunIdentity): RuntimeInteractionRunOwner {
@@ -261,6 +289,73 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       close: (reason: RuntimeInteractionRunClosureReason) => this.#closeRun(run, reason),
       release: () => this.#releaseRun(run),
     });
+  }
+
+  /** Host tools share Runtime's durable interaction lifecycle without rebinding its Run. */
+  async requestForm(input: HostFormInput): Promise<HostFormResult> {
+    this.#throwIfPoisoned();
+    const run = this.#runs.get(runKey(input));
+    if (!run || !run.bound || run.released) {
+      throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'invalid_request');
+    }
+    this.#assertRunOpen(run, input.requestId);
+    const replay = await this.#readInteraction(input.requestId);
+    if (replay) {
+      if (runKey(replay.request) !== runKey(input) || replay.request.request.kind !== 'form') {
+        throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'invalid_request');
+      }
+      if (replay.outcome) {
+        const outcome = runtimeFormOutcome(replay.outcome.outcome);
+        return {
+          createdAt: replay.request.createdAt,
+          answer: outcome.kind === 'form_answer' ? outcome.answer : { action: 'cancel' },
+        };
+      }
+    }
+    const existing = this.#live.get(input.requestId);
+    if (existing?.kind === 'form' && existing.run === run && existing.hostResult)
+      return existing.hostResult;
+    // An orphaned pending record cannot resurrect a continuation after a Host restart.
+    if (replay)
+      throw new RuntimeInteractionAdmissionRejectedError(input.requestId, 'request_settled');
+    const request = projectInteractionFormRequest(await input.create());
+    const concurrent = this.#live.get(input.requestId);
+    if (concurrent?.kind === 'form' && concurrent.run === run && concurrent.hostResult)
+      return concurrent.hostResult;
+    this.#assertRunOpen(run, input.requestId);
+    const createdAt = this.#now();
+    let settle!: (answer: InteractionFormResult) => void;
+    let reject!: (error: unknown) => void;
+    const hostResult = observed(
+      new Promise<HostFormResult>((resolve, fail) => {
+        settle = (answer) => resolve({ createdAt, answer });
+        reject = fail;
+      }),
+    );
+    try {
+      await this.#accept(run, {
+        kind: 'form',
+        request: { ...runIdentity(run), requestId: input.requestId, createdAt, request },
+        hostResult,
+        continuation: {
+          requestId: input.requestId,
+          turnId: run.turnId,
+          runId: run.runId,
+          applyAnswer: async (answer) => {
+            settle(answer);
+          },
+          applyClosure: async () => {
+            settle({ action: 'cancel' });
+          },
+          // Host publication is performed by #accept, with no Runtime event producer to await.
+          waitForPublication: async () => {},
+        },
+      });
+    } catch (error) {
+      reject(error);
+      throw error;
+    }
+    return hostResult;
   }
 
   async requestClientCapabilityApproval(
@@ -429,6 +524,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
 
   async close(): Promise<void> {
     this.beginDrain();
+    await Promise.all([...this.#detachedNotifications]);
     this.#throwIfPoisoned();
     const pending = await this.#readPending();
     const pendingSandboxBoundaries = await this.#readAllPendingSandboxBoundaries();
@@ -658,7 +754,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       );
     }
     entry.phase = 'live';
-    await this.#refreshCanonicalContinuity(entry.request.sessionId, admission);
+    await this.#refreshCanonicalContinuity(entry.request.sessionId, admission, {
+      kind: 'waiting',
+      eventId: entry.request.requestId,
+      ...waitingAttentionBody(entry.request),
+    });
     this.#throwIfPoisoned();
     return;
   }
@@ -763,7 +863,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       phase: 'live',
     };
     this.#live.set(boundaryRequest.requestId, entry);
-    await this.#refreshCanonicalContinuity(run.sessionId, admission);
+    await this.#refreshCanonicalContinuity(run.sessionId, admission, {
+      kind: 'waiting',
+      eventId: boundaryRequest.requestId,
+      body: truncateUtf8(boundaryRequest.justification, SESSION_ATTENTION_BODY_MAX_BYTES, '…'),
+    });
     this.#throwIfPoisoned();
   }
 
@@ -821,6 +925,63 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         throw this.#poison(error);
       }),
     );
+  }
+
+  /** Only forwards an actual answer collected by a Host-owned WorkHub question tool. */
+  answerDelegatedQuestion(
+    input: InteractionAnswerInput,
+    lease: SessionAdmissionLease,
+  ): ReturnType<InteractionOperationHandlerMap['interaction.answer']> {
+    return this.#sessionAdmission.runAdmitted(input.sessionId, lease, async () => {
+      this.#throwIfPoisoned();
+      const record = await this.#readInteraction(input.interactionId);
+      if (
+        !record ||
+        record.request.sessionId !== input.sessionId ||
+        record.request.request.kind !== 'question' ||
+        input.answer.kind !== 'question'
+      )
+        return interactionNotFound();
+      return this.#answerStoredInteraction(record, input.answer, lease);
+    });
+  }
+
+  /** Close a copied WorkHub question once its original question has settled.
+   * The exact Turn and tool call bind this closure to the relay, not to another
+   * pending WorkHub interaction.
+   */
+  closeRelayedQuestion(turnId: string, toolUseId: string): Promise<boolean> {
+    return this.#sessionAdmission.run(WORKHUB_COORDINATION_SESSION_ID, async (admission) => {
+      this.#throwIfPoisoned();
+      const requests = (
+        await this.#readPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
+      ).filter(
+        (request) =>
+          request.turnId === turnId &&
+          request.request.kind === 'question' &&
+          request.request.toolUseId === toolUseId,
+      );
+      if (requests.length === 0) return false;
+      if (requests.length !== 1) {
+        throw this.#poison(
+          new RuntimeInteractionInvariantError('Ambiguous WorkHub question relay'),
+        );
+      }
+      const request = requests[0]!;
+      const entry = this.#requireLiveStored(request);
+      if (entry.kind !== 'question') {
+        throw this.#poison(new RuntimeInteractionInvariantError('WorkHub relay is not a question'));
+      }
+      const outcome = await this.#commitOutcome(request, {
+        kind: 'closure',
+        reason: 'producer_cancelled',
+        committedAt: this.#now(),
+      });
+      await this.#refreshCanonicalContinuity(WORKHUB_COORDINATION_SESSION_ID, admission);
+      this.#throwIfPoisoned();
+      await this.#applyAndDelete(entry, outcome);
+      return true;
+    });
   }
 
   async #answerStoredInteraction(
@@ -886,7 +1047,26 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     await this.#refreshCanonicalContinuity(request.sessionId, admission);
     this.#throwIfPoisoned();
     await this.#applySandboxBoundaryDecisionAndDelete(entry, settlement);
-    await this.#onSandboxBoundarySettled(request.sessionId);
+    // The answer owns Session admission. Resolve graph-wake lineage while that
+    // admission is held, then detach only the notification which may need to
+    // acquire the activity lease held by the wake turn parked on this answer.
+    // Awaiting that notification here deadlocks the Session (#3328, #3866).
+    const resolvedRootSessionId = await this.#resolveSandboxBoundaryRootSession(request.sessionId);
+    const detachedNotification = this.#sessionAdmission.detach(() =>
+      Promise.resolve()
+        .then(() => {
+          if (!resolvedRootSessionId) return;
+          return this.#onSandboxBoundaryGraphWake(resolvedRootSessionId);
+        })
+        .catch((error: unknown) => {
+          this.#poison(error);
+        }),
+    );
+    this.#detachedNotifications.add(detachedNotification);
+    void detachedNotification.then(
+      () => this.#detachedNotifications.delete(detachedNotification),
+      () => this.#detachedNotifications.delete(detachedNotification),
+    );
     const result = projectSandboxBoundaryInteraction(settlement.request);
     if (result.status !== 'answered') {
       throw this.#poison(
@@ -1771,6 +1951,25 @@ function isExpectedRuntimeError(error: unknown): boolean {
     error instanceof RuntimeInteractionAdmissionRejectedError ||
     error instanceof RuntimeInteractionFailStopError
   );
+}
+
+function waitingAttentionBody(request: StoredInteractionRequest): { readonly body?: string } {
+  let body: string | undefined;
+  switch (request.request.kind) {
+    case 'question':
+      body = request.request.questions[0]?.question;
+      break;
+    case 'form':
+      body = request.request.message;
+      break;
+    case 'sandbox_boundary':
+      body = request.request.justification;
+      break;
+    case 'permission':
+    case 'client_capability':
+      break;
+  }
+  return body ? { body: truncateUtf8(body, SESSION_ATTENTION_BODY_MAX_BYTES, '…') } : {};
 }
 
 function rejected<T>(error: unknown): Promise<T> {

@@ -246,7 +246,6 @@ export function SubagentSettingsPage(props: {
           <Button
             ref={addButtonRef}
             variant="primary"
-            size="sm"
             label={copy.section.add}
             isDisabled={saving || atLimit}
             onClick={openCreate}
@@ -602,6 +601,7 @@ function SubagentPresetEditor(props: {
               isLabelHidden
               value={draft.model}
               options={modelOptions}
+              hasSearch
               width="100%"
               isDisabled={props.isSaving || offerableModels.length === 0}
               disabledMessage={offerableModels.length === 0 ? copy.editor.noModel : undefined}

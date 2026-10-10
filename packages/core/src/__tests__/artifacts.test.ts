@@ -81,4 +81,10 @@ describe('Artifact source policy', () => {
     assert.equal(isArtifactUserVisible(projection), false);
     assert.equal(isArtifactSharedSessionReadable(projection), true);
   });
+
+  test('exposes directly written HTML files while keeping other tool results internal', () => {
+    assert.equal(isArtifactUserVisible({ source: 'tool_result', kind: 'html' }), true);
+    assert.equal(isArtifactUserVisible({ source: 'tool_result', kind: 'file' }), false);
+    assert.equal(isArtifactUserVisible({ source: 'tool_result', kind: 'diff' }), false);
+  });
 });

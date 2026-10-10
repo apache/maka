@@ -48,6 +48,7 @@ export type HealthCenterCopy = {
   readAgain: string;
   title: string;
   subtitle: string;
+  checksTitle: string;
   badge: string;
   lastRead: string;
   refresh: string;
@@ -108,7 +109,7 @@ const layersEn: HealthCenterCopy['layers'] = {
 const SETTINGS_HEALTH_COPY = {
   'zh-CN': {
     loading: '正在加载健康快照', readFailed: '无法读取健康快照', noData: '健康服务未返回数据。', readAgain: '重新读取',
-    title: '健康中心', subtitle: '各项能力当前的运行状况检查。',
+    title: '健康中心', subtitle: '各项能力当前的运行状况检查。', checksTitle: '检查项',
     badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '按状态筛选健康信号', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 项，当前筛选；再次按下显示全部` : `仅显示${label}健康信号，共 ${count} 项`,
     blockers: {
       send: (count, totalCount) => `全部健康信号中，${count}/${totalCount} 条会阻塞发送`,
@@ -123,11 +124,11 @@ const SETTINGS_HEALTH_COPY = {
     source: '来源：', blocksSend: '阻塞发送', blocksCapability: '阻塞能力',
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 运行态` : signal.label),
     signalMessage: (signal) => signalMessagesZh[signal.message],
-    signalDetail: (signal) => signalDetailZh(signal),
+    signalDetail: (signal) => signalDetailZh(signal.detail),
   },
   'zh-TW': {
     loading: '正在載入健康快照', readFailed: '無法讀取健康快照', noData: '健康服務未返回資料。', readAgain: '重新讀取',
-    title: '健康中心', subtitle: '各項能力目前的執行狀況檢查。',
+    title: '健康中心', subtitle: '各項能力目前的執行狀況檢查。', checksTitle: '檢查項目',
     badge: '只讀快照', lastRead: '最近一次讀取：', refresh: '重新整理', summaryAria: '按狀態篩選健康訊號', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 項，目前篩選；再次按下顯示全部` : `僅顯示${label}健康訊號，共 ${count} 項`,
     blockers: {
       send: (count, totalCount) => `全部健康訊號中，${count}/${totalCount} 條會阻塞傳送`,
@@ -142,11 +143,11 @@ const SETTINGS_HEALTH_COPY = {
     source: '來源：', blocksSend: '阻塞傳送', blocksCapability: '阻塞能力',
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} 執行狀態` : signal.label),
     signalMessage: (signal) => signalMessagesZhTw[signal.message],
-    signalDetail: (signal) => signalDetailZhTw(signal),
+    signalDetail: (signal) => signalDetailZhTw(signal.detail),
   },
   en: {
     loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',
-    title: 'Health center', subtitle: 'How each capability is currently doing.',
+    title: 'Health center', subtitle: 'How each capability is currently doing.', checksTitle: 'Checks',
     badge: 'Read-only snapshot', lastRead: 'Last read: ', refresh: 'Refresh', summaryAria: 'Filter health signals by status', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}; filter selected. Press again to show all signals` : `Show only ${label.toLowerCase()} health signals, ${count}`,
     blockers: {
       send: (count, totalCount) => `Across all health signals, ${count} of ${totalCount} ${count === 1 ? 'blocks' : 'block'} sending`,
@@ -161,7 +162,7 @@ const SETTINGS_HEALTH_COPY = {
     source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
     signalLabel: (signal) => (signal.id.endsWith(':runtime') ? `${signal.label} runtime` : signal.label),
     signalMessage: (signal) => signalMessagesEn[signal.message],
-    signalDetail: (signal) => signalDetailEn(signal),
+    signalDetail: (signal) => signalDetailEn(signal.detail),
   },
 } satisfies UiCatalog<HealthCenterCopy>;
 
@@ -253,8 +254,7 @@ const connectionTestErrorMessages = {
   },
 } satisfies UiCatalog<Record<HealthConnectionTestErrorClass, string>>;
 
-function signalDetailZh(signal: HealthSignal): string | undefined {
-  const detail = signal.detail;
+function signalDetailZh(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
   switch (detail.kind) {
     case 'validation_scope_note':
@@ -272,10 +272,7 @@ function signalDetailZh(signal: HealthSignal): string | undefined {
         ...(detail.errorClass ? [`错误类型=${localizedRuntimeErrorClass(detail.errorClass, 'zh-CN')}`] : []),
       ].join(' · ');
     case 'capability_reason':
-      // Interim: capability-snapshot still emits zh-CN prose; code it as a
-      // CapabilityReasonCode to drop this sniff. Bot reasons pre-resolve at the
-      // page layer (copy catalogs may not runtime-import each other).
-      return /[\u3400-\u9fff]/u.test(detail.reason) ? detail.reason : '状态详情请见对应设置页。';
+      return '状态详情请见对应设置页。';
     case 'last_test_error_class':
       return connectionTestErrorMessages['zh-CN'][detail.errorClass];
     case 'last_test_message':
@@ -285,8 +282,7 @@ function signalDetailZh(signal: HealthSignal): string | undefined {
   }
 }
 
-function signalDetailZhTw(signal: HealthSignal): string | undefined {
-  const detail = signal.detail;
+function signalDetailZhTw(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
   switch (detail.kind) {
     case 'validation_scope_note':
@@ -314,8 +310,7 @@ function signalDetailZhTw(signal: HealthSignal): string | undefined {
   }
 }
 
-function signalDetailEn(signal: HealthSignal): string | undefined {
-  const detail = signal.detail;
+function signalDetailEn(detail: HealthSignalDetail | undefined): string | undefined {
   if (!detail) return undefined;
   switch (detail.kind) {
     case 'validation_scope_note':

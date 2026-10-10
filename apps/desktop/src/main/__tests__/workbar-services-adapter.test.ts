@@ -19,28 +19,31 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import type { ShellRunUpdate } from '@maka/core/events';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { createDesktopWorkbarServices } from '../../renderer/platform/desktop/create-workbar-services.js';
 
 type RecordedCall = { name: string; args: unknown[] };
 
-function createBridgeRecorder(): {
+function createBridgeRecorder(answerOverrides: Record<string, unknown> = {}): {
   bridge: MakaBridge;
   calls: RecordedCall[];
 } {
   const calls: RecordedCall[] = [];
   const syncMethods = new Set([
     'sessions.subscribeEvents',
+    'sessions.subscribeChanges',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
-    'browser.onLive',
     'inspector.subscribeUsageChanges',
   ]);
   // Adapters that reshape a bridge answer need one to reshape.
   const answers = new Map<string, unknown>([
+    ['sessions.setPermissionMode', { ok: true, session: {} }],
     [
       'sessions.submitMessage',
       {
@@ -52,6 +55,7 @@ function createBridgeRecorder(): {
       },
     ],
   ]);
+  for (const [name, answer] of Object.entries(answerOverrides)) answers.set(name, answer);
   const domain = (name: string) =>
     new Proxy({}, {
       get: (_target, property) => (...args: unknown[]) => {
@@ -79,6 +83,73 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
+  it('recovers only live local desktop PTYs from the Host inventory and updates', async () => {
+    const { bridge } = createBridgeRecorder();
+    const manual = {
+      sessionId: 's', ownership: { kind: 'local' },
+      sourceTurnId: 'desktop-terminal-one', sourceToolCallId: 'desktop-terminal-one',
+      result: { ref: 'manual', mode: 'pty', status: 'running' },
+    } as ShellRunUpdate;
+    const updates = [
+      manual,
+      { ...manual, sourceTurnId: 'agent-turn' },
+      { ...manual, result: { ...manual.result, mode: 'pipes' } },
+      { ...manual, result: { ...manual.result, status: 'completed' } },
+      { ...manual, ownership: { kind: 'source_unavailable', sourceSessionId: 'source' } },
+    ] as ShellRunUpdate[];
+    let listener: ((update: ShellRunUpdate) => void) | undefined;
+    bridge.shellRuns = {
+      ...bridge.shellRuns,
+      recover: async () => ({ resources: updates, closes: [] }),
+      subscribeUpdates: (handler) => { listener = handler; return () => { listener = undefined; }; },
+    };
+    const services = createDesktopWorkbarServices(bridge);
+    assert.deepEqual(await services.terminal.recover('s'), { resources: [manual], closes: [] });
+    const received: ShellRunUpdate[] = [];
+    const dispose = services.terminal.subscribeUpdates((update) => received.push(update));
+    for (const update of updates) listener?.(update);
+    assert.deepEqual(received, [manual, updates[3]]);
+    dispose();
+    assert.equal(listener, undefined);
+  });
+  it('waits for Host admission before accepting a Side Conversation follow-up', async () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.submitMessage')?.args,
+      [
+        'fork',
+        'next_turn',
+        { messageId: 'message-next', text: 'later' },
+        { waitForHostAdmission: true },
+      ],
+    );
+  });
+
+  it('keeps a classified attachment refusal on a Side Conversation follow-up (#5279)', async () => {
+    const { bridge } = createBridgeRecorder({
+      'sessions.submitMessage': { ok: false, reason: 'attachment_blocked', code: 'item_unreadable' },
+    });
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await assert.rejects(
+      services.sideChat.submitFollowUp('fork', 'current_turn', 'with a folder', 'message-folder'),
+      (error: unknown) => error instanceof AttachmentIngestBlockedError && error.code === 'item_unreadable',
+    );
+  });
+
   it('preserves the Side Conversation Stop identity kind', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const services = createDesktopWorkbarServices(bridge, {
@@ -97,6 +168,30 @@ describe('createDesktopWorkbarServices', () => {
     );
   });
 
+  it('reports Side Conversation readiness again after an observation reseed', () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+    let readyCount = 0;
+
+    services.sideChat.subscribeEvents('fork', () => undefined, () => {
+      readyCount += 1;
+    })();
+
+    const subscribe = calls.find((call) => call.name === 'sessions.subscribeEvents');
+    assert.ok(subscribe);
+    const observationSeed = subscribe.args[2] as
+      | ((phase: 'pending' | 'ready') => void)
+      | undefined;
+    observationSeed?.('pending');
+    observationSeed?.('ready');
+    observationSeed?.('pending');
+    observationSeed?.('ready');
+
+    assert.equal(readyCount, 2);
+  });
+
   it('maps every Workbar capability to the existing Desktop bridge', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const settledReads: unknown[][] = [];
@@ -110,6 +205,7 @@ describe('createDesktopWorkbarServices', () => {
 
     await services.review.read({ sessionId: 's', source: 'unstaged' });
     services.review.subscribeSessionEvents('s', eventHandler)();
+    services.review.subscribeSessionChanges(eventHandler)();
 
     await services.terminal.start('s');
     await services.terminal.stop({ sessionId: 's', ref: 'term' });
@@ -129,7 +225,6 @@ describe('createDesktopWorkbarServices', () => {
     await services.browser.close('s');
     await services.browser.getState('s');
     services.browser.subscribeState(eventHandler)();
-    services.browser.subscribeLive(eventHandler)();
 
     await services.artifacts.list('s');
     await services.artifacts.readText('s', 'a');
@@ -151,6 +246,7 @@ describe('createDesktopWorkbarServices', () => {
     await services.sideChat.listTurns('s');
     await services.sideChat.readSettledMessages('s', {
       requiredAssistantMessageId: 'message',
+      requiredTurnId: 'turn',
     });
     await services.sideChat.branchFromTurn('s', {
       sourceTurnId: 'turn',
@@ -166,12 +262,23 @@ describe('createDesktopWorkbarServices', () => {
       text: 'hello',
     });
     await services.sideChat.stop('fork');
-    await services.sideChat.steer('fork', 'more');
+    const nextFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'next_turn',
+      'later',
+      'message-next',
+    );
+    const currentFollowUp = await services.sideChat.submitFollowUp(
+      'fork',
+      'current_turn',
+      'more',
+      'message-current',
+    );
+    await services.sideChat.queryMessageExecutions('fork', ['message-next']);
+    await services.sideChat.retractQueueEntry('fork', 'entry-1');
+    await services.sideChat.promoteQueueEntry('fork', 'entry-2');
+    await services.sideChat.reorderQueueEntries('fork', ['entry-3', 'entry-2'], 5);
     await services.sideChat.setPermissionMode('fork', 'ask');
-    await services.sideChat.regenerateTurn('fork', {
-      sourceTurnId: 'turn-2',
-      turnId: 'turn-3',
-    });
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
     await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
@@ -183,6 +290,7 @@ describe('createDesktopWorkbarServices', () => {
       [
         'gitReview.read',
         'sessions.subscribeEvents',
+        'sessions.subscribeChanges',
         'shellRuns.start',
         'shellRuns.stop',
         'shellRuns.attach',
@@ -200,7 +308,6 @@ describe('createDesktopWorkbarServices', () => {
         'browser.close',
         'browser.getState',
         'browser.onState',
-        'browser.onLive',
         'artifacts.list',
         'artifacts.readText',
         'artifacts.readBinary',
@@ -223,8 +330,12 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
+        'sessions.submitMessage',
+        'sessions.queryMessageExecutions',
+        'sessions.retractQueueEntry',
+        'sessions.promoteQueueEntry',
+        'sessions.reorderQueueEntries',
         'sessions.setPermissionMode',
-        'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
         'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
@@ -244,10 +355,33 @@ describe('createDesktopWorkbarServices', () => {
       's',
       'cursor-1',
     ]);
-    assert.equal(settledReads[0]?.[0], bridge.transcripts);
+    assert.equal(settledReads[0]?.[0], bridge);
     assert.deepEqual(settledReads[0]?.slice(1), [
       's',
-      { requiredAssistantMessageId: 'message' },
+      { requiredAssistantMessageId: 'message', requiredTurnId: 'turn' },
     ]);
+    const followUpCalls = calls.filter((call) => call.name === 'sessions.submitMessage');
+    assert.deepEqual(followUpCalls[0]?.args, [
+      'fork',
+      'next_turn',
+      { messageId: 'message-next', text: 'later' },
+      { waitForHostAdmission: true },
+    ]);
+    assert.deepEqual(followUpCalls[1]?.args, [
+      'fork',
+      'current_turn',
+      { messageId: 'message-current', text: 'more' },
+      { waitForHostAdmission: true },
+    ]);
+    assert.deepEqual(nextFollowUp, { kind: 'queued' });
+    assert.deepEqual(currentFollowUp, { kind: 'queued' });
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.queryMessageExecutions')?.args,
+      ['fork', ['message-next']],
+    );
+    assert.deepEqual(
+      calls.find((call) => call.name === 'sessions.reorderQueueEntries')?.args,
+      ['fork', ['entry-3', 'entry-2'], 5],
+    );
   });
 });

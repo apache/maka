@@ -32,6 +32,7 @@ export type HostModelPromptContext = SystemPromptContext;
 
 export interface ResolvedRunPrompt {
   readonly text: string | undefined;
+  readonly contexts?: readonly { readonly name: string; readonly text: string }[];
   readonly sourceRevisions: readonly RunCompositionSourceRevision[];
 }
 
@@ -39,6 +40,8 @@ export interface HostRunComposer {
   readonly composerId: string;
   readonly composerRevision: string;
   readonly tools: readonly MakaTool[];
+  /** Reads the current scoped Tool surface before each logical model step. */
+  readonly resolveTools?: () => readonly MakaTool[];
   readonly toolAvailability?: ToolAvailabilityConfig;
   readonly resolveSystemPrompt: (context: HostModelPromptContext) => Promise<ResolvedRunPrompt>;
   readonly planTraceContext?: AiSdkBackendInput['planTraceContext'];

@@ -19,7 +19,7 @@
 
 import { constants } from 'node:fs';
 import { access, realpath } from 'node:fs/promises';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import {
   resolveFilesystemWorkerBundle,
@@ -29,6 +29,12 @@ import {
   resolveMacosExecutableDependencies,
   type MacosExecutableDependencyResolution,
 } from './macos-executable-dependencies.js';
+import {
+  currentRipgrepEnvironment,
+  formatRipgrepEnvironmentArg,
+  type RipgrepEnvironment,
+} from '../ripgrep-guidance.js';
+import { defaultRipgrepCandidates, resolveRipgrepCandidates } from '../ripgrep-executable.js';
 
 export interface FilesystemWorkerLaunchSpec {
   program: string;
@@ -46,7 +52,9 @@ export type FilesystemWorkerLaunchSpecResult =
       message: string;
     };
 
-export type FilesystemWorkerLaunchSpecProvider = () => Promise<FilesystemWorkerLaunchSpecResult>;
+export type FilesystemWorkerLaunchSpecProvider = (operation: {
+  kind: string;
+}) => Promise<FilesystemWorkerLaunchSpecResult>;
 
 export interface CreateFilesystemWorkerLaunchSpecProviderInput {
   runtime: 'node' | 'electron';
@@ -65,8 +73,21 @@ export interface CreateFilesystemWorkerLaunchSpecProviderInput {
 export function createFilesystemWorkerLaunchSpecProvider(
   input: CreateFilesystemWorkerLaunchSpecProviderInput,
 ): FilesystemWorkerLaunchSpecProvider {
-  let cached: Promise<FilesystemWorkerLaunchSpecResult> | undefined;
-  return () => (cached ??= resolveLaunchSpec(input));
+  const platform = input.platform ?? process.platform;
+  let base: Promise<LaunchBaseResult> | undefined;
+  return async (operation) => {
+    const resolved = await (base ??= resolveLaunchBase(input, platform));
+    if (!resolved.ok) return resolved;
+    const grep =
+      operation.kind === 'grep'
+        ? await resolveWorkerRipgrep(
+            input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
+            platform,
+            input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
+          )
+        : undefined;
+    return { ok: true, spec: composeLaunchSpec(resolved.base, grep) };
+  };
 }
 
 export function buildFilesystemWorkerEnv(
@@ -94,9 +115,33 @@ export function buildFilesystemWorkerEnv(
   return env;
 }
 
-async function resolveLaunchSpec(
+interface RipgrepResolution {
+  readonly executable: string;
+  readonly runtimeReadableRoots: readonly string[];
+  readonly executableRoots: readonly string[];
+}
+
+/** Everything in a launch that does not depend on ripgrep; resolved once. */
+interface LaunchBase {
+  readonly runtime: 'node' | 'electron';
+  readonly platform: NodeJS.Platform;
+  readonly program: string;
+  readonly bundlePath: string;
+  readonly runtimeRoot: string;
+  readonly dependencyRoots: readonly string[];
+  readonly electronFrameworks?: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly environment?: RipgrepEnvironment;
+}
+
+type LaunchBaseResult =
+  | { ok: true; base: LaunchBase }
+  | Extract<FilesystemWorkerLaunchSpecResult, { ok: false }>;
+
+async function resolveLaunchBase(
   input: CreateFilesystemWorkerLaunchSpecProviderInput,
-): Promise<FilesystemWorkerLaunchSpecResult> {
+  platform: NodeJS.Platform,
+): Promise<LaunchBaseResult> {
   const bundle = await resolveFilesystemWorkerBundle(input.resourceLocation);
   if (!bundle.ok) {
     return {
@@ -113,7 +158,6 @@ async function resolveLaunchSpec(
       message: 'Filesystem worker runtime is unavailable.',
     };
   }
-  const platform = input.platform ?? process.platform;
   // A packaged Windows executable lives directly inside the product-owned app
   // directory. Granting its parent would widen a normal install from
   // `...\Programs\Maka` to every application under `...\Programs` (or from
@@ -131,11 +175,6 @@ async function resolveLaunchSpec(
     };
   }
   const dependencyRoots = await resolveRuntimeDependencyRoots(program);
-  const grep = await resolveRipgrepExecutable(
-    input.rgCandidates ?? defaultRipgrepCandidates(input.hostEnv ?? process.env, platform),
-    platform,
-    input.inspectMacosExecutableDependencies ?? resolveMacosExecutableDependencies,
-  );
   const electronFrameworks =
     input.runtime === 'electron' && platform === 'darwin'
       ? await resolveReadableRoot(resolve(dirname(program), '..', 'Frameworks'))
@@ -147,65 +186,75 @@ async function resolveLaunchSpec(
       message: 'Electron framework roots are unavailable.',
     };
   }
+  const environment = currentRipgrepEnvironment(input.hostEnv ?? process.env);
   return {
     ok: true,
-    spec: {
+    base: {
+      runtime: input.runtime,
+      platform,
       program,
-      // --preserve-symlinks-main skips the module loader's realpath of the
-      // bundle path. Inside the Windows AppContainer that realpath would
-      // lstat every ancestor directory (up to the volume root), which the
-      // sandbox grants deliberately do not allow.
-      //
-      // --no-stdio-init: Electron's run-as-node entry opens the NUL device to
-      // backfill missing standard handles before Node starts, and the
-      // AppContainer denies that device open, which aborts startup (FATAL
-      // node_main.cc "Unable to open nul device"). The broker always relays
-      // three valid standard handles into the child, so the backfill is
-      // unnecessary; the switch skips it and is consumed before Node's own
-      // option parsing.
-      args: [
-        ...(input.runtime === 'electron' && platform === 'win32' ? ['--no-stdio-init'] : []),
-        ...(platform === 'win32' ? ['--preserve-symlinks-main'] : []),
-        bundle.path,
-        ...(grep ? ['--grep-executable', grep.executable] : []),
-      ],
+      bundlePath: bundle.path,
+      runtimeRoot,
+      dependencyRoots,
+      ...(electronFrameworks ? { electronFrameworks } : {}),
       env: buildFilesystemWorkerEnv(input.runtime, input.hostEnv, input.tmpdir, platform),
-      runtimeReadableRoots: unique([
-        bundle.path,
-        runtimeRoot,
-        ...dependencyRoots,
-        ...(grep?.runtimeReadableRoots ?? []),
-      ]),
-      executableRoots: unique([
-        program,
-        runtimeRoot,
-        ...(electronFrameworks ? [electronFrameworks] : []),
-        ...dependencyRoots,
-        ...(grep ? [grep.executable, ...grep.executableRoots] : []),
-      ]),
+      ...(environment ? { environment } : {}),
     },
   };
 }
 
-async function resolveRipgrepExecutable(
+function composeLaunchSpec(
+  base: LaunchBase,
+  grep: RipgrepResolution | undefined,
+): FilesystemWorkerLaunchSpec {
+  return {
+    program: base.program,
+    // --preserve-symlinks-main skips the module loader's realpath of the
+    // bundle path. Inside the Windows AppContainer that realpath would
+    // lstat every ancestor directory (up to the volume root), which the
+    // sandbox grants deliberately do not allow.
+    //
+    // --no-stdio-init: Electron's run-as-node entry opens the NUL device to
+    // backfill missing standard handles before Node starts, and the
+    // AppContainer denies that device open, which aborts startup (FATAL
+    // node_main.cc "Unable to open nul device"). The broker always relays
+    // three valid standard handles into the child, so the backfill is
+    // unnecessary; the switch skips it and is consumed before Node's own
+    // option parsing.
+    args: [
+      ...(base.runtime === 'electron' && base.platform === 'win32' ? ['--no-stdio-init'] : []),
+      ...(base.platform === 'win32' ? ['--preserve-symlinks-main'] : []),
+      base.bundlePath,
+      ...(base.environment
+        ? ['--ripgrep-environment', formatRipgrepEnvironmentArg(base.environment)]
+        : []),
+      ...(grep ? ['--grep-executable', grep.executable] : []),
+    ],
+    env: base.env,
+    runtimeReadableRoots: unique([
+      base.bundlePath,
+      base.runtimeRoot,
+      ...base.dependencyRoots,
+      ...(grep?.runtimeReadableRoots ?? []),
+    ]),
+    executableRoots: unique([
+      base.program,
+      base.runtimeRoot,
+      ...(base.electronFrameworks ? [base.electronFrameworks] : []),
+      ...base.dependencyRoots,
+      ...(grep ? [grep.executable, ...grep.executableRoots] : []),
+    ]),
+  };
+}
+
+async function resolveWorkerRipgrep(
   candidates: readonly string[],
   platform: NodeJS.Platform,
   inspectMacosExecutableDependencies: (
     executable: string,
   ) => Promise<MacosExecutableDependencyResolution>,
-): Promise<
-  | {
-      executable: string;
-      runtimeReadableRoots: readonly string[];
-      executableRoots: readonly string[];
-    }
-  | undefined
-> {
-  const inspected = new Set<string>();
-  for (const candidate of candidates) {
-    const executable = await resolveExecutable(candidate);
-    if (!executable || inspected.has(executable)) continue;
-    inspected.add(executable);
+): Promise<RipgrepResolution | undefined> {
+  for await (const executable of resolveRipgrepCandidates(candidates)) {
     if (platform !== 'darwin') {
       return { executable, runtimeReadableRoots: [], executableRoots: [] };
     }
@@ -236,20 +285,6 @@ async function resolveReadableRoot(candidate: string): Promise<string | undefine
   } catch {
     return undefined;
   }
-}
-
-function defaultRipgrepCandidates(
-  env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform = process.platform,
-): readonly string[] {
-  const executableName = platform === 'win32' ? 'rg.exe' : 'rg';
-  return [
-    ...(env.PATH ?? '')
-      .split(delimiter)
-      .filter(Boolean)
-      .map((directory) => join(directory, executableName)),
-    ...(platform === 'win32' ? [] : ['/opt/homebrew/bin/rg', '/usr/local/bin/rg', '/usr/bin/rg']),
-  ];
 }
 
 async function resolveRuntimeDependencyRoots(program: string): Promise<readonly string[]> {

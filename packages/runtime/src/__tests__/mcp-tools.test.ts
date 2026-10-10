@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type {
@@ -65,7 +66,7 @@ test('buildMcpTools projects discovery, abort, and rich model output', async () 
   const tools = buildMcpTools(provider);
   assert.deepEqual(
     tools.map((tool) => tool.name),
-    ['mcp__read_server__read_item', 'mcp__write__mutate-item'],
+    [mcpProxyToolName('read server', 'read.item'), 'mcp__write__mutate-item'],
   );
   assert.equal(tools[0]?.categoryHint, 'network_send');
   assert.equal(tools[1]?.categoryHint, 'network_send');
@@ -443,6 +444,49 @@ test('a trusted composition can preserve provider-owned activity semantics', () 
   assert.equal(tool?.activityKind, 'computer');
 });
 
+test('distinct MCP identities remain callable after name normalization', async () => {
+  const identities = [
+    ['server', 'get.item'],
+    ['server', 'get_item'],
+    ['server', '读取'],
+    ['server', '写入'],
+    ['a__b', 'c'],
+    ['a', 'b__c'],
+    ['a'.repeat(80), 'x'],
+    ['a'.repeat(47), 'bb9771ed28'],
+  ];
+  const calls: McpToolBinding[] = [];
+  const tools = buildMcpTools(
+    fakeProvider(
+      identities.map(([server, name], index) =>
+        boundTool(descriptor(server!, name!), binding(String(index))),
+      ),
+      async (value) => {
+        calls.push(value);
+        return { content: [] };
+      },
+    ),
+  );
+  assert.equal(new Set(tools.map((tool) => tool.name)).size, identities.length);
+  for (const tool of tools) {
+    await tool.impl(
+      {},
+      {
+        sessionId: 's',
+        turnId: 't',
+        cwd: '/tmp',
+        toolCallId: tool.name,
+        abortSignal: new AbortController().signal,
+        emitOutput() {},
+      },
+    );
+  }
+  assert.deepEqual(
+    calls,
+    identities.map((_, index) => binding(String(index))),
+  );
+});
+
 test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () => {
   const first = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));
   const second = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));
@@ -467,7 +511,7 @@ test('buildMcpToolsWithIdentities pairs each proxy tool with its source identity
   assert.deepEqual(
     identified.map(({ tool, serverId, toolName }) => [tool.name, serverId, toolName]),
     [
-      ['mcp__read_server__read_item', 'read server', 'read.item'],
+      [mcpProxyToolName('read server', 'read.item'), 'read server', 'read.item'],
       ['mcp__write__mutate-item', 'write', 'mutate-item'],
     ],
   );
@@ -501,3 +545,18 @@ function fakeProvider(tools: McpBoundTool[], call: McpToolProvider['callTool']):
     callTool: call,
   };
 }
+
+test('MCP descriptions are normalized to the Request Composition bound', () => {
+  const oversized = 'x'.repeat(REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH + 1);
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [boundTool({ ...descriptor('server', 'large'), description: oversized }, binding('large'))],
+      async () => ({ content: [{ type: 'text', text: 'unused' }] }),
+    ),
+  );
+
+  assert.equal(
+    tool?.description,
+    oversized.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH),
+  );
+});

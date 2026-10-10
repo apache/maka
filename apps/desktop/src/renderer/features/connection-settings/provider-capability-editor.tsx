@@ -1,0 +1,297 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { useId, type ReactNode } from 'react';
+import { parseContextWindowInput } from './context-window-input.js';
+import { DropdownMenu, DropdownMenuCheckboxItem, Field, FormLayout } from '@astryxdesign/core';
+import {
+  MODEL_API_PROTOCOL_LABELS,
+  MODEL_API_PROTOCOLS,
+  type ModelApiProtocol,
+  type ProviderType,
+} from '@maka/core/llm-connections';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
+import {
+  DECLARABLE_RELAY_THINKING_LEVELS,
+  THINKING_LEVELS,
+  modelApplyPatchEnabled,
+  type ModelOverride,
+  type ThinkingLevel,
+} from '@maka/core/model-thinking';
+import { Selector, TextInput } from '@maka/ui';
+import { getProviderSettingsCopy } from './settings-provider-copy.js';
+
+export function CapabilityEditor(props: {
+  children?: ReactNode;
+  copy: ReturnType<typeof getProviderSettingsCopy>['detail'];
+  modelId: string;
+  /** Set only on a custom connection, which alone takes wire and thinking declarations. */
+  customDefaultApiProtocol?: ModelApiProtocol;
+  declared: ModelOverride | undefined;
+  /** The connection's provider; one that rejects any output-token limit gets a read-only field. */
+  providerType: ProviderType;
+  contextWindowInput: string;
+  contextWindowInputInvalid: boolean;
+  numericInputs?: Partial<Record<'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', string>>;
+  onNumericInput(field: 'inputLimit' | 'compactionThreshold' | 'maxOutputTokens', input: string): void;
+  defaultContextWindow?: number;
+  defaultInputLimit?: number;
+  thinkingLevels: readonly ThinkingLevel[];
+  limitsConflict?: boolean;
+  contextWindowError?: string;
+  disabled: boolean;
+  showsFastMode: boolean;
+  defaultVision: boolean | undefined;
+  onContextWindowInput(value: string): void;
+  onChange(patch: Partial<ModelOverride>): void;
+}) {
+  const { copy, modelId, declared } = props;
+  const thinkingId = useId();
+  const visionValue =
+    declared?.vision === true ? 'enabled' : declared?.vision === false ? 'disabled' : 'auto';
+  const applyPatchValue =
+    declared?.applyPatch === true
+      ? 'enabled'
+      : declared?.applyPatch === false
+        ? 'disabled'
+        : 'auto';
+  const draftLevels = declared?.thinkingLevels ?? [];
+  // The menu offers the five declarable levels PLUS anything the stored table
+  // already claims — a level saved while it was still declarable (or
+  // hand-written into the document) must stay visible and un-checkable, never
+  // an invisible selection the trigger counts but the menu cannot show.
+  const menuLevels: readonly ThinkingLevel[] = THINKING_LEVELS.filter(
+    (level) =>
+      (DECLARABLE_RELAY_THINKING_LEVELS as readonly ThinkingLevel[]).includes(level) ||
+      draftLevels.includes(level),
+  );
+  const isCustom = props.customDefaultApiProtocol !== undefined;
+  const defaultThinkingLevels = isCustom && declared?.thinkingLevels !== undefined
+    ? declared.thinkingLevels
+    : props.thinkingLevels;
+  const defaultThinkingLevel = declared?.defaultThinkingLevel !== undefined &&
+    defaultThinkingLevels.includes(declared.defaultThinkingLevel)
+    ? declared.defaultThinkingLevel
+    : '';
+  return (
+    <FormLayout direction="vertical" defaultOptionality="optional">
+      {props.children}
+      {props.customDefaultApiProtocol !== undefined && (
+        <Selector
+          label={copy.apiProtocol}
+          labelTooltip={copy.apiProtocolHelp}
+          size="sm"
+          width="100%"
+          options={[
+            {
+              value: '',
+              label: copy.apiProtocolDefaultOption(
+                MODEL_API_PROTOCOL_LABELS[props.customDefaultApiProtocol],
+              ),
+            },
+            ...MODEL_API_PROTOCOLS.map((protocol) => ({
+              value: protocol,
+              label: MODEL_API_PROTOCOL_LABELS[protocol],
+            })),
+          ]}
+          value={declared?.apiProtocol ?? ''}
+          onChange={(value) =>
+            props.onChange({ apiProtocol: value === '' ? undefined : (value as ModelApiProtocol) })
+          }
+          isDisabled={props.disabled}
+        />
+      )}
+      <TextInput
+        size="sm"
+        width="100%"
+        label={copy.modelDisplayName}
+        labelTooltip={copy.modelDisplayNameHelp}
+        value={declared?.displayName ?? ''}
+        hasClear
+        isDisabled={props.disabled}
+        onChange={(displayName) =>
+          props.onChange({ displayName: displayName.trim() ? displayName : undefined })
+        }
+      />
+
+      <Selector
+        label={copy.visionInput}
+        labelTooltip={copy.visionInputHelp}
+        size="sm"
+        width="100%"
+        options={[
+          { value: 'auto', label: copy.visionDefaultOption(props.defaultVision) },
+          { value: 'enabled', label: copy.visionEnabledOption },
+          { value: 'disabled', label: copy.visionDisabledOption },
+        ]}
+        value={visionValue}
+        onChange={(value) =>
+          props.onChange({ vision: value === 'auto' ? undefined : value === 'enabled' })
+        }
+        isDisabled={props.disabled}
+      />
+
+      <Selector
+        label={copy.applyPatch}
+        labelTooltip={copy.applyPatchHelp}
+        size="sm"
+        width="100%"
+        options={[
+          {
+            value: 'auto',
+            label: copy.applyPatchDefaultOption(modelApplyPatchEnabled(modelId)),
+          },
+          { value: 'enabled', label: copy.applyPatchEnabled },
+          { value: 'disabled', label: copy.applyPatchDisabled },
+        ]}
+        value={applyPatchValue}
+        onChange={(value) =>
+          props.onChange({ applyPatch: value === 'auto' ? undefined : value === 'enabled' })
+        }
+        isDisabled={props.disabled}
+      />
+
+      <TextInput
+        size="sm"
+        width="100%"
+        value={props.contextWindowInput}
+        isDisabled={props.disabled}
+        label={copy.contextWindow}
+        labelTooltip={copy.contextWindowHelp}
+        hasClear
+        placeholder={props.defaultContextWindow === undefined ? '128000 / 128K / 1M' : String(props.defaultContextWindow)}
+        onChange={props.onContextWindowInput}
+        status={
+          props.contextWindowInputInvalid
+            ? { type: 'error', message: props.contextWindowError ?? copy.contextWindowInputInvalid }
+            : undefined
+        }
+      />
+      {(['inputLimit', 'compactionThreshold', 'maxOutputTokens'] as const).map((field) => {
+        const input = props.numericInputs?.[field] ?? String(declared?.[field] ?? '');
+        const invalid = input.trim() !== '' && parseContextWindowInput(input) === null;
+        const unsupported =
+          field === 'maxOutputTokens' && !providerAcceptsOutputTokenLimit(props.providerType);
+        return (
+          <TextInput
+            size="sm"
+            width="100%"
+            key={field}
+            label={copy[field]}
+            labelTooltip={copy[`${field}Help`]}
+            value={input}
+            onChange={(value) => props.onNumericInput(field, value)}
+            isDisabled={props.disabled || unsupported}
+            {...(unsupported ? { disabledMessage: copy.maxOutputTokensUnsupported } : {})}
+            hasClear
+            placeholder={field === 'inputLimit' && props.defaultInputLimit !== undefined ? String(props.defaultInputLimit) : field === 'maxOutputTokens' ? '8192 / 8K' : '128000 / 128K / 1M'}
+            status={
+              unsupported && input.trim() !== ''
+                ? { type: 'warning', message: copy.maxOutputTokensUnsupported }
+                : invalid ? { type: 'error', message: copy.contextWindowInputInvalid } : field === 'inputLimit' && props.limitsConflict ? { type: 'error', message: copy.modelLimitsConflict } : undefined
+            }
+          />
+        );
+      })}
+      {isCustom && (
+        <Field
+          label={copy.thinkingEffort}
+          inputID={thinkingId}
+          labelTooltip={copy.thinkingEffortHelp}
+        >
+          {/* DropdownMenu, not MultiSelector: levels have a canonical order
+              (low → max) that must not shuffle — MultiSelector pins the
+              selected-at-open options to the top with no opt-out, which
+              misread as the declaration being order-sensitive. */}
+          <DropdownMenu
+            button={{
+              variant: 'secondary',
+              size: 'sm',
+              label:
+                draftLevels.length > 0
+                  ? copy.thinkingSelectedCount(draftLevels.length)
+                  : copy.thinkingUndeclared,
+              id: thinkingId,
+              'aria-label': copy.thinkingEffort,
+              isDisabled: props.disabled,
+            }}
+            hasChevron
+            menuWidth={224}
+          >
+            {menuLevels.map((level) => (
+              <DropdownMenuCheckboxItem
+                key={level}
+                label={level}
+                aria-label={`${modelId} ${level}`}
+                value={draftLevels.includes(level)}
+                onChange={(checked) => {
+                  const thinkingLevels = checked
+                    ? [...draftLevels, level]
+                    : draftLevels.filter((existing) => existing !== level);
+                  props.onChange({
+                    thinkingLevels,
+                    ...(declared?.defaultThinkingLevel !== undefined &&
+                    !thinkingLevels.includes(declared.defaultThinkingLevel)
+                      ? { defaultThinkingLevel: undefined }
+                      : {}),
+                  });
+                }}
+                isDisabled={props.disabled}
+              />
+            ))}
+          </DropdownMenu>
+        </Field>
+      )}
+      {defaultThinkingLevels.length > 0 && (
+        <Selector
+          label={copy.defaultThinkingLevel}
+          labelTooltip={copy.defaultThinkingLevelHelp}
+          size="sm"
+          width="100%"
+          options={[
+            { value: '', label: copy.providerDefaultThinking },
+            ...defaultThinkingLevels.map((level) => ({ value: level, label: level })),
+          ]}
+          value={defaultThinkingLevel}
+          onChange={(value) => props.onChange({
+            defaultThinkingLevel: value === '' ? undefined : value as ThinkingLevel,
+          })}
+          isDisabled={props.disabled}
+        />
+      )}
+      {props.showsFastMode && (
+        <Selector
+          label={copy.fastMode}
+          labelTooltip={copy.fastModeHelp}
+          size="sm"
+          width="100%"
+          options={[
+            { value: 'auto', label: copy.fastAuto },
+            { value: 'fast', label: copy.fastEnabled },
+          ]}
+          value={declared?.serviceTier ?? 'auto'}
+          onChange={(value) =>
+            props.onChange({ serviceTier: value === 'fast' ? 'fast' : undefined })
+          }
+          isDisabled={props.disabled}
+        />
+      )}
+    </FormLayout>
+  );
+}

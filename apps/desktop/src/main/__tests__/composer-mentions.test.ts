@@ -17,17 +17,25 @@
  * under the License.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import { strict as assert } from 'node:assert';
 import { test, type TestContext } from 'node:test';
 import { parseHTML } from 'linkedom';
 import { act, createElement, useLayoutEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import { LocaleProvider } from '@maka/ui';
 import {
   ComposerMentionsProvider,
   useComposerMentionsContext,
   type ComposerMentions,
 } from '../../renderer/composer-mentions.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 
 interface CatalogObservation {
   sessionId: string;
@@ -71,16 +79,15 @@ function installCatalogRenderer(t: TestContext) {
     sessionId: string;
     resolve(skills: InvocableSkillEntry[]): void;
   }> = [];
-  (window as unknown as { maka: unknown }).maka = {
+  const services = stubConversationServices({
     skills: {
       listInvocable: (sessionId: string) => new Promise<InvocableSkillEntry[]>((resolve) => {
         pending.push({ sessionId, resolve });
       }),
     },
-    sessions: { subscribeChanges: () => () => {} },
-    mcp: { subscribeChanges: () => () => {} },
-  };
+  });
 
+  const sessionCatalog = createSessionCatalogController();
   const observations: CatalogObservation[] = [];
   function Consumer({ sessionId }: { sessionId: string }) {
     const mentions = useComposerMentionsContext();
@@ -116,11 +123,27 @@ function installCatalogRenderer(t: TestContext) {
       assert.ok(observation);
       return observation;
     },
-    async render(sessionId: string, skillCatalogRevision = 0) {
-      await act(() => root.render(createElement(ComposerMentionsProvider, {
-        sessionId,
-        skillCatalogRevision,
-        children: createElement(Consumer, { sessionId }),
+    pendingRequestCount() {
+      return pending.length;
+    },
+    async render(sessionId: string, skillCatalogRevision = 0, projectPath?: string) {
+      await act(() => root.render(createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(ConversationServicesProvider, {
+          services,
+          children: createElement(SessionCatalogContext.Provider, {
+            value: sessionCatalog,
+            children: createElement(ComposerStagingFixture, {
+              draftKey: sessionId,
+              children: createElement(ComposerMentionsProvider, {
+              sessionId,
+              projectPath,
+              skillCatalogRevision,
+              children: createElement(Consumer, { sessionId }),
+              }),
+            }),
+          }),
+        }),
       })));
     },
     async settleNext(sessionId: string, skills: InvocableSkillEntry[]) {
@@ -192,4 +215,20 @@ test('a same-context refresh keeps the settled skills visible until it resolves'
     loading: false,
     unavailable: false,
   });
+});
+
+test('resolving the project path for an existing session keeps its catalog settled', async (t) => {
+  const renderer = installCatalogRenderer(t);
+  await renderer.render('session-a');
+  await renderer.settleNext('session-a', [skillA]);
+
+  await renderer.render('session-a', 0, '/workspace/project-a');
+
+  assert.deepEqual(renderer.latest(), {
+    sessionId: 'session-a',
+    skills: [skillA],
+    loading: false,
+    unavailable: false,
+  });
+  assert.equal(renderer.pendingRequestCount(), 0);
 });

@@ -65,6 +65,19 @@ function question(requestId: string): UserQuestionRequestEvent {
   };
 }
 
+test('a delayed terminal event cannot retire the successor Turn question', () => {
+  const successor = { ...question('question-b'), turnId: 'turn-b' };
+  let queues = enqueueInteraction({}, 'session', successor);
+  queues = reduceInteractionQueues(queues, 'session', {
+    type: 'complete', id: 'terminal-a', turnId: 'turn-a', ts: 1, stopReason: 'end_turn',
+  });
+  assert.equal(queues.session?.[0], successor);
+  queues = reduceInteractionQueues(queues, 'session', {
+    type: 'abort', id: 'terminal-b', turnId: 'turn-b', ts: 2, reason: 'user_stop',
+  });
+  assert.deepEqual(queues.session, []);
+});
+
 function form(requestId: string): FormRequestEvent {
   return {
     type: 'form_request',

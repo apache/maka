@@ -1,3 +1,15 @@
+---
+doc_id: windows-support
+title: "Windows support baseline"
+language: en
+source_language: en
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-09-04
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -141,7 +153,7 @@ NSIS **Abort 路径**上，安装器
 
 The initial target is a native Windows 11 x64 development environment with:
 
-- Node.js 22.19 or newer; CI currently standardizes on Node.js 24;
+- Node.js 22.19 or newer on the 22 line, or Node.js 24 or newer (Node.js 23 is not supported); CI currently standardizes on Node.js 24;
 - npm 11 and the committed lockfile;
 - Git for Windows with long-path support available;
 - PowerShell 7 (`pwsh`) preferred, with Windows PowerShell 5.1 and `cmd.exe` supported fallbacks;

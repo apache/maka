@@ -363,7 +363,12 @@ function historyRole(event: RuntimeEvent): 'user' | 'assistant' {
 }
 
 function sliceCodePoints(value: string, maximum: number): string {
-  return Array.from(value).slice(0, maximum).join('');
+  const prefix: string[] = [];
+  for (const point of value) {
+    if (prefix.length >= maximum) break;
+    prefix.push(point);
+  }
+  return prefix.join('');
 }
 
 function uniqueSorted(values: readonly number[]): number[] {

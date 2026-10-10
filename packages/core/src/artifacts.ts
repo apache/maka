@@ -137,8 +137,6 @@ export interface ArtifactRecord extends ArtifactDescriptor {
    * filesystem path to renderer code.
    */
   relativePath: string;
-  /** Durable role for artifacts owned by a Deep Research workspace. */
-  deepResearchRole?: import('./deep-research-run.js').DeepResearchArtifactRole;
 }
 
 interface ArtifactSourcePolicy {
@@ -152,6 +150,7 @@ const ARTIFACT_SOURCE_POLICIES = {
   tool_result_projection: { userDeletable: false, userVisible: false, sharedReadable: true },
   tool_result_archive: { userDeletable: false, userVisible: false, sharedReadable: false },
   subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
+  // Kept so reports saved before Deep Research retirement remain readable.
   deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },
   user_upload: { userDeletable: true, userVisible: false, sharedReadable: true },
   session_effect: { userDeletable: false, userVisible: false, sharedReadable: false },
@@ -164,7 +163,14 @@ const CHILD_RESULT_OUTPUT_SOURCES = new Set<ArtifactSource>([
   'deep_research',
 ]);
 
-export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): boolean {
+export function isArtifactUserVisible(
+  record: Pick<ArtifactRecord, 'source'> & Partial<Pick<ArtifactRecord, 'kind'>>,
+): boolean {
+  // A directly written HTML file is an intentional user-facing deliverable:
+  // the Artifact Pane must be able to preview and open it without requiring a
+  // child-workspace writeback. Other tool results remain internal to avoid
+  // flooding the Generated Files tab with command output and diffs.
+  if (record.source === 'tool_result' && record.kind === 'html') return true;
   return ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
 }
 

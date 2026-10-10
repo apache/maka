@@ -39,7 +39,8 @@ can overwrite newer status.
 
 The provider publishes two independent projections:
 
-- About receives full status plus the guarded manual-check command.
+- About receives full status, the guarded manual-check command, and the same
+  install action the sidebar offers once an update is downloaded.
 - The sidebar footer receives only `downloaded` and versioned `error`
   reminders plus the install/retry command.
 

@@ -19,7 +19,7 @@
 
 import { isDeepStrictEqual } from 'node:util';
 import {
-  messageContentsEqual,
+  messageContentDigest,
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
@@ -43,8 +43,15 @@ type Immutable<T> = T extends (...args: never[]) => unknown
 
 export type ValidatedRootTurnAdmission = Immutable<RootTurnAdmission>;
 
+type AdmissionIdentity = Omit<RootTurnAdmission, 'normalizedInput' | 'sourceMessages'> & {
+  normalizedInputDigest: string | null;
+  sourceMessages: readonly (Omit<RootTurnAdmission['sourceMessages'][number], 'content'> & {
+    contentDigest: string;
+  })[];
+};
+
 export class RootAdmissionOwner {
-  readonly #admissionsBySession = new Map<string, Map<string, RootTurnAdmission>>();
+  readonly #admissionsBySession = new Map<string, Map<string, AdmissionIdentity>>();
   readonly #tips = new Map<string, RootTurnAdmission>();
   readonly #poisonedSessions = new Set<string>();
 
@@ -67,8 +74,8 @@ export class RootAdmissionOwner {
     }
     const admissions = await this.store.listRootTurnAdmissionsForRecovery(sessionId);
     const snapshots = Object.freeze(admissions.map(snapshotAdmission));
-    const byTurnId = new Map<string, RootTurnAdmission>();
-    for (const admission of snapshots) byTurnId.set(admission.turnId, admission);
+    const byTurnId = new Map<string, AdmissionIdentity>();
+    for (const admission of snapshots) byTurnId.set(admission.turnId, admissionIdentity(admission));
     this.#admissionsBySession.set(sessionId, byTurnId);
     const tip = snapshots.at(-1);
     if (tip) this.#tips.set(sessionId, tip);
@@ -91,7 +98,7 @@ export class RootAdmissionOwner {
         if (!known || !sameRootAdmission(known, admission)) {
           throw new Error('Durable Root Turn conflict is outside the owned chain');
         }
-        return Object.freeze({ kind: 'conflict', admission: known });
+        return Object.freeze({ kind: 'conflict', admission: snapshotAdmission(admission) });
       }
       if (
         admission.sessionId !== input.sessionId ||
@@ -107,7 +114,7 @@ export class RootAdmissionOwner {
         throw new Error('Root Turn admission identity changed within one Host Epoch');
       }
       const snapshot = snapshotAdmission(admission);
-      byTurnId.set(admission.turnId, snapshot);
+      byTurnId.set(admission.turnId, admissionIdentity(snapshot));
       this.#admissionsBySession.set(input.sessionId, byTurnId);
       this.#tips.set(input.sessionId, snapshot);
       return Object.freeze({ ...result, admission: snapshot });
@@ -118,7 +125,22 @@ export class RootAdmissionOwner {
   }
 }
 
-function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): boolean {
+// Historical admissions must remain verifiable throughout the Host Epoch, but
+// only the current tip needs to own the full message bodies.
+function admissionIdentity(admission: RootTurnAdmission): AdmissionIdentity {
+  const { normalizedInput, sourceMessages, ...metadata } = admission;
+  return Object.freeze({
+    ...structuredClone(metadata),
+    normalizedInputDigest: normalizedInput === null ? null : messageContentDigest(normalizedInput),
+    sourceMessages: Object.freeze(
+      sourceMessages.map(({ content, ...source }) =>
+        Object.freeze({ ...structuredClone(source), contentDigest: messageContentDigest(content) }),
+      ),
+    ),
+  });
+}
+
+function sameRootAdmission(left: AdmissionIdentity, right: RootTurnAdmission): boolean {
   return (
     left.schemaVersion === right.schemaVersion &&
     left.sessionId === right.sessionId &&
@@ -130,9 +152,8 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
     isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
     isDeepStrictEqual(left.authorization, right.authorization) &&
     left.previousRootTurnId === right.previousRootTurnId &&
-    (left.normalizedInput === null || right.normalizedInput === null
-      ? left.normalizedInput === right.normalizedInput
-      : messageContentsEqual(left.normalizedInput, right.normalizedInput)) &&
+    left.normalizedInputDigest ===
+      (right.normalizedInput === null ? null : messageContentDigest(right.normalizedInput)) &&
     left.sourceMessages.length === right.sourceMessages.length &&
     left.sourceMessages.every((source, index) => {
       const other = right.sourceMessages[index];
@@ -146,7 +167,7 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
           (other.submittedPlacement ?? other.placement) &&
         submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
         isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
-        messageContentsEqual(source.content, other.content)
+        source.contentDigest === messageContentDigest(other.content)
       );
     }) &&
     left.admittedAt === right.admittedAt

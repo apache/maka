@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { declaredContextWindow, type ThinkingLevel } from './model-thinking.js';
+import { type ThinkingLevel } from './model-thinking.js';
 import {
   offerableCatalogEntries,
   providerDefaultsOf,
@@ -38,6 +38,8 @@ export interface ChatModelChoice {
   connectionName?: string;
   isDefault: boolean;
   thinkingLevels: readonly ThinkingLevel[];
+  /** Per-model default applied when creating a new Session. */
+  defaultThinkingLevel?: ThinkingLevel;
   /** Exact capability projection used by model-facing attachment composition. */
   supportsVision?: boolean;
   /** Provider/model metadata shown beside the user-declared context setting. */
@@ -54,7 +56,7 @@ export function buildChatModelChoices(
     const provider = providerDefaultsOf(connection.providerType);
     if (!provider) continue;
     for (const entry of offerableCatalogEntries(connection)) {
-      const declaredWindow = declaredContextWindow(connection, entry.id);
+      const declaredWindow = entry.compactionThreshold;
       choices.push({
         connectionId: connection.connectionId,
         connectionSlug: connection.slug,
@@ -67,6 +69,9 @@ export function buildChatModelChoices(
         ...(provider.authKind === 'oauth_token' ? {} : { connectionName: connection.name }),
         isDefault: entry.isDefault,
         thinkingLevels: entry.thinkingLevels,
+        ...(entry.defaultThinkingLevel === undefined
+          ? {}
+          : { defaultThinkingLevel: entry.defaultThinkingLevel }),
         supportsVision: entry.supportsVision,
         ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
         ...(declaredWindow !== undefined ? { declaredContextWindow: declaredWindow } : {}),

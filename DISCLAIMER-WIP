@@ -11,7 +11,12 @@ policy. For example, releases may have incomplete or un-reviewed licensing
 conditions. What follows is a list of issues the project is currently aware of
 (this list is likely to be incomplete):
 
- * The software grant and committer ICLAs are not yet complete.
+ * The initial-code authorization review remains open at
+   https://github.com/apache/maka/issues/3268. Since RC1, the ASF has recorded
+   the ICLA of contributor Mingqwqqaq, and the Deep Research implementation
+   has been removed. The review still needs to record the authorization basis
+   for the retained initial code; these changes do not establish that an SGA
+   has been filed.
 
 If you are planning to incorporate this work into your product/project, please
 be aware that you will need to conduct a thorough licensing review to determine

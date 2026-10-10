@@ -318,7 +318,6 @@ function buildRuntime(
     header: testHeader(),
     connection: testConnection(),
     modelId: 'mock-model',
-    appendMessage: async () => {},
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

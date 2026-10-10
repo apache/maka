@@ -25,7 +25,6 @@ import type {
   RuntimeHostPeerTransitSnapshot,
 } from '../transport/peer-native.js';
 import { createHash } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import {
   canonicalPeerMeshMemberAdvertisement,
@@ -1166,16 +1165,20 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     observedGeneration: number,
     signal: AbortSignal,
   ): Promise<void> {
-    if (this.#reconcileGeneration !== observedGeneration) return;
+    if (this.#reconcileGeneration !== observedGeneration || signal.aborted) return;
     let wake!: () => void;
     const triggered = new Promise<void>((resolve) => {
       wake = resolve;
       this.#reconcileWaiters.add(wake);
     });
-    if (this.#reconcileGeneration !== observedGeneration) wake();
+    const timeout = setTimeout(wake, RECONCILE_INTERVAL_MS);
+    signal.addEventListener('abort', wake, { once: true });
+    if (this.#reconcileGeneration !== observedGeneration || signal.aborted) wake();
     try {
-      await Promise.race([triggered, delay(RECONCILE_INTERVAL_MS, undefined, { signal })]);
+      await triggered;
     } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', wake);
       this.#reconcileWaiters.delete(wake);
     }
   }

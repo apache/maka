@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { connectRuntimeHostWslEnvironment } from '../client/wsl-environment.js';
 
 const operator = (modulePath: string) => ({
@@ -119,4 +123,88 @@ test('contains oversized WSL bridge diagnostics inside the connection failure', 
     ),
     /handshake_failed/u,
   );
+});
+
+for (const stream of ['stdin', 'stdout'] as const) {
+  test(`contains WSL bridge ${stream} errors inside the handshake failure`, async () => {
+    let child: ChildProcessWithoutNullStreams | undefined;
+    try {
+      await assert.rejects(
+        connectRuntimeHostWslEnvironment(
+          {
+            distribution: 'Ubuntu',
+            operator: operator('/opt/maka/operator.mjs'),
+            rootId: 'a'.repeat(64),
+            clientInstanceId: 'desktop-test',
+            handshakeTimeoutMs: 10_000,
+          },
+          {
+            processFactory: () => {
+              child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)'], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+              });
+              const pipe = child[stream];
+              // A stream error event is separate from the pending write callback
+              // and ChildProcess error event. Own it even if no write is pending.
+              queueMicrotask(() =>
+                pipe.destroy(Object.assign(new Error('bridge pipe closed'), { code: 'EPIPE' })),
+              );
+              return child;
+            },
+            wslExecutable: 'wsl-test',
+          },
+        ),
+        /handshake_failed/u,
+      );
+      assert.ok(child);
+      assert.ok(child.exitCode !== null || child.signalCode !== null);
+    } finally {
+      child?.kill('SIGKILL');
+    }
+  });
+}
+
+test('contains a real bridge EPIPE that hits a pending handshake write', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-wsl-epipe-'));
+  const marker = join(directory, 'stdin-closed');
+  // The bridge closes its stdin before the connection exists, so the handshake
+  // write meets a pipe with no reader. Node then reports EPIPE both to the write
+  // callback and as a stdin error event.
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `const fs = require('node:fs'); fs.closeSync(0); fs.writeFileSync(${JSON.stringify(marker)}, ''); setTimeout(() => {}, 10_000);`,
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  try {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        await access(marker);
+        break;
+      } catch {
+        assert.ok(Date.now() < deadline, 'bridge did not close its stdin');
+        await delay(10);
+      }
+    }
+    await assert.rejects(
+      connectRuntimeHostWslEnvironment(
+        {
+          distribution: 'Ubuntu',
+          operator: operator('/opt/maka/operator.mjs'),
+          rootId: 'a'.repeat(64),
+          clientInstanceId: 'desktop-test',
+          handshakeTimeoutMs: 10_000,
+        },
+        { processFactory: () => child, wslExecutable: 'wsl-test' },
+      ),
+      /handshake_failed/u,
+    );
+    assert.ok(child.exitCode !== null || child.signalCode !== null);
+  } finally {
+    child.kill('SIGKILL');
+    await rm(directory, { recursive: true, force: true });
+  }
 });

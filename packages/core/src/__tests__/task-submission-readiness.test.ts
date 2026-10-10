@@ -113,7 +113,7 @@ function connection(): LlmConnection {
   return {
     slug: 'provider',
     name: 'Provider',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     enabled: true,
     defaultModel: 'model-a',
     enabledModelIds: ['model-a'],

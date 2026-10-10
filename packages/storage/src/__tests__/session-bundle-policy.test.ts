@@ -25,8 +25,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { createSessionStore } from '../session-store.js';
-import { exportSessionBundleState } from '../session-bundle-policy.js';
+import {
+  exportSessionBundleState,
+  importSessionBundleState,
+  listSessionBundleMergeTables,
+} from '../session-bundle-policy.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
 test('exports one Session as filtered SQLite', async () => {
@@ -78,6 +83,73 @@ test('exports one Session as filtered SQLite', async () => {
         ).count,
         0,
       );
+    } finally {
+      database.close();
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('an imported archived Session starts its archive clock at the import', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-session-bundle-archived-'));
+  const configRoot = join(base, 'config');
+  await mkdir(configRoot, { recursive: true });
+  try {
+    // One archived before the time was recorded, one archived long ago.
+    const exported: Array<{ id: string; bundle: string }> = [];
+    for (const [name, archivedAt] of [
+      ['unknown', null],
+      ['old', 5],
+    ] as const) {
+      const stateRoot = join(base, `source-${name}`);
+      const sessions = createSessionStore(stateRoot);
+      const session = await sessions.create(input(name));
+      await sessions.appendMessage(session.id, message(`${name}-message`));
+      await sessions.setSessionsArchivedVersioned(
+        [
+          {
+            sessionId: session.id,
+            expectedVersion: (await sessions.readHeaderRecordSnapshot(session.id)).revision,
+          },
+        ],
+        true,
+      );
+      await sessions.close?.();
+      const source = new DatabaseSync(join(stateRoot, 'runtime.sqlite'));
+      source
+        .prepare('UPDATE session_metadata SET archived_at = ? WHERE session_id = ?')
+        .run(archivedAt, session.id);
+      source.close();
+      const bundle = join(base, `bundle-${name}`);
+      await exportSessionBundleState({
+        stateRoot,
+        configRoot,
+        destinationRoot: bundle,
+        sessionId: session.id,
+      });
+      exported.push({ id: session.id, bundle });
+    }
+
+    const target = join(base, 'target');
+    await mkdir(target, { recursive: true });
+    const before = Date.now();
+    for (const { bundle } of exported) {
+      await importSessionBundleState({ stateRoot: target, bundleStateRoot: bundle });
+    }
+    const after = Date.now();
+    const database = new DatabaseSync(join(target, 'runtime.sqlite'), { readOnly: true });
+    try {
+      for (const { id } of exported) {
+        const row = database
+          .prepare('SELECT is_archived, archived_at FROM session_metadata WHERE session_id = ?')
+          .get(id) as { is_archived: number; archived_at: number | null };
+        assert.equal(row.is_archived, 1);
+        assert.ok(
+          row.archived_at !== null && row.archived_at >= before && row.archived_at <= after,
+          `archived_at ${row.archived_at} is the import time`,
+        );
+      }
     } finally {
       database.close();
     }
@@ -156,6 +228,81 @@ test('retains only the selected Session partial stream segments', async () => {
     await rm(base, { recursive: true, force: true });
   }
 });
+
+/**
+ * Copied Session tables whose single INTEGER key is a portable value, so the
+ * import keeps it instead of letting the target allocate one. Each entry needs
+ * a one-line reason. Empty: every such key in the current schema is a
+ * database-local rowid, and those belong in `LOCAL_SEQUENCE_COLUMNS`.
+ */
+const PORTABLE_INTEGER_KEYS = new Map<string, string>([]);
+
+test('reallocates every database-local INTEGER key an import copies', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-session-bundle-keys-'));
+  const sourceRoot = join(base, 'source');
+  const targetRoot = join(base, 'target');
+  const configRoot = join(base, 'config');
+  const destinationRoot = join(base, 'bundle');
+  await mkdir(configRoot, { recursive: true });
+  try {
+    // A real export, so the attached tables are the ones an import sees.
+    const sessions = createSessionStore(sourceRoot);
+    const session = await sessions.create(input('Exported'));
+    await sessions.close?.();
+    await exportSessionBundleState({
+      stateRoot: sourceRoot,
+      configRoot,
+      destinationRoot,
+      sessionId: session.id,
+    });
+
+    // Opened and migrated the way the import opens its target.
+    const lease = acquireOperationalStateDatabase(targetRoot);
+    const target = lease.database;
+    const bundlePath = join(destinationRoot, 'runtime.sqlite');
+    target.exec(`ATTACH DATABASE '${bundlePath.replaceAll("'", "''")}' AS bundle`);
+    try {
+      const merged = listSessionBundleMergeTables(target);
+      assert.ok(merged.some((table) => table.name === 'session_metadata'));
+      const unclassified: string[] = [];
+      for (const { name, localSequenceColumn } of merged) {
+        const key = singleIntegerKey(target, name);
+        if (localSequenceColumn !== undefined) {
+          assert.equal(
+            key,
+            localSequenceColumn,
+            `${name}.${localSequenceColumn} is reallocated but is not the table's single INTEGER key`,
+          );
+        } else if (key !== undefined && PORTABLE_INTEGER_KEYS.get(name) !== key) {
+          unclassified.push(`${name}.${key}`);
+        }
+      }
+      assert.deepEqual(
+        unclassified,
+        [],
+        'An import copies these single INTEGER keys verbatim, so they collide in a populated ' +
+          'workspace: add each to LOCAL_SEQUENCE_COLUMNS, or to PORTABLE_INTEGER_KEYS with a reason',
+      );
+    } finally {
+      target.exec('DETACH DATABASE bundle');
+      lease.close();
+    }
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+/** The table's primary key column when it is exactly one INTEGER column. */
+function singleIntegerKey(database: DatabaseSync, table: string): string | undefined {
+  const [key, ...rest] = (
+    database.prepare(`PRAGMA main.table_info("${table.replaceAll('"', '""')}")`).all() as Array<{
+      name: string;
+      type: string;
+      pk: number;
+    }>
+  ).filter((column) => column.pk > 0);
+  return key && rest.length === 0 && key.type.toUpperCase() === 'INTEGER' ? key.name : undefined;
+}
 
 function input(name: string): CreateSessionInput {
   return {

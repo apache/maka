@@ -31,7 +31,11 @@ export type SessionCollaborationImportResult =
         | 'peer_path_unavailable'
         | 'incompatible_host'
         | 'connection_failed';
-      readonly message?: string;
+    }
+  | {
+      readonly kind: 'error';
+      readonly reason: 'mount_limit_reached';
+      readonly params: { readonly max: number };
     };
 
 export type SessionCollaborationImportPhase =
@@ -53,6 +57,8 @@ export interface SessionCollaborationMountSummary {
   readonly failure?: SessionCollaborationMountFailure;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
   readonly session?: SharedSessionCatalogProjection;
+  /** Whether the Session snapshot was observed on the current ready connection. */
+  readonly sessionState?: 'live' | 'cached';
 }
 
 export type SessionCollaborationMountFailure =

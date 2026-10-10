@@ -22,6 +22,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { migrateSqliteUsageDatabase } from '../sqlite-usage-schema.js';
 import {
+  assertCurrentOperationalTargetSchema,
+  ensureOperationalSchemaRegistry,
+} from '../operational-target-schema.js';
+import { migrateSqliteArtifactDatabase } from '../sqlite-artifact-schema.js';
+import { migrateSqliteCoreExecutionDatabase } from '../sqlite-core-execution-schema.js';
+import { migrateSqliteRuntimeDatabase } from '../sqlite-runtime-schema.js';
+import { migrateSqliteSessionMetadataDatabase } from '../sqlite-session-metadata-schema.js';
+import { migrateSqliteWorkflowDatabase } from '../sqlite-workflow-schema.js';
+import {
   MODEL_CALL_NOW as NOW,
   modelCallAttempt as attempt,
   wideModelCallAttempt as wideAttempt,
@@ -109,6 +118,17 @@ test('usage migration backfills Session identity for existing ledger rows', () =
           "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'usage_model_call_attempts_session_completed_at'",
         )
         .get(),
+    );
+    database.exec('CREATE INDEX usage_llm_calls_session_id ON usage_llm_calls(session_id)');
+    migrateSqliteUsageDatabase(database);
+    assert.equal(
+      database
+        .prepare(
+          "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'usage_llm_calls_session_id'",
+        )
+        .get(),
+      undefined,
+      'upgraded stores drop the redundant Session-only index',
     );
   } finally {
     database.close();
@@ -254,6 +274,103 @@ test('the ledger refuses a row that would make a total dishonest', () => {
     );
     // Half a record is not a record.
     assert.throws(() => insert({ attempt_id: 'd', completed_at: NOW, cost_basis: 'unpriced' }));
+  } finally {
+    database.close();
+  }
+});
+
+test('Usage title revision ignores unrelated metadata and covers every activity source', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    // A pre-existing metadata table, as installed before the Usage migration.
+    database.exec(
+      'CREATE TABLE session_metadata (session_id TEXT PRIMARY KEY, name TEXT, is_flagged INTEGER)',
+    );
+    database.exec("INSERT INTO session_metadata VALUES ('session', 'Before', 0)");
+    migrateSqliteUsageDatabase(database);
+    const revision = () =>
+      database.prepare('SELECT revision FROM usage_screen_revision').get()!.revision;
+    const before = revision();
+
+    database.exec("UPDATE session_metadata SET is_flagged = 1 WHERE session_id = 'session'");
+    database.exec("UPDATE session_metadata SET name = 'Unused' WHERE session_id = 'session'");
+    for (let index = 0; index < 100; index++) {
+      database
+        .prepare('INSERT INTO session_metadata VALUES (?, ?, 0)')
+        .run(`unused-${index}`, `Unused ${index}`);
+    }
+    database.exec("DELETE FROM session_metadata WHERE session_id LIKE 'unused-%'");
+    assert.equal(
+      revision(),
+      before,
+      'metadata without Usage activity creates no invalidation churn',
+    );
+
+    database
+      .prepare('INSERT INTO usage_llm_calls VALUES (?, ?, ?, ?, ?)')
+      .run('legacy-key', 'legacy', 1, '{"sessionId":"session"}', 'session');
+    const withLegacy = revision();
+    database.exec('BEGIN');
+    database.exec("UPDATE session_metadata SET name = 'Rolled back' WHERE session_id = 'session'");
+    assert.notEqual(revision(), withLegacy);
+    database.exec('ROLLBACK');
+    assert.equal(revision(), withLegacy);
+    database.exec("UPDATE session_metadata SET name = 'Legacy' WHERE session_id = 'session'");
+    assert.notEqual(revision(), withLegacy);
+
+    database.exec('DELETE FROM usage_llm_calls');
+    database
+      .prepare('INSERT INTO usage_tool_invocations VALUES (?, ?, ?, ?)')
+      .run('tool-key', 'tool', 2, '{"sessionId":"session"}');
+    const withTool = revision();
+    database.exec("UPDATE session_metadata SET name = 'Tool' WHERE session_id = 'session'");
+    assert.notEqual(revision(), withTool);
+
+    database.exec('DELETE FROM usage_tool_invocations');
+    database.exec(
+      "INSERT INTO usage_model_call_attempts(attempt_id, completed_at, session_id) VALUES ('attempt', 3, 'session')",
+    );
+    const withCanonical = revision();
+    database.exec("DELETE FROM session_metadata WHERE session_id = 'session'");
+    const deleted = revision();
+    assert.notEqual(deleted, withCanonical);
+    database.exec("INSERT INTO session_metadata VALUES ('session', 'Restored', 0)");
+    assert.notEqual(revision(), deleted);
+  } finally {
+    database.close();
+  }
+});
+
+test('a schema-9 usage database upgrades to the target shape and stays idempotent', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    // Build the full operational target, then regress usage to its schema-9
+    // shape. The #5890 target adds `no_run` as the usage delta, so a real
+    // schema-9 database is exactly this table minus that column.
+    migrateSqliteRuntimeDatabase(database);
+    migrateSqliteSessionMetadataDatabase(database);
+    migrateSqliteCoreExecutionDatabase(database);
+    migrateSqliteWorkflowDatabase(database);
+    migrateSqliteUsageDatabase(database);
+    migrateSqliteArtifactDatabase(database);
+    ensureOperationalSchemaRegistry(database);
+    database.exec('ALTER TABLE usage_model_call_attempts DROP COLUMN no_run');
+
+    migrateSqliteUsageDatabase(database);
+
+    // The upgrade restores the recorder-owned default in place — the DDL
+    // signature matches a fresh create only because ADD COLUMN appends the
+    // column the same way — and a rerun changes nothing.
+    assertCurrentOperationalTargetSchema(database);
+    const restored = database
+      .prepare(
+        "SELECT \"notnull\" AS not_null, dflt_value FROM pragma_table_info('usage_model_call_attempts') WHERE name = 'no_run'",
+      )
+      .get() as { not_null: number; dflt_value: string };
+    assert.equal(restored.not_null, 1);
+    assert.equal(restored.dflt_value, '0');
+    migrateSqliteUsageDatabase(database);
+    assertCurrentOperationalTargetSchema(database);
   } finally {
     database.close();
   }
