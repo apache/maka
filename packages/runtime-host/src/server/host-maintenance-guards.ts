@@ -63,6 +63,9 @@ export class HostClockGuard {
     const observedThisRun = this.#observedThisRun;
     this.#observedAt = Math.max(previous, options.now);
     this.#observedThisRun = true;
+    // A running Host measures from its own prior observation. A fresh process
+    // instead combines the persisted floor with the newest Session metadata,
+    // so offline time and metadata written by another process are represented.
     const since = observedThisRun
       ? previous
       : Math.max(previous, (await options.readLatestSessionMetadataTime()) ?? 0);
