@@ -238,13 +238,18 @@ function renderToolResult(result: ToolResultMessage): string[] {
     return renderResultBody(label, redactSecrets(safeJson(content.value)));
   }
   if (content.kind === 'file_diff') {
+    // Paths are user-visible strings too; a secret baked into a filename
+    // reaches the label just like it reaches a diff body.
     return renderResultBody(
-      `${label} — diff for ${content.paths.join(', ')}`,
+      redactSecrets(`${label} — diff for ${content.paths.join(', ')}`),
       redactSecrets(content.diff),
     );
   }
   if (content.kind === 'file_write') {
-    return renderResultBody(label, `Wrote ${content.path} (${content.bytes} bytes)`);
+    return renderResultBody(
+      redactSecrets(`${label} — Wrote ${content.path} (${content.bytes} bytes)`),
+      '',
+    );
   }
   if (content.kind === 'archived_tool_result') {
     return renderResultBody(label, `[archived tool result: ${content.status} — ${content.reason}]`);

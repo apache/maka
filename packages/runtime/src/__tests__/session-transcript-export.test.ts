@@ -471,6 +471,44 @@ test('redacts shell_run fallbacks and terminal labels before rendering', () => {
   }
 });
 
+test('redacts file-result paths and file-write destinations before rendering', () => {
+  const markdown = renderSessionTranscriptMarkdown(
+    'Redact paths',
+    [
+      userMessage('u1', 'turn-1', 1, 'show diffs'),
+      toolCallMessage({ id: 'call-1', turnId: 'turn-1', ts: 2, toolName: 'Edit' }),
+      {
+        type: 'tool_result',
+        id: 'r1',
+        turnId: 'turn-1',
+        ts: 3,
+        toolUseId: 'call-1',
+        isError: false,
+        content: {
+          kind: 'file_diff',
+          paths: ['src/sk-path-fixture123.ts'],
+          diff: 'clean diff text',
+        },
+      },
+      toolCallMessage({ id: 'call-2', turnId: 'turn-1', ts: 4, toolName: 'Write' }),
+      {
+        type: 'tool_result',
+        id: 'r2',
+        turnId: 'turn-1',
+        ts: 5,
+        toolUseId: 'call-2',
+        isError: false,
+        content: { kind: 'file_write', path: 'src/sk-write-fixture123.ts', bytes: 10 },
+      },
+    ] as StoredMessage[],
+    { now: () => 0 },
+  );
+  for (const secret of ['sk-path-fixture123', 'sk-write-fixture123']) {
+    assert.equal(markdown.includes(secret), false, secret);
+  }
+  assert.ok(markdown.includes('clean diff text'));
+});
+
 test('renders every user message in a turn, steering included', () => {
   const markdown = renderSessionTranscriptMarkdown(
     'Steering',
