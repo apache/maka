@@ -7,7 +7,7 @@ counterpart: ./llm-compaction-events-log-projection-draft.zh-CN.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-10-10
+last_verified: 2026-08-28
 owners:
   - maka-backend
 ---
@@ -38,7 +38,7 @@ This chapter builds on Chapter 1's log-first Runtime and Chapter 2's distinction
 
 The primary subject is **RuntimeEvent history compaction**: a compactor produces either a continuation summary or provider-native compact state, the checkpoint covers a safe prefix of RuntimeEvents, and later requests use that projection in place of the prefix. The same planner and checkpoint transaction serve manual, pre-turn, mid-turn, and overflow triggers. The chapter does not fully cover active or stale pruning of individual Tool Results; those reduce provider messages without creating another LLM compaction mechanism.
 
-This chapter describes the implementation current as of 2026-10-10. Ledger-backed checkpoints use schema V2 for text summaries and schema V3 for provider-native state. OpenAI Codex subscription models prefer Codex remote compaction V2 and retain the text summarizer as a narrow liveness fallback; other providers use text-summary behavior directly.
+This chapter describes the implementation current as of 2026-08-30. Ledger-backed checkpoints use schema V2 for text summaries and schema V3 for provider-native state. OpenAI Codex subscription models prefer Codex remote compaction V2 and retain the text summarizer as a narrow liveness fallback; other providers use text-summary behavior directly.
 
 ## Start with a long-running Session
 
@@ -146,7 +146,7 @@ HistoryCompactCheckpoint
     sourceDigest
   projection
     V2: summary
-    V3: providerState { kind, connectionSlug, modelId, itemId, encryptedContent }
+    V3: providerState { kind, connectionId, modelId, itemId, encryptedContent }
     limitations
     estimatedTokens
   lineage
@@ -157,7 +157,7 @@ For V2, the model sees `summary`. For V3, the provider sees its own opaque compa
 
 ## Current: every request still begins with RuntimeEvents
 
-The prior-history path for a normal Send begins in `AiSdkTurn.buildPriorMessages()`. It does not reuse the provider messages assembled for an earlier request. Instead, it receives RuntimeEvents from earlier Runs and executes a projection pipeline:
+The prior-history path for a normal Send begins in `AiSdkBackend.buildPriorMessages()`. It does not reuse the provider messages assembled for an earlier request. Instead, it receives RuntimeEvents from earlier Runs and executes a projection pipeline:
 
 1. Exclude the current `turnId` to obtain the prior Runtime context.
 2. Prepare the context-budget policy.
@@ -185,7 +185,7 @@ Capacity is the context window the user declared for the selected model, or noth
 Trigger owners use that capacity but do not participate in compaction:
 
 - the active-turn evaluator emits a Compact command when the previous accepted request's real usage plus the reply reserve reaches the user-declared capacity;
-- provider-overflow recovery emits the same command after a real overflow, and the two share one budget: the module is entered at most once per send;
+- provider-overflow recovery emits the same command after a real overflow; a successful provider step resets the shaping budget, so recovery stays available on later steps, while the summarizer-failure circuit remains turn-scoped;
 - manual `context.compact` emits it directly, without manufacturing a high-water crossing.
 
 Once emitted, the command always enters the same transaction. The planner receives no force flag, context window, reserve, next-request estimate, high-water ratio, or minimum-recent-Turn policy:
@@ -236,11 +236,11 @@ The portable text summarizer remains a bounded liveness fallback. Maka retries o
 
 Compaction input preserves assistant-step chronology. Because the Responses converter cannot resend provider-executed tool results under `store:false`, a settled hosted call/result is lowered only for this compaction request into a paired ordinary function call and output, followed by the grounded assistant text. This keeps the available tool evidence in the request without producing an orphan output.
 
-The compaction call receives an output cap of 8,000 tokens and the provider's normal request path decides whether that call fits. Tool Result archive policies may still replace oversized individual results with durable placeholders, but history compaction does not measure the final request or reject a candidate because a local estimate says it is too large.
+The portable text summarizer receives an output cap of 8,000 tokens; the native Codex compaction call passes no output cap, and the provider's normal request path decides whether that call fits. Tool Result archive policies may still replace oversized individual results with durable placeholders, but history compaction does not measure the final request or reject a candidate because a local estimate says it is too large.
 
 This is deliberately a history-only contract. Maka does not send the current system prompt or tool catalog to the remote compactor, unlike the Codex CLI's whole-request assembly. Those values are neither part of checkpoint source coverage nor frozen into the checkpoint; the subsequent model request always applies its current system prompt and tools. This keeps provider-native and text-summary compactors behind the same small contract, at the cost of not giving the compactor that extra request-shape context.
 
-Maka accepts exactly one `openai.compaction` output with both `itemId` and `encryptedContent`, then persists it in a schema-V3 checkpoint. The state is bound to the connection slug and model ID. A different provider, connection, or model rejects that checkpoint and reprojects from raw RuntimeEvents. Matching checkpoints replay as provider custom parts across pre-Turn compaction, mid-Turn capacity compaction, and reactive overflow retry.
+Maka accepts exactly one `openai.compaction` output with both `itemId` and `encryptedContent`, then persists it in a schema-V3 checkpoint. The state is bound to the connection ID and model ID. A different provider, connection, or model rejects that checkpoint and reprojects from raw RuntimeEvents. Matching checkpoints replay as provider custom parts across pre-Turn compaction, mid-Turn capacity compaction, and reactive overflow retry.
 
 The V3 schema is a compatibility boundary: older binaries that only understand schema V2 reject it and fall back to raw history. Provider state is redacted from request-capture telemetry and omitted from conversation copies; copied Sessions retain raw RuntimeEvents and may compact them again. The explicit trigger is an observed Codex subscription protocol used by the Codex client, not a claim about the public Responses API contract.
 
