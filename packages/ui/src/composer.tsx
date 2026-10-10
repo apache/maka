@@ -613,8 +613,6 @@ export const Composer = forwardRef<
   const inputRootRef = useRef<HTMLDivElement>(null);
   /** Selection to restore after a toolbar control changes composer settings. */
   const thinkingSelectionRef = useRef<{ range: Range; value: string } | null>(null);
-  /** 恢复排队期间，编辑器重新获得焦点不能清掉待恢复选区。 */
-  const thinkingRestorePendingRef = useRef(false);
   function editableNode(): HTMLElement | null {
     return inputRootRef.current?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
   }
@@ -647,62 +645,71 @@ export const Composer = forwardRef<
     selection?.removeAllRanges();
     selection?.addRange(pending.range);
   }
-  function changeThinkingLevel(
-    level: import('@maka/core/model-thinking').ThinkingLevel | undefined,
-    onChange?: (next: import('@maka/core/model-thinking').ThinkingLevel | undefined) => void | Promise<void>,
-  ) {
-    if (!thinkingSelectionRef.current) rememberThinkingSelection();
-    const hasSelection = thinkingSelectionRef.current !== null;
-    thinkingRestorePendingRef.current = hasSelection;
-    const result = onChange?.(level);
-    // 窄窗底部面板会在退场后归还焦点，届时再恢复，避免被面板抢回。
-    if (hasSelection && thinkingPresentation === 'popover') {
-      window.requestAnimationFrame(() => {
-        restoreThinkingSelection();
-        thinkingRestorePendingRef.current = false;
-      });
-    }
-    return result;
-  }
   useEffect(() => {
     const form = formRef.current;
     if (!form) return undefined;
+    let control: Element | null = null;
+    let opened = false;
+    let frame: number | undefined;
+    const scheduleRestore = () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = undefined;
+        // Wait for the surface to close and return focus. Bottom sheets do so
+        // after their exit animation; closed-state typeahead never opens one.
+        if (!opened || control?.getAttribute('aria-expanded') !== 'false') return;
+        if (document.activeElement !== control && document.activeElement !== editableNode()) return;
+        restoreThinkingSelection();
+        control = null;
+        opened = false;
+      });
+    };
     const rememberForThinkingControl = (event: Event) => {
       const target = event.target as Element | null;
       const selector = target?.closest?.('.maka-thinking-level-selector [role="combobox"]');
-      if (selector) {
-        if (event.type === 'focusin' && thinkingRestorePendingRef.current) {
-          window.requestAnimationFrame(() => {
-            restoreThinkingSelection();
-            thinkingRestorePendingRef.current = false;
-          });
-          return;
-        }
-        const key = event.type === 'keydown'
-          ? (event as unknown as globalThis.KeyboardEvent).key : undefined;
-        const activating = event.type === 'pointerdown'
-          || key === 'Enter' || key === ' ' || key === 'ArrowDown' || key === 'ArrowUp';
-        if (activating
-          && selector.getAttribute('aria-disabled') !== 'true'
-          && selector.getAttribute('aria-readonly') !== 'true'
-          && !(selector as HTMLButtonElement).disabled) {
-          // 每次主动打开前重新捕获，取消菜单后不能复用上一次选区。
+      if (event.type === 'focusin') {
+        if (selector === control && opened) scheduleRestore();
+        else if (!opened && target?.closest?.('[contenteditable="true"]')) {
           thinkingSelectionRef.current = null;
-          thinkingRestorePendingRef.current = false;
-          rememberThinkingSelection();
         }
-      } else if (target?.closest?.('[contenteditable="true"]')) {
-        // The queued restore can focus the editor before its rAF runs.
-        if (!thinkingRestorePendingRef.current) {
-          thinkingSelectionRef.current = null;
-          thinkingRestorePendingRef.current = false;
-        }
+        return;
+      }
+      const key = event.type === 'keydown'
+        ? (event as unknown as globalThis.KeyboardEvent).key : undefined;
+      const activating = event.type === 'pointerdown'
+        || key === 'Enter' || key === ' ' || key === 'ArrowDown' || key === 'ArrowUp';
+      if (selector && activating && selector.getAttribute('aria-expanded') !== 'true'
+        && selector.getAttribute('aria-disabled') !== 'true'
+        && selector.getAttribute('aria-readonly') !== 'true'
+        && !(selector as HTMLButtonElement).disabled) {
+        thinkingSelectionRef.current = null;
+        rememberThinkingSelection();
+        control = thinkingSelectionRef.current ? selector : null;
+        opened = false;
+        observer.disconnect();
+        if (control) observer.observe(control, { attributes: true, attributeFilter: ['aria-expanded'] });
+      } else if (event.type === 'pointerdown' && !selector
+        && !document.getElementById(control?.getAttribute('aria-controls') ?? '')?.contains(target)) {
+        // A deliberate click elsewhere owns focus and must not revive a range.
+        thinkingSelectionRef.current = null;
+        control = null;
+        opened = false;
       }
     };
+    // Selector exposes disclosure through ARIA, not an onOpenChange prop.
+    // Watching the shared trigger covers native/executor, reselect and cancel.
+    const observer = new window.MutationObserver(() => {
+      if (!control) return;
+      if (control.getAttribute('aria-expanded') === 'true') opened = true;
+      else if (opened) scheduleRestore();
+    });
     form.addEventListener('pointerdown', rememberForThinkingControl, true);
     form.addEventListener('focusin', rememberForThinkingControl, true);
     form.addEventListener('keydown', rememberForThinkingControl, true);
     return () => {
+      observer.disconnect();
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      thinkingSelectionRef.current = null;
       form.removeEventListener('pointerdown', rememberForThinkingControl, true);
       form.removeEventListener('focusin', rememberForThinkingControl, true);
       form.removeEventListener('keydown', rememberForThinkingControl, true);
@@ -1946,7 +1953,7 @@ export const Composer = forwardRef<
         current={props.activeThinkingLevel}
         presentation={thinkingPresentation}
         isReadOnly={props.pickersReadOnly}
-        onChange={(level) => changeThinkingLevel(level, props.onThinkingLevelChange)}
+        onChange={props.onThinkingLevelChange}
         disabled={!modelSwitchAvailability.available}
         disabledReason={thinkingSwitcherDisabledReason}
       />
@@ -1956,7 +1963,7 @@ export const Composer = forwardRef<
         current={props.newChatThinkingLevel}
         presentation={thinkingPresentation}
         isReadOnly={props.pickersReadOnly}
-        onChange={(level) => changeThinkingLevel(level, props.onNewChatThinkingLevelChange)}
+        onChange={props.onNewChatThinkingLevelChange}
       />
     );
 
