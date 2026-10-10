@@ -167,6 +167,20 @@ export function catalogJobs(
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
     .flatMap((entry) => {
+      // Usage timestamp fitting depends on localized dates and day-period
+      // markers. Reuse the wide/narrow stories' real geometry assertions.
+      if (
+        entry.id === 'product-settings-pages--usage-long-tail' ||
+        entry.id === 'product-settings-pages--usage-narrow'
+      ) {
+        return ['zh-CN', 'zh-TW', 'en'].map((locale) => ({
+          storyId: entry.id,
+          colorScheme: 'light',
+          forcedColors: 'none',
+          palette: 'default',
+          locale,
+        }));
+      }
       // Reuse the Pricing states at both widths so validation/recovery banners
       // and footer actions are exercised in a narrow window, without duplicate stories.
       if (entry.id.startsWith('product-settings-pricing--')) {

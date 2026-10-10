@@ -606,7 +606,9 @@ function UsageRequestsPanel(props: {
           </div>
         ) : undefined}
         columns={[
-          { header: props.copy.tables.requestHeaders[0], width: 168 },
+          // Localized dates can include a day-period marker; leave room for
+          // that text and native system-font metrics in the fixed table column.
+          { header: props.copy.tables.requestHeaders[0], width: 224 },
           { header: props.copy.tables.requestHeaders[1], width: 72 },
           { header: props.copy.tables.requestHeaders[2], grow: true },
           { header: props.copy.tables.requestHeaders[3], width: 168 },
