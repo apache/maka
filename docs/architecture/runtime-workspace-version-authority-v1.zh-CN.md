@@ -1,3 +1,8 @@
+---
+translation_status: source-only
+last_verified: 2026-10-10
+---
+
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -20,7 +25,7 @@
 # Workspace Version Authority v1：Baseline 事实权威
 
 - 状态：authority foundation 已合并；当前 schema 20 继续支持 baseline facts、root binding、successor/mutation facts 与 projection reader/rebuild，仍没有生产 baseline 或 mutation consumer
-- 更新日期：2026-10-08
+- 更新日期：2026-10-10（随 #3522 核验通过；上一次内容变更为 #4718，2026-10-09 合并）
 - 主要不变量：经专用 writer 提交的一个 workspace epoch，其 baseline canonical facts 与三个 SQLite projection 对外只能全可见或全不可见
 - 事实权威：immutable RuntimeEvents
 - artifact owner：后续 Gitoxide data plane；本切片不执行 Git 命令
