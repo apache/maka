@@ -117,14 +117,17 @@ export function reconcileInteractions(
   liveRequests: readonly ActiveInteractionRequestEvent[],
 ): InteractionQueues {
   const visibleRequests = liveRequests.filter(isComposerInteraction);
-  const liveById = new Map(visibleRequests.map((request) => [request.requestId, request]));
+  const liveById = new Set(visibleRequests.map((request) => request.requestId));
   const seen = new Set<string>();
   const reconciled: ComposerInteraction[] = [];
   for (const interaction of queues[sessionId] ?? []) {
-    const live = liveById.get(interaction.requestId);
-    if (!live) continue;
+    if (!liveById.has(interaction.requestId)) continue;
     seen.add(interaction.requestId);
-    reconciled.push(live);
+    // Keep the surface's own object rather than the runtime's copy: a pending
+    // request's content is fixed (only the read's timestamp differs), and
+    // per-request UI state (the question wizard's progress) is keyed by this
+    // object's identity for as long as the queue holds it.
+    reconciled.push(interaction);
   }
   for (const request of visibleRequests) {
     if (!seen.has(request.requestId)) reconciled.push(request);

@@ -169,6 +169,18 @@ describe('composer interaction queue', () => {
     );
   });
 
+  test("rehydration keeps the surface's own object for a request the runtime still holds", () => {
+    // The runtime returns the request it emitted, so the IPC copy adds nothing,
+    // and per-request UI state (the question wizard's progress) is keyed by
+    // the identity of the object the queue already shows.
+    const shown = question('shown');
+    const queues = enqueueInteraction({}, 's', shown);
+
+    const reconciled = reconcileInteractions(queues, 's', [structuredClone(shown)]);
+
+    assert.equal(reconciled.s[0], shown);
+  });
+
   test('rehydration adds a question the surface never saw live', () => {
     const reconciled = reconcileInteractions({}, 's', [question('missed')]);
 
