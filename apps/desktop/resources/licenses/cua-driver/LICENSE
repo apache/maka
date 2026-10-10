@@ -1,0 +1,47 @@
+Cua Driver 0.28.2
+=================
+
+Maka's macOS binary packages include the Cua Driver executable at
+Contents/Resources/bin/cua-driver. Its source is
+https://github.com/trycua/cua/tree/fc188250b4ca8549b8e61f937fdb1fb560770e86/libs/cua-driver/rust
+and it is licensed as follows:
+
+MIT License
+
+Copyright (c) 2025 Cua AI, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-party components in the executable
+----------------------------------------
+
+UniFFI 0.31.0 (uniffi, uniffi_core, uniffi_pipeline), in binary form, under
+the Mozilla Public License 2.0. See MPL-2.0.txt in this directory. Source:
+https://github.com/mozilla/uniffi-rs/tree/v0.31.0
+
+The Inter font, Copyright 2020 The Inter Project Authors, under the SIL Open
+Font License 1.1. See Inter-OFL.txt in this directory. Source:
+https://github.com/rsms/inter
+
+webpki-roots 1.0.7, whose Common CA Database data is under the Community Data
+License Agreement Permissive 2.0. See CDLA-Permissive-2.0.txt in this
+directory. Source: https://github.com/rustls/webpki-roots
+
+The other Rust crates linked into the executable, with their licenses, sources
+and license texts, are listed in THIRD_PARTY_NOTICES.txt in this directory.

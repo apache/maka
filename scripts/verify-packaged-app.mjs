@@ -1053,6 +1053,7 @@ export async function assertPackagedResources(
     // Current Desktop builds ship the direct-peer Client addon beside its Rust
     // notices. Upgrade baselines may predate both resources.
     requireDirectPeerArtifact = true,
+    requireCuaDriverArtifact = process.platform === 'darwin',
     // Upgrade baselines may still ship the worker as `filesystem-worker.js`.
     requireMjsFilesystemWorker = true,
   } = {},
@@ -1060,6 +1061,16 @@ export async function assertPackagedResources(
   const required = [
     'app.asar',
     'bundled-tools.json',
+    ...(requireCuaDriverArtifact
+      ? [
+          join('bin', 'cua-driver'),
+          join('licenses', 'cua-driver', 'LICENSE'),
+          join('licenses', 'cua-driver', 'MPL-2.0.txt'),
+          join('licenses', 'cua-driver', 'Inter-OFL.txt'),
+          join('licenses', 'cua-driver', 'CDLA-Permissive-2.0.txt'),
+          join('licenses', 'cua-driver', 'THIRD_PARTY_NOTICES.txt'),
+        ]
+      : []),
     ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
     ...(requireMjsFilesystemWorker ? [join('workers', 'filesystem-worker.mjs')] : []),
     ...(requireDirectPeerArtifact
@@ -1111,15 +1122,7 @@ export async function assertPackagedResources(
     join('licenses', 'git'),
     join('tools', 'officecli'),
     join('licenses', 'officecli'),
-    // cua-driver is gone from this repository, and these two forbids stay for the
-    // same reason the officecli ones next to them do: `apps/desktop/resources/bin`
-    // is gitignored, so a binary a developer prepared before this change is still
-    // sitting in their tree and would be packaged without anything noticing.
-    join('bin', 'cua-driver'),
     join('tools', 'cua-driver'),
-    // maka-cu is built from source locally and is not signed, so it may not be in
-    // a packaged build at all — an ad-hoc helper fails notarization for the whole
-    // app, and `distributionReady` is false for exactly this reason.
     join('bin', 'maka-cu'),
     join('tools', 'maka-cu'),
   ];

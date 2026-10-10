@@ -439,7 +439,7 @@ function menuCaption(observation: CuObservation, menu: readonly CuObservedElemen
   );
   if (menu.some((element) => element.enabled === false)) {
     parts.push(
-      'note(a disabled command needs its application in front, which Computer Use does not do; it cannot be pressed from here)',
+      'note(a disabled command needs its application in front; it cannot be pressed in the background)',
     );
   }
   if (observation.menu?.truncated === true) {

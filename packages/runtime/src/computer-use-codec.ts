@@ -69,6 +69,9 @@ const redundantTargetHints = {
   app: z.string().min(1).max(512).optional(),
   window_id: z.number().int().positive().optional(),
 } as const;
+const deliveryMode = {
+  delivery_mode: z.enum(['background', 'foreground']).optional(),
+} as const;
 export const computerParams = z.discriminatedUnion('action', [
   z
     .object({
@@ -119,6 +122,7 @@ export const computerParams = z.discriminatedUnion('action', [
       action: z.literal('click_element'),
       observation_id: z.string().min(1).max(256),
       element_id: z.string().min(1).max(256),
+      ...deliveryMode,
       ...redundantTargetHints,
     })
     .strict(),
@@ -146,6 +150,7 @@ export const computerParams = z.discriminatedUnion('action', [
       observation_id: z.string().min(1).max(256),
       element_id: z.string().min(1).max(256),
       text,
+      ...deliveryMode,
       ...redundantTargetHints,
     })
     .strict(),
@@ -156,6 +161,7 @@ export const computerParams = z.discriminatedUnion('action', [
       element_id: z.string().min(1).max(256),
       scroll_direction: z.enum(['up', 'down', 'left', 'right']),
       scroll_amount: z.number().int().min(0).max(100).optional(),
+      ...deliveryMode,
       ...redundantTargetHints,
     })
     .strict(),
@@ -246,6 +252,7 @@ export const computerParams = z.discriminatedUnion('action', [
        * and was told only that the field was unknown.
        */
       element_id: z.string().min(1).max(256).optional(),
+      ...deliveryMode,
       ...redundantTargetHints,
     })
     .strict(),
@@ -264,6 +271,7 @@ export const computerParams = z.discriminatedUnion('action', [
       action: z.literal('type'),
       observation_id: z.string().min(1).max(256),
       text,
+      ...deliveryMode,
     })
     .strict(),
   z
@@ -271,6 +279,7 @@ export const computerParams = z.discriminatedUnion('action', [
       action: z.literal('key'),
       observation_id: z.string().min(1).max(256),
       text,
+      ...deliveryMode,
     })
     .strict(),
   z
@@ -452,9 +461,17 @@ export function adaptToCuAction(args: ComputerParams): CuAction {
     case 'screenshot':
       return { type: 'screenshot' };
     case 'type':
-      return { type: 'type', text: needText(args.text, args.action) };
+      return {
+        type: 'type',
+        text: needText(args.text, args.action),
+        deliveryMode: args.delivery_mode,
+      };
     case 'key':
-      return { type: 'key', text: needText(args.text, args.action) };
+      return {
+        type: 'key',
+        text: needText(args.text, args.action),
+        deliveryMode: args.delivery_mode,
+      };
     case 'wait':
       return { type: 'wait', durationMs: Math.round((args.duration ?? 0) * 1000) };
     default:

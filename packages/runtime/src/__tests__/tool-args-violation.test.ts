@@ -113,7 +113,7 @@ describe('tool argument field lookup', () => {
 
   test('Computer Use answers per action, not with every field of every action', () => {
     // Its wire schema is one flat object, because a function-tool JSON schema
-    // must have an object at the top. Read as an object it names all 22 keys,
+    // must have an object at the top. Read as an object it names every key,
     // so a `click_element` with a camelCase key was told `maka_computer` takes
     // `menu`, `duration` and `region` — the model added one and was refused
     // again. The strict union knows which fields belong to which action.
@@ -122,10 +122,13 @@ describe('tool argument field lookup', () => {
       { action: 'click_element', elementId: '4' },
       'computer_use',
     );
-    assert.deepEqual(perAction, ['observation_id', 'element_id', 'app', 'window_id']);
-    for (const foreign of ['menu', 'duration', 'region', 'position', 'size', 'steps']) {
-      assert.ok(!perAction?.includes(foreign), `${foreign} is not a click_element field`);
-    }
+    assert.deepEqual(perAction, [
+      'observation_id',
+      'element_id',
+      'delivery_mode',
+      'app',
+      'window_id',
+    ]);
 
     // An action the union does not know is undefined — say nothing — rather
     // than the whole flat shape.

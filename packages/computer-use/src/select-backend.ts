@@ -19,29 +19,17 @@
 
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import { type CuOverlayHook, type CuDispatchBackend } from '@maka/runtime/computer-use-types';
-import { createMakaCuBackend } from './maka-cu-backend.js';
-import type { MakaCuBackendOptions } from './maka-cu-backend.js';
-import type { MakaCuServiceSnapshot } from './maka-cu-service.js';
+import { createCuaDriverBackend, type CuaDriverBackendOptions } from './cua-driver-backend.js';
+import type { CuaDriverService } from './cua-driver-service.js';
 
-/**
- * One executor.
- *
- * This was a two-member set while cua-driver was being replaced, and the
- * selector took an overload per member. Keeping the id now that the second
- * executor is gone is not ceremony: `backendId` is what the capability snapshot
- * reports and what `'none'` is distinguished from, so it stays a named value
- * rather than becoming a boolean nobody can read.
- */
-export const CU_BACKEND_IDS = ['maka-cu'] as const;
+export const CU_BACKEND_IDS = ['cua-driver'] as const;
 export type CuBackendId = (typeof CU_BACKEND_IDS)[number];
-
-export const DEFAULT_CU_BACKEND_ID: CuBackendId = 'maka-cu';
+export const DEFAULT_CU_BACKEND_ID: CuBackendId = 'cua-driver';
 
 type DisposableBackend = CuDispatchBackend & {
   clearSession?: (sessionId: string) => void;
   dispose?: () => void;
-  /** maka-cu supervises one child, not a role pair, so it reports its own shape. */
-  executorState?: () => MakaCuServiceSnapshot;
+  executorState?: () => ReturnType<CuaDriverService['snapshot']>;
 };
 
 export interface SelectedComputerUseBackend {
@@ -74,44 +62,34 @@ const NONE: SelectedComputerUseBackend = {
   backendId: 'none',
 };
 
-export interface MakaCuSelection {
-  /** Omitted means the default; see `DEFAULT_CU_BACKEND_ID`. */
-  backendId?: 'maka-cu';
+export interface ComputerUseBackendSelection {
   binaryPath?: string;
   expectedBinarySha256?: string;
-  compressFrame?: (
-    base64: string,
-    mimeType: string,
-  ) => { base64: string; mimeType: 'image/png' | 'image/jpeg' };
-  physicalInputRecentlyActive?: () => boolean | Promise<boolean>;
-  /**
-   * Whether the machine is locked. Handed to the tool layer rather than to the
-   * driver, because the refusal is a session-state decision (see
-   * `buildComputerUseTools`) and the driver has no session state to latch it in.
-   */
+  compressFrame?: CuaDriverBackendOptions['compressFrame'];
+  physicalInputRecentlyActive?: CuaDriverBackendOptions['physicalInputRecentlyActive'];
+  requestAccessibilityPermission?: CuaDriverBackendOptions['requestAccessibilityPermission'];
   screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   overlay?: CuOverlayHook;
-  onTrace?: MakaCuBackendOptions['onTrace'];
-  createBackend?: (options: MakaCuBackendOptions) => DisposableBackend;
+  createBackend?: (options: CuaDriverBackendOptions) => DisposableBackend;
 }
 
-export type ComputerUseBackendSelection = MakaCuSelection;
-
-export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComputerUseBackend {
+export function selectComputerUseBackend(
+  deps?: ComputerUseBackendSelection,
+): SelectedComputerUseBackend {
   if (process.platform !== 'darwin') return NONE;
   if (!deps?.binaryPath || !deps.expectedBinarySha256) return NONE;
-  const binaryPath = deps.binaryPath;
-  const expectedBinarySha256 = deps.expectedBinarySha256;
   try {
     let tools: ComputerUseToolSet | undefined;
-    const backend = (deps.createBackend ?? createMakaCuBackend)({
-      binaryPath,
-      expectedBinarySha256,
+    const backend = (deps.createBackend ?? createCuaDriverBackend)({
+      binaryPath: deps.binaryPath,
+      expectedBinarySha256: deps.expectedBinarySha256,
       ...(deps.compressFrame ? { compressFrame: deps.compressFrame } : {}),
       ...(deps.physicalInputRecentlyActive
         ? { physicalInputRecentlyActive: deps.physicalInputRecentlyActive }
         : {}),
-      ...(deps.onTrace ? { onTrace: deps.onTrace } : {}),
+      ...(deps.requestAccessibilityPermission
+        ? { requestAccessibilityPermission: deps.requestAccessibilityPermission }
+        : {}),
       onSessionInvalidated: ({ sessionId }) => {
         tools?.sessionEvents.reobserveRequired(sessionId);
       },

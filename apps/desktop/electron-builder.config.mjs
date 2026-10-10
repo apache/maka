@@ -116,6 +116,16 @@ const baseDesktopBuilderConfig = {
       from: 'bundled-tools.json',
       to: 'bundled-tools.json',
     },
+    ...(process.platform === 'darwin'
+      ? [
+          { from: 'resources/bin/cua-driver', to: 'bin/cua-driver' },
+          { from: 'resources/licenses/cua-driver/LICENSE', to: 'licenses/cua-driver/LICENSE' },
+          { from: 'resources/licenses/cua-driver/MPL-2.0.txt', to: 'licenses/cua-driver/MPL-2.0.txt' },
+          { from: 'resources/licenses/cua-driver/Inter-OFL.txt', to: 'licenses/cua-driver/Inter-OFL.txt' },
+          { from: 'resources/licenses/cua-driver/CDLA-Permissive-2.0.txt', to: 'licenses/cua-driver/CDLA-Permissive-2.0.txt' },
+          { from: 'resources/licenses/cua-driver/THIRD_PARTY_NOTICES.txt', to: 'licenses/cua-driver/THIRD_PARTY_NOTICES.txt' },
+        ]
+      : []),
     {
       // The app icon is read at runtime by the BrowserWindow `icon` option
       // and by the permission-overlay card, and `files` above does not carry
@@ -233,6 +243,8 @@ const baseDesktopBuilderConfig = {
     // a test in scripts/verify-packaged-app-icons.test.mjs.
     icon: 'assets/app-icons/sky.png',
     forceCodeSigning: true,
+    // Preserve the pinned upstream Developer ID signature and binary digest.
+    signIgnore: ['Contents/Resources/bin/cua-driver$'],
     hardenedRuntime: true,
     notarize: true,
     entitlements: 'build/entitlements.mac.plist',
