@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { ComposerStagingFixture } from './composer-staging-fixture.js';
 import { strict as assert } from 'node:assert';
 import { test, type TestContext } from 'node:test';
 import { parseHTML } from 'linkedom';
@@ -29,10 +30,8 @@ import {
   useComposerMentionsContext,
   type ComposerMentions,
 } from '../../renderer/composer-mentions.js';
-import {
-  ConversationServicesProvider,
-  type ConversationServices,
-} from '../../renderer/features/conversation/index.js';
+import { ConversationServicesProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices } from '../../renderer/features/conversation/testing.js';
 import {
   createSessionCatalogController,
   SessionCatalogContext,
@@ -80,33 +79,13 @@ function installCatalogRenderer(t: TestContext) {
     sessionId: string;
     resolve(skills: InvocableSkillEntry[]): void;
   }> = [];
-  const services: ConversationServices = {
-    listMessages: async () => [],
-    cancelMessage: async () => undefined,
-    reconcileMessage: async () => undefined,
-    subscribeChanges: () => () => undefined,
+  const services = stubConversationServices({
     skills: {
       listInvocable: (sessionId: string) => new Promise<InvocableSkillEntry[]>((resolve) => {
         pending.push({ sessionId, resolve });
       }),
     },
-    sessions: {
-      readSnapshot: async () => {
-        throw new Error('Session snapshot is not used in catalog tests');
-      },
-      readExecutionBoundary: async () => {
-        throw new Error('Execution boundary is not used in catalog tests');
-      },
-    },
-    runtimeHosts: { subscribeChanges: () => () => undefined },
-    workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
-    newTasks: {
-      subscribeChanges: () => () => undefined,
-      listInvocableSkills: async () => [],
-      searchFiles: async () => ({ ok: false, reason: 'no_project' }),
-    },
-    mcp: { subscribeChanges: () => () => undefined },
-  };
+  });
 
   const sessionCatalog = createSessionCatalogController();
   const observations: CatalogObservation[] = [];
@@ -154,11 +133,14 @@ function installCatalogRenderer(t: TestContext) {
           services,
           children: createElement(SessionCatalogContext.Provider, {
             value: sessionCatalog,
-            children: createElement(ComposerMentionsProvider, {
+            children: createElement(ComposerStagingFixture, {
+              draftKey: sessionId,
+              children: createElement(ComposerMentionsProvider, {
               sessionId,
               projectPath,
               skillCatalogRevision,
               children: createElement(Consumer, { sessionId }),
+              }),
             }),
           }),
         }),

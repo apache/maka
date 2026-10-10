@@ -70,25 +70,17 @@ test('discards a pending Project projection after the default Host changes', asy
         return pendingContext.promise;
       },
       subscribeChanges: () => () => {},
-      getLocalSnapshot: async () => ({
-        projects: [],
-        capabilities: NO_PROJECT_CAPABILITIES,
-      }),
-      subscribeLocalChanges: () => () => {},
     },
   };
-  let projects: ProjectRecord[] = [];
-  let selectedProjectId: string | null | undefined;
+  let projectInfo: unknown;
+  let currentProjectId: string | null | undefined;
 
   function Probe() {
     const context = projectContext.useAppShellProjectContext({
-      uiLocale: 'en',
       rendererMountedRef: { current: true },
-      onProjectSelected: () => {},
-      toastApi: { success: () => {}, error: () => {} },
     });
-    projects = context.projects;
-    selectedProjectId = context.selectedProjectId;
+    projectInfo = context.projectInfo;
+    currentProjectId = context.currentProjectId;
     return null;
   }
 
@@ -113,8 +105,8 @@ test('discards a pending Project projection after the default Host changes', asy
     await commitGuardChecked.promise;
   });
 
-  assert.deepEqual(projects, []);
-  assert.equal(selectedProjectId, undefined);
+  assert.equal(projectInfo, null);
+  assert.equal(currentProjectId, undefined);
 });
 
 afterEach(() => {

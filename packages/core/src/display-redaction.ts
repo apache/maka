@@ -26,9 +26,10 @@
 //
 // The backend (main process) has its own separate redactor in
 // redaction.ts for log/persistence sanitization — the two are intentionally
-// different: the display redactor prefers false positives (masking a
-// benign hex is better than leaking a real token), while the backend
-// redactor is stricter to avoid over-redacting structured logs.
+// different: the display redactor masks additional display-specific token
+// shapes and prefers false positives. The backend uses key-aware rules for
+// structured logs, but also inspects assignments nested in text values and
+// masks sensitive-key lookalikes such as `shortcut=key:Enter`.
 
 interface Pattern {
   /** Stable identifier for the masked region in the output. */

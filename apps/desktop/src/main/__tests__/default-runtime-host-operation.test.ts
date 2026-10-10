@@ -23,7 +23,7 @@ import {
   defaultRuntimeHostDiagnosticTarget,
   runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
-} from '../../renderer/default-runtime-host-operation.js';
+} from '../../renderer/platform/desktop/default-runtime-host-operation.js';
 
 afterEach(() => {
   delete (globalThis as { window?: unknown }).window;

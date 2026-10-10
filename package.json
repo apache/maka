@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "engines": {
-    "node": ">=22.19.0"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "packageManager": "npm@11.19.0",
   "releaseToolchain": {
@@ -32,6 +32,7 @@
     "prepare": "npm run sync:model-metadata && node scripts/install-husky.mjs",
     "postinstall": "node scripts/apply-dependency-patches.mjs && node scripts/install-electron-with-retry.mjs",
     "lint": "biome lint .",
+    "test:startup-correctness": "node scripts/test-startup-correctness.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "check:e2e-budget": "npm --workspace @maka/desktop run check:e2e-budget",
@@ -44,6 +45,7 @@
     "build:runtime-host-windows-task-launcher": "node native/runtime-host-windows-task-launcher/build.mjs",
     "lint:runtime-host-peer": "cargo clippy --locked --all-targets --manifest-path native/runtime-host-peer/Cargo.toml -- -D warnings",
     "dev": "npm --workspace @maka/desktop run dev:hmr --",
+    "dev:worktree": "npm --workspace @maka/desktop run dev:worktree --",
     "dev:peer": "npm --workspace @maka/desktop run dev:peer --",
     "dev:full": "npm run build && npm --workspace @maka/desktop run start",
     "dev:full:peer": "npm run build && npm --workspace @maka/desktop run start:peer",
@@ -81,7 +83,7 @@
     "check:runtime-host-peer-dependencies": "node scripts/generate-runtime-host-peer-dependencies.mjs --check",
     "generate:runtime-host-peer-notices": "node scripts/generate-runtime-host-peer-notices.mjs",
     "check:runtime-host-peer-notices": "node scripts/generate-runtime-host-peer-notices.mjs --check",
-    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:model-metadata && npm run check:product-release-identity && npm run check:asf-npm && node --test scripts/product-nightly.test.mjs scripts/desktop-release-targets.test.mjs scripts/verify-linux-harness.test.mjs scripts/desktop-nightly.test.mjs scripts/desktop-nightly-stage.test.mjs scripts/desktop-nightly-release.test.mjs scripts/desktop-nightly-workflow-policy.test.mjs scripts/audit-shipped-dependencies.test.mjs scripts/product-release.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/qualify-released-cli-state-root.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs scripts/prepare-windows-upgrade-baseline.test.mjs scripts/windows-package-source-closure.test.mjs",
+    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:model-metadata && npm run check:product-release-identity && npm run check:asf-npm && node --test scripts/product-nightly.test.mjs scripts/desktop-release-targets.test.mjs scripts/verify-linux-harness.test.mjs scripts/desktop-nightly.test.mjs scripts/desktop-nightly-stage.test.mjs scripts/desktop-nightly-release.test.mjs scripts/desktop-nightly-workflow-policy.test.mjs scripts/audit-shipped-dependencies.test.mjs scripts/product-release.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/qualify-released-cli-state-root.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/macos-update-archive.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs scripts/prepare-windows-upgrade-baseline.test.mjs scripts/windows-package-source-closure.test.mjs",
     "package:macos-arm64": "node scripts/package-macos.mjs arm64",
     "package:macos-x64": "node scripts/package-macos.mjs x64",
     "verify:macos": "node scripts/verify-macos-dmg.mjs",
@@ -97,37 +99,38 @@
     "package:linux": "node scripts/package-linux.mjs",
     "verify:linux": "node scripts/verify-linux.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
-    "astryx:surface-inventory": "node scripts/check-astryx-surface-inventory.mjs",
-    "astryx:surface-inventory:write": "node scripts/generate-astryx-surface-inventory.mjs",
-    "astryx:surface-inventory:test": "node --test scripts/generate-astryx-surface-inventory.test.mjs",
+    "astryx:surface-inventory": "node --enable-source-maps scripts/check-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory:write": "node --enable-source-maps scripts/generate-astryx-surface-inventory.mjs",
+    "astryx:surface-inventory:test": "node --test scripts/generate-astryx-surface-inventory.test.mjs scripts/check-astryx-surface-inventory.test.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "refresh:model-metadata": "node scripts/sync-model-metadata.mjs --refresh",
     "check:model-metadata": "node scripts/sync-model-metadata.mjs --check",
     "check:model-metadata-drift": "node scripts/sync-model-metadata.mjs --drift",
     "generate:bundled-skills": "node scripts/gen-bundled-skill-catalog.mjs",
     "computer-use": "node scripts/computer-use.mjs",
+    "shots:storybook": "node scripts/storybook-visual-diff.mjs",
     "windows:inventory": "node --test scripts/windows-test-inventory.test.mjs && node scripts/windows-test-inventory.mjs --check",
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && npm run smoke:windows:dist",
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
-    "@ai-sdk/provider-utils": "5.0.40",
-    "@astryxdesign/cli": "0.6.2",
-    "@astryxdesign/core": "0.6.2",
-    "@biomejs/biome": "2.5.13",
+    "@ai-sdk/provider-utils": "5.0.51",
+    "@astryxdesign/cli": "0.6.3",
+    "@astryxdesign/core": "0.6.3",
+    "@biomejs/biome": "2.5.14",
     "@electron/asar": "4.3.0",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.3",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "knip": "^6.35.1",
+    "knip": "^6.38.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
     "yaml": "2.9.1"
   },
   "allowScripts": {
-    "esbuild@0.27.7": true,
-    "@jackwener/opencli@1.8.4": true,
+    "esbuild@0.28.2": true,
+    "@jackwener/opencli@1.8.8": true,
     "node-pty@1.2.0-beta.15": true
   },
   "overrides": {
@@ -136,6 +139,9 @@
     },
     "@modelcontextprotocol/sdk": {
       "@hono/node-server": "2.0.12"
+    },
+    "@jackwener/opencli@1.8.8": {
+      "undici": "7.29.1"
     }
   }
 }

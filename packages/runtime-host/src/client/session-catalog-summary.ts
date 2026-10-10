@@ -33,6 +33,7 @@ export function projectSessionCatalogSummary(
     name: session.name,
     isFlagged: session.isFlagged,
     isArchived: session.isArchived,
+    ...(session.archivedAt === undefined ? {} : { archivedAt: session.archivedAt }),
     labels: [...session.labels],
     hasUnread: session.hasUnread,
     ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
@@ -40,11 +41,25 @@ export function projectSessionCatalogSummary(
       ? {}
       : { lastMessagePreview: session.lastMessagePreview }),
     status: session.status,
+    ...(session.backgroundActivity === undefined
+      ? {}
+      : { backgroundActivity: session.backgroundActivity }),
+    ...(session.backgroundActivityVersion === undefined
+      ? {}
+      : { backgroundActivityVersion: session.backgroundActivityVersion }),
     ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
     ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
     ...(session.liveRunState === undefined
       ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
+      : {
+          runningTurnIds: [...session.liveRunState.runningTurnIds],
+          ...(session.liveRunState.runEpoch === undefined
+            ? {}
+            : { runEpoch: session.liveRunState.runEpoch }),
+          ...(session.liveRunState.hostGeneration === undefined
+            ? {}
+            : { runHostGeneration: session.liveRunState.hostGeneration }),
+        }),
     ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
     ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
     ...(session.subagent === undefined ? {} : { subagent: session.subagent }),

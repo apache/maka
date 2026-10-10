@@ -112,7 +112,7 @@ test('refuses to create through a symlinked Skill location ancestor', async () =
   await withFixture(async ({ projectRoot, workspaceRoot, homeDirectory, root }) => {
     const outside = join(root, 'outside');
     await mkdir(outside);
-    await symlink(outside, join(projectRoot, '.maka'));
+    await symlink(outside, join(projectRoot, '.maka'), process.platform === 'win32' ? 'junction' : 'dir');
 
     assert.deepEqual(
       await resolveSkillLocation(
@@ -129,7 +129,7 @@ test('accepts a Skill location whose ancestor symlink stays inside the containme
   await withFixture(async ({ projectRoot, workspaceRoot, homeDirectory }) => {
     const contained = join(projectRoot, 'contained');
     await mkdir(contained);
-    await symlink(contained, join(projectRoot, '.maka'));
+    await symlink(contained, join(projectRoot, '.maka'), process.platform === 'win32' ? 'junction' : 'dir');
 
     const created = await resolveSkillLocation(
       { projectRoot, workspaceRoot, homeDirectory },

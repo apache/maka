@@ -29,8 +29,14 @@ export interface WorkHubResultOrigin {
   targetTurnId: string;
 }
 
+export interface CloudActivationOrigin {
+  kind: 'cloud_activation';
+  activationId: string;
+}
+
 export type TurnOrigin =
   | WorkHubResultOrigin
+  | CloudActivationOrigin
   | { kind: 'scheduled_task'; scheduledTaskId: string }
   | { kind: 'legacy_automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
@@ -44,12 +50,17 @@ export type TurnOrigin =
     };
 
 type ScheduledTaskOrigin = Extract<TurnOrigin, { kind: 'scheduled_task' }>;
+type CloudActivationOriginType = Extract<TurnOrigin, { kind: 'cloud_activation' }>;
 type LegacyAutomationOrigin = Extract<TurnOrigin, { kind: 'legacy_automation' }>;
 type GoalOrigin = Extract<TurnOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<TurnOrigin, { kind: 'agent_graph' }>;
 
 const SCHEDULED_TASK_ORIGIN_SHAPE = defineObjectShape<ScheduledTaskOrigin>()(
   ['kind', 'scheduledTaskId'],
+  [],
+);
+const CLOUD_ACTIVATION_ORIGIN_SHAPE = defineObjectShape<CloudActivationOriginType>()(
+  ['kind', 'activationId'],
   [],
 );
 const LEGACY_AUTOMATION_ORIGIN_SHAPE = defineObjectShape<LegacyAutomationOrigin>()(
@@ -90,6 +101,13 @@ export function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
     typeof value.scheduledTaskId === 'string'
   ) {
     return { kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId };
+  }
+  if (
+    hasExactShape(value, CLOUD_ACTIVATION_ORIGIN_SHAPE) &&
+    value.kind === 'cloud_activation' &&
+    typeof value.activationId === 'string'
+  ) {
+    return { kind: 'cloud_activation', activationId: value.activationId };
   }
   if (
     hasExactShape(value, LEGACY_AUTOMATION_ORIGIN_SHAPE) &&

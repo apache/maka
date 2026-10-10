@@ -267,6 +267,7 @@ export const TUI_COPY_RESOURCES = {
       title: 'MCP SERVERS',
       footer: {
         back: 'Esc back',
+        diagnostic: '↑/↓ scroll · Esc back',
         readOnly: '↑/↓ scroll · q/Esc close',
         manage:
           'a Add · Enter Edit · Space Enable/disable · t Test · r Reconnect · d Remove · Esc Close',
@@ -279,6 +280,8 @@ export const TUI_COPY_RESOURCES = {
       loading: 'Loading mcp.json and discovering tools…',
       loadError:
         'MCP configuration could not be loaded; no tools were published to the Runtime Host.',
+      invalidConfigFile:
+        'Invalid JSON in {path}. The file is unchanged. Quit maka, back up and repair this file before retrying.',
       noServers: 'No MCP servers are configured. Press a to add one.',
       publication: {
         waiting: 'waiting to publish',
@@ -375,6 +378,7 @@ export const TUI_COPY_RESOURCES = {
       title: 'MCP 服务器',
       footer: {
         back: 'Esc 返回',
+        diagnostic: '↑/↓ 滚动 · Esc 返回',
         readOnly: '↑/↓ 滚动 · q/Esc 关闭',
         manage: 'a 添加 · Enter 编辑 · Space 启用/停用 · t 测试 · r 重连 · d 删除 · Esc 关闭',
         managePublication:
@@ -384,6 +388,8 @@ export const TUI_COPY_RESOURCES = {
       unavailableDetail: '远程 Runtime Host 的客户端 MCP 工具关联将在后续版本提供。',
       loading: '正在读取 mcp.json 并发现工具…',
       loadError: '无法读取或应用 MCP 配置；没有向 Runtime Host 发布工具。',
+      invalidConfigFile:
+        '{path} 中的 JSON 无效，文件未被修改。请退出 maka，备份并修复此文件后重试。',
       noServers: '尚未配置 MCP 服务器。按 a 添加。',
       publication: {
         waiting: '等待发布',
@@ -475,6 +481,7 @@ export const TUI_COPY_RESOURCES = {
       title: 'MCP 伺服器',
       footer: {
         back: 'Esc 返回',
+        diagnostic: '↑/↓ 捲動 · Esc 返回',
         readOnly: '↑/↓ 捲動 · q/Esc 關閉',
         manage: 'a 新增 · Enter 編輯 · Space 啟用/停用 · t 測試 · r 重新連線 · d 刪除 · Esc 關閉',
         managePublication:
@@ -484,6 +491,8 @@ export const TUI_COPY_RESOURCES = {
       unavailableDetail: '遠端 Runtime Host 的用戶端 MCP 工具關聯將於後續版本提供。',
       loading: '正在讀取 mcp.json 並探索工具…',
       loadError: '無法讀取或套用 MCP 設定；未向 Runtime Host 發佈任何工具。',
+      invalidConfigFile:
+        '{path} 中的 JSON 無效，檔案未被修改。請退出 maka，備份並修復此檔案後重試。',
       noServers: '尚未設定 MCP 伺服器。按 a 新增。',
       publication: {
         waiting: '等待發佈',
@@ -1075,8 +1084,8 @@ export const TUI_COPY_RESOURCES = {
           '  Ctrl+T — expand or collapse all thinking in view',
           '  Scroll the transcript with your terminal or trackpad',
           '  Enter (during a turn) — steer: inject a message into the running turn',
-          '  Alt+Enter (during a turn) — queue a message for the next turn',
-          '  Alt+↑ — take queued messages back into the editor to re-edit',
+          '  Tab (during a turn) — queue a message for the next turn',
+          '  Shift+← — take queued messages back into the editor to re-edit',
           '  Esc Esc (during a turn) — interrupt the turn',
           '  Esc Esc (when idle) — rewind to an earlier turn',
           '  Ctrl+C — stop the turn, clear input, or press twice to exit',
@@ -1129,8 +1138,8 @@ export const TUI_COPY_RESOURCES = {
           '  Ctrl+T — 展开或折叠视图中的所有思考块',
           '  使用终端或触控板滚动对话记录',
           '  Enter（任务运行中）— 将消息注入当前任务',
-          '  Alt+Enter（任务运行中）— 将消息排入下一轮',
-          '  Alt+↑ — 将已排队消息取回编辑器重新编辑',
+          '  Tab（任务运行中）— 将消息排入下一轮',
+          '  Shift+← — 将已排队消息取回编辑器重新编辑',
           '  Esc Esc（任务运行中）— 中断当前任务',
           '  Esc Esc（空闲时）— 回退到较早的轮次',
           '  Ctrl+C — 停止任务、清空输入，或连续按两次退出',
@@ -1183,8 +1192,8 @@ export const TUI_COPY_RESOURCES = {
           '  Ctrl+T — 展開或摺疊檢視中的所有思考區塊',
           '  使用終端機或觸控板捲動對話記錄',
           '  Enter（任務執行中）— 將訊息注入目前任務',
-          '  Alt+Enter（任務執行中）— 將訊息排入下一輪',
-          '  Alt+↑ — 將已排隊訊息取回編輯器重新編輯',
+          '  Tab（任務執行中）— 將訊息排入下一輪',
+          '  Shift+← — 將已排隊訊息取回編輯器重新編輯',
           '  Esc Esc（任務執行中）— 中斷目前任務',
           '  Esc Esc（空閒時）— 回退到較早的輪次',
           '  Ctrl+C — 停止任務、清空輸入，或連續按兩次退出',
@@ -1445,17 +1454,17 @@ export const TUI_COPY_RESOURCES = {
     en: {
       steeringLabel: 'Steering:',
       queuedLabel: 'Queued:',
-      requeueHint: 'Alt+↑ take queued messages back to re-edit',
+      requeueHint: 'Shift+← take queued messages back to re-edit',
     },
     'zh-CN': {
       steeringLabel: '注入：',
       queuedLabel: '已排队：',
-      requeueHint: 'Alt+↑ 取回队列以重新编辑',
+      requeueHint: 'Shift+← 取回队列以重新编辑',
     },
     'zh-TW': {
       steeringLabel: '調整方向：',
       queuedLabel: '已排入佇列：',
-      requeueHint: 'Alt+↑ 取回佇列訊息重新編輯',
+      requeueHint: 'Shift+← 取回佇列訊息重新編輯',
     },
   },
   'session-status': {

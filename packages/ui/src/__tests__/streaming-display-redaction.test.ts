@@ -151,7 +151,6 @@ describe('streaming display redaction', () => {
     const previousText = redactSecrets(source);
     const continued = appendStreamingDisplayRedaction(previousText, 'suffix');
     assert.equal(continued.text, previousText);
-    assert.equal(continued.redacted, true);
 
     const terminated = appendStreamingDisplayRedaction(
       continued.text,
@@ -161,33 +160,29 @@ describe('streaming display redaction', () => {
     assert.equal(terminated.text, redactSecrets(`${source}suffix done`));
   });
 
-  it('redacts cross-delta secrets before per-delta and total truncation', () => {
+  it('redacts cross-delta secrets before total truncation', () => {
     for (const apply of [applyAssistantDelta, applyThinkingDelta]) {
       const initialState = createStreamingDisplayRedactionState();
       const opener = apply('', 'Authorization:', {
         locale: 'zh-CN' as const,
-        maxDeltaChars: 128,
         maxTotalChars: 512,
         redactionState: initialState,
       });
       const secret = `Bearer ${'s'.repeat(5_000)}`;
-      const truncated = apply(opener.text, secret, {
+      const redacted = apply(opener.text, secret, {
         locale: 'zh-CN' as const,
-        maxDeltaChars: 128,
         maxTotalChars: 512,
         redactionState: opener.redactionState,
       });
-      assert.equal(truncated.text.includes('s'.repeat(32)), false);
-      assert.equal(truncated.truncated, true);
+      assert.equal(redacted.text.includes('s'.repeat(32)), false);
       assert.ok(
-        (truncated.redactionState?.settledChars ?? 0)
-          + (truncated.redactionState?.pendingChars ?? 0)
+        (redacted.redactionState?.settledChars ?? 0)
+          + (redacted.redactionState?.pendingChars ?? 0)
         <= 512,
       );
 
       const total = apply('', 'safe '.repeat(200), {
         locale: 'zh-CN' as const,
-        maxDeltaChars: 2_000,
         maxTotalChars: 128,
         redactionState: createStreamingDisplayRedactionState(),
       });
@@ -200,7 +195,7 @@ describe('streaming display redaction', () => {
     }
   });
 
-  it('does not expose a secret continuation after an oversized contextual delta', () => {
+  it('does not expose a secret continuation after a long contextual delta', () => {
     let projection = applyLiveTurnEvent(undefined, {
       type: 'text_delta', id: 'text-1', turnId: 'turn-1', messageId: 'message-1', ts: 1,
       text: 'Authorization: Bearer ',
@@ -218,17 +213,19 @@ describe('streaming display redaction', () => {
     assert.equal(projection.steps[0]?.text?.text, redactedPrefix);
   });
 
-  it('preserves an unfinished opener when production truncates a reseed delta', () => {
+  it('keeps a large reseed delta whole and preserves its unfinished opener', () => {
     for (const opener of [
       'Authorization: Bearer ',
       'x-api-key: ',
       'https://example.test/?access_token=',
     ]) {
+      const seed = `${'safe '.repeat(4_000)}${opener}`;
       let projection = applyLiveTurnEvent(undefined, {
         type: 'text_delta', id: 'text-1', turnId: 'turn-1', messageId: 'message-1', ts: 1,
-        text: `${'safe '.repeat(1_000)}${opener}`,
+        startOffset: 0, text: seed,
       });
-      assert.equal(projection.steps[0]?.text?.truncated, true);
+      assert.equal(projection.steps[0]?.text?.text, redactSecrets(seed));
+      assert.equal(projection.steps[0]?.text?.truncated, false);
 
       const secret = 'secret-value-arriving-after-reseed';
       projection = applyLiveTurnEvent(projection, {
@@ -248,7 +245,6 @@ describe('streaming display redaction', () => {
       `x-api-key: ${'k'.repeat(2_000)}`,
     ]) {
       const result = applyAssistantDelta('', input, {
-        maxDeltaChars: input.length,
         maxTotalChars: 256,
         redactionState: createStreamingDisplayRedactionState(),
         locale: 'en',
@@ -269,7 +265,6 @@ describe('streaming display redaction', () => {
     const secondSecret = 'b'.repeat(5_000);
     const input = `Authorization: Bearer ${firstSecret} safe Authorization: Bearer ${secondSecret}`;
     const result = applyAssistantDelta('', input, {
-      maxDeltaChars: input.length,
       maxTotalChars,
       locale: 'en',
     });
@@ -294,7 +289,6 @@ describe('streaming display redaction', () => {
         `ghp_${'a'.repeat(1_000)}`,
       ]) {
         const compacted = apply('', input, {
-          maxDeltaChars: 2_000,
           maxTotalChars,
           locale: 'en',
         });
@@ -308,7 +302,6 @@ describe('streaming display redaction', () => {
 
         const invalidatingCharacter = input.startsWith('ghp_') ? '_' : 'g';
         const invalidated = apply(compacted.text, invalidatingCharacter, {
-          maxDeltaChars: 2_000,
           maxTotalChars,
           redactionState: compacted.redactionState,
           locale: 'en',
@@ -325,7 +318,6 @@ describe('streaming display redaction', () => {
     const maxTotalChars = 64;
     const source = `${'safe-prefix '.repeat(20)}ghp_${'a'.repeat(1_000)}`;
     const first = applyThinkingDelta('', source, {
-      maxDeltaChars: source.length,
       maxTotalChars,
       locale: 'en',
     });
@@ -333,7 +325,6 @@ describe('streaming display redaction', () => {
     assert.ok(first.redactionState);
 
     const invalidated = applyThinkingDelta(first.text, '_', {
-      maxDeltaChars: source.length,
       maxTotalChars,
       redactionState: first.redactionState,
       locale: 'en',
@@ -344,16 +335,18 @@ describe('streaming display redaction', () => {
     );
   });
 
-  it('continues thinking after a per-delta truncation below the total cap', () => {
+  it('keeps a Host-merged thinking slice whole below the total cap', () => {
+    const merged = 'reasoning '.repeat(1_600);
     let projection = applyLiveTurnEvent(undefined, {
       type: 'thinking_delta', id: 'thinking-1', turnId: 'turn-2',
-      messageId: 'message-2', ts: 1, text: 'x'.repeat(5_000),
+      messageId: 'message-2', ts: 1, startOffset: 0, text: merged,
     });
     projection = applyLiveTurnEvent(projection, {
       type: 'thinking_delta', id: 'thinking-2', turnId: 'turn-2',
-      messageId: 'message-2', ts: 2, text: 'VISIBLE_NEXT',
+      messageId: 'message-2', ts: 2, startOffset: merged.length, text: 'VISIBLE_NEXT',
     });
-    assert.equal(projection.steps[0]?.thinking?.text.includes('VISIBLE_NEXT'), true);
+    assert.equal(projection.steps[0]?.thinking?.text, `${merged}VISIBLE_NEXT`);
+    assert.equal(projection.steps[0]?.thinking?.truncated, false);
   });
 
   it('continues tail-kept thinking after the total cap without leaking an active secret', () => {
@@ -361,7 +354,6 @@ describe('streaming display redaction', () => {
       '',
       `${'safe '.repeat(40)}Authorization: Bearer ${'s'.repeat(1_000)}`,
       {
-        maxDeltaChars: 2_000,
         maxTotalChars: 128,
         redactionState: createStreamingDisplayRedactionState(),
         locale: 'en',
@@ -371,7 +363,6 @@ describe('streaming display redaction', () => {
     assert.ok(first.redactionState);
 
     const continuation = applyThinkingDelta(first.text, 'SECRET_CONTINUATION', {
-      maxDeltaChars: 2_000,
       maxTotalChars: 128,
       redactionState: first.redactionState,
       locale: 'en',
@@ -379,7 +370,6 @@ describe('streaming display redaction', () => {
     assert.equal(continuation.text.includes('SECRET_CONTINUATION'), false);
 
     const terminated = applyThinkingDelta(continuation.text, ' done', {
-      maxDeltaChars: 2_000,
       maxTotalChars: 128,
       redactionState: continuation.redactionState,
       locale: 'en',
@@ -391,7 +381,6 @@ describe('streaming display redaction', () => {
     const maxTotalChars = 64;
     const source = `${'safe '.repeat(20)}Authorization:${' '.repeat(40)}`;
     const first = applyThinkingDelta('', source, {
-      maxDeltaChars: source.length,
       maxTotalChars,
       locale: 'en',
     });
@@ -400,7 +389,6 @@ describe('streaming display redaction', () => {
 
     const continuation = 'Bearer secret-value done';
     const resumed = applyThinkingDelta(first.text, continuation, {
-      maxDeltaChars: source.length,
       maxTotalChars,
       redactionState: first.redactionState,
       locale: 'en',
@@ -413,21 +401,18 @@ describe('streaming display redaction', () => {
 
     const overlongSource = `${'safe '.repeat(20)}Authorization:${' '.repeat(100)}`;
     const overlong = applyThinkingDelta('', overlongSource, {
-      maxDeltaChars: overlongSource.length,
       maxTotalChars,
       locale: 'en',
     });
     assert.ok(overlong.redactionState);
     assert.ok(overlong.redactionState.pendingChars <= maxTotalChars + 1);
     const hiddenSecret = applyThinkingDelta(overlong.text, 'Bearer hidden-secret', {
-      maxDeltaChars: overlongSource.length,
       maxTotalChars,
       redactionState: overlong.redactionState,
       locale: 'en',
     });
     assert.equal(hiddenSecret.text.includes('hidden-secret'), false);
     const afterLine = applyThinkingDelta(hiddenSecret.text, '\nVISIBLE', {
-      maxDeltaChars: overlongSource.length,
       maxTotalChars,
       redactionState: hiddenSecret.redactionState,
       locale: 'en',

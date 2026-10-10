@@ -88,12 +88,18 @@ test('browser IPC isolates owned renderer documents and their native parents', a
   class FakeWindow extends EventEmitter {
     visible = true;
     minimized = false;
+    contentView: Electron.View | undefined;
     isVisible(): boolean { return this.visible; }
     isMinimized(): boolean { return this.minimized; }
     isDestroyed(): boolean { return false; }
   }
   const windows = new Map<unknown, FakeWindow>();
-  const BrowserWindow = { fromWebContents: (contents: unknown) => windows.get(contents) ?? null };
+  const BrowserWindow = {
+    fromWebContents: (contents: FakeRenderer) => {
+      if (contents.isDestroyed()) throw new TypeError('Object has been destroyed');
+      return windows.get(contents) ?? null;
+    },
+  };
   const testGlobal = globalThis as typeof globalThis & {
     __makaBrowserIpcMain?: typeof ipcMain;
     __makaBrowserWindow?: typeof BrowserWindow;
@@ -115,13 +121,13 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     const workHub = new FakeRenderer('workhub-document-frame', 1.25);
     const mainWindow = new FakeWindow();
     const floatingWindow = new FakeWindow();
+    const mainParent = { getVisible: () => true } as unknown as Electron.View;
+    mainWindow.contentView = mainParent;
     windows.set(main, mainWindow);
     windows.set(workHub, mainWindow);
     let workHubVisible = true;
-    const mainParent = { getVisible: () => true } as unknown as Electron.View;
     const workHubParent = { getVisible: () => workHubVisible } as unknown as Electron.View;
     const owned = new Map<Electron.WebContents, Electron.View>([
-      [main as unknown as Electron.WebContents, mainParent],
       [workHub as unknown as Electron.WebContents, workHubParent],
     ]);
     let hostActive = true;
@@ -152,14 +158,18 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       },
     };
     const mainWindowController = {
-      getBrowserViews: () => manager,
+      getBrowserViews: (resolve: typeof parentResolver) => {
+        parentResolver = resolve;
+        return manager;
+      },
       isMainRenderer: (contents: Electron.WebContents) => contents === main as unknown as Electron.WebContents,
-      ownsRenderer: (contents: Electron.WebContents) => !contents.isDestroyed() && owned.has(contents),
-      browserParentForRenderer: (contents: Electron.WebContents) => owned.get(contents),
-      setBrowserViewParentResolver: (resolve: typeof parentResolver) => { parentResolver = resolve; },
     };
     const browserIpc = registerBrowserIpc({
       mainWindowController: mainWindowController as never,
+      auxiliaryWindowRegistry: {
+        rendererParent: (contents: Electron.WebContents) =>
+          !contents.isDestroyed() ? owned.get(contents) : undefined,
+      },
       isHostActive: (candidate) => hostActive && candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
     });
 
@@ -345,6 +355,16 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.equal(coordinationController.disposed, true, 'destroying the owner releases its page even while Main presents it');
     assert.equal(controllers.get(mainKey), mainController, 'destroying WorkHub preserves the main browser session');
     assert.equal(mainController.disposed, false);
+
+    // Closing Main destroys its WebContents before selection cleanup runs.
+    // Electron rejects fromWebContents on that destroyed native object.
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 5);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 5);
+    assert.doesNotThrow(() => main.destroy());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(mainController.disposed, true, 'closing Main still releases its owned browser page');
+    assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
+    assert.equal(mainWindow.listenerCount('close'), 0, 'renderer teardown removes window listeners');
   } finally {
     hooks.deregister();
     setBridgeFactoryForTest(null);

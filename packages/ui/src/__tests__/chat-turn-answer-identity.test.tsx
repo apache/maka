@@ -87,12 +87,20 @@ function turnWith(timeline: TurnTimelineItem[]): TurnViewModel {
 function renderTurn(
   root: ReturnType<typeof createRoot>,
   turn: TurnViewModel,
-  liveStreaming?: { runningStatus?: boolean; onStreamingSettled?: (messageId?: string) => void },
+  liveStreaming?: {
+    runningStatus?: boolean;
+    onStreamingSettled?: (messageId?: string) => void;
+  },
+  safeResumeAction?: { pending: boolean; onResume(): void },
 ): Promise<void> {
   return act(() => {
     root.render(
       <LocaleProvider locale="en">
-        <TurnView turn={turn} liveStreaming={liveStreaming} />
+        <TurnView
+          turn={turn}
+          liveStreaming={liveStreaming}
+          safeResumeAction={safeResumeAction}
+        />
       </LocaleProvider>,
     );
   }) as unknown as Promise<void>;

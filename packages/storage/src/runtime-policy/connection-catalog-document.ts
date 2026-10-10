@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import { applyConnectionModelOverrides, modelLimitsConflict } from '@maka/core/model-thinking';
+import {
+  applyConnectionModelOverrides,
+  declaredModelApiProtocol,
+  modelLimitsConflict,
+} from '@maka/core/model-thinking';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { LegacyModelFactsReader } from '../model-facts-store.js';
@@ -25,12 +29,14 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionName,
   decodeConnectionSlug,
   decodeConnectionTarget,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  decodeDefaultApiProtocol,
   decodeProviderType,
   decodeRuntimePolicyEntityId,
   normalizeConnectionCatalogEntryUpdateForProvider,
@@ -57,8 +63,8 @@ import {
   providerReportsCompleteModelCatalog,
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
-import { pruneModelOverrides } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
+import { upgradeLegacyCustomProvider } from './legacy-custom-connection.js';
 import {
   codecError,
   decodeConnectionInput,
@@ -73,7 +79,7 @@ import {
 } from './document-io.js';
 
 const FILE = 'connection-catalog.json';
-const SCHEMA_VERSION = 2 as const;
+const SCHEMA_VERSION = 3 as const;
 
 export interface ConnectionCatalogDocument {
   readonly schemaVersion: typeof SCHEMA_VERSION;
@@ -109,7 +115,11 @@ export class ConnectionCatalogDocumentOwner {
       'defaultTarget',
       'connections',
     ]);
-    if (raw.schemaVersion !== SCHEMA_VERSION && raw.schemaVersion !== 1) {
+    if (
+      raw.schemaVersion !== SCHEMA_VERSION &&
+      raw.schemaVersion !== 2 &&
+      raw.schemaVersion !== 1
+    ) {
       throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
     }
     if (
@@ -118,6 +128,10 @@ export class ConnectionCatalogDocumentOwner {
     ) {
       throw codecError('invalid_document', `${FILE}.connections must be a bounded array`);
     }
+    // v3 folded the three per-protocol custom types into `custom`; the next
+    // catalog write persists the upgraded rows.
+    const upgrade =
+      raw.schemaVersion === SCHEMA_VERSION ? <T>(item: T) => item : upgradeLegacyCustomProvider;
     // Releases before #3054 could persist the non-executable Gemini account
     // preview. Keep the raw file recoverable on read, but omit retired entries
     // from the active catalog; the next catalog mutation writes the canonical
@@ -146,7 +160,7 @@ export class ConnectionCatalogDocumentOwner {
     const legacyFacts = legacyRead?.document.overrides;
     const connections = maintainedConnections.map((item) => {
       if (raw.schemaVersion !== 1)
-        return decodePersistedDomain(() => decodeCanonicalConnectionCatalogEntry(item));
+        return decodePersistedDomain(() => decodeCanonicalConnectionCatalogEntry(upgrade(item)));
       const legacy = item as Record<string, any>;
       const { relayModelProfiles, lastTestModelFactsFingerprint: _fingerprint, ...base } = legacy;
       const overrides = new Map<string, Record<string, unknown>>();
@@ -203,10 +217,12 @@ export class ConnectionCatalogDocumentOwner {
         });
       }
       return decodePersistedDomain(() =>
-        decodeCanonicalConnectionCatalogEntry({
-          ...base,
-          ...(overrides.size ? { modelOverrides: Object.fromEntries(overrides) } : {}),
-        }),
+        decodeCanonicalConnectionCatalogEntry(
+          upgrade({
+            ...base,
+            ...(overrides.size ? { modelOverrides: Object.fromEntries(overrides) } : {}),
+          }),
+        ),
       );
     });
     const catalogIdentities = [...retiredConnections, ...connections];
@@ -347,6 +363,9 @@ export class ConnectionCatalogDocumentOwner {
       name: changes.name,
       providerType: previous.providerType,
       ...(changes.baseUrl === undefined ? {} : { baseUrl: changes.baseUrl }),
+      ...(previous.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: previous.defaultApiProtocol }),
       enabled: changes.enabled,
       enabledModelIds: changes.enabledModelIds,
       // Profile-table semantics, in order:
@@ -420,9 +439,38 @@ export class ConnectionCatalogDocumentOwner {
     if (current.revision !== input.expectedCatalogRevision) {
       return revisionConflict(input.expectedCatalogRevision, current.revision);
     }
+    const connections = [...current.connections];
+    if (input.target && input.enableModel) {
+      const { connectionId, modelId } = input.target;
+      const index = connections.findIndex((item) => item.connectionId === connectionId);
+      const connection = connections[index];
+      if (!connection?.enabled || isRetiredProvider(connection.providerType)) {
+        return deepFreeze({ kind: 'invalid_default_target', target: input.target });
+      }
+      if (!connection.enabledModelIds.includes(modelId)) {
+        const model = resolveConnectionModelCatalog({
+          ...connection,
+          models: [...connection.models],
+          enabledModelIds: [...connection.enabledModelIds],
+          defaultModel: '',
+        }).find((entry) => entry.id === modelId);
+        if (
+          !model?.canUseAsChatDefault ||
+          connection.enabledModelIds.length >= CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS
+        ) {
+          return deepFreeze({ kind: 'invalid_default_target', target: input.target });
+        }
+        const { lastTest: _lastTest, ...withoutTest } = connection;
+        connections[index] = {
+          ...withoutTest,
+          revision: nextRevision(connection.revision),
+          enabledModelIds: [...connection.enabledModelIds, modelId],
+        };
+      }
+    }
     // The one call that states a target, so the one place an unusable one is
     // the caller's error rather than a consequence to release.
-    if (input.target && !isValidTarget(input.target, current.connections)) {
+    if (input.target && !isValidTarget(input.target, connections)) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
     // Refused rather than accepted-then-released: committing it would succeed
@@ -437,7 +485,7 @@ export class ConnectionCatalogDocumentOwner {
     ) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
-    const next = this.nextDocument(current, current.connections, input.target);
+    const next = this.nextDocument(current, connections, input.target);
     await this.write(root, next);
     return committed(next);
   }
@@ -447,6 +495,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionModelDiscoveryResult,
+    preserveSelection = false,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     if (result.models.length === 0) {
@@ -461,22 +510,27 @@ export class ConnectionCatalogDocumentOwner {
       current.defaultTarget?.connectionId === previous.connectionId
         ? current.defaultTarget
         : undefined;
-    const reconciled = reconcileConnectionAfterModelFetch(
-      {
-        defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
-        enabledModelIds: previous.enabledModelIds,
-        // An entry always carries a `models` array, so "has an inventory" has
-        // to be read off its contents: empty means this connection has never
-        // had a list to pick from and discovery may seed one. A non-empty one
-        // means an empty selection is the user's answer.
-        hasModelInventory: previous.models.length > 0,
-      },
-      result.models,
-      {
-        aliases: modelIdAliasesForProvider(previous.providerType),
-        authoritative: providerReportsCompleteModelCatalog(previous.providerType),
-      },
-    );
+    const reconciled = preserveSelection
+      ? {
+          defaultModel: currentDefaultTarget?.modelId ?? '',
+          enabledModelIds: [...previous.enabledModelIds],
+        }
+      : reconcileConnectionAfterModelFetch(
+          {
+            defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
+            enabledModelIds: previous.enabledModelIds,
+            // An entry always carries a `models` array, so "has an inventory" has
+            // to be read off its contents: empty means this connection has never
+            // had a list to pick from and discovery may seed one. A non-empty one
+            // means an empty selection is the user's answer.
+            hasModelInventory: previous.models.length > 0,
+          },
+          result.models,
+          {
+            aliases: modelIdAliasesForProvider(previous.providerType),
+            authoritative: providerReportsCompleteModelCatalog(previous.providerType),
+          },
+        );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
     // decided is its own bug — fail closed where it is still attributable.
@@ -525,6 +579,7 @@ export class ConnectionCatalogDocumentOwner {
     rawConnectionId: string,
     rawSlug: string,
     rawProviderType: unknown,
+    rawDefaultApiProtocol: unknown,
     rawName: string | null,
     rawBaseUrl: string | null,
     rawEnabledModelIds: readonly string[],
@@ -537,6 +592,9 @@ export class ConnectionCatalogDocumentOwner {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
     const slug = decodeConnectionInput(() => decodeConnectionSlug(rawSlug));
     const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
+    const defaultApiProtocol = decodeConnectionInput(() =>
+      decodeDefaultApiProtocol(rawDefaultApiProtocol, providerType),
+    );
     const requestedName =
       rawName === null ? null : decodeConnectionInput(() => decodeConnectionName(rawName));
     const definition = PROVIDER_REGISTRY[providerType];
@@ -548,7 +606,10 @@ export class ConnectionCatalogDocumentOwner {
       (connection) => connection.connectionId === connectionId,
     );
     const previous = current.connections[index];
-    if (previous && previous.providerType !== providerType) {
+    if (
+      previous &&
+      (previous.providerType !== providerType || previous.defaultApiProtocol !== defaultApiProtocol)
+    ) {
       return { kind: 'slug_conflict' };
     }
     if (previous && previous.slug !== slug) {
@@ -609,6 +670,7 @@ export class ConnectionCatalogDocumentOwner {
       slug,
       name: definition.label,
       providerType,
+      ...(defaultApiProtocol === undefined ? {} : { defaultApiProtocol }),
       enabled: false,
       enabledModelIds: [],
       models: [],
@@ -877,19 +939,16 @@ export function findConnection(
 export function connectionTestModelBasis(
   connection: ConnectionCatalogEntry,
 ): ConnectionTestModelBasis {
-  const models = new Map(
-    connection.enabledModelIds.map((id) => [
-      id,
-      { id, apiProtocol: undefined as ConnectionCatalogEntry['models'][number]['apiProtocol'] },
-    ]),
-  );
-  for (const model of applyConnectionModelOverrides(connection).models) {
-    models.set(model.id, { id: model.id, apiProtocol: model.apiProtocol });
-  }
+  const ids = new Set([
+    ...connection.enabledModelIds,
+    ...applyConnectionModelOverrides(connection).models.map((model) => model.id),
+  ]);
   return {
     enabledModelIds: [...connection.enabledModelIds],
     modelSource: connection.modelSource,
-    models: [...models.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    models: [...ids]
+      .sort((a, b) => a.localeCompare(b))
+      .map((id) => ({ id, apiProtocol: declaredModelApiProtocol(connection, id) })),
   };
 }
 

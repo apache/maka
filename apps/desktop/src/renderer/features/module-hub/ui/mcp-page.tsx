@@ -29,22 +29,17 @@ import { isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Button,
   Collapsible,
-  Divider,
   EmptyState,
-  Heading,
   HStack,
   IconButton,
   List,
-  ListItem,
   SegmentedControl,
   SegmentedControlItem,
   Skeleton,
   StackItem,
-  StatusDot,
   Switch,
   Text,
   TextInput,
-  Toolbar,
   VStack,
 } from '@astryxdesign/core';
 import {
@@ -52,10 +47,15 @@ import {
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
 import { Banner } from '@astryxdesign/core/Banner';
+import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
 import {
   ModulePage,
+  ModulePageSection,
+  ModuleRow,
+  DETAIL_LABEL_WIDTH,
+  StatusLabel,
   BotBrandLogo,
   Selector,
   TextArea,
@@ -66,7 +66,6 @@ import {
   type ModuleHubHeader,
   type ModulePageDetail,
   type StatusSemantic,
-  dotForStatus,
 } from '@maka/ui';
 
 import {
@@ -82,7 +81,7 @@ import {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  mcpWriteFailureMessage,
+  mcpConfigFailureMessage,
   type McpEditorDraft,
 } from '../model/mcp-page-model.js';
 import { classifiedErrorFallback } from '../../../application/contracts/operation-diagnostics.js';
@@ -90,7 +89,7 @@ import { getMcpCopy, type McpCopy } from '../../../locales/mcp-copy.js';
 import { getSettingsSharedCopy } from '../../../locales/settings-shared-copy.js';
 import { formatCommandLine } from '../model/mcp-command-line.js';
 import { defaultRuntimeHostDiagnosticTarget } from '../controller/default-runtime-host.js';
-import { useMcpController } from '../controller/use-mcp-controller.js';
+import { isChromeServer, useMcpController } from '../controller/use-mcp-controller.js';
 import {
   validateMcpEditorDraft,
   type McpEditorErrors,
@@ -109,11 +108,13 @@ type EditorState = {
 type McpEditConflict = 'changed' | 'removed' | null;
 
 type McpMarkSource = { image: string } | { mask: string } | 'feishu';
-type McpSuggestion = { id: 'notion' | 'linear' | 'feishu' | 'mcp-docs'; url: string; mark: McpMarkSource };
+// The Chrome suggestion has no URL: its command comes from main.
+type McpSuggestion = { id: keyof McpCopy['page']['suggestions']; url?: string; mark: McpMarkSource };
 
-// Notion's mark paints its own white page, so it stays an image; the
+// Chrome's and Notion's marks paint their own colours, so they stay images; the
 // single-colour Linear and MCP marks are masks that take the plate's ink.
 const MCP_SUGGESTIONS: readonly McpSuggestion[] = [
+  { id: 'chrome', mark: { image: new URL('../../../assets/provider-brands/chrome.svg', import.meta.url).href } },
   { id: 'notion', url: 'https://mcp.notion.com/mcp', mark: { image: new URL('../../../assets/provider-brands/notion.svg', import.meta.url).href } },
   { id: 'linear', url: 'https://mcp.linear.app/mcp', mark: { mask: new URL('../../../assets/provider-brands/linear.svg', import.meta.url).href } },
   { id: 'feishu', url: 'https://mcp.feishu.cn/mcp', mark: 'feishu' },
@@ -126,7 +127,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const locale = useUiLocale();
   const copy = getMcpCopy(locale);
   const controller = useMcpController();
-  const { config, statuses, busy, reload, error } = controller;
+  const { config, statuses, chrome, busy, reload, error } = controller;
   const [editor, setEditor] = useState<EditorState>(null);
   const [editorErrors, setEditorErrors] = useState<McpEditorErrors>({});
   const [editorOpen, setEditorOpen] = useState(false);
@@ -136,7 +137,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const mounted = useMountedRef();
   const toast = useToast();
   useEffect(() => {
-    if (error) toast.error(copy.errors.update, mcpWriteFailureMessage(error, copy) ?? classifiedErrorFallback(error, getSettingsSharedCopy(locale).unknownError, locale, 'mcp'), undefined, defaultRuntimeHostDiagnosticTarget(error));
+    if (error) toast.error(copy.errors.update, mcpConfigFailureMessage(error, copy) ?? classifiedErrorFallback(error, getSettingsSharedCopy(locale).unknownError, locale, 'mcp'), undefined, defaultRuntimeHostDiagnosticTarget(error));
   }, [error, locale, copy, toast]);
   // Set when a remove starts, consumed once the row has actually left the
   // list — which only happens when the config write lands.
@@ -159,7 +160,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
   const configuredHosts = new Set(entries.map(([, server]) => hostOf(server)).filter(Boolean));
-  const suggestions = busy === 'load' ? [] : MCP_SUGGESTIONS.filter((suggestion) => !configuredHosts.has(hostOf(suggestion)));
+  const suggestions = busy === 'load' ? [] : MCP_SUGGESTIONS.filter((suggestion) => suggestion.url
+    ? !configuredHosts.has(hostOf(suggestion))
+    : chrome !== null && !entries.some(([, server]) => isChromeServer(server, chrome)));
 
   // Derived, not stored: deleting or filtering out a row closes its detail.
   const selectedServer = connectionEntries.find(([serverId]) => serverId === selectedServerId) ?? null;
@@ -221,7 +224,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function addSuggestion(suggestion: McpSuggestion) {
-    const server: McpServerConfig = { enabled: true, url: suggestion.url, transport: 'auto', protocol: 'auto' };
+    const server: McpServerConfig = suggestion.url
+      ? { enabled: true, url: suggestion.url, transport: 'auto', protocol: 'auto' }
+      : { enabled: true, command: chrome!.command };
     const result = await controller.add(suggestion.id, server);
     if (!result || !mounted.current) return;
     if (result.status === 'exists') {
@@ -231,6 +236,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     }
     setSelectedServerId(suggestion.id);
     toast.success(copy.toast.saved, copy.toast.savedDetail);
+    if (!suggestion.url && !chrome?.connected) await controller.connectChrome();
   }
 
   async function saveDraft(event: React.FormEvent) {
@@ -288,20 +294,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     toast.success(copy.toast.removed);
   }
 
-  const attentionCount = entries.filter(([serverId, server]) => {
-    const { status } = presentStatus(statusById.get(serverId), server.enabled !== false, copy);
-    return status === 'attention' || status === 'error';
-  }).length;
+  const awaitsChrome = (server: McpServerConfig) => isChromeServer(server, chrome) && !chrome?.connected;
   const searchVisible = entries.length >= SEARCH_MIN_CONNECTIONS || normalizedQuery !== '';
+  const newDraft = (mode: 'manual' | 'json') => openEditor({ mode, draft: { ...createEmptyMcpDraft(), kind: 'remote' }, source: '', editing: null });
 
-  const connectionsPanel = busy === 'load' || entries.length > 0 ? (
-    <div className="maka-module-page-panel" ref={rowsContainerRef} {...rovingRows}>
-      {normalizedQuery ? (
-        <div className="maka-module-search-summary" role="status" aria-live="polite">
-          <span>{copy.page.searchMatches(connectionEntries.length)}</span>
-          <Button variant="ghost" size="sm" onClick={() => setQuery('')} label={copy.page.clearSearch} />
-        </div>
-      ) : null}
+  const connectionsSection = busy === 'load' || entries.length > 0 ? (
+    <ModulePageSection title={copy.page.connections}>
       {busy === 'load' ? (
         /* Loading (DESIGN.md §10): rows are predictable, so the list loads as
            row-shaped skeletons in the rows' own geometry — three rows, this
@@ -328,44 +326,32 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         /* Selectable, otherwise inert rows: every per-connection control lives
            in the detail dialog — no interactive elements inside an interactive
            list item. */
-        <List
-          density="balanced"
-          hasDividers
-          className="maka-module-page-rows"
-          header={<Heading level={2} className="maka-mcp-section-heading">{copy.page.connections}</Heading>}
-        >
-          {connectionEntries.map(([serverId, server]) => {
-            const state = presentStatus(statusById.get(serverId), server.enabled !== false, copy);
-            const endpoint = endpointFor(server);
-            return (
-              <ListItem
-                key={serverId}
-                label={serverId}
-                description={(
-                  <span className="maka-module-row-description" data-maka-contract="mcp-server-description">
-                    <code title={endpoint}>{endpoint}</code>
-                  </span>
-                )}
-                startContent={<McpMark server={server} />}
-                endContent={<McpStatusLabel state={state} />}
-                isSelected={selectedServerId === serverId}
-                onClick={() => setSelectedServerId(serverId)}
-              />
-            );
-          })}
-        </List>
+        <div ref={rowsContainerRef} {...rovingRows}>
+          <List density="balanced" hasDividers aria-label={copy.page.connections}>
+            {connectionEntries.map(([serverId, server]) => {
+              const state = presentStatus(statusById.get(serverId), server.enabled !== false, awaitsChrome(server), copy);
+              return (
+                <ModuleRow
+                  key={serverId}
+                  label={serverId}
+                  description={hostOf(server) ?? endpointFor(server)}
+                  mark={<McpMark server={server} isChrome={isChromeServer(server, chrome)} />}
+                  end={<StatusLabel status={state.status} label={state.label} />}
+                  isSelected={selectedServerId === serverId}
+                  onClick={() => setSelectedServerId(serverId)}
+                />
+              );
+            })}
+          </List>
+        </div>
       )}
-    </div>
+    </ModulePageSection>
   ) : null;
 
   return (
     <section className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout" data-module="mcp" data-maka-contract="module-main" aria-label={props.hubHeader?.title ?? 'MCP'}>
       <ModulePage
         title={props.hubHeader?.title ?? 'MCP'}
-        meta={[
-          copy.page.metaConnections(entries.length),
-          attentionCount > 0 ? copy.page.metaAttention(attentionCount) : null,
-        ].filter(Boolean).join(' · ')}
         onDetailDismiss={() => setSelectedServerId(null)}
         // The editor takes the detail's place instead of stacking on it;
         // closing the editor brings the detail back.
@@ -373,8 +359,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           serverId: selectedServer[0],
           server: selectedServer[1],
           status: statusById.get(selectedServer[0]),
+          isChrome: isChromeServer(selectedServer[1], chrome),
+          awaitingChrome: awaitsChrome(selectedServer[1]),
           busy,
           copy,
+          onConnectChrome: () => void controller.connectChrome(),
           onToggle: (enabled) => void controller.setEnabled(selectedServer[0], enabled),
           onEdit: () => openEdit(selectedServer[0], selectedServer[1]),
           onTest: () => void testServer(selectedServer[0]),
@@ -390,7 +379,17 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             role="group"
             aria-label={copy.page.actionsAria}
           >
-            <Button variant="primary" onClick={() => openEditor({ mode: 'manual', draft: { ...createEmptyMcpDraft(), kind: 'remote' }, source: '', editing: null })} isDisabled={busy !== null} icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />} label={copy.page.add} />
+            {searchVisible ? (
+              <TextInput
+                value={query}
+                onChange={setQuery}
+                placeholder={copy.page.searchPlaceholder}
+                label={copy.page.searchAria}
+                isLabelHidden
+                startIcon={Search}
+                width={220}
+              />
+            ) : null}
             <IconButton
               variant="ghost"
               label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
@@ -399,64 +398,53 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               isDisabled={busy === 'load'}
               icon={<RefreshCcw size={ICON_SIZE.chrome} aria-hidden="true" />}
             />
-          </div>
-        }
-        toolbar={(
-          <div className="maka-module-page-bar">
-            {props.hubHeader?.badge}
-            <Toolbar
-              size="sm"
-              label={copy.page.toolbarAria}
-              endContent={searchVisible ? (
-                <TextInput
-                  value={query}
-                  onChange={setQuery}
-                  placeholder={copy.page.searchPlaceholder}
-                  label={copy.page.searchAria}
-                  isLabelHidden
-                  width={220}
-                />
-              ) : undefined}
+            <DropdownMenu
+              button={{ label: copy.page.add, variant: 'primary', isDisabled: busy !== null, icon: <Plus size={ICON_SIZE.chrome} aria-hidden="true" /> }}
+              items={[
+                { label: copy.editor.manual, onClick: () => newDraft('manual') },
+                { label: copy.editor.pasteJson, onClick: () => newDraft('json') },
+              ]}
             />
           </div>
-        )}
+        }
+        toolbar={props.hubHeader?.badge ? <div className="maka-module-page-bar">{props.hubHeader.badge}</div> : undefined}
       >
-        <VStack gap={0}>
-          {connectionsPanel}
+        <div className="maka-module-page-panel">
+          {normalizedQuery ? (
+            <div className="maka-module-search-summary" role="status" aria-live="polite">
+              <span>{copy.page.searchMatches(connectionEntries.length)}</span>
+              <Button variant="ghost" size="sm" onClick={() => setQuery('')} label={copy.page.clearSearch} />
+            </div>
+          ) : null}
+          {connectionsSection}
           {suggestions.length > 0 ? (
-            <div className="maka-module-page-panel">
-              <List
-                density="balanced"
-                hasDividers
-                className="maka-module-page-rows"
-                header={<Heading level={2} className="maka-mcp-section-heading">{copy.page.recommended}</Heading>}
-              >
+            <ModulePageSection title={copy.page.recommended}>
+              <List density="balanced" hasDividers aria-label={copy.page.recommended}>
                 {suggestions.map((suggestion) => {
                   const { name, description } = copy.page.suggestions[suggestion.id];
                   return (
-                    <ListItem
+                    <ModuleRow
                       key={suggestion.id}
                       label={name}
                       description={description}
-                      startContent={<McpMark suggestion={suggestion} />}
-                      endContent={(
-                        <IconButton
+                      mark={<McpMark suggestion={suggestion} />}
+                      end={(
+                        <Button
                           variant="secondary"
                           size="sm"
-                          label={copy.page.addSuggestion(name)}
-                          tooltip={copy.page.addSuggestion(name)}
+                          label={copy.page.add}
+                          aria-label={copy.page.addSuggestion(name)}
                           isDisabled={busy !== null}
                           onClick={() => void addSuggestion(suggestion)}
-                          icon={<Plus size={ICON_SIZE.chrome} aria-hidden="true" />}
                         />
                       )}
                     />
                   );
                 })}
               </List>
-            </div>
+            </ModulePageSection>
           ) : null}
-        </VStack>
+        </div>
       </ModulePage>
 
       {editor && (
@@ -500,13 +488,13 @@ function mcpImportFailureMessage(
   }
 }
 
-function McpMark(props: { server: McpServerConfig } | { suggestion: McpSuggestion }) {
-  const suggestion = 'suggestion' in props
-    ? props.suggestion
-    : MCP_SUGGESTIONS.find((candidate) => hostOf(candidate) === hostOf(props.server));
+function McpMark(props: { server: McpServerConfig; isChrome: boolean } | { suggestion: McpSuggestion }) {
+  const suggestion = 'suggestion' in props ? props.suggestion
+    : props.isChrome ? MCP_SUGGESTIONS.find((candidate) => candidate.id === 'chrome')
+    : MCP_SUGGESTIONS.find((candidate) => candidate.url && hostOf(candidate) === hostOf(props.server));
   const mark = suggestion?.mark;
   // Feishu's mark is already an app-icon tile, so it takes the plate's place.
-  if (mark === 'feishu') return <BotBrandLogo provider="feishu" width={ICON_SIZE.plate} height={ICON_SIZE.plate} className="maka-mcp-mark" aria-hidden="true" />;
+  if (mark === 'feishu') return <BotBrandLogo provider="feishu" className="maka-mcp-mark" aria-hidden="true" />;
   return (
     <span className="maka-module-market-icon maka-mcp-mark" aria-hidden="true">
       {mark && 'image' in mark ? <img src={mark.image} alt="" />
@@ -517,30 +505,15 @@ function McpMark(props: { server: McpServerConfig } | { suggestion: McpSuggestio
   );
 }
 
-// The dot is decoration beside the same words, so only the words are read.
-function McpStatusLabel(props: { state: McpStatusPresentation }) {
-  const { status, label } = props.state;
-  const dot = status === 'attention' || status === 'error' ? dotForStatus(status)
-    : status === 'active' ? 'neutral'
-    : null;
-  return (
-    <HStack gap={2} vAlign="center" wrap="nowrap">
-      {dot ? (
-        <span aria-hidden="true" className="maka-mcp-status-dot">
-          <StatusDot variant={dot} label={label} isPulsing={status === 'active'} />
-        </span>
-      ) : null}
-      <Text type="supporting" color="secondary">{label}</Text>
-    </HStack>
-  );
-}
-
 function mcpServerDetail(props: {
   serverId: string;
   server: McpServerConfig;
   status?: McpServerStatus;
+  isChrome: boolean;
+  awaitingChrome: boolean;
   busy: string | null;
   copy: McpCopy;
+  onConnectChrome(): void;
   onToggle(enabled: boolean): void;
   onEdit(): void;
   onTest(): void;
@@ -550,80 +523,57 @@ function mcpServerDetail(props: {
   onLogout(): void;
 }): ModulePageDetail {
   const { serverId, server, status, copy } = props;
-  const state = presentStatus(status, server.enabled !== false, copy);
+  const state = presentStatus(status, server.enabled !== false, props.awaitingChrome, copy);
   const loginActive = status?.authorizationPending || props.busy === `login:${serverId}`;
   const disabled = props.busy !== null || loginActive;
-  const note = loginActive ? copy.row.loginPending : status?.error;
+  const awaitingChrome = props.awaitingChrome && server.enabled !== false;
+  // One problem, one sentence, one way out; a healthy server shows no banner.
+  const banner = loginActive
+    ? <Banner status="info" title={copy.row.loginPending} endContent={<Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />} />
+    : status?.state === 'needs-auth'
+      ? <Banner status="warning" title={copy.row.needsAuth} endContent={<Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />} />
+      : awaitingChrome
+        ? <Banner status="warning" title={copy.detail.chromeDisconnected} endContent={<Button size="sm" variant="secondary" isDisabled={disabled} isLoading={props.busy === 'chrome'} onClick={props.onConnectChrome} label={copy.detail.connectChrome} />} />
+        : status?.error
+          ? (
+            <Banner status="error" title={status.error}>
+              {status.stderrTail?.length ? <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre> : undefined}
+            </Banner>
+          )
+          : null;
   return {
     title: serverId,
     subtitle: state.label,
-    startContent: <McpMark server={server} />,
+    startContent: <McpMark server={server} isChrome={props.isChrome} />,
     content: (
-      <VStack gap={4}>
-        {note ? <Text type="body" color="secondary">{note}</Text> : null}
-        <HStack gap={2} vAlign="center" wrap="wrap">
-          <StackItem size="fill">
-            <Switch
-              value={server.enabled !== false}
-              onChange={props.onToggle}
-              isDisabled={disabled}
-              label={copy.detail.enabled}
-            />
-          </StackItem>
-          {loginActive ? (
-            <Button size="sm" variant="secondary" onClick={props.onCancelLogin} label={copy.row.cancelLogin} />
-          ) : (
-            <>
-              {status?.authenticated ? (
-                <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
-              ) : null}
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={props.onTest}
-                isDisabled={disabled}
-                isLoading={props.busy === `test:${serverId}`}
-                label={copy.row.test}
-              />
-              {status?.state === 'needs-auth' ? (
-                <Button size="sm" variant="primary" isDisabled={disabled} onClick={props.onLogin} label={copy.row.login} />
-              ) : null}
-            </>
-          )}
-        </HStack>
-
-        <Divider />
-
-        <MetadataList columns="single" label={{ position: 'start', width: 72 }}>
+      <VStack gap={5}>
+        {banner}
+        <MetadataList columns="single" label={{ position: 'start', width: DETAIL_LABEL_WIDTH }}>
+          <MetadataListItem label={copy.detail.enabled}>
+            <Switch size="sm" value={server.enabled !== false} onChange={props.onToggle} isDisabled={disabled} label={copy.detail.enabled} isLabelHidden />
+          </MetadataListItem>
+          {status?.authenticated && !loginActive ? (
+            <MetadataListItem label={copy.detail.authorized}>
+              <Button size="sm" variant="secondary" isDisabled={disabled} onClick={props.onLogout} label={copy.row.logout} />
+            </MetadataListItem>
+          ) : null}
           <MetadataListItem label={isMcpStdioConfig(server) ? copy.editor.command : copy.detail.address}>
             <code className="maka-mcp-detail-endpoint">{endpointFor(server)}</code>
           </MetadataListItem>
+          {status?.tools.length ? (
+            <MetadataListItem label={copy.detail.tools}>
+              <Text>{status.tools.map((tool) => tool.name).join(', ')}</Text>
+            </MetadataListItem>
+          ) : null}
         </MetadataList>
-
-        {status?.tools.length ? (
-          <VStack gap={2}>
-            <Text type="label" color="secondary">{copy.detail.tools}</Text>
-            <List density="compact" hasDividers>
-              {status.tools.map((tool) => (
-                <ListItem key={tool.name} label={tool.name} description={tool.description} />
-              ))}
-            </List>
-          </VStack>
-        ) : null}
-
-        {status?.stderrTail?.length ? (
-          <VStack gap={2}>
-            <Text type="label" color="secondary">{copy.detail.stderr}</Text>
-            <pre className="maka-mcp-stderr">{status.stderrTail.join('\n')}</pre>
-          </VStack>
-        ) : null}
       </VStack>
     ),
     footer: (
       <HStack gap={2} vAlign="center">
-        <Button variant="destructive" onClick={props.onRemove} isDisabled={disabled} label={copy.row.delete} />
+        <Button variant="ghost" onClick={props.onRemove} isDisabled={disabled} label={copy.row.delete} />
         <StackItem size="fill" />
         <Button variant="secondary" onClick={props.onEdit} isDisabled={disabled} label={copy.row.edit} />
+        <Button variant="secondary" onClick={props.onTest} isDisabled={disabled} isLoading={props.busy === `test:${serverId}`} label={copy.row.test} />
       </HStack>
     ),
   };
@@ -731,7 +681,8 @@ function McpEditorDialog(props: {
                 )}
               </div>
               <Collapsible
-                trigger={props.copy.editor.advanced}
+                trigger={<Text type="label">{props.copy.editor.advanced}</Text>}
+                chevronPosition="start"
                 isOpen={advancedOpen}
                 onOpenChange={setAdvancedOpen}
               >
@@ -775,7 +726,7 @@ function McpEditorDialog(props: {
                     width="100%"
                   />
                   {props.state.draft.kind === 'remote' && (
-                    <Collapsible trigger={props.copy.editor.oauth} defaultIsOpen={Boolean(props.state.draft.oauth)}>
+                    <Collapsible trigger={<Text type="label">{props.copy.editor.oauth}</Text>} chevronPosition="start" defaultIsOpen={Boolean(props.state.draft.oauth)}>
                       <VStack gap={3} className="maka-mcp-advanced-fields">
                         <Text type="supporting" color="secondary">{props.copy.editor.oauthHelp}</Text>
                         <TextInput label={props.copy.editor.clientId} value={props.state.draft.oauth?.clientId ?? ''} onChange={(value) => updateOAuth('clientId', value || undefined)} />
@@ -806,18 +757,20 @@ function endpointFor(server: McpServerConfig): string {
 }
 
 function hostOf(server: McpServerConfig | McpSuggestion): string | null {
-  if ('command' in server) return null;
+  if ('command' in server || !server.url) return null;
   try { return new URL(server.url).host; } catch { return null; }
 }
 
 type McpStatusPresentation = { label: string; status: StatusSemantic };
 
-function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): McpStatusPresentation {
+function presentStatus(status: McpServerStatus | undefined, enabled: boolean, awaitingChrome: boolean, copy: McpCopy): McpStatusPresentation {
   if (status?.authorizationPending) return { label: copy.row.authorizing, status: 'active' };
   if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, status: 'neutral' };
   if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, status: 'neutral' };
   if (status.state === 'connecting') return { label: copy.row.connecting, status: 'active' };
   if (status.state === 'needs-auth') return { label: copy.row.needsAuth, status: 'attention' };
+  // The server starts without the extension, but it cannot browse yet.
+  if (status.state === 'connected' && awaitingChrome) return { label: copy.row.awaitingChrome, status: 'attention' };
   if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), status: 'success' };
   return { label: copy.row.failed, status: 'error' };
 }

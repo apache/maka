@@ -292,6 +292,21 @@ describe('effective model projection reduction', () => {
 
     assert.deepEqual(candidates, []);
   });
+
+  test('measures the size gate in UTF-8 bytes so Chinese text is not let through', () => {
+    const event = toolResultEvent('rt-1', 'turn-1', { body: '界'.repeat(3_000) });
+
+    const candidates = collectToolResultArchiveCandidates(
+      [event, toolResultEvent('rt-2', 'turn-2', { body: 'tail' })],
+      { enabled: true },
+      4,
+    );
+
+    assert.deepEqual(
+      candidates.map((candidate) => candidate.runtimeEventId),
+      ['rt-1'],
+    );
+  });
 });
 
 describe('durable transition writer', () => {

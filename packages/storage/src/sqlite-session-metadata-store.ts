@@ -186,6 +186,7 @@ import {
 } from './recall-fold.js';
 import {
   buildSqliteSessionCatalogPageQuery,
+  sqliteArchivedTaskRowPredicate,
   type SqliteSessionCatalogCursor,
 } from './sqlite-session-catalog-query.js';
 import {
@@ -282,6 +283,11 @@ export interface SessionMetadataRecord {
 export interface SessionMetadataCatalogRecord extends SessionMetadataRecord {
   readonly activityAt: number;
   readonly lastMessagePreview?: string;
+  /**
+   * When the Session last entered the archive. Absent while it is not
+   * archived, and for a Session archived before the time was recorded.
+   */
+  readonly archivedAt?: number;
 }
 
 export interface SessionCatalogRevisionState {
@@ -1203,6 +1209,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          metadata.archived_at,
           projection.activity_at,
           projection.last_message_preview
         FROM session_catalog_projection projection
@@ -1276,6 +1283,121 @@ export class SqliteSessionMetadataStore {
             )
             .all(sessionId);
     return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
+  }
+
+  /**
+   * Archive-retention candidates, oldest archive first: the rows Settings ›
+   * Archived tasks shows (the catalog's own archived-row predicate), less
+   * Agent Graph operators, which retire only with their root, and less any
+   * family a pinned member keeps. A row that no longer decodes is returned as
+   * such, so a sweep can count it and move past it.
+   */
+  async listArchiveRetentionCandidates(query: {
+    readonly archivedBefore?: number;
+    readonly after?: { readonly archivedAt?: number; readonly sessionId: string };
+    readonly limit: number;
+  }): Promise<
+    Array<
+      | (SessionMetadataRecord & { readonly archivedAt?: number })
+      | { readonly undecodable: true; readonly sessionId: string; readonly archivedAt?: number }
+    >
+  > {
+    this.assertOpen();
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 256) {
+      throw new Error('Archive retention candidate limit must be between 1 and 256');
+    }
+    const candidate = archiveRetentionCandidatePredicate();
+    const where = [candidate.sql];
+    const parameters: Array<string | number> = [...candidate.parameters];
+    if (query.archivedBefore !== undefined) {
+      where.push('(metadata.archived_at IS NULL OR metadata.archived_at < ?)');
+      parameters.push(query.archivedBefore);
+    }
+    if (query.after) {
+      assertSafeSessionId(query.after.sessionId);
+      where.push('(COALESCE(metadata.archived_at, -1), metadata.session_id) > (?, ?)');
+      parameters.push(query.after.archivedAt ?? -1, query.after.sessionId);
+    }
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          metadata.session_id,
+          metadata.payload_json,
+          metadata.metadata_version,
+          metadata.committed_at,
+          metadata.archived_at
+        FROM session_metadata metadata
+        JOIN session_catalog_projection projection
+          ON projection.session_id = metadata.session_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY COALESCE(metadata.archived_at, -1), metadata.session_id
+        LIMIT ?
+      `,
+      )
+      .all(...parameters, query.limit) as unknown as Array<
+      SessionMetadataRow & { archived_at: number | null }
+    >;
+    return rows.map((row) => {
+      const position = typeof row.archived_at === 'number' ? { archivedAt: row.archived_at } : {};
+      try {
+        const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
+        return { ...decodeRecord(row), ...(archivedAt === undefined ? {} : { archivedAt }) };
+      } catch {
+        return { undecodable: true as const, sessionId: row.session_id, ...position };
+      }
+    });
+  }
+
+  /**
+   * How many families `listArchiveRetentionCandidates` would offer, and the
+   * earliest clock start among them under a policy enabled at `enabledAt`: a
+   * family starts when its most recently archived member did, and never before
+   * enablement.
+   */
+  async countArchiveRetentionCandidates(
+    enabledAt: number,
+  ): Promise<{ readonly families: number; readonly firstStart?: number }> {
+    this.assertOpen();
+    const candidate = archiveRetentionCandidatePredicate();
+    const row = this.db
+      .prepare(
+        `
+        SELECT COUNT(*) AS families, MIN(start) AS first_start
+        FROM (
+          SELECT MAX(MAX(COALESCE(metadata.archived_at, ?), ?)) AS start
+          FROM session_metadata metadata
+          JOIN session_catalog_projection projection
+            ON projection.session_id = metadata.session_id
+          WHERE ${candidate.sql}
+          GROUP BY COALESCE(metadata.revision_root_session_id, metadata.session_id)
+        )
+      `,
+      )
+      .get(enabledAt, enabledAt, ...candidate.parameters) as {
+      families: number;
+      first_start: number | null;
+    };
+    return {
+      families: row.families,
+      ...(typeof row.first_start === 'number' ? { firstStart: row.first_start } : {}),
+    };
+  }
+
+  async readLatestSessionMetadataTime(): Promise<number | undefined> {
+    this.assertOpen();
+    const row = this.db
+      .prepare(
+        `
+        SELECT MAX(committed_at) AS committed_at, MAX(archived_at) AS archived_at
+        FROM session_metadata
+      `,
+      )
+      .get() as { committed_at: number | null; archived_at: number | null } | undefined;
+    const times = [row?.committed_at, row?.archived_at].filter(
+      (value): value is number => typeof value === 'number' && Number.isFinite(value),
+    );
+    return times.length === 0 ? undefined : Math.max(...times);
   }
 
   async reconcileOrphanedAgentGraphRetirements(): Promise<string[]> {
@@ -1447,6 +1569,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          metadata.archived_at,
           COALESCE(projection.activity_at, 0) AS activity_at,
           projection.last_message_preview
         FROM session_metadata metadata
@@ -2179,6 +2302,7 @@ export class SqliteSessionMetadataStore {
   async readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]> {
     this.assertOpen();
     for (const sessionId of targetSessionIds) assertSafeSessionId(sessionId);
@@ -2289,11 +2413,11 @@ export class SqliteSessionMetadataStore {
         ) {
           continue;
         }
-        const stopResolution = this.readMessageByIdSync(
-          WORKHUB_COORDINATION_SESSION_ID,
-          `whz_${terminalSuffix}`,
-        );
+        const stopResolution =
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whzt_${terminalSuffix}`) ??
+          this.readMessageByIdSync(WORKHUB_COORDINATION_SESSION_ID, `whz_${terminalSuffix}`);
         if (
+          !includeStopped &&
           stopResolution?.type === 'workhub_coordination' &&
           stopResolution.kind === 'delegation_stop_resolved' &&
           stopResolution.outcome !== 'not_owned'
@@ -3376,12 +3500,20 @@ export class SqliteSessionMetadataStore {
   }> {
     this.assertOpen();
     assertAgentGraphSupervisorWakeAttempt(request);
+    if (
+      request.maxAttempts !== undefined &&
+      (!Number.isSafeInteger(request.maxAttempts) || request.maxAttempts < 1)
+    ) {
+      throw new Error('Agent graph supervisor wake max attempts must be positive');
+    }
     return this.transaction(() => {
       const wake = this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
       if (
         wake.status === 'delivered' ||
         wake.status === 'running' ||
-        wake.status === 'waiting_permission'
+        wake.status === 'waiting_permission' ||
+        wake.status === 'exhausted' ||
+        (request.maxAttempts !== undefined && wake.attemptCount >= request.maxAttempts)
       ) {
         return { wake, acquired: false };
       }
@@ -3399,9 +3531,18 @@ export class SqliteSessionMetadataStore {
           WHERE graph_id = ?
             AND wake_id = ?
             AND status IN ('pending', 'retryable_failed')
+            AND (? IS NULL OR attempt_count < ?)
         `,
         )
-        .run(request.attemptId, request.turnId, now, request.graphId, request.wakeId);
+        .run(
+          request.attemptId,
+          request.turnId,
+          now,
+          request.graphId,
+          request.wakeId,
+          request.maxAttempts ?? null,
+          request.maxAttempts ?? null,
+        );
       if (updated.changes !== 1) {
         return {
           wake: this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId),
@@ -3502,6 +3643,36 @@ export class SqliteSessionMetadataStore {
           wake.status,
         );
       return this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
+    });
+  }
+
+  async exhaustAgentGraphSupervisorWake(
+    graphId: string,
+    wakeId: string,
+    reason: string,
+  ): Promise<AgentGraphSupervisorWakeRecord> {
+    this.assertOpen();
+    assertGraphLookupIdentity(graphId, 'graph id');
+    assertGraphLookupIdentity(wakeId, 'supervisor wake id');
+    if (!reason.trim() || reason.length > 4_000) {
+      throw new Error(
+        'Agent graph supervisor wake exhaustion reason must be non-empty and bounded',
+      );
+    }
+    return this.transaction(() => {
+      const wake = this.requireAgentGraphSupervisorWakeSync(graphId, wakeId);
+      if (wake.status === 'exhausted') return wake;
+      if (wake.status !== 'retryable_failed') {
+        throw new SessionMetadataConflictError('Agent graph supervisor wake is not retryable');
+      }
+      this.db
+        .prepare(`
+        UPDATE agent_graph_supervisor_wakes
+        SET status = 'exhausted', failure_reason = ?, updated_at = ?
+        WHERE graph_id = ? AND wake_id = ? AND status = 'retryable_failed'
+      `)
+        .run(reason, this.now(), graphId, wakeId);
+      return this.requireAgentGraphSupervisorWakeSync(graphId, wakeId);
     });
   }
 
@@ -4446,8 +4617,11 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     const identities = uniqueVersionedSessionIdentities(sessions);
     return this.transaction(() => {
+      // One instant for the whole set, so a family archived together reads as
+      // archived together.
+      const archivedAt = this.now();
       const records = identities.map(({ sessionId, expectedVersion }) =>
-        this.setArchivedSync(sessionId, expectedVersion, isArchived),
+        this.setArchivedSync(sessionId, expectedVersion, isArchived, archivedAt),
       );
       if (isArchived) this.deleteGoalAuthorities(identities);
       return records;
@@ -4502,7 +4676,7 @@ export class SqliteSessionMetadataStore {
       }
       const deletedAt = this.now();
       for (const { sessionId, expectedVersion } of archiveIdentities) {
-        this.setArchivedSync(sessionId, expectedVersion, true);
+        this.setArchivedSync(sessionId, expectedVersion, true, deletedAt);
       }
       for (const { sessionId } of present) {
         const deleted = this.db
@@ -4851,6 +5025,7 @@ export class SqliteSessionMetadataStore {
     sessionId: string,
     expectedVersion: number,
     isArchived: boolean,
+    archivedAt: number,
   ): SessionMetadataRecord {
     const current = this.readRecordSync(sessionId);
     if (!current) throw new SessionNotFoundError(sessionId);
@@ -4862,7 +5037,13 @@ export class SqliteSessionMetadataStore {
       );
     }
     const next = normalizeSessionHeader({ ...current.header, isArchived }, sessionId);
-    return this.persistHeaderSync(sessionId, current, next, { skipNoop: true });
+    // A Session already in the requested state is a no-op below, so an
+    // archived Session keeps the time it was first archived; only a real
+    // transition writes the column. Every other writer leaves it alone.
+    return this.persistHeaderSync(sessionId, current, next, {
+      skipNoop: true,
+      archivedAt: isArchived ? archivedAt : null,
+    });
   }
 
   private persistHeaderSync(
@@ -4872,6 +5053,8 @@ export class SqliteSessionMetadataStore {
     options: {
       skipNoop?: boolean;
       catalogPreview?: { readonly kind: 'replace'; readonly value?: string };
+      /** Set only by the archive lifecycle writer; null clears the column. */
+      archivedAt?: number | null;
     } = {},
   ): SessionMetadataRecord {
     if (next.id !== sessionId) {
@@ -4906,7 +5089,8 @@ export class SqliteSessionMetadataStore {
           llm_connection_slug = ?,
           model = ?,
           metadata_version = ?,
-          committed_at = ?
+          committed_at = ?,
+          archived_at = CASE WHEN ? = 1 THEN ? ELSE archived_at END
         WHERE session_id = ? AND metadata_version = ?
       `,
       )
@@ -4927,6 +5111,8 @@ export class SqliteSessionMetadataStore {
         next.model,
         metadataVersion,
         committedAt,
+        options.archivedAt === undefined ? 0 : 1,
+        options.archivedAt ?? null,
         sessionId,
         current.metadataVersion,
       );
@@ -6013,6 +6199,7 @@ interface OrphanedAgentGraphOperatorRow extends OwnedAgentGraphOperatorRow {
 }
 
 interface SessionMetadataCatalogRow extends SessionMetadataRow {
+  archived_at: number | null;
   activity_at: number;
   last_message_preview: string | null;
 }
@@ -6218,6 +6405,7 @@ function decodeAgentGraphSupervisorWakeRow(
       'waiting_permission',
       'delivered',
       'superseded',
+      'exhausted',
       'retryable_failed',
     ].includes(row.status) ||
     !Number.isSafeInteger(row.attemptCount) ||
@@ -6301,6 +6489,28 @@ function agentGraphScheduleUpdateRequest(
   return request;
 }
 
+function archiveRetentionCandidatePredicate(): { sql: string; parameters: readonly string[] } {
+  const row = sqliteArchivedTaskRowPredicate();
+  return {
+    // The pinned-family exclusion is deliberately uncorrelated: SQLite
+    // evaluates the pinned family roots once, instead of rescanning
+    // session_metadata for every candidate. The correlated form was quadratic
+    // (about 1 s at 10k Sessions) and runs synchronously on the Host thread.
+    // No index covers is_flagged/is_archived (migration 26 dropped them).
+    sql: `(
+      metadata.is_flagged = 0
+      AND ${row.sql}
+      AND json_type(metadata.payload_json, '$.subagentParent.graph') IS NULL
+      AND COALESCE(metadata.revision_root_session_id, metadata.session_id) NOT IN (
+        SELECT COALESCE(pinned.revision_root_session_id, pinned.session_id)
+        FROM session_metadata pinned
+        WHERE pinned.is_flagged = 1
+      )
+    )`,
+    parameters: row.parameters,
+  };
+}
+
 function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
   const parsed = JSON.parse(row.payload_json) as SessionHeader;
   if (
@@ -6322,11 +6532,21 @@ function decodeCatalogRecord(row: SessionMetadataCatalogRow): SessionMetadataCat
     throw new Error(`Invalid SQLite Session catalog activity for ${row.session_id}`);
   }
   const lastMessagePreview = decodeCatalogPreview(row.last_message_preview, row.session_id);
+  const archivedAt = decodeCatalogArchivedAt(row.archived_at, row.session_id);
   return {
     ...decodeRecord(row),
     activityAt: row.activity_at,
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+    ...(archivedAt === undefined ? {} : { archivedAt }),
   };
+}
+
+function decodeCatalogArchivedAt(value: unknown, sessionId: string): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Invalid SQLite Session archive time for ${sessionId}`);
+  }
+  return value;
 }
 
 function decodeCatalogPreview(value: unknown, sessionId: string): string | undefined {

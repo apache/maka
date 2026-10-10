@@ -146,12 +146,6 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
   const copy = getConversationCopy(locale).messages.systemNotes;
   if (kind === "context_compacted") return copy.contextCompacted;
   if (kind === "context_compaction_failed_open") return copy.contextCompactionFailedOpen;
-  if (kind === "context_provider_dropping") {
-    const dropping = data as { inputTokens?: unknown; priorInputTokens?: unknown } | undefined;
-    const used = typeof dropping?.inputTokens === "number" ? dropping.inputTokens : 0;
-    const prior = typeof dropping?.priorInputTokens === "number" ? dropping.priorInputTokens : 0;
-    return copy.contextProviderDropping(used, prior);
-  }
   if (kind === "context_overflow_after_compaction") return copy.contextOverflowAfterCompaction;
   if (kind === "context_reported_window_exceeded") {
     const exceeded = data as
@@ -361,6 +355,7 @@ export interface TurnViewModel {
    * Absent on hand-built view models, which are treated as non-evidence.
    */
   statusSource?: TurnRecord["statusSource"];
+  abortSource?: string;
   retriedFromTurnId?: string;
   regeneratedFromTurnId?: string;
   errorClass?: string;
@@ -716,6 +711,7 @@ export function materializeTurns(
         turnId,
         status: record?.status ?? "completed",
         statusSource: record?.statusSource ?? "inferred",
+        ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.retriedFromTurnId
           ? { retriedFromTurnId: record.retriedFromTurnId }
           : {}),

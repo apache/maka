@@ -1127,8 +1127,13 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    const allowedKeys = ['kind', 'inputDigest', 'maxSteps'];
+    const decodedOrigin = decodeTurnOrigin(value.origin);
+    const origin = decodedOrigin?.kind === 'cloud_activation' ? decodedOrigin : undefined;
+    const allowedKeys = ['kind', 'inputDigest', 'maxSteps', 'origin'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    if (value.origin !== undefined && origin === undefined) {
       throw new Error('Invalid root execution descriptor');
     }
     if (value.inputDigest !== undefined && !isSha256Digest(value.inputDigest)) {
@@ -1146,6 +1151,7 @@ export function normalizeRootExecutionDescriptor(value: unknown): RootExecutionD
       kind: 'external_message',
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
+      ...(origin !== undefined ? { origin } : {}),
     });
   }
   if (value.kind === 'workhub_coordination') {
@@ -1441,8 +1447,4 @@ export function hasExactKeys(
 ): boolean {
   const keys = Object.keys(record);
   return keys.length === expected.length && expected.every((key) => Object.hasOwn(record, key));
-}
-
-export function sanitizeJson(_key: string, value: unknown): unknown {
-  return value === undefined ? undefined : value;
 }

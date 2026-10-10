@@ -28,7 +28,7 @@ import type { SessionEvent } from '@maka/core/events';
 import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
+import { createAppShellSessionEventHandlers } from '../../renderer/features/conversation/testing.js';
 import {
   ConversationServicesProvider,
   type ConversationHostChange,
@@ -77,6 +77,17 @@ describe('Active execution boundary read model', () => {
     assert.equal(
       deriveDesktopExecutionBoundarySurface('session-a', widened, 'ask').permissionMode,
       'ask',
+    );
+  });
+
+  it('shows a pending mode change only once the boundary is known', () => {
+    assert.deepEqual(
+      deriveDesktopExecutionBoundarySurface('session-a', widened, 'ask', 'bypass'),
+      { permissionMode: 'bypass', localInteractionAvailable: true },
+    );
+    assert.deepEqual(
+      deriveDesktopExecutionBoundarySurface('session-a', undefined, 'ask', 'bypass'),
+      { permissionMode: undefined, localInteractionAvailable: false },
     );
   });
 });

@@ -21,7 +21,9 @@ import { realpath, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const FILESYSTEM_WORKER_BUNDLE_NAME = 'filesystem-worker.js';
+// `.mjs` so Node never looks for a package.json to decide the module type:
+// the Windows AppContainer sandbox denies that read and the worker crashes.
+export const FILESYSTEM_WORKER_BUNDLE_NAME = 'filesystem-worker.mjs';
 
 export type FilesystemWorkerResourceLocation =
   | { kind: 'runtime'; moduleUrl?: string }

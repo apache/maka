@@ -61,7 +61,7 @@ import {
 import { usageStatsRecords, usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
-  'settings-models',
+  'settings-connections',
   'turn-narrative',
   'turn-narrative-browser',
   'chat-prompt-rail',
@@ -163,7 +163,7 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     ...(fixture.timezone ? { timezone: fixture.timezone } : {}),
   };
   switch (fixture.scenario) {
-    case 'settings-models':
+    case 'settings-connections':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
       // Any open face will do — the scenario is about focus order through the
