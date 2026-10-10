@@ -114,6 +114,8 @@ window.__MakaModuleLoader__.load({
             [error, setError] = React.useState(''),
             [busy, setBusy] = React.useState(false),
             [selected, setSelected] = React.useState(null),
+            [settingsOpen, setSettingsOpen] = React.useState(false),
+            [memoryOpen, setMemoryOpen] = React.useState(false),
             interval = React.useRef(null);
           React.useEffect(() => {
             listeners.add(setVisible);
@@ -154,7 +156,9 @@ window.__MakaModuleLoader__.load({
             setError('');
             try {
               await fn();
-              const value = await ctx.remote.call('assistant.status', { includeMemory: false });
+              const value = await ctx.remote.call('assistant.status', {
+                includeMemory: false,
+              });
               setData((prior) => ({ ...prior, ...value }));
             } catch (e) {
               setError(e.message);
@@ -176,33 +180,142 @@ window.__MakaModuleLoader__.load({
             memory = data?.memory,
             tasks = data?.tasks;
           const task = tasks?.items.find((t) => t.id === selected);
+          const items = tasks?.items || [];
+          const active = items.filter((t) => !['completed', 'cancelled'].includes(t.status));
+          const finished = items.filter((t) => ['completed', 'cancelled'].includes(t.status));
+          const summary = (t) =>
+            String(
+              t.updates?.[0]?.text || t.waitingFor || t.state || statuses[t.status] || '已接收',
+            )
+              .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+              .replace(/[*_`#]/g, '')
+              .trim();
+          const next = (t) => {
+            if (!['active', 'waiting'].includes(t.status)) return null;
+            const times = (t.wakes || []).map((w) => w.at).filter(Number.isFinite);
+            return times.length ? Math.min(...times) : null;
+          };
+          const row = (t) =>
+            h(
+              'button',
+              {
+                key: t.id,
+                className: 'pa-task',
+                onClick: () => setSelected(t.id),
+                'aria-label': `查看任务：${t.title}`,
+              },
+              h(
+                'span',
+                { className: 'pa-task-mark', 'aria-hidden': true },
+                t.status === 'completed' ? '✓' : t.status === 'active' ? '◌' : '○',
+              ),
+              h(
+                'span',
+                { className: 'pa-task-copy' },
+                h('strong', {}, t.title),
+                h('span', { className: 'pa-task-summary' }, summary(t)),
+              ),
+              h(
+                'span',
+                { className: 'pa-task-time' },
+                next(t)
+                  ? h(React.Fragment, {}, h('span', {}, '下次检查'), h('span', {}, time(next(t))))
+                  : statuses[t.status] || t.status,
+              ),
+            );
+          const memoryIssue =
+            memory?.error ||
+            memory?.indexes?.some(
+              (i) =>
+                i.unavailable ||
+                ['check_failed', 'maintenance_failed'].includes(i.freshness?.status),
+            );
           return h(
             'aside',
             { className: 'pa-panel', 'aria-label': '个人助手状态' },
             h(
               'header',
               {},
-              h('strong', {}, '个人助手'),
-              h('button', { onClick: () => show(false), 'aria-label': '收起助手状态' }, '×'),
-            ),
-            h('p', { className: 'pa-muted' }, '在主聊天中交代事情，进展和主动消息也会回到那里。'),
-            h(
-              'button',
-              { className: 'pa-primary', disabled: busy, onClick: () => act(openChat) },
-              state ? '回到助手聊天' : '开始聊天',
-            ),
-            !state &&
+              h('span', { className: 'pa-spark', 'aria-hidden': true }, '✧'),
+              h('strong', {}, '助手动态'),
               h(
-                'p',
-                {},
-                '无需导入历史，也无需先建立索引。先聊起来，连接来源和整理记忆都可以之后再做。',
+                'button',
+                {
+                  className: 'pa-icon',
+                  onClick: () => setSettingsOpen(!settingsOpen),
+                  'aria-label': '助手设置',
+                  'aria-expanded': settingsOpen,
+                  'aria-controls': 'pa-settings',
+                  disabled: !state,
+                },
+                h(
+                  'svg',
+                  {
+                    width: 16,
+                    height: 16,
+                    viewBox: '0 0 24 24',
+                    fill: 'none',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.5,
+                    'aria-hidden': true,
+                  },
+                  h('path', { d: 'M3 7h8m4 0h6M3 17h3m4 0h11' }),
+                  h('circle', { cx: 13, cy: 7, r: 2 }),
+                  h('circle', { cx: 8, cy: 17, r: 2 }),
+                ),
               ),
-            error && h('p', { role: 'alert', className: 'pa-error' }, error),
-            !data && h('p', { role: 'status' }, '正在读取状态…'),
+              h(
+                'button',
+                {
+                  className: 'pa-icon',
+                  onClick: () => show(false),
+                  'aria-label': '收起助手状态',
+                },
+                '−',
+              ),
+            ),
+            h(
+              'div',
+              { className: 'pa-status', role: 'status' },
+              h('span', {
+                className: 'pa-dot',
+                'data-state':
+                  state?.lastError || error ? 'error' : state?.enabled ? 'enabled' : 'off',
+                'aria-hidden': true,
+              }),
+              h(
+                'span',
+                {},
+                !data
+                  ? '正在读取状态…'
+                  : !state
+                    ? '正在连接助手聊天…'
+                    : state.lastError
+                      ? '主动发现需要处理'
+                      : state.active
+                        ? '正在探索'
+                        : state.enabled
+                          ? '主动发现已开启'
+                          : '主动发现未开启 / 已暂停',
+              ),
+              state?.enabled &&
+                !state.active &&
+                state.nextAt &&
+                h('span', { className: 'pa-next' }, `下次 ${time(state.nextAt)}`),
+            ),
+            error && h('p', { role: 'alert', className: 'pa-error pa-inset' }, error),
+            state?.lastError &&
+              h(
+                'details',
+                { className: 'pa-inset pa-error' },
+                h('summary', {}, '查看检查异常'),
+                h('p', {}, state.lastError),
+              ),
             state &&
+              settingsOpen &&
               h(
                 'section',
-                {},
+                { className: 'pa-settings', id: 'pa-settings' },
                 h('h3', {}, '主动发现'),
                 h(
                   'p',
@@ -249,150 +362,224 @@ window.__MakaModuleLoader__.load({
                   state.enabled &&
                     h(
                       'button',
-                      { disabled: busy || !!state.active, onClick: () => control('check') },
+                      {
+                        disabled: busy || !!state.active,
+                        onClick: () => control('check'),
+                      },
                       '现在检查',
                     ),
                 ),
-                h(
-                  'small',
-                  {},
-                  'Host 运行时检查；没有值得交流的发现会保持安静。暂停主动发现不影响聊天和已交代的任务。',
-                ),
+                h('small', {}, 'Maka 的 Host 运行时检查。暂停主动发现不影响聊天和已交代的任务。'),
               ),
-            h(
-              'section',
-              {},
-              h('h3', {}, '任务进展'),
-              tasks && !tasks.installed && h('p', {}, '尚未安装持续跟进插件，普通聊天仍可使用。'),
-              tasks?.installed &&
-                !tasks.items.length &&
-                h('p', { className: 'pa-muted' }, '还没有任务。直接在主聊天中交代要做的事情。'),
-              ...(tasks?.items || []).map((t) =>
-                h(
-                  'button',
-                  {
-                    className: 'pa-task',
-                    key: t.id,
-                    onClick: () => setSelected(selected === t.id ? null : t.id),
-                  },
-                  h('strong', {}, t.title),
-                  h(
-                    'small',
-                    {},
-                    `${statuses[t.status] || t.status}${t.wakes?.length ? ' · 下次 ' + time(Math.min(...t.wakes.map((w) => w.at))) : ''}`,
-                  ),
-                ),
+            tasks?.error &&
+              h(
+                'p',
+                { role: 'alert', className: 'pa-error pa-inset' },
+                '任务读取失败：' + tasks.error,
               ),
-              task &&
-                h(
-                  'div',
+            ...(tasks?.notifications || [])
+              .filter((n) => n.error)
+              .map((n, i) =>
+                h('p', { key: i, className: 'pa-error pa-inset' }, '任务反馈：' + n.error),
+              ),
+            task
+              ? h(
+                  'section',
                   { className: 'pa-detail' },
-                  h('p', {}, task.updates?.[0]?.text || task.state || '已接收，正在开始执行。'),
-                  task.waitingFor && h('p', {}, '等待：' + task.waitingFor),
-                  task.lastError && h('p', { className: 'pa-error' }, task.lastError),
-                  h('small', {}, '补充要求、暂停或取消，请直接告诉主聊天中的助手。'),
-                ),
-              ...(tasks?.notifications || [])
-                .filter((n) => n.error)
-                .map((n, i) => h('p', { key: i, className: 'pa-error' }, '任务反馈：' + n.error)),
-              !!tasks?.legacy?.length &&
-                h(
-                  'details',
-                  {},
-                  h('summary', {}, `以前的独立任务（${tasks.legacy.length}）`),
-                  ...tasks.legacy.map((t) =>
+                  h(
+                    'button',
+                    { className: 'pa-back', onClick: () => setSelected(null) },
+                    '‹ 返回跟进列表',
+                  ),
+                  h('h3', {}, task.title),
+                  h(
+                    'div',
+                    { className: 'pa-step' },
+                    h('small', {}, statuses[task.status] || task.status),
+                    h('p', {}, task.updates?.[0]?.text || task.state || '已接收，正在开始执行。'),
+                  ),
+                  task.waitingFor &&
                     h(
                       'div',
-                      { key: t.id, className: 'pa-task' },
-                      h('span', {}, t.title),
-                      h(
-                        'button',
-                        {
-                          disabled: busy || !state,
-                          onClick: () =>
-                            act(() => ctx.remote.call('assistant.adopt-task', { id: t.id })),
-                        },
-                        '交给此助手跟进',
+                      { className: 'pa-step' },
+                      h('small', {}, '等待'),
+                      h('p', {}, task.waitingFor),
+                    ),
+                  next(task) &&
+                    h(
+                      'div',
+                      { className: 'pa-step' },
+                      h('small', {}, '下次检查'),
+                      h('p', {}, time(next(task))),
+                    ),
+                  task.lastError && h('p', { className: 'pa-error' }, task.lastError),
+                  h('small', {}, '补充要求、暂停或取消，直接在聊天中告诉助手。'),
+                )
+              : h(
+                  'section',
+                  { className: 'pa-tasks' },
+                  h(
+                    'div',
+                    { className: 'pa-section-title' },
+                    h('span', {}, '正在跟进'),
+                    h('span', {}, active.length),
+                  ),
+                  ...active.map(row),
+                  tasks?.installed &&
+                    !tasks.error &&
+                    !active.length &&
+                    h(
+                      'div',
+                      { className: 'pa-empty' },
+                      h('strong', {}, '暂时没有正在跟进的事'),
+                      h('p', {}, '在聊天里交代事情，进展会出现在这里。'),
+                      !memory?.indexes?.length && h('small', {}, '无需先导入历史或建立记忆。'),
+                    ),
+                  tasks &&
+                    !tasks.installed &&
+                    h(
+                      'p',
+                      { className: 'pa-inset pa-muted' },
+                      '尚未安装持续跟进插件，普通聊天仍可使用。',
+                    ),
+                  !!finished.length &&
+                    h(
+                      'details',
+                      { className: 'pa-history' },
+                      h('summary', {}, `已结束 · ${finished.length}`),
+                      ...finished.map(row),
+                    ),
+                  !!tasks?.legacy?.length &&
+                    h(
+                      'details',
+                      { className: 'pa-history' },
+                      h('summary', {}, `以前的独立任务 · ${tasks.legacy.length}`),
+                      ...tasks.legacy.map((t) =>
+                        h(
+                          'div',
+                          { className: 'pa-legacy', key: t.id },
+                          h('span', {}, t.title),
+                          h(
+                            'button',
+                            {
+                              disabled: busy || !state,
+                              onClick: () =>
+                                act(() =>
+                                  ctx.remote.call('assistant.adopt-task', {
+                                    id: t.id,
+                                  }),
+                                ),
+                            },
+                            '交给此助手跟进',
+                          ),
+                        ),
                       ),
                     ),
-                  ),
                 ),
-            ),
             h(
-              'section',
+              'footer',
               {},
-              h('h3', {}, '信息与记忆'),
               h(
                 'button',
                 {
-                  disabled: busy,
-                  onClick: () =>
-                    act(async () => {
-                      const value = await ctx.remote.call('assistant.status', {
-                        includeMemory: true,
-                      });
-                      setData((prior) => ({ ...prior, ...value }));
-                    }),
+                  onClick: () => setMemoryOpen(!memoryOpen),
+                  'aria-expanded': memoryOpen,
+                  'aria-controls': 'pa-memory',
                 },
-                '刷新记忆状态',
+                '记忆与来源',
+                memoryIssue && h('span', { className: 'pa-error' }, ' · 需要处理'),
               ),
-              memory && !memory.installed && h('p', {}, '记忆插件未安装，仍然可以聊天。'),
-              memory?.error &&
-                h('p', { className: 'pa-error' }, '记忆状态读取失败：' + memory.error),
-              memory?.installed &&
+              h(
+                'span',
+                {},
+                !memory
+                  ? '尚未读取'
+                  : !memory.installed
+                    ? '未安装'
+                    : memoryIssue
+                      ? '检查异常'
+                      : memory.indexes?.length
+                        ? `${memory.indexes.length} 个索引`
+                        : '尚无索引',
+              ),
+            ),
+            memoryOpen &&
+              h(
+                'section',
+                { className: 'pa-memory', id: 'pa-memory' },
+                h('h3', {}, '信息与记忆'),
                 h(
-                  React.Fragment,
-                  {},
-                  h('p', { className: 'pa-muted' }, '历史导入可选；这里不会自动导入或启动整理。'),
+                  'button',
+                  {
+                    disabled: busy,
+                    onClick: () =>
+                      act(async () => {
+                        const value = await ctx.remote.call('assistant.status', {
+                          includeMemory: true,
+                        });
+                        setData((prior) => ({ ...prior, ...value }));
+                      }),
+                  },
+                  '刷新记忆状态',
+                ),
+                memory && !memory.installed && h('p', {}, '记忆插件未安装，仍然可以聊天。'),
+                memory?.error &&
+                  h('p', { className: 'pa-error' }, '记忆状态读取失败：' + memory.error),
+                memory?.installed &&
                   h(
-                    'p',
+                    React.Fragment,
                     {},
-                    '已注册来源：' +
-                      ((memory.sources || [])
-                        .map((s) =>
-                          s.id === 'maka'
-                            ? 'Maka 对话'
-                            : s.id.startsWith('feishu.')
-                              ? '飞书 · ' +
-                                ({
-                                  messages: '聊天',
-                                  calendar: '日历',
-                                  tasks: '任务',
-                                  documents: '文档',
-                                }[s.id.split('.').at(-1)] || s.id)
-                              : s.description || s.id,
-                        )
-                        .join('、') || '打开助手后查看'),
-                  ),
-                  !memory.indexes?.length &&
+                    h('p', { className: 'pa-muted' }, '历史导入可选；这里不会自动导入或启动整理。'),
                     h(
                       'p',
                       {},
-                      '尚无索引。可以先正常使用；需要时在聊天中说明想记住什么、允许整理哪些来源。',
+                      '已注册来源：' +
+                        ((memory.sources || [])
+                          .map((s) =>
+                            s.id === 'maka'
+                              ? 'Maka 对话'
+                              : s.id.startsWith('feishu.')
+                                ? '飞书 · ' +
+                                  ({
+                                    messages: '聊天',
+                                    calendar: '日历',
+                                    tasks: '任务',
+                                    documents: '文档',
+                                  }[s.id.split('.').at(-1)] || s.id)
+                                : s.description || s.id,
+                          )
+                          .join('、') || '打开助手后查看'),
                     ),
-                  ...(memory.indexes || []).map((i) =>
-                    h(
-                      'div',
-                      { key: i.id, className: 'pa-task' },
-                      h('strong', {}, i.name || '不可访问的索引'),
+                    !memory.indexes?.length &&
                       h(
-                        'small',
+                        'p',
                         {},
-                        i.unavailable
-                          ? '暂时不可读取（权限或来源连接）'
-                          : `${freshness[i.freshness.status] || '状态未知'} · 整理于 ${time(i.freshness.lastOrganizedAt)}`,
+                        '尚无索引。可以先正常使用；需要时在聊天中说明想记住什么、允许整理哪些来源。',
+                      ),
+                    ...(memory.indexes || []).map((i) =>
+                      h(
+                        'div',
+                        { key: i.id, className: 'pa-index' },
+                        h('strong', {}, i.name || '不可访问的索引'),
+                        h(
+                          'small',
+                          {},
+                          i.unavailable
+                            ? '暂时不可读取（权限或来源连接）'
+                            : `${freshness[i.freshness.status] || '状态未知'} · 整理于 ${time(i.freshness.lastOrganizedAt)}`,
+                        ),
                       ),
                     ),
+                    h(
+                      'small',
+                      {},
+                      '飞书为可选来源：在扩展中安装「飞书只读 Source」，完成 CLI 授权并设置范围。已注册不代表授权有效；日历只覆盖配置的时间窗口。',
+                    ),
                   ),
-                  h(
-                    'small',
-                    {},
-                    '飞书为可选来源：在扩展中安装「飞书只读 Source」，完成 CLI 授权并设置范围。已注册不代表授权有效；日历只覆盖配置的时间窗口。',
-                  ),
-                ),
-            ),
+              ),
           );
         }
+
         function Entry({ openSession }) {
           const [issue, setIssue] = React.useState(false);
           React.useEffect(() => {
@@ -427,7 +614,9 @@ window.__MakaModuleLoader__.load({
                   strokeWidth: 1.5,
                   'aria-hidden': true,
                 },
-                h('path', { d: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z' }),
+                h('path', {
+                  d: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z',
+                }),
               ),
             endContent: issue
               ? h(
@@ -461,7 +650,10 @@ window.__MakaModuleLoader__.load({
           Panel,
         );
         ctx.style(
-          `.pa-panel{position:fixed;right:24px;top:80px;width:min(360px,calc(100vw - 32px));max-height:calc(100dvh - 104px);overflow:auto;background:var(--background,#fff);color:var(--foreground,#292929);border:1px solid #8883;border-radius:22px;box-shadow:0 8px 32px #0001;padding:22px;z-index:1000;font-size:13px;line-height:1.65}.pa-panel header{display:flex;justify-content:space-between;font-size:17px}.pa-panel section{border-top:1px solid #8882;margin-top:18px;padding-top:12px}.pa-panel h3{font-size:13px;margin:0 0 8px}.pa-panel p{margin:8px 0;overflow-wrap:anywhere;white-space:pre-wrap}.pa-panel button{font:inherit;cursor:pointer;border:1px solid #8883;border-radius:9px;background:transparent;color:inherit;padding:6px 10px}.pa-panel button:disabled{opacity:.5;cursor:default}.pa-panel button:focus-visible{outline:2px solid #648f76}.pa-panel .pa-primary{background:#527965;color:white;border:0}.pa-muted,.pa-panel small{opacity:.65}.pa-error{color:#b34a54}.pa-actions{display:flex;gap:8px;margin:10px 0}.pa-task{display:flex;flex-direction:column;gap:3px;width:100%;text-align:left;margin:7px 0;padding:9px 0}.pa-detail{border-left:2px solid #648f76;padding-left:12px}.pa-panel input{width:70px;color:inherit;background:transparent;border:1px solid #8883;border-radius:5px;padding:4px}.pa-panel details{margin:10px 0}`,
+          `.pa-panel{--pa-line:color-mix(in srgb,var(--foreground,#292929) 10%,transparent);--pa-muted:var(--muted-foreground,#777b83);--pa-hover:color-mix(in srgb,var(--foreground,#292929) 4%,transparent);position:fixed;box-sizing:border-box;right:24px;top:80px;width:min(348px,calc(100vw - 32px));max-height:calc(100dvh - 104px);overflow:auto;background:var(--background,#fff);color:var(--foreground,#292929);border:1px solid var(--pa-line);border-radius:14px;box-shadow:0 10px 35px #18202c12,0 2px 6px #18202c0a;z-index:1000;font-size:13px;line-height:1.5;color-scheme:inherit}
+.pa-panel header{display:flex;align-items:center;gap:8px;padding:12px 12px 8px 16px}.pa-panel header strong{font-size:14px;font-weight:500;flex:1}.pa-spark{font-size:20px}.pa-panel button{font:inherit;cursor:pointer;border:0;border-radius:6px;background:transparent;color:inherit;padding:5px 7px;text-align:left}.pa-panel button:hover{background:var(--pa-hover)}.pa-panel button:disabled{opacity:.5;cursor:default}.pa-panel button:focus-visible,.pa-panel summary:focus-visible{outline:2px solid var(--ring,#648f76);outline-offset:-2px}.pa-panel .pa-icon{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;font-size:18px;color:var(--pa-muted)}
+.pa-status{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:0 16px 14px;font-size:11px;color:var(--pa-muted)}.pa-dot{width:6px;height:6px;flex-shrink:0;border-radius:50%;background:var(--pa-muted)}.pa-dot[data-state=enabled]{background:var(--success,#527965)}.pa-dot[data-state=error]{background:var(--destructive,#b34a54)}.pa-next{margin-left:auto;font-variant-numeric:tabular-nums}.pa-panel p{margin:7px 0;overflow-wrap:anywhere;white-space:pre-wrap}.pa-panel small,.pa-muted{color:var(--pa-muted);font-size:11px}.pa-panel .pa-error{color:var(--destructive,#b34a54)}.pa-panel .pa-inset{margin:10px 16px}.pa-panel h3{font-size:13px;font-weight:500;margin:0 0 8px}.pa-settings,.pa-memory{padding:14px 16px;border-top:1px solid var(--pa-line)}.pa-settings label{font-size:12px}.pa-panel input{box-sizing:border-box;width:70px;color:inherit;background:var(--pa-hover);border:1px solid var(--pa-line);border-radius:6px;padding:5px;font:inherit}.pa-actions{display:flex;gap:8px;margin:10px 0}.pa-actions button,.pa-memory>button,.pa-legacy button{border:1px solid var(--pa-line)}
+.pa-tasks,.pa-detail{border-top:1px solid var(--pa-line)}.pa-section-title{display:flex;justify-content:space-between;padding:12px 16px 4px;font-size:11px;color:var(--pa-muted)}.pa-panel .pa-task{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:9px;width:100%;padding:12px 16px;border-radius:0}.pa-task-mark{color:var(--pa-muted);font-size:16px}.pa-task-copy{min-width:0}.pa-task strong{display:block;font-weight:500;overflow-wrap:anywhere}.pa-task-summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;font-size:12px;color:var(--pa-muted);overflow-wrap:anywhere}.pa-task-time{max-width:90px;font-size:11px;color:var(--pa-muted);padding-top:2px;text-align:right;font-variant-numeric:tabular-nums}.pa-task-time>span{display:block;white-space:nowrap}.pa-empty{text-align:center;padding:24px 16px 28px;color:var(--pa-muted);font-size:12px}.pa-empty strong{display:block;color:var(--foreground,#292929);font-weight:500;font-size:13px}.pa-history{border-top:1px solid var(--pa-line);font-size:12px}.pa-panel summary{cursor:pointer}.pa-history>summary{padding:10px 16px;color:var(--pa-muted)}.pa-legacy{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:8px 16px}.pa-legacy>span{min-width:0;overflow-wrap:anywhere}.pa-legacy button{flex-shrink:0;font-size:11px}.pa-detail{padding:10px 16px 18px}.pa-panel .pa-back{padding:4px 0;margin-bottom:10px;color:var(--pa-muted);font-size:12px}.pa-detail h3{font-size:15px}.pa-step{border-left:1px solid var(--pa-line);padding-left:12px;margin:14px 0}.pa-panel footer{border-top:1px solid var(--pa-line);display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;color:var(--pa-muted);font-size:11px}.pa-index{padding:10px 0;display:flex;flex-direction:column;gap:4px}.pa-index strong{font-weight:500}.pa-memory details{margin:10px 0}@media(max-width:480px){.pa-panel{right:16px;top:64px;max-height:calc(100dvh - 80px)}}@media(pointer:coarse){.pa-panel button,.pa-panel summary{min-height:44px}.pa-panel .pa-icon{width:44px;height:44px}.pa-panel input{font-size:16px}}`,
         );
       },
     };

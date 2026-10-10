@@ -58,6 +58,7 @@ test('assistant entry opens one Host-qualified native conversation; never render
     runtime: any,
     root: any,
     f: any;
+  let items: any[] = [];
   const opened: string[] = [],
     calls: string[] = [];
   const ownerId = JSON.stringify(['host-one', 'assistant']);
@@ -123,7 +124,7 @@ test('assistant entry opens one Host-qualified native conversation; never render
                   : {
                       state,
                       memory: { installed: true, sources: [], indexes: [] },
-                      tasks: { installed: true, items: [], legacy: [] },
+                      tasks: { installed: true, items, legacy: [] },
                     },
           };
         },
@@ -170,12 +171,55 @@ test('assistant entry opens one Host-qualified native conversation; never render
     assert.equal(created, 1);
     assert.deepEqual(opened, [ownerId, ownerId]);
     assert.equal(window.document.querySelectorAll('textarea').length, 0);
-    assert.match(window.document.body.textContent!, /无需导入|历史导入可选/);
+    assert.match(window.document.body.textContent!, /无需先导入|历史导入可选/);
     assert.ok(!calls.includes('assistant.control'), 'opening must not enable heartbeats');
+    assert.equal(window.document.querySelector('.pa-settings'), null);
+    assert.equal(window.document.querySelector('.pa-memory'), null);
+    assert.equal(window.document.body.textContent!.includes('回到助手聊天'), false);
+    await click('助手设置');
+    assert.ok(window.document.querySelector('.pa-settings'));
     await click('开启并立即检查');
     assert.equal(state.enabled, true);
     await click('暂停主动发现');
     assert.equal(state.enabled, false);
+    await click('助手设置');
+    assert.equal(window.document.querySelector('.pa-settings'), null);
+    items = [
+      {
+        id: 'waiting',
+        title: '演示包验收',
+        status: 'waiting',
+        updates: [{ text: '导出已通过，等待隔离复测。' }],
+        waitingFor: '等待构建结果',
+        wakes: [{ at: Date.now() + 60000 }],
+      },
+      {
+        id: 'done',
+        title: '已签收',
+        status: 'completed',
+        updates: [],
+        wakes: [{ at: Date.now() + 60000 }],
+      },
+    ];
+    await click('记忆与来源');
+    await click('刷新记忆状态');
+    assert.ok(window.document.querySelector('.pa-memory'));
+    await click('记忆与来源');
+    assert.equal(window.document.querySelector('.pa-memory'), null);
+    assert.match(window.document.body.textContent!, /导出已通过，等待隔离复测/);
+    const done = window.document.querySelector('button[aria-label="查看任务：已签收"]')!;
+    assert.ok(done.closest('details'), 'finished tasks stay in collapsed history');
+    assert.doesNotMatch(
+      done.textContent!,
+      /下次/,
+      'stale wakes on completed tasks must not appear',
+    );
+    await click('查看任务：演示包验收');
+    assert.match(window.document.querySelector('.pa-detail')!.textContent!, /等待构建结果/);
+    assert.match(window.document.querySelector('.pa-detail')!.textContent!, /下次检查/);
+    await click('‹ 返回跟进列表');
+    assert.equal(window.document.querySelector('.pa-detail'), null);
+    assert.equal(created, 1, 'panel drilldown must not create another conversation');
     await React.act(async () => {
       await runtime.close();
       root.unmount();
