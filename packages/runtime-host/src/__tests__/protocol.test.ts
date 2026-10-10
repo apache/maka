@@ -134,6 +134,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
   });
 
+  test('publishes a new compatibility epoch for Artifact invalidation frames', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 196);
+  });
+
   test('publishes a new compatibility epoch for durable external turn origins', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 189);
   });

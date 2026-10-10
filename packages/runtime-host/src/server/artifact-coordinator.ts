@@ -79,6 +79,7 @@ export class HostArtifactCoordinator {
     | Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>
     | undefined;
   readonly #uploads: ConnectionBoundChunkUploads<ArtifactUploadMetadata>;
+  readonly #onArtifactDeleted: ((sessionId: string, artifactId: string) => void) | undefined;
 
   constructor(
     store: InteractiveArtifactStoreWriter,
@@ -87,12 +88,14 @@ export class HostArtifactCoordinator {
     sessions: SessionPresenceReader,
     now: () => number = Date.now,
     sessionAccessAuthority?: Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>,
+    onArtifactDeleted?: (sessionId: string, artifactId: string) => void,
   ) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
     this.#requestDrain = requestDrain;
     this.#sessionAdmission = sessionAdmission;
     this.#sessions = sessions;
     this.#sessionAccessAuthority = sessionAccessAuthority;
+    this.#onArtifactDeleted = onArtifactDeleted;
     this.#uploads = new ConnectionBoundChunkUploads(
       {
         maxActive: MAX_ACTIVE_ARTIFACT_UPLOADS,
@@ -492,6 +495,7 @@ export class HostArtifactCoordinator {
           },
         };
       }
+      this.#onArtifactDeleted?.(input.sessionId, input.artifactId);
       return {
         ok: true,
         result: encodeArtifactDeleteResult({ kind: 'deleted' }),
