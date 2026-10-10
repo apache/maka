@@ -31,7 +31,7 @@ export interface WorkHubLinkedWork {
   readonly workspaceName?: string;
 }
 
-/** Links come from successful tool results in the same durable conversation. */
+/** Links come from durable task receipts and Host-owned result origins. */
 export function workHubLinkedWork(
   messages: readonly StoredMessage[],
   sessions: readonly { id: string; name: string; cwd?: string }[],
@@ -55,6 +55,24 @@ export function workHubLinkedWork(
   };
   const results = new Map(messages.flatMap((message) => message.type === 'tool_result' ? [[message.toolUseId, message] as const] : []));
   return messages.flatMap((message): WorkHubLinkedWork[] => {
+    // A result notification starts its own coordination turn. It remains
+    // linked even when that turn only summarizes the result without tools,
+    // or the original delegation is outside the loaded history window.
+    if (message.type === 'user' && message.origin?.kind === 'workhub_result') {
+      if (!coordinationSessionKey) return [];
+      let target: string;
+      try {
+        target = desktopSessionKey({
+          hostId: parseDesktopSessionKey(coordinationSessionKey).hostId,
+          sessionId: message.origin.targetSessionId,
+        });
+      } catch { return []; }
+      return [{
+        id: message.id, coordinationTurnId: message.turnId, targetSessionId: target,
+        targetSessionName: sessionById.get(target)?.name ?? fallbackName,
+        workspaceName: workspaceName(target),
+      }];
+    }
     if (message.type === 'tool_call' && taskCalls.has(message.id)) {
       const args = message.args;
       const request = args && typeof args === 'object' && 'request' in args ? args.request : undefined;

@@ -104,7 +104,8 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 212 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 215 as const;
+// 215: WorkHub coordination uses canonical configuration and scoped delegated permissions.
 // 212: Session catalogs carry `backgroundActivity` and `backgroundActivityVersion`
 // for Host-owned activity and generation-scoped ordering independent of Session
 // revisions and Turn epochs. Older closed decoders reject these fields.

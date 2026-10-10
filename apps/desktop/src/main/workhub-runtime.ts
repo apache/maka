@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { WORKHUB_COORDINATION_SESSION_ID, type WorkHubCreateDefaults } from '@maka/core/session';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import type { WorkHubActionResult } from '@maka/core/workhub-action-result';
 import { clientCapabilityEntityId } from '@maka/runtime-host/client-capability-entity-id';
 import type { WorkHubCoordinationProposal, WorkspaceTarget } from '@maka/runtime-host/protocol';
@@ -28,7 +28,7 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 interface WorkHubRuntimeDeps {
   client(scope: DesktopTargetScope): Pick<DesktopRuntimeHostClient, 'queryTurn' | 'stopTurn' | 'listWorkHubCoordinationCandidates' | 'actWorkHubCoordinationFromTurn' | 'selectAndDelegateWorkHubTarget'>;
   isCurrent(scope: DesktopTargetScope): boolean;
-  createContext(scope: DesktopTargetScope): Promise<{ workspace: WorkspaceTarget; defaults: WorkHubCreateDefaults }>;
+  createContext(scope: DesktopTargetScope): Promise<{ workspace: WorkspaceTarget }>;
   changed(scope: DesktopTargetScope, reason: 'created' | 'status-change', sessionId: string): void;
 }
 
@@ -38,7 +38,7 @@ function executionEvidence(result: WorkHubActionResult) {
     : {};
 }
 
-/** Keep task authority in the Host; Desktop supplies only its selected workspace and preferences. */
+/** Keep task authority in the Host; Desktop supplies only its selected workspace. */
 export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
   const requireCurrent = (scope: DesktopTargetScope) => {
     if (!deps.isCurrent(scope)) throw new Error('Runtime Host changed');
@@ -89,8 +89,11 @@ export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
       // WorkHub persists actions as entities; capability tool-call IDs are opaque.
       const actionId = clientCapabilityEntityId(toolCallId);
       if (input.operation === 'select_and_delegate') {
+        const context = await deps.createContext(scope);
+        requireCurrent(scope);
         const outcome = await client.selectAndDelegateWorkHubTarget({ turnId, actionId,
-          candidateSetId: input.candidateSetId, candidateRefs: input.candidateRefs, delegationText: input.text });
+          candidateSetId: input.candidateSetId, candidateRefs: input.candidateRefs, delegationText: input.text,
+          create: { workspace: context.workspace } });
         if (outcome.kind === 'cancelled') return outcome;
         const result = outcome.result;
         if ('targetSessionId' in result) deps.changed(scope, 'status-change', result.targetSessionId);
@@ -102,22 +105,17 @@ export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
       switch (input.operation) {
         case 'delegate_existing': proposal = { disposition: 'delegate_existing', candidateRef: input.candidateRef }; break;
         case 'create_new': proposal = { disposition: 'create_new', title: input.title }; break;
-        case 'correct': proposal = { operation: 'correct', replacesActionId: input.replacesActionId, target: input.target }; break;
         case 'stop': proposal = { operation: 'stop', expects: { targetSessionId: input.targetSessionId } }; break;
         case 'resume': proposal = { operation: 'resume', resumesActionId: input.resumesActionId, expects: { targetSessionId: input.targetSessionId } }; break;
       }
-      const createsTarget =
-        ('disposition' in proposal && proposal.disposition === 'create_new') ||
-        ('operation' in proposal &&
-          proposal.operation === 'correct' &&
-          proposal.target.disposition === 'create_new');
+      const createsTarget = 'disposition' in proposal && proposal.disposition === 'create_new';
       const context = createsTarget ? await deps.createContext(scope) : undefined;
       requireCurrent(scope);
       const result = await client.actWorkHubCoordinationFromTurn({
         turnId, actionId, proposal,
         ...('text' in input ? { delegationText: input.text } : {}),
         ...('candidateSetId' in input && input.candidateSetId ? { candidateSetId: input.candidateSetId } : {}),
-        ...(context ? { create: { workspace: context.workspace }, newWorkDefaults: context.defaults } : {}),
+        ...(context ? { create: { workspace: context.workspace } } : {}),
       });
       if (result.disposition === 'create_new' || (result.disposition === 'replace' && result.replacementDisposition === 'create_new')) {
         deps.changed(scope, 'created', result.targetSessionId);

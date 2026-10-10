@@ -143,20 +143,6 @@ export const workHubControlSchema = z.discriminatedUnion("operation", [
     ),
 ]);
 
-const delegationTarget = z.discriminatedUnion("disposition", [
-  z
-    .object({
-      disposition: z.literal("delegate_existing"),
-      candidateRef: z.string().min(1),
-    })
-    .strict(),
-  z
-    .object({
-      disposition: z.literal("create_new"),
-      title: z.string().min(1).max(512),
-    })
-    .strict(),
-]);
 export const workHubTasksSchema = z.discriminatedUnion("operation", [
   z.object({
     operation: z.literal("status"),
@@ -169,7 +155,7 @@ export const workHubTasksSchema = z.discriminatedUnion("operation", [
     operation: z.literal("select_and_delegate"),
     candidateSetId: z.string().min(1),
     candidateRefs: z.array(z.string().min(1)).min(1).max(32),
-    text: z.string().min(1).max(48000),
+    text: z.string().min(1).max(48000).describe("Faithful handoff: preserve the original user request and actual clarification answers; add only established context. Leave detailed planning and environment choices to the execution Session; do not write a numbered execution plan. Label any brief optional suggestion separately. Do not invent deliverables or change the chosen approach."),
   }).strict().describe(
     "When an existing target is ambiguous or the user asks to choose, offer the relevant candidateRefs from one fresh candidates result. The Host asks the user and delegates this text directly to their exact selection; cancellation performs no delegation. Do not use AskUserQuestion to select task identities or reinterpret the answer into another delegate call.",
   ),
@@ -177,40 +163,28 @@ export const workHubTasksSchema = z.discriminatedUnion("operation", [
     .object({ operation: z.literal("candidates") })
     .strict()
     .describe(
-      "Discover current Host tasks and their identities. Use returned candidateSetId/candidateRef pairs for delegation, and exact Session/delegation action identities for stop, resume or correction; never invent identities.",
+      "Discover current Host tasks and their identities. Use returned candidateRef for delegation, and exact Session/delegation action identities for stop or resume; never invent identities.",
     ),
   z
     .object({
       operation: z.literal("delegate_existing"),
-      candidateSetId: z.string().min(1),
+      candidateSetId: z.string().min(1).optional(),
       candidateRef: z.string().min(1),
-      text: z.string().min(1).max(48000),
+      text: z.string().min(1).max(48000).describe("Faithful handoff: preserve the original user request and actual clarification answers; add only established context. Leave detailed planning and environment choices to the execution Session; do not write a numbered execution plan. Label any brief optional suggestion separately. Do not invent deliverables or change the chosen approach."),
     })
     .strict()
     .describe(
-      "Delegate text to an existing task using a candidateRef and candidateSetId from the same fresh candidates result. Text is the actual task instruction, not proof of user authorization. A returned target turn confirms admission, not task completion.",
+      "Send instructions to the exact Session identified by candidateRef from discovery. A running Session receives steering; an idle Session starts its next Turn. Text is the actual task instruction, not proof of user authorization. A returned target turn confirms admission, not task completion.",
     ),
   z
     .object({
       operation: z.literal("create_new"),
       title: z.string().min(1).max(512),
-      text: z.string().min(1).max(48000),
+      text: z.string().min(1).max(48000).describe("Faithful handoff: preserve the original user request and actual clarification answers; add only established context. Leave detailed planning and environment choices to the execution Session; do not write a numbered execution plan. Label any brief optional suggestion separately. Do not invent deliverables or change the chosen approach."),
     })
     .strict()
     .describe(
-      "Create a task in the selected workspace and delegate text as its instruction. Title names the task. A returned target turn confirms admission, not task completion.",
-    ),
-  z
-    .object({
-      operation: z.literal("correct"),
-      replacesActionId: z.string().min(1),
-      candidateSetId: z.string().min(1).optional(),
-      target: delegationTarget,
-      text: z.string().min(1).max(48000),
-    })
-    .strict()
-    .describe(
-      "Correct an existing delegation: replacesActionId must identify the exact prior delegation being corrected. Discover fresh candidate references when choosing an existing replacement. The Host checks the original user request for correction authorization. Admission of the replacement does not mean it has completed.",
+      "Create a task for an independent request in the selected workspace and delegate text as its instruction. No explicit user request to create a Session is required. Title names the task. A returned target turn confirms admission, not task completion.",
     ),
   z
     .object({
