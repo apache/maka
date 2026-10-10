@@ -63,6 +63,9 @@ for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
       };
       Object.assign(globalThis, globals);
       const { createRoot } = await import('react-dom/client');
+      const { createSessionCatalogController } = await import(
+        '../../renderer/application/contracts/session-catalog/session-catalog-state.js'
+      );
       const { LocaleProvider } = await import('@maka/ui');
       const { CommandPalette, OverlaysRoot, OverlaysServicesProvider } = await import(
         '../../renderer/features/overlays/index.js'
@@ -118,7 +121,11 @@ for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
                 children: createElement(OverlaysRoot, {
                   children: (projection) => {
                     overlays = projection;
-                    return createElement(CommandPalette, { commands });
+                    return createElement(CommandPalette, {
+                      commands, sessionCatalog: createSessionCatalogController(),
+                      hiddenSessionIds: new Set<string>(), activeSessionId: undefined,
+                      onSelectSession: noop,
+                    });
                   },
                 }),
               }),

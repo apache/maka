@@ -299,6 +299,7 @@ const ZH_TW_CALL_KIND: CallKindCopy = {
   goal_evaluation: '目標評估',
   session_title: '生成任務標題',
   session_recap: '任務回顧',
+  prompt_suggestion: '下一步輸入建議',
   daily_review: '每日回顧',
   workhub_intent: 'WorkHub 意圖識別',
   workhub_recall: 'WorkHub 任務召回',

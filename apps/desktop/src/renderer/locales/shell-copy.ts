@@ -149,7 +149,6 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
 const ZH_TW_STATIC_COMMAND_ALIASES: Record<StaticCommandId, readonly string[]> = {
   'action:new-chat': ['任務'],
   'action:side-chat': ['側邊', '側聊', '任務', '追問'],
-  'action:new-deep-research': ['唯讀', '只讀'],
   'action:new-scheduled-task': ['計畫', '建立'],
   'action:open-settings': ['設定', '偏好'],
   'action:keyboard-help': ['快捷鍵', '說明'],
@@ -158,12 +157,12 @@ const ZH_TW_STATIC_COMMAND_ALIASES: Record<StaticCommandId, readonly string[]> =
   'theme:auto': ['跟隨', '系統', '主題'],
   'nav:sessions': ['任務', '會話', '對話'],
   'nav:automations': ['定時任務', '計畫'],
+  // 技能 is shared by both Chinese locales; the Simplified aliases are retained below.
   'nav:skills': [],
   'nav:mcp': ['擴充'],
   'nav:daily-review': ['回顧'],
   'diag:open-workspace': ['工作區', '資料夾', '目錄'],
   'diag:open-project-folder': ['專案', '目錄', '資料夾'],
-  'diag:open-skills': ['資料夾'],
   'diag:export-conversation': ['匯出', '任務', '剪貼簿'],
   'diag:save-conversation-file': ['儲存', '檔案', '任務', '匯出'],
   'diag:copy-today-daily-review': ['回顧', '複製', '剪貼簿'],
@@ -664,11 +663,6 @@ const ZH_TW_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
-  'action:new-deep-research': {
-    label: '新建深度研究',
-    hint: '唯讀探索',
-    group: '操作',
-  },
   'action:new-scheduled-task': {
     label: '新建定時任務',
     hint: '開啟定時任務表單',
@@ -695,11 +689,6 @@ const ZH_TW_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:open-project-folder': {
     label: '開啟專案目錄',
-    hint: 'Finder',
-    group: '診斷',
-  },
-  'diag:open-skills': {
-    label: '開啟 Skills 資料夾',
     hint: 'Finder',
     group: '診斷',
   },
