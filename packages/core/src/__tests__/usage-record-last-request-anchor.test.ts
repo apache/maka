@@ -27,6 +27,8 @@ const usage = { input: 370, output: 60 };
 test('a last-request anchor accepts the new usage shape and retired payload key', () => {
   assert.equal(isLastRequestAnchor({ inputTokens: 120, outputTokens: 30 }), true);
   assert.equal(isLastRequestAnchor({ inputTokens: 120 }), true);
+  assert.equal(isLastRequestAnchor({ inputTokens: 120, completedAt: 1_000 }), true);
+  assert.equal(isLastRequestAnchor({ inputTokens: 120, completedAt: -1 }), false);
   assert.equal(isLastRequestAnchor({ inputTokens: 120, payloadChars: 4_000 }), true);
   assert.equal(isLastRequestAnchor({ payloadChars: 4_000 }), false);
   assert.equal(isLastRequestAnchor({ inputTokens: 0, payloadChars: 4_000 }), false);

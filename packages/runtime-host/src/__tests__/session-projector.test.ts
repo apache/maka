@@ -612,6 +612,28 @@ test('does not replay settled transcript steps when the active step reaches term
   );
 });
 
+test('projects each live compaction boundary immediately with its original identity and timestamp', () => {
+  const projector = projectorAt();
+  for (const sequence of [1, 2]) {
+    const event = {
+      type: 'context_compaction_applied' as const,
+      id: `compaction-${sequence}`,
+      turnId: 'turn-1',
+      ts: 123456789 + sequence,
+    };
+    const update = projector.accept({
+      kind: 'subscription.session_event',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence,
+      sessionId: 'session-1',
+      runId: 'run-1',
+      event,
+    });
+    assert.deepEqual(update.events, [event]);
+  }
+});
+
 test('marks Runtime Host tool results whose durable content is omitted', () => {
   const projector = projectorAt();
 

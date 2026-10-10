@@ -23,6 +23,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
+import type { ContextUsageReading } from '../context-usage-reading.js';
 import { LocaleProvider } from '../locale-context.js';
 
 test('the context usage action opens its host trace surface', async () => {
@@ -49,7 +50,7 @@ test('the context usage action opens its host trace surface', async () => {
     await act(() => root.render(
       <LocaleProvider locale="en">
         <Composer
-          contextUsage={{ onOpen: () => { opened = true; } }}
+          contextUsage={{ reading: { kind: 'unavailable' }, onOpen: () => { opened = true; } }}
           onSend={() => undefined}
           onStop={() => undefined}
         />
@@ -99,11 +100,11 @@ test('the context usage share resolves declared, then metered, then metadata win
 
   const render = async (
     contextUsage: {
-      usageTokens?: number;
+      reading: ContextUsageReading;
       declaredContextWindow?: number;
-      meteredContextWindow?: number;
       metadataContextWindow?: number;
     },
+    expectedTooltip?: string,
   ) => {
     await act(() => root.render(
       <LocaleProvider locale="en">
@@ -118,6 +119,13 @@ test('the context usage share resolves declared, then metered, then metadata win
       'button[aria-label="Open usage trace"]',
     );
     assert.ok(action);
+    if (expectedTooltip !== undefined) {
+      const describedBy = action.getAttribute('aria-describedby');
+      assert.ok(describedBy, 'context usage must reference its tooltip');
+      const tooltip = document.getElementById(describedBy);
+      assert.ok(tooltip, 'context usage tooltip must exist');
+      assert.equal(tooltip.textContent?.trim(), expectedTooltip);
+    }
     return action.textContent?.trim();
   };
 
@@ -125,9 +133,8 @@ test('the context usage share resolves declared, then metered, then metadata win
     // The user's declaration wins over every reported window.
     assert.equal(
       await render({
-        usageTokens: 40_000,
+        reading: { kind: 'measured', tokens: 40_000, contextWindow: 80_000 },
         declaredContextWindow: 100_000,
-        meteredContextWindow: 80_000,
         metadataContextWindow: 64_000,
       }),
       '40%',
@@ -135,13 +142,27 @@ test('the context usage share resolves declared, then metered, then metadata win
     // The metered window was frozen against the same request as the tokens,
     // so it outranks the catalog's metadata window.
     assert.equal(
-      await render({ usageTokens: 40_000, meteredContextWindow: 80_000, metadataContextWindow: 64_000 }),
+      await render({ reading: { kind: 'measured', tokens: 40_000, contextWindow: 80_000 }, metadataContextWindow: 64_000 }),
       '50%',
     );
     // Metadata is the fallback…
-    assert.equal(await render({ usageTokens: 32_000, metadataContextWindow: 64_000 }), '50%');
+    assert.equal(await render({ reading: { kind: 'measured', tokens: 32_000 }, metadataContextWindow: 64_000 }), '50%');
     // …and with no window at all the usage stands alone, no invented share.
-    assert.equal(await render({ usageTokens: 40_000 }), 'Usage');
+    assert.equal(await render({ reading: { kind: 'measured', tokens: 40_000 } }), 'Usage');
+    // A superseded reading keeps the usage entry label even when a window is known.
+    assert.equal(await render(
+      { reading: { kind: 'stale', reason: 'compaction' }, declaredContextWindow: 100_000 },
+      'Context has been compacted. Usage will update when the next request completes.',
+    ), 'Usage');
+    // A later successful measurement restores the share in the same mounted control.
+    assert.equal(await render(
+      { reading: { kind: 'measured', tokens: 10_000, contextWindow: 100_000 } },
+      'Context: 10% (10K / 100K tokens)',
+    ), '10%');
+    assert.equal(await render(
+      { reading: { kind: 'unavailable' }, declaredContextWindow: 100_000 },
+      'No context usage data',
+    ), 'Usage');
   } finally {
     await act(() => root.unmount());
     Object.assign(globalThis, original);

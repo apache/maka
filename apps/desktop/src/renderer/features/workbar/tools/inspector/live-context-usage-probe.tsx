@@ -19,7 +19,7 @@
 
 import { useWorkbarServices } from '../../services-context.js';
 import type { ReactElement, ReactNode } from 'react';
-import type { LiveContextUsage } from '../../../../application/contracts/session-inspector/live-context-usage.js';
+import type { LiveContextReading } from '../../../../application/contracts/session-inspector/live-context-usage.js';
 import { useLiveContextUsage } from '../../../../application/contracts/session-inspector/use-live-context-usage.js';
 
 /**
@@ -36,7 +36,7 @@ export function LiveContextUsageProbe(props: {
   readonly sessionId: string | undefined;
   readonly model: string | undefined;
   readonly providerType: string | undefined;
-  readonly children: (usage: LiveContextUsage | undefined) => ReactNode;
+  readonly children: (usage: LiveContextReading) => ReactNode;
 }): ReactElement {
   const { inspector } = useWorkbarServices();
   const usage = useLiveContextUsage({

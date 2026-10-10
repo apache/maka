@@ -329,6 +329,7 @@ export interface ConversationCopy {
       contextUsageShare: (used: number, window: number) => string;
       contextUsageNoWindow: (used: number) => string;
       contextUsageUnavailable: string;
+      contextUsageCompacted: string;
       contextUsageOpen: string;
       stepLimit: string;
     };
@@ -540,6 +541,7 @@ const CONVERSATION_COPY = {
           `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
         contextUsageUnavailable: '暂无上下文用量数据',
+        contextUsageCompacted: '上下文已压缩，用量将在下一次请求完成后更新。',
         contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
@@ -663,6 +665,7 @@ const CONVERSATION_COPY = {
           `上下文：${Math.round((used / window) * 100)}%（${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} token）`,
         contextUsageNoWindow: (used) => `上下文：${formatCompactTokenCount(used)} token`,
         contextUsageUnavailable: '暫無上下文用量資料',
+        contextUsageCompacted: '上下文已壓縮，用量將在下一次請求完成後更新。',
         contextUsageOpen: '開啟用量追蹤',
         stepLimit: '已達到本輪工具步驟上限，任務可能尚未完成。傳送“繼續”即可接著處理。',
       },
@@ -784,6 +787,8 @@ const CONVERSATION_COPY = {
           `Context: ${Math.round((used / window) * 100)}% (${formatCompactTokenCount(used)} / ${formatCompactTokenCount(window)} tokens)`,
         contextUsageNoWindow: (used) => `Context: ${formatCompactTokenCount(used)} tokens`,
         contextUsageUnavailable: 'No context usage data',
+        contextUsageCompacted:
+          'Context has been compacted. Usage will update when the next request completes.',
         contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },

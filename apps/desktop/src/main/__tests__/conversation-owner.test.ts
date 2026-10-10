@@ -27,6 +27,7 @@ import type { DesktopSessionSummary } from '../../shared/desktop-session-project
 import { createSessionCatalogController, SessionCatalogContext } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ConversationProvider, ConversationServicesProvider, ConversationLifecycle, ConversationTranscriptRegion, ConversationComposerRegion, useAppShellSessionUiState, type ConversationObservationServices, type ConversationServices } from '../../renderer/features/conversation/index.js';
 import { renderConversationMarkdown, stubComposerGateInputs, stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
+import type { LatestRequestUsage } from '../../renderer/application/contracts/session-inspector/latest-request-usage.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import { withComposerSubmission } from './composer-submission-fixture.js';
 
@@ -97,7 +98,7 @@ function harness(options: {
   let setVisible!: (visible: boolean) => void;
   let setCovered!: (covered: boolean) => void;
   function Transcript(props: NonNullable<typeof transcript>) { transcript = props; transcriptRenders += 1; return null; }
-  function Composer(_props: { processing: boolean; pendingMessages?: readonly TransientUserMessageProjection[]; latestRequestUsageTokens?: number }) {
+  function Composer(_props: { processing: boolean; pendingMessages?: readonly TransientUserMessageProjection[]; latestRequestUsage?: LatestRequestUsage }) {
     composerRenders += 1;
     useEffect(() => { composerMounts += 1; return () => { composerUnmounts += 1; }; }, []);
     return null;

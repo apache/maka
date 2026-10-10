@@ -4826,6 +4826,14 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     // The kernel writes the note on the compaction turn itself, so the row
     // appears the moment compaction ends — not one send later.
     assert.strictEqual(notes.length, 1);
+    // The apply-time boundary row lands beside it, on the same turn.
+    const applied = messages.filter(
+      (message) =>
+        message.type === 'system_note' &&
+        message.turnId === 'turn-compact' &&
+        message.kind === 'context_compaction_applied',
+    );
+    assert.strictEqual(applied.length, 1);
     // And no duplicate failed-open note on a successful compaction.
     const failed = messages.filter(
       (message) =>

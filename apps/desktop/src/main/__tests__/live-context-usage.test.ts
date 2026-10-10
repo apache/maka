@@ -25,6 +25,10 @@ import {
   createLiveContextUsageTracker,
   liveContextUsageFromDiagnostics,
 } from '../../renderer/features/workbar/testing.js';
+import {
+  resolveContextUsage,
+  selectLatestRequestUsage,
+} from '../../renderer/application/contracts/session-inspector/latest-request-usage.js';
 
 const ROUTE = { model: 'deepseek-v4-flash', providerType: 'deepseek' } as const;
 
@@ -83,8 +87,10 @@ function scriptedQuery() {
 describe('liveContextUsageFromDiagnostics', () => {
   it('maps a matching snapshot onto the gauge, window included', () => {
     assert.deepEqual(liveContextUsageFromDiagnostics(available(), ROUTE), {
-      usageTokens: 79_436,
+      kind: 'tokens',
+      tokens: 79_436,
       contextWindow: 128_000,
+      at: 1,
     });
   });
 
@@ -113,12 +119,167 @@ describe('liveContextUsageFromDiagnostics', () => {
   it('stands alone without a window', () => {
     assert.deepEqual(
       liveContextUsageFromDiagnostics(available({ contextWindow: undefined }), ROUTE),
-      { usageTokens: 79_436 },
+      { kind: 'tokens', tokens: 79_436, at: 1 },
     );
   });
 });
 
 describe('createLiveContextUsageTracker', () => {
+  it('synchronously invalidates the gauge during a running turn while the transcript is still old', async () => {
+    const timer = fakeTimer();
+    const query = scriptedQuery();
+    const readings: unknown[] = [];
+    const latestRequestUsage = selectLatestRequestUsage([
+      {
+        type: 'token_usage', ts: 1_100,
+        lastRequestAnchor: {
+          inputTokens: 79_436, completedAt: 1_000,
+          modelId: ROUTE.model, connectionId: 'conn-a',
+        },
+      },
+    ], ROUTE.model, { llmConnectionId: 'conn-a' });
+    const tracker = createLiveContextUsageTracker({
+      query: query.query,
+      delayMs: 400,
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+      onChange: (live) => readings.push(resolveContextUsage({ latestRequestUsage, live })),
+    });
+    tracker.setTarget({ sessionId: 's1', route: ROUTE });
+    query.pending[0]!.resolve(available({ completedAt: 1_000 }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 79_436, contextWindow: 128_000 });
+
+    tracker.observe(event('tool_result'));
+    timer.fire();
+    // No complete event or transcript refresh: the provider retry is still running.
+    tracker.observe({ type: 'context_compaction_applied', id: 'fold-1', turnId: 'turn-1', ts: 2_000 });
+    assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+    const afterBoundary = readings.length;
+    // The old query resolves before even issuing the replacement read.
+    query.pending[1]!.resolve(available({ completedAt: 1_000 }));
+    await Promise.resolve();
+    assert.equal(readings.length, afterBoundary);
+    timer.fire();
+    query.pending.at(-1)!.reject(new Error('host reconnecting'));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+
+    for (const diagnostics of [
+      available({ completedAt: 1_000 }),
+      available({ completedAt: 2_000 }),
+      available({ completedAt: undefined }),
+      available({ completedAt: 2_500, modelId: 'other-model' }),
+      available({ completedAt: 2_500, inputTokens: undefined }),
+      { status: 'unavailable', reason: 'no_completed_request' } as const,
+    ]) {
+      tracker.observe(event('tool_result'));
+      timer.fire();
+      query.pending.at(-1)!.resolve(diagnostics);
+      await Promise.resolve();
+      assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+    }
+
+    tracker.observe(event('tool_result'));
+    timer.fire();
+    query.pending.at(-1)!.resolve(available({ completedAt: 2_500, inputTokens: 20_000 }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 20_000, contextWindow: 128_000 });
+    // Duplicate or out-of-order replay cannot invalidate a newer measurement.
+    tracker.observe({ type: 'context_compaction_applied', id: 'fold-1', turnId: 'turn-1', ts: 2_000 });
+    tracker.observe({ type: 'context_compaction_applied', id: 'older-fold', turnId: 'turn-1', ts: 1_500 });
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 20_000, contextWindow: 128_000 });
+
+    tracker.observe({ type: 'context_compaction_applied', id: 'fold-2', turnId: 'turn-1', ts: 3_000 });
+    assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+    tracker.observe({ type: 'context_compaction_applied', id: 'fold-1', turnId: 'turn-1', ts: 2_000 });
+    timer.fire();
+    query.pending.at(-1)!.resolve(available({ completedAt: 2_500, inputTokens: 20_000 }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+
+    tracker.observe(event('tool_result'));
+    timer.fire();
+    query.pending.at(-1)!.resolve(available({ completedAt: 3_500, inputTokens: 10_000 }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 10_000, contextWindow: 128_000 });
+    tracker.dispose();
+  });
+
+  it('retains a boundary on the same target and isolates it from changed sessions or routes', async () => {
+    const timer = fakeTimer();
+    const query = scriptedQuery();
+    const seen: unknown[] = [];
+    const readings: unknown[] = [];
+    const tracker = createLiveContextUsageTracker({
+      query: query.query,
+      delayMs: 400,
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+      onChange: (live) => {
+        seen.push(live);
+        readings.push(resolveContextUsage({ latestRequestUsage: undefined, live }));
+      },
+    });
+    tracker.setTarget({ sessionId: 's1', route: ROUTE });
+    tracker.observe({ type: 'context_compaction_applied', id: 'fold-1', turnId: 'turn-1', ts: 2_000 });
+    tracker.setTarget({ sessionId: 's1', route: { ...ROUTE } });
+    assert.deepEqual(seen.at(-1), { kind: 'compacted', at: 2_000 });
+    query.pending.at(-1)!.resolve(available());
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+
+    tracker.setTarget({ sessionId: 's2', route: ROUTE });
+    assert.deepEqual(readings.at(-1), { kind: 'unavailable' });
+    query.pending.at(-1)!.resolve(available());
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 79_436, contextWindow: 128_000 });
+    query.pending[0]!.resolve(available({ inputTokens: 99_000 }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 79_436, contextWindow: 128_000 });
+
+    tracker.observe({ type: 'context_compaction_applied', id: 'fold-2', turnId: 'turn-2', ts: 3_000 });
+    tracker.setTarget({ sessionId: 's2', route: { model: 'other-model', providerType: ROUTE.providerType } });
+    assert.deepEqual(readings.at(-1), { kind: 'unavailable' });
+    query.pending.at(-1)!.resolve(available({ modelId: 'other-model' }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 79_436, contextWindow: 128_000 });
+
+    tracker.setTarget(undefined);
+    tracker.observe({ type: 'context_compaction_applied', id: 'late-fold', turnId: 'turn-2', ts: 4_000 });
+    assert.deepEqual(readings.at(-1), { kind: 'unavailable' });
+    assert.equal(timer.scheduled, 0);
+    tracker.dispose();
+  });
+
+  it('recovers the boundary from the transcript after reconnect without a live event', async () => {
+    const timer = fakeTimer();
+    const query = scriptedQuery();
+    const readings: unknown[] = [];
+    const latestRequestUsage = selectLatestRequestUsage([
+      { type: 'system_note', kind: 'context_compaction_applied', ts: 2_000, turnId: 'turn-1' },
+      { type: 'system_note', kind: 'context_compacted', ts: 9_000, turnId: 'turn-1' },
+    ], ROUTE.model, { llmConnectionId: 'conn-a' });
+    const tracker = createLiveContextUsageTracker({
+      query: query.query,
+      delayMs: 400,
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+      onChange: (live) => readings.push(resolveContextUsage({ latestRequestUsage, live })),
+    });
+    tracker.setTarget({ sessionId: 's1', route: ROUTE });
+    assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+    query.pending[0]!.resolve(available({ completedAt: 1_000 }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'stale', reason: 'compaction' });
+    tracker.observe(event('tool_result'));
+    timer.fire();
+    query.pending.at(-1)!.resolve(available({ completedAt: 2_500, inputTokens: 20_000 }));
+    await Promise.resolve();
+    assert.deepEqual(readings.at(-1), { kind: 'measured', tokens: 20_000, contextWindow: 128_000 });
+    tracker.dispose();
+  });
+
   it('reads immediately when aimed at a session', async () => {
     const timer = fakeTimer();
     const query = scriptedQuery();
@@ -136,7 +297,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     // The leading `undefined` is the aim itself: whatever stood on screen
     // before cannot answer for this target, so it clears before the read.
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { kind: 'tokens', tokens: 79_436, contextWindow: 128_000, at: 1 }]);
     tracker.dispose();
   });
 
@@ -182,12 +343,12 @@ describe('createLiveContextUsageTracker', () => {
     assert.equal(query.pending.length, 1);
     timer.fire();
     assert.equal(query.pending.length, 2);
-    query.pending[1]!.resolve(available({ inputTokens: 52_000 }));
+    query.pending[1]!.resolve(available({ inputTokens: 52_000, completedAt: 2 }));
     await Promise.resolve();
     assert.deepEqual(seen, [
       undefined,
-      { usageTokens: 40_000, contextWindow: 128_000 },
-      { usageTokens: 52_000, contextWindow: 128_000 },
+      { kind: 'tokens', tokens: 40_000, contextWindow: 128_000, at: 1 },
+      { kind: 'tokens', tokens: 52_000, contextWindow: 128_000, at: 2 },
     ]);
     tracker.dispose();
   });
@@ -231,7 +392,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     query.pending[0]!.resolve(available({ inputTokens: 10_000 }));
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 60_000, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { kind: 'tokens', tokens: 60_000, contextWindow: 128_000, at: 1 }]);
     tracker.dispose();
   });
 
@@ -258,7 +419,7 @@ describe('createLiveContextUsageTracker', () => {
     timer.fire();
     query.pending[1]!.resolve(available({ inputTokens: 60_000 }));
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 60_000, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { kind: 'tokens', tokens: 60_000, contextWindow: 128_000, at: 1 }]);
     tracker.dispose();
   });
 
@@ -281,7 +442,7 @@ describe('createLiveContextUsageTracker', () => {
     query.pending[1]!.reject(new Error('host not ready'));
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { kind: 'tokens', tokens: 79_436, contextWindow: 128_000, at: 1 }]);
     tracker.dispose();
   });
 
@@ -303,14 +464,14 @@ describe('createLiveContextUsageTracker', () => {
     // Switching sessions makes the standing number unanswerable: it must
     // leave the screen BEFORE the new target's first read lands…
     tracker.setTarget({ sessionId: 's2', route: ROUTE });
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
+    assert.deepEqual(seen, [undefined, { kind: 'tokens', tokens: 79_436, contextWindow: 128_000, at: 1 }, undefined]);
 
     // …and a rejected first read on the new target keeps it cleared, rather
     // than pinning the previous session's number in place indefinitely.
     query.pending[1]!.reject(new Error('host not ready'));
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }, undefined]);
+    assert.deepEqual(seen, [undefined, { kind: 'tokens', tokens: 79_436, contextWindow: 128_000, at: 1 }, undefined]);
     tracker.dispose();
   });
 
@@ -337,7 +498,7 @@ describe('createLiveContextUsageTracker', () => {
     query.pending[1]!.reject(new Error('host not ready'));
     await Promise.resolve();
     await Promise.resolve();
-    assert.deepEqual(seen, [undefined, { usageTokens: 79_436, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, { kind: 'tokens', tokens: 79_436, contextWindow: 128_000, at: 1 }]);
     tracker.dispose();
   });
 
@@ -382,7 +543,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     // Aiming, then leaving s1 clears its (never-landed) reading, then s2's
     // lands; the stale s1 read resolving late must not overwrite it.
-    assert.deepEqual(seen, [undefined, undefined, { usageTokens: 5_000, contextWindow: 128_000 }]);
+    assert.deepEqual(seen, [undefined, undefined, { kind: 'tokens', tokens: 5_000, contextWindow: 128_000, at: 1 }]);
     tracker.dispose();
   });
 
@@ -408,7 +569,7 @@ describe('createLiveContextUsageTracker', () => {
     await Promise.resolve();
     assert.deepEqual(seen, [
       undefined,
-      { usageTokens: 79_436, contextWindow: 128_000 },
+      { kind: 'tokens', tokens: 79_436, contextWindow: 128_000, at: 1 },
       undefined,
       undefined,
     ]);

@@ -428,6 +428,7 @@ function modelCallUsageFields(
 
 export class ProviderRequestTracker {
   private step = 0;
+  private lastCompletedMainRequestAt: number | undefined;
   private readonly attemptsByStep = new Map<number, number>();
   /**
    * One logical call per step. Retries of the same step are further attempts of
@@ -440,6 +441,10 @@ export class ProviderRequestTracker {
 
   get traceId(): string {
     return this.input.traceId;
+  }
+
+  get latestCompletedMainRequestAt(): number | undefined {
+    return this.lastCompletedMainRequestAt;
   }
 
   setStep(step: number, requestCompositionId?: string): void {
@@ -617,6 +622,9 @@ export class ProviderRequestTracker {
         input.abortSignal?.removeEventListener('abort', abortListener);
       }
       const completedAt = this.input.now();
+      if (status === 'completed' && this.input.accounting?.callKind === 'main') {
+        this.lastCompletedMainRequestAt = completedAt;
+      }
       const usage = strictProviderRequestUsage(finish?.usage);
       const contextWindow = positiveInteger(this.input.contextWindow);
       const diagnostic =
