@@ -294,6 +294,17 @@ export class AiSdkCompaction {
         return { outcome: { kind: 'unchanged', reason: 'empty_history' } };
       }
 
+      // The next send's prepareContextBudgetPolicy prunes oversized tool
+      // results BEFORE it validates this fold's checkpoint, so a summary
+      // written over an unarchived body fails its first currency check and is
+      // silently discarded (#6048). Commit the same archives here first:
+      // projectEffectiveCoverage below then folds them into both the
+      // summarizer's view and the pinned effectiveSourceDigest — the same
+      // effective view the validator folds. The planning pool stays the raw
+      // events, so the coverage identity and the #5929 reuse gate are
+      // untouched.
+      await this.pruneToolResults(runtimeContext, input.turnId);
+
       const charsPerToken = policy.charsPerToken ?? 4;
       let previousCheckpoint: HistoryCompactCheckpoint | undefined;
       try {
