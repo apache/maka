@@ -146,7 +146,7 @@ HistoryCompactCheckpoint
     sourceDigest
   projection
     V2: summary
-    V3: providerState { kind, connectionSlug, modelId, itemId, encryptedContent }
+    V3: providerState { kind, connectionId, modelId, itemId, encryptedContent }
     limitations
     estimatedTokens
   lineage
@@ -163,7 +163,7 @@ V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque comp
 2. 准备 context budget policy；
 3. 加载最新且兼容的 ledger-backed checkpoint；
 4. 在 immutable RuntimeEvent 序列上校验并 replay 已有 checkpoint；
-5. 只对未覆盖的 projected remainder 执行 stale oversized Tool Result prune；
+5. 按当前与历史 turn 的同一体积规则准备 oversized 文本 Tool Result；
 6. 如果 active request 有用户声明的 Maka 窗口，且上一次成功请求的真实 usage 加上回复预留 `min(上次回复 × 2, 8000)` 达到它，选择 safe prefix 与 retained tail；
 7. 如果旧 checkpoint 不足以覆盖新的 fold，调用 compactor 滚动生成 successor；
 8. successor 通过校验并 durable record 后才能使用；
@@ -172,7 +172,7 @@ V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque comp
 
 这条顺序说明三件事。
 
-第一，checkpoint source matching 始终面对 immutable RuntimeEvent ledger。Stale Tool Result prune 只塑造未覆盖的 replay remainder，因此 recent-turn window 的移动不会改变 digest 所依据的字节，进而错误地让本来匹配的 checkpoint 失效。
+第一，checkpoint source matching 始终面对 immutable RuntimeEvent ledger。Tool Result prune 以独立的 durable projection transition 记录；checkpoint replay 同时校验不可变的覆盖身份与有效覆盖摘要。
 
 第二，compaction 发生在 **model-history projection** 内，而不是 RuntimeEvent append path 内。模型和工具已经产生的事件不会因为以后预算变化而改变。
 
@@ -236,11 +236,11 @@ Repair 之外的 malformed retry 也有上限。Runtime 为每个 Session backen
 
 Compaction input 会保留 assistant step 的时序。由于 Responses converter 在 `store:false` 下无法重新发送 provider-executed tool result，已经完整结算的 hosted call/result 只在这次 compaction request 中降级为成对的普通 function call 与 output，之后再放 grounded assistant text。这样既保留了现有 tool evidence，也不会生成悬空 output。
 
-Compaction call 的 output 上限是 8,000 tokens，是否能放下由 provider 的正常请求路径决定。Tool Result archive policy 仍可以把过大的单条结果替换为可持久化 placeholder，但 history compaction 不再量最终 request，也不会因为本地估算认为过大而拒绝候选。
+可移植文本 summarizer 的 output 上限是 8,000 tokens；native Codex compaction call 不传 output cap，是否能放下由 provider 的正常请求路径决定。Tool Result archive policy 仍可以把过大的单条结果替换为可持久化 placeholder，但 history compaction 不再量最终 request，也不会因为本地估算认为过大而拒绝候选。
 
 这是有意设计成 history-only 的契约。与 Codex CLI 的 whole-request assembly 不同，Maka 不会把当前 system prompt 或 tool catalog 发给 remote compactor；它们既不属于 checkpoint source coverage，也不会被冻结进 checkpoint，后续模型请求始终使用当时最新的 system prompt 和 tools。这样 provider-native 与 text-summary compactor 可以共享同一份小契约，代价是 compactor 无法利用这部分额外的 request-shape context。
 
-Maka 只接受唯一一个同时带有 `itemId` 与 `encryptedContent` 的 `openai.compaction` output，并把它持久化为 schema-V3 checkpoint。state 绑定 connection slug 与 model ID；provider、connection 或 model 不匹配时，checkpoint 会被拒绝，并从 raw RuntimeEvents 重新投影。匹配的 checkpoint 在 pre-Turn compaction、mid-Turn capacity compaction 和 reactive overflow retry 中都以 provider custom part 回放。
+Maka 只接受唯一一个同时带有 `itemId` 与 `encryptedContent` 的 `openai.compaction` output，并把它持久化为 schema-V3 checkpoint。state 绑定 connection ID 与 model ID；provider、connection 或 model 不匹配时，checkpoint 会被拒绝，并从 raw RuntimeEvents 重新投影。匹配的 checkpoint 在 pre-Turn compaction、mid-Turn capacity compaction 和 reactive overflow retry 中都以 provider custom part 回放。
 
 V3 schema 也是兼容边界：只理解 schema V2 的旧 binary 会拒绝它并回退 raw history。provider state 会从 request-capture telemetry 中脱敏，也不会进入 conversation copy；复制后的 Session 仍保留 raw RuntimeEvents，需要时可以重新 compact。这里的显式 trigger 是 Codex client 已使用的 Codex 订阅协议，不代表对公开 Responses API contract 的宣称。
 
@@ -453,7 +453,7 @@ Maka 只有一套 LLM compaction 机制，以及一个相邻的 current-request 
 
 Active Tool Result Prune 仍是 deterministic、非 LLM 的 rewrite。它先归档 eligible raw Tool Result，再向 AgentRun event ledger 追加 durable projection transition，并由 effective-history reducer 生成 current request。后续 replay、restart、budgeting 与 compaction 也消费同一 reducer。Prune 既不总结 span，也不创建 checkpoint，canonical RuntimeEvents 保持不变。
 
-工具结果裁剪只保留 `toolResultPrune.enabled`，当前与历史 turn 使用同一个固定体积规则。文本投影超过 7,500 个序列化字符时，保留有界首屏和 `next` 续读参数；图片沿用原有 materialization 策略。`Read` 只有必填的 `path` 和可选、零基行坐标的 `offset` / `limit`。关闭裁剪或传入大 limit 都不能绕过单次响应上限。显式 limit 定义本次读取范围，超长单行由 Harness 自动分段，并用正文校验过的地址续读。ArchiveRead、inspect/query/search 和 active/stale 调参字段直接删除，不保留别名。
+工具结果裁剪只保留 `toolResultPrune.enabled`，当前与历史 turn 使用同一个固定体积规则。文本投影超过 7,500 个 UTF-8 字节时，保留有界首屏和 `next` 续读参数；图片沿用原有 materialization 策略。`Read` 只有必填的 `path` 和可选、零基行坐标的 `offset` / `limit`。关闭裁剪或传入大 limit 都不能绕过单次响应上限。显式 limit 定义本次读取范围，超长单行由 Harness 自动分段，并用正文校验过的地址续读。ArchiveRead、inspect/query/search 和 active/stale 调参字段直接删除，不保留别名。
 
 工具结果地址使用 `maka://runtime/tool-results/<event-id>`。Host 在调用方 Session 内解析地址，验证已接受的投影 transition，从原事件恢复模型正文；模型不必复写摘要或内部 transition 身份。先持久化 transition，再替换投影；历史重放、压缩尾部和溢出重试都经过同一个 reducer。Checkpoint 仍按不可变事件身份匹配，并校验有效覆盖内容的摘要。
 
