@@ -617,8 +617,9 @@ function asFiniteNumber(value: unknown): number | null {
 }
 
 /**
- * 日历重复保留 Date 的本地时间规则：夏令时缺失时间向后平移，重复时间取首次。
- * 每次仍从锚点重建，平移不延续到下一周期；cron 则跳过不存在的本地时间。
+ * Calendar recurrence uses Date's local-time rules: shift gaps forward and take
+ * the first repeated time. Rebuild from the anchor so gap shifts do not carry
+ * into later cycles; cron instead skips nonexistent local times.
  */
 function nextCalendarFireAt(
   schedule: Extract<ScheduledTaskSchedule, { kind: 'calendar' }>,
