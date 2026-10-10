@@ -127,14 +127,13 @@ The source ledger is never mutated by continuation execution.
 
 ## Current storage boundary
 
-Phase 1 reads and writes the SQLite RuntimeEvent and AgentRun stores. Because
-tool effects and events commit transactionally in the SQLite tool journal
-(T1/T2), a continuation only requires that every tool outcome in the replay
-prefix is already committed.
+Phase 1 reads and writes the SQLite RuntimeEvent and AgentRun stores. Tool
+effects are bracketed by the T1/T2 journal commits but are not themselves
+transactional, so only boundaries where every tool outcome in the replay
+prefix is already committed can continue.
 
-Operation IDs, reconciliation, and idempotent re-execution remain later
-phases. Phase 1 adds no hashing policy, lease, fencing token, or distributed
-scheduler ownership.
+Reconciliation and idempotent re-execution remain later phases. Phase 1 adds
+no hashing policy, lease, fencing token, or distributed scheduler ownership.
 
 ## Host responsibilities
 

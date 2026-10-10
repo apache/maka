@@ -554,7 +554,7 @@ Authority, safety, and other recovery failures remain red errors with the raw
 reason preserved for diagnosis.
 
 Because this changes a closed protocol union, Runtime Host compatibility epoch
-206 rejects mixed old/new Client-Host pairs during handshake instead of letting
+57 rejects mixed old/new Client-Host pairs during handshake instead of letting
 a Client misclassify a recovery failure as a disabled feature. This change only
 corrects Host projection and CLI presentation; it does not move ownership of
 the planner, durable continuation claim, or feature flag.
@@ -847,10 +847,12 @@ Eval does not resume or reconstruct Runtime execution. It asks Runtime Host to e
 ```mermaid
 flowchart TD
   A["PR A<br/>Recovery persistence authority<br/>complete"] --> B["PR B<br/>Immutable cursor + durable claim<br/>merged"]
-  B --> E["PR E<br/>Checkpoint contracts<br/>future: phase3-4 design"]
-  E --> F["PR F<br/>Canonical checkpoint bundle<br/>future"]
-  F --> G["PR G<br/>Observe-only Git carrier<br/>future"]
-  G --> H["PR H<br/>Capture + retention<br/>future"]
+  A --> C["PR C<br/>File evidence + finalize-only recovery"]
+  B --> E["PR E<br/>Checkpoint contracts"]
+  C --> E
+  E --> F["PR F<br/>Canonical checkpoint bundle"]
+  F --> G["PR G<br/>Observe-only Git carrier"]
+  G --> H["PR H<br/>Capture + retention"]
   H --> Restore["Isolated restore"]
   H --> Rebaseline["Durable rebaseline"]
   D["PR D<br/>Host owner lifecycle"] -. "Required before default capture / auto-resume" .-> H
@@ -951,7 +953,7 @@ Current implementation does not promise:
 The two most important follow-ups are:
 
 1. PR B has landed: immutable event-seq boundaries, a domain-separated prefix digest, the SQLite unique claim (`runtime_continuation_claims`), and unified ancestor replay through `continuation_start_v2`;
-2. the remaining checkpoint ladder is tracked by the phase3-4 workspace checkpoint design (contracts, canonical bundle, capture, restore, rebaseline) together with a complete host-owner lifecycle.
+2. PR C/D: production file evidence/reconciler and one complete host-owner lifecycle.
 
 ## Code-reading map
 

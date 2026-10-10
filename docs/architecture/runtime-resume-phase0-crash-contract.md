@@ -22,9 +22,11 @@
 last_verified: 2026-10-10
 
 Phase 0 defines replay safety for a fully committed `RuntimeEvent` prefix. It
-does not resume execution or reconcile tool side effects. The SQLite tool
-journal (T1/T2) that this contract once described as future work is now the
-canonical store it runs against.
+does not resume execution or reconcile tool side effects. The SQLite
+RuntimeEvent store that this contract once described as future work is now the
+canonical store it runs against, and the SQLite tool journal (T1/T2) has since
+landed as well; the committed prefix this contract reasons about remains a
+`RuntimeEvent` prefix.
 
 The production API is pure:
 
@@ -39,7 +41,7 @@ committed RuntimeEvent prefix
 
 `RUNTIME_RESUME_FAILPOINTS` is the machine-readable source of truth. The
 `committedPrefix` column means the last complete RuntimeEvent prefix available
-after a crash: the last row that committed in the SQLite tool journal.
+after a crash: the last row committed to `runtime_events`.
 
 | ID | Injection boundary | Last fully committed RuntimeEvent prefix |
 |---|---|---|

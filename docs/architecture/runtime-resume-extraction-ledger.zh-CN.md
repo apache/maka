@@ -290,9 +290,10 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | `agent-run-continuation-source.test.ts` | V2 header 非空 identity、high-water 与 manifest/boundary 一致性 |
 
 > 现状勘误（2026-10-10）：`continuation_source_v2` header lineage 现存于
-> `packages/storage/src/legacy-run-header.ts`（legacy 解码）；`packages/core/src/agent-run.ts`
-> 的现行 lineage 是 `AgentRunLineage` + durable claim。表中 `agent-run-continuation-source.test.ts`
-> 已不存在，最接近的现行契约测试是 `packages/core/src/__tests__/agent-run-event-contract.test.ts`；
+> `packages/storage/src/legacy-run-header.ts`（legacy 解码）；现行 lineage 是
+> `AgentRunLineage`（`packages/runtime/src/agent-run.ts`）+ durable claim。表中
+> `agent-run-continuation-source.test.ts` 已不存在，最接近的现行契约测试是
+> `packages/core/src/__tests__/agent-run-event-contract.test.ts`；
 > `sqlite-recovery-concurrency-child.ts` 位于 `packages/storage/src/__tests__/fixtures/`。
 
 #### Storage
