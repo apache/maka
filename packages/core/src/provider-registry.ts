@@ -1560,7 +1560,7 @@ const providerRegistry = {
         apiProtocol: 'openai-responses',
         responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
-      'anthropic-messages': { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: true },
+      'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
     },
     // Bedrock's OpenAI-compatible endpoint and model-list availability vary
     // by endpoint family and region. A custom endpoint remains user supplied.

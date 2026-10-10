@@ -111,7 +111,9 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       });
       assert.deepEqual(definition.protocolAdapters?.['anthropic-messages'], {
         kind: 'anthropic',
-        auth: type === 'amazon-bedrock-api-key' ? 'bearer' : 'api-key',
+        // Bedrock's documented Anthropic endpoint accepts the API key in
+        // x-api-key, as does the Azure Foundry endpoint.
+        auth: 'api-key',
         normalizeBaseUrl: true,
       });
     }
