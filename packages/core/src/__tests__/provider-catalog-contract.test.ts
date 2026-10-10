@@ -31,6 +31,8 @@ import {
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
+  providerSupportsApiProtocolSelection,
+  providerSupportsDefaultApiProtocol,
   isRetiredProvider,
   providerAcceptsOutputTokenLimit,
   providerFallbackModelIds,
@@ -66,6 +68,21 @@ describe('Moonshot provider regions', () => {
 });
 
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
+  it('derives protocol picker availability from endpoint-owned registry entries', () => {
+    assert.equal(providerSupportsApiProtocolSelection('custom'), true);
+    assert.equal(providerSupportsApiProtocolSelection('azure-foundry'), true);
+    assert.equal(providerSupportsApiProtocolSelection('amazon-bedrock-api-key'), true);
+    assert.equal(providerSupportsApiProtocolSelection('openrouter'), false);
+    assert.equal(providerSupportsApiProtocolSelection('opencode'), false);
+    assert.equal(providerSupportsDefaultApiProtocol('azure-foundry', 'openai-chat'), true);
+    assert.equal(providerSupportsDefaultApiProtocol('azure-foundry', 'openai-responses'), true);
+    assert.equal(
+      providerSupportsDefaultApiProtocol('amazon-bedrock-api-key', 'anthropic-messages'),
+      true,
+    );
+    assert.equal(providerSupportsDefaultApiProtocol('openrouter', 'openai-chat'), false);
+  });
+
   it('marks tenant- or region-scoped API providers as user-endpoint connections', () => {
     for (const type of ['azure-foundry', 'amazon-bedrock-api-key'] as const) {
       const definition = PROVIDER_REGISTRY[type];
@@ -94,7 +111,7 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       });
       assert.deepEqual(definition.protocolAdapters?.['anthropic-messages'], {
         kind: 'anthropic',
-        auth: 'api-key',
+        auth: type === 'amazon-bedrock-api-key' ? 'bearer' : 'api-key',
         normalizeBaseUrl: true,
       });
     }

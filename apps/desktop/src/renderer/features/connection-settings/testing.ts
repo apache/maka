@@ -17,4 +17,4 @@
  * under the License.
  */
 
-export { providerRequestUrlPreview } from './provider-endpoint-field.js';
+export { providerEndpointHelpKey, providerRequestUrlPreview } from './provider-endpoint-field.js';

@@ -19,6 +19,7 @@
 
 import {
   isModelApiProtocol,
+  providerSupportsDefaultApiProtocol,
   isModelModality,
   effectiveBaseUrl,
   PROVIDER_REGISTRY,
@@ -400,17 +401,8 @@ export function decodeDefaultApiProtocol(
   value: unknown,
   providerType: ProviderType,
 ): ModelApiProtocol | undefined {
-  const canChooseProtocol =
-    providerType === 'custom' ||
-    providerType === 'azure-foundry' ||
-    providerType === 'amazon-bedrock-api-key';
   const supportsProtocol = (protocol: ModelApiProtocol): boolean =>
-    providerType === 'custom'
-      ? isModelApiProtocol(protocol)
-      : canChooseProtocol &&
-        (protocol === 'openai-chat'
-          ? PROVIDER_REGISTRY[providerType].runtimeAdapter.kind === 'openai-compatible'
-          : PROVIDER_REGISTRY[providerType].protocolAdapters?.[protocol] !== undefined);
+    providerSupportsDefaultApiProtocol(providerType, protocol);
   if (value === undefined) {
     if (providerType === 'custom') {
       throw domainError('custom connection default API protocol is invalid');

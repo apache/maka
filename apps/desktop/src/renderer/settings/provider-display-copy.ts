@@ -265,8 +265,8 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'Azure AI Foundry', description: 'Connect a deployed OpenAI-compatible model with its Foundry endpoint and API key.', badge: 'API' },
   },
   'amazon-bedrock-api-key': {
-    'zh-CN': { name: 'Amazon Bedrock', description: '通过 Bedrock 的 OpenAI 兼容 API、区域终结点和 Bedrock API 密钥连接模型。', badge: 'API' },
-    'zh-TW': { name: 'Amazon Bedrock', description: '透過 Bedrock 的 OpenAI 相容 API、區域端點與 Bedrock API 金鑰連線模型。', badge: 'API' },
+    'zh-CN': { name: 'Amazon Bedrock（API 密钥）', description: '使用 Bedrock API 密钥和区域 OpenAI 兼容端点连接模型；可为 Responses 或 Anthropic Messages 模型选择对应协议。', badge: 'API' },
+    'zh-TW': { name: 'Amazon Bedrock（API 金鑰）', description: '使用 Bedrock API 金鑰與區域 OpenAI 相容端點連線模型；可為 Responses 或 Anthropic Messages 模型選擇對應協定。', badge: 'API' },
     en: { name: 'Amazon Bedrock (API key)', description: 'Use a Bedrock API key with its regional OpenAI-compatible endpoint and select Responses or Anthropic Messages for models that require them.', badge: 'API' },
   },
   huggingface: {

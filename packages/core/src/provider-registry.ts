@@ -1560,7 +1560,7 @@ const providerRegistry = {
         apiProtocol: 'openai-responses',
         responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
       },
-      'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
+      'anthropic-messages': { kind: 'anthropic', auth: 'bearer', normalizeBaseUrl: true },
     },
     // Bedrock's OpenAI-compatible endpoint and model-list availability vary
     // by endpoint family and region. A custom endpoint remains user supplied.
@@ -1730,6 +1730,31 @@ export function providerDefaultsOf(providerType: string): ProviderDefaults | und
   return Object.hasOwn(PROVIDER_REGISTRY, providerType)
     ? PROVIDER_REGISTRY[providerType as ProviderType]
     : undefined;
+}
+
+/** Whether a provider's registry definition permits the user to choose a default API protocol. */
+export function providerSupportsApiProtocolSelection(providerType: ProviderType): boolean {
+  if (providerType === 'custom') return true;
+  const defaults = providerDefaultsOf(providerType);
+  return (
+    defaults?.category === 'custom' &&
+    defaults.runtimeAdapter.kind === 'openai-compatible' &&
+    defaults.runtimeAdapter.requireBaseUrl === true &&
+    Object.keys(defaults.protocolAdapters ?? {}).length > 0
+  );
+}
+
+/** Whether the registry can execute a selected default API protocol for this provider. */
+export function providerSupportsDefaultApiProtocol(
+  providerType: ProviderType,
+  protocol: ModelApiProtocol,
+): boolean {
+  const defaults = providerDefaultsOf(providerType);
+  if (!defaults || !providerSupportsApiProtocolSelection(providerType)) return false;
+  if (providerType === 'custom') return isModelApiProtocol(protocol);
+  return protocol === 'openai-chat'
+    ? defaults.runtimeAdapter.kind === 'openai-compatible'
+    : defaults.protocolAdapters?.[protocol] !== undefined;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   MODEL_API_PROTOCOLS,
   PROVIDER_REGISTRY,
   deriveConnectionSlug,
+  providerSupportsApiProtocolSelection,
 } from '@maka/core/llm-connections';
 import {
   providerAuthRequiresSecret,
@@ -132,8 +133,7 @@ export function AddProviderForm(props: {
   }>({ baseUrl: defaults.baseUrl, defaultApiProtocol: 'openai-chat' });
   const { baseUrl, defaultApiProtocol } = endpoint;
   const isCustom = props.providerType === 'custom';
-  const canChooseApiProtocol = isCustom || props.providerType === 'azure-foundry' ||
-    props.providerType === 'amazon-bedrock-api-key';
+  const canChooseApiProtocol = providerSupportsApiProtocolSelection(props.providerType);
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState(recommendedDefaultModel);

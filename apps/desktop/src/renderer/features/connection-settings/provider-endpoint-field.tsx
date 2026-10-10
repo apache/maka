@@ -24,6 +24,7 @@ import { getProviderSettingsCopy } from './settings-provider-copy.js';
 import { openAiChatUrl, openResponsesUrl } from '@maka/core/openai-urls';
 import { normalizeCatalogConnectionBaseUrl } from '@maka/core/runtime-policy';
 import { redactSecrets } from '@maka/core/display-redaction';
+import { providerSupportsApiProtocolSelection } from '@maka/core/llm-connections';
 
 export function ProviderEndpointField(props: {
   providerType: ProviderType;
@@ -33,17 +34,11 @@ export function ProviderEndpointField(props: {
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).shared;
   const url = providerRequestUrlPreview(props.providerType, props.baseUrl, props.apiProtocol);
-  const supportsPreview = props.providerType === 'custom' || props.providerType === 'azure-foundry' ||
-    props.providerType === 'amazon-bedrock-api-key';
+  const supportsPreview = providerSupportsApiProtocolSelection(props.providerType);
   if (!supportsPreview) return props.children(undefined);
   const description = url ? `${copy.requestUrlLabel} ${url}` : undefined;
-  const endpointHelp = props.providerType === 'azure-foundry'
-    ? copy.azureFoundryEndpointHelp
-    : props.providerType === 'amazon-bedrock-api-key'
-      ? props.apiProtocol === 'anthropic-messages'
-        ? copy.bedrockAnthropicEndpointHelp
-        : copy.bedrockOpenAiEndpointHelp
-      : undefined;
+  const endpointHelpKey = providerEndpointHelpKey(props.providerType, props.apiProtocol);
+  const endpointHelp = endpointHelpKey ? copy[endpointHelpKey] : undefined;
   // Astryx's description is above the input (and hidden with its label).
   // This computed output belongs below it; pass it through aria-description
   // on the control as well, without duplicating the field's visible label.
@@ -56,6 +51,28 @@ export function ProviderEndpointField(props: {
   );
 }
 
+export function providerEndpointHelpKey(
+  providerType: ProviderType,
+  apiProtocol?: ModelApiProtocol,
+):
+  | 'azureFoundryEndpointHelp'
+  | 'azureFoundryAnthropicEndpointHelp'
+  | 'bedrockOpenAiEndpointHelp'
+  | 'bedrockAnthropicEndpointHelp'
+  | undefined {
+  if (providerType === 'azure-foundry') {
+    return apiProtocol === 'anthropic-messages'
+      ? 'azureFoundryAnthropicEndpointHelp'
+      : 'azureFoundryEndpointHelp';
+  }
+  if (providerType === 'amazon-bedrock-api-key') {
+    return apiProtocol === 'anthropic-messages'
+      ? 'bedrockAnthropicEndpointHelp'
+      : 'bedrockOpenAiEndpointHelp';
+  }
+  return undefined;
+}
+
 /** Preview the selected protocol when adding, or the default model's protocol when editing. */
 export function providerRequestUrlPreview(
   providerType: ProviderType,
@@ -63,7 +80,7 @@ export function providerRequestUrlPreview(
   apiProtocol: ModelApiProtocol = 'openai-chat',
 ): string | null {
   if (
-    !['custom', 'azure-foundry', 'amazon-bedrock-api-key'].includes(providerType) ||
+    !providerSupportsApiProtocolSelection(providerType) ||
     apiProtocol === 'anthropic-messages'
   ) {
     return null;
