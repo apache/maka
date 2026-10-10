@@ -74,10 +74,12 @@ body limit.
 `selectSkillsForContext` returns a `SkillSelectionReport` alongside the selected
 catalog. It records one decision for every inventory item (`advertised`,
 `budget`, `disabled`, `invalid`, `host_incompatible`, or `shadowed`) and the
-advertised rank. The durable catalog snapshot carries `contextStatus:
-'unknown'` and no `contextRank` until a prompt is built; before that, surfaces
-render the deterministic `enabled ? 'advertised' : 'disabled'` fallback rather
-than a per-project prompt-build report.
+advertised rank. The durable catalog snapshot never carries a prompt-build
+rank (`contextRank` is always null there); enabled, valid, unshadowed items
+report `contextStatus: 'unknown'` (omitted over IPC), while disabled, shadowed,
+and invalid items carry those statuses directly. Surfaces render the
+deterministic `enabled ? 'advertised' : 'disabled'` fallback rather than a
+per-project prompt-build report.
 
 Runtime preferences use `.maka/skills-state.json` schema v2:
 

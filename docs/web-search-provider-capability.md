@@ -137,13 +137,16 @@ display projection. Provider-native results are not partially archived: history
 compaction removes the complete old turn instead of archiving only `result`
 while accidentally retaining an unbounded `providerOutput`.
 
-> **Status note (2026-10-10):** DeepSeek native WebSearch execution is
-> currently disabled — `model-web-search.ts` marks DeepSeek
-> `implemented: false` since #2972 (2026-08-19), because DeepSeek ignores
-> built-in `web_search` in Responses requests. Only historical
-> `web_search_call` items replay through the message projection (#5824).
-> The live verification below is retained as historical evidence of the
-> provider capability; re-enabling execution is tracked in #3689.
+> **Status note (2026-10-10):** the `deepseek` provider type (Responses wire)
+> has native WebSearch execution disabled — `implemented: false` since #2972
+> (2026-08-19, initially because `@ai-sdk/open-responses` serialized function
+> tools only); the current reason (#5824) is that DeepSeek ignores built-in
+> `web_search` in Responses requests, so only historical `web_search_call`
+> items replay through the message projection. Native search through DeepSeek's
+> Anthropic endpoint still runs via a `custom` `anthropic-messages` connection
+> that declares `capabilities.webSearch=true`. The live verification below is
+> retained as historical evidence of the provider capability; re-enabling
+> execution is tracked in #3689.
 
 DeepSeek live verification on 2026-08-04 completed one real Maka `AiSdkBackend`
 turn with two provider-executed WebSearch calls and a final answer in the same
@@ -209,7 +212,7 @@ matched the general Codex/coding-agent wire.
 
 | Provider or access path | Official hosted search surface | Model boundary | Maka state |
 | --- | --- | --- | --- |
-| DeepSeek | Responses `web_search`, server-executed | `deepseek-v4-flash` and `deepseek-v4-pro` | Not executed: `implemented: false` since #2972 (DeepSeek ignores built-in `web_search`); historical `web_search_call` items replay (#5824). Re-enablement: #3689 |
+| DeepSeek | Responses `web_search`, server-executed | `deepseek-v4-flash` and `deepseek-v4-pro` | Not executed on the Responses wire: `implemented: false` since #2972 (initially because `@ai-sdk/open-responses` serialized function tools only; current reason per #5824: DeepSeek ignores built-in `web_search`). Historical `web_search_call` items replay; the CC wire stays available via a `custom` connection. Re-enablement: #3689 |
 | OpenAI API | Responses `web_search` tool | Maka currently enables the native path for GPT-5 families, whose runtime wire is already Responses | Integrated through `openai-responses` |
 | Custom connection | Responses `web_search` or Messages `web_search_20250305` when explicitly declared | `custom` models whose resolved wire is `openai-responses` or `anthropic-messages` and that declare `capabilities.webSearch=true` | Integrated through the resolved wire |
 | xAI API / OAuth | Responses Agent Tools `web_search` | Maka currently enables the verified Grok 4.5 Responses route | Integrated through `openai-responses` |

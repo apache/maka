@@ -47,7 +47,7 @@ Maka 的 MCP 接入必须复用现有 `MakaTool` execution boundary，而不是�
 - `tools/list` pagination、tool call timeout 和 abort；legacy 使用 unsolicited `notifications/tools/list_changed`，modern 使用经 server acknowledgement 的 `subscriptions/listen`。
 - modern server 未声明 tools capability 时不发送 `tools/list`；list-change 由 Maka 做 bounded/coalesced refresh，不把 SDK auto-refresh 作为第二份 snapshot authority。
 - modern Streamable HTTP 对 SEP-2243 `x-mcp-header` 做 bounded validation；非法定义只排除对应 Tool，unsafe integer argument 在发送前本地失败。
-- text、image、audio、embedded resource、resource link content；MCP `isError` 进入 Maka error path。成功的工具结果同样有界：`callTool` 返回前后按 `MAX_SUCCESS_TOOL_RESULT_*` 预算双重限制，超限按 fail-closed 处理（#4915）。
+- text、image、audio、embedded resource、resource link content；MCP `isError` 进入 Maka error path。成功的工具结果同样有界：在 `callTool` 内部于 SDK 调用前后按 `MAX_SUCCESS_TOOL_RESULT_*` 预算双重限制，超限抛 `McpToolCallError` 按 fail-closed 处理（#4915）。
 - workspace-scoped `mcp.json` 使用 version 3；version 1/2 wrapper 读取时保持各自 legacy 语义，只有显式 mutation 才迁移落盘。
 - 首页侧边栏「扩展 > MCP」模块只展示已配置连接，提供搜索、JSON import、添加、编辑、启停、测试、删除和 OAuth 登录；通过 Module Hub services/controller 接入客户端能力。
 - 页面内置建议目录（`MCP_SUGGESTIONS`：Chrome、Notion、Linear、Feishu、MCP docs 等），并随条目携带第三方品牌 SVG 资产；选择条目仅预填连接配置（Chrome 条目提供引导式连接流，#5603/#5638），不构成安装状态。用户仍可按服务文档添加本地命令或远程 URL。保存后由 mcp.json 表示连接配置；连接失败保留配置，用户显式停用或删除。
