@@ -126,6 +126,14 @@ export class HostSessionRevisionCoordinator {
   readonly #stores: ExecutionStoresWriter<'interactive'>;
   readonly #artifacts: InteractiveArtifactStoreWriter;
   readonly #sessionTodo: InteractiveSessionTodoWriter;
+  /**
+   * Conversation copies that recovery decided must be discarded, waiting for
+   * the post-ready maintenance lane. The durable headers stay the authority:
+   * an entry that never drains (crash before Ready) is re-derived by the next
+   * recovery pass, and every reader treats a preparing copy as inert in the
+   * meantime.
+   */
+  readonly #pendingDiscards: string[] = [];
 
   constructor(private readonly options: HostSessionRevisionCoordinatorOptions) {
     this.#stores = authenticateExecutionStoresWriter(options.stores, 'interactive');
@@ -138,7 +146,7 @@ export class HostSessionRevisionCoordinator {
       (header) => header.conversationCopy !== undefined,
     );
     for (const header of copies) {
-      if (header.conversationCopy!.state === 'preparing') await this.#discardDuringRecovery(header);
+      if (header.conversationCopy!.state === 'preparing') this.#deferDiscard(header);
     }
 
     const committed = copies.filter((header) => header.conversationCopy!.state === 'committed');
@@ -177,19 +185,62 @@ export class HostSessionRevisionCoordinator {
       if (retained.has(header.id)) {
         await this.options.manager.commitRevisionVersion(header.id);
       } else {
-        await this.#discardDuringRecovery(header);
+        this.#deferDiscard(header);
       }
     }
   }
 
-  async #discardDuringRecovery(header: SessionHeader): Promise<void> {
+  #deferDiscard(header: SessionHeader): void {
+    // The physical sidecar purge resolves artifact paths across the whole
+    // store, so it runs from the post-ready maintenance lane instead of
+    // blocking Host readiness (issue #4027).
+    if (!this.#pendingDiscards.includes(header.id)) this.#pendingDiscards.push(header.id);
+  }
+
+  /**
+   * Drains one deferred conversation-copy discard. Only the post-ready
+   * storage maintenance lane calls this: the purge walks the artifact store
+   * and must never compete with Host readiness. The header is re-read under
+   * the Session admission lease so a copy committed or discarded since
+   * recovery wins over the stale snapshot.
+   *
+   * @returns true while more deferred discards remain.
+   */
+  async drainPendingDiscards(): Promise<boolean> {
+    const sessionId = this.#pendingDiscards[0];
+    if (sessionId === undefined) return false;
     try {
-      await this.#discard(header);
+      await this.options.admission.run(sessionId, () => this.#drainOneDiscard(sessionId));
     } catch (error) {
-      console.error(
-        `[runtime-host] conversation copy cleanup deferred during recovery (${header.id}): ${conversationCopyCommitFailureDiagnostic(error)}`,
-      );
+      // Rotate the failed entry behind the rest so one stuck Session cannot
+      // starve the queue; the maintenance lane's backoff paces the retry.
+      this.#pendingDiscards.push(this.#pendingDiscards.shift()!);
+      throw error;
     }
+    this.#pendingDiscards.shift();
+    return this.#pendingDiscards.length > 0;
+  }
+
+  async #drainOneDiscard(sessionId: string): Promise<void> {
+    let header: SessionHeader;
+    try {
+      header = await this.#stores.sessionStore.readHeaderSnapshot(sessionId);
+    } catch {
+      return; // The copy is gone: another path completed the discard.
+    }
+    const copy = header.conversationCopy;
+    if (copy === undefined || copy.state === 'committed') return;
+    // A revision can admit its first turn between recovery and this drain;
+    // admitted revisions are committed, never discarded (same rule as recovery).
+    if (
+      copy.kind === 'revision' &&
+      header.revisionState === 'preparing' &&
+      (await this.#hasAdmittedRevisionTurn(sessionId))
+    ) {
+      await this.options.manager.commitRevisionVersion(sessionId);
+      return;
+    }
+    await this.#discard(header);
   }
 
   async #copy(
