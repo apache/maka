@@ -29,7 +29,11 @@ import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
-import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
+import {
+  APICallError,
+  type LanguageModelV4StreamPart,
+  type LanguageModelV4Usage,
+} from '@ai-sdk/provider';
 import type { RuntimeInvocationRootAuthority } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AttachmentByteReader } from '@maka/core/attachments';
@@ -8755,6 +8759,342 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(error?.reason, 'stream_truncated');
     assert.deepEqual(error?.retry, { decision: 'exhausted', attempts: 10 });
     assert.equal(error?.message, 'Provider stream ended without finishing (other)');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('retries an output-free unmetered stop after a settled tool call and recovers', async () => {
+    const durable = durableTurnHarness('turn-output-free-stop-retry', 'read the file');
+    let calls = 0;
+    let toolExecutions = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : calls === 2
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: unavailableUsage(),
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-1' },
+                  { type: 'text-delta', id: 'text-1', delta: 'Recovered answer' },
+                  { type: 'text-end', id: 'text-1' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            toolExecutions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 3);
+    assert.equal(toolExecutions, 1);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'provider_unavailable' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'provider_unavailable' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('records exhaustion of output-free unmetered stop recovery as provider_unavailable', async () => {
+    const durable = durableTurnHarness('turn-output-free-stop-exhausted', 'read the file');
+    let calls = 0;
+    let toolExecutions = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: unavailableUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            toolExecutions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+
+    assert.equal(calls, 11);
+    assert.equal(toolExecutions, 1);
+    assert.equal(error?.reason, 'provider_unavailable');
+    assert.deepEqual(error?.retry, { decision: 'exhausted', attempts: 10 });
+    assert.equal(error?.message, 'Provider ended the stream with no output');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('retries an output-free network_error finish through the network retry policy', async () => {
+    const durable = durableTurnHarness('turn-output-free-network-retry', 'read the file');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'network_error' },
+                  usage: unavailableUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 10, reason: 'network' },
+        { phase: 'started', attempt: 2, maxAttempts: 10, reason: 'network' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('retries an output-free stop after only a client tool-input marker and recovers', async () => {
+    const durable = durableTurnHarness('turn-tool-input-stop-retry', 'analyse the image');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-input-start',
+                  id: 'search-1',
+                  toolName: 'web_search',
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: unavailableUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      providerRetrySleep: async () => {},
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('does not retry an output-free stop after provider-executed tool input starts', async () => {
+    const durable = durableTurnHarness('turn-provider-tool-input-stop', 'analyse the image');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-input-start',
+                id: 'search-1',
+                toolName: 'web_search',
+                providerExecuted: true,
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: unavailableUsage(),
+              },
+            ] as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createBackend({
+      connection: connection(),
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      providerRetrySleep: async () => {},
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(calls, 1);
+    const error = events.find((event) => event.type === 'error');
+    assert.equal(error?.reason, 'provider_unavailable');
+    assert.deepEqual(error?.retry, { decision: 'declined', because: 'side_effects' });
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
@@ -17596,6 +17936,18 @@ function emptyUsage() {
   return {
     inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
     outputTokens: { total: 0, text: 0, reasoning: 0 },
+  };
+}
+
+function unavailableUsage(): LanguageModelV4Usage {
+  return {
+    inputTokens: {
+      total: undefined,
+      noCache: undefined,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
+    outputTokens: { total: undefined, text: undefined, reasoning: undefined },
   };
 }
 
