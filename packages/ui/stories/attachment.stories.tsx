@@ -24,6 +24,8 @@ import type { AttachmentRef } from '@maka/core/events';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import { ChatSurfaceLayout, ChatView, Composer } from '../src/components.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
+import type { ImageDeliveryResult } from '@maka/core/image-delivery';
+import { LocaleProvider } from '../src/locale-context.js';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -150,6 +152,35 @@ function AttachmentChat(props: ComponentProps<typeof ChatView>) {
     </ChatSurfaceLayout>
   );
 }
+
+function imageDeliveryStory(result: ImageDeliveryResult): Story {
+  return {
+    render: () => <LocaleProvider locale="en"><Frame><AttachmentChat {...baseChat}
+      messages={[{ type: 'assistant', id: 'image-message', turnId: 'image-turn', ts: NOW,
+        modelId: 'claude-sonnet-4-5', text: '![Dashboard](https://example.invalid/dashboard.png)' }]}
+      onResolveImageDelivery={async () => result}
+    /></Frame></LocaleProvider>,
+    play: async ({ canvasElement }) => {
+      await waitFor(() => {
+        const image = canvasElement.querySelector('.maka-markdown-image-resource');
+        if (!image) throw new Error('assistant image has not mounted');
+        if (result.status === 'ready') expect(image.querySelector('img')?.getAttribute('src')).toMatch(/^data:/);
+        else if (result.status === 'requires_confirmation') expect(image.textContent).toContain('Remote images cannot be loaded here');
+        else if (result.status === 'failed') expect(image.textContent).toContain('download failed');
+        else expect(image.textContent).toContain('Loading image');
+      });
+    },
+  };
+}
+
+// Real path: assistant chat bubble → an older Host cannot deliver the remote image.
+export const AssistantImageUnavailable = imageDeliveryStory({ status: 'requires_confirmation' });
+// Real path: assistant chat bubble → Host is saving bytes; the image remains a placeholder.
+export const AssistantImageSaving = imageDeliveryStory({ status: 'pending' });
+// Real path: assistant chat bubble → saved attachment is read through the production byte reader.
+export const AssistantImageSaved = imageDeliveryStory({ status: 'ready', artifactId: 'dashboard-image' });
+// Real path: assistant chat bubble → failed download offers Retry with the failure reason.
+export const AssistantImageFailed = imageDeliveryStory({ status: 'failed', reason: 'download_failed' });
 
 // Real path: composer → ＋ → attach files → the pending chips before the message is sent.
 export const ComposerPendingChips: Story = {

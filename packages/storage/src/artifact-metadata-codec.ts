@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isImageDeliveryMetadata } from '@maka/core/image-delivery';
 import { isAbsolute } from 'node:path';
 import {
   ARTIFACT_KINDS,
@@ -42,6 +43,7 @@ const ARTIFACT_RECORD_KEYS = new Set([
   'mimeType',
   'source',
   'summary',
+  'imageDelivery',
   'deepResearchRole',
 ]);
 
@@ -111,6 +113,7 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
     value.sizeBytes < 0 ||
     !isOptionalNonEmptyString(value.mimeType) ||
     !isOptionalNonEmptyString(value.summary) ||
+    (value.imageDelivery !== undefined && !isImageDeliveryMetadata(value.imageDelivery)) ||
     typeof value.source !== 'string'
   ) {
     throw invalidMetadataRecord(index);

@@ -2,7 +2,7 @@
   "name": "@maka/core",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "description": "Pure types for Maka — events, session, permission, connections.",
+  "description": "Pure types for Maka \u2014 events, session, permission, connections.",
   "type": "module",
   "sideEffects": false,
   "private": true,
@@ -63,6 +63,8 @@
     "./context-offload": "./dist/context-offload.js",
     "./tool-result-archive-evidence": "./dist/tool-result-archive-evidence.js",
     "./attachments": "./dist/attachments.js",
+    "./image-delivery": "./dist/image-delivery.js",
+    "./image-markdown": "./dist/image-markdown.js",
     "./artifacts": "./dist/artifacts.js",
     "./pet": "./dist/pet.js",
     "./skill-invocation": "./dist/skill-invocation.js",
@@ -177,6 +179,8 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.15"
+    "intl-messageformat": "11.2.15",
+    "mdast-util-from-markdown": "^2.1.0",
+    "marked": "18.0.11"
   }
 }

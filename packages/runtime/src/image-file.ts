@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { imageDimensionsFromData } from 'image-dimensions';
@@ -27,9 +28,29 @@ import {
   READ_IMAGE_TOO_LARGE_MESSAGE,
   sniffAttachmentMimeType,
 } from '@maka/core/attachments';
+import { ARTIFACT_IMAGE_PREVIEW_MAX_BYTES } from '@maka/core/artifacts';
+
+export interface WorkspaceFileReadOptions {
+  imagePurpose?: 'chat';
+  abortSignal?: AbortSignal;
+}
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 export type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+export class ImageFileError extends Error {
+  constructor(
+    readonly code: 'ERR_IMAGE_TOO_LARGE' | 'ERR_INVALID_IMAGE',
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** Translate validated image failures without changing backend/transport errors. */
+export function imageFileFailureReason(error: ImageFileError): 'too_large' | 'unsupported_mime' {
+  return error.code === 'ERR_IMAGE_TOO_LARGE' ? 'too_large' : 'unsupported_mime';
+}
 
 export function isSupportedImagePath(path: string): boolean {
   return IMAGE_EXTENSIONS.has(extname(path).toLowerCase());
@@ -38,9 +59,22 @@ export function isSupportedImagePath(path: string): boolean {
 /** Classify a bounded prefix before decoding text or allocating an image body. */
 export async function readWorkspaceFile(
   path: string,
+  options: WorkspaceFileReadOptions = {},
 ): Promise<{ content: string } | { bytes: Uint8Array; mimeType: ImageMimeType }> {
-  const file = await open(path, 'r');
+  options.abortSignal?.throwIfAborted();
+  // Chat capture must never block opening a FIFO or read an unbounded text file.
+  const file = await open(
+    path,
+    options.imagePurpose === 'chat' ? constants.O_RDONLY | constants.O_NONBLOCK : 'r',
+  );
   try {
+    options.abortSignal?.throwIfAborted();
+    if (options.imagePurpose === 'chat') {
+      const size = await file.stat();
+      if (!size.isFile()) throw new Error('Image path is not a file.');
+      if (size.size > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) throw imageTooLargeError('chat');
+      return validateImageBytes(await file.readFile({ signal: options.abortSignal }), 'chat');
+    }
     const prefix = Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES);
     // A positioned read leaves the descriptor's offset at zero for readFile.
     const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
@@ -56,13 +90,21 @@ export async function readWorkspaceFile(
   }
 }
 
-export function validateImageBytes(bytes: Uint8Array): {
+export function validateImageBytes(
+  bytes: Uint8Array,
+  purpose: 'model' | 'chat' = 'model',
+): {
   bytes: Uint8Array;
   mimeType: ImageMimeType;
 } {
-  if (bytes.length > MAX_READ_IMAGE_BYTES) throw imageTooLargeError();
+  if (bytes.length > (purpose === 'chat' ? ARTIFACT_IMAGE_PREVIEW_MAX_BYTES : MAX_READ_IMAGE_BYTES))
+    throw imageTooLargeError(purpose);
   const mimeType = sniffImageMime(bytes);
-  if (!mimeType) throw new Error('Image content is not a supported PNG, JPEG, GIF, or WebP file.');
+  if (!mimeType)
+    throw new ImageFileError(
+      'ERR_INVALID_IMAGE',
+      'Image content is not a supported PNG, JPEG, GIF, or WebP file.',
+    );
   const dimensions = imageDimensionsFromData(bytes);
   if (
     !dimensions ||
@@ -73,18 +115,35 @@ export function validateImageBytes(bytes: Uint8Array): {
     dimensions.width <= 0 ||
     dimensions.height <= 0
   ) {
-    throw new Error('Image dimensions could not be read; verify the image file is valid.');
+    throw new ImageFileError(
+      'ERR_INVALID_IMAGE',
+      'Image dimensions could not be read; verify the image file is valid.',
+    );
   }
-  if (Math.max(dimensions.width, dimensions.height) > MAX_MODEL_IMAGE_EDGE) {
+  if (purpose === 'model' && Math.max(dimensions.width, dimensions.height) > MAX_MODEL_IMAGE_EDGE) {
     throw new Error(
       `Image dimensions ${dimensions.width}x${dimensions.height} exceed the ${MAX_MODEL_IMAGE_EDGE}px model input limit; downscale it and try again.`,
     );
   }
+  // Compressed byte size does not bound renderer decoding memory. Permit large
+  // screenshots while rejecting pathological headers before archival/preview.
+  if (
+    purpose === 'chat' &&
+    (Math.max(dimensions.width, dimensions.height) > 16_384 ||
+      dimensions.width * dimensions.height > 32 * 1024 * 1024)
+  ) {
+    throw imageTooLargeError(purpose);
+  }
   return { bytes, mimeType };
 }
 
-function imageTooLargeError(): Error {
-  return new Error(READ_IMAGE_TOO_LARGE_MESSAGE);
+function imageTooLargeError(purpose: 'model' | 'chat' = 'model'): Error {
+  return new ImageFileError(
+    'ERR_IMAGE_TOO_LARGE',
+    purpose === 'chat'
+      ? 'Image exceeds a chat preview limit (2 MiB, 16384px per edge, or 32 megapixels); resize it before publishing.'
+      : READ_IMAGE_TOO_LARGE_MESSAGE,
+  );
 }
 
 function sniffImageMime(bytes: Uint8Array): ImageMimeType | undefined {

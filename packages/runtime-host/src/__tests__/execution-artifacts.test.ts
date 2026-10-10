@@ -39,6 +39,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import { parseAttachmentResourceRef } from '@maka/core/attachments';
+import { ARTIFACT_IMAGE_PREVIEW_MAX_BYTES } from '@maka/core/artifacts';
+import { buildBuiltinTools } from '@maka/runtime/builtin-tools';
 import {
   openInteractiveArtifactStoreForWrite,
   createReadImageSnapshotPlanner,
@@ -53,6 +56,96 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { createHostExecutionArtifactServices } from '../server/execution-artifacts.js';
 import { restoreArtifactV1Shape } from './fixtures/artifact-v1.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+
+test('PublishImage delivers a temporary screenshot as a durable, session-scoped Markdown image', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-publish-image-'));
+  const owner = await tryAcquireInteractiveRootOwner(
+    await resolveStorageRoot({ path: join(base, 'state'), kind: 'interactive' }),
+  );
+  assert.ok(owner);
+  let store = await openInteractiveArtifactStoreForWrite(owner.lease);
+  try {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const screenshot = join(base, 'screenshot.png');
+    await writeFile(screenshot, png);
+    const services = createHostExecutionArtifactServices({
+      artifacts: store,
+      sessionAdmission: new SessionAdmissionGate(),
+      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      requestDrain: () => assert.fail('successful publication must not drain'),
+    });
+    const quotaServices = createHostExecutionArtifactServices({
+      artifacts: store,
+      sessionAdmission: new SessionAdmissionGate(),
+      sessions: { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      imageArchiveLimits: { sessionBytes: 0, workspaceBytes: 0 },
+      requestDrain: () => assert.fail('quota rejection must not drain'),
+    });
+    await assert.rejects(
+      quotaServices.publishImage({
+        sessionId: 'session',
+        turnId: 'turn',
+        toolCallId: 'quota-call',
+        name: 'image.png',
+        mimeType: 'image/png',
+        bytes: png,
+      }),
+      /quota exceeded/,
+    );
+    const tool = buildBuiltinTools({ publishImage: services.publishImage }).find(
+      (tool) => tool.name === 'PublishImage',
+    );
+    assert.ok(tool);
+    const context = {
+      sessionId: 'session',
+      turnId: 'turn',
+      toolCallId: 'publish-call',
+      cwd: join(base, 'state'),
+      permissionMode: 'bypass' as const,
+      executionBoundary: { kind: 'bypass' as const, revision: 0 },
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    };
+    const result = (await tool.impl({ path: screenshot }, context)) as {
+      published: boolean;
+      resource: string;
+      markdown: string;
+    };
+    assert.equal(result.published, true);
+    const ref = parseAttachmentResourceRef(result.resource);
+    assert.ok(ref);
+    assert.equal(result.markdown, `![screenshot.png](${result.resource})`);
+    const projection = encodeDurableToolResultOutput({ type: 'json', value: result }, 'session');
+    assert.deepEqual(durableProjectionToToolResultOutput(projection), {
+      type: 'json',
+      value: result,
+    });
+    await rm(screenshot);
+    store.close();
+    store = await openInteractiveArtifactStoreForWrite(owner.lease);
+    const bytes = await store.readBinaryInSession('session', ref.artifactId);
+    assert.equal(bytes.ok, true);
+    if (bytes.ok) assert.equal(bytes.base64, png.toString('base64'));
+    assert.equal((await store.readBinaryInSession('other', ref.artifactId)).ok, false);
+    await assert.rejects(
+      services.publishImage({
+        ...context,
+        name: 'oversized.png',
+        mimeType: 'image/png',
+        bytes: new Uint8Array(ARTIFACT_IMAGE_PREVIEW_MAX_BYTES + 1),
+      }),
+      /at most 2 MiB/,
+    );
+  } finally {
+    store.close();
+    await owner.close();
+    await rm(base, { recursive: true, force: true });
+    await rm(owner.controlDirectory, { recursive: true, force: true });
+  }
+});
 
 for (const scenario of ['text', 'large raw MCP image', 'executor-sized Bash'] as const) {
   test(`production archives survive reopen (${scenario})`, async () => {

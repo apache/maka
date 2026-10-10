@@ -97,6 +97,7 @@ type ConversationCopyCreateInput = CreateSessionInput & {
 };
 
 export interface HostSessionRevisionCoordinatorOptions {
+  readonly imageArchiveLimits?: import('@maka/core/image-delivery').ImageArchiveLimits;
   readonly stores: ExecutionStoresWriter<'interactive'>;
   readonly artifacts: InteractiveArtifactStoreWriter;
   readonly sessionTodo: InteractiveSessionTodoWriter;
@@ -517,6 +518,9 @@ export class HostSessionRevisionCoordinator {
         throw new Error(`Session context references could not be copied: ${contextCopy.reason}`);
       }
       const artifactCopy = await this.#artifacts.copyConversationArtifacts({
+        ...(this.options.imageArchiveLimits
+          ? { imageArchiveLimits: this.options.imageArchiveLimits }
+          : {}),
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
         turnIds: copyTurnIds,

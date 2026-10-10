@@ -33,7 +33,10 @@ import {
 } from '../../connection-effect-fetch.js';
 import { runConnectionModelDiscoveryEffect } from '../../model-fetcher.js';
 import { runConnectionTestEffect, testConnection } from '../../test-connection.js';
-import { createConnectionEffectFetchTransport } from '../scoped-fetch-transport.js';
+import {
+  createConnectionEffectFetchTransport,
+  createProxiedFetchTransport,
+} from '../scoped-fetch-transport.js';
 import { testProxyConnection } from '../proxy-test.js';
 import { proxiedFetch } from '../../bots/proxied-fetch.js';
 import { setActiveProxy } from '../active-proxy-state.js';
@@ -218,6 +221,37 @@ describe('connection effect network transport', () => {
           'SOCKS request did not finish',
         );
         assert.equal(response.status, 200);
+        assert.equal(await response.text(), 'proxy-ok');
+      } finally {
+        await transport.close();
+        await proxy.close();
+      }
+    });
+  }
+
+  for (const authenticated of [false, true]) {
+    test(`public requests preserve SOCKS remote DNS (auth: ${authenticated})`, async () => {
+      const proxy = await startStalledProxy(
+        authenticated ? 'socks-auth-http' : 'socks-http',
+        false,
+        'image.example',
+      );
+      const transport = createProxiedFetchTransport({
+        ...PROXY_DEFAULTS,
+        enabled: true,
+        type: 'socks5',
+        host: '127.0.0.1',
+        port: proxy.port,
+        username: authenticated ? 'proxy-user' : '',
+        password: authenticated ? 'proxy-password' : '',
+        bypassList: [],
+      });
+      try {
+        const response = await transport.fetch('http://image.example/models', {
+          targetPolicy: 'public',
+          redirect: 'manual',
+          signal: AbortSignal.timeout(2000),
+        });
         assert.equal(await response.text(), 'proxy-ok');
       } finally {
         await transport.close();
@@ -803,7 +837,11 @@ describe('connection effect network transport', () => {
   });
 });
 
-async function startStalledProxy(stage: string, rejectTls = false) {
+async function startStalledProxy(
+  stage: string,
+  rejectTls = false,
+  targetHost = 'provider.invalid',
+) {
   const sockets = new Set<net.Socket>();
   let started!: () => void;
   const reachedStage = new Promise<void>((resolve) => {
@@ -864,7 +902,7 @@ async function startStalledProxy(stage: string, rejectTls = false) {
       } else if (phase === 'socks-connect' && buffer.length >= 5) {
         assert.equal(buffer[3], 3, 'the destination hostname must be resolved by the proxy');
         if (buffer.length < 7 + buffer[4]!) return;
-        assert.equal(buffer.subarray(5, 5 + buffer[4]!).toString(), 'provider.invalid');
+        assert.equal(buffer.subarray(5, 5 + buffer[4]!).toString(), targetHost);
         buffer = Buffer.alloc(0);
         if (stage === 'socks-connect') {
           phase = 'stalled';

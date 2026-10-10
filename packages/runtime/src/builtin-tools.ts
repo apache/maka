@@ -43,7 +43,11 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute } from 'node:path';
 import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
-import { parseAttachmentResourceRef } from '@maka/core/attachments';
+import { formatAttachmentResourceRef, parseAttachmentResourceRef } from '@maka/core/attachments';
+import {
+  ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
+  normalizeArtifactImagePreviewMime,
+} from '@maka/core/artifacts';
 import { type SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/core/events';
 import { type PermissionProfile } from '@maka/core/permission-profile';
@@ -205,6 +209,15 @@ export interface BuildBuiltinToolsOptions {
     mimeType: string;
   }) => Promise<Extract<StorageRef, { kind: 'session_context' }>>;
   releaseImageSnapshot?: (input: { sessionId: string; refId: string }) => Promise<void>;
+  /** Publish bytes already admitted by the filesystem read boundary. */
+  publishImage?: (input: {
+    sessionId: string;
+    turnId: string;
+    toolCallId: string;
+    name: string;
+    bytes: Uint8Array;
+    mimeType: string;
+  }) => Promise<Extract<StorageRef, { kind: 'session_file' }>>;
 }
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
@@ -295,6 +308,59 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
   const tools: MakaTool[] = [
     ...bashTools,
     ...backgroundTools,
+    ...(options.publishImage
+      ? [
+          {
+            name: 'PublishImage',
+            activityKind: 'read' as const,
+            description:
+              'Publish a local PNG/JPEG/GIF/WebP image as a durable attachment in the current chat. ' +
+              'Use this after generating a screenshot or image to show it to the user. ' +
+              'Returns a resource URL and ready-to-use Markdown. Use this to save a copy before deleting or replacing the source; ordinary image Markdown is captured automatically by the Host. ' +
+              'Images must be at most 2 MiB; resize larger images first. File access uses the same permissions as Read.',
+            parameters: z.object({
+              path: z
+                .string()
+                .describe('Local image path; relative paths resolve from the session cwd.'),
+            }),
+            executionFacts,
+            impl: async ({ path }: { path: string }, ctx: MakaToolContext) => {
+              const result = await filesystem.execute({
+                operation: { kind: 'read', path, imagePurpose: 'chat' },
+                ...filesystemCall(ctx),
+              });
+              if (
+                result.kind !== 'read_image' ||
+                !normalizeArtifactImagePreviewMime(result.mimeType)
+              )
+                throw new Error('PublishImage requires a PNG, JPEG, GIF, or WebP image.');
+              if (result.bytes.byteLength > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES)
+                throw new Error(
+                  'Image exceeds the 2 MiB chat preview limit; resize it before publishing.',
+                );
+              ctx.abortSignal.throwIfAborted();
+              const ref = await options.publishImage!({
+                sessionId: ctx.sessionId,
+                turnId: ctx.turnId,
+                toolCallId: ctx.toolCallId,
+                name: basename(path),
+                bytes: result.bytes,
+                mimeType: result.mimeType,
+              });
+              const resource =
+                ref.sessionId === ctx.sessionId ? formatAttachmentResourceRef(ref) : null;
+              if (!resource)
+                throw new Error('Image publication did not return a valid session attachment.');
+              const name = basename(path).replace(/[\[\]\\\r\n]/g, '_');
+              return {
+                published: true,
+                resource,
+                markdown: `![${name}](${resource})`,
+              };
+            },
+          } satisfies MakaTool,
+        ]
+      : []),
     {
       name: 'Read',
       activityKind: 'read',

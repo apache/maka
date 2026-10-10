@@ -650,3 +650,63 @@ function createTranscriptProjection(invocations: readonly RuntimeInvocationRecor
     },
   };
 }
+
+/** Resolves only settled canonical assistant text; presentation cannot grant a file read. */
+export function createAssistantMessageReader(input: {
+  events: Pick<
+    ExecutionStoresWriter<'interactive'>['runtimeEventStore'],
+    'readTranscriptTurns' | 'readTranscriptRun'
+  >;
+  ensureTranscriptLedger(sessionId: string): Promise<void>;
+}) {
+  return async (identity: {
+    sessionId: string;
+    turnId: string;
+    messageId: string;
+  }): Promise<string | undefined> => {
+    await input.ensureTranscriptLedger(identity.sessionId);
+    const [turn] = await input.events.readTranscriptTurns(identity.sessionId, {
+      turnId: identity.turnId,
+    });
+    if (!turn) return undefined;
+    for (
+      let position = turn.firstOrdinal, runs = 0;
+      position <= turn.lastOrdinal && runs < 16;
+      runs++
+    ) {
+      const found = await input.events.readTranscriptRun(
+        identity.sessionId,
+        {
+          direction: 'newer',
+          throughOrdinal: turn.lastOrdinal,
+          position,
+          maxEvents: 4096,
+          maxBytes: 16 * 1024 * 1024,
+          maxRecordBytes: 8 * 1024 * 1024,
+        },
+        (run, events) => {
+          let text: string | undefined;
+          for (const { event } of events) {
+            if (
+              event.partial ||
+              event.turnId !== identity.turnId ||
+              event.role !== 'model' ||
+              event.content?.kind !== 'text'
+            )
+              continue;
+            if (
+              (event.refs?.storedMessageId ?? event.refs?.providerEventId ?? event.id) ===
+              identity.messageId
+            )
+              text = event.content.text;
+          }
+          return { text, next: run.lastOrdinal + 1 };
+        },
+      );
+      if (!found) break;
+      if (found.text !== undefined) return found.text;
+      position = found.next;
+    }
+    return undefined;
+  };
+}

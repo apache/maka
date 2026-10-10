@@ -84,6 +84,12 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
             return { ok: true, disposition: args[2] === 'current_turn' ? 'steering' : 'followup', attachments: [uploaded] };
           }
           if (channel === 'attachments:readBytes') return { ok: true, base64: 'aGVsbG8=' };
+          if (channel === 'attachments:resolveImage') {
+            assert.deepEqual(structuredClone(args[2]), {
+              turnId: 'image-turn', messageId: 'image-message', source: '/tmp/image.png',
+            });
+            return { status: 'ready', artifactId: 'image-1' };
+          }
           throw new Error(`Unexpected channel: ${channel}`);
         },
       },
@@ -108,7 +114,11 @@ test('WorkHub upload references round-trip through idle answers, both queue mode
     assert.equal(await services.enqueueMessage(sessionId, `message-${placement}`, 'read this', attachments, placement), 'admitted');
   }
   assert.deepEqual(structuredClone(sent.map(({ attachments }) => attachments)), [[uploaded], [uploaded], [uploaded]]);
-  assert.equal((await services.readAttachmentBytes(sessionId, 'brief.txt')).ok, true);
+  assert.equal((await services.readBytes(sessionId, 'brief.txt')).ok, true);
+  assert.ok(services.resolveImageDelivery);
+  assert.deepEqual(await services.resolveImageDelivery(sessionId, {
+    turnId: 'image-turn', messageId: 'image-message', source: '/tmp/image.png',
+  }), { status: 'ready', artifactId: 'image-1' });
   preparationResult = { ok: false, code: 'item_too_large' };
   await assert.rejects(
     services.prepareAttachments(sessionId, [

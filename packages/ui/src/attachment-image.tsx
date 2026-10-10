@@ -19,24 +19,23 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from 'react';
-import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
+import type { ReadAttachmentBytes } from '@maka/core/image-delivery';
 import { decideImageReadOutcome } from './artifact-preview-registry.js';
 
 /** Host capability for reading bytes from the Runtime Host attachment authority. */
-export type ReadAttachmentBytes = (
-  sessionId: string,
-  artifactId: string,
-) => Promise<ArtifactBinaryReadResult>;
+export type { ReadAttachmentBytes } from '@maka/core/image-delivery';
 
 type SessionAttachmentContextValue = {
   sessionId: string;
   loadImage: (sessionId: string, artifactId: string) => Promise<string | undefined>;
+  invalidate(sessionId: string, artifactId: string): void;
 };
 
 const SessionAttachmentContext = createContext<SessionAttachmentContextValue | undefined>(undefined);
@@ -52,10 +51,19 @@ export function SessionAttachmentProvider(props: {
       const readBytes = props.readBytes;
       if (!readBytes) return undefined;
       const pending = new Map<string, Promise<string | undefined>>();
+      const ready = new Map<string, string>();
+      let cachedBytes = 0;
       return {
         sessionId: props.sessionId,
+        invalidate(sessionId: string, artifactId: string) {
+          const key = `${sessionId}\0${artifactId}`;
+          const cached = ready.get(key);
+          if (cached) { cachedBytes -= cached.length * 2; ready.delete(key); }
+        },
         loadImage(sessionId: string, artifactId: string) {
           const key = `${sessionId}\0${artifactId}`;
+          const cached = ready.get(key);
+          if (cached) { ready.delete(key); ready.set(key, cached); return Promise.resolve(cached); }
           const existing = pending.get(key);
           if (existing) return existing;
           const loaded = readBytes(sessionId, artifactId)
@@ -67,6 +75,14 @@ export function SessionAttachmentProvider(props: {
             })
             .catch(() => undefined);
           pending.set(key, loaded);
+          void loaded.then(src => {
+            if (!src) return;
+            ready.set(key, src); cachedBytes += src.length * 2;
+            while (cachedBytes > 32 * 1024 * 1024 && ready.size) {
+              const oldest = ready.keys().next().value!;
+              cachedBytes -= ready.get(oldest)!.length * 2; ready.delete(oldest);
+            }
+          });
           void loaded.finally(() => {
             if (pending.get(key) === loaded) pending.delete(key);
           });
@@ -88,24 +104,48 @@ export function useAttachmentImageSource(ref: {
   artifactId: string;
   sessionId?: string;
 } | undefined): string | undefined {
+  return useAttachmentImage(ref).src;
+}
+
+export function useAttachmentImage(ref: {
+  artifactId: string;
+  sessionId?: string;
+} | undefined) {
   const context = useContext(SessionAttachmentContext);
   const artifactId = ref?.artifactId;
   const sessionId = ref?.sessionId ?? context?.sessionId;
   const loadImage = context?.loadImage;
-  const [src, setSrc] = useState<string | undefined>(undefined);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    if (artifactId && sessionId) context?.invalidate(sessionId, artifactId);
+    setAttempt((value) => value + 1);
+  }, [artifactId, sessionId, context]);
+  const request = useMemo(
+    () => artifactId && sessionId && loadImage
+      ? { artifactId, sessionId, loadImage, attempt }
+      : undefined,
+    [artifactId, sessionId, loadImage, attempt],
+  );
+  const [result, setResult] = useState<{
+    request: typeof request;
+    status: 'loading' | 'ready' | 'failed';
+    src?: string;
+  }>();
 
   useEffect(() => {
-    setSrc(undefined);
-    if (!artifactId || !sessionId || !loadImage) return;
+    if (!request) return;
+    setResult({ request, status: 'loading' });
     let cancelled = false;
-    loadImage(sessionId, artifactId)
+    request.loadImage(request.sessionId, request.artifactId)
       .then((loaded) => {
-        if (!cancelled) setSrc(loaded);
-      })
+        if (!cancelled) setResult({ request, status: loaded ? 'ready' : 'failed', src: loaded });
+      });
     return () => {
       cancelled = true;
     };
-  }, [artifactId, loadImage, sessionId]);
+  }, [request]);
 
-  return src;
+  if (!request) return { status: 'unavailable' as const, src: undefined, retry };
+  if (result?.request !== request) return { status: 'loading' as const, src: undefined, retry };
+  return { status: result.status, src: result.src, retry };
 }

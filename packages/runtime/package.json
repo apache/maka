@@ -11,6 +11,8 @@
     "./ai-sdk-backend": "./dist/ai-sdk-backend.js",
     "./mcp-tools": "./dist/mcp-tools.js",
     "./read-page": "./dist/read-page.js",
+    "./image-file-reader": "./dist/image-file-reader.js",
+    "./image-file": "./dist/image-file.js",
     "./builtin-tools": "./dist/builtin-tools.js",
     "./shell-tools": "./dist/shell-tools.js",
     "./shell-run-manager": "./dist/shell-run-manager.js",

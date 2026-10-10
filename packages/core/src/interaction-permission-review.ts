@@ -523,6 +523,7 @@ function projectToolReview(
       };
     }
     case 'Read':
+    case 'PublishImage':
     case 'Write':
     case 'Edit': {
       const path = projectionStringFrom(
@@ -533,7 +534,12 @@ function projectToolReview(
       );
       return {
         kind: 'path',
-        operation: toolName === 'Read' ? 'read' : toolName === 'Write' ? 'write' : 'edit',
+        operation:
+          toolName === 'Read' || toolName === 'PublishImage'
+            ? 'read'
+            : toolName === 'Write'
+              ? 'write'
+              : 'edit',
         path: safeText(path, INTERACTION_PERMISSION_PATH_MAX_BYTES),
       };
     }

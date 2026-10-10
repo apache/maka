@@ -18,6 +18,7 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { isImageDeliveryRequest } from '@maka/core/image-delivery';
 import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -87,6 +88,10 @@ export function registerRuntimeHostArtifactsIpc(
       return result;
     },
   );
+  deps.ipcMain.handle('attachments:resolveImage', (_event, sessionId: string, request: unknown) => {
+    if (!isImageDeliveryRequest(request)) throw new Error('Invalid image delivery request');
+    return deps.client.resolveImageDelivery(sessionId, request);
+  });
   registerRuntimeHostAttachmentPreviewIpc(deps);
   const materializePresentationArtifact = async (
     sessionId: string,

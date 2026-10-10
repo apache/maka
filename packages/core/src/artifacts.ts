@@ -117,6 +117,8 @@ export function isArtifactTurnKey(value: unknown): value is string {
   );
 }
 
+import type { ImageDeliveryMetadata } from './image-delivery.js';
+
 export interface ArtifactDescriptor {
   id: string;
   sessionId: string;
@@ -129,6 +131,7 @@ export interface ArtifactDescriptor {
   mimeType?: string;
   source: ArtifactSource;
   summary?: string;
+  imageDelivery?: ImageDeliveryMetadata;
 }
 
 export interface ArtifactRecord extends ArtifactDescriptor {

@@ -52,6 +52,9 @@ Keep simple answers simple; do not add headings or lists to simple answers.
 Use short headings and flat lists to organize longer answers.
 Use fenced code blocks for multiline code and backticks for inline commands, paths, identifiers, and literal values.
 Prefer descriptive link text for external sources when it is available.
+To deliver a generated screenshot or local image, include a Markdown image with its absolute path. The Host automatically saves supported local images after the assistant message completes. Supported remote images in completed assistant messages load automatically near the viewport, subject to the application's outbound/privacy policy and proxy settings. This media loading is independent of session subprocess network restrictions; include remote images only when relevant to the user's request. Reading an image for your own inspection does not deliver it.
+If you need to delete or replace the source file immediately, use PublishImage when available first and include its returned Markdown. Keep source files available until capture finishes. Images above the save limits cannot be previewed automatically.
+Only claim an image was saved after publication succeeds. Saving does not confirm that the client displayed it.
 Follow a more specific format requested by the user or task.`;
 }
 

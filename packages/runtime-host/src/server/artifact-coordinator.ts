@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ChatImageDeliveryService } from './chat-image-delivery.js';
 import { JsonArrayPageBudget } from './json-array-page-budget.js';
 
 import { createHash } from 'node:crypto';
@@ -63,6 +64,13 @@ interface ArtifactUploadMetadata {
 /** Session-scoped Host projection and deletion authority for Artifacts. */
 export class HostArtifactCoordinator {
   readonly handlers: ArtifactOperationHandlerMap = {
+    'artifact.image.resolve': async (input, context) => {
+      if (context.principalKind === 'session_guest' || !this.imageDelivery)
+        return { ok: true, result: { status: 'unavailable' } };
+      if ((await this.#sessions.probeSessionRemoval(input.sessionId)).kind !== 'present')
+        return { ok: false, error: { code: 'not_found', message: 'Session was not found' } };
+      return { ok: true, result: await this.imageDelivery.resolve(input) };
+    },
     'artifact.ingest': (input, context) =>
       this.#sessionAdmission.run(input.sessionId, () => this.#ingest(input, context)),
     'artifact.query': (input, context) =>
@@ -87,6 +95,7 @@ export class HostArtifactCoordinator {
     sessions: SessionPresenceReader,
     now: () => number = Date.now,
     sessionAccessAuthority?: Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>,
+    private readonly imageDelivery?: ChatImageDeliveryService,
   ) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
     this.#requestDrain = requestDrain;

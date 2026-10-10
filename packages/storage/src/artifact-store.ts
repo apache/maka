@@ -17,6 +17,16 @@
  * under the License.
  */
 
+import { assertImageArchiveQuota, planImageArchive } from './artifact-image-storage.js';
+import {
+  DEFAULT_IMAGE_ARCHIVE_LIMITS,
+  isImageDeliveryMetadata,
+  type ImageDeliveryMetadata,
+  type ImageDeliveryIdentity,
+  type ImageDeliveryAttempt,
+  type ImageDeliveryResult,
+  type ImageArchiveLimits,
+} from '@maka/core/image-delivery';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { type BigIntStats, constants as fsConstants } from 'node:fs';
@@ -24,6 +34,7 @@ import {
   access,
   copyFile,
   lstat,
+  link,
   mkdir,
   open,
   readFile,
@@ -104,6 +115,8 @@ export interface CreateArtifactInput {
   summary?: string;
   now?: number;
   id?: string;
+  imageDelivery?: ImageDeliveryMetadata;
+  imageArchiveLimits?: ImageArchiveLimits;
 }
 
 export type ArtifactListRevision = `sha256:${string}`;
@@ -131,6 +144,7 @@ export type ArtifactChunkReadResult =
   | { readonly ok: false; readonly reason: 'out_of_range' };
 
 export interface ConversationArtifactCopyInput {
+  readonly imageArchiveLimits?: ImageArchiveLimits;
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
   readonly turnIds: readonly string[];
@@ -189,6 +203,16 @@ export interface ArtifactUpgradeCleanupResult {
 
 export interface ArtifactAuthorityStore extends DurableArtifactAttachmentReader {
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
+  findImageDelivery(
+    sessionId: string,
+    turnId: string,
+    messageId: string,
+    source: string,
+  ): Promise<ImageDeliveryResult | undefined>;
+  setImageDeliveryAttempt(
+    identity: ImageDeliveryIdentity,
+    attempt: ImageDeliveryAttempt,
+  ): Promise<void>;
   close(): void;
   copyConversationArtifacts(
     input: ConversationArtifactCopyInput,
@@ -269,11 +293,50 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     this.metadataRepository.close();
   }
 
+  async findImageDelivery(
+    sessionId: string,
+    turnId: string,
+    messageId: string,
+    source: string,
+  ): Promise<ImageDeliveryResult | undefined> {
+    return this.enqueue(async () =>
+      this.metadataRepository.findImageDelivery(sessionId, turnId, messageId, source),
+    );
+  }
+
+  setImageDeliveryAttempt(
+    identity: ImageDeliveryIdentity,
+    attempt: ImageDeliveryAttempt,
+  ): Promise<void> {
+    assertCanonicalArtifactEntityId(identity.sessionId, 'sessionId');
+    assertArtifactTurnKey(identity.turnId);
+    const acceptedIdentity = Object.freeze({ ...identity });
+    const acceptedAttempt = Object.freeze({ ...attempt });
+    return this.enqueueMutation(async () =>
+      this.metadataRepository.setImageDeliveryAttempt(acceptedIdentity, acceptedAttempt),
+    );
+  }
+
   async create(input: CreateArtifactInput): Promise<ArtifactRecord> {
     const acceptedInput: CreateArtifactInput = Object.freeze({
       ...input,
+      ...(input.imageDelivery ? { imageDelivery: Object.freeze({ ...input.imageDelivery }) } : {}),
+      ...(input.imageArchiveLimits
+        ? { imageArchiveLimits: Object.freeze({ ...input.imageArchiveLimits }) }
+        : {}),
       content: typeof input.content === 'string' ? input.content : new Uint8Array(input.content),
     });
+    if (
+      acceptedInput.imageDelivery !== undefined &&
+      (!isImageDeliveryMetadata(acceptedInput.imageDelivery) ||
+        acceptedInput.imageDelivery.status !== 'ready')
+    )
+      throw new Error('Invalid image delivery metadata');
+    if (
+      acceptedInput.imageDelivery?.status === 'ready' &&
+      acceptedInput.imageDelivery.contentSha256 !== sha256(Buffer.from(acceptedInput.content))
+    )
+      throw new Error('Image delivery digest does not match its bytes');
     const id = acceptedInput.id ?? randomUUID();
     if (!ARTIFACT_KIND_SET.has(acceptedInput.kind)) throw new Error('Invalid Artifact kind');
     if (!ARTIFACT_SOURCE_SET.has(acceptedInput.source)) {
@@ -301,6 +364,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           relativePath,
         });
       }
+      const { digest, sameContent } = planImageArchive(this.records, acceptedInput);
       return this.publishNewArtifactUnlocked(
         {
           id,
@@ -313,8 +377,20 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
           source: acceptedInput.source,
           ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
+          ...(acceptedInput.imageDelivery ? { imageDelivery: acceptedInput.imageDelivery } : {}),
         },
-        (targetPath) => writeFile(targetPath, acceptedInput.content, { flag: 'wx' }),
+        async (targetPath) => {
+          if (sameContent) {
+            const source = await this.prepareRecordRead(sameContent, sameContent.sizeBytes);
+            if (
+              source.ok &&
+              (await hashPreparedArtifact(source)) === digest &&
+              (await tryLinkImagePayload(source.path, targetPath))
+            )
+              return;
+          }
+          await writeFile(targetPath, acceptedInput.content, { flag: 'wx' });
+        },
       );
     });
   }
@@ -327,6 +403,9 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     if (input.sourceSessionId === input.targetSessionId) {
       throw new Error('Artifact conversation copy requires distinct Sessions');
     }
+    const imageArchiveLimits = Object.freeze({
+      ...(input.imageArchiveLimits ?? DEFAULT_IMAGE_ARCHIVE_LIMITS),
+    });
     const turnIds = new Set(input.turnIds);
     const includedArtifactIds = new Set(input.includeArtifactIds ?? []);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
@@ -344,7 +423,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       }
       requestedLinkedArtifactIds.set(linked.sessionId, artifactIds);
     }
-    const records = await this.enqueue(async () => {
+    const { records, attempts } = await this.enqueue(async () => {
       await this.load();
       const selected = this.records
         .filter(
@@ -375,7 +454,12 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           selectedIds.add(record.id);
         }
       }
-      return selected;
+      return {
+        records: selected,
+        attempts: this.metadataRepository.readImageDeliveryAttempts(input.sourceSessionId, [
+          ...turnIds,
+        ]),
+      };
     });
 
     const artifactIds = new Map<string, string>();
@@ -395,10 +479,14 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         input.targetSessionId,
         targetId,
         input.existingTarget === 'reuse_verified',
+        imageArchiveLimits,
       );
       artifactIds.set(record.id, created.id);
       relativePaths.set(record.relativePath, created.relativePath);
     }
+    await this.enqueueMutation(async () =>
+      this.metadataRepository.copyImageDeliveryAttempts(attempts, input.targetSessionId),
+    );
     return { artifactIds, relativePaths };
   }
 
@@ -407,6 +495,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     targetSessionId: string,
     targetId: string,
     reuseVerified: boolean,
+    imageArchiveLimits: ImageArchiveLimits,
   ): Promise<ArtifactRecord> {
     const source = prepared.record;
     const name = sanitizeArtifactName(source.name);
@@ -442,9 +531,21 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         }
         return { ...existing };
       }
+      assertImageArchiveQuota(this.records, { ...expected, imageArchiveLimits });
       return this.publishNewArtifactUnlocked(
         expected,
-        (targetPath) => copyFile(prepared.path, targetPath, fsConstants.COPYFILE_EXCL),
+        async (targetPath) => {
+          if (source.imageDelivery?.status === 'ready') {
+            const current = await this.prepareRecordRead(source, source.sizeBytes);
+            if (
+              !current.ok ||
+              (await hashPreparedArtifact(current)) !== source.imageDelivery.contentSha256
+            )
+              throw artifactReplayConflict(source.id);
+            if (await tryLinkImagePayload(current.path, targetPath)) return;
+          }
+          await copyFile(prepared.path, targetPath, fsConstants.COPYFILE_EXCL);
+        },
         source.sizeBytes,
       );
     });
@@ -489,6 +590,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       await this.purgeRecordsUnlocked(
         this.records.filter((record) => record.sessionId === sessionId),
       );
+      this.metadataRepository.purgeImageDeliveryAttempts(sessionId);
     });
   }
 
@@ -600,6 +702,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       existing.mimeType !== optionalCanonicalText(input.mimeType) ||
       existing.source !== input.source ||
       existing.summary !== optionalCanonicalText(input.summary) ||
+      !isDeepStrictEqual(existing.imageDelivery, input.imageDelivery) ||
       (input.now !== undefined && existing.createdAt !== input.now)
     ) {
       throw artifactReplayConflict(canonical.id);
@@ -1330,4 +1433,20 @@ function sniffAllowedBinaryMime(bytes: Uint8Array): string | null {
   if (/^<svg[\s>]/i.test(leading) || /^<\?xml[\s\S]*<svg[\s>]/i.test(leading))
     return 'image/svg+xml';
   return null;
+}
+
+async function tryLinkImagePayload(source: string, target: string): Promise<boolean> {
+  try {
+    await link(source, target);
+    return true;
+  } catch (error) {
+    // Filesystems without hard links retain the regular write/copy fallback.
+    if (
+      !['ENOTSUP', 'EPERM', 'EXDEV', 'EACCES'].includes(
+        String((error as NodeJS.ErrnoException).code),
+      )
+    )
+      throw error;
+    return false;
+  }
 }

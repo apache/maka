@@ -314,6 +314,7 @@ function canonicalRendererEntryHtml(
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="referrer" content="no-referrer" />
         <meta
           http-equiv="Content-Security-Policy"
           content="default-src 'self'; ${policy}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'"
@@ -1775,6 +1776,13 @@ describe('renderer architecture checker fixtures', () => {
           '/fixture/src/renderer/settings/alternate-entry.tsx',
         ]),
       /renderer entry contract requires src\/renderer\/index\.html to import only src\/renderer\/main\.tsx/u,
+    );
+  });
+
+  it('rejects an HTML transform that changes the no-referrer policy', () => {
+    assert.throws(
+      () => assertRendererEntryHtml(canonicalRendererEntryHtml().replace('content="no-referrer"', 'content="unsafe-url"')),
+      /renderer entry HTML contract forbids transformed executable or navigation surfaces/u,
     );
   });
 

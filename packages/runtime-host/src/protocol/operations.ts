@@ -262,6 +262,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'agent.graph.stop',
   'artifact.delete',
   'artifact.ingest',
+  'artifact.image.resolve',
   'artifact.query',
   'client.capability.replace',
   'client.capability.unregister',

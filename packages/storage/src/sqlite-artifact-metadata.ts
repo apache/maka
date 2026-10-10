@@ -18,6 +18,18 @@
  */
 
 import { resolve } from 'node:path';
+import type {
+  ImageDeliveryIdentity,
+  ImageDeliveryAttempt,
+  ImageDeliveryResult,
+} from '@maka/core/image-delivery';
+import {
+  readImageDeliveryAttempt,
+  writeImageDeliveryAttempt,
+  removeImageDeliveryAttempt,
+  readImageDeliveryAttempts,
+  type StoredImageDeliveryAttempt,
+} from './sqlite-image-delivery.js';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { decodeArtifactRecordJsons } from './artifact-metadata-codec.js';
 import {
@@ -40,6 +52,91 @@ class SqliteArtifactMetadataRepository {
 
   constructor(workspaceRoot: string) {
     this.#lease = acquireOperationalStateDatabase(resolve(workspaceRoot));
+  }
+
+  findImageDelivery(
+    sessionId: string,
+    turnId: string,
+    messageId: string,
+    source: string,
+  ): ImageDeliveryResult | undefined {
+    this.assertOpen();
+    const rows = this.#lease.database
+      .prepare(`
+      SELECT record_json FROM artifact_records
+      WHERE session_id = ? AND json_valid(record_json)
+        AND json_type(record_json, '$.imageDelivery') = 'object'
+        AND json_extract(record_json, '$.turnId') = ?
+        AND json_extract(record_json, '$.imageDelivery.messageId') = ?
+        AND json_extract(record_json, '$.imageDelivery.source') = ?
+        AND json_extract(record_json, '$.imageDelivery.status') = 'ready'
+      ORDER BY created_at DESC, artifact_id DESC LIMIT 1
+    `)
+      .all(sessionId, turnId, messageId, source) as Array<{ record_json: string }>;
+    const record = decodeRows(rows)[0];
+    if (record?.imageDelivery?.status === 'ready')
+      return { status: 'ready', artifactId: record.id };
+    return readImageDeliveryAttempt(this.#lease.database, { sessionId, turnId, messageId, source });
+  }
+
+  setImageDeliveryAttempt(identity: ImageDeliveryIdentity, attempt: ImageDeliveryAttempt): void {
+    this.assertOpen();
+    this.#lease.transaction('write', () => {
+      // Saved history is immutable, including when a retry races publication.
+      if (
+        this.findImageDelivery(
+          identity.sessionId,
+          identity.turnId,
+          identity.messageId,
+          identity.source,
+        )?.status === 'ready'
+      )
+        return;
+      writeImageDeliveryAttempt(this.#lease.database, identity, attempt);
+    });
+  }
+
+  readImageDeliveryAttempts(
+    sessionId: string,
+    turnIds: readonly string[],
+  ): StoredImageDeliveryAttempt[] {
+    this.assertOpen();
+    return readImageDeliveryAttempts(this.#lease.database, sessionId, turnIds);
+  }
+
+  copyImageDeliveryAttempts(
+    attempts: readonly StoredImageDeliveryAttempt[],
+    targetSessionId: string,
+  ): void {
+    this.assertOpen();
+    this.#lease.transaction('write', () => {
+      for (const record of attempts) {
+        const identity = { ...record.identity, sessionId: targetSessionId };
+        if (
+          !this.findImageDelivery(
+            identity.sessionId,
+            identity.turnId,
+            identity.messageId,
+            identity.source,
+          )
+        )
+          writeImageDeliveryAttempt(
+            this.#lease.database,
+            identity,
+            record.attempt,
+            record.createdAt,
+          );
+      }
+    });
+  }
+
+  purgeImageDeliveryAttempts(sessionId: string): void {
+    this.assertOpen();
+    this.#lease.transaction('write', () => {
+      this.#lease.database
+        .prepare('DELETE FROM image_delivery_attempts WHERE session_id = ?')
+        .run(sessionId);
+    });
   }
 
   readAll(): ArtifactRecord[] {
@@ -81,6 +178,13 @@ class SqliteArtifactMetadataRepository {
            OR record_json IS NOT excluded.record_json
       `);
       for (const record of changes.upserts ?? []) {
+        if (record.imageDelivery?.status === 'ready')
+          removeImageDeliveryAttempt(this.#lease.database, {
+            sessionId: record.sessionId,
+            turnId: record.turnId,
+            messageId: record.imageDelivery.messageId,
+            source: record.imageDelivery.source,
+          });
         upsert.run(
           record.id,
           record.sessionId,

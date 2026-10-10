@@ -29,6 +29,8 @@ import {
 } from '../attachment-image.js';
 import { LocaleProvider } from '../locale-context.js';
 import { MarkdownBody } from '../markdown-body.js';
+import { Markdown } from '../markdown.js';
+import { ImageDeliveryProvider, ImageMessageProvider } from '../image-delivery.js';
 import type { TurnViewModel } from '../materialize.js';
 
 const originalGlobals = {
@@ -72,13 +74,50 @@ async function renderAttachmentMarkdown(text: string, readBytes: ReadAttachmentB
   const { container, root } = domRoot();
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody text={text} />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
   return { container, root };
 }
+
+test('the complete Markdown entry resolves original signed and hashed destinations after redacting display text', async () => {
+  const sources = [
+    'https://example.com/image.png?token=first-secret',
+    'https://example.com/image.png?token=second-secret',
+    `/tmp/${'a'.repeat(48)}.png`,
+  ];
+  const { container, root } = domRoot();
+  const requested: string[] = [];
+  await act(async () => {
+    root.render(
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={async () => ({ ok: true, base64: 'aW1n', mimeType: 'image/png' })}>
+          <ImageDeliveryProvider sessionId="session-1" resolve={async (sessionId, request) => {
+            assert.equal(sessionId, 'session-1');
+            assert.equal(request.turnId, 'turn-1');
+            assert.equal(request.messageId, 'message-1');
+            requested.push(request.source);
+            assert.ok(sources.includes(request.source));
+            return { status: 'ready', artifactId: `saved-${sources.indexOf(request.source)}` };
+          }}>
+            <ImageMessageProvider identity={{ turnId: 'turn-1', messageId: 'message-1' }}>
+              <Markdown text={sources.map(source => `![Screenshot](${source})`).join('\n\n') + '\n\nAuthorization: Bearer prose-secret'} />
+            </ImageMessageProvider>
+          </ImageDeliveryProvider>
+        </SessionAttachmentProvider>
+      </LocaleProvider>,
+    );
+  });
+  await act(async () => { await import('../markdown-body.js'); });
+  assert.deepEqual(requested, sources);
+  assert.equal(container.querySelectorAll('img').length, sources.length);
+  for (const image of container.querySelectorAll('img')) assert.equal(image.getAttribute('src'), 'data:image/png;base64,aW1n');
+  assert.doesNotMatch(container.textContent ?? '', /first-secret|second-secret|prose-secret|a{48}/);
+});
 
 const TURN_WITH_IMAGE: TurnViewModel = {
   turnId: 'turn-1',
@@ -169,7 +208,7 @@ test('renders a session attachment referenced by assistant Markdown', async () =
   assert.deepEqual(readRef, { sessionId: 'session-1', artifactId: 'attachment-123' });
 });
 
-test('keeps unreadable assistant attachments as named placeholders', async () => {
+test('explains unreadable assistant attachments and offers retry', async () => {
   const cases: Array<[string, ReadAttachmentBytes]> = [
     ['missing', async () => ({ ok: false, reason: 'not_found' })],
     ['document', async () => ({ ok: true, base64: 'cGRm', mimeType: 'application/pdf' })],
@@ -188,7 +227,9 @@ test('keeps unreadable assistant attachments as named placeholders', async () =>
       readBytes,
     );
     assert.equal(container.querySelector('img'), null);
-    assert.ok(container.textContent.includes(`[${name}]`));
+    assert.ok(container.textContent.includes(name));
+    assert.ok(container.textContent.includes("Could not load the image"));
+    assert.equal(container.querySelector("button")?.textContent, "Retry");
   }
 });
 
@@ -218,14 +259,10 @@ test('retries an attachment image after a transient read failure', async () => {
       ? { ok: false, reason: 'read_failed' }
       : { ok: true, base64: 'cmVjb3ZlcmVk', mimeType: 'image/png' };
   };
-  const { container, root } = await renderAttachmentMarkdown(markdown, readBytes);
+  const { container } = await renderAttachmentMarkdown(markdown, readBytes);
   assert.equal(container.querySelector('img'), null);
   await act(async () => {
-    root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
-        <MarkdownBody key="retry" text={markdown} />
-      </SessionAttachmentProvider>,
-    );
+    container.querySelector('button')!.click();
   });
 
   const image = container.querySelector('img[alt="preview"]');
@@ -244,22 +281,26 @@ test('renders an attachment when a streaming Markdown image becomes complete', a
   });
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody
           text="![preview](maka://runtime/attachments/attachment-"
           streaming
           settledText=""
         />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
   assert.equal(container.querySelector('img'), null);
 
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody text={markdown} streaming settledText={markdown} />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
 

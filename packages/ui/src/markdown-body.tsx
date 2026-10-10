@@ -29,7 +29,9 @@
  * product-specific trust boundaries around that renderer.
  */
 
-import { useCallback, useContext, useRef, type ReactNode } from 'react';
+import { MarkdownImage, createMarkdownImagePlugins } from './markdown-image.js';
+import { useCallback, useContext, useMemo, useRef, type ReactNode } from 'react';
+import { redactMarkdownImages } from './markdown-image-redaction.js';
 import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
@@ -51,8 +53,6 @@ import {
   MarkdownMath,
   prepareMarkdownMath,
 } from './markdown-math.js';
-import { parseAttachmentResourceRef } from '@maka/core/attachments';
-import { useAttachmentImageSource } from './attachment-image.js';
 
 const BASE_MARKDOWN_COMPONENTS = {
   link: MarkdownLink,
@@ -144,6 +144,9 @@ const MARKDOWN_COMPONENTS = {
 
 export function MarkdownBody(props: {
   text: string;
+  /** The lazy entry redacts its fallback; the body also preserves image identities. */
+  redact?: boolean;
+  imageDisplay?: 'image' | 'link';
   streaming?: boolean;
   settledText?: string;
   density?: 'default' | 'compact';
@@ -153,7 +156,13 @@ export function MarkdownBody(props: {
     (source: string) => prepareMarkdownMath(source, mathCache.current),
     [],
   );
-  const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
+  const presentation = useMemo(() => props.redact
+    ? redactMarkdownImages(props.text, props.settledText)
+    : { text: props.text, settledText: props.settledText, sources: undefined },
+  [props.redact, props.text, props.settledText]);
+  const plugins = useMemo(() => createMarkdownImagePlugins(props.imageDisplay, presentation.sources),
+    [props.imageDisplay, presentation.sources]);
+  const budgetedText = props.streaming ? presentation.text : applyMermaidRenderBudget(presentation.text);
   const density = props.density ?? 'default';
   const components = props.streaming
     ? density === 'compact'
@@ -195,8 +204,9 @@ export function MarkdownBody(props: {
         // the one combination neither half of the argument asks for.
         density={density}
         components={components}
+        plugins={plugins}
         isStreaming={props.streaming}
-        settledText={props.settledText}
+        settledText={presentation.settledText}
         transformSource={transformMathSource}
       >
         {budgetedText}
@@ -269,37 +279,6 @@ function MarkdownCode(props: {
       />
     </div>
   );
-}
-
-function MarkdownImage(props: { src: string; alt: string }) {
-  const attachment = parseAttachmentResourceRef(props.src);
-  const attachmentSrc = useAttachmentImageSource(
-    attachment ? { artifactId: attachment.artifactId } : undefined,
-  );
-  if (attachment) {
-    if (!attachmentSrc) return <span>[{props.alt}]</span>;
-    return (
-      <img
-        className="maka-markdown-attachment-image"
-        src={attachmentSrc}
-        alt={props.alt}
-      />
-    );
-  }
-  if (!isSafeMarkdownImageUrl(props.src)) return <span>[{props.alt}]</span>;
-  // Remote images can be badges or sentence-level icons, so preserve Maka's
-  // existing inline presentation. Session attachments above are content
-  // previews and deliberately own a block presentation instead.
-  return <img src={props.src} alt={props.alt} style={{ display: 'inline-block' }} />;
-}
-
-function isSafeMarkdownImageUrl(url: string): boolean {
-  try {
-    const protocol = new URL(url).protocol;
-    return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 /**

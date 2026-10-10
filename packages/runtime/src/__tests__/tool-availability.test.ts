@@ -124,13 +124,15 @@ describe('ToolAvailabilityRuntime — search activation', () => {
 
   test('a group cannot defer the fixed direct baseline', () => {
     const plan = new ToolAvailabilityRuntime(
-      [tool('Read'), tool('browser_click')],
-      { groups: [{ id: 'bad-source', toolNames: ['Read', 'browser_click'] }] },
+      [tool('Read'), tool('PublishImage'), tool('browser_click')],
+      { groups: [{ id: 'bad-source', toolNames: ['Read', 'PublishImage', 'browser_click'] }] },
       invalid,
     ).prepare(new Map());
     assert.ok(plan.activeTools.includes('Read'));
+    assert.ok(plan.activeTools.includes('PublishImage'));
     assert.ok(!plan.activeTools.includes('browser_click'));
     assert.doesNotMatch(searchTool(plan).description, /- Read/);
+    assert.doesNotMatch(searchTool(plan).description, /- PublishImage/);
   });
 
   test('skill discovery tools stay direct while search is enabled', () => {

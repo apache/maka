@@ -592,7 +592,9 @@ function UsageRequestsPanel(props: {
           </div>
         ) : undefined}
         columns={[
-          { header: props.copy.tables.requestHeaders[0], width: 168 },
+          // Linux's system font needs slightly more than 168px for the timestamp
+          // and cell padding. Leave room so the full time survives truncation.
+          { header: props.copy.tables.requestHeaders[0], width: 176 },
           { header: props.copy.tables.requestHeaders[1], width: 72 },
           { header: props.copy.tables.requestHeaders[2], grow: true },
           { header: props.copy.tables.requestHeaders[3], width: 168 },

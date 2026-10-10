@@ -450,8 +450,12 @@ jobs:
       # The smoke only launches headless; the full Chrome build was downloaded
       # and never opened. The headed consumer (perf/storybook.mjs) self-installs.
       - name: Install Playwright Chromium
-        if: steps.plan.outputs.storybook == 'true'
+        if: steps.plan.outputs.storybook == 'true' || contains(steps.plan.outputs.standard_workspaces, 'packages/ui')
         run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Markdown image security and layout
+        if: steps.plan.outputs.storybook == 'true' || contains(steps.plan.outputs.standard_workspaces, 'packages/ui')
+        run: node --test packages/ui/scripts/markdown-images.browser.test.mjs
 
       - name: Build Storybook
         if: steps.plan.outputs.storybook == 'true'

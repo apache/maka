@@ -28,6 +28,7 @@ import {
   type DurableArtifactAttachmentReader,
 } from './artifact-store.js';
 
+export { ImageArchiveQuotaError } from './artifact-image-storage.js';
 export { sanitizeArtifactName } from './artifact-store.js';
 import {
   assertStorageRootLease,
@@ -57,6 +58,8 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly access: 'write';
   readonly [writerBrand]: true;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
+  findImageDelivery: ArtifactAuthorityStore['findImageDelivery'];
+  setImageDeliveryAttempt: ArtifactAuthorityStore['setImageDeliveryAttempt'];
   /**
    * Narrow system delete for one Session-owned artifact of a declared source.
    *
@@ -136,6 +139,13 @@ function createWriterFacade(
     kind: 'interactive',
     access: 'write',
     [writerBrand]: true,
+    findImageDelivery: (sessionId, turnId, messageId, source) =>
+      run(() => store.findImageDelivery(sessionId, turnId, messageId, source)),
+    setImageDeliveryAttempt: (identity, attempt) => {
+      const acceptedIdentity = Object.freeze({ ...identity });
+      const acceptedAttempt = Object.freeze({ ...attempt });
+      return run(() => store.setImageDeliveryAttempt(acceptedIdentity, acceptedAttempt));
+    },
     listPage: (sessionId, options) => run(() => store.listPage(sessionId, options)),
     listTurnArtifacts: (sessionId, turnId) => run(() => store.listTurnArtifacts(sessionId, turnId)),
     getInSession: (sessionId, artifactId) => run(() => store.getInSession(sessionId, artifactId)),
@@ -156,6 +166,9 @@ function createWriterFacade(
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,
         turnIds: Object.freeze([...input.turnIds]),
+        ...(input.imageArchiveLimits
+          ? { imageArchiveLimits: Object.freeze({ ...input.imageArchiveLimits }) }
+          : {}),
         ...(input.includeArtifactIds
           ? { includeArtifactIds: Object.freeze([...input.includeArtifactIds]) }
           : {}),
@@ -189,6 +202,10 @@ function createWriterFacade(
 function snapshotCreateInput(input: CreateArtifactInput): CreateArtifactInput {
   return Object.freeze({
     ...input,
+    ...(input.imageDelivery ? { imageDelivery: Object.freeze({ ...input.imageDelivery }) } : {}),
+    ...(input.imageArchiveLimits
+      ? { imageArchiveLimits: Object.freeze({ ...input.imageArchiveLimits }) }
+      : {}),
     content: typeof input.content === 'string' ? input.content : new Uint8Array(input.content),
   });
 }

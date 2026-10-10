@@ -37,6 +37,21 @@ import {
   MAX_MERMAID_SOURCE_LENGTH,
 } from '../mermaid-diagram.js';
 
+it('image links use canonical destinations for titles, angle brackets and escaped parentheses', () => {
+  for (const [text, destination] of [
+    ['![Title](https://example.com/image.png "Screenshot title")', 'https://example.com/image.png'],
+    ['![Angle](<https://example.com/image.png>)', 'https://example.com/image.png'],
+    [String.raw`![Escaped](https://example.com/a\(1\).png)`, 'https://example.com/a(1).png'],
+  ]) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(MarkdownBody, { text, imageDisplay: 'link' }),
+    }));
+    assert.ok(markup.includes(`href="${destination}"`), markup);
+    assert.doesNotMatch(markup, /<img\b|maka-markdown-image-resource|unsafe-scheme/);
+  }
+});
+
 it('keeps raw HTML inert instead of expanding the Markdown trust surface', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: '<details open><summary>Click</summary>payload</details>',
@@ -380,6 +395,17 @@ it('redacts secrets before even the lazy Markdown fallback reaches the rendered 
   assert.match(markup, /&lt;redacted&gt;/);
 });
 
+it('keeps signed image destinations out of the lazy fallback and rendered prose', () => {
+  const text = '![Screenshot](https://example.com/image.png?token=image-secret)\n\nAuthorization: Bearer prose-secret';
+  for (const markup of [
+    renderToStaticMarkup(createElement(Markdown, { text })),
+    renderToStaticMarkup(createElement(MarkdownBody, { text, redact: true })),
+  ]) {
+    assert.doesNotMatch(markup, /image-secret|prose-secret/);
+    assert.match(markup, /&lt;redacted&gt;/);
+  }
+});
+
 
 
 it('preserves allowlisted Maka navigation links through sanitization', () => {
@@ -436,7 +462,7 @@ it('keeps non-allowlisted external schemes inert', () => {
 });
 
 it('never loads non-allowlisted Markdown image sources', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+  const markup = renderImageMarkdown({
     text: [
       '![standalone](file:///Users/example/.ssh/id_rsa)',
       '',
@@ -448,7 +474,7 @@ it('never loads non-allowlisted Markdown image sources', () => {
       '',
       '[avatar]: file:///Users/example/private.png',
     ].join('\n'),
-  }));
+  });
 
   assert.doesNotMatch(markup, /<img\b/);
   assert.doesNotMatch(markup, /\bsrc="(?:file|custom):/);
@@ -464,9 +490,9 @@ it('does not treat navigation and communication schemes as image resources', () 
     'maka://runtime/attachments/not-an-artifact',
     'mailto:user@example.com',
   ]) {
-    const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    const markup = renderImageMarkdown({
       text: `![not-an-image](${src})`,
-    }));
+    });
 
     assert.doesNotMatch(markup, /<img\b/, src);
     assert.doesNotMatch(markup, /\bsrc=/, src);
@@ -474,13 +500,26 @@ it('does not treat navigation and communication schemes as image resources', () 
 });
 
 it('shows an attachment placeholder when no session reader is installed', () => {
-  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+  const markup = renderImageMarkdown({
     text: '![preview](maka://runtime/attachments/attachment-123)',
-  }));
+  });
 
-  assert.match(markup, />\[preview\]</);
+  assert.match(markup, />preview</);
+  assert.match(markup, /This image attachment is unavailable here/);
   assert.doesNotMatch(markup, /maka:\/\/runtime\/attachments/);
   assert.doesNotMatch(markup, /<img\b/);
+});
+
+function renderImageMarkdown(props: { text: string }) {
+  return renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, props),
+  }));
+}
+
+it('keeps remote URLs out of image elements until a Host archive is available', () => {
+  const markup = renderImageMarkdown({ text: '![preview](https://example.com/image.png)' });
+  assert.doesNotMatch(markup, /<img\b|rel="preload"/);
 });
 
 it('defers Mermaid fences beyond the per-Markdown automatic diagram budget', () => {
