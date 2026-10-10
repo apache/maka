@@ -7,7 +7,7 @@ counterpart: ./runtime-core-architecture-draft.zh-CN.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-08-23
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -36,7 +36,7 @@ owners:
 
 This chapter is for engineers entering the Maka Runtime for the first time and maintainers changing its main execution path. The first half should give you a working map of the runtime boundaries. By the end, you should be able to locate the main implementation and understand the invariants that changes to termination, tools, or persistence must preserve.
 
-The chapter describes the implementation on the production path as verified on 2026-08-23. Phase plans in historical design documents are not treated as current behavior.
+The chapter describes the implementation on the production path as verified on 2026-10-10. Phase plans in historical design documents are not treated as current behavior.
 
 ## Start with a deceptively simple request
 

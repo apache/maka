@@ -7,7 +7,7 @@ counterpart: ./runtime-core-architecture-draft.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-08-23
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -36,7 +36,7 @@ owners:
 
 本文面向第一次进入 Maka Runtime 的工程师，也面向需要修改运行主链的维护者。读完前半部分，你应该能说清一次运行经过哪些边界；读完整章，你应该能定位主链代码，并理解修改终止、工具或持久化逻辑时必须保护哪些不变量。
 
-本文描述的是截至 2026-08-23 已在生产主链中落地的实现。历史设计文档中的阶段性计划不作为当前事实。
+本文描述的是截至 2026-10-10 已在生产主链中落地的实现。历史设计文档中的阶段性计划不作为当前事实。
 
 ## 从一个看似简单的请求开始
 
