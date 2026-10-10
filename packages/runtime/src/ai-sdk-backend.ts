@@ -50,6 +50,7 @@ import type {
 } from '@maka/core/run-composition';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { resolveSideConversationPromptCacheSessionId } from '@maka/core/side-conversation';
 
 import { AdmissionLimiter } from './admission-limiter.js';
 import {
@@ -339,6 +340,11 @@ export class AiSdkBackend implements AgentBackend {
       buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel, runtime);
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
+      promptCacheSessionId: resolveSideConversationPromptCacheSessionId({
+        sessionId: input.sessionId,
+        labels: input.header.labels,
+        parentSessionId: input.header.parentSessionId,
+      }),
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
@@ -384,6 +390,7 @@ export class AiSdkBackend implements AgentBackend {
     this.compaction = new AiSdkCompaction({
       input,
       sessionId: this.sessionId,
+      header: input.header,
       targetConnectionId: input.header.llmConnectionId,
       targetProviderStateIdentity: input.providerStateIdentity,
       now: this.now,
