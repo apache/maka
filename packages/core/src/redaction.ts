@@ -57,8 +57,15 @@ const ASSIGNED_SECRET_VALUE_PATTERN = new RegExp(
   `(?:${ASSIGNED_SECRET_VALUE_CHARACTER_SOURCE})+`,
   'y',
 );
+// Match each key run once, as in the unquoted scanner, before consuming a
+// complete quoted diagnostic value. Restarting at each hyphen is quadratic.
+const QUOTED_SECRET_ASSIGNMENT_PATTERN = new RegExp(
+  `(?<![A-Za-z0-9_-])(([A-Za-z0-9_-]+)${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE})("(?:\\\\[\\s\\S]|[^"\\\\])*"|'(?:\\\\[\\s\\S]|[^'\\\\])*')`,
+  'g',
+);
 const AUTHORIZATION_HEADER_PATTERN =
   /(^|[^A-Za-z0-9_])(['"]?(?:proxy[-_]?authorization|authorization)['"]?\s*:\s*['"]?(?:bearer|basic|token)\s+)[^\s"'<>]+/gim;
+const STANDALONE_BEARER_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi;
 const AWS_CLI_SPACE_SECRET_PATTERN = new RegExp(
   `(^|[\\s;&|()])((?:aws${SHELL_SEPARATOR_SOURCE}configure${SHELL_SEPARATOR_SOURCE}set${SHELL_SEPARATOR_SOURCE}${AWS_CONFIG_SECRET_KEY_SOURCE}|${AWS_SECRET_ACCESS_KEY_FLAG_SOURCE})${SHELL_SEPARATOR_SOURCE})${SHELL_SECRET_TOKEN_SOURCE}`,
   'gm',
@@ -91,6 +98,15 @@ function redactTextSecrets(value: string): string {
   next = next.replace(
     AUTHORIZATION_HEADER_PATTERN,
     (_match, boundary: string, prefix: string) => `${boundary}${prefix}[redacted]`,
+  );
+  next = next.replace(STANDALONE_BEARER_PATTERN, (_match, prefix: string) => `${prefix}[redacted]`);
+  // Mask complete quoted values before bare-value/AWS rules can expose later words.
+  next = next.replace(
+    QUOTED_SECRET_ASSIGNMENT_PATTERN,
+    (match, prefix: string, key: string, token: string) =>
+      isAssignmentSensitiveKey(ASSIGNED_SECRET_KEY_PATTERN.exec(key)?.[0] ?? '')
+        ? `${prefix}${redactShellToken(token)}`
+        : match,
   );
   next = next.replace(
     AWS_CLI_SPACE_SECRET_PATTERN,
