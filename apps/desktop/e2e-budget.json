@@ -49,6 +49,10 @@
       "tests": 5,
       "electron": "Git changes re-read on native window focus; native PTY ownership survives Session navigation and renderer replacement, while Stop/exit cross preload/main into the terminal view; Side Chat owns a Host fork lifecycle; first send reaches the Host; the composer usage entry opens a workbar whose per-Session visibility survives renderer reload."
     },
+    "settings-pricing.spec.ts": {
+      "tests": 1,
+      "electron": "the installed contextBridge, main IPC handlers and selected-Host adapter carry Pricing writes and return authoritative values through a fresh preload after renderer reload; injected services and handler fakes cannot detect missing registrations, incorrect Host scope or serialization loss. Picker, tabs and focus are covered by the existing Pricing and Settings Storybook plays"
+    },
     "settings.spec.ts": {
       "tests": 2,
       "electron": "Code Mode reads back Host settings through IPC; opening Settings commits a pending title rename to the Host, with workbar hide/restore asserted in that same Session."

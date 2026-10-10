@@ -53,6 +53,7 @@
     "src/renderer/locales/settings-memory-copy.ts",
     "src/renderer/locales/settings-navigation-copy.ts",
     "src/renderer/locales/settings-preferences-copy.ts",
+    "src/renderer/locales/settings-pricing-copy.ts",
     "src/renderer/locales/settings-projects-copy.ts",
     "src/renderer/locales/settings-shared-copy.ts",
     "src/renderer/locales/settings-subagents-copy.ts",
@@ -478,6 +479,11 @@
       ],
       "composition": [
         "TaskEntryServicesProvider"
+      ]
+    },
+    "src/renderer/features/usage/index.ts": {
+      "composition": [
+        "UsagePricingServicesProvider"
       ]
     },
     "src/renderer/features/workbar/index.ts": {
@@ -1274,6 +1280,15 @@
         "dependencyPaths": {}
       },
       "src/renderer/locales/settings-preferences-copy.ts": {
+        "bridgePaths": {},
+        "environmentCapabilities": {},
+        "hookCalls": {},
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {}
+      },
+      "src/renderer/locales/settings-pricing-copy.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {},

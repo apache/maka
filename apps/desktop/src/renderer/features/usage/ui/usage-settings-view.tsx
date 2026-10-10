@@ -52,6 +52,7 @@ import {
   RefreshCcw,
   Search,
 } from '@maka/ui/icons';
+import { PricingEditor } from './pricing-editor.js';
 import {
   getUsageSettingsCopy,
   type UsageSettingsCopy,
@@ -65,6 +66,7 @@ import {
   useUsageStats,
   type UsagePagingProgress,
 } from '../services-context.js';
+import type { UsageHostRef } from '../ports.js';
 
 type UsageActiveTab = UsageSettings['activeTab'];
 
@@ -112,6 +114,8 @@ function TokenTooltipContent(props: {
 export function UsageSettingsView(props: {
   settings: UsageSettings;
   describeError(error: unknown): string;
+  /** Settings-selected Runtime Host, threaded to the Pricing tab (per-Host overrides). */
+  runtimeHost: UsageHostRef | undefined;
   onOpenSession?(sessionId: string): void;
 }) {
   const services = useUsageServices();
@@ -135,6 +139,7 @@ export function UsageSettingsView(props: {
     pagingProgress,
     loadMore,
     screenVersion,
+    isCurrentTarget,
   } = useUsageStats(persistedUsage.range);
   const [refreshing, setRefreshing] = useState(false);
   const usageRefreshGuard = useActionGuard<'refresh'>();
@@ -216,12 +221,11 @@ export function UsageSettingsView(props: {
       );
   }, [stats, usageDraft.status, normalizedModelFilter]);
 
-  const tabCounts: Record<UsageActiveTab, number> = {
+  const tabCounts: Record<Exclude<UsageActiveTab, 'pricing'>, number> = {
     requests: stats?.navigation?.activityTotal ?? stats?.logs.length ?? 0,
     providers: stats?.byProvider.length ?? 0,
     models: stats?.byModel.length ?? 0,
     tools: stats?.byTool.length ?? 0,
-    pricing: stats?.pricing.length ?? 0,
   };
 
   function updateUsage(patch: Partial<UsageSettings>): Promise<boolean> {
@@ -271,7 +275,7 @@ export function UsageSettingsView(props: {
 
   return (
     <>
-      {state === 'stale' || state === 'error' ? (
+      {usageDraft.activeTab !== 'pricing' && (state === 'stale' || state === 'error') ? (
         <Banner
           status={state === 'stale' ? 'info' : 'warning'}
           role="status"
@@ -291,7 +295,7 @@ export function UsageSettingsView(props: {
           ) : undefined}
         />
       ) : null}
-      {usageIncomplete ? (
+      {usageIncomplete && usageDraft.activeTab !== 'pricing' ? (
         <Banner
           status="warning"
           role="status"
@@ -299,79 +303,84 @@ export function UsageSettingsView(props: {
           description={copy.incompleteBody}
         />
       ) : null}
-      <div className="settingsUsageOverview">
-        <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
-          <SegmentedControl
-            value={usageDraft.range}
-            label={copy.rangeAria}
-            onChange={(value) => void setRange(value as UsageRange)}
-          >
-            {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
-              <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
-            ))}
-          </SegmentedControl>
-          <Button
-            variant="ghost"
-            size="sm"
-            isIconOnly
-            isLoading={refreshing || state === 'loading'}
-            label={copy.refreshAria}
-            tooltip={copy.refreshAria}
-            onClick={() => void refresh()}
-            icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
-          />
-        </div>
+      {/* #2015 acceptance #2: the Pricing tab is not time-scoped, so the Usage
+          range/summary toolbar is hidden there — the date range cannot be
+          mistaken for a Pricing scope. */}
+      {usageDraft.activeTab !== 'pricing' ? (
+        <div className="settingsUsageOverview">
+          <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
+            <SegmentedControl
+              value={usageDraft.range}
+              label={copy.rangeAria}
+              onChange={(value) => void setRange(value as UsageRange)}
+            >
+              {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
+                <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
+              ))}
+            </SegmentedControl>
+            <Button
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              isLoading={refreshing || state === 'loading'}
+              label={copy.refreshAria}
+              tooltip={copy.refreshAria}
+              onClick={() => void refresh()}
+              icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
+            />
+          </div>
 
-        <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
-          <MetricCard
-            title={copy.totalRequests}
-            value={stats ? formatCompactTokenCount(stats.summary.totalRequests) : '—'}
-          />
-          <MetricCard title={copy.totalCost} value={totalCostDisplay} detail={copy.costHelp} />
-          <MetricCard
-            title={copy.totalTokens}
-            value={stats ? (
-              <Tooltip
-                content={(
-                  <TokenTooltipContent rows={[
-                    [copy.tokenTooltip.total, exactTokenFormatter.format(stats.summary.totalTokens)],
-                    [copy.tokenTooltip.input, exactTokenFormatter.format(stats.summary.inputTokens)],
-                    [copy.tokenTooltip.output, exactTokenFormatter.format(stats.summary.outputTokens)],
-                  ]} />
-                )}
-              >
-                {formatCompactTokenCount(stats.summary.totalTokens)}
-              </Tooltip>
-            ) : '—'}
-            detail={stats ? copy.tokenDetail(
-              formatCompactTokenCount(stats.summary.inputTokens),
-              formatCompactTokenCount(stats.summary.outputTokens),
-            ) : undefined}
-          />
-          <MetricCard
-            title={copy.cacheTokens}
-            value={stats ? (
-              <Tooltip
-                content={(
-                  <TokenTooltipContent rows={[
-                    [copy.tokenTooltip.cached, exactTokenFormatter.format(stats.summary.cacheTokens)],
-                    [copy.tokenTooltip.new, exactTokenFormatter.format(stats.summary.cacheMiss)],
-                    [copy.tokenTooltip.hit, exactTokenFormatter.format(stats.summary.cacheRead)],
-                    [copy.tokenTooltip.created, exactTokenFormatter.format(stats.summary.cacheCreation)],
-                  ]} />
-                )}
-              >
-                {formatCompactTokenCount(stats.summary.cacheTokens)}
-              </Tooltip>
-            ) : '—'}
-            detail={stats ? copy.cacheDetail(
-              formatCompactTokenCount(stats.summary.cacheMiss),
-              formatCompactTokenCount(stats.summary.cacheRead),
-              formatCompactTokenCount(stats.summary.cacheCreation),
-            ) : undefined}
-          />
+          <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
+            <MetricCard
+              title={copy.totalRequests}
+              value={stats ? formatCompactTokenCount(stats.summary.totalRequests) : '—'}
+            />
+            <MetricCard title={copy.totalCost} value={totalCostDisplay} detail={copy.costHelp} />
+            <MetricCard
+              title={copy.totalTokens}
+              value={stats ? (
+                <Tooltip
+                  content={(
+                    <TokenTooltipContent rows={[
+                      [copy.tokenTooltip.total, exactTokenFormatter.format(stats.summary.totalTokens)],
+                      [copy.tokenTooltip.input, exactTokenFormatter.format(stats.summary.inputTokens)],
+                      [copy.tokenTooltip.output, exactTokenFormatter.format(stats.summary.outputTokens)],
+                    ]} />
+                  )}
+                >
+                  {formatCompactTokenCount(stats.summary.totalTokens)}
+                </Tooltip>
+              ) : '—'}
+              detail={stats ? copy.tokenDetail(
+                formatCompactTokenCount(stats.summary.inputTokens),
+                formatCompactTokenCount(stats.summary.outputTokens),
+              ) : undefined}
+            />
+            <MetricCard
+              title={copy.cacheTokens}
+              value={stats ? (
+                <Tooltip
+                  content={(
+                    <TokenTooltipContent rows={[
+                      [copy.tokenTooltip.cached, exactTokenFormatter.format(stats.summary.cacheTokens)],
+                      [copy.tokenTooltip.new, exactTokenFormatter.format(stats.summary.cacheMiss)],
+                      [copy.tokenTooltip.hit, exactTokenFormatter.format(stats.summary.cacheRead)],
+                      [copy.tokenTooltip.created, exactTokenFormatter.format(stats.summary.cacheCreation)],
+                    ]} />
+                  )}
+                >
+                  {formatCompactTokenCount(stats.summary.cacheTokens)}
+                </Tooltip>
+              ) : '—'}
+              detail={stats ? copy.cacheDetail(
+                formatCompactTokenCount(stats.summary.cacheMiss),
+                formatCompactTokenCount(stats.summary.cacheRead),
+                formatCompactTokenCount(stats.summary.cacheCreation),
+              ) : undefined}
+            />
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <div className="settingsUsageBreakdown">
         <div className="settingsUsageTabsBar">
@@ -385,7 +394,7 @@ export function UsageSettingsView(props: {
             <Tab value="providers" label={copy.tabs[1]} endContent={<span>{tabCounts.providers}</span>} />
             <Tab value="models" label={copy.tabs[2]} endContent={<span>{tabCounts.models}</span>} />
             <Tab value="tools" label={copy.tabs[3]} endContent={<span>{tabCounts.tools}</span>} />
-            <Tab value="pricing" label={copy.tabs[4]} endContent={<span>{tabCounts.pricing}</span>} />
+            <Tab value="pricing" label={copy.tabs[4]} />
           </TabList>
         </div>
 
@@ -438,7 +447,12 @@ export function UsageSettingsView(props: {
 
         {usageDraft.activeTab === 'pricing' ? (
           <div className="settingsUsageTabPanel">
-            <UsagePricingPanel stats={stats} copy={copy} />
+            <PricingEditor
+              describeError={props.describeError}
+              target={props.runtimeHost
+                ? { host: props.runtimeHost, generationKey: targetKey, isCurrent: isCurrentTarget }
+                : null}
+            />
           </div>
         ) : null}
       </div>
@@ -592,7 +606,9 @@ function UsageRequestsPanel(props: {
           </div>
         ) : undefined}
         columns={[
-          { header: props.copy.tables.requestHeaders[0], width: 168 },
+          // Localized dates can include a day-period marker; leave room for
+          // that text and native system-font metrics in the fixed table column.
+          { header: props.copy.tables.requestHeaders[0], width: 224 },
           { header: props.copy.tables.requestHeaders[1], width: 72 },
           { header: props.copy.tables.requestHeaders[2], grow: true },
           { header: props.copy.tables.requestHeaders[3], width: 168 },
@@ -746,22 +762,6 @@ function UsageToolsPanel(props: { stats: UsageStats | null; copy: UsageSettingsC
       ]}
       rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, `${row.avgDurationMs}ms`])}
       empty={{ Icon: Activity, title: props.copy.tables.toolEmptyTitle, body: props.copy.tables.toolEmptyBody }}
-    />
-  );
-}
-
-function UsagePricingPanel(props: { stats: UsageStats | null; copy: UsageSettingsCopy }) {
-  return (
-    <UsageStatsTable
-      ariaLabel={props.copy.tables.pricingAria}
-      columns={[
-        { header: props.copy.tables.pricingHeaders[0], grow: true },
-        { header: props.copy.tables.pricingHeaders[1] },
-        { header: props.copy.tables.pricingHeaders[2], numeric: true },
-        { header: props.copy.tables.pricingHeaders[3], numeric: true },
-      ]}
-      rows={(props.stats?.pricing ?? []).map((row) => [row.provider, row.model, `$${row.inputPerMTokUsd}`, `$${row.outputPerMTokUsd}`])}
-      empty={{ Icon: BarChart3, title: props.copy.tables.noPricing, body: props.copy.tables.pricingEmptyBody }}
     />
   );
 }
