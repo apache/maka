@@ -28,7 +28,11 @@ import {
   ExternalSessionNotFoundError,
 } from '@maka/core/external-session';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
-import { CURSOR_SESSION_ADAPTER_ID, CursorSessionAdapter } from '../cursor-session-adapter.js';
+import {
+  CURSOR_SESSION_ADAPTER_ID,
+  CursorSessionAdapter,
+  defaultCursorHome,
+} from '../cursor-session-adapter.js';
 
 const CLEANUPS: (() => Promise<void>)[] = [];
 
@@ -56,6 +60,8 @@ interface FixtureComposer {
   readonly omitBubbles?: readonly string[];
   /** Rows whose key is written but whose value is not JSON. */
   readonly corruptBubbles?: readonly string[];
+  /** Pads the composer record with a foreign field of this many bytes. */
+  readonly paddedBytes?: number;
 }
 
 /** Builds a `state.vscdb` the way Cursor writes it: one KV table, JSON text values. */
@@ -71,6 +77,9 @@ async function makeStateDb(composers: readonly FixtureComposer[]): Promise<strin
       ...(composer.name !== undefined ? { name: composer.name } : {}),
       ...(composer.createdAt !== undefined ? { createdAt: composer.createdAt } : {}),
       ...(composer.lastUpdatedAt !== undefined ? { lastUpdatedAt: composer.lastUpdatedAt } : {}),
+      ...(composer.paddedBytes !== undefined
+        ? { foreignFutureField: 'p'.repeat(composer.paddedBytes) }
+        : {}),
       fullConversationHeadersOnly: (composer.headers ?? []).map(({ bubbleId, type }) => ({
         bubbleId,
         type,
@@ -415,5 +424,63 @@ describe('CursorSessionAdapter', () => {
     const adapter = registry.get(CURSOR_SESSION_ADAPTER_ID);
     assert.ok(adapter);
     assert.equal(await adapter.detect(), true);
+  });
+
+  test('the composer row itself is budgeted before it is read', async () => {
+    const home = await makeStateDb([
+      {
+        composerId: 'composer-fat',
+        name: 'Fat composer',
+        headers: [],
+        // The composer record alone carries a padded foreign field that blows
+        // a 1 KB budget without any bubbles at all.
+        paddedBytes: 4096,
+      },
+    ]);
+    await assert.rejects(
+      adapterFor(home, { maxRawBytes: 1024 }).readSession('composer-fat'),
+      (error: unknown) =>
+        error instanceof ExternalSessionLimitError && error.limit.kind === 'record_bytes',
+    );
+  });
+
+  test('the row budget counts the composer row against records', async () => {
+    const home = await makeStateDb(fullFixture());
+    // composer + 5 bubbles = 6 source rows; a limit of 6 must pass, 5 refuse.
+    const session = await adapterFor(home, { maxRows: 6 }).readSession('composer-aaaa');
+    assert.ok(session.messages.length > 0);
+    await assert.rejects(
+      adapterFor(home, { maxRows: 5 }).readSession('composer-aaaa'),
+      (error: unknown) =>
+        error instanceof ExternalSessionLimitError && error.limit.kind === 'records',
+    );
+  });
+
+  test('default discovery roots follow the platform', () => {
+    assert.equal(
+      defaultCursorHome('darwin', '/Users/u'),
+      '/Users/u/Library/Application Support/Cursor/User/globalStorage',
+    );
+    assert.equal(
+      defaultCursorHome('linux', '/home/u'),
+      '/home/u/.config/Cursor/User/globalStorage',
+    );
+    assert.equal(
+      defaultCursorHome('win32', 'C:\\Users\\u'),
+      'C:\\Users\\u\\AppData\\Roaming\\Cursor\\User\\globalStorage',
+    );
+  });
+
+  test('open and read failures stay free of the source path', async () => {
+    const home = await makeStateDb(fullFixture());
+    await writeFile(join(home, 'state.vscdb'), 'not a database');
+    const adapter = adapterFor(home);
+    const error = await adapter.listSessions().then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    assert.ok(error instanceof Error);
+    assert.equal(error.message.includes(home), false, error.message);
+    assert.equal((error as NodeJS.ErrnoException).cause, undefined);
   });
 });

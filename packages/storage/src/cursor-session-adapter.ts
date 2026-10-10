@@ -79,7 +79,7 @@ const CURSOR_CATALOG_TITLE_MAX_BYTES = 64 * 1024;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 
 export interface CursorSessionAdapterOptions {
-  /** Overrides Cursor's `User/globalStorage` directory. */
+  /** Overrides the platform default Cursor data root. */
   cursorHome?: string;
   /** Overrides the database file inside `cursorHome`. */
   stateDbPath?: string;
@@ -93,6 +93,22 @@ export interface CursorSessionAdapterOptions {
   maxConvertedBytes?: number;
 }
 
+/**
+ * Cursor's app-data root per platform, the directory that holds
+ * `User/globalStorage`. Pure so tests can pin all three platforms without
+ * touching the real home directory; separators are written per platform so
+ * the layout is stable no matter where the test runs.
+ */
+export function defaultCursorHome(platform: NodeJS.Platform, home: string): string {
+  if (platform === 'darwin') {
+    return `${home}/Library/Application Support/Cursor/User/globalStorage`;
+  }
+  if (platform === 'win32') {
+    return `${home}\\AppData\\Roaming\\Cursor\\User\\globalStorage`;
+  }
+  return `${home}/.config/Cursor/User/globalStorage`;
+}
+
 export class CursorSessionAdapter implements ExternalSessionAdapter {
   readonly id = CURSOR_SESSION_ADAPTER_ID;
   readonly #home: string;
@@ -103,9 +119,7 @@ export class CursorSessionAdapter implements ExternalSessionAdapter {
   readonly #maxConvertedBytes: number;
 
   constructor(options: CursorSessionAdapterOptions = {}) {
-    this.#home =
-      options.cursorHome ??
-      join(homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage');
+    this.#home = options.cursorHome ?? defaultCursorHome(process.platform, homedir());
     this.#stateDbPath = options.stateDbPath;
     this.#maxRawBytes = options.maxRawBytes ?? CURSOR_TRANSCRIPT_MAX_RAW_BYTES;
     this.#maxRows = options.maxRows ?? CURSOR_TRANSCRIPT_MAX_ROWS;
@@ -136,20 +150,35 @@ export class CursorSessionAdapter implements ExternalSessionAdapter {
       throw new Error(`cursor session id is not usable: ${sessionId}`);
     }
     return this.#withDatabase((db) => {
+      // The composer record is itself a source row: size it before anything
+      // materializes it, and count it against both budgets, or a single fat
+      // record imports under a tiny budget.
+      const composerBytes = composerRecordBytes(db, sessionId);
+      if (composerBytes === undefined || composerBytes === 0) {
+        throw new ExternalSessionNotFoundError();
+      }
+      if (composerBytes > this.#maxRawBytes) {
+        throw new ExternalSessionLimitError(
+          'record_bytes',
+          this.#maxRawBytes,
+          `Cursor transcript contains a source record larger than ${this.#maxRawBytes} bytes`,
+        );
+      }
+      // Sized above, so materializing the record now stays inside the budget.
       const composer = readComposerRecord(db, sessionId);
       if (!composer) throw new ExternalSessionNotFoundError();
       const name = sanitizeExternalSessionTitle(composer.name) || sessionId;
       const headers = Array.isArray(composer.fullConversationHeadersOnly)
         ? composer.fullConversationHeadersOnly
         : [];
-      if (headers.length > this.#maxRows) {
+      if (headers.length + 1 > this.#maxRows) {
         throw new ExternalSessionLimitError(
           'records',
           this.#maxRows,
           `Cursor transcript exceeds ${this.#maxRows} source rows`,
         );
       }
-      const bubbles = readBubbles(db, sessionId, headers, this.#maxRawBytes);
+      const bubbles = readBubbles(db, sessionId, headers, this.#maxRawBytes - composerBytes);
       return {
         sourceSessionId: sessionId,
         metadata: {
@@ -189,8 +218,11 @@ export class CursorSessionAdapter implements ExternalSessionAdapter {
     let db: CursorDatabase;
     try {
       db = new sqlite.DatabaseSync(path, { readOnly: true }) as CursorDatabase;
-    } catch (cause) {
-      throw new Error(`cursor database could not be opened: ${path}`, { cause });
+    } catch {
+      // Defense in depth: the Host translates adapter errors today, but the
+      // adapter contract is that its own errors never carry the source path
+      // or the driver's underlying error text.
+      throw new Error('cursor database could not be opened');
     }
     try {
       return read(db);
@@ -202,7 +234,7 @@ export class CursorSessionAdapter implements ExternalSessionAdapter {
       ) {
         throw cause;
       }
-      throw new Error(`cursor database could not be read: ${path}`, { cause });
+      throw new Error('cursor database could not be read');
     } finally {
       try {
         db.close();
@@ -236,22 +268,44 @@ export class CursorSessionAdapter implements ExternalSessionAdapter {
         throw new Error('Invalid Cursor catalog page');
       }
       if (requestedLimit === 0) return [];
+      // Projection in SQL: only the scalar metadata a summary needs leaves the
+      // database, never the whole composer JSON — one page costs its own rows,
+      // not the catalog.
       const statement = db.prepare(
-        `SELECT key, value FROM cursorDiskKV
-         WHERE key LIKE 'composerData:%'
-           AND length(CAST(key AS BLOB)) <= ${CURSOR_COMPOSER_KEY_MAX_BYTES}
-         ORDER BY key`,
+        `SELECT coalesce(json_extract(value, '$.composerId'), substr(key, ${'composerData:'.length + 1})) AS cid,
+                json_extract(value, '$.name') AS name,
+                json_extract(value, '$.createdAt') AS created,
+                json_extract(value, '$.lastUpdatedAt') AS updated
+           FROM cursorDiskKV
+          WHERE key LIKE 'composerData:%'
+            AND length(CAST(key AS BLOB)) <= ${CURSOR_COMPOSER_KEY_MAX_BYTES}
+            AND json_valid(value)
+          ORDER BY key
+          LIMIT ? OFFSET ?`,
       );
       const summaries: ExternalSessionSummary[] = [];
       let matched = 0;
-      for (const raw of statement.all()) {
-        const composer = parseComposerRow(raw);
-        if (!composer) continue;
-        const summary = toSummary(composer);
-        if (!externalSessionMatchesQuery(summary, query)) continue;
-        if (matched++ < requestedOffset) continue;
-        summaries.push(summary);
-        if (summaries.length === requestedLimit) break;
+      let rawOffset = 0;
+      const batchSize = Math.max(32, Math.min(256, requestedLimit * 2));
+      while (summaries.length < requestedLimit) {
+        const raw = statement.all(batchSize, rawOffset);
+        for (const row of raw) {
+          const record = asRecord(row);
+          const id = stringOf(record?.cid);
+          if (id === undefined) continue;
+          const summary = toSummary({
+            composerId: id,
+            name: stringOf(record?.name),
+            createdAt: numberOf(record?.created),
+            lastUpdatedAt: numberOf(record?.updated),
+          });
+          if (!externalSessionMatchesQuery(summary, query)) continue;
+          if (matched++ < requestedOffset) continue;
+          summaries.push(summary);
+          if (summaries.length === requestedLimit) break;
+        }
+        rawOffset += raw.length;
+        if (raw.length < batchSize) break;
       }
       return summaries;
     });
@@ -294,6 +348,17 @@ function readComposerRecord(db: CursorDatabase, sessionId: string): ComposerReco
     .prepare('SELECT value FROM cursorDiskKV WHERE key = ?')
     .get(`composerData:${sessionId}`);
   return parseComposerRow(raw);
+}
+
+/** The encoded size of one composer record, read without materializing it. */
+function composerRecordBytes(db: CursorDatabase, sessionId: string): number | undefined {
+  const row = asRecord(
+    db
+      .prepare('SELECT length(CAST(value AS BLOB)) AS bytes FROM cursorDiskKV WHERE key = ?')
+      .get(`composerData:${sessionId}`),
+  );
+  const bytes = numberOf(row?.bytes);
+  return bytes === undefined ? undefined : bytes;
 }
 
 /**
