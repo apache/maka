@@ -1,3 +1,7 @@
+---
+last_verified: 2026-10-10
+---
+
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -18,8 +22,6 @@
 -->
 
 # Runtime Resume Phase 1 Safe-Boundary Contract
-
-last_verified: 2026-10-10
 
 Phase 1 adds an explicit, fail-closed continuation path on top of the Phase 0
 `RuntimeEvent` replay projection. It can create a new Run and Invocation only

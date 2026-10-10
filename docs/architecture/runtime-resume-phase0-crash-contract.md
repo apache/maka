@@ -1,3 +1,7 @@
+---
+last_verified: 2026-10-10
+---
+
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -19,14 +23,11 @@
 
 # Runtime Resume Phase 0 Crash Contract
 
-last_verified: 2026-10-10
-
 Phase 0 defines replay safety for a fully committed `RuntimeEvent` prefix. It
-does not resume execution or reconcile tool side effects. The SQLite
-RuntimeEvent store that this contract once described as future work is now the
-canonical store it runs against, and the SQLite tool journal (T1/T2) has since
-landed as well; the committed prefix this contract reasons about remains a
-`RuntimeEvent` prefix.
+does not resume execution or reconcile tool side effects. Phase 0 runs against
+the canonical SQLite RuntimeEvent store. The SQLite tool journal (T1/T2) that
+this contract once described as future work has since landed; the committed
+prefix this contract reasons about remains a `RuntimeEvent` prefix.
 
 The production API is pure:
 

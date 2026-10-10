@@ -857,7 +857,7 @@ Phase 3–4 不适合做成一个横跨 schema、runtime protocol、host lifecyc
 
 ```mermaid
 flowchart TD
-  A["PR A<br/>Recovery persistence authority<br/>已完成"] --> B["PR B<br/>Immutable cursor + durable claim"]
+  A["PR A<br/>Recovery persistence authority<br/>已完成"] --> B["PR B<br/>Immutable cursor + durable claim<br/>已合并"]
   A --> C["PR C<br/>File evidence + finalize-only recovery"]
   B --> E["PR E<br/>Checkpoint contracts"]
   C --> E
