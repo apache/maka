@@ -17,45 +17,10 @@
  * under the License.
  */
 
-import type { TranscriptScrollAuthority } from './transcript-scroll-authority.js';
-
-/** Bridge the active surface's scroll authority to conversation commands and publication.
- * Publication outlives a viewport: only the source owner can invalidate its data. */
+/** Bridge conversation commands to the active surface's scroll authority. */
 export function createTranscriptViewportNavigation() {
   const listeners = new Set<(sessionId: string) => void>();
-  let viewport: { sessionId: string; commitRange: (commit: () => void) => void } | undefined;
-  let pending: { sessionId: string; commit: () => void } | undefined;
-  const drain = (): void => {
-    const update = pending;
-    if (!update) return;
-    const commit = () => {
-      pending = undefined;
-      update.commit();
-    };
-    if (viewport?.sessionId === update.sessionId) viewport.commitRange(commit);
-    else commit();
-  };
   return {
-    attachCommitScheduler(sessionId: string, authority: Pick<TranscriptScrollAuthority, 'commitRange' | 'subscribeToReaderScroll'>): () => void {
-      const attached = { sessionId, commitRange: authority.commitRange };
-      viewport = attached;
-      const unsubscribe = authority.subscribeToReaderScroll((phase) => {
-        if (phase === 'settled') drain();
-      });
-      queueMicrotask(drain);
-      return () => {
-        unsubscribe();
-        if (viewport !== attached) return;
-        viewport = undefined;
-        // React cleanup may be running. Publish after it, without depending
-        // on a future source emission or a replacement viewport mounting.
-        queueMicrotask(drain);
-      };
-    },
-    commitRange(sessionId: string, commit: () => void): void {
-      pending = { sessionId, commit };
-      queueMicrotask(drain);
-    },
     followLatest(sessionId: string): void {
       for (const listener of [...listeners]) listener(sessionId);
     },

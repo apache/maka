@@ -20,7 +20,12 @@
 import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
-  testMatch: ['frontend.spec.ts', 'geometry-navigation.spec.ts', 'scroll-input.spec.ts'],
+  testMatch: [
+    'frontend.spec.ts',
+    'geometry-navigation.spec.ts',
+    'scroll-input.spec.ts',
+    'streaming-render.spec.ts',
+  ],
   workers: 1,
   retries: 0,
   timeout: 180000,

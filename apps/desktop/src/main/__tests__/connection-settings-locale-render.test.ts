@@ -37,6 +37,10 @@ import type { RuntimeHostManagementServices } from '../../renderer/features/runt
 
 // Keep renderer implementations and their asset imports out of the main compilation graph.
 interface RenderModules {
+  ProvidersPanel: ComponentType<{
+    bridge: ConnectionsBridge;
+    initialConnectionSlug?: string;
+  }>;
   ConnectionDetail: ComponentType<{
     bridge: ConnectionsBridge;
     connection: ProjectedLlmConnection;
@@ -97,6 +101,7 @@ before(async () => {
   await build({
     stdin: {
       contents: [
+        "export { ProvidersPanel } from './settings/providers-panel';",
         "export { ConnectionDetail } from './settings/provider-connection-detail';",
         "export { RuntimeHostSettingsTarget } from './settings/runtime-host-settings-target';",
         "export { AddProviderForm } from './settings/provider-add-form';",
@@ -236,7 +241,7 @@ for (const copy of localeCases) {
         fetchModels: async () => { calls.push('fetchModels'); throw new Error('unexpected discovery'); },
       } as unknown as ConnectionsBridge;
       await harness.render(copy.locale, createElement(components.AddProviderForm, {
-        bridge, providerType: 'openai-compatible', existingSlugs: ['taken'],
+        bridge, providerType: 'custom', existingSlugs: ['taken'],
         onCancel: unexpectedCall, onCreated: unexpectedCall,
       }));
       const input = harness.document.querySelector<HTMLInputElement>('input[placeholder="my-provider"]');
@@ -263,6 +268,7 @@ for (const copy of localeCases) {
       assert.deepEqual(calls, [], 'invalid identifiers must not reach the provider bridge');
     });
   }
+
 }
 
 test('zh-TW: expanded Peer Mesh members render localized route states', async () => {
@@ -300,6 +306,117 @@ test('zh-TW: expanded Peer Mesh members render localized route states', async ()
   }
 });
 
+test('custom connection creation updates and clears the request URL preview while typing', async () => {
+  const harness = installRenderer();
+  await harness.render('en', createElement(components.AddProviderForm, {
+    bridge: connectionDetailBridge({}),
+    providerType: 'custom', existingSlugs: [],
+    onCancel: unexpectedCall, onCreated: unexpectedCall,
+  }));
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input, 'missing service URL input');
+  for (const [draft, expected] of [
+    ['https://relay.example/proxy/chat/completions', 'https://relay.example/proxy/chat/completions'],
+    ['https://relay.example/team', 'https://relay.example/team/chat/completions'],
+    ['https://', null],
+    ['', null],
+  ] as const) {
+    await act(async () => {
+      input.value = draft;
+      const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+      assert.ok(key, 'missing React input props');
+      const props = (input as unknown as Record<string, unknown>)[key] as {
+        onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+      };
+      props.onChange({ target: input, defaultPrevented: false });
+    });
+    const preview = harness.document.querySelector('.providerRequestUrlPreview');
+    if (expected) {
+      assert.ok(preview);
+      assert.ok(preview.textContent.endsWith(expected));
+      assert.equal(input.getAttribute('aria-description'), preview.textContent);
+    } else {
+      assert.equal(preview, null);
+      assert.equal(input.getAttribute('aria-description'), null);
+    }
+  }
+});
+
+test('endpoint editing previews the default model protocol override', async () => {
+  const harness = installRenderer();
+  const base = relayConnection();
+  const connection: ProjectedLlmConnection = {
+    ...base,
+    defaultApiProtocol: 'openai-chat',
+    modelOverrides: { [base.defaultModel]: { apiProtocol: 'openai-responses' } },
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = [...harness.document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.getAttribute('aria-label') === 'Edit: Service URL',
+  );
+  assert.ok(edit, 'missing service URL edit action');
+  await act(async () => edit.click());
+  const preview = harness.document.querySelector('.providerRequestUrlPreview');
+  assert.ok(preview);
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  assert.equal(
+    harness.document.querySelector('.providerEndpointField input')?.getAttribute('aria-description'),
+    preview.textContent,
+  );
+});
+
+test('legacy credential endpoint editing shows one preview and retains its accessible description', async () => {
+  const harness = installRenderer();
+  const connection: ProjectedLlmConnection = {
+    ...relayConnection(),
+    baseUrl: 'https://relay.example/v1?token=legacy-secret',
+  };
+  await harness.render('en', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => true }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+  const edit = harness.document.querySelector<HTMLButtonElement>('button[aria-label="Edit: Service URL"]');
+  assert.ok(edit);
+  await act(async () => edit.click());
+  const input = harness.document.querySelector<HTMLInputElement>('.providerEndpointField input');
+  assert.ok(input);
+  assert.equal(input.type, 'password');
+  assert.equal(harness.document.querySelector('.providerRequestUrlPreview'), null);
+  await act(async () => {
+    input.value = 'https://relay.example/v1';
+    const key = Object.keys(input).find((candidate) => candidate.startsWith('__reactProps$'));
+    assert.ok(key);
+    const props = (input as unknown as Record<string, unknown>)[key] as {
+      onChange(event: { target: HTMLInputElement; defaultPrevented: boolean }): void;
+    };
+    props.onChange({ target: input, defaultPrevented: false });
+  });
+  const previews = harness.document.querySelectorAll('.providerRequestUrlPreview');
+  assert.equal(previews.length, 1);
+  const preview = previews[0]!;
+  assert.ok(preview.textContent.endsWith('https://relay.example/v1/responses'));
+  const descriptions = describedElements(input);
+  assert.ok(descriptions.some((element) => element.textContent.includes(preview.textContent)));
+  assert.ok(descriptions.some((element) =>
+    element.querySelector('.maka-visually-hidden')?.textContent.trim() === preview.textContent,
+  ), 'the accessible copy of the URL must not render a second visible preview');
+});
+
 test('credential probing does not flash a page-level loading warning', async () => {
   const harness = installRenderer();
   const credential = deferred<boolean>();
@@ -329,6 +446,43 @@ test('credential probing does not flash a page-level loading warning', async () 
     credential.resolve(true);
     await credential.promise;
   });
+});
+
+test('model rows retain named parameter actions without mounting a tooltip layer per row', async () => {
+  const harness = installRenderer();
+  const base = relayConnection();
+  const models = Array.from({ length: 32 }, (_, index) => ({
+    id: `fixture/model-${index + 1}`,
+    displayName: `Fixture model ${index + 1}`,
+  }));
+  const connection: ProjectedLlmConnection = {
+    ...base,
+    defaultModel: models[0]!.id,
+    enabledModelIds: [models[0]!.id],
+    models,
+    catalogEntries: models.map((model, index) => ({
+      ...base.catalogEntries[0]!,
+      ...model,
+      isDefault: index === 0,
+    })),
+  };
+  await harness.render('zh-CN', createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ConnectionDetail, {
+      bridge: connectionDetailBridge({ hasSecret: async () => false }),
+      connection,
+      isDefault: true,
+      onChanged: async () => {},
+      onDeleted: async () => {},
+    }),
+  }));
+
+  const actions = [...harness.document.querySelectorAll<HTMLButtonElement>('span[title="配置参数"] > button')];
+  assert.equal(actions.length, models.length);
+  for (const [index, action] of actions.entries()) {
+    assert.equal(action.getAttribute('aria-label'), `配置模型参数：${models[index]!.displayName}`);
+    assert.equal(action.hasAttribute('aria-describedby'), false);
+  }
 });
 
 test('credential read failures still render the persistent warning', async () => {
@@ -375,13 +529,149 @@ function deferred<T>() {
   return { promise, resolve: resolvePromise, reject: rejectPromise };
 }
 
+test('setting a default with one enabled model commits directly', async () => {
+  const harness = installRenderer();
+  const connection = { ...relayConnection(), defaultModel: '' };
+  const calls: unknown[] = [];
+  const bridge = connectionDetailBridge({
+    hasSecret: async () => true,
+    getSnapshot: async () => ({ connections: [connection], defaultConnection: 'relay-a', chatModelChoices: [] }),
+    setDefault: async (identity, modelId) => { calls.push([identity, modelId]); },
+  });
+  await harness.render('zh-CN', providersPanel(bridge, connection.slug));
+  await clickText(harness.document, '设为默认');
+  assert.deepEqual(calls, [[{ connectionId: connection.connectionId, slug: connection.slug }, connection.enabledModelIds![0]]]);
+  assert.equal(harness.document.querySelectorAll('dialog[open]').length, 0);
+});
+
+test('a connection with no enabled models asks for a choice and cancel writes nothing', async () => {
+  const harness = installRenderer();
+  const connection = { ...relayConnection(), defaultModel: '', enabledModelIds: [] };
+  const bridge = connectionDetailBridge({
+    hasSecret: async () => true,
+    getSnapshot: async () => ({ connections: [connection], defaultConnection: 'relay-a', chatModelChoices: [] }),
+  });
+  await harness.render('zh-CN', providersPanel(bridge, connection.slug));
+  await clickText(harness.document, '设为默认');
+  const dialog = harness.document.querySelector('dialog[open]');
+  assert.ok(dialog);
+  assert.match(dialog.textContent!, /这个连接尚未启用模型/);
+  const confirm = [...dialog.querySelectorAll('button')].find(button => button.textContent === '设为默认');
+  assert.ok(confirm?.disabled);
+  await clickText(dialog, '取消');
+  assert.equal(harness.document.querySelectorAll('dialog[open]').length, 0);
+});
+
+test('choosing an unenabled default keeps the dialog on failure and updates the badge only on success', async () => {
+  const harness = installRenderer();
+  let connection = { ...relayConnection(), defaultModel: '', enabledModelIds: [] as string[] };
+  let defaultConnection = 'relay-a';
+  const calls: unknown[] = [];
+  const bridge = connectionDetailBridge({
+    hasSecret: async () => true,
+    getSnapshot: async () => ({ connections: [connection], defaultConnection, chatModelChoices: [] }),
+    setDefault: async (identity, modelId) => {
+      calls.push([identity, modelId]);
+      if (calls.length === 1) throw new Error('DEFAULT_CONNECTION_CHANGED');
+      connection = { ...connection, defaultModel: modelId!, enabledModelIds: [modelId!] };
+      defaultConnection = connection.slug;
+    },
+  });
+  await harness.render('zh-CN', providersPanel(bridge, connection.slug));
+  await clickText(harness.document, '设为默认');
+  const selector = harness.document.querySelector<HTMLButtonElement>('dialog[open] [role="combobox"]');
+  assert.ok(selector);
+  await act(async () => selector.click());
+  const option = [...harness.document.querySelectorAll<HTMLElement>('[role="option"]')].find(element => element.textContent?.includes('gpt-5.6-sol-joybuilder'));
+  assert.ok(option);
+  await act(async () => option.click());
+  await clickText(harness.document.querySelector('dialog[open]')!, '启用并设为默认');
+  assert.equal(defaultConnection, 'relay-a');
+  assert.match(harness.document.querySelector('dialog[open]')!.textContent!, /连接配置已更新/);
+  await clickText(harness.document.querySelector('dialog[open]')!, '启用并设为默认');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], [{ connectionId: connection.connectionId, slug: connection.slug }, 'gpt-5.6-sol-joybuilder']);
+  assert.equal(defaultConnection, connection.slug);
+  assert.equal(harness.document.querySelectorAll('dialog[open]').length, 0);
+  assert.equal(harness.document.querySelector('.settingsActionSlotBadge')?.textContent, '默认');
+});
+
+test('fetching choices in the default dialog preserves the selection and offers every discovered model', async () => {
+  const harness = installRenderer();
+  let connection: ProjectedLlmConnection = { ...relayConnection(), defaultModel: '', enabledModelIds: [], models: [], catalogEntries: [] };
+  const bridge = connectionDetailBridge({
+    hasSecret: async () => true,
+    getSnapshot: async () => ({ connections: [connection], defaultConnection: 'relay-a', chatModelChoices: [] }),
+    fetchModels: async (identity, options) => {
+      assert.deepEqual(identity, { connectionId: connection.connectionId, slug: connection.slug });
+      assert.deepEqual(options, { preserveSelection: true });
+      connection = { ...connection, models: [{ id: 'discovered-first' }, { id: 'discovered-second' }],
+        catalogEntries: ['discovered-first', 'discovered-second'].map(id => ({ ...relayConnection().catalogEntries[0]!, id, isDefault: false })),
+      };
+      return { models: connection.models!, source: 'fetched' };
+    },
+  });
+  await harness.render('zh-CN', providersPanel(bridge, connection.slug));
+  await clickText(harness.document, '设为默认');
+  await clickText(harness.document.querySelector('dialog[open]')!, '获取模型');
+  const selector = harness.document.querySelector<HTMLButtonElement>('dialog[open] [role="combobox"]');
+  assert.ok(selector);
+  await act(async () => selector.click());
+  const offered = [...harness.document.querySelectorAll('[role="option"]')].map(option => option.textContent);
+  assert.ok(offered.includes('discovered-first'));
+  assert.ok(offered.includes('discovered-second'));
+  await clickText(harness.document.querySelector('dialog[open]')!, '取消');
+  assert.deepEqual(connection.enabledModelIds, []);
+});
+
+test('multiple enabled models require a choice, and an empty catalog offers model setup', async () => {
+  const harness = installRenderer();
+  let connection: ProjectedLlmConnection = { ...relayConnection(), defaultModel: '',
+    enabledModelIds: ['first', 'second'],
+    catalogEntries: ['first', 'second'].map(id => ({ ...relayConnection().catalogEntries[0]!, id, isDefault: false })),
+  };
+  const bridge = connectionDetailBridge({
+    hasSecret: async () => true,
+    getSnapshot: async () => ({ connections: [connection], defaultConnection: 'relay-a', chatModelChoices: [] }),
+    fetchModels: async () => {
+      connection = { ...relayConnection(), defaultModel: '', enabledModelIds: [] };
+      return { models: connection.models!, source: 'fetched' };
+    },
+  });
+  await harness.render('zh-CN', providersPanel(bridge, connection.slug));
+  await clickText(harness.document, '设为默认');
+  assert.match(harness.document.querySelector('dialog[open]')!.textContent!, /选择这个连接用于新任务/);
+  await clickText(harness.document.querySelector('dialog[open]')!, '取消');
+  connection = { ...connection, connectionId: 'empty-relay', slug: 'empty-relay', models: [], catalogEntries: [], enabledModelIds: [] };
+  // A new panel instance reads the empty connection instead of reusing the old route.
+  await harness.render('zh-CN', providersPanel(bridge, connection.slug, 'empty'));
+  await clickText(harness.document, '设为默认');
+  assert.match(harness.document.querySelector('dialog[open]')!.textContent!, /请先获取或手动添加模型/);
+  await clickText(harness.document.querySelector('dialog[open]')!, '手动添加模型');
+  assert.match(harness.document.querySelector('dialog[open]')!.textContent!, /模型 ID/);
+});
+
+function providersPanel(bridge: ConnectionsBridge, slug: string, key?: string) {
+  return createElement(components.RuntimeHostSettingsTarget, {
+    host: { profileId: 'local', hostId: 'host-local' },
+    children: createElement(components.ProvidersPanel, { key, bridge, initialConnectionSlug: slug }),
+  });
+}
+
+async function clickText(container: ParentNode, label: string) {
+  const button = [...container.querySelectorAll('button')].find(button => button.textContent === label);
+  assert.ok(button, `missing button: ${label}`);
+  await act(async () => button.click());
+}
+
 function relayConnection(): ProjectedLlmConnection {
   const modelId = 'gpt-5.6-sol-joybuilder';
   return {
     connectionId: 'relay-connection',
-    slug: 'openai-responses-compatible-2',
+    slug: 'custom-2',
     name: '自定义中转站（OpenAI Responses）',
-    providerType: 'openai-responses-compatible',
+    providerType: 'custom',
+    defaultApiProtocol: 'openai-responses',
     baseUrl: 'https://relay.example/v1',
     defaultModel: modelId,
     enabledModelIds: [modelId],
@@ -426,6 +716,12 @@ function managementServices(): RuntimeHostManagementServices {
       readClipboardText: unexpectedCall, writeClipboardText: unexpectedCall,
     },
     resources: { query: unexpectedCall, schedule: unexpectedCall },
+    handoff: {
+      current: async () => null,
+      subscribe: () => () => {},
+      decide: unexpectedCall,
+      copyText: unexpectedCall,
+    },
     peerMesh: {
       execute: unexpectedCall, cancel: unexpectedCall,
       getConnectivityPolicy: unexpectedCall, setConnectivityPolicy: unexpectedCall,
@@ -455,8 +751,8 @@ function installRenderer() {
   }) as unknown as CSSStyleDeclaration;
   Object.assign(window, { matchMedia, getComputedStyle, scrollTo() {} });
   Object.assign(window.HTMLElement.prototype, {
-    showModal(this: HTMLElement) { this.setAttribute('open', ''); },
-    close(this: HTMLElement) { this.removeAttribute('open'); },
+    showModal(this: HTMLElement & { open: boolean }) { this.open = true; this.setAttribute('open', ''); },
+    close(this: HTMLElement & { open: boolean }) { this.open = false; this.removeAttribute('open'); },
   });
   Object.assign(globalThis, {
     document, window, matchMedia, getComputedStyle,

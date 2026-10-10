@@ -20,6 +20,7 @@
 import type { WorkHubActionReceipt } from '@maka/core/workhub-action-result';
 import type { AgentRunStore } from '@maka/core/agent-run';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
+import { randomUUID } from 'node:crypto';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import {
   decodeRuntimeBoundaryCursor,
@@ -182,6 +183,10 @@ export interface RuntimeKernelLike {
   compactSession(sessionId: string, input?: CompactSessionInput): AsyncIterable<SessionEvent>;
   preflightContextCompaction(sessionId: string): Promise<void>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
+  stopExecution?(claim: RuntimeExecutionClaim, input?: StopSessionInput): Promise<void>;
+  waitForExecutionStop?(claim: RuntimeExecutionClaim): Promise<void>;
+  stopRun?(identity: RuntimeMessageRunIdentity, input?: StopSessionInput): Promise<void>;
+  hasPendingRunStop?(identity: RuntimeMessageRunIdentity): boolean;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
@@ -197,6 +202,21 @@ export interface RuntimeKernelLike {
    * from an arbitrary one of them.
    */
   runningTurnIds?(sessionId: string): string[];
+  /**
+   * Bumped every time a run enters or leaves the session's active set, so two
+   * same-revision catalog reads can be ordered by their live run state even
+   * when a turn started or ended between them (#5713). The counter belongs to
+   * this process alone; pair it with `sessionHostGeneration` to tell which
+   * process an observation came from.
+   */
+  sessionRunEpoch?(sessionId: string): number;
+  /**
+   * Identifies this kernel process's run-epoch generation. Catalog rows
+   * survive a Host restart while the per-process epoch counters restart at
+   * zero, so clients must not order rows across generations by epoch — a
+   * restarted Host supersedes every observation its predecessor published.
+   */
+  sessionHostGeneration?(): string;
   hasActiveRun?(sessionId: string, runId: string, turnId?: string): boolean;
   requestRunHandoff?(
     sessionId: string,
@@ -278,6 +298,12 @@ export interface RuntimeKernelDeps {
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   backends: BackendRegistry;
   newId: () => string;
+  /**
+   * The run-epoch generation of this kernel process. Omit to draw a random
+   * UUID; injecting one lets tests pin `sessionHostGeneration()` without
+   * touching the `newId` sequence.
+   */
+  hostGeneration?: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
   resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
@@ -337,6 +363,9 @@ interface StopOperation {
   statusProjected: boolean;
   targets: Map<number, StopTarget>;
   queue: Promise<void>;
+  completion: Promise<void>;
+  resolveCompletion(): void;
+  rejectCompletion(error: unknown): void;
 }
 
 interface SessionStopIntent {
@@ -361,6 +390,7 @@ interface PendingExecutionClaim {
   backendHeaderSnapshot?: { invalidated: boolean };
   backendPreparation?: PreparedBackendActivation;
   stopIntent?: SessionStopIntent;
+  scopedStopAttempt?: Promise<void>;
   finalization?: ExecutionClaimOutcome;
 }
 
@@ -407,6 +437,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
+    // One identity per kernel process: catalog rows survive a Host restart
+    // while the per-session epoch counters restart at zero, so clients pair
+    // the generation with the epoch instead of comparing epochs across
+    // processes (#5713 review). Drawn outside the `newId` sequence so a
+    // restart identity never shifts the ids callers observe, and defaulted
+    // for deps that omit `newId` entirely.
+    this.#hostGeneration = deps.hostGeneration?.() ?? randomUUID();
     this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
@@ -567,6 +604,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     execution.run = run;
     execution.phase = 'attached';
+    // A host-operation claim's run is visible through the claim itself before
+    // any backend reservation: the epoch must follow that visibility change
+    // too, or two same-revision reads can disagree about runningTurnIds
+    // (#5713 review).
+    if (execution.hostOperation) this.#bumpSessionRunEpoch(execution.sessionId);
     if (execution.stopIntent) {
       run.stop(execution.stopIntent.input.source, execution.stopIntent.input.workHubActionId);
     }
@@ -626,6 +668,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
     outcome: ExecutionClaimOutcome,
   ): void {
+    // The claim removal takes a host-operation run out of the visible set:
+    // order that transition like the attach and the unregister (#5713 review).
+    if (execution.hostOperation && execution.run) {
+      this.#bumpSessionRunEpoch(execution.sessionId);
+    }
     const claims = this.executionClaims.get(execution.sessionId);
     claims?.delete(execution);
     if (claims?.size === 0) this.executionClaims.delete(execution.sessionId);
@@ -724,6 +771,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       this.attachExecutionClaim(execution, run);
       yield* this.runAgentTurn(sessionId, run, execution, {
         steering: true,
+        allowPriorUnknownToolOutcomes: isExplicitClientMessage(input),
         onRunStarted: options.onRunStarted,
         initialHeader: header,
       });
@@ -1325,6 +1373,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
     options: {
       steering?: boolean;
+      allowPriorUnknownToolOutcomes?: boolean;
       onRunStarted?: (runId: string, initialHeader: SessionHeader) => void | Promise<void>;
       initialHeader?: SessionHeader;
       prepareBackendActivation?: () => Promise<void>;
@@ -1376,6 +1425,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         invocationId: begin.initialRuntimeEvent.invocationId,
         runId: run.runId,
         ...begin.backendInput,
+        ...(options.allowPriorUnknownToolOutcomes ? { allowPriorUnknownToolOutcomes: true } : {}),
         headAnchorRuntimeEvent: begin.initialRuntimeEvent,
         handoffBoundary: (signal, remainingSteps) =>
           run.reachHandoffBoundary(signal, remainingSteps),
@@ -1891,6 +1941,130 @@ export class RuntimeKernel implements RuntimeKernelLike {
     ];
   }
 
+  /** Stop one captured owner without cancelling other queued executions in its Session. */
+  stopExecution(claim: RuntimeExecutionClaim, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
+    const execution = this.executionClaimStates.get(claim);
+    if (!execution) throw new Error('Runtime execution claim belongs to another owner');
+    if (execution.scopedStopAttempt) return execution.scopedStopAttempt;
+    const run = execution.run;
+    const active =
+      run &&
+      this.backendGenerationsFor(execution.sessionId).find(
+        (candidate) => candidate.activeRuns.get(run.runId) === run,
+      );
+    if (!active && (execution.phase === 'released' || execution.phase === 'failed')) {
+      return run
+        ? this.retryStoppedRun(
+            {
+              sessionId: execution.sessionId,
+              runId: run.runId,
+              turnId: run.turnId,
+            },
+            input,
+          )
+        : Promise.resolve();
+    }
+    if (active && run) this.assertScopedStopGeneration(active, run);
+    // Validate first, then capture the capability synchronously. A pending
+    // owner carries the stop through attach/reserve without a Session fence.
+    execution.stopIntent ??= { input, claims: new Set([execution]) };
+    if (active && run) this.captureScopedRunStop(active, run, input);
+    else run?.stop(input.source, input.workHubActionId);
+    execution.abortController.abort(execution.cancellation);
+    const attempt = this.stopCapturedExecution(execution, input).finally(() => {
+      if (execution.scopedStopAttempt === attempt) execution.scopedStopAttempt = undefined;
+    });
+    execution.scopedStopAttempt = attempt;
+    return attempt;
+  }
+
+  /** A failed cleanup attempt keeps its captured owner parked until a successful retry. */
+  waitForExecutionStop(claim: RuntimeExecutionClaim): Promise<void> {
+    const run = this.executionClaimStates.get(claim)?.run;
+    const operation =
+      run &&
+      this.retainedRunStopOperation({
+        sessionId: claim.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+      });
+    return operation ? operation.completion : Promise.resolve();
+  }
+
+  /** Whether a retained stop operation still owns cleanup for this exact Run. */
+  hasPendingRunStop(identity: RuntimeMessageRunIdentity): boolean {
+    return this.retainedRunStopOperation(identity) !== undefined;
+  }
+
+  private retainedRunStopOperation(identity: RuntimeMessageRunIdentity): StopOperation | undefined {
+    const operation = this.stopOperations.get(identity.sessionId);
+    return operation &&
+      [...operation.targets.values()].some(
+        (target) => target.runs.get(identity.runId)?.turnId === identity.turnId,
+      )
+      ? operation
+      : undefined;
+  }
+
+  /** Exact identity lookup never redirects a completed Run's stop to its successor. */
+  stopRun(identity: RuntimeMessageRunIdentity, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
+    const execution = [...(this.executionClaims.get(identity.sessionId) ?? [])].find(
+      (candidate) =>
+        candidate.run?.runId === identity.runId && candidate.run.turnId === identity.turnId,
+    );
+    if (execution) return this.stopExecution(execution.handle, input);
+    for (const active of this.backendGenerationsFor(identity.sessionId)) {
+      const run = active.activeRuns.get(identity.runId);
+      if (!run || run.turnId !== identity.turnId) continue;
+      this.assertScopedStopGeneration(active, run);
+      this.captureScopedRunStop(active, run, input);
+      return this.retryStoppedRun(identity, input);
+    }
+    return this.retryStoppedRun(identity, input);
+  }
+
+  private assertScopedStopGeneration(active: BackendGeneration, run: AgentRun): void {
+    if ([...active.activeRuns.values()].some((other) => other !== run && !other.isStopped())) {
+      throw new Error('Cannot stop one Run while its backend generation owns another active Run');
+    }
+  }
+
+  private captureScopedRunStop(
+    active: BackendGeneration,
+    run: AgentRun,
+    input: StopSessionInput,
+  ): void {
+    const operation = this.claimRunForStop(active.sessionId, input, active, run);
+    if (operation && active.phase === 'active') active.phase = 'stopping';
+  }
+
+  private async stopCapturedExecution(
+    execution: PendingExecutionClaim,
+    input: StopSessionInput,
+  ): Promise<void> {
+    await execution.settled;
+    if (execution.run) {
+      await this.retryStoppedRun(
+        {
+          sessionId: execution.sessionId,
+          runId: execution.run.runId,
+          turnId: execution.run.turnId,
+        },
+        input,
+      );
+    }
+  }
+
+  private async retryStoppedRun(
+    identity: RuntimeMessageRunIdentity,
+    input: StopSessionInput,
+  ): Promise<void> {
+    const operation = this.retainedRunStopOperation(identity);
+    if (operation) await this.enqueueStopOperation(identity.sessionId, operation, input, true);
+  }
+
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
     normalizeStopSessionSource(input.source, input.workHubActionId);
     const existing = this.stopAttempts.get(sessionId);
@@ -1995,12 +2169,22 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private buildStopOperation(input: StopSessionInput): StopOperation {
     const abortSource = normalizeStopSessionSource(input.source, input.workHubActionId);
     const ts = this.deps.now();
+    let resolveCompletion!: () => void;
+    let rejectCompletion!: (error: unknown) => void;
+    const completion = new Promise<void>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    void completion.catch(() => undefined);
     return {
       abortSource,
       ts,
       statusProjected: false,
       targets: new Map(),
       queue: Promise.resolve(),
+      completion,
+      resolveCompletion,
+      rejectCompletion,
     };
   }
 
@@ -2120,7 +2304,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     for (const target of operation.targets.values()) {
       if (target.delivery.kind === 'failed') failures.add(target.delivery.error);
     }
-    failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
+    try {
+      failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
+      if (completed) operation.resolveCompletion();
+    } catch (error) {
+      if (completed) operation.rejectCompletion(error);
+      throw error;
+    }
   }
 
   async respondToSandboxBoundary(
@@ -2181,6 +2371,21 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   runningTurnIds(sessionId: string): string[] {
     return [...new Set(this.activeRunsFor(sessionId).map((run) => run.turnId))];
+  }
+
+  readonly #sessionRunEpochs = new Map<string, number>();
+  readonly #hostGeneration: string;
+
+  sessionRunEpoch(sessionId: string): number {
+    return this.#sessionRunEpochs.get(sessionId) ?? 0;
+  }
+
+  sessionHostGeneration(): string {
+    return this.#hostGeneration;
+  }
+
+  #bumpSessionRunEpoch(sessionId: string): void {
+    this.#sessionRunEpochs.set(sessionId, (this.#sessionRunEpochs.get(sessionId) ?? 0) + 1);
   }
 
   hasActiveRun(sessionId: string, runId: string, turnId?: string): boolean {
@@ -2721,6 +2926,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     active.activeRuns.set(run.runId, run);
     active.turnToRunId.set(run.turnId, run.runId);
+    this.#bumpSessionRunEpoch(active.sessionId);
   }
 
   private assertRunCanDispatch(run: AgentRun, backend: AgentBackend): void {
@@ -2748,6 +2954,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (active.turnToRunId.get(run.turnId) === run.runId) {
       active.turnToRunId.delete(run.turnId);
     }
+    this.#bumpSessionRunEpoch(active.sessionId);
   }
 
   private async unregisterParentRun(active: AgentRunActiveSession, run: AgentRun): Promise<void> {
@@ -2777,7 +2984,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private releaseStoppedRunReferences(operation: StopOperation, run: AgentRun): void {
     for (const target of operation.targets.values()) {
       const stoppedRun = target.runs.get(run.runId);
-      if (stoppedRun?.run === run) stoppedRun.run = undefined;
+      // A failed terminal append still needs this captured Run on retry, even
+      // after its stream exits. Drop it only once stop settlement succeeded.
+      if (stoppedRun?.run === run && stoppedRun.stopCompleted) stoppedRun.run = undefined;
       if (
         target.active &&
         target.delivery.kind !== 'pending' &&
@@ -2819,7 +3028,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const ownsCurrentStop =
       execution.phase === 'attached' &&
       execution.stopIntent !== undefined &&
-      this.stopIntents.get(sessionId) === execution.stopIntent;
+      execution.stopIntent.claims.has(execution);
     if (this.stopOperations.has(sessionId) && !ownsCurrentStop) {
       throw new Error(`Session ${sessionId} is quarantined by a retained stop operation`);
     }
@@ -3176,7 +3385,9 @@ function consumeAdmittedRuntimeContinuation(input: {
   ) {
     throw new Error('Runtime continuation durable admission boundary is inconsistent');
   }
-  const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
+  const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext, {
+    allowRepairedAssistantPrefix: true,
+  });
   const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
     continuation.runtimeContext,
     input.admissionRoute.invocations,
@@ -3535,6 +3746,19 @@ function assertNoRemovedChildAgentRunLineage(input: UserMessageInput): void {
   ) {
     throw new Error('Live Turn cannot use removed child AgentRun lineage');
   }
+}
+
+function isExplicitClientMessage(input: UserMessageInput): boolean {
+  return (
+    input.origin === undefined &&
+    input.agentId === undefined &&
+    input.agentName === undefined &&
+    input.parentSessionId === undefined &&
+    input.parentTurnId === undefined &&
+    input.retriedFromTurnId === undefined &&
+    input.regeneratedFromTurnId === undefined &&
+    input.branchOfTurnId === undefined
+  );
 }
 
 async function interactionResumeAllowed(

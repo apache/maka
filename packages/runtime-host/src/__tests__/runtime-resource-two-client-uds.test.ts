@@ -181,7 +181,7 @@ test('a Host-owned PTY survives Desktop disconnect and transfers control to TUI'
       sessionId: SESSION_ID,
       ref: started.ref,
     });
-    assert.equal(stopped.resource.status, 'cancelled');
+    assert.deepEqual(stopped, {});
     const terminal = await waitForTerminal(tui, started.ref);
     assert.equal(terminal.status, 'cancelled');
   } finally {

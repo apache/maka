@@ -21,6 +21,7 @@ import { useMemo, type ReactNode } from 'react';
 import { useOverlaysController } from '../controller/use-overlays-controller.js';
 import type { OverlaysShellProjection } from '../model/overlays-projection.js';
 import { OverlaysContext } from './overlays-context.js';
+import { SettingsNavigationProvider } from '../../../application/contracts/settings-presentation/settings-navigation.js';
 
 export interface OverlaysRootProps {
   /**
@@ -35,5 +36,9 @@ export interface OverlaysRootProps {
 export function OverlaysRoot({ children }: OverlaysRootProps) {
   const overlays = useOverlaysController();
   const frame = useMemo(() => children(overlays), [children, overlays]);
-  return <OverlaysContext.Provider value={overlays}>{frame}</OverlaysContext.Provider>;
+  return (
+    <SettingsNavigationProvider navigation={overlays.commands}>
+      <OverlaysContext.Provider value={overlays}>{frame}</OverlaysContext.Provider>
+    </SettingsNavigationProvider>
+  );
 }

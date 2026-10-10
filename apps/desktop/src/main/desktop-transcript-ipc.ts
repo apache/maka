@@ -21,76 +21,59 @@ import type { StoredMessage } from '@maka/core/session';
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   type DesktopTranscriptBatchPayload,
-  type DesktopTranscriptExtension,
   type DesktopTranscriptFragment,
 } from '../preload/transcript-contract.js';
 import type {
   DesktopSequencedTranscriptMessage,
   DesktopTranscriptReplicaChange,
-  DesktopTranscriptReplicaPage,
   DesktopTranscriptReplicaSnapshot,
 } from './desktop-transcript-replica.js';
 
-interface TranscriptBatchIdentity {
-  readonly navigation?: number;
+export interface TranscriptBatchIdentity {
   readonly sessionId: string;
   readonly generation: string;
   readonly hostEpoch: string;
 }
 
-interface TranscriptBatchContent {
+/** One part of an answer; `ready` marks its last part. */
+export interface TranscriptBatchContent {
   readonly durableThrough: number | null;
   readonly durable: readonly DesktopSequencedTranscriptMessage[];
   readonly hasOlder?: boolean;
-  readonly hasNewer?: boolean;
-  readonly extends?: DesktopTranscriptExtension;
+  readonly beginsAtTurnBoundary?: boolean;
+  readonly earlierThan?: number;
   readonly coversFrom?: number | null;
   readonly reset: boolean;
+  readonly ready: boolean;
 }
 
 export function encodeDesktopTranscriptSnapshot(
   snapshot: DesktopTranscriptReplicaSnapshot,
-  navigation?: number,
 ): Iterable<DesktopTranscriptBatchPayload> {
-  return encodeDesktopTranscriptBatches({ ...snapshot, navigation }, {
+  return encodeDesktopTranscriptBatches(snapshot, {
     durableThrough: snapshot.durableThrough,
     durable: snapshot.durable,
     hasOlder: snapshot.hasOlder,
-    hasNewer: snapshot.hasNewer,
+    beginsAtTurnBoundary: snapshot.beginsAtTurnBoundary,
     reset: true,
-  });
-}
-
-export function encodeDesktopTranscriptPage(
-  identity: TranscriptBatchIdentity,
-  page: DesktopTranscriptReplicaPage,
-  extension: DesktopTranscriptExtension,
-): Iterable<DesktopTranscriptBatchPayload> {
-  return encodeDesktopTranscriptBatches(identity, {
-    durableThrough: page.durableThrough,
-    durable: page.durable,
-    hasOlder: page.hasOlder,
-    hasNewer: page.hasNewer,
-    extends: extension,
-    reset: false,
+    ready: true,
   });
 }
 
 export function encodeDesktopTranscriptChange(
   identity: TranscriptBatchIdentity,
-  // A merge that had to drop rows carries no `coversFrom` at all: it claims
-  // nothing about adjacency and only moves the watermark.
-  change: Omit<DesktopTranscriptReplicaChange, 'coversFrom'> & { readonly coversFrom?: number | null },
+  change: DesktopTranscriptReplicaChange,
 ): Iterable<DesktopTranscriptBatchPayload> {
   return encodeDesktopTranscriptBatches(identity, {
     durableThrough: change.durableThrough,
     durable: change.durableUpserts,
     coversFrom: change.coversFrom,
     reset: false,
+    ready: true,
   });
 }
 
-function* encodeDesktopTranscriptBatches(
+export function* encodeDesktopTranscriptBatches(
   identity: TranscriptBatchIdentity,
   content: TranscriptBatchContent,
 ): Iterable<DesktopTranscriptBatchPayload> {
@@ -109,19 +92,21 @@ function* encodeDesktopTranscriptBatches(
       rawBytes += bytes;
       fragment = fragments.next();
     }
+    const last = fragment.done === true;
     yield {
-      ...(identity.navigation === undefined ? {} : { navigation: identity.navigation }),
-      ...(content.extends === undefined ? {} : { extends: content.extends }),
+      ...(content.earlierThan === undefined ? {} : { earlierThan: content.earlierThan }),
       ...(content.coversFrom === undefined ? {} : { coversFrom: content.coversFrom }),
       sessionId: identity.sessionId,
       generation: identity.generation,
       hostEpoch: identity.hostEpoch,
       durableThrough: content.durableThrough,
       fragments: batchFragments,
-      ...(content.hasOlder === undefined ? {} : { hasOlder: content.hasOlder }),
-      ...(content.hasNewer === undefined ? {} : { hasNewer: content.hasNewer }),
+      ...(content.hasOlder === undefined || !(last && content.ready) ? {} : { hasOlder: content.hasOlder }),
+      ...(content.beginsAtTurnBoundary === undefined || !(last && content.ready)
+        ? {}
+        : { beginsAtTurnBoundary: content.beginsAtTurnBoundary }),
       reset: content.reset && first,
-      ready: fragment.done === true,
+      ready: last && content.ready,
     };
     first = false;
   }

@@ -63,8 +63,8 @@ async function run() {
   await main.loadURL(url);
   let owner;
   let ownerParent;
-  let parentResolver;
-  const views = new BrowserViewManager({ create: (id) => new BrowserViewController(parentResolver(id), id, () => {}) });
+  let parentForSession;
+  const views = new BrowserViewManager({ create: (id) => new BrowserViewController(parentForSession(id), id, () => {}) });
   const presentation = createWorkHubPresentation({
     mainWindow: () => main.isDestroyed() ? undefined : main,
     ensureMainWindow: async () => main,
@@ -75,11 +75,14 @@ async function run() {
   presentation.attachMainWindow(main);
   registerBrowserIpc({
     mainWindowController: {
-      getBrowserViews: () => views,
-      ownsRenderer: (wc) => !wc.isDestroyed() && (wc === owner || (!main.isDestroyed() && wc === main.webContents)),
+      getBrowserViews: (resolve) => {
+        parentForSession = resolve;
+        return views;
+      },
       isMainRenderer: (wc) => !main.isDestroyed() && wc === main.webContents,
-      browserParentForRenderer: (wc) => wc === owner ? ownerParent : main.contentView,
-      setBrowserViewParentResolver: (resolve) => { parentResolver = resolve; },
+    },
+    auxiliaryWindowRegistry: {
+      rendererParent: (wc) => wc === owner ? ownerParent : undefined,
     },
     isHostActive: (ref) => ref.hostId === scope.hostId && ref.targetEpoch === scope.targetEpoch,
   });
@@ -164,8 +167,13 @@ async function run() {
     await capture('background-restored', true);
     await command(owner, 'dock');
     await capture('redocked', true);
-    await command(owner, 'detach');
-    main.close();
+    // Leave the conversation docked so the close handler exercises its
+    // production path for moving the live view to the floating window.
+    // Dispatch the close handlers directly before destroying the synthetic
+    // fixture window; BrowserWindow.close() can block in Xvfb while reparenting
+    // WebContentsView children during the native close handshake.
+    main.emit('close');
+    main.destroy();
     await wait(100);
     assert.ok(controller.hasParent(ownerParent));
     assert.equal(controller.state().hasPage, true);
@@ -173,10 +181,32 @@ async function run() {
     await closedMainLease.ready;
     await controller.navigate(`${url}/page?main-closed`);
     const page = ownerParent.children.find((child) => 'webContents' in child && child.webContents !== owner).webContents;
+    // The view was just reparented into the floating window and navigated.
+    // Under Xvfb it may not have committed a frame (and hit-test data) in its
+    // new window yet, and Chromium drops input it cannot route. Wait for the
+    // page to load and render two frames before the single click. The timer
+    // only bounds the wait; it never adds a second click.
+    const readiness = await page.executeJavaScript(`new Promise((resolve) => {
+      const done = (via) => resolve({ via, visibility: document.visibilityState });
+      const frames = () => requestAnimationFrame(() => requestAnimationFrame(() => done('frames')));
+      setTimeout(() => done('timeout'), 2000);
+      if (document.readyState === 'complete') frames(); else addEventListener('load', frames, { once: true });
+    })`);
+    console.log(`Background page input readiness: ${readiness.via}, ${readiness.visibility}`);
     const point = await page.executeJavaScript(`(() => { const r = document.querySelector('button').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
     await page.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
-    assert.equal(await page.executeJavaScript("document.querySelector('button').textContent"), 'Clicked');
+    // CDP input acknowledgement can precede the renderer's click handler on
+    // Linux. Observe its effect without dispatching another click, so a lost
+    // event or broken background-page attachment still fails this smoke.
+    const clickDeadline = Date.now() + 3_000;
+    let buttonText;
+    do {
+      buttonText = await page.executeJavaScript("document.querySelector('button').textContent");
+      if (buttonText === 'Clicked') break;
+      await wait(20);
+    } while (Date.now() < clickDeadline);
+    assert.equal(buttonText, 'Clicked', 'background page must handle the native click after Main closes');
     await closedMainLease.release();
     console.log('PASS closing Main preserves the background page and native clicks');
   } finally {

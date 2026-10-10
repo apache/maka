@@ -22,6 +22,7 @@ import {
   SegmentedControlItem,
 } from '@astryxdesign/core/SegmentedControl';
 import { SideNav } from '@astryxdesign/core/SideNav';
+import { Text } from '@astryxdesign/core/Text';
 import { SessionHistoryList } from './session-history-list.js';
 import {
   useSessionRailChrome,
@@ -58,24 +59,30 @@ export function SessionListPanel() {
   //
   // Text labels, not icons: a clock and a folder are two icons the rail has to
   // teach, and it never had anywhere to teach them — 按时间 / 按项目 is the
-  // whole vocabulary and it fits. The control spans the rail's full width so
-  // the two segments are one object with a visible current half, rather than a
-  // pair of small buttons floating beside a title.
+  // whole vocabulary and it fits.
   //
-  // It lives here, in the sticky top region, and NOT as a list heading's
-  // endContent: the heading is gone (the rail landmark already names the panel,
-  // so "会话" was a label for a list that is the only thing under it), and a
-  // switch that scrolls away with the list it switches is a switch you have to
-  // scroll back up to find. Collapsed at 48px there is no room for either
-  // segment's label, and the list it governs is not rendered at all.
+  // Content width, at the trailing end of a 任务 heading row. Spanning the
+  // rail's full width made the switch the heaviest object in the rail — heavier
+  // than 新任务 — for a view option people rarely change, and wedged between
+  // the nav rows and the list it read as one more nav row. As a heading's
+  // trailing control it belongs to the list under it, the same place the
+  // settings surface puts a section's switch (SettingsSection `action`).
+  //
+  // The row stays here, in the sticky top region, and NOT as a list section's
+  // endContent: a switch that scrolls away with the list it switches is a
+  // switch you have to scroll back up to find, and the list's own sections
+  // (置顶 / 最近 / 项目) change with the mode. Collapsed at 48px there is no
+  // room for either segment's label, and the list it governs is not rendered.
   const groupingSwitch = onViewModeChange && !collapsed ? (
     <div className="maka-session-grouping-switch">
+      <Text size="base" weight="semibold" color="secondary" aria-hidden>
+        {copy.groupingHeading}
+      </Text>
       <SegmentedControl
         value={viewMode}
         onChange={(mode) => onViewModeChange(mode as SessionViewMode)}
         label={copy.groupingAriaLabel}
         size="sm"
-        layout="fill"
       >
         <SegmentedControlItem value="conversation" label={copy.groupByTime} />
         <SegmentedControlItem value="project" label={copy.groupByProject} />

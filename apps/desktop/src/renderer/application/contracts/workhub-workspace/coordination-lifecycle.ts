@@ -28,6 +28,13 @@ export interface WorkHubCoordinationHostChange {
 
 const UNAVAILABLE_DEFAULT_HOST = 'The default Runtime Host is unavailable';
 
+export class WorkHubModelConfigurationRequiredError extends Error {
+  constructor() {
+    super('WorkHub needs a default model before it can start');
+    this.name = 'WorkHubModelConfigurationRequiredError';
+  }
+}
+
 /** Keeps active WorkHub resolution aligned with the current default Runtime Host. */
 export function startWorkHubCoordinationLifecycle(input: {
   readonly resolve: () => Promise<string>;

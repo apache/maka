@@ -744,6 +744,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const command = await driver.runUserCommand!('sleep 3600');
     command.takeRacedUpdate();
+    assert.deepEqual(driver.getWorkspaceTarget(), { kind: 'host_path', path: '/repo' });
 
     await driver.switchSession('session-1');
 
@@ -756,6 +757,7 @@ describe('Runtime Host Maka Session driver', () => {
       ref: connection.userCommandResource.ref,
     });
     assert.equal(driver.getSessionId(), 'session-1');
+    assert.deepEqual(driver.getWorkspaceTarget(), { kind: 'host_path', path: '/tmp' });
   });
 
   test('a rejecting user-command stop aborts the switch before any durable relocation commits (#3210)', async () => {
@@ -2491,6 +2493,45 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal((await nextEvent(turn.events)).text, 'Recovered');
   });
 
+  test('returns the admitted Turn identity when starting a safe-boundary resume', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'turn-resume',
+    });
+    await driver.switchSession('session-1');
+
+    const turn = await driver.resumeLatestTurn({
+      sessionId: 'session-1',
+      disposition: 'ready',
+      sourceRunId: 'run-source',
+      sourceTurnId: 'turn-source',
+      sourceRuntimeEventHighWater: 3,
+    });
+
+    assert.deepEqual(
+      { sessionId: turn.sessionId, turnId: turn.turnId, runId: turn.runId },
+      { sessionId: 'session-1', turnId: 'turn-resume', runId: 'run-resumed' },
+    );
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'turn.resume.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-resume',
+        sourceRunId: 'run-source',
+        sourceRuntimeEventHighWater: 3,
+      },
+    });
+  });
+
   test('starts explicit Skills through the Host command and preserves its typed feedback', async () => {
     const subscription = new FakeSubscription(
       continuitySnapshot({ rootTurn: null }),
@@ -2517,6 +2558,69 @@ describe('Runtime Host Maka Session driver', () => {
     await assert.rejects(driver.preparePrompt('/skill:missing', { turnId: 'turn-blocked' }), {
       message: /Could not resolve the Skill this Turn asked for: \/skill:missing \(not found\)/,
     });
+  });
+
+  test('carries a cloud activation origin across the turn.start protocol', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'turn-activation',
+    });
+    await driver.switchSession('session-1');
+
+    await driver.preparePrompt('Inspect the workspace', {
+      origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+    });
+
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'turn.start',
+      input: {
+        sessionId: 'session-1',
+        turnId: 'turn-activation',
+        content: { text: 'Inspect the workspace' },
+        origin: { kind: 'cloud_activation', activationId: 'activation-1' },
+      },
+    });
+  });
+
+  test('does not let client turn.start mint Host-owned trigger origins', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: null }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'turn-forged-origin',
+    });
+    await driver.switchSession('session-1');
+    const startsBefore = connection.requests.filter(
+      (request) => request.operation === 'turn.start',
+    );
+
+    await assert.rejects(
+      driver.preparePrompt('Inspect the workspace', {
+        origin: { kind: 'goal', goalId: 'goal-1' },
+      }),
+      /only supports cloud activation origins/u,
+    );
+
+    assert.equal(
+      connection.requests.filter((request) => request.operation === 'turn.start').length,
+      startsBefore.length,
+    );
   });
 
   test('retires a pending question when another client answers it', async () => {
@@ -2971,15 +3075,7 @@ class FakeConnection {
     }
     if (operation === 'runtime.resource.stop') {
       if (this.runtimeResourceStopFailure) throw this.runtimeResourceStopFailure;
-      return {
-        resource: {
-          ...this.userCommandResource,
-          status: 'cancelled',
-          updatedAt: 2,
-          completedAt: 2,
-          revision: 2,
-        },
-      } as OperationOutput<K>;
+      return {} as OperationOutput<K>;
     }
     if (operation === 'runtime.resource.query') {
       if (this.runtimeResourceQuery === undefined) {
@@ -2993,6 +3089,18 @@ class FakeConnection {
     }
     if (operation === 'turn.stop') {
       return {} as OperationOutput<K>;
+    }
+    if (operation === 'turn.resume.start') {
+      const resumeInput = input as OperationInput<'turn.resume.start'>;
+      return {
+        kind: 'started',
+        turn: {
+          sessionId: resumeInput.sessionId,
+          turnId: resumeInput.turnId,
+          runId: 'run-resumed',
+          status: 'running',
+        },
+      } as OperationOutput<K>;
     }
     const turnInput = input as {
       sessionId?: string;
@@ -3105,6 +3213,7 @@ class FakeSubscription implements RuntimeHostSessionSubscription, AsyncIterator<
   readonly hostEpoch = 'host-1';
   readonly activeAssistantStreams = [];
   readonly transcriptBootstrap = null;
+  readonly transcriptWatermark = null;
   readonly subscriptionId: string;
   readonly #frames: SubscriptionFrame[] = [];
   readonly #waiters: Array<{

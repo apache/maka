@@ -19,12 +19,18 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { act, createElement } from 'react';
-import { LocaleProvider } from '@maka/ui';
+import { act, createElement, useSyncExternalStore } from 'react';
+import { LocaleProvider, ToastProvider } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import {
+  createSessionCatalogController,
+  SessionCatalogContext,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { useAppShellSessionWorkspace } from '../../renderer/use-app-shell-session-workspace.js';
-import { createRecoveringDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
+import { ConversationServicesProvider, ConversationProvider } from '../../renderer/features/conversation/index.js';
+import { stubConversationServices, useConversationOwner } from '../../renderer/features/conversation/testing.js';
+import { createDesktopTranscriptRangeController, DesktopTranscriptRangeStore } from '../../renderer/platform/desktop/desktop-transcript-range-store.js';
 import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
 
 /**
@@ -36,7 +42,14 @@ import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
  * for a single session switch. Identity is a contract, not an implementation
  * detail, so it is asserted here rather than left to review.
  */
-type Workspace = ReturnType<typeof useAppShellSessionWorkspace>;
+function useTestWorkspace() {
+  const target = useAppShellSessionWorkspace({ error: () => {} });
+  const { workspace, commands } = useConversationOwner();
+  const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
+  return { ...target, ...workspace, captureSelection: commands.captureSelection, messages: view.messages, publishedTranscriptRange: view.range, messageLoadPending: view.loading,
+    get requestedSessionId() { return target.sessionCatalogController.getState().activeSessionId; } };
+}
+type Workspace = ReturnType<typeof useTestWorkspace>;
 
 /**
  * Every function the hook returns, read off the first render rather than
@@ -58,15 +71,25 @@ describe('session workspace action identity', () => {
     const sessionB = JSON.stringify(['local', 'b']);
     const sessionC = JSON.stringify(['local', 'c']);
     const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
     let workspace!: Workspace;
     const displays: Array<{ id: string | undefined; messages: StoredMessage[] }> = [];
+    const services = stubConversationServices();
     function Probe(): null {
-      workspace = useAppShellSessionWorkspace({ error: () => {} });
+      workspace = useTestWorkspace();
       displays.push({ id: workspace.activeId, messages: workspace.messages });
       return null;
     }
     act(() => root.render(createElement(LocaleProvider, {
-      locale: 'en', children: createElement(Probe),
+      locale: 'en',
+      children: createElement(ToastProvider, {
+        children: createElement(ConversationServicesProvider, {
+          services,
+          children: createElement(SessionCatalogContext.Provider, {
+            value: catalog, children: createElement(ConversationProvider, { children: createElement(Probe) }),
+          }),
+        }),
+      }),
     })));
     act(() => workspace.seedSessions([sessionA, sessionB, sessionC].map((id) => ({
       id, name: id, isFlagged: false, isArchived: false, labels: [],
@@ -78,7 +101,7 @@ describe('session workspace action identity', () => {
     const row = (id: string): StoredMessage => ({ id, type: 'user', text: id, turnId: id, ts: 1 });
     const a = [row('a-message')];
     const c = [row('c-message')];
-    const reader = (id: string) => createRecoveringDesktopTranscriptRangeController(
+    const reader = (id: string) => createDesktopTranscriptRangeController(
       new DesktopTranscriptRangeStore(id), async () => { throw new Error('unexpected read'); }, { onError() {} },
     );
     const readerA = reader(sessionA);
@@ -137,28 +160,20 @@ describe('session workspace action identity', () => {
     act(() => workspace.setActiveId(sessionA));
     assert.deepEqual(workspace.retiredSessionIds([{ id: sessionB }]), [sessionA]);
 
-    // Publication is scheduled outside the current React lifecycle.
-    // A retired queued source may not replace the displayed
-    // Session or publish its reader.
+    // A retired source may not replace the displayed Session or publish its reader.
     act(() => workspace.setActiveId(sessionC));
     for (const batch of encodeDesktopTranscriptSnapshot({
+      beginsAtTurnBoundary: true,
       sessionId: 'c', generation: 'publication', hostEpoch: 'host',
-      durableThrough: 0, durable: c.map((message, sequence) => ({ sequence, message })), hasOlder: false, hasNewer: false,
+      durableThrough: 0, durable: c.map((message, sequence) => ({ sequence, message })), hasOlder: false,
     })) readerC.store.accept(batch);
-    let blocked = true;
-    let idle!: () => void;
-    const detach = workspace.sessionUiController.transcriptViewportNavigation.attachCommitScheduler(sessionC, {
-      subscribeToReaderScroll: () => () => {},
-      commitRange: (commit) => { if (blocked) idle = commit; else commit(); },
-    });
     let publications = 0;
-    await act(async () => workspace.publishTranscript(
-      sessionC, readerC, workspace.captureSelection(), () => { publications += 1; },
-    ));
-    assert.equal(workspace.activeId, sessionB);
+    const retiredSelection = workspace.captureSelection();
     act(() => workspace.clearOwnedSessionState(sessionC));
-    await act(async () => { blocked = false; idle(); });
-    assert.equal(publications, 0, 'retirement revokes queued publication');
+    await act(async () => workspace.publishTranscript(
+      sessionC, readerC, retiredSelection, () => { publications += 1; },
+    ));
+    assert.equal(publications, 0, 'retirement revokes publication');
     assert.equal(workspace.activeId, sessionB);
     assert.equal(workspace.transcriptRangeRef.current, undefined);
     await act(async () => {
@@ -170,29 +185,39 @@ describe('session workspace action identity', () => {
     assert.equal((workspace.messages as StoredMessage[])[0]?.id, 'c-message');
     assert.equal(workspace.publishedTranscriptRange?.sessionId, sessionC);
     assert.equal(workspace.transcriptRangeRef.current, readerC);
-    await act(async () => detach());
   });
 
   it('keeps every action identity fixed across re-renders', () => {
     const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
     const reads: Workspace[] = [];
 
     function Probe(): null {
-      reads.push(useAppShellSessionWorkspace({ error: () => {} }));
+      reads.push(useTestWorkspace());
       return null;
     }
 
     act(() => {
       root.render(
-        createElement(LocaleProvider, { locale: 'en', children: createElement(Probe) }),
+        createElement(LocaleProvider, {
+          locale: 'en',
+          children: createElement(ToastProvider, {
+            children: createElement(ConversationServicesProvider, {
+              services: stubConversationServices(),
+              children: createElement(SessionCatalogContext.Provider, {
+                value: catalog, children: createElement(ConversationProvider, { children: createElement(Probe) }),
+              }),
+            }),
+          }),
+        }),
       );
     });
     assert.equal(reads.length, 1);
 
     // Three unrelated state changes, each of which re-renders the hook.
     act(() => reads[0]!.setActiveId('session-a'));
-    act(() => reads[0]!.setMessages([]));
-    act(() => reads[0]!.setMessageLoadPending(true));
+    act(() => reads[0]!.setActiveId('session-b'));
+    act(() => reads[0]!.setLoading(true));
     assert.ok(reads.length > 1, 'the probe should have re-rendered');
 
     const first = reads[0]!;

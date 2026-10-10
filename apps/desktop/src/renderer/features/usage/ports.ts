@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UsageRange, UsageSettings, UsageStats } from '@maka/core/settings';
+import type { UsageRange, UsageSettings, UsageStats, UsageScreenQuery, UsageScreenRequest, UsageScreenFailure, UsageScreenResult } from '@maka/core/settings';
 
 // Dependency-inversion boundary for the Usage settings feature (issue #4425).
 // The feature controller owns draft/state and reads these ports; it never
@@ -30,7 +30,8 @@ import type { UsageRange, UsageSettings, UsageStats } from '@maka/core/settings'
 // #4425 ultimately targets.
 export interface UsageServices {
   /** Host-scoped usage stats for a range (`null` = no Host / not loaded yet). */
-  loadUsageStats(range: UsageRange): Promise<UsageStats | null>;
+  loadUsageStats(range: UsageRange, query?: UsageScreenQuery): Promise<UsageStats | Extract<UsageScreenFailure, {kind: 'screen_response_too_large'}> | null>;
+  loadUsageActivity?(input: Extract<UsageScreenRequest, {kind: 'activity'}>): Promise<UsageScreenResult>;
   /**
    * Persist a usage display-preferences patch and resolve with the reconciled
    * usage settings. Routes through the app settings update (client-owned

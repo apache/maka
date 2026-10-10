@@ -30,7 +30,21 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
-## `run@2.1.4` and `@ai-sdk/code-mode@1.0.56`
+## `electron-updater@6.8.9`
+
+GitHub can continue serving a withdrawn prerelease in `releases.atom` after
+the Release and its channel metadata are gone. The GitHub provider otherwise
+pins that first same-channel entry, retries its missing `dev.yml`, falls back
+to its missing `latest.yml`, and never considers the next complete entry.
+
+For prerelease channels only, the patch retains eligible Atom entries in feed
+order and advances when both metadata names return 404. Other HTTP and parsing
+failures remain terminal, stable-release selection is unchanged, and the
+withdrawn candidate is never offered or downloaded. Remove the patch when
+electron-updater ships equivalent missing-metadata candidate selection. The
+provider regression is in `scripts/desktop-nightly.test.mjs`.
+
+## `run@2.1.4` and `@ai-sdk/code-mode@1.0.79`
 
 Code Mode awaits normal Runtime tools, including user interactions. The upstream
 wall deadline aborts those waits. The opt-in `timeoutMode: 'execution'` instead
@@ -88,7 +102,7 @@ painted on resume without another write. It fails against the unpatched bundle.
 Delete when upstream routes selection changes through its paused-render
 contract and both bundle regressions pass without the patch.
 
-## `@earendil-works/pi-tui@0.84.4`
+## `@earendil-works/pi-tui@0.87.1`
 
 
 Editor undo snapshots deep-clone all stored paste strings for each typed word,
@@ -101,7 +115,7 @@ that product code can configure.
 
 Delete the patch when upstream shares immutable paste strings across undo snapshots.
 
-## `zod@4.5.4`
+## `zod@4.6.5`
 
 Recursive schemas retain their last parse context and bucket in schema closures,
 keeping the input and output graphs alive for the schema's lifetime. Containers
@@ -116,7 +130,7 @@ Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle
 identity against the new memoizer and container implementations.
 The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
-## `@modelcontextprotocol/client@2.0.0`
+## `@modelcontextprotocol/client@2.2.0`
 
 Pending transport sends retain settled request arguments and results through
 error observers, even after response, abort, timeout, or connection close.
@@ -150,15 +164,26 @@ the queue at the native exit fence. See #2978.
 
 Delete when node-pty ships an equivalent Unix write-lifecycle fix.
 
-## `@ai-sdk/provider-utils@5.0.40`
+## `@ai-sdk/provider-utils@5.0.51`
 
-Streaming tool-call association for gateways that reuse or omit `index` / `id`
-(Ollama-style, Anthropic→OpenAI translators). See #1967 / #1976 and
+Upstream now associates streamed calls across reused or omitted `index` / `id`.
+Maka still fails closed when a delta ambiguously addresses multiple calls or
+starts a new call with a blank name; the published tracker silently drops those
+deltas. See #1967 / #1976 and
 `packages/runtime/src/__tests__/model-factory-tool-call-index.test.ts`.
 
-Delete when that guard passes against an unpatched package.
+Delete when the ambiguity and blank-name tests pass against an unpatched package.
 
-## `@astryxdesign/core@0.5.2`
+## `@astryxdesign/core@0.6.3`
+
+`ToastViewport` keeps its portal host inside the active native modal and opens
+its popover after that modal. Opening the empty viewport only once leaves it
+below later dialog backdrops; reopening alone still leaves it inert outside
+the modal. Moving a stable portal host preserves toast timers and React event
+handling when the dialog closes. The public LayerProvider API cannot change
+the viewport's host. The MCP detail Storybook play checks hit testing, focus
+and dismissal after testing a connection. Remove this hunk when upstream
+provides equivalent modal-aware toast placement.
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short
@@ -184,6 +209,10 @@ The short, multiline, tall and completion submission stories in
 
 The other component changes preserve host-owned state and semantics:
 
+- `ChatComposerTrigger.menuAnchorRef` lets the Session picker align with the
+  composer instead of a caret-sized anchor. Popover's existing anchor sizing
+  keeps its rows aligned on resize without a second positioning observer.
+  Other triggers retain their caret placement.
 - `ChatLayout.autoScroll` forwards the existing hook's `enabled` option so
   Maka's transcript authority can own scrolling without competing with the
   dependency's auto-follow listeners and writes.
@@ -207,6 +236,12 @@ Markdown can also transform the displayed prefix immediately before its
 existing incremental parser, so host syntax such as math stays behind the
 streaming cursor without adding another parser or scheduler.
 
+`trimStreamingArtifacts` pairs its unclosed-marker scans with the inline math
+spans it already found. Without that, a complete `$…$` whose TeX contains
+`[`, `*`, or `~~` on the last streamed line is trimmed or auto-closed as if
+the characters were Markdown, mangling a finished formula. Remove this hunk
+when upstream scopes those scans to text outside math.
+
 One hunk is a geometry fix rather than a seam. `ChatLayout`'s frosted dock
 layer is a per-density constant (80/100/120px) while the dock it fades is
 sized by its content. At `balanced` the 100px layer starts 90px inside the
@@ -219,4 +254,47 @@ alone — no `themeProps`, no `data-*`, no custom property — so the only handl
 is a structural selector that breaks the moment a caller passes
 `scrollButton={null}`. See #3446.
 
+Three hunks fix composer caret anchoring and chip alignment rather than add
+seams. Every programmatic caret move (`placeCaretAtEnd`, `ensureCaretInside`,
+`insertTextAtCursor`, `insertToken`, `expandToken`, the token-paste path and
+the controlled-write restore) anchored a collapsed range on a child offset of
+the contenteditable; Chromium anchors an IME composition to the boundary it
+starts from, and from an element boundary the first preedit commits as its raw
+letters, so the first CJK word after a chip or a caret move arrived as pinyin.
+`landInsideTrailingTextNode` moves the caret into the text node it visually
+points at — appending an empty one when nothing landable remains — and the
+`setStartAfter` sites anchor inside the node they just inserted. No product
+code can reach these ranges: they are created inside the dependency's own
+helpers. Tracked upstream as facebook/astryx#6411.
+
+The inline token chip used `vertical-align: middle`, which centres the box on
+the parent's x-height midline and ignores its height, leaving a 20px chip
+~1.8px low against CJK text on a 22px line. `insertToken`'s span and
+`ChatTokenizedText`'s wrapper both carry `height: 1lh; align-items: center;
+vertical-align: top` — they must stay equal or a token moves when the message
+is sent. Neither is reachable by product CSS without `!important` against an
+inline style and a stylex class. Tracked upstream as facebook/astryx#6412.
+
+The `./Chat` barrel re-export of `placeCaretAtEnd` is a widened surface, not a
+behaviour change: `packages/ui`'s composer restores drafts with its own
+caret-to-end and duplicated the boundary walk because the selection helpers
+are not exported. Delete the re-export when upstream exports
+`chatComposerSelection` or grows an equivalent caret primitive — raised in
+#6411 — keeping the composer call site on whatever upstream ships.
+
 Delete each hunk when the corresponding behavior ships in Astryx.
+
+## `virtua@0.52.7`
+
+When measured rows above the reader shrink the list, the browser clamps
+`scrollTop` to the new maximum before virtua corrects for the shrink. virtua's
+correction is a relative `scrollBy` unless its target lies at an edge, so the
+clamp and the correction both land: reading upwards from the tail skipped
+~2300px and several Turns. The patch also takes the absolute path when the live
+offset is within a pixel of the maximum: the browser clamps to rounded DOM
+sizes while virtua's maximum keeps the fractional part. `scripts/perf/geometry-ablation.mjs
+--assert-stable` and the `upward-traversal-holds-turn-geometry` story under CPU
+throttle fail without it.
+
+Delete when upstream applies the correction absolutely after a clamp
+(inokawa/virtua#983).

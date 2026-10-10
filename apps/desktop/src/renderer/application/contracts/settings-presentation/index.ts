@@ -22,3 +22,4 @@ export * from "./runtime-host-settings-target.js";
 export * from "./action-guard.js";
 export * from "./oauth-login-flow-guard.js";
 export * from "./use-action-guard.js";
+export * from "./settings-navigation.js";

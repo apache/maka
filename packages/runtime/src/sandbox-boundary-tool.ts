@@ -42,6 +42,21 @@ export const SANDBOX_BOUNDARY_UNAVAILABLE =
 
 export const REQUEST_SANDBOX_BOUNDARY_TOOL_NAME = 'request_sandbox_boundary';
 
+/**
+ * Session-stable required names for the widening tool. Host only binds it when
+ * the Session is not Full access. Passing the name through `requiredToolNames`
+ * keeps the schema visible without a `tool_search` hop, and without depending
+ * on a live boundary prompt that would change the provider prefix per Turn
+ * (#5879). Returns empty when the tool is not bound.
+ */
+export function requiredSandboxBoundaryToolNames(
+  hostTools: readonly Pick<MakaTool, 'name'>[],
+): ReadonlySet<string> {
+  return hostTools.some((tool) => tool.name === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME)
+    ? new Set([REQUEST_SANDBOX_BOUNDARY_TOOL_NAME])
+    : new Set();
+}
+
 export const SANDBOX_BOUNDARY_DENIED_FOR_TURN =
   'The user denied a sandbox boundary expansion for this Turn. Do not request another expansion. ' +
   'Continue only with the authority already available, or explain the remaining blocker.';

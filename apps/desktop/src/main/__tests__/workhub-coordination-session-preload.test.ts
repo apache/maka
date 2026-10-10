@@ -46,6 +46,9 @@ test('resolves the Coordination Session through the currently active Runtime Hos
   const second = await resolve();
 
   assert.deepEqual(seen, scopes);
+  assert.equal(typeof first, 'string');
+  assert.equal(typeof second, 'string');
+  if (typeof first !== 'string' || typeof second !== 'string') throw new Error('expected session keys');
   assert.deepEqual(parseDesktopSessionKey(first), {
     hostId: 'host-a',
     sessionId: 'maka_workhub_coordination',
@@ -54,6 +57,15 @@ test('resolves the Coordination Session through the currently active Runtime Hos
     hostId: 'host-b',
     sessionId: 'maka_workhub_coordination',
   });
+});
+
+test('keeps model setup as a structured WorkHub resolution state', async () => {
+  const result = await resolveDesktopWorkHubCoordinationSession(
+    async () => ({ hostId: 'host-a', targetEpoch: 'epoch-a' }),
+    async () => ({ kind: 'model_required' }),
+  );
+
+  assert.deepEqual(result, { kind: 'model_required' });
 });
 
 test('creates against the Coordination Session Host instead of later UI focus', async () => {

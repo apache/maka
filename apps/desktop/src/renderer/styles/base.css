@@ -69,6 +69,12 @@
     white-space: nowrap !important;
     border: 0 !important;
   }
+.maka-running-indicator {
+    display: inline-flex;
+    /* The Spinner's period. Astryx core's default; the theme's 525ms is too
+       busy for a ring that stays up for a whole run. */
+    --duration-slow-min: 730ms;
+  }
 button {
     transition:
       background var(--duration-base) var(--ease-out-strong),

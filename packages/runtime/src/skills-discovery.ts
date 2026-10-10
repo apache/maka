@@ -21,6 +21,11 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { lstat, readdir, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import {
+  STANDARD_SKILL_LOCATIONS,
+  type SkillLocationDefinition,
+  type SkillLocationRef,
+} from '@maka/core/skill-locations';
 import { isPathInside, readContainedRegularFile } from './path-containment.js';
 import { validateSkillMetadata } from './skills-metadata.js';
 import type { SkillValidationIssue } from './skills-metadata.js';
@@ -53,6 +58,12 @@ export interface SkillDiscoveryEntry {
   source?: SkillDiscoverySource;
   /** Stable source identity; defaults to `${scope}:${source}`. */
   refPrefix?: string;
+}
+
+interface StandardSkillDiscoveryEntry extends SkillDiscoveryEntry {
+  scope: SkillLocationDefinition['scope'];
+  source: SkillLocationDefinition['source'];
+  refPrefix: SkillLocationRef;
 }
 
 export type SkillSource =
@@ -175,35 +186,28 @@ export interface RejectedSkillDefinition {
  *
  * Returns containment roots so `scanSkillDir` can reject ancestor-level
  * symlink escapes (e.g. `repo/.agents -> /outside`).
+ * A null cwd omits Project locations without substituting another scope's root.
  */
 export function resolveSkillDiscoveryPaths(
-  cwd: string,
+  cwd: string | null,
   workspaceRoot: string,
   homeDir?: string,
-): { entries: SkillDiscoveryEntry[]; dirs: string[]; stateRoot: string } {
-  const home = homeDir ?? homedir();
-  const entries: SkillDiscoveryEntry[] = [
-    { dir: join(cwd, '.maka', 'skills'), containmentRoot: cwd, scope: 'project', source: 'maka' },
-    {
-      dir: join(cwd, '.agents', 'skills'),
-      containmentRoot: cwd,
-      scope: 'project',
-      source: 'agents',
-    },
-    {
-      dir: join(workspaceRoot, 'skills'),
-      containmentRoot: workspaceRoot,
-      scope: 'workspace',
-      source: 'legacy',
-    },
-    { dir: join(home, '.maka', 'skills'), containmentRoot: home, scope: 'user', source: 'maka' },
-    {
-      dir: join(home, '.agents', 'skills'),
-      containmentRoot: home,
-      scope: 'user',
-      source: 'agents',
-    },
-  ];
+): { entries: StandardSkillDiscoveryEntry[]; dirs: string[]; stateRoot: string } {
+  const roots = { project: cwd, workspace: workspaceRoot, user: homeDir ?? homedir() };
+  const entries = STANDARD_SKILL_LOCATIONS.flatMap((location): StandardSkillDiscoveryEntry[] => {
+    const root = roots[location.scope];
+    return root === null
+      ? []
+      : [
+          {
+            dir: join(root, ...location.segments),
+            containmentRoot: root,
+            scope: location.scope,
+            source: location.source,
+            refPrefix: location.ref,
+          },
+        ];
+  });
   return { entries, dirs: entries.map((e) => e.dir), stateRoot: workspaceRoot };
 }
 

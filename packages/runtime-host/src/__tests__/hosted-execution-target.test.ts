@@ -142,12 +142,12 @@ test('explicit hosted target replaces a missing effective endpoint', async () =>
       if (operation === 'connection.catalog.query') {
         queryCount += 1;
         return queryCount === 1
-          ? catalogPage(['deepseek-v4-flash'], [], null, 'openai-compatible')
+          ? catalogPage(['deepseek-v4-flash'], [], null, 'custom')
           : catalogPage(
               ['deepseek-v4-flash'],
               ['deepseek-v4-flash'],
               'https://api.deepseek.com/',
-              'openai-compatible',
+              'custom',
             );
       }
       if (operation === 'connection.catalog.update') {
@@ -187,13 +187,99 @@ test('explicit hosted target replaces a missing effective endpoint', async () =>
   ]);
 });
 
+test('explicit hosted target creates a custom connection with its default protocol', async () => {
+  let saved: unknown;
+  const connection = {
+    request: async (operation: string, input: unknown) => {
+      if (operation === 'connection.catalog.query') return catalogPage([], []);
+      if (operation === 'connection.onboarding.save') {
+        saved = input;
+        return { kind: 'saved', connection: { connectionId: CONNECTION_ID, slug: 'relay' } };
+      }
+      throw new Error(`Unexpected operation ${operation}`);
+    },
+  } as unknown as Pick<RuntimeHostConnection, 'request'>;
+
+  await configureHostedExecutionTarget(connection, {
+    connection: {
+      providerType: 'custom',
+      defaultApiProtocol: 'anthropic-messages',
+      apiKey: 'sk-relay',
+    },
+    connectionSlug: 'relay',
+    model: 'claude-opus-4-8',
+    baseUrl: 'https://relay.example/v1',
+  });
+  assert.deepEqual((saved as { target: unknown }).target, {
+    kind: 'create',
+    providerType: 'custom',
+    defaultApiProtocol: 'anthropic-messages',
+    slug: 'relay',
+    name: 'relay',
+  });
+});
+
+test('explicit hosted target rejects an existing custom connection on another protocol', async () => {
+  const operations: string[] = [];
+  const connection = {
+    request: async (operation: string) => {
+      operations.push(operation);
+      return catalogPage(['claude-opus-4-8'], ['claude-opus-4-8'], null, 'custom');
+    },
+  } as unknown as Pick<RuntimeHostConnection, 'request'>;
+
+  await assert.rejects(
+    configureHostedExecutionTarget(connection, {
+      connection: {
+        providerType: 'custom',
+        defaultApiProtocol: 'anthropic-messages',
+        apiKey: 'sk-relay',
+      },
+      connectionSlug: 'env-openai',
+      model: 'claude-opus-4-8',
+      baseUrl: 'https://relay.example/v1',
+    }),
+    /provider does not match/u,
+  );
+  assert.deepEqual(operations, ['connection.catalog.query']);
+});
+
+test('explicit hosted target reuses a custom connection whose model overrides the protocol', async () => {
+  const page = catalogPage(['claude-opus-4-8'], ['claude-opus-4-8'], null, 'custom');
+  const operations: string[] = [];
+  const connection = {
+    request: async (operation: string) => {
+      operations.push(operation);
+      if (operation === 'connection.onboarding.save') {
+        return { kind: 'saved', connection: { connectionId: CONNECTION_ID, slug: 'env-openai' } };
+      }
+      return {
+        ...page,
+        items: page.items.map((item) =>
+          item.kind === 'model'
+            ? { ...item, model: { ...item.model, apiProtocol: 'anthropic-messages' } }
+            : item,
+        ),
+      };
+    },
+  } as unknown as Pick<RuntimeHostConnection, 'request'>;
+
+  await configureHostedExecutionTarget(connection, {
+    connection: { providerType: 'custom', defaultApiProtocol: 'openai-chat', apiKey: 'sk-relay' },
+    connectionSlug: 'env-openai',
+    model: 'claude-opus-4-8',
+    baseUrl: 'https://relay.example/v1',
+  });
+  assert.deepEqual(operations, ['connection.catalog.query', 'connection.onboarding.save']);
+});
+
 const CONNECTION_ID = '00000000-0000-4000-8000-000000000001';
 
 function catalogPage(
   enabledModelIds: string[],
   models: string[],
   baseUrl: string | null = 'https://api.openai.com/v1/',
-  providerType: 'openai' | 'deepseek' | 'openai-compatible' = 'openai',
+  providerType: 'openai' | 'deepseek' | 'custom' = 'openai',
 ) {
   return {
     kind: 'page' as const,
@@ -209,6 +295,7 @@ function catalogPage(
         slug: 'env-openai',
         name: 'OpenAI',
         providerType,
+        ...(providerType === 'custom' ? { defaultApiProtocol: 'openai-chat' as const } : {}),
         ...(baseUrl === null ? {} : { baseUrl }),
         enabled: true,
         enabledModelIdCount: enabledModelIds.length,

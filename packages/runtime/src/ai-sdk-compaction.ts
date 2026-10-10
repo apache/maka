@@ -68,7 +68,6 @@ import {
   isMalformedHistoryCompactSummaryReason,
   type MalformedHistoryCompactSummaryReason,
 } from './history-compact-error.js';
-import { createHash } from 'node:crypto';
 import type { ModelMessage, NormalizedUsage } from './model-protocol.js';
 import type {
   RequestProjection,
@@ -81,7 +80,7 @@ import {
   serializedToolResultProjection,
   type ToolResultArchiveTransitionServices,
 } from './tool-result-archive-transition.js';
-import { estimateTokens } from './context-budget-helpers.js';
+import { estimateTokens, sha256 } from './context-budget-helpers.js';
 import {
   reduceEffectiveModelProjections,
   type LoadedModelProjectionTransitions,
@@ -317,7 +316,14 @@ export class AiSdkCompaction {
       if (previousCheckpoint) {
         const match = matchHistoryCompactCheckpointPrefix(previousCheckpoint, runtimeContext);
         if (!match.reason && match.successorRuntimeEvents.length === 0) {
-          {
+          // Raw identity is not enough: a projection transition committed
+          // after the fold rewrites the covered span's effective view without
+          // touching the raw ledger, so reuse requires the pinned effective
+          // digest to still match — the same gate the pre-send path applies
+          // (#5929). On drift, fall through to the planner, whose roll-forward
+          // currency check discards the stale checkpoint and re-summarizes.
+          const effectiveCovered = await this.foldEffectiveModelHistory(match.coveredRuntimeEvents);
+          if (this.checkpointEffectiveCoverageMatches(previousCheckpoint, effectiveCovered)) {
             const projectedEvents = projectHistoryCompactCheckpointReplay(
               previousCheckpoint,
               match.coveredRuntimeEvents,
@@ -813,7 +819,6 @@ export class AiSdkCompaction {
     if (persisted) {
       state.baselineTokens = persisted.inputTokens + (persisted.outputTokens ?? 0);
       state.lastAcceptedTotalTokens = state.baselineTokens;
-      state.priorAcceptedInputTokens = persisted.inputTokens;
     }
     if (persisted) state.replyReserveTokens = replyReserveTokens(persisted.outputTokens);
     return state;
@@ -1112,14 +1117,21 @@ export class AiSdkCompaction {
 
     if (plan.decision === 'fail_open') {
       const diagnosticReason = plan.diagnosticReason ?? plan.reason;
-      // Latch every fail-open reason, not only the malformed ones. The baseline
+      // Latch only a fail-open the summarizer actually produced. The baseline
       // that fired this trigger survives a fail-open, so without the latch the
       // next step evaluates the same condition and dispatches the same doomed
       // summarizer call: a provider that answers slowly and fails (kimi's HTTP
       // 200 with an error body) produced 15 such calls over 47 minutes before
       // one main request (#4634). The latch covers the whole Turn and only
       // fail-opens; a successful fold spends no part of it (#4559).
-      state.summarizerFailure = diagnosticReason;
+      //
+      // no_safe_completed_span is not a summarizer failure — no call was made.
+      // It describes the event pool at this step, and a pool that has since
+      // grown a completed tool pair can present a safe cut, so the next
+      // attempt must re-read the ledger rather than inherit this miss (#5790).
+      if (plan.reason === 'summarizer_failed') {
+        state.summarizerFailure = diagnosticReason;
+      }
       return {
         decision: 'fail',
         diagnosticReason,
@@ -1322,10 +1334,6 @@ function projectAcceptedMidTurnCompactionMessages(
   ];
 }
 
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
-
 function modelMessageSignature(message: ModelMessage): string {
   return sha256(stableStringifyForSignature(message));
 }
@@ -1382,11 +1390,10 @@ export class MidTurnCapacityCompactState {
   }
   /**
    * What has reshaped the request since the last one a provider accepted. The
-   * turn clears it at that acceptance, every shaper records itself here, and
-   * every consumer reads it here — an empty set is the only proof that the next
-   * request is a pure append of its predecessor.
+   * turn clears it at that acceptance; overflow recovery reads it so a request
+   * that was already folded or stripped of images is not reshaped again.
    */
-  readonly stepShaping = new Set<'fold' | 'prune' | 'omit_images' | 'tools'>();
+  readonly stepShaping = new Set<'fold' | 'omit_images'>();
   /**
    * finish-step boundaries the event pump has flushed into the session-event
    * queue. The capacity hook's durability wait needs it: only after the pump
@@ -1396,16 +1403,13 @@ export class MidTurnCapacityCompactState {
   flushedSteps = 0;
   /** Exact historical image results omitted after a provider overflow. */
   omittedImageToolResults = new Map<string, HistoricalImageToolResult>();
-  /** Malformed summaries spend one bounded repair budget for this whole Turn. */
-  summarizerFailure: string | undefined;
   /**
-   * Input tokens of the last request a provider accepted before this send.
-   *
-   * Input against input, across the send boundary: the first request of a send
-   * has no earlier step to compare with, and `baselineTokens` counts the reply
-   * too, which the next request does not always carry.
+   * One bounded retry budget for the whole Turn, spent only by a failure the
+   * summarizer actually produced (#4634). A structural miss like
+   * no_safe_completed_span never reaches it: the pool may grow a safe cut, so
+   * the next attempt re-reads the ledger instead of short-circuiting (#5790).
    */
-  priorAcceptedInputTokens: number | undefined;
+  summarizerFailure: string | undefined;
 
   constructor(
     readonly headAnchor: RuntimeEvent,

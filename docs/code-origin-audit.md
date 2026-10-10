@@ -255,11 +255,8 @@ rejected even if a path is listed here.
 - `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.
 - `apps/desktop/resources/status/*.png`: the status images recorded above and reproducibly rendered by `scripts/generate-cu-status-icons.mjs`.
 - `docs/images/**/*.png`: screenshots of Maka's own user interface committed as review evidence, including pull requests #3584 and #3588.
-- `packages/core/src/__tests__/foreign-session.test.ts`: Apache-licensed source fixture containing a literal NUL, bidi override, and zero-width character to verify imported-session sanitization.
 - `packages/runtime-host/src/protocol/artifact.ts`: Apache-licensed protocol source containing literal C0 and DEL characters in the control-character rejection expression.
-- `packages/storage/src/__tests__/foreign-session-store.test.ts`: Apache-licensed storage fixture containing literal bidi and bell characters to verify durable imported-title sanitization.
 - `packages/storage/src/__tests__/mcp-config-store.test.ts`: Apache-licensed validation fixture containing a literal control character in a rejected MCP tool name.
-- `packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite`: migration fixture created through Maka's public storage APIs at tag `v0.1.6`; its exact origin and SHA-256 are recorded in the adjacent `README.md`.
 - `patches/@xterm+xterm+6.0.0.patch`: MIT-licensed xterm.js patch attributed in root `LICENSE`; upstream context includes literal terminal control characters whose bytes must be preserved for patch application.
 
 ### Website build dependency boundary

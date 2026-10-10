@@ -23,10 +23,12 @@ import type { IpcMain } from 'electron';
 import { AttachmentIngestBlockedError, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import {
+  abortable,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import type {
+  TurnMessageExecutionResolution,
   TurnMessageSubmitInput,
   TurnMessageSubmitResult,
   WorkspaceTarget,
@@ -57,6 +59,9 @@ import {
 } from './session-local-store.js';
 import type { DesktopTranscriptReplicaSnapshot } from './desktop-transcript-replica.js';
 
+/** The Host resolved no Skill for a Message that is settled from durable facts. */
+const EMPTY_SKILL_INVOCATION = { loaded: [], failed: [], receipts: [] } as const;
+
 export interface DesktopSessionLocalTarget {
   readonly partition: string;
   readonly scope: DesktopTargetScope;
@@ -64,8 +69,19 @@ export interface DesktopSessionLocalTarget {
   readonly client?: Pick<
     DesktopRuntimeHostClient,
     'hostEpoch' | 'createSession' | 'getSession' | 'listSessions' | 'ingestAttachment'
-  >;
+  > & {
+    /** Absent only in narrow test doubles; production clients always provide it. */
+    readonly queryMessageExecutions?: DesktopRuntimeHostClient['queryMessageExecutions'];
+  };
   readonly submit?: (input: TurnMessageSubmitInput) => Promise<TurnMessageSubmitResult>;
+}
+
+interface SessionCatalogConnection {
+  readonly client: DesktopSessionLocalTarget['client'];
+  readonly hostEpoch: string | undefined;
+  readonly targetEpoch: string;
+  readonly controller: AbortController;
+  invalidationVersion: number;
 }
 
 /** Includes the credential's lifetime without persisting a reusable secret. */
@@ -96,7 +112,16 @@ export class DesktopSessionLocalService {
     { target: DesktopSessionLocalTarget; snapshot: DesktopTranscriptReplicaSnapshot }
   >();
   readonly #catalogTasks = new Map<string, Promise<void>>();
-  readonly #catalogFresh = new Map<string, { epoch: string; at: number }>();
+  readonly #catalogPending = new Map<string, {
+    target: DesktopSessionLocalTarget;
+    connection: SessionCatalogConnection;
+  }>();
+  readonly #catalogConnections = new Map<string, SessionCatalogConnection>();
+  readonly #catalogFresh = new Map<string, {
+    connection: SessionCatalogConnection;
+    at: number;
+    invalidationVersion: number;
+  }>();
   readonly #revoked = new Set<string>();
   #scheduled = false;
   #closed = false;
@@ -125,6 +150,15 @@ export class DesktopSessionLocalService {
     return target;
   }
 
+  /** True while the local store still owns the Session's creation intent. */
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean {
+    try {
+      return this.store.creation(this.target(scope).partition, sessionId) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   changed(scope?: DesktopTargetScope): void {
     if (scope) {
       const target = this.deps
@@ -133,9 +167,22 @@ export class DesktopSessionLocalService {
           (target) =>
             target.scope.hostId === scope.hostId && target.scope.targetEpoch === scope.targetEpoch,
         );
-      if (target) this.#catalogFresh.delete(target.partition);
+      if (target) {
+        // A change asks for another observation; it does not revoke a live
+        // connection's last successful observation while that read is pending.
+        const connection = this.#catalogConnections.get(target.partition);
+        if (connection) connection.invalidationVersion += 1;
+      }
     }
     this.wake();
+  }
+
+  connectionChanged(target: DesktopSessionLocalTarget): void {
+    if (this.#closed || this.#revoked.has(target.partition)) return;
+    // Record outages even when no renderer reads the catalog before recovery.
+    // Reusing the same Host process or client cannot revive its old snapshot.
+    this.#observeCatalogConnection(target);
+    this.#drainCatalogRefreshes();
   }
 
   wake(): void {
@@ -192,6 +239,7 @@ export class DesktopSessionLocalService {
         (!record.intent.originHostEpoch && record.state !== 'accepted') ||
         record.state === 'failed',
       placement: record.intent.command.placement,
+      localDisplayPlacement: record.intent.localDisplayPlacement,
       text: record.intent.command.content.displayText ?? record.intent.command.content.text,
       attachments: record.intent.command.content.attachments ?? [],
       directoryReferences: record.intent.command.content.directoryReferences,
@@ -199,6 +247,7 @@ export class DesktopSessionLocalService {
       inlineReferences: record.intent.command.content.inlineReferences ?? [],
       ...(record.result?.disposition === 'turn_started' ? { turnId: record.result.turnId } : {}),
       ...(record.error ? { error: record.error } : {}),
+      ...(target.client && target.submit ? { delivering: true as const } : {}),
     }));
   }
 
@@ -237,8 +286,9 @@ export class DesktopSessionLocalService {
       .targets()
       .filter((target) => !this.#revoked.has(target.partition))
       .map((target) => {
+        const connection = this.#observeCatalogConnection(target);
         const fresh = this.#catalogFresh.get(target.partition);
-        const authoritative = !!target.client && fresh?.epoch === target.client.hostEpoch;
+        const authoritative = !this.#closed && !!target.client && fresh?.connection === connection;
         const sessions = this.store
           .sessions(target.partition)
           .map((session) =>
@@ -246,51 +296,112 @@ export class DesktopSessionLocalService {
               ? { ...session, localState: 'pending' as const }
               : authoritative
                 ? session
-                : { ...session, runningTurnIds: undefined, localState: 'cached' as const },
+                : { ...session, runningTurnIds: undefined, backgroundActivity: undefined, backgroundActivityVersion: undefined, localState: 'cached' as const },
           );
         if (
           target.client &&
-          (!fresh || fresh.epoch !== target.client.hostEpoch || Date.now() - fresh.at > 5000)
+          (!authoritative || !fresh ||
+            fresh.invalidationVersion !== connection.invalidationVersion ||
+            Date.now() - fresh.at > 5000)
         )
-          this.#refreshCatalog(target);
+          this.#refreshCatalog(target, connection);
         return { scope: target.scope, sessions, authoritative };
       });
   }
 
-  #refreshCatalog(target: DesktopSessionLocalTarget): void {
-    if (
-      !target.client ||
-      this.#catalogTasks.has(target.partition) ||
-      this.#catalogTasks.size >= 2 ||
-      this.#closed
-    )
-      return;
-    const client = target.client;
-    const revision = this.store.revision;
-    const task = client
-      .listSessions()
+  #observeCatalogConnection(target: DesktopSessionLocalTarget): SessionCatalogConnection {
+    const previous = this.#catalogConnections.get(target.partition);
+    if (previous && previous.client === target.client &&
+      previous.hostEpoch === target.client?.hostEpoch &&
+      previous.targetEpoch === target.scope.targetEpoch) return previous;
+    const connection: SessionCatalogConnection = {
+      client: target.client,
+      hostEpoch: target.client?.hostEpoch,
+      targetEpoch: target.scope.targetEpoch,
+      controller: new AbortController(),
+      invalidationVersion: 0,
+    };
+    this.#catalogConnections.set(target.partition, connection);
+    this.#catalogFresh.delete(target.partition);
+    // A retired read must not occupy a current connection's catalog slot.
+    // Its finally handler also checks task identity before releasing that slot.
+    this.#catalogTasks.delete(target.partition);
+    this.#catalogPending.delete(target.partition);
+    previous?.controller.abort(new Error('Owner Session catalog connection changed'));
+    return connection;
+  }
+
+  #currentCatalogConnection(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): boolean {
+    if (this.#closed || this.#revoked.has(target.partition) || connection.controller.signal.aborted)
+      return false;
+    const current = this.deps.targets().find(({ partition }) => partition === target.partition);
+    return !!current?.client && this.#observeCatalogConnection(current) === connection;
+  }
+
+  #refreshCatalog(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): void {
+    if (!target.client || this.#closed || this.#catalogTasks.has(target.partition)) return;
+    // Map insertion order gives waiting partitions a turn before a busy
+    // partition's next trailing read. Repeated requests share one queue entry.
+    this.#catalogPending.set(target.partition, { target, connection });
+    this.#drainCatalogRefreshes();
+  }
+
+  #drainCatalogRefreshes(): void {
+    for (const [partition, { target, connection }] of this.#catalogPending) {
+      if (this.#closed || this.#catalogTasks.size >= 2) return;
+      this.#catalogPending.delete(partition);
+      if (!this.#currentCatalogConnection(target, connection) || this.#catalogTasks.has(partition))
+        continue;
+      this.#startCatalogRefresh(target, connection);
+    }
+  }
+
+  #startCatalogRefresh(target: DesktopSessionLocalTarget, connection: SessionCatalogConnection): void {
+    const client = target.client!;
+    const revision = this.store.partitionRevision(target.partition);
+    const invalidationVersion = connection.invalidationVersion;
+    let freshnessRevoked = false;
+    let locallyInvalidated = false;
+    const task = abortable(() => client.listSessions(), connection.controller.signal)
       .then((sessions) => {
-        if (!this.#current(target)) return;
+        if (!this.#currentCatalogConnection(target, connection)) return;
         // A late catalog cannot erase a Session created/removed while it read.
-        if (this.store.revision !== revision) return;
+        if (this.store.partitionRevision(target.partition) !== revision) {
+          locallyInvalidated = true;
+          return;
+        }
         this.store.saveCatalog(target.partition, sessions.map(toDesktopHostSessionSummary));
-        this.#catalogFresh.set(target.partition, { epoch: client.hostEpoch, at: Date.now() });
+        // Publish successful observations even under continuous Host events.
+        // The captured version keeps this observation dirty if another change
+        // arrived while reading, so one trailing refresh can converge.
+        this.#catalogFresh.set(target.partition, { connection, at: Date.now(), invalidationVersion });
         this.deps.changed(target.scope);
       })
       .catch((error: unknown) => {
-        if (!this.#current(target)) return;
+        if (!this.#currentCatalogConnection(target, connection)) return;
         if (error instanceof RuntimeHostOperationError && error.code === 'unauthorized')
           this.purge(target, true);
-        else this.deps.onError(error);
+        else {
+          // A failed refresh cannot keep old execution activity authoritative.
+          // Notify only on the live-to-cached transition so repeated failures
+          // cannot drive a renderer notification/retry loop.
+          freshnessRevoked = this.#catalogFresh.delete(target.partition);
+          this.deps.onError(error);
+        }
       })
       .finally(() => {
-        this.#catalogTasks.delete(target.partition);
-        if (
-          this.#current(target) &&
-          !this.#catalogFresh.has(target.partition) &&
-          this.store.revision !== revision
-        )
-          this.deps.changed(target.scope);
+        if (this.#catalogTasks.get(target.partition) === task)
+          this.#catalogTasks.delete(target.partition);
+        if (this.#currentCatalogConnection(target, connection)) {
+          if (freshnessRevoked || (!this.#catalogFresh.has(target.partition) && locallyInvalidated))
+            this.deps.changed(target.scope);
+          if (locallyInvalidated || connection.invalidationVersion !== invalidationVersion) {
+            // Retry a read fenced by local mutations in this partition even
+            // when no Host invalidation requested another observation.
+            this.#catalogPending.set(target.partition, { target, connection });
+          }
+        }
+        this.#drainCatalogRefreshes();
       });
     this.#catalogTasks.set(target.partition, task);
   }
@@ -303,8 +414,13 @@ export class DesktopSessionLocalService {
     for (const [key, entry] of this.#snapshots)
       if (entry.target.partition === target.partition) this.#snapshots.delete(key);
     this.store.purge(target.partition);
+    this.#catalogConnections.get(target.partition)?.controller.abort(new Error('Owner Session authority was removed'));
+    this.#catalogConnections.delete(target.partition);
+    this.#catalogTasks.delete(target.partition);
+    this.#catalogPending.delete(target.partition);
     this.#catalogFresh.delete(target.partition);
     this.deps.changed(target.scope);
+    this.#drainCatalogRefreshes();
   }
 
   cacheTranscript(scope: DesktopTargetScope, snapshot: DesktopTranscriptReplicaSnapshot): void {
@@ -345,6 +461,12 @@ export class DesktopSessionLocalService {
 
   close(): void {
     this.#closed = true;
+    for (const connection of this.#catalogConnections.values())
+      connection.controller.abort(new Error('Owner Session catalog service is closed'));
+    this.#catalogConnections.clear();
+    this.#catalogTasks.clear();
+    this.#catalogPending.clear();
+    this.#catalogFresh.clear();
     this.#snapshots.clear();
     for (const timer of this.#retries.values()) clearTimeout(timer);
     this.#retries.clear();
@@ -383,6 +505,19 @@ export class DesktopSessionLocalService {
     const stillOwned = () =>
       this.#current(target) && this.store.get(record.partition, record.messageId) !== undefined;
     try {
+      // A Message whose immutable dispatch epoch is gone cannot be replayed:
+      // the running Host has no in-memory submit for it and answers
+      // `outcome_unknown` for any identity lacking durable proof, so retrying
+      // the same submit loops forever and blocks the Session's queue. Settle it
+      // from the Host's durable facts instead.
+      if (
+        record.intent.originHostEpoch !== undefined &&
+        record.intent.originHostEpoch !== client.hostEpoch &&
+        client.queryMessageExecutions !== undefined
+      ) {
+        await this.#settleDispatchedEpoch(target, record);
+        return;
+      }
       const creation = this.store.creation(target.partition, record.sessionId);
       if (creation) {
         // session.create already has a durable request fingerprint. Replaying
@@ -476,6 +611,106 @@ export class DesktopSessionLocalService {
     }
     this.deps.changed(target.scope, record.sessionId);
   }
+
+  /**
+   * Settles a Message whose immutable dispatch epoch is no longer the running
+   * Host's. The running Host released the previous epoch's in-memory submits,
+   * so replaying this submit can never be proven and answers `outcome_unknown`
+   * forever, which held the Session's queue behind it. The identity's real fate
+   * is still on record: the Host resolves it from its durable receipts,
+   * steering proofs, cancellation tombstones, and pending admissions. Read that
+   * instead of replaying the doomed submit.
+   */
+  async #settleDispatchedEpoch(
+    target: DesktopSessionLocalTarget,
+    record: LocalOutboxRecord,
+  ): Promise<void> {
+    const client = target.client!;
+    const key = `${target.partition}:${record.messageId}`;
+    const stillOwned = () => this.#current(target) && this.store.get(target.partition, record.messageId) !== undefined;
+    let resolution: TurnMessageExecutionResolution | undefined;
+    try {
+      const resolved = await client.queryMessageExecutions!({
+        sessionId: record.sessionId,
+        messageIds: [record.messageId],
+      });
+      resolution = resolved.resolutions.find((entry) => entry.messageId === record.messageId);
+    } catch {
+      // The running Host cannot answer yet. Keep the copy unresolved rather
+      // than guess: a wrong "never delivered" would let the user resend a
+      // Message the Host may already own.
+      if (!stillOwned()) return;
+      this.store.update({
+        ...record,
+        state: 'unknown',
+        error: 'Host outcome is unknown; the running Host has not confirmed the original message.',
+      });
+      if (!this.#closed && !this.#retries.has(key)) this.#scheduleRetry(key);
+      this.deps.changed(target.scope, record.sessionId);
+      return;
+    }
+    if (!stillOwned()) return;
+    const current = this.store.get(target.partition, record.messageId)!;
+    if (resolution?.state === 'owned') {
+      // A durable receipt or steering proof names this identity; the Turn it
+      // opened is this local copy's settlement.
+      this.store.update({
+        ...current,
+        state: 'accepted',
+        result: {
+          disposition: 'turn_started',
+          turnId: resolution.turnId,
+          skillInvocation: EMPTY_SKILL_INVOCATION,
+        },
+        error: undefined,
+      });
+    } else if (resolution?.state === 'pending') {
+      // The Host durably holds a queued admission for it. Delivery succeeded;
+      // the Host queue owns the ordering, so this local copy yields.
+      this.store.update({
+        ...current,
+        state: 'accepted',
+        result: { disposition: 'followup', skillInvocation: EMPTY_SKILL_INVOCATION },
+        error: undefined,
+      });
+    } else if (resolution?.state === 'cancelled' || resolution?.state === 'not_admitted') {
+      // The Host answered positively that this identity is settled: either it
+      // carries a cancellation tombstone, or it has no durable record at all
+      // and no in-flight submit, so no epoch ever admitted it and it can never
+      // execute. Record that as an explicit non-delivery: it releases the
+      // Session's ordering and gives the user a removable local copy.
+      this.store.update({
+        ...current,
+        state: 'failed',
+        error:
+          resolution.state === 'cancelled'
+            ? 'The Host cancelled this message; the local copy is retained.'
+            : 'The Host never admitted this message; the local copy is retained.',
+        result: undefined,
+      });
+    } else {
+      // The Host omitted the identity: it cannot yet assert anything about it
+      // (`recovering`). Keep the copy unresolved rather than guess — a wrong
+      // "never delivered" would let the user resend a Message the Host may
+      // already own.
+      this.store.update({
+        ...current,
+        state: 'unknown',
+        error: 'Host outcome is unknown; the running Host has not confirmed the original message.',
+      });
+      if (!this.#closed && !this.#retries.has(key)) this.#scheduleRetry(key);
+      this.deps.changed(target.scope, record.sessionId);
+      return;
+    }
+    const timer = this.#retries.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.#retries.delete(key);
+    }
+    this.#probed.delete(key);
+    this.#catalogFresh.delete(target.partition);
+    this.deps.changed(target.scope, record.sessionId);
+  }
 }
 
 export function registerDesktopSessionLocalIpc(deps: {
@@ -542,7 +777,8 @@ export function registerDesktopSessionLocalIpc(deps: {
           ? {
               executorId: creation.executorId,
               llmConnectionSlug: `executor:${creation.executorId}`,
-              model: creation.executorId,
+              model: creation.executorConfig?.model ?? creation.executorModel ?? creation.executorId,
+              ...(creation.executorConfig ? { executorConfig: creation.executorConfig } : {}),
             }
           : {
               llmConnectionSlug: input.llmConnectionSlug ?? '',
@@ -550,10 +786,12 @@ export function registerDesktopSessionLocalIpc(deps: {
               ...(input.llmConnectionId ? { llmConnectionId: input.llmConnectionId } : {}),
             }),
         connectionLocked: false,
-        permissionMode: creation.permissionMode ?? 'ask',
+        permissionMode: creation.permissionMode ?? 'bypass',
         collaborationMode: creation.collaborationMode,
         orchestrationMode: creation.orchestrationMode,
-        thinkingLevel: creation.thinkingLevel,
+        ...(creation.thinkingLevel === null
+          ? {}
+          : { thinkingLevel: creation.thinkingLevel }),
       };
       service.store.saveSession(target.partition, summary, creation);
       deps.changed(target.scope, creation.sessionId);
@@ -580,8 +818,13 @@ export function registerDesktopSessionLocalIpc(deps: {
       requiredId(sessionId);
       if (placement !== 'current_turn' && placement !== 'next_turn')
         throw new Error('Invalid message placement');
+      const submitted = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+      const { localDisplayPlacement } = submitted;
+      if (localDisplayPlacement !== undefined && localDisplayPlacement !== 'current_turn'
+        && localDisplayPlacement !== 'next_turn')
+        throw new Error('Invalid local display placement');
       const command = normalizeSessionSendCommand({
-        ...(value && typeof value === 'object' ? value : {}),
+        ...submitted,
         type: 'send',
       });
       if (!command?.messageId) throw new Error('Invalid submitted message');
@@ -635,6 +878,7 @@ export function registerDesktopSessionLocalIpc(deps: {
         prepared.commit(() =>
           service.store.enqueue(target.partition, {
             staged,
+            ...(localDisplayPlacement ? { localDisplayPlacement } : {}),
             command: {
               sessionId,
               messageId,
@@ -675,4 +919,26 @@ function requiredId(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 256)
     throw new Error('Invalid local Session or Message identity');
   return value;
+}
+
+/**
+ * `session-local:changed` keeps the row id for message-level readers, while
+ * `sessions:changed` drops it for a Session the local store still owns: a
+ * targeted `sessions.get` can only answer for Host-owned rows, so a pending
+ * Session's change must signal a merged-list refresh instead.
+ */
+export function createSessionLocalChangedEmitter(deps: {
+  send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
+  locallyOwned(scope: DesktopTargetScope, sessionId: string): boolean;
+}): (scope: DesktopTargetScope, sessionId?: string) => void {
+  return (scope, sessionId) => {
+    deps.send('session-local:changed', scope, { sessionId });
+    const catalogSessionId =
+      sessionId !== undefined && !deps.locallyOwned(scope, sessionId) ? sessionId : undefined;
+    deps.send('sessions:changed', scope, {
+      reason: 'updated',
+      ts: Date.now(),
+      ...(catalogSessionId !== undefined ? { sessionId: catalogSessionId } : {}),
+    });
+  };
 }

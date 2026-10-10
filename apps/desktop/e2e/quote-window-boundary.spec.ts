@@ -43,7 +43,7 @@ test('a transcript drag releases outside the window through its owning Turn', as
     .locator('[data-maka-contract="markdown"]')
     .getByText(/Fake backend received: pointer capture source/);
   await expect(reply).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+  await expect(page.locator('.maka-assistant-answer [data-action="copy"]')).toHaveCount(1, {
     timeout: 20_000,
   });
   await expect(page.getByRole('article', { name: '你发送的消息' }).locator('time')).toBeVisible();

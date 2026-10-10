@@ -144,6 +144,22 @@ test('compound model configuration requires an explicit thinking level', async (
   assert.deepEqual(patches, []);
 });
 
+test('executor model and thinking are committed through one configuration patch', async () => {
+  const patches: DesktopSessionConfigurationPatch[] = [];
+  const ipc = harness(patches);
+
+  await ipc.invoke('sessions:setExecutorConfiguration', 'session-1', {
+    executorId: 'codex.app-server',
+    model: 'gpt-6-astra',
+    thinkingLevel: 'xhigh',
+  });
+
+  assert.deepEqual(patches, [{
+    executorTarget: { executorId: 'codex.app-server', model: 'gpt-6-astra' },
+    thinkingLevel: 'xhigh',
+  }]);
+});
+
 test('a Plan Session keeps the orchestration default it was carrying', async () => {
   const patches: DesktopSessionConfigurationPatch[] = [];
   const ipc = harness(patches);

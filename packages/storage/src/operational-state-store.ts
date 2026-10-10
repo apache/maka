@@ -217,6 +217,9 @@ class OperationalStateDatabaseOwner {
     mkdirSync(dirname(databasePath), { recursive: true });
     const Database = loadDatabaseSync();
     this.database = new Database(databasePath);
+    this.database.function('usage_screen_lower', { deterministic: true }, (value) =>
+      String(value ?? '').toLowerCase(),
+    );
     try {
       configureSqliteRuntimeLockWait(this.database);
       this.database.exec('PRAGMA foreign_keys = ON');
@@ -286,7 +289,9 @@ class OperationalStateDatabaseOwner {
 
   private transaction<T>(mode: 'read' | 'write', operation: () => T): T {
     if (this.closed) throw new Error('Operational state database is closed');
-    if (this.transactionDepth > 0) return operation();
+    if (this.transactionDepth > 0) {
+      return operation();
+    }
     this.database.exec(mode === 'write' ? 'BEGIN IMMEDIATE' : 'BEGIN');
     this.transactionDepth += 1;
     let result: T;

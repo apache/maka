@@ -38,6 +38,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   connectRuntimeHost,
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
   type RuntimeHostConnection,
 } from '../client/index.js';
 import { clientSubscription } from './fixtures/client-session-subscription.js';
@@ -408,6 +409,56 @@ test('ends every active subscription with connection_closed on EOF', async () =>
   );
 });
 
+test('records the close reason before a full queue can reject the frame', () => {
+  const subscription = clientSubscription(
+    openResult('host-1', 'subscription-1'),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected read');
+    },
+  );
+  // Fill the client queue so the closed frame itself overflows it.
+  for (let sequence = 1; sequence <= 32; sequence += 1) {
+    subscription.accept(deltaFrame('host-1', 'subscription-1', sequence));
+  }
+  assert.throws(
+    () =>
+      subscription.accept({
+        kind: 'subscription.closed',
+        hostEpoch: 'host-1',
+        subscriptionId: 'subscription-1',
+        sequence: 33,
+        reason: 'session_removed',
+      }),
+    hasSubscriptionReason('slow_consumer'),
+  );
+  assert.ok(subscription.deathCause instanceof SessionRemovedSubscriptionError);
+});
+
+test('a transcript read surfaces the terminal error, not the dead-state mask', () => {
+  const subscription = clientSubscription(
+    openResult('host-1', 'subscription-1'),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected read');
+    },
+  );
+  const failure = new RuntimeHostSubscriptionError('sequence_gap', 'test gap');
+  subscription.fail(failure);
+  assert.equal(subscription.deathCause, failure);
+  assert.throws(
+    () =>
+      subscription.loadTranscriptPage({
+        direction: 'older',
+        throughSequence: null,
+        cursor: null,
+        anchorSequence: null,
+        maxBytes: 1024,
+      }),
+    (error: unknown) => error === failure,
+  );
+});
+
 test('loads a canonical transcript while live frames continue on the same connection', async () => {
   const message = {
     type: 'assistant' as const,
@@ -680,7 +731,7 @@ test('decodes one bounded page without walking the remaining transcript', async 
   assert.deepEqual(requests, []);
 });
 
-test('assembles the complete edge Turn while paging newer transcript', async () => {
+test('returns a page of complete messages without reading past its cursor', async () => {
   const prompt = {
     type: 'user' as const,
     id: 'user-1',
@@ -688,16 +739,7 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
     ts: 1,
     text: 'prompt',
   };
-  const answer = {
-    type: 'assistant' as const,
-    id: 'assistant-1',
-    turnId: 'turn-1',
-    ts: 2,
-    text: 'answer',
-    modelId: 'model-1',
-  };
   const promptBytes = Buffer.from(JSON.stringify(prompt), 'utf8');
-  const answerBytes = Buffer.from(JSON.stringify(answer), 'utf8');
   const requests: string[] = [];
   const initial: SessionTranscriptPage = {
     ...transcriptPage({
@@ -715,8 +757,6 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
     }),
     direction: 'newer',
     throughSequence: 1,
-    rangeBoundarySequence: 1,
-    protectedTurnSequence: 1,
   };
   const subscription = clientSubscription(
     openResult('host-1', 'subscription-newer-turn', {
@@ -725,24 +765,7 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
     async () => undefined,
     async (input) => {
       requests.push(input.cursor!);
-      return {
-        ...transcriptPage({
-          rawBytes: answerBytes.byteLength,
-          fragments: [
-            {
-              sequence: 1,
-              byteOffset: 0,
-              totalBytes: answerBytes.byteLength,
-              payloadDigest: null,
-              data: answerBytes.toString('base64'),
-            },
-          ],
-        }),
-        direction: 'newer',
-        throughSequence: 1,
-        rangeBoundarySequence: 1,
-        protectedTurnSequence: 1,
-      };
+      throw new Error('a complete page must not read its continuation');
     },
   );
 
@@ -750,12 +773,10 @@ test('assembles the complete edge Turn while paging newer transcript', async () 
 
   assert.deepEqual(
     decoded.messages.map(({ identity, message }) => [identity, message.id]),
-    [
-      [0, 'user-1'],
-      [1, 'assistant-1'],
-    ],
+    [[0, 'user-1']],
   );
-  assert.deepEqual(requests, ['answer']);
+  assert.equal(decoded.nextCursor, 'answer');
+  assert.deepEqual(requests, []);
 });
 
 test('loads a durable transcript whose sequences are sparse', async () => {
@@ -1283,6 +1304,7 @@ function transcriptPage(
     rawBytes?: number;
     fragments?: readonly SessionTranscriptFragment[];
     nextCursor?: string | null;
+    endsAtTurnBoundary?: boolean;
   } = {},
 ): SessionTranscriptPage {
   return {
@@ -1292,9 +1314,8 @@ function transcriptPage(
     throughSequence: 0,
     rawBytes: options.rawBytes ?? 0,
     fragments: options.fragments ?? [],
-    rangeBoundarySequence: null,
-    protectedTurnSequence: null,
     nextCursor: options.nextCursor ?? null,
+    endsAtTurnBoundary: options.endsAtTurnBoundary ?? options.nextCursor == null,
   };
 }
 

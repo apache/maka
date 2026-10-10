@@ -354,6 +354,49 @@ test('Naming falls back to the Message when the title model is unreachable', asy
   );
 });
 
+test('Plugin executor naming uses the message without calling a native model', async () => {
+  const named = gate();
+  const titles: string[] = [];
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: 'External task title\nMore instructions' },
+      });
+      await named.promise;
+      assert.deepEqual(titles, ['External task title']);
+    },
+    {
+      generateTitle: async () => assert.fail('external execution has no native title model'),
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => ({ ...unnamedHeader(), backend: 'plugin-executor' }),
+      nameSessionIfUnnamed: async (_sessionId, title) => {
+        titles.push(title);
+        return unnamedHeader();
+      },
+      onSessionNamed: () => named.release(),
+    },
+  );
+});
+
+test('Plugin executor recap is unavailable without calling a native model or draining', async () => {
+  await withHarness(
+    async ({ coordinator, modelCalls }) => {
+      const result = await coordinator.handlers['session.recap.generate'](
+        { sessionId: 'session-1', effectId: 'effect-1', reason: 'manual' },
+        connectionContext,
+      );
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.error.code, 'operation_unavailable');
+      assert.equal(modelCalls.count, 0);
+    },
+    undefined,
+    { readSessionHeader: async () => ({ ...unnamedHeader(), backend: 'plugin-executor' }) },
+  );
+});
+
 test('A named Session is never renamed by the effect', async () => {
   let modelCalls = 0;
   await withHarness(

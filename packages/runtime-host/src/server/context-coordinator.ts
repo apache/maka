@@ -196,6 +196,10 @@ export class HostContextCoordinator {
       if (isSessionNotFoundError(error)) return notFound('Session does not exist');
       throw error;
     }
+    if (header.backend === 'plugin-executor')
+      return operationUnavailable(
+        'External executors own their context. Start a new task instead of compacting.',
+      );
     if (header.isArchived) {
       return sessionArchived('Cannot compact an archived Session');
     }

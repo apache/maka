@@ -32,9 +32,9 @@
  * It mounts only for sessions with a live view (see browser:live), so an
  * ordinary chat reserves no space.
  */
-import { isNativeSurfaceOccluded } from '../../../../application/contracts/native-surface-occlusion.js';
+import { isNativeSurfaceOccluded, watchNativeSurface } from '../../../../application/contracts/native-surface-occlusion.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ICON_SIZE, ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
+import { ICON_SIZE, AlertTriangle, ChevronLeft, ChevronRight, Globe, Maximize2, Minimize2, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core/browser';
 import {
   IconButton,
@@ -44,9 +44,10 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { Button } from '@astryxdesign/core/Button';
 import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { getBrowserCopy, type BrowserCopy } from '../../../../locales/browser-copy';
+import { getBrowserCopy, type BrowserCopy } from '../../../../locales/browser-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 
 const EMPTY_STATE: BrowserState = {
@@ -57,7 +58,18 @@ const EMPTY_STATE: BrowserState = {
   loading: false,
   secure: false,
   hasPage: false,
+  loadError: null,
 };
+
+function browserLoadFailureCopy(code: number, copy: BrowserCopy): string {
+  if (code === -105 || code === -137) return copy.loadFailureDns;
+  if (code === -106) return copy.loadFailureOffline;
+  if (code === -7 || code === -118) return copy.loadFailureTimeout;
+  if (code >= -299 && code <= -200) return copy.loadFailureCertificate;
+  if (code === -107 || code === -113) return copy.loadFailureSecureConnection;
+  if (code === -20 || code === -27) return copy.loadFailureBlocked;
+  return copy.loadFailureNetwork;
+}
 
 function browserAddressFailureCopy(reason: 'unsupported_scheme' | 'invalid_url', copy: BrowserCopy): string {
   switch (reason) {
@@ -68,7 +80,7 @@ function browserAddressFailureCopy(reason: 'unsupported_scheme' | 'invalid_url',
   }
 }
 
-export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
+export function BrowserPanel(props: { sessionId: string; hidden: boolean; focused?: boolean; onToggleFocus?: () => void; onPreviewExit?: () => void }) {
   const { browser } = useWorkbarServices();
   const { sessionId, hidden } = props;
   const toast = useToast();
@@ -83,6 +95,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
   const editingRef = useRef(false);
   const browserPanelMountedRef = useMountedRef();
   const browserPanelSessionIdRef = useRef(sessionId);
+  // Which session the held `state`/`address` describe — a hidden stretch must
+  // not wipe them, and a session switch while hidden must still reset on show.
+  const stateSessionRef = useRef<string | undefined>(undefined);
 
   browserPanelSessionIdRef.current = sessionId;
 
@@ -90,35 +105,44 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     return browserPanelMountedRef.current && browserPanelSessionIdRef.current === ownerSessionId;
   }, []);
 
-  // Subscribe to this session's state pushes + seed the initial state.
+  // Subscribe to this session's state pushes + seed the current state only
+  // while the panel is shown: hidden pushes are missed on purpose, and the
+  // getState reseed on the way back catches up.
   useEffect(() => {
+    if (hidden) return;
     let alive = true;
-    editingRef.current = false;
-    setState(EMPTY_STATE);
-    setAddress('');
+    let receivedPush = false;
+    if (stateSessionRef.current !== sessionId) {
+      stateSessionRef.current = sessionId;
+      editingRef.current = false;
+      setState(EMPTY_STATE);
+      setAddress('');
+    }
     const apply = (next: BrowserState) => {
       if (!alive) return;
       setState(next);
-      if (!editingRef.current) setAddress(next.url);
+      if (!editingRef.current) setAddress(next.loadError?.url ?? next.url);
     };
+    const off = browser.subscribeState((payload) => {
+      if (payload.sessionId === sessionId) {
+        receivedPush = true;
+        apply(payload.state);
+      }
+    });
+    // A newer failure/recovery push wins over a delayed initial snapshot.
     void browser
       .getState(sessionId)
-      .then((s) => apply(s ?? EMPTY_STATE))
-      .catch(() => apply(EMPTY_STATE));
-    const off = browser.subscribeState((payload) => {
-      if (payload.sessionId === sessionId) apply(payload.state);
-    });
+      .then((s) => { if (!receivedPush) apply(s ?? EMPTY_STATE); })
+      .catch(() => { if (!receivedPush) apply(EMPTY_STATE); });
     return () => {
       alive = false;
       off();
     };
-  }, [browser, sessionId]);
+  }, [browser, sessionId, hidden]);
 
-  // Mirror the strip's on-screen rect to main every animation frame while it is
-  // showable. Position shifts on window resize and sidebar drags even when the
-  // size is unchanged, which a ResizeObserver would miss; a getBoundingClientRect
-  // per frame is negligible and the IPC only fires when the rect changes.
-  const showView = !hidden && state.hasPage;
+  // Mirror the strip's on-screen rect to main while it is showable. The IPC
+  // only fires when the rect changes.
+  const showView = !hidden && state.hasPage && !state.loadError;
   useEffect(() => {
     // Capture the injected capability because this passive cleanup may run
     // after its provider has started tearing down the host composition.
@@ -129,12 +153,11 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     }
     const el = stripRef.current;
     if (!el) return;
-    let raf = 0;
     let last = '';
     let active = true;
     let covered = false;
     let revision = 0;
-    const tick = () => {
+    const sync = () => {
       const r = el.getBoundingClientRect();
       const rect = {
         x: Math.round(r.left),
@@ -158,18 +181,17 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         } else setBackdrop(undefined);
         last = '';
       }
-      if (occluded) { raf = requestAnimationFrame(tick); return; }
+      if (occluded) return;
       const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
       if (key !== last) {
         last = key;
         browser.setViewport({ sessionId, rect });
       }
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+    const surface = watchNativeSurface(el, sync);
     return () => {
       active = false;
-      cancelAnimationFrame(raf);
+      surface.dispose();
       browser.setViewport({ sessionId, rect: null });
     };
   }, [browser, sessionId, showView]);
@@ -195,12 +217,29 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     });
   }, [address, copy, isBrowserPanelSessionCurrent, sessionId, toast]);
 
+  const retry = () => {
+    const ownerSessionId = sessionId;
+    void browser.reload(ownerSessionId).catch(() => {
+      if (isBrowserPanelSessionCurrent(ownerSessionId)) {
+        toast.error(copy.navigationFailed, copy.navigationFailedDetail, undefined, { sessionId: ownerSessionId });
+      }
+    });
+  };
+  const liveAddress = state.loadError?.url ?? state.url;
+
   return (
     <div
       className="maka-browser-panel"
+      data-preview-focused={props.focused || undefined}
       data-maka-assistant-exclude="browser"
       role="region"
       aria-label={state.title ? copy.panelAriaWithTitle(state.title) : copy.panelAria}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || event.defaultPrevented || !props.focused) return;
+        event.preventDefault();
+        event.stopPropagation();
+        props.onPreviewExit?.();
+      }}
     >
       <Toolbar
         className="maka-browser-toolbar"
@@ -234,7 +273,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 icon={state.loading ? <X size={ICON_SIZE.chrome} aria-hidden /> : <RotateCw size={ICON_SIZE.chrome} aria-hidden />}
                 variant="ghost"
                 size="sm"
-                isDisabled={!state.hasPage && !state.loading}
+                isDisabled={!state.hasPage && !state.loading && !state.loadError}
                 onClick={() =>
                   state.loading ? void browser.stop(sessionId) : void browser.reload(sessionId)
                 }
@@ -256,9 +295,15 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
                 }}
                 onBlur={() => {
                   editingRef.current = false;
-                  setAddress(state.url);
+                  setAddress(liveAddress);
                 }}
                 onKeyDown={(e) => {
+                  if (e.key === 'Escape' && address !== liveAddress) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setAddress(liveAddress);
+                    e.currentTarget.blur();
+                  }
                   if (e.key === 'Enter') {
                     e.currentTarget.blur();
                     go();
@@ -269,20 +314,45 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           </>
         )}
         endContent={(
+          <div className="maka-browser-toolbar-actions">
+          {props.onToggleFocus && (
+            <Tooltip content={props.focused ? copy.restorePreview : copy.focusPreview}>
+              <IconButton
+                label={props.focused ? copy.restorePreview : copy.focusPreview}
+                icon={props.focused ? <Minimize2 size={ICON_SIZE.chrome} aria-hidden /> : <Maximize2 size={ICON_SIZE.chrome} aria-hidden />}
+                aria-pressed={Boolean(props.focused)}
+                variant="ghost"
+                size="sm"
+                onClick={props.onToggleFocus}
+              />
+            </Tooltip>
+          )}
           <Tooltip content={copy.close}>
             <IconButton
               label={copy.closeAria}
               icon={<X size={ICON_SIZE.chrome} aria-hidden />}
               variant="ghost"
               size="sm"
-              onClick={() => void browser.close(sessionId)}
+              onClick={() => { props.onPreviewExit?.(); void browser.close(sessionId); }}
             />
           </Tooltip>
+          </div>
         )}
       />
       <div className="maka-browser-strip" ref={stripRef}>
         {backdrop && <img className="maka-browser-backdrop" src={backdrop} alt="" aria-hidden draggable={false} />}
-        {!state.hasPage && (
+        {state.loadError && (
+          <div className="maka-browser-error" role="alert">
+            <EmptyState
+              isCompact
+              icon={<AlertTriangle size={ICON_SIZE.empty} aria-hidden="true" />}
+              title={copy.loadFailed}
+              description={`${browserLoadFailureCopy(state.loadError.code, copy)} ${copy.retryDetail}`}
+              actions={<Button label={copy.retry} aria-label={copy.retryAria} isDisabled={state.loading} onClick={retry} />}
+            />
+          </div>
+        )}
+        {!state.hasPage && !state.loadError && (
           <EmptyState
             icon={<Globe size={ICON_SIZE.empty} aria-hidden="true" />}
             title={copy.title}

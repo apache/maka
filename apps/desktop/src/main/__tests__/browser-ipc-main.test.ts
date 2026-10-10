@@ -65,11 +65,12 @@ class FakeRenderer extends EventEmitter {
   destroyed = false;
   readonly mainFrame: { frameToken: string };
 
-  constructor(token: string) {
+  constructor(token: string, public zoomFactor = 1) {
     super();
     this.mainFrame = { frameToken: token };
   }
 
+  getZoomFactor(): number { return this.zoomFactor; }
   isDestroyed(): boolean { return this.destroyed; }
   destroy(): void {
     this.destroyed = true;
@@ -87,12 +88,18 @@ test('browser IPC isolates owned renderer documents and their native parents', a
   class FakeWindow extends EventEmitter {
     visible = true;
     minimized = false;
+    contentView: Electron.View | undefined;
     isVisible(): boolean { return this.visible; }
     isMinimized(): boolean { return this.minimized; }
     isDestroyed(): boolean { return false; }
   }
   const windows = new Map<unknown, FakeWindow>();
-  const BrowserWindow = { fromWebContents: (contents: unknown) => windows.get(contents) ?? null };
+  const BrowserWindow = {
+    fromWebContents: (contents: FakeRenderer) => {
+      if (contents.isDestroyed()) throw new TypeError('Object has been destroyed');
+      return windows.get(contents) ?? null;
+    },
+  };
   const testGlobal = globalThis as typeof globalThis & {
     __makaBrowserIpcMain?: typeof ipcMain;
     __makaBrowserWindow?: typeof BrowserWindow;
@@ -110,17 +117,17 @@ test('browser IPC isolates owned renderer documents and their native parents', a
 
   try {
     const { registerBrowserIpc } = await import('../browser-ipc-main.js');
-    const main = new FakeRenderer('main-document-frame');
-    const workHub = new FakeRenderer('workhub-document-frame');
+    const main = new FakeRenderer('main-document-frame', 1.1);
+    const workHub = new FakeRenderer('workhub-document-frame', 1.25);
     const mainWindow = new FakeWindow();
     const floatingWindow = new FakeWindow();
+    const mainParent = { getVisible: () => true } as unknown as Electron.View;
+    mainWindow.contentView = mainParent;
     windows.set(main, mainWindow);
     windows.set(workHub, mainWindow);
     let workHubVisible = true;
-    const mainParent = { getVisible: () => true } as unknown as Electron.View;
     const workHubParent = { getVisible: () => workHubVisible } as unknown as Electron.View;
     const owned = new Map<Electron.WebContents, Electron.View>([
-      [main as unknown as Electron.WebContents, mainParent],
       [workHub as unknown as Electron.WebContents, workHubParent],
     ]);
     let hostActive = true;
@@ -151,14 +158,18 @@ test('browser IPC isolates owned renderer documents and their native parents', a
       },
     };
     const mainWindowController = {
-      getBrowserViews: () => manager,
+      getBrowserViews: (resolve: typeof parentResolver) => {
+        parentResolver = resolve;
+        return manager;
+      },
       isMainRenderer: (contents: Electron.WebContents) => contents === main as unknown as Electron.WebContents,
-      ownsRenderer: (contents: Electron.WebContents) => !contents.isDestroyed() && owned.has(contents),
-      browserParentForRenderer: (contents: Electron.WebContents) => owned.get(contents),
-      setBrowserViewParentResolver: (resolve: typeof parentResolver) => { parentResolver = resolve; },
     };
     const browserIpc = registerBrowserIpc({
       mainWindowController: mainWindowController as never,
+      auxiliaryWindowRegistry: {
+        rendererParent: (contents: Electron.WebContents) =>
+          !contents.isDestroyed() ? owned.get(contents) : undefined,
+      },
       isHostActive: (candidate) => hostActive && candidate.hostId === scope.hostId && candidate.targetEpoch === scope.targetEpoch,
     });
 
@@ -190,7 +201,9 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     emit('browser:active-session', workHub, scope, 'workhub-session', 'workhub-document', 1);
 
     const mainRect = { x: 10, y: 20, width: 300, height: 200 };
+    const mainDipRect = { x: 11, y: 22, width: 330, height: 220 };
     const workHubRect = { x: 4, y: 8, width: 220, height: 160 };
+    const workHubDipRect = { x: 5, y: 10, width: 275, height: 200 };
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 1);
     await invoke('browser:navigate', main, scope, 'main-session', 'https://main.example/');
     assert.equal(await invoke('browser:capture-page', main, scope, 'main-session'), 'data:image/png;base64,page');
@@ -202,8 +215,8 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     const workHubController = controllers.get(workHubKey)!;
     assert.equal(mainController.parent, mainParent);
     assert.equal(workHubController.parent, workHubParent);
-    assert.deepEqual(mainController.viewports, [mainRect]);
-    assert.deepEqual(workHubController.viewports, [workHubRect]);
+    assert.deepEqual(mainController.viewports, [mainDipRect]);
+    assert.deepEqual(workHubController.viewports, [workHubDipRect]);
     assert.deepEqual(mainController.navigations, ['https://main.example/']);
     assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
 
@@ -287,15 +300,24 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: workHubRect }, 'main-document', 0);
     emit('browser:setViewport', main, scope, { sessionId: 'workhub-session', rect: mainRect }, 'main-document', 1);
     await invoke('browser:navigate', main, scope, 'workhub-session', 'https://cross-owner.example/');
-    assert.deepEqual(mainController.viewports, [mainRect]);
-    assert.deepEqual(workHubController.viewports, [workHubRect, null]);
+    assert.deepEqual(mainController.viewports, [mainDipRect]);
+    assert.deepEqual(workHubController.viewports, [workHubDipRect, null]);
     assert.deepEqual(workHubController.navigations, ['https://workhub.example/']);
 
     emit('browser:active-session', workHub, scope, 'main-session', 'workhub-document', 4);
     await invoke('browser:navigate', workHub, scope, 'main-session', 'https://stolen.example/');
     assert.deepEqual(mainController.navigations, ['https://main.example/']);
     assert.equal(mainController.parent, mainParent);
-    assert.deepEqual(mainController.viewports, [mainRect]);
+    assert.deepEqual(mainController.viewports, [mainDipRect]);
+
+    // Native bounds follow an application zoom change even when the renderer's
+    // CSS rect itself does not change.
+    main.zoomFactor = 1.25;
+    main.emit('zoom-changed');
+    assert.deepEqual(mainController.viewports, [
+      mainDipRect,
+      { x: 13, y: 25, width: 375, height: 250 },
+    ]);
 
     // Main presents Coordination without taking its persistent conversation ownership.
     emit('browser:active-session', workHub, scope, WORKHUB_COORDINATION_SESSION_ID, 'workhub-document', 5);
@@ -307,6 +329,9 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     mainWindow.emit('close');
     assert.equal(coordinationController.parent, workHubParent, 'Main close parks rather than destroys the background page');
     assert.equal(coordinationController.viewports.at(-1), null);
+    main.zoomFactor = 1.5;
+    main.emit('zoom-changed');
+    assert.equal(coordinationController.parent, workHubParent, 'a stale presenter zoom cannot reclaim a shared page');
     assert.equal(await browserViewHost().canDrive(coordinationKey, 'mutate'), true);
     emit('browser:setViewport', main, scope, { sessionId: WORKHUB_COORDINATION_SESSION_ID, rect: mainRect }, 'main-document', 2);
     emit('browser:active-session', main, scope, 'main-session', 'main-document', 3);
@@ -330,6 +355,16 @@ test('browser IPC isolates owned renderer documents and their native parents', a
     assert.equal(coordinationController.disposed, true, 'destroying the owner releases its page even while Main presents it');
     assert.equal(controllers.get(mainKey), mainController, 'destroying WorkHub preserves the main browser session');
     assert.equal(mainController.disposed, false);
+
+    // Closing Main destroys its WebContents before selection cleanup runs.
+    // Electron rejects fromWebContents on that destroyed native object.
+    emit('browser:active-session', main, scope, 'main-session', 'main-document', 5);
+    emit('browser:setViewport', main, scope, { sessionId: 'main-session', rect: mainRect }, 'main-document', 5);
+    assert.doesNotThrow(() => main.destroy());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(mainController.disposed, true, 'closing Main still releases its owned browser page');
+    assert.equal(await browserViewHost().canDrive(mainKey, 'observe'), false);
+    assert.equal(mainWindow.listenerCount('close'), 0, 'renderer teardown removes window listeners');
   } finally {
     hooks.deregister();
     setBridgeFactoryForTest(null);

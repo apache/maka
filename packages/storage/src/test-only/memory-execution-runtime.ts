@@ -23,6 +23,7 @@ import {
   type RuntimeEvent,
 } from '@maka/core/runtime-event';
 import {
+  runtimeInvocationRecoveryInventoryFromInvocations,
   RunSealedError,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
   type ContinuationClaimStateV1,
@@ -44,12 +45,15 @@ import {
 import { assertHandoffClaimSource } from '@maka/core/runtime-handoff';
 import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import {
-  validateToolLedgerTransition,
   scanToolLedger,
+  referencedToolOperationIds,
+  ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
+  validateToolLedgerTransition,
   type ToolLedgerTransitionKind,
 } from '@maka/core/tool-ledger-scanner';
 import { interpretScannedToolRecovery } from '@maka/core/tool-recovery-bundle';
+import { assertEvidenceReadBudget } from '../bounded-evidence.js';
 import type { ExecutionRuntimeEventWriter } from '../execution-stores.js';
 import type {
   ToolOperationRecord,
@@ -68,6 +72,7 @@ import { immutableSteeringMessageId } from '../runtime-event-invariants.js';
 import {
   RuntimeTranscriptOversizedTurnError,
   type RuntimeTranscriptRun,
+  type RuntimeTranscriptTurn,
 } from '../runtime-transcript-query.js';
 import {
   partialRuntimeStream,
@@ -96,6 +101,14 @@ type ToolJournalEntry = {
   state: ToolOperationRecord['currentState'] | 'reconcile_observed';
   committedAt: number;
 };
+
+function terminalToolProjectionState(
+  operation: Pick<ToolOperationRecord, 'toolName' | 'recoveryMode'>,
+): 'abandoned' | 'interrupted_unknown' {
+  return operation.toolName === 'AskUserQuestion' && operation.recoveryMode === 'never_auto_retry'
+    ? 'abandoned'
+    : 'interrupted_unknown';
+}
 
 /** Reconstruct projections from canonical facts, inside the import transaction. */
 function rebuildToolProjections(s: MemoryState, sessionId: string): void {
@@ -191,14 +204,41 @@ function transition(
   candidateEvents: RuntimeEvent[],
   expectedTransition: ToolLedgerTransitionKind,
 ) {
-  const ids = new Set(candidateEvents.map((e) => e.invocationId));
+  const existingEvents = allEvents(s);
+  const invocationIds = new Set(candidateEvents.map((event) => event.invocationId));
+  const operationIds = referencedToolOperationIds(candidateEvents);
+  const loadedInvocationIds = new Set<string>();
+  while (true) {
+    for (const event of existingEvents) {
+      const operationId = event.actions?.toolDispatch?.operationId;
+      if (operationId && operationIds.has(operationId)) invocationIds.add(event.invocationId);
+    }
+    const pending = [...invocationIds].filter(
+      (invocationId) => !loadedInvocationIds.has(invocationId),
+    );
+    if (pending.length === 0) break;
+    for (const invocationId of pending) {
+      loadedInvocationIds.add(invocationId);
+      for (const event of existingEvents) {
+        if (event.invocationId === invocationId && event.refs?.parentOperationId) {
+          operationIds.add(event.refs.parentOperationId);
+        }
+      }
+    }
+  }
   const validation = validateToolLedgerTransition({
-    existingEvents: allEvents(s).filter((e) => ids.has(e.invocationId)),
+    existingEvents: existingEvents.filter((event) => invocationIds.has(event.invocationId)),
     candidateEvents,
     expectedTransition,
   });
-  if (!validation.ok) throw new ToolLedgerRejectionError(validation.code, validation.eventId);
+  if (!validation.ok) {
+    if (validation.source === 'existing') {
+      throw new ToolLedgerCorruptionError(validation.code, validation.eventId);
+    }
+    throw new ToolLedgerRejectionError(validation.code, validation.eventId);
+  }
 }
+
 function assertIdentity(s: MemoryState, event: RuntimeEvent) {
   check(event.id, event.sessionId, event.runId, event.invocationId, event.turnId);
   for (const existing of [...allEvents(s), ...[...partials(s).values()].map((p) => p.event)]) {
@@ -517,8 +557,121 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
     ensureTerminalRuntimeEventDurable: async (sessionId, runId, event) => {
       if (!isTerminalRuntimeEvent(event) || event.partial)
         throw new Error('Terminal writer requires immutable terminal event');
-      await store.appendRuntimeEvent(sessionId, runId, event, { durable: true });
+      await a.write('runtime.terminal', (s) => {
+        if (event.sessionId !== sessionId || event.runId !== runId)
+          throw new Error('Runtime terminal identity mismatch');
+        if (
+          !immutable(s, sessionId, runId).some((candidate) => candidate.id === event.id) &&
+          [...operations(s).values()].some(
+            (operation) =>
+              operation.invocationId === event.invocationId &&
+              operation.currentState === 'prepared' &&
+              operation.resultEventId === undefined &&
+              operation.dispatchEventId !== undefined &&
+              immutable(s, sessionId, runId).some(
+                (candidate) => candidate.id === operation.dispatchEventId,
+              ),
+          )
+        ) {
+          throw new Error('Cannot terminalize invocation with unsettled tool operation');
+        }
+        insert(s, event);
+      });
     },
+    ensureRecoveredTerminalRuntimeEventDurable: async (
+      sessionId,
+      runId,
+      event,
+      unsettledOperationIds,
+    ) =>
+      a.write('runtime.recoveryTerminal', (s) => {
+        if (
+          event.sessionId !== sessionId ||
+          event.runId !== runId ||
+          event.partial ||
+          event.status !== 'failed' ||
+          event.actions?.stateDelta?.recovered !== true ||
+          event.actions.stateDelta.recoveryReason !== 'outcome_unknown' ||
+          !isTerminalRuntimeEvent(event)
+        ) {
+          throw new Error('Unknown-outcome recovery requires a failed terminal RuntimeEvent');
+        }
+        const expected = new Set(unsettledOperationIds);
+        if (expected.size === 0 || expected.size !== unsettledOperationIds.length) {
+          throw new Error('Recovery terminal requires distinct unsettled operation ids');
+        }
+        const existing = immutable(s, sessionId, runId).find(
+          (candidate) => candidate.id === event.id,
+        );
+        if (existing) {
+          insert(s, event);
+          if (immutable(s, sessionId, runId).at(-1)?.id !== event.id) {
+            throw new Error('Recovery terminal RuntimeEvent is not the immutable run tail');
+          }
+          const settled = [...rows<ToolJournalEntry>(s, 'toolJournal').values()].filter(
+            (entry) =>
+              entry.eventId === event.id &&
+              (entry.state === 'abandoned' || entry.state === 'interrupted_unknown'),
+          );
+          if (
+            settled.length !== expected.size ||
+            settled.some((entry) => !expected.has(entry.operationId))
+          ) {
+            throw new Error('Recovery terminal settled operations do not match the durable ledger');
+          }
+          for (const id of expected) {
+            const operation = operations(s).get(id);
+            if (
+              !operation ||
+              operation.invocationId !== event.invocationId ||
+              operation.runId !== runId ||
+              operation.turnId !== event.turnId ||
+              operation.currentState !== terminalToolProjectionState(operation)
+            ) {
+              throw new Error(`Recovery terminal tool projection is incomplete: ${id}`);
+            }
+          }
+          return;
+        }
+        const eventsById = new Map(allEvents(s).map((candidate) => [candidate.id, candidate]));
+        const pending = [...operations(s).values()].filter(
+          (operation) =>
+            operation.invocationId === event.invocationId &&
+            operation.currentState === 'prepared' &&
+            operation.resultEventId === undefined &&
+            operation.dispatchEventId !== undefined &&
+            eventsById.get(operation.callEventId)?.sessionId === sessionId,
+        );
+        if (
+          pending.length !== expected.size ||
+          pending.some(
+            (operation) =>
+              !expected.has(operation.operationId) ||
+              operation.runId !== runId ||
+              operation.turnId !== event.turnId,
+          )
+        ) {
+          throw new Error('Recovery terminal unsettled operations do not match the durable ledger');
+        }
+        insert(s, event);
+        for (const operation of pending) {
+          const state = terminalToolProjectionState(operation);
+          operations(s).set(operation.operationId, {
+            ...operation,
+            currentState: state,
+            version: operation.version + 1,
+          });
+          rows<ToolJournalEntry>(s, 'toolJournal').set(
+            `${operation.operationId}_${event.id}_journal`,
+            {
+              operationId: operation.operationId,
+              eventId: event.id,
+              state,
+              committedAt: event.ts,
+            },
+          );
+        }
+      }),
     readRuntimeEvents: async (sessionId, runId) =>
       a.read((s) =>
         mergeRuntimePartialSnapshots(
@@ -530,6 +683,47 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       ),
     readImmutableRuntimeEvents: async (sessionId, runId) =>
       a.read((s) => immutable(s, sessionId, runId)),
+    readRecoveryMessageEvents: async (input) =>
+      a.read((s) => {
+        check(input.sessionId, ...input.turnIds, ...input.eventIds);
+        assertEvidenceReadBudget(input.budget);
+        const turnIds = new Set(input.turnIds);
+        const eventIds = new Set(input.eventIds);
+        const records = allEvents(s)
+          .filter(
+            (event) =>
+              event.sessionId === input.sessionId &&
+              ((turnIds.has(event.turnId) &&
+                event.role === 'user' &&
+                event.partial === false &&
+                event.content?.kind === 'text' &&
+                event.content.steering !== true) ||
+                eventIds.has(event.id)),
+          )
+          .sort(
+            (left, right) =>
+              left.ts - right.ts ||
+              left.runId.localeCompare(right.runId) ||
+              left.id.localeCompare(right.id),
+          );
+        let storedBytes = 0;
+        for (const event of records) {
+          storedBytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+          if (
+            records.length > input.budget.maxRecords ||
+            !Number.isSafeInteger(storedBytes) ||
+            storedBytes > input.budget.maxBytes
+          ) {
+            return { status: 'limit_exceeded' as const };
+          }
+        }
+        return {
+          status: 'complete' as const,
+          records,
+          sourceRecordCount: records.length,
+          storedBytes,
+        };
+      }),
     readSessionRuntimeEventEntries: async (sessionId) =>
       a.read((s) => {
         check(sessionId);
@@ -561,6 +755,16 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
         sessionId,
         (await store.readSessionRuntimeEventEntries(sessionId)).map((e) => e.event),
       ),
+    listInvocationRecoveryInventory: async (sessionIds) =>
+      (
+        await Promise.all(
+          sessionIds.map(async (sessionId) =>
+            runtimeInvocationRecoveryInventoryFromInvocations(
+              await store.listSessionInvocations(sessionId),
+            ),
+          ),
+        )
+      ).flat(),
     readRunInvocation: async (sessionId, runId) =>
       (await store.listSessionInvocations(sessionId)).find((i) => i.runId === runId),
     readInvocation: async (sessionId, invocationId) => {
@@ -675,6 +879,29 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
         )
           rebuildToolProjections(s, sessionId);
       }),
+    // Same contract as the SQLite scan: a Session is offered when the folded
+    // JSON of any of its events contains a folded term.
+    listSessionsWithRuntimeEventText: async (sessionIds, terms) => {
+      const offered: string[] = [];
+      for (const sessionId of sessionIds) {
+        const events = (await store.readSessionRuntimeEventEntries(sessionId)).map((e) => e.event);
+        const folded = events.map((event) => JSON.stringify(event).normalize('NFC').toLowerCase());
+        if (folded.some((json) => terms.some((term) => json.includes(term))))
+          offered.push(sessionId);
+      }
+      return offered;
+    },
+    countRuntimeEventMessages: async (sessionIds) => {
+      let total = 0;
+      for (const sessionId of sessionIds) {
+        for (const { event } of await store.readSessionRuntimeEventEntries(sessionId)) {
+          const kind = event.content?.kind;
+          if (kind === 'text' || kind === 'function_call' || kind === 'function_response')
+            total += 1;
+        }
+      }
+      return total;
+    },
     resequenceSessionEventOrdinals: async (sessionId) =>
       a.write('runtime.resequence', (s) => {
         const entries = ordinals(s).get(sessionId) ?? [];
@@ -704,11 +931,6 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
         if (matches.length > 1) throw new Error('Immutable steering identity conflict');
         return matches[0] ? { event: matches[0] } : undefined;
       }),
-    repairImmutableSteeringMessageProofsForRecovery: async (sessionId) => {
-      const events = (await store.readSessionRuntimeEventEntries(sessionId)).map((e) => e.event);
-      const ids = events.map(immutableSteeringMessageId).filter(Boolean);
-      if (new Set(ids).size !== ids.length) throw new Error('Immutable steering identity conflict');
-    },
     readImmutableRuntimePrefix: async (input) => a.read((s) => prefix(s, input)),
     readImmutableRuntimePrefixProof: async (input, budget) =>
       a.read((s) => prefixProof(s, input, budget)),
@@ -863,14 +1085,62 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
         });
         return { created: true, runtimeEventSeq: seq };
       }),
-    listUnsettledToolOperations: async (sessionId) =>
-      a.read((s) =>
-        [...operations(s).values()].filter(
-          (o) =>
-            o.currentState === 'prepared' &&
-            allEvents(s).some((e) => e.id === o.callEventId && e.sessionId === sessionId),
-        ),
-      ),
+    listUnsettledToolOperations: async (sessionIds) =>
+      a.read((s) => {
+        const selected = new Set(typeof sessionIds === 'string' ? [sessionIds] : sessionIds);
+        const eventsById = new Map(allEvents(s).map((event) => [event.id, event]));
+        return [...operations(s).values()].flatMap((operation) => {
+          if (operation.currentState !== 'prepared') return [];
+          const sessionId = eventsById.get(operation.callEventId)?.sessionId;
+          return sessionId && selected.has(sessionId) ? [{ sessionId, ...operation }] : [];
+        });
+      }),
+    rebuildTerminalToolProjectionsForSessions: async (sessionIds) =>
+      a.write('runtime.rebuildTerminalToolProjections', (s) => {
+        const selected = new Set(sessionIds);
+        if (selected.size === 0) return;
+        const history = allEvents(s);
+        const eventsById = new Map(history.map((event) => [event.id, event]));
+        const eventOrder = new Map(history.map((event, index) => [event.id, index]));
+        const terminalByInvocation = new Map<
+          string,
+          { readonly event: RuntimeEvent; readonly order: number }
+        >();
+        for (const event of history) {
+          if (!isTerminalRuntimeEvent(event)) continue;
+          const order = eventOrder.get(event.id);
+          if (order === undefined) continue;
+          const previous = terminalByInvocation.get(event.invocationId);
+          if (!previous || order < previous.order) {
+            terminalByInvocation.set(event.invocationId, { event, order });
+          }
+        }
+        for (const [operationId, operation] of operations(s)) {
+          if (operation.currentState !== 'prepared' || !operation.dispatchEventId) continue;
+          const call = eventsById.get(operation.callEventId);
+          if (!call || !selected.has(call.sessionId)) continue;
+          const dispatchOrder = eventOrder.get(operation.dispatchEventId);
+          const terminal = terminalByInvocation.get(operation.invocationId);
+          if (dispatchOrder === undefined || !terminal || terminal.order <= dispatchOrder) {
+            continue;
+          }
+          const state = terminalToolProjectionState(operation);
+          operations(s).set(operationId, {
+            ...operation,
+            currentState: state,
+            version: operation.version + 1,
+          });
+          rows<ToolJournalEntry>(s, 'toolJournal').set(
+            `${operationId}_${terminal.event.id}_journal`,
+            {
+              operationId,
+              eventId: terminal.event.id,
+              state,
+              committedAt: terminal.event.ts,
+            },
+          );
+        }
+      }),
     readTranscriptHighWater: async (sessionId) =>
       a.read((s) => {
         check(sessionId);
@@ -939,32 +1209,48 @@ export function createMemoryRuntimeStore(a: MemoryExecutionAuthority): Execution
       }
       return project(header, read());
     },
-    readTranscriptLandmarks: async (sessionId, throughOrdinal, n) =>
+    readTranscriptTurns: async (sessionId, request) =>
       a.read((s) => {
-        if (!Number.isSafeInteger(throughOrdinal) || throughOrdinal < 0 || !Number.isSafeInteger(n))
-          throw new RangeError('Invalid landmark bounds');
-        if (n < 1) return [];
-        const all = transcript(s, sessionId, throughOrdinal);
-        if (all.length === 0) return [];
-        const positions = new Set(
-          Array.from({ length: n }, (_, i) =>
-            n === 1 ? all.length - 1 : Math.floor((i * (all.length - 1)) / (n - 1)),
-          ),
-        );
-        return [...positions]
-          .map((i) => all[i]!)
-          .map((i) => ({
-            invocation: i.invocation,
-            firstOrdinal: i.firstOrdinal,
-            ...(i.events.find((e) => e.event.role === 'user' && e.event.content?.kind === 'text')
-              ? {
-                  prompt: i.events.find(
-                    (e) => e.event.role === 'user' && e.event.content?.kind === 'text',
-                  ),
-                }
-              : {}),
-          }));
+        const turns = transcriptTurns(s, sessionId);
+        return 'turnId' in request
+          ? turns.filter((turn) => turn.turnId === request.turnId)
+          : sampled(
+              turns.filter((turn) => turn.firstOrdinal <= request.throughOrdinal),
+              request.limit,
+            );
       }),
+    readTranscriptTurnCrossing: async (sessionId, ordinal) =>
+      a.read((s) =>
+        transcriptTurns(s, sessionId).some(
+          (turn) => turn.firstOrdinal < ordinal && turn.lastOrdinal >= ordinal,
+        ),
+      ),
   };
   return store;
+}
+
+function transcriptTurns(s: MemoryState, sessionId: string): RuntimeTranscriptTurn[] {
+  const turns = new Map<string, RuntimeTranscriptTurn>();
+  for (const { invocation, events } of transcript(s, sessionId)) {
+    const turnId = invocation.turnId;
+    const known = turns.get(turnId);
+    const prompt = events.find((e) => e.event.content?.kind === 'text' && e.event.role === 'user');
+    turns.set(turnId, {
+      turnId,
+      firstOrdinal: Math.min(known?.firstOrdinal ?? Infinity, ...events.map((e) => e.ordinal)),
+      lastOrdinal: Math.max(known?.lastOrdinal ?? 0, ...events.map((e) => e.ordinal)),
+      ...((known?.prompt ?? prompt) ? { prompt: known?.prompt ?? prompt } : {}),
+    });
+  }
+  return [...turns.values()].sort((x, y) => x.firstOrdinal - y.firstOrdinal);
+}
+
+function sampled<T>(items: readonly T[], limit: number): T[] {
+  if (limit < 1 || items.length === 0) return [];
+  if (limit === 1) return [items.at(-1)!];
+  const picked = new Set<T>();
+  for (let n = 0; n < limit; n += 1) {
+    picked.add(items[Math.floor((n * (items.length - 1)) / (limit - 1))]!);
+  }
+  return [...picked];
 }

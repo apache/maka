@@ -66,6 +66,7 @@ describe('SQLite SessionStore', () => {
         makeInput({
           cwd: root,
           executorId: 'codex',
+          executorConfig: { model: 'account-model-v2' },
           llmConnectionSlug: 'executor:codex',
           model: 'codex',
         }),
@@ -80,6 +81,8 @@ describe('SQLite SessionStore', () => {
       assert.equal(reloaded.backend, 'plugin-executor');
       assert.equal(reloaded.executorId, 'codex');
       assert.equal((await store.list())[0]?.executorId, 'codex');
+      assert.deepEqual(reloaded.executorConfig, { model: 'account-model-v2' });
+      assert.deepEqual((await store.list())[0]?.executorConfig, { model: 'account-model-v2' });
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -549,6 +552,28 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('announces import commit only after validating the complete payload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-import-commit-boundary-'));
+    const store = createSessionStore(root);
+    let commitStarted = false;
+    try {
+      await assert.rejects(
+        store.createImportedSession(
+          makeInput(),
+          [{ type: 'user' } as unknown as StoredMessage],
+          { adapterId: 'fake', sourceSessionId: 'source-1' },
+          { onCommitStarted: () => (commitStarted = true) },
+        ),
+        /Invalid stored message schema/,
+      );
+      assert.equal(commitStarted, false);
+      assert.deepEqual(await store.listHeaders(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('a generated title fills an absence and never overwrites a rename', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-generated-title-'));
     const store = createSessionStore(root);
@@ -849,6 +874,7 @@ describe('SQLite SessionStore', () => {
       DROP INDEX session_metadata_by_external_origin;
       ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
       ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+      ALTER TABLE session_metadata DROP COLUMN archived_at;
       UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
     `);
     legacy.close();

@@ -20,7 +20,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import type { SessionEvent } from '@maka/core/events';
 import {
@@ -34,11 +33,12 @@ import {
 import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
-} from '../../renderer/app-shell-session-events.js';
+} from '../../renderer/features/conversation/testing.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { renderTranscriptMarkup } from './transcript-test-dom.js';
 
-function renderWithLocale(child: ReactNode): string {
-  return renderToStaticMarkup(
+function renderWithLocale(child: ReactNode): Promise<string> {
+  return renderTranscriptMarkup(
     createElement(LocaleProvider, {
       locale: 'zh-CN',
       children: createElement(ChatSurfaceLayout, { composer: null, children: child }),
@@ -63,7 +63,7 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
   await pollFor(predicate, { timeoutMs: 3_000, pollMs: 10, message });
 }
 
-function renderLiveTurn(liveTurn: LiveTurnProjection): string {
+function renderLiveTurn(liveTurn: LiveTurnProjection): Promise<string> {
   return renderWithLocale(createElement(ChatView, {
     activeSession: {
       id: 'session-1',
@@ -88,34 +88,37 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
 }
 
 describe('single live-turn handoff', () => {
-  it('keeps activity in the process row before the session or Turn arrives', () => {
+  it('keeps activity in the top status row before the session or Turn arrives', async () => {
     const session: NonNullable<Parameters<typeof ChatView>[0]['activeSession']> = {
       id: 'session-1', name: 'pending', status: 'running' as const, backend: 'ai-sdk',
       labels: [], isFlagged: false, isArchived: false, hasUnread: false,
       llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask' as const,
     };
     for (const activeSession of [undefined, session]) {
-      const markup = renderWithLocale(createElement(ChatView, {
+      const markup = await renderWithLocale(createElement(ChatView, {
         activeSession,
         messages: [],
         transientMessages: [{
           id: 'message-pending', ts: 1, text: 'send now',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         }],
         activeTurn: { turnId: 'turn-pending' },
         scrollBehavior: 'smooth',
         onNew() {},
       } satisfies Parameters<typeof ChatView>[0]));
       const { document } = parseHTML(markup);
-      const status = document.querySelector('.maka-processing-summary [role="status"]');
-      assert.ok(status, 'activity must occupy the process row');
-      assert.equal(document.querySelector('.maka-turn-footer'), null);
+      const status = document.querySelector(
+        '.maka-assistant-answer .maka-turn-statusbar [role="status"]',
+      );
+      assert.ok(status, 'activity must occupy the top status row');
+      assert.equal(document.querySelector('.maka-processing-block'), null);
+      assert.equal(document.querySelector('.maka-turn-footer')?.textContent, '');
       assert.equal(document.querySelector('.maka-assistant-answer [role="toolbar"]'), null);
     }
   });
 
-  it('renders a transient user message without manufacturing a Turn', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('renders a transient user message without manufacturing a Turn', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -127,7 +130,7 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-pending', ts: 2,
-          text: 'send now', transientPlacement: 'current_turn',
+          text: 'send now', transientPlacement: 'transcript',
         },
       ],
       scrollBehavior: 'smooth',
@@ -139,8 +142,8 @@ describe('single live-turn handoff', () => {
     assert.match(markup, />send now</);
   });
 
-  it('does not flash the empty-chat Maka hero before a first transient message', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('does not flash the empty-chat Maka hero before a first transient message', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -150,7 +153,7 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-pending', ts: 1,
-          text: 'inspect this image', transientPlacement: 'current_turn',
+          text: 'inspect this image', transientPlacement: 'transcript',
         },
       ],
       scrollBehavior: 'smooth',
@@ -162,8 +165,8 @@ describe('single live-turn handoff', () => {
     assert.doesNotMatch(markup, /maka-hero-empty-chat/);
   });
 
-  it('shows a loading transient before its real live Turn answer', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('shows a loading transient before its real live Turn answer', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -174,7 +177,7 @@ describe('single live-turn handoff', () => {
         {
           id: 'turn-1', ts: 1, text: 'send now',
           hostTurnId: 'turn-1',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         },
       ],
       messageLoading: true,
@@ -199,8 +202,8 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
 
-  it('keeps an unresolved Message independent of a Turn without an admission binding', () => {
-    const markup = renderWithLocale(createElement(ChatView, {
+  it('keeps an unresolved Message independent of a Turn without an admission binding', async () => {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -210,11 +213,11 @@ describe('single live-turn handoff', () => {
       transientMessages: [
         {
           id: 'message-1', ts: 1, text: 'send now',
-          transientPlacement: 'current_turn',
+          transientPlacement: 'transcript',
         },
         {
           id: 'message-next', ts: 2, text: 'do this next',
-          transientPlacement: 'next_turn',
+          transientPlacement: 'follow_up',
         },
       ],
       scrollBehavior: 'smooth',
@@ -236,8 +239,8 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 1);
   });
 
-  it('renders one ordered timeline: thinking before its tool and answer', () => {
-    const markup = renderLiveTurn({
+  it('renders one ordered timeline: thinking before its tool and answer', async () => {
+    const markup = await renderLiveTurn({
       turnId: 'turn-1',
       steps: [{
         stepId: 'assistant-1',
@@ -262,9 +265,9 @@ describe('single live-turn handoff', () => {
     assert.equal((markup.match(/data-turn-id=/g) ?? []).length, 1);
   });
 
-  it('keeps a completed live answer as the only visible owner until settle', () => {
+  it('keeps a completed live answer as the only visible owner until settle', async () => {
     const finalText = 'one visible answer';
-    const markup = renderWithLocale(createElement(ChatView, {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -291,9 +294,9 @@ describe('single live-turn handoff', () => {
     assert.equal(markup.split(finalText).length - 1, 1);
   });
 
-  it('keeps an incomplete live answer as the only owner after early persistence', () => {
+  it('keeps an incomplete live answer as the only owner after early persistence', async () => {
     const text = 'persisted before a slow tool finishes';
-    const markup = renderWithLocale(createElement(ChatView, {
+    const markup = await renderWithLocale(createElement(ChatView, {
       activeSession: {
         id: 'session-1', name: 'streaming', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
         labels: [], isFlagged: false, isArchived: false, hasUnread: false,
@@ -526,7 +529,7 @@ describe('single live-turn handoff', () => {
       seq: 0, stream: 'stdout', chunk: 'late', redacted: false,
       createdAt: 1, ts: 1,
     });
-    handlers.dropDisplayEvents('session-1');
+    handlers.discardDisplayEvents('session-1');
     liveTurns.set(() => ({}));
     liveTurnBySessionRef.current = liveTurns.get();
 
@@ -534,68 +537,55 @@ describe('single live-turn handoff', () => {
     assert.equal(liveTurns.get()['session-1'], undefined);
   });
 
-  it('applies catch-up deltas immediately until the returning session is seeded', () => {
-    const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
-      'session-1': [armLiveTurn('turn-1')],
-    });
-    const liveTurnBySessionRef = { current: liveTurns.get() };
-    const interactions = createStateSetter<InteractionQueues>({});
-    const frames: Array<() => void> = [];
-    let publications = 0;
-    const handlers = createAppShellSessionEventHandlers({
+  it('publishes recovery text before returning the session to frame scheduling', () => {
+    const sessionId = 'recovery-session';
+    const state = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
+      [sessionId]: [armLiveTurn('turn-1')],
+    } satisfies Record<string, readonly LiveTurnProjection[]>);
+    const stateRef = { current: state.get() };
+    const frameQueue: Array<() => void> = [];
+    const publicationCounts: number[] = [];
+    const publishLiveTurns = (update: Parameters<typeof state.set>[0]) => {
+      state.set(update);
+      stateRef.current = state.get();
+      publicationCounts.push((publicationCounts.at(-1) ?? 0) + 1);
+    };
+    const eventHandlers = createAppShellSessionEventHandlers({
       uiLocale: 'zh-CN',
-      activeIdRef: { current: 'session-1' },
-      liveTurnBySessionRef,
-      refreshMessages: async () => true,
-      refreshSessions: async () => [],
-      setLiveTurnBySession: (updater) => {
-        publications += 1;
-        liveTurns.set(updater);
-        liveTurnBySessionRef.current = liveTurns.get();
-      },
-      setInteractionBySession: interactions.set,
-      showModelSetupToast: () => {},
-      toastApi: { error: () => {} },
-      scheduleFrame: (callback) => { frames.push(callback); },
-    });
-
-    handlers.markDisplayPending('session-1');
-    handlers.handleEvent('session-1', {
-      type: 'text_delta',
-      id: 'seed',
-      turnId: 'turn-1',
-      messageId: 'assistant-1',
-      ts: 1,
-      startOffset: 0,
-      text: 'prefix accumulated while away',
-    });
-    assert.equal(publications, 1);
-    assert.equal(frames.length, 0);
-    assert.equal(
-      liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text,
-      'prefix accumulated while away',
-    );
-
-    handlers.flushDisplayEvents('session-1');
-    handlers.markDisplayReady('session-1');
-    handlers.handleEvent('session-1', {
-      type: 'text_delta',
-      id: 'live',
-      turnId: 'turn-1',
-      messageId: 'assistant-1',
-      ts: 2,
-      text: ' new',
-    });
-    assert.equal(publications, 1);
-    assert.equal(frames.length, 1);
-    frames.shift()?.();
-    assert.equal(publications, 2);
-    assert.equal(
-      liveTurns.get()['session-1']?.[0]?.steps[0]?.text?.text,
-      'prefix accumulated while away new',
-    );
-  });
-
+      activeIdRef: { current: sessionId },
+      liveTurnBySessionRef: stateRef,
+      async refreshMessages() { return true; },
+      async refreshSessions() { return []; },
+      setLiveTurnBySession: publishLiveTurns,
+      setInteractionBySession: createStateSetter<InteractionQueues>({}).set,
+      showModelSetupToast() {},
+      toastApi: { error() {} },
+      scheduleFrame: (callback) => void frameQueue.push(callback),
+    } satisfies Parameters<typeof createAppShellSessionEventHandlers>[0]);
+    const renderedText = () => state.get()[sessionId]?.[0]?.steps[0]?.text?.text;
+    const emit = (event: SessionEvent) => eventHandlers.handleEvent(sessionId, event);
+    eventHandlers.holdDisplayEvents(sessionId);
+    emit({
+      type: 'text_delta', id: 'recovered', turnId: 'turn-1', messageId: 'assistant-1',
+      ts: 1, startOffset: 0, text: 'restored prefix',
+    } satisfies SessionEvent);
+    const recoverySnapshot = {
+      publications: publicationCounts.length,
+      frames: frameQueue.length,
+      text: renderedText(),
+    };
+    assert.deepEqual(recoverySnapshot, { publications: 1, frames: 0, text: 'restored prefix' });
+    eventHandlers.releaseDisplayEvents(sessionId);
+    emit({
+      type: 'text_delta', id: 'continued', turnId: 'turn-1', messageId: 'assistant-1',
+      ts: 2, text: ' plus live text',
+    } satisfies SessionEvent);
+    assert.equal(publicationCounts.length, 1, 'live continuation remains unpublished');
+    assert.equal(frameQueue.length, 1, 'live continuation remains frame-gated');
+    frameQueue.shift()?.();
+    const renderedSnapshot = { publications: publicationCounts.length, text: renderedText() };
+    assert.deepEqual(renderedSnapshot, { publications: 2, text: 'restored prefix plus live text' });
+  }); // Recovery delivery is synchronous only while the hold is active.
   it('shares pending display events across handler replacement', () => {
     const liveTurns = createStateSetter<Record<string, readonly LiveTurnProjection[]>>({
       'session-1': [armLiveTurn('turn-1')],

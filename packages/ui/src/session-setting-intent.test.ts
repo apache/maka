@@ -23,6 +23,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import {
+  type SessionSettingIntentCatalog,
   type SessionSettingIntentChannel,
   type SessionSettingIntentWriteResult,
   useSessionSettingIntent,
@@ -41,6 +42,24 @@ function deferred<T>() {
     resolve = next;
   });
   return { promise, resolve };
+}
+
+function createTestCatalog() {
+  const listeners = new Set<() => void>();
+  let revision = 0;
+  return {
+    catalog: {
+      revision: () => revision,
+      subscribeChanged: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    } satisfies SessionSettingIntentCatalog,
+    commit(next: number) {
+      revision = next;
+      for (const listener of [...listeners]) listener();
+    },
+  };
 }
 
 const originalGlobals = {
@@ -140,26 +159,29 @@ test('revision-aware commits retire only after the target session observes that 
   mountedRoot = root;
 
   let controller: Controller | undefined;
-  const render = (catalogRevision: number, sessionRevision: number) => {
+  const testCatalog = createTestCatalog();
+  const render = (sessionRevision: number) => {
     root.render(createElement(RevisionHarness, {
       capture: (next) => {
         controller = next;
       },
-      catalogRevision,
+      catalog: testCatalog.catalog,
       sessionRevision,
     }));
   };
 
-  await act(async () => render(0, 0));
+  await act(async () => render(0));
   await act(async () => {
     assert.equal(await controller!.request('model', 'session-1', 'model-b'), true);
   });
   assert.equal(controller!.overlayByChannel.model['session-1'], 'model-b');
 
-  await act(async () => render(1, 1));
+  await act(async () => render(1));
+  await act(async () => testCatalog.commit(1));
   assert.equal(controller!.overlayByChannel.model['session-1'], 'model-b');
 
-  await act(async () => render(2, 2));
+  await act(async () => render(2));
+  await act(async () => testCatalog.commit(2));
   assert.equal(controller!.overlayByChannel.model['session-1'], undefined);
 });
 
@@ -185,12 +207,13 @@ test('rapid revision-aware requests retire only after the last committed revisio
     }>>;
   }> = [];
   let controller: Controller | undefined;
-  const render = (catalogRevision: number, sessionRevision: number) => {
+  const testCatalog = createTestCatalog();
+  const render = (sessionRevision: number) => {
     root.render(createElement(RapidRevisionHarness, {
       capture: (next) => {
         controller = next;
       },
-      catalogRevision,
+      catalog: testCatalog.catalog,
       sessionRevision,
       write: async (_sessionId, value) => {
         const result = deferred<{ committed: boolean; sessionRevision: number }>();
@@ -200,7 +223,7 @@ test('rapid revision-aware requests retire only after the last committed revisio
     }));
   };
 
-  await act(async () => render(0, 0));
+  await act(async () => render(0));
   let completion!: Promise<boolean>;
   await act(async () => {
     completion = controller!.request('model', 'session-1', 'model-a');
@@ -222,13 +245,16 @@ test('rapid revision-aware requests retire only after the last committed revisio
   });
   assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
 
-  await act(async () => render(1, 1));
+  await act(async () => render(1));
+  await act(async () => testCatalog.commit(1));
   assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
 
-  await act(async () => render(2, 2));
+  await act(async () => render(2));
+  await act(async () => testCatalog.commit(2));
   assert.equal(controller!.overlayByChannel.model['session-1'], 'model-c');
 
-  await act(async () => render(3, 3));
+  await act(async () => render(3));
+  await act(async () => testCatalog.commit(3));
   assert.equal(controller!.overlayByChannel.model['session-1'], undefined);
 });
 
@@ -378,7 +404,7 @@ function IntentHarness({
   onModelWriteError(sessionId: string, error: unknown, attempted: string): void;
 }) {
   const controller = useSessionSettingIntent<Channels>({
-    catalogRevision: 0,
+    catalog: createTestCatalog().catalog,
     refreshCatalog,
     channels: {
       model: { write: modelWrite, onWriteError: onModelWriteError },
@@ -391,12 +417,12 @@ function IntentHarness({
 
 function RapidRevisionHarness({
   capture,
-  catalogRevision,
+  catalog,
   sessionRevision,
   write,
 }: {
   capture(controller: Controller): void;
-  catalogRevision: number;
+  catalog: SessionSettingIntentCatalog;
   sessionRevision: number;
   write(
     sessionId: string,
@@ -404,7 +430,7 @@ function RapidRevisionHarness({
   ): Promise<{ committed: boolean; sessionRevision: number }>;
 }) {
   const controller = useSessionSettingIntent<Channels>({
-    catalogRevision,
+    catalog,
     refreshCatalog: async () => {},
     channels: {
       model: {
@@ -424,15 +450,15 @@ function RapidRevisionHarness({
 
 function RevisionHarness({
   capture,
-  catalogRevision,
+  catalog,
   sessionRevision,
 }: {
   capture(controller: Controller): void;
-  catalogRevision: number;
+  catalog: SessionSettingIntentCatalog;
   sessionRevision: number;
 }) {
   const controller = useSessionSettingIntent<Channels>({
-    catalogRevision,
+    catalog,
     refreshCatalog: async () => {},
     channels: {
       model: {
@@ -460,7 +486,7 @@ function Harness({
   permissionWrite(sessionId: string, value: 'ask' | 'bypass'): Promise<boolean>;
 }) {
   const controller = useSessionSettingIntent<Channels>({
-    catalogRevision: 0,
+    catalog: createTestCatalog().catalog,
     refreshCatalog: async () => {},
     channels: {
       model: {

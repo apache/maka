@@ -33,22 +33,54 @@
 // assistant message records `time.completed`, and `finish` is `stop` on a
 // closing step, `tool-calls` on an intermediate one, and absent on a message
 // that was aborted, which also carries `error.name`.
-import { existsSync } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { externalSessionMatchesQuery } from '@maka/core/external-session';
+import { basename, join, sep } from 'node:path';
+import {
+  ExternalSessionLimitError,
+  ExternalSessionNotFoundError,
+  externalSessionMatchesQuery,
+  sanitizeExternalSessionTitle,
+} from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
+  ExternalSessionCatalogPage,
+  ExternalSessionCatalogPageQuery,
   ExternalSessionQuery,
   ExternalSessionSummary,
 } from '@maka/core/external-session';
-import { sanitizeForeignTitle } from '@maka/core/foreign-session';
 import type { StoredMessage } from '@maka/core/session';
+import { listOffsetExternalSessionCatalogPage } from './offset-external-session-catalog.js';
 
 export const OPENCODE_SESSION_ADAPTER_ID = 'opencode';
+/**
+ * What one OpenCode transcript may cost before the import is refused.
+ *
+ * Rows are `message` rows plus `part` rows, counted the way the preflight
+ * counts them, and bytes are the id, foreign-key and `data` columns it sums.
+ * These bounds protect the source side of the import: bytes cap encoded SQLite
+ * payload and rows cap the number of decoded source objects. They are not a
+ * process-RSS promise; JSON parsing depends on payload shape. The converter has
+ * its own `OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES` limit for retained Maka
+ * messages, so source and output memory are never conflated.
+ */
+export const OPENCODE_TRANSCRIPT_MAX_RAW_BYTES = 64 * 1024 * 1024;
+export const OPENCODE_TRANSCRIPT_MAX_ROWS = 250_000;
+export const OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
 
 const EXTERNAL_SNAPSHOT_ABORT_SOURCE = 'external_session_snapshot';
+
+/**
+ * Guards a source field before it reaches JavaScript.
+ *
+ * These are memory bounds, not display limits. Display length is enforced by
+ * `sanitizeExternalSessionTitle` and the wire protocol; these larger bounds
+ * only prevent malformed source fields from being loaded whole.
+ */
+const OPENCODE_CATALOG_ID_MAX_BYTES = 512;
+const OPENCODE_CATALOG_TITLE_MAX_BYTES = 64 * 1024;
+const OPENCODE_CATALOG_CWD_MAX_BYTES = 4 * 1024;
 
 /** Guards the value interpolated into no SQL, but read back out of one. */
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
@@ -56,6 +88,12 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 export interface OpenCodeSessionAdapterOptions {
   /** Overrides `~/.local/share/opencode`. */
   opencodeHome?: string;
+  /** Maximum aggregate bytes across source rows loaded for one import. */
+  maxRawBytes?: number;
+  /** Maximum message + part rows loaded for one import. */
+  maxRows?: number;
+  /** Maximum serialized bytes retained across converted Maka messages. */
+  maxConvertedBytes?: number;
 }
 
 interface SessionRow {
@@ -82,46 +120,64 @@ interface PartRow {
 export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
   readonly id = OPENCODE_SESSION_ADAPTER_ID;
   readonly #home: string;
+  readonly #maxRawBytes: number;
+  readonly #maxRows: number;
+  readonly #maxConvertedBytes: number;
 
   constructor(options: OpenCodeSessionAdapterOptions = {}) {
     this.#home = options.opencodeHome ?? join(homedir(), '.local', 'share', 'opencode');
+    this.#maxRawBytes = options.maxRawBytes ?? OPENCODE_TRANSCRIPT_MAX_RAW_BYTES;
+    this.#maxRows = options.maxRows ?? OPENCODE_TRANSCRIPT_MAX_ROWS;
+    this.#maxConvertedBytes = options.maxConvertedBytes ?? OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES;
+    assertPositiveSafeInteger(this.#maxRawBytes, 'OpenCode transcript byte limit');
+    assertPositiveSafeInteger(this.#maxRows, 'OpenCode transcript row limit');
+    assertPositiveSafeInteger(this.#maxConvertedBytes, 'OpenCode converted message byte limit');
   }
 
   async detect(): Promise<boolean> {
-    return existsSync(this.#databasePath());
+    return (await this.#resolvedDatabasePath()) !== undefined;
   }
 
-  async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
-    const rows = await this.#readSessions();
-    const summaries: ExternalSessionSummary[] = [];
-    for (const row of rows) {
-      // A child session is one operator's leg of a parent conversation, not a
-      // conversation a user started. Listing it offers an import of half a
-      // dialogue whose other half is a separate entry.
-      if (row.parentId !== undefined) continue;
-      const summary = toSummary(row);
-      if (externalSessionMatchesQuery(summary, query)) summaries.push(summary);
-    }
-    summaries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
-    return summaries;
+  async listSessions(query: ExternalSessionQuery = {}): Promise<readonly ExternalSessionSummary[]> {
+    return this.#readSessionPage(query);
+  }
+
+  async listSessionPage(
+    query: ExternalSessionCatalogPageQuery,
+  ): Promise<ExternalSessionCatalogPage> {
+    return listOffsetExternalSessionCatalogPage(query, (pageQuery) => this.listSessions(pageQuery));
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
     if (!SESSION_ID_PATTERN.test(sessionId)) {
       throw new Error(`opencode session id is not usable: ${sessionId}`);
     }
-    const rows = await this.#readSessions();
-    const row = rows.find((candidate) => candidate.id === sessionId);
-    if (!row) throw new Error(`opencode session not found: ${sessionId}`);
-    if (row.parentId !== undefined) {
-      throw new Error(`opencode session is a child of another session: ${sessionId}`);
-    }
-    const { messages, parts } = await this.#readTranscript(sessionId);
-    return {
-      sourceSessionId: sessionId,
-      metadata: { name: row.title || sessionId, cwd: row.directory },
-      messages: convertTranscript(sessionId, messages, parts),
-    };
+    return this.#withDatabase((db) =>
+      withReadSnapshot(db, () => {
+        requireTranscriptSchema(db);
+        preflightSessionMetadata(db, sessionId);
+        const rawSession = db
+          .prepare(
+            'SELECT id, title, directory, time_created, time_updated, time_archived, parent_id FROM session WHERE id = ?',
+          )
+          .get(sessionId);
+        const row = toSessionRow(rawSession);
+        if (!row) throw new ExternalSessionNotFoundError();
+        if (row.parentId !== undefined) {
+          throw new Error(`opencode session is a child of another session: ${sessionId}`);
+        }
+        preflightTranscript(db, sessionId, this.#maxRawBytes, this.#maxRows);
+        const { messages, parts } = readTranscript(db, sessionId);
+        return {
+          sourceSessionId: sessionId,
+          metadata: {
+            name: sanitizeExternalSessionTitle(row.title) || sessionId,
+            cwd: row.directory,
+          },
+          messages: convertTranscript(sessionId, messages, parts, this.#maxConvertedBytes),
+        };
+      }),
+    );
   }
 
   #databasePath(): string {
@@ -137,8 +193,21 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
    * here" for a database that is locked, corrupt, or written by a version
    * whose tables this does not recognise.
    */
+  async #resolvedDatabasePath(): Promise<string | undefined> {
+    try {
+      const root = await realpath(this.#home);
+      const path = await realpath(this.#databasePath());
+      if (path !== root && !path.startsWith(root + sep)) return undefined;
+      if (basename(path) !== 'opencode.db' || !(await stat(path)).isFile()) return undefined;
+      return path;
+    } catch {
+      return undefined;
+    }
+  }
+
   async #withDatabase<T>(read: (db: OpenCodeDatabase) => T): Promise<T> {
-    const path = this.#databasePath();
+    const path = await this.#resolvedDatabasePath();
+    if (!path) throw new Error('opencode database is unavailable');
     let sqlite: typeof import('node:sqlite');
     try {
       sqlite = await import('node:sqlite');
@@ -154,6 +223,12 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
     try {
       return read(db);
     } catch (cause) {
+      if (
+        cause instanceof ExternalSessionLimitError ||
+        (cause instanceof Error && cause.message.startsWith('opencode session '))
+      ) {
+        throw cause;
+      }
       throw new Error(`opencode database could not be read: ${path}`, { cause });
     } finally {
       try {
@@ -166,15 +241,15 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
     }
   }
 
-  async #readSessions(): Promise<readonly SessionRow[]> {
+  async #readSessionPage(query: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
     // Discovery is allowed to come up empty — the catalog lists whatever
     // sources are present, and an opencode that was installed but never used
     // is a normal state rather than a failure to report.
-    if (!existsSync(this.#databasePath())) return [];
+    if (!(await this.#resolvedDatabasePath())) return [];
     return await this.#withDatabase((db) => {
       const columns = tableColumns(db, 'session');
-      if (!columns.has('id') || !columns.has('directory')) {
-        throw new Error('opencode `session` table does not carry `id` and `directory`');
+      if (!columns.has('id') || !columns.has('directory') || !columns.has('parent_id')) {
+        throw new Error('opencode `session` table does not carry required columns');
       }
       const selected = [
         'id',
@@ -185,37 +260,192 @@ export class OpenCodeSessionAdapter implements ExternalSessionAdapter {
         'time_archived',
         'parent_id',
       ].filter((column) => columns.has(column));
-      const raw = db.prepare(`SELECT ${selected.join(', ')} FROM session`).all();
-      return raw.map(toSessionRow).filter((row): row is SessionRow => row !== undefined);
-    });
-  }
-
-  async #readTranscript(
-    sessionId: string,
-  ): Promise<{ messages: readonly MessageRow[]; parts: readonly PartRow[] }> {
-    return await this.#withDatabase((db) => {
-      // A row that will not decode is not skipped. Dropping one silently
-      // yields a transcript missing a message or a part while the import
-      // reports success — a history that reads as complete and is not. A
-      // selected import either carries what the session recorded or fails.
-      const messages = db
-        .prepare('SELECT id, time_created, data FROM message WHERE session_id = ?')
-        .all(sessionId)
-        .map((row, index) => requireRow(toMessageRow(row), 'message', index));
-      // Ordered by the message they belong to and then by their own id, which
-      // is how the writer orders them; `time_created` ties within one step.
-      const parts = db
-        .prepare('SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id')
-        .all(sessionId)
-        .map((row, index) => requireRow(toPartRow(row), 'part', index));
-      return { messages, parts };
+      const bounds = [
+        "(parent_id IS NULL OR parent_id = '')",
+        ...(!query.includeArchived && columns.has('time_archived')
+          ? ['time_archived IS NULL']
+          : []),
+        `length(CAST(id AS BLOB)) <= ${OPENCODE_CATALOG_ID_MAX_BYTES}`,
+        `length(CAST(coalesce(directory, '') AS BLOB)) <= ${OPENCODE_CATALOG_CWD_MAX_BYTES}`,
+        ...(columns.has('title')
+          ? [`length(CAST(coalesce(title, '') AS BLOB)) <= ${OPENCODE_CATALOG_TITLE_MAX_BYTES}`]
+          : []),
+      ];
+      const order = columns.has('time_updated')
+        ? columns.has('time_created')
+          ? 'coalesce(time_updated, time_created, 0) DESC, id DESC'
+          : 'coalesce(time_updated, 0) DESC, id DESC'
+        : columns.has('time_created')
+          ? 'coalesce(time_created, 0) DESC, id DESC'
+          : 'id DESC';
+      const requestedOffset = query.offset ?? 0;
+      const requestedLimit = query.limit ?? Number.MAX_SAFE_INTEGER;
+      if (
+        !Number.isSafeInteger(requestedOffset) ||
+        requestedOffset < 0 ||
+        !Number.isSafeInteger(requestedLimit) ||
+        requestedLimit < 0
+      ) {
+        throw new Error('Invalid OpenCode catalog page');
+      }
+      if (requestedLimit === 0) return [];
+      const batchSize = Math.max(32, Math.min(256, requestedLimit * 2));
+      const statement = db.prepare(
+        `SELECT ${selected.join(', ')} FROM session WHERE ${bounds.join(' AND ')} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      );
+      const summaries: ExternalSessionSummary[] = [];
+      let matched = 0;
+      let rawOffset = 0;
+      while (summaries.length < requestedLimit) {
+        const raw = statement.all(batchSize, rawOffset);
+        for (const value of raw) {
+          const row = toSessionRow(value);
+          if (!row) continue;
+          const summary = toSummary(row);
+          if (!externalSessionMatchesQuery(summary, query)) continue;
+          if (matched++ < requestedOffset) continue;
+          summaries.push(summary);
+          if (summaries.length === requestedLimit) break;
+        }
+        rawOffset += raw.length;
+        if (raw.length < batchSize) break;
+      }
+      return summaries;
     });
   }
 }
 
 interface OpenCodeDatabase {
-  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+  prepare(sql: string): {
+    all(...params: unknown[]): unknown[];
+    get(...params: unknown[]): unknown;
+  };
+  exec(sql: string): void;
   close(): void;
+}
+
+function withReadSnapshot<T>(db: OpenCodeDatabase, read: () => T): T {
+  db.exec('BEGIN DEFERRED');
+  try {
+    const result = read();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Preserve the read failure. Closing the read-only connection releases
+      // any transaction SQLite could not roll back explicitly.
+    }
+    throw error;
+  }
+}
+
+function requireTranscriptSchema(db: OpenCodeDatabase): void {
+  const required = {
+    session: ['id', 'title', 'directory', 'parent_id'],
+    message: ['id', 'session_id', 'time_created', 'data'],
+    part: ['id', 'message_id', 'session_id', 'time_created', 'data'],
+  } as const;
+  for (const [table, columns] of Object.entries(required)) {
+    const actual = tableColumns(db, table);
+    if (columns.some((column) => !actual.has(column))) {
+      throw new Error(`opencode \`${table}\` table does not carry required columns`);
+    }
+  }
+}
+
+function preflightSessionMetadata(db: OpenCodeDatabase, sessionId: string): void {
+  const sizes = asRecord(
+    db
+      .prepare(
+        `SELECT length(CAST(id AS BLOB)) AS id_bytes,
+                length(CAST(coalesce(title, '') AS BLOB)) AS title_bytes,
+                length(CAST(directory AS BLOB)) AS cwd_bytes
+           FROM session WHERE id = ?`,
+      )
+      .get(sessionId),
+  );
+  if (!sizes) throw new ExternalSessionNotFoundError();
+  for (const [field, max] of [
+    ['id_bytes', OPENCODE_CATALOG_ID_MAX_BYTES],
+    ['title_bytes', OPENCODE_CATALOG_TITLE_MAX_BYTES],
+    ['cwd_bytes', OPENCODE_CATALOG_CWD_MAX_BYTES],
+  ] as const) {
+    if ((numberOf(sizes[field]) ?? 0) > max) {
+      throw new ExternalSessionLimitError(
+        'record_bytes',
+        max,
+        `OpenCode Session metadata exceeds ${max} bytes`,
+      );
+    }
+  }
+}
+
+function preflightTranscript(
+  db: OpenCodeDatabase,
+  sessionId: string,
+  maxRawBytes: number,
+  maxRows: number,
+): void {
+  const stats = asRecord(
+    db
+      .prepare(
+        `SELECT count(*) AS rows, coalesce(sum(raw_bytes), 0) AS raw_bytes, coalesce(max(data_bytes), 0) AS max_data_bytes
+         FROM (
+           SELECT length(CAST(id AS BLOB)) + length(CAST(data AS BLOB)) AS raw_bytes,
+                  length(CAST(data AS BLOB)) AS data_bytes
+             FROM message WHERE session_id = ?
+           UNION ALL
+           SELECT length(CAST(id AS BLOB)) + length(CAST(message_id AS BLOB)) + length(CAST(data AS BLOB)) AS raw_bytes,
+                  length(CAST(data AS BLOB)) AS data_bytes
+             FROM part WHERE session_id = ?
+           LIMIT ?
+         )`,
+      )
+      .get(sessionId, sessionId, maxRows + 1),
+  );
+  const rows = numberOf(stats?.rows) ?? 0;
+  const rawBytes = numberOf(stats?.raw_bytes) ?? 0;
+  const maxDataBytes = numberOf(stats?.max_data_bytes) ?? 0;
+  if (rows > maxRows) {
+    throw new ExternalSessionLimitError(
+      'records',
+      maxRows,
+      `OpenCode transcript exceeds ${maxRows} source rows`,
+    );
+  }
+  if (maxDataBytes > maxRawBytes) {
+    throw new ExternalSessionLimitError(
+      'record_bytes',
+      maxRawBytes,
+      `OpenCode transcript contains a source record larger than ${maxRawBytes} bytes`,
+    );
+  }
+  if (rawBytes > maxRawBytes) {
+    throw new ExternalSessionLimitError(
+      'transcript_bytes',
+      maxRawBytes,
+      `OpenCode transcript exceeds ${maxRawBytes} source bytes`,
+    );
+  }
+}
+
+function readTranscript(
+  db: OpenCodeDatabase,
+  sessionId: string,
+): { messages: readonly MessageRow[]; parts: readonly PartRow[] } {
+  const messages = db
+    .prepare(
+      'SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created, id',
+    )
+    .all(sessionId)
+    .map((row, index) => requireRow(toMessageRow(row), 'message', index));
+  const parts = db
+    .prepare('SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id')
+    .all(sessionId)
+    .map((row, index) => requireRow(toPartRow(row), 'part', index));
+  return { messages, parts };
 }
 
 function tableColumns(db: OpenCodeDatabase, table: string): Set<string> {
@@ -226,12 +456,13 @@ function tableColumns(db: OpenCodeDatabase, table: string): Set<string> {
 }
 
 function toSummary(row: SessionRow): ExternalSessionSummary {
+  const updatedAt = row.timeUpdated ?? row.timeCreated;
   return {
     id: row.id,
-    name: sanitizeForeignTitle(row.title) || row.id,
+    name: sanitizeExternalSessionTitle(row.title) || row.id,
     cwd: row.directory,
     ...(row.timeCreated !== undefined ? { createdAt: row.timeCreated } : {}),
-    ...(row.timeUpdated !== undefined ? { updatedAt: row.timeUpdated } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
     ...(row.archived ? { archived: true } : {}),
   };
 }
@@ -247,6 +478,7 @@ export function convertTranscript(
   sessionId: string,
   messages: readonly MessageRow[],
   parts: readonly PartRow[],
+  maxConvertedBytes = OPENCODE_TRANSCRIPT_MAX_CONVERTED_BYTES,
 ): readonly StoredMessage[] {
   const partsByMessage = new Map<string, Record<string, unknown>[]>();
   for (const part of parts) {
@@ -262,6 +494,19 @@ export function convertTranscript(
   );
 
   const out: StoredMessage[] = [];
+  let convertedBytes = 0;
+  const append = (message: StoredMessage): void => {
+    const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (encodedBytes > maxConvertedBytes - convertedBytes) {
+      throw new ExternalSessionLimitError(
+        'converted_bytes',
+        maxConvertedBytes,
+        `OpenCode transcript converts to more than ${maxConvertedBytes} bytes`,
+      );
+    }
+    convertedBytes += encodedBytes;
+    out.push(message);
+  };
   let sequence = 0;
   const id = (kind: string): string => `opencode:${sessionId}:${kind}:${sequence++}`;
   let turnSequence = 0;
@@ -278,7 +523,7 @@ export function convertTranscript(
   const closeTurn = (): void => {
     if (!turn) return;
     if (turn.errorName !== undefined && !turn.aborted) {
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -287,7 +532,7 @@ export function convertTranscript(
         errorClass: 'opencode_error',
       });
     } else if (turn.aborted) {
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -297,7 +542,7 @@ export function convertTranscript(
         abortSource: EXTERNAL_SNAPSHOT_ABORT_SOURCE,
       });
     } else if (turn.closed) {
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -308,7 +553,7 @@ export function convertTranscript(
       // A turn whose last assistant step asked for tools and never came back:
       // the run stopped between a call and its answer. Recording it as
       // completed would assert a reply the session never produced.
-      out.push({
+      append({
         type: 'turn_state',
         id: id('turn-state'),
         turnId: turn.turnId,
@@ -333,7 +578,7 @@ export function convertTranscript(
       // boundary, whether or not it carries a prompt this import can use.
       closeTurn();
       const text = messageParts
-        .filter((part) => stringOf(part.type) === 'text')
+        .filter((part) => stringOf(part.type) === 'text' && part.synthetic !== true)
         .map((part) => stringOf(part.text) ?? '')
         .filter((part) => part.length > 0)
         .join('\n\n');
@@ -348,7 +593,7 @@ export function convertTranscript(
         aborted: false,
         closed: false,
       };
-      out.push({ type: 'user', id: id('user'), turnId: turn.turnId, ts, text });
+      append({ type: 'user', id: id('user'), turnId: turn.turnId, ts, text });
       continue;
     }
 
@@ -390,7 +635,7 @@ export function convertTranscript(
       if (kind === 'reasoning') {
         const thinking = stringOf(part.text);
         if (thinking === undefined) continue;
-        out.push({
+        append({
           type: 'assistant',
           id: id('thinking'),
           turnId: turn.turnId,
@@ -406,7 +651,7 @@ export function convertTranscript(
       if (kind === 'text') {
         const text = stringOf(part.text);
         if (text === undefined) continue;
-        out.push({
+        append({
           type: 'assistant',
           id: id('assistant'),
           turnId: turn.turnId,
@@ -426,7 +671,7 @@ export function convertTranscript(
       if (callId === undefined) continue;
       const state = asRecord(part.state);
       const status = stringOf(state?.status);
-      out.push({
+      append({
         type: 'tool_call',
         id: callId,
         turnId: turn.turnId,
@@ -444,7 +689,7 @@ export function convertTranscript(
       // `pending` and `running` are the calls that genuinely had no answer
       // when the session was written, and they get no result.
       if (status === 'completed') {
-        out.push({
+        append({
           type: 'tool_result',
           id: id('tool-result'),
           turnId: turn.turnId,
@@ -456,7 +701,7 @@ export function convertTranscript(
         continue;
       }
       if (status === 'error') {
-        out.push({
+        append({
           type: 'tool_result',
           id: id('tool-result'),
           turnId: turn.turnId,
@@ -485,7 +730,7 @@ function toSessionRow(value: unknown): SessionRow | undefined {
   const id = stringOf(row?.id);
   if (id === undefined) return undefined;
   const directory = stringOf(row?.directory) ?? '';
-  const parentId = stringOf(row?.parent_id);
+  const parentId = readParentId(row?.parent_id);
   return {
     id,
     title: stringOf(row?.title) ?? '',
@@ -536,6 +781,30 @@ function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * The source marks a root Session's `parent_id` as NULL or the empty string.
+ *
+ * Anything else is a child. A value this build cannot read as text is a child
+ * it cannot name — not the absence of a parent — so it is refused rather than
+ * decoded to `undefined`, which would let a child session be imported as a
+ * root of its own. The catalog's SQL already restricts its rows to roots, so a
+ * row that fails here is one the pagination bounds did not anticipate: skipped
+ * there, refused here.
+ */
+function readParentId(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(
+      'opencode session `parent_id` is neither text nor null, so the session cannot be proven a root',
+    );
+  }
+  return value.length > 0 ? value : undefined;
+}
+
 function numberOf(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function assertPositiveSafeInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} must be positive`);
 }

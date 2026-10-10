@@ -181,6 +181,8 @@ export interface ShellRunStore {
   ): Promise<ShellRunRecord>;
   readShellRun(sessionId: string, shellRunId: string): Promise<ShellRunRecord>;
   listSessionShellRuns(sessionId: string): Promise<ShellRunRecord[]>;
+  /** Sessions with a durable active ShellRun that may need restart recovery. */
+  listShellRunRecoverySessionIds?(): Promise<string[]>;
 }
 
 export function isShellRunStatus(value: unknown): value is ShellRunStatus {
@@ -205,6 +207,25 @@ export function isTerminalShellRunStatus(value: ShellRunStatus): value is ShellR
 
 export function isActiveShellRunStatus(value: ShellRunStatus): value is ShellRunActiveStatus {
   return (SHELL_RUN_ACTIVE_STATUSES as readonly string[]).includes(value);
+}
+
+/** Desktop interactive-terminal launch identity, persisted as the run's source ids. */
+export const DESKTOP_TERMINAL_LAUNCH_PREFIX = 'desktop-terminal-';
+
+/**
+ * A Desktop-owned interactive terminal carries no transcript tool call, so
+ * nothing consumes the output on its update and wire projections.
+ */
+export function isDesktopTerminalShellRun(source: {
+  readonly sourceTurnId: string;
+  readonly sourceToolCallId: string;
+  readonly mode: string;
+}): boolean {
+  return (
+    source.mode === 'pty' &&
+    source.sourceTurnId === source.sourceToolCallId &&
+    source.sourceTurnId.startsWith(DESKTOP_TERMINAL_LAUNCH_PREFIX)
+  );
 }
 
 export function isValidShellRunStatusTransition(

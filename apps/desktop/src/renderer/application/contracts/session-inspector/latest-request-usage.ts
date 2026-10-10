@@ -47,13 +47,11 @@ export interface LatestRequestUsageAnchor {
 
 export function selectLatestRequestUsage(
   messages: readonly { type: string; lastRequestAnchor?: LatestRequestUsageAnchor }[],
-  /** `hasNewer` means the loaded range is not the session tail. */
-  range: { hasNewer?: boolean } | undefined,
   model: string | undefined,
   route: { llmConnectionId?: string } | undefined,
 ): number | undefined {
   const connectionId = route?.llmConnectionId;
-  if (range?.hasNewer || model === undefined || connectionId === undefined) return undefined;
+  if (model === undefined || connectionId === undefined) return undefined;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.type !== 'token_usage') continue;

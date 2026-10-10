@@ -642,6 +642,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     executeRoot: (input) =>
       executeHostedExecutionToSettlement(requireCoordinator(coordinator), input),
     stopRoot: (identity, input) => requireCoordinator(coordinator).stopRoot(identity, input),
+    stopRootRun: (identity, input) => requireCoordinator(coordinator).stopRootRun(identity, input),
     stopSession: (sessionId, input) =>
       requireCoordinator(coordinator).stopSession(sessionId, input),
   };

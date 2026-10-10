@@ -38,6 +38,7 @@ test('keeps a full sampled landmark index inside its encoded result budget', () 
       projectSessionTurnLandmarkForWire({
         turnId: `${index}`.padEnd(128, 't'),
         sequence: Number.MAX_SAFE_INTEGER - index,
+        lastSequence: Number.MAX_SAFE_INTEGER - index,
         label: '\0'.repeat(256),
       }),
     ),

@@ -46,11 +46,11 @@ function recordingEnvironment() {
 test('the Desktop adapter hands the search namespace through and owns the browser edges', async () => {
   const calls: string[] = [];
   const search = {
-    thread: async (request: { query: string }, requestId?: string) => {
-      calls.push(`thread:${request.query}:${requestId}`);
-      return [];
+    recall: async (request: { terms: readonly string[] }, requestId?: string) => {
+      calls.push(`recall:${request.terms.join(',')}:${requestId}`);
+      return { passages: [], gaps: '', searchedEverySession: true };
     },
-    cancelThread: async (requestId: string) => { calls.push(`cancel:${requestId}`); },
+    cancelRecall: async (requestId: string) => { calls.push(`cancel:${requestId}`); },
   };
   const bridge = { search } as unknown as DesktopOverlaysBridge;
   const { environment, writes, blurred } = recordingEnvironment();
@@ -58,20 +58,60 @@ test('the Desktop adapter hands the search namespace through and owns the browse
   const services = createDesktopOverlaysServices(bridge, environment);
 
   assert.equal(services.search, bridge.search);
-  await services.search.thread({ query: 'plan' } as Parameters<typeof services.search.thread>[0], 'search-1');
-  await services.search.cancelThread('search-1');
+  await services.search.recall({ terms: ['plan'] }, 'search-1');
+  await services.search.cancelRecall('search-1');
   services.settingsSection.persist('models');
   services.focus.blurActiveElement();
 
-  assert.deepEqual(calls, ['thread:plan:search-1', 'cancel:search-1']);
+  assert.deepEqual(calls, ['recall:plan:search-1', 'cancel:search-1']);
   assert.deepEqual(writes, [[SETTINGS_SECTION_STORAGE_KEY, 'models']]);
   assert.equal(SETTINGS_SECTION_STORAGE_KEY, 'maka-settings-section-v1');
   assert.equal(blurred(), 1);
-  assert.deepEqual(Object.keys(services).sort(), ['focus', 'search', 'settingsSection']);
+  assert.deepEqual(Object.keys(services).sort(), ['focus', 'palette', 'search', 'settingsSection']);
+});
+
+test('the palette actions reach Desktop with the arguments the rows always sent', async () => {
+  const calls: unknown[][] = [];
+  const record = (name: string, result: unknown) => async (...args: unknown[]) => {
+    calls.push([name, ...args]);
+    return result;
+  };
+  const bridge = {
+    connections: {
+      test: record('connections.test', { ok: true }),
+      setDefault: record('connections.setDefault', undefined),
+    },
+    settings: { testNetworkProxy: record('settings.testNetworkProxy', { ok: true, message: '' }) },
+    memory: { openFile: record('memory.openFile', { ok: true }) },
+    sessions: { saveConversationToFile: record('sessions.saveConversationToFile', { ok: true, path: '/tmp/a.md' }) },
+  } as unknown as DesktopOverlaysBridge;
+  const { palette } = createDesktopOverlaysServices(bridge, recordingEnvironment().environment);
+  const host = { profileId: 'profile-1', hostId: 'host-1' };
+  const input = { markdown: '# Task', defaultName: 'maka-task.md' };
+
+  await palette.testConnection('work', host);
+  await palette.setDefaultConnection('work', host);
+  await palette.testNetworkProxy(host);
+  await palette.openLocalMemoryFile(host);
+  assert.deepEqual(await palette.saveConversationToFile(input), { ok: true, path: '/tmp/a.md' });
+
+  assert.deepEqual(calls, [
+    ['connections.test', 'work', undefined, host],
+    ['connections.setDefault', 'work', host],
+    ['settings.testNetworkProxy', undefined, host],
+    ['memory.openFile', host],
+    ['sessions.saveConversationToFile', input],
+  ]);
+  assert.equal(calls[4]?.[1], input);
 });
 
 test('the adapter tolerates an unavailable store and a missing active element', () => {
-  const bridge = { search: { thread: async () => [] } } as unknown as DesktopOverlaysBridge;
+  const bridge = {
+    search: {
+      recall: async () => ({ passages: [], gaps: '', searchedEverySession: true }),
+      cancelRecall: async () => undefined,
+    },
+  } as unknown as DesktopOverlaysBridge;
   const services = createDesktopOverlaysServices(bridge, {
     storage: {
       setItem() {

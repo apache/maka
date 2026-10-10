@@ -32,6 +32,25 @@ const repo = new URL('../../', import.meta.url);
 const page = (path) => readFileSync(new URL(path, dist), 'utf8');
 const locales = ['en', 'zh-CN'];
 const pages = ['index.html', 'downloads/index.html'];
+const canonicalUrls = [
+  'https://maka.apache.org/en/',
+  'https://maka.apache.org/zh-CN/',
+  'https://maka.apache.org/en/downloads/',
+  'https://maka.apache.org/zh-CN/downloads/',
+];
+const llmsSources = [
+  'docs/README.md',
+  'ARCHITECTURE.md',
+  'docs/architecture/runtime-host-architecture.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-edit-contracts.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-four-arm.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-maka-vs-opencode.md',
+  'docs/eval/terminal-bench-2.1-deepseek-v4-flash-nine-arm.md',
+  'docs/eval/terminal-bench-2.1-maka-vs-kimi-code-v11.md',
+  'docs/eval/terminal-bench-2.1-ollama-deepseek-v4-flash-0731-maka-vs-opencode.md',
+  'SECURITY.md',
+  'CONTRIBUTING.md',
+];
 
 const positioning =
   'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.';
@@ -65,6 +84,30 @@ const normalize = (href) => href.replace(/\.zh-CN\.md$/u, '.md').replace(/^\/zh-
 
 test('the root redirects to the English homepage without a delay', () => {
   assert.match(page('index.html'), /content="0;url=\/en\/"/u);
+});
+
+test('machine-readable entry points describe the published site', () => {
+  const robots = page('robots.txt');
+  assert.match(robots, /^User-agent: \*\nAllow: \/$/mu);
+  assert.match(robots, /^Sitemap: https:\/\/maka\.apache\.org\/sitemap\.xml$/mu);
+
+  const sitemapUrls = [...page('sitemap.xml').matchAll(/<loc>([^<]+)<\/loc>/gu)].map(
+    ([, url]) => url,
+  );
+  assert.deepEqual(sitemapUrls, canonicalUrls);
+  assert.ok(!sitemapUrls.includes('https://maka.apache.org/'));
+
+  const llms = page('llms.txt');
+  assert.match(llms, /^# Apache Maka \(Incubating\)$/mu);
+  assert.ok(llms.includes(positioning));
+  for (const url of canonicalUrls) assert.ok(llms.includes(url), url);
+
+  const rawUrls = [
+    ...llms.matchAll(/https:\/\/raw\.githubusercontent\.com\/apache\/maka\/main\/([^\s)]+)/gu),
+  ].map(([, path]) => path);
+  assert.deepEqual(rawUrls, llmsSources);
+  for (const path of rawUrls)
+    assert.doesNotThrow(() => statSync(new URL(`../../${path}`, import.meta.url)));
 });
 
 const readmeAlt = (locale) =>
@@ -119,7 +162,7 @@ test('every copy button on the downloads page has its own accessible name', () =
         /<button class="copy"[^>]*aria-label="([^"]+)"/gu,
       ),
     ].map(([, name]) => name);
-    assert.equal(names.length, 5, locale);
+    assert.equal(names.length, 3, locale);
     assert.equal(new Set(names).size, names.length, locale);
   }
 });
@@ -127,6 +170,36 @@ test('every copy button on the downloads page has its own accessible name', () =
 test('the font licenses ship with the fonts', () => {
   for (const pkg of ['geist', 'geist-mono']) {
     assert.match(page(`licenses/${pkg}/LICENSE`), /SIL Open Font License/u);
+  }
+});
+
+test('public pages direct downloads to release status and keep development separate', () => {
+  for (const locale of locales) {
+    for (const path of pages) {
+      const html = page(`${locale}/${path}`);
+      const targets = [...hrefs(html)];
+      assert.ok(
+        !targets.some((href) =>
+          /^https:\/\/github\.com\/apache\/maka\/releases(?:[/?#]|$)/u.test(href),
+        ),
+        `${locale}/${path}`,
+      );
+      assert.doesNotMatch(html, /npm ci|npm run build|git clone|Desktop Nightly/u);
+      assert.ok(
+        targets.some((href) =>
+          href.endsWith(locale === 'en' ? '/CONTRIBUTING.md' : '/CONTRIBUTING.zh-CN.md'),
+        ),
+      );
+    }
+    assert.match(
+      page(`${locale}/index.html`),
+      new RegExp(`class="btn primary" href="/${locale}/downloads/#apache-releases"`, 'u'),
+    );
+    assert.ok(
+      hrefs(page(`${locale}/downloads/index.html`)).has(
+        'https://lists.apache.org/list.html?dev@maka.apache.org',
+      ),
+    );
   }
 });
 

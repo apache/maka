@@ -36,7 +36,14 @@ type SelectedDirectoryActionResult =
 export interface ProjectManagementService {
   current(): Promise<CurrentProjectSelection>;
   getSnapshot(): Promise<DesktopProjectSnapshot>;
-  add(options?: { select?: boolean }): Promise<SelectedDirectoryActionResult>;
+  /**
+   * Register a directory the user chose as a project and, when `name` is given,
+   * name it in the same step — the difference between "add this folder" and
+   * "create this project". Renaming after registration keeps one atomic-ish
+   * flow on the user's side: the folder picker decides the directory, the name
+   * comes from the dialog that opened it.
+   */
+  add(options?: { select?: boolean; name?: string }): Promise<SelectedDirectoryActionResult>;
   select(
     projectId: unknown,
   ): Promise<{ project: ProjectRecord | null; path: string }>;
@@ -121,7 +128,13 @@ export function createProjectManagementService(deps: {
       requireLocalDirectoryActions(deps);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
-      const project = await deps.catalog.register(path);
+      const registered = await deps.catalog.register(path);
+      // Rename before selecting, so the value the caller reads back (and the
+      // one the selection records) is the name the user typed, not the folder
+      // basename it was registered under. A blank name is not a name: it leaves
+      // the folder-derived one alone rather than failing the whole add.
+      const name = options?.name?.trim();
+      const project = name ? await deps.catalog.rename(registered.id, name) : registered;
       const selected = requireSelectableProject(project);
       if (options?.select !== false) {
         deps.selection.setSelection(selected.id, selected.preferredPath);

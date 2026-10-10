@@ -86,7 +86,7 @@ function assertCondition(condition, message) {
  * PACKAGED Windows app: the packaged broker executable enforces the
  * AppContainer boundary, the packaged Electron executable is the worker
  * runtime (ELECTRON_RUN_AS_NODE, exactly as production launches it) and the
- * packaged `resources\workers\filesystem-worker.js` is the worker bundle.
+ * packaged `resources\workers\filesystem-worker.mjs` is the worker bundle.
  * Only the driver (client + launch-spec code) comes from the repository
  * build, because the packaged copy lives inside app.asar which plain node
  * cannot import; every executed artifact is the shipped one.
@@ -96,7 +96,7 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
   const appExecutable = join(appDirectory, 'Maka.exe');
   const resourcesPath = join(appDirectory, 'resources');
   const sandboxExecutable = join(resourcesPath, 'windows-sandbox', 'maka-windows-sandbox.exe');
-  const workerBundle = join(resourcesPath, 'workers', 'filesystem-worker.js');
+  const workerBundle = join(resourcesPath, 'workers', 'filesystem-worker.mjs');
   for (const [path, label] of [
     [appExecutable, 'packaged Electron executable'],
     [sandboxExecutable, 'packaged sandbox broker'],
@@ -311,10 +311,11 @@ async function verifyPackagedRuntimeHostParentDeath({
 }) {
   const requestId = `runtime-host-parent-death-${process.pid}-${randomBytes(4).toString('hex')}`;
   const launchRequestId = `${requestId}-launch`;
-  assertCondition(
-    (await listCancellationProcesses(sandboxExecutable)).length === 0,
-    'Runtime Host parent-death evidence started with an existing sandbox process.',
-  );
+  await waitForObservation({
+    description: 'clean Runtime Host parent-death process baseline',
+    probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+    accept: (processes) => processes.length === 0,
+  });
 
   const child = spawn(
     appExecutable,
@@ -516,10 +517,11 @@ async function verifyPackagedClientCancellation({
   const requestId = `packaged-client-cancel-${process.pid}-${randomBytes(4).toString('hex')}`;
   const launchRequestId = `${requestId}-launch`;
   const sleepSeconds = 47;
-  assertCondition(
-    (await listCancellationProcesses(sandboxExecutable)).length === 0,
-    'Client-cancel evidence started with an existing sandbox process.',
-  );
+  await waitForObservation({
+    description: 'clean client-cancel process baseline',
+    probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+    accept: (processes) => processes.length === 0,
+  });
   const controller = new AbortController();
   const cancelClient = new FilesystemWorkerClient({
     sandboxManager: new SandboxManager([

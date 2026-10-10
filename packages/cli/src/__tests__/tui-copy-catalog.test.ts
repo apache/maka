@@ -37,6 +37,7 @@ const MESSAGE_VALUES = {
   state: 'ready',
   count: 2,
   detail: 'HTTP 401',
+  path: '/profile/mcp.json',
   hasDetail: true,
   bytes: 40_000,
   serverId: 'filesystem',
@@ -51,6 +52,10 @@ const MESSAGE_VALUES = {
   format: 'email',
   notice: 'The original account was deleted.',
   recovery: 'Add or enable a connection first.',
+  source: 'OpenCode',
+  kind: 'records',
+  max: 250_000,
+  sessionId: 'session-imported',
 } as const;
 
 describe('TUI copy resources', () => {

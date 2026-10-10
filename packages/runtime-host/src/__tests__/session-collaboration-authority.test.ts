@@ -364,7 +364,6 @@ test('an approved exact Turn request survives restart and is admitted once', asy
           },
         };
       },
-      regenerateTurn: unexpectedRegenerateTurn,
     });
     await coordinator.recover();
     await coordinator.close();
@@ -393,7 +392,7 @@ test('an approved exact Turn request survives restart and is admitted once', asy
   }
 });
 
-test('an approved regeneration request uses the same durable admission boundary', async () => {
+test('an approved legacy regeneration request is terminalized after the operation is removed', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-session-regenerate-request-'));
   const authority = await openRuntimeHostAccessAuthority(directory);
   try {
@@ -412,7 +411,7 @@ test('an approved regeneration request uses the same durable admission boundary'
       requestId: request.requestId,
       decision: 'approve',
     });
-    const admitted: unknown[] = [];
+    let started = false;
     const coordinator = new SessionTurnAccessRequestCoordinator({
       authority,
       hostEpoch: 'epoch-1',
@@ -420,31 +419,20 @@ test('an approved regeneration request uses the same durable admission boundary'
       requestDrain: () => undefined,
       whenIdle: () => undefined,
       startTurn: async () => {
-        throw new Error('Regeneration must not use turn.start');
-      },
-      regenerateTurn: async (input) => {
-        admitted.push(input);
-        return {
-          ok: true,
-          result: {
-            sessionId: input.sessionId,
-            turnId: input.turnId,
-            runId: 'run-regenerated',
-            status: 'running',
-          },
-        };
+        started = true;
+        throw new Error('Legacy regeneration must not start a turn');
       },
     });
     coordinator.recover();
     await coordinator.close();
 
-    assert.deepEqual(admitted, [intent]);
+    assert.equal(started, false);
     const completed = authority.queryTurnAccessRequests(LOCAL_OWNER, {
       sessionId: 'session-1',
     }).requests[0];
     assert.equal(
       completed?.state.kind === 'approved' ? completed.state.admission : undefined,
-      'started',
+      'failed',
     );
   } finally {
     await authority.close();
@@ -675,7 +663,6 @@ test('recovery stays ready while an approved Turn request waits for the Session'
               },
             };
       },
-      regenerateTurn: unexpectedRegenerateTurn,
     });
     coordinator.recover();
     assert.equal(attempts, 1);
@@ -732,7 +719,6 @@ test('an idle-wait failure drains without losing the approved Turn request', asy
           retryable: true,
         },
       }),
-      regenerateTurn: unexpectedRegenerateTurn,
     });
     coordinator.recover();
     await coordinator.close();
@@ -780,7 +766,6 @@ test('drain does not terminalize an in-flight admission failure', async () => {
         started();
         return admission;
       },
-      regenerateTurn: unexpectedRegenerateTurn,
     });
     const request = await authority.createTurnAccessRequest(principalId, {
       intent: {

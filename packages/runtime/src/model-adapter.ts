@@ -25,6 +25,7 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { providerAcceptsOutputTokenLimit } from '@maka/core/provider-registry';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
 import type {
@@ -39,6 +40,7 @@ import type {
   ModelFailureKind,
   ModelToolSet,
   ToolCallPart,
+  UserContent,
 } from './model-protocol.js';
 export type {
   NormalizedUsage,
@@ -52,8 +54,10 @@ export type {
 } from './model-protocol.js';
 
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
+import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 import {
   plaintextResponsesReasoningProviderOptions,
+  withoutMakaResponsesState,
   safePlaintextResponsesReasoningItemId,
 } from './responses-reasoning-state.js';
 import { classifyError, providerModelFailure } from './provider-error-classification.js';
@@ -79,7 +83,7 @@ import {
   OPENAI_RESPONSES_LANE_HEADER,
   type OpenAiResponsesTransportState,
 } from './openai-responses-websocket.js';
-import { openAiApplyPatchProviderTool } from './openai-apply-patch.js';
+import { openAiApplyPatchProviderTool, codexApplyPatchProviderTool } from './openai-apply-patch.js';
 import { TOOL_SEARCH_NAME, TOOL_SEARCH_PROVIDER_NAME } from './tool-availability.js';
 
 /**
@@ -140,6 +144,8 @@ export interface ModelAdapterStreamInput {
   historyCompactBoundary?: ContextDiagnosticsCompaction;
   /** Turn-scoped continuation lane. Omitted callers keep the full-request path. */
   continuationKey?: string;
+  /** Per-request cap after the caller has accounted for the current context. */
+  maxOutputTokens?: number;
 }
 
 export class ModelAdapter {
@@ -162,11 +168,9 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
-      // Verified against @ai-sdk/open-responses@2.0.34: replay preserves
-      // item order and IDs, but a provider-executed result embedded in the
-      // assistant message (Maka's provider-tool chronology) is still dropped,
-      // leaving a dangling function_call on the wire. Fail closed until the
-      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
+      // General Open Responses provider tool replay remains unsupported.
+      // AiSdkMessageProjection admits only DeepSeek calls with a paired,
+      // original web_search_call item through its narrower per-item check.
       providerExecutedTools:
         this.runtime.reasoningReplay.kind !== 'responses' ||
         this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
@@ -183,12 +187,23 @@ export class ModelAdapter {
             ? 'encrypted-content'
             : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content'
               ? 'plaintext-content'
-              : {
-                  kind: 'plaintext-item',
-                  profile: requireResponsesReplayProfile(this.runtime),
-                  providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
-                },
+              : this.runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
+                ? {
+                    kind: 'plaintext-item',
+                    profile: requireResponsesReplayProfile(this.runtime),
+                    providerOptionsKey: requireResponsesProviderOptionsKey(this.runtime),
+                  }
+                : 'none',
     };
+  }
+
+  supportsDeepSeekWebSearchReplay(): boolean {
+    return (
+      this.input.connection.providerType === 'deepseek' &&
+      this.runtime.wire === 'openai-responses' &&
+      this.runtime.reasoningReplay.kind === 'responses' &&
+      this.runtime.reasoningReplay.contract.adapter === 'open-responses'
+    );
   }
 
   resolveModel(): unknown {
@@ -210,12 +225,59 @@ export class ModelAdapter {
     });
   }
 
+  /**
+   * Whether a request to this connection may carry an output-token limit at
+   * all. When it may not, no limit is sent: neither a configured per-model
+   * limit nor the context-recovery cap.
+   */
+  acceptsOutputTokenLimit(): boolean {
+    return providerAcceptsOutputTokenLimit(this.input.connection.providerType);
+  }
+
   maxOutputTokens(): number | undefined {
+    if (!this.acceptsOutputTokenLimit()) return undefined;
     return selectedModelMaxOutputTokens(
       this.input.connection,
       this.input.modelId,
       this.input.providerOptions,
       this.runtime,
+    );
+  }
+
+  /**
+   * Keep a provider-derived output limit from making a resumed request
+   * impossible. The token count is the last request the provider accepted, so
+   * it is a conservative lower bound for the next request. Leave a small
+   * amount of room for newly appended user/tool content because Runtime does
+   * not estimate the final prompt locally.
+   */
+  maxOutputTokensForInput(knownInputTokens: number | undefined): number | undefined {
+    const outputLimit = this.maxOutputTokens();
+    if (
+      outputLimit === undefined ||
+      knownInputTokens === undefined ||
+      !Number.isFinite(knownInputTokens) ||
+      knownInputTokens < 0
+    ) {
+      return outputLimit;
+    }
+    const contextWindow = resolveSelectedModelContextWindow(
+      this.input.connection,
+      this.input.modelId,
+    );
+    if (contextWindow === undefined) return outputLimit;
+    const thinkingBudget =
+      this.runtime.wire === 'anthropic-messages'
+        ? fixedAnthropicThinkingBudget(this.input.providerOptions)
+        : 0;
+    const available =
+      contextWindow - Math.ceil(knownInputTokens) - CONTEXT_INPUT_GROWTH_HEADROOM - thinkingBudget;
+    // Do not turn a near-window request into a one-token success. A useful
+    // floor deliberately lets the provider reject the request, which keeps
+    // the existing reactive compaction path in control of recovery.
+    return Math.max(
+      Math.min(outputLimit, CONTEXT_RECOVERY_OUTPUT_FLOOR),
+      Math.min(outputLimit, available),
     );
   }
 
@@ -230,12 +292,18 @@ export class ModelAdapter {
       wrapLanguageModel: (input: Record<string, unknown>) => unknown;
     };
 
-    const maxOutputTokens = selectedModelMaxOutputTokens(
-      this.input.connection,
-      this.input.modelId,
-      this.input.providerOptions,
-      this.runtime,
-    );
+    // The one place a main-turn output limit reaches the wire. A provider that
+    // rejects any limit gets none, whether it came from the caller (overflow
+    // recovery, a resumed request) or from the configured model limit.
+    const maxOutputTokens = this.acceptsOutputTokenLimit()
+      ? (input.maxOutputTokens ??
+        selectedModelMaxOutputTokens(
+          this.input.connection,
+          this.input.modelId,
+          this.input.providerOptions,
+          this.runtime,
+        ))
+      : undefined;
     let settleAccounting: ((outcome: ModelStepOutcome) => Promise<void>) | undefined;
     const terminalModel = withProviderFinishBoundary(input.model, wrapLanguageModel);
     const trackedModel = input.providerRequestTracker
@@ -258,11 +326,19 @@ export class ModelAdapter {
     const runtimeToolName = (name: string): string =>
       usesOpenAiResponsesAdapter && name === TOOL_SEARCH_PROVIDER_NAME ? TOOL_SEARCH_NAME : name;
     const sdkTools = lowerModelTools(input.tools);
-    if (usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined) {
+    // Prose names the alias only when the provider can call it. In Code Mode
+    // tool_search is nested inside exec under its runtime name, so the
+    // catalog prompt must keep that name.
+    const providerExposesToolSearch =
+      usesOpenAiResponsesAdapter && sdkTools[TOOL_SEARCH_NAME] !== undefined;
+    const providerTextToolName = (name: string): string =>
+      providerExposesToolSearch ? providerToolName(name) : name;
+    if (providerExposesToolSearch) {
       sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
       delete sdkTools[TOOL_SEARCH_NAME];
     }
-    const fullMessages = input.messages;
+    const fullMessages =
+      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(input.messages) : input.messages;
     const responsesLane =
       input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.runtime)
         ? input.continuationKey
@@ -273,9 +349,13 @@ export class ModelAdapter {
           this.openAiResponsesTransportState.semanticBaseline(responsesLane),
         )
       : { messages: fullMessages };
-    const providerMessages = remapModelMessageToolNames(continuation.messages, providerToolName);
+    const providerMessages = remapModelMessageToolNames(
+      continuation.messages,
+      providerToolName,
+      providerTextToolName,
+    );
     const providerSystem = input.system
-      ? remapProviderToolNamesInText(input.system, providerToolName)
+      ? remapProviderToolNamesInText(input.system, providerTextToolName)
       : undefined;
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
@@ -647,6 +727,13 @@ function failedStepOutcome(
   };
 }
 
+/**
+ * A persisted provider count describes the preceding request, not the new
+ * user message or tool result that may be appended after a restart.
+ */
+const CONTEXT_INPUT_GROWTH_HEADROOM = 8_000;
+const CONTEXT_RECOVERY_OUTPUT_FLOOR = 8_000;
+
 function selectedModelMaxOutputTokens(
   connection: RuntimeExecutionConnection,
   modelId: string,
@@ -861,19 +948,17 @@ function anthropicRedactedThinkingProviderOptionsFromChunk(
   if (!anthropic || typeof anthropic !== 'object' || Array.isArray(anthropic)) return undefined;
   const redactedData = (anthropic as { redactedData?: unknown }).redactedData;
   return typeof redactedData === 'string'
-    ? (meta as NonNullable<ModelMessage['providerOptions']>)
+    ? withoutMakaResponsesState(meta as NonNullable<ModelMessage['providerOptions']>)
     : undefined;
 }
 
-function openAiResponsesReasoningProviderOptionsFromChunk(
+function responsesReasoningProviderOptionsFromChunk(
   chunk: AiSdkStreamChunk,
   runtime: ResolvedModelRuntime,
 ): NonNullable<ModelMessage['providerOptions']> | undefined {
+  if (runtime.reasoningReplay.kind !== 'responses') return undefined;
   const meta = chunk.providerMetadata;
-  if (
-    runtime.reasoningReplay.kind === 'responses' &&
-    runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary'
-  ) {
+  if (runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-summary') {
     if (chunk.type !== 'reasoning' && chunk.type !== 'reasoning-end') return undefined;
     const providerOptionsKey = runtime.responsesProviderOptionsKey;
     const provider =
@@ -908,6 +993,9 @@ function openAiResponsesReasoningProviderOptionsFromChunk(
       throw new Error('Plaintext Responses reasoning summary exceeds durable state bounds');
     }
     return providerOptions;
+  }
+  if (runtime.reasoningReplay.contract.reasoningReplay !== 'encrypted-content') {
+    return undefined;
   }
   if (!meta || typeof meta !== 'object') return undefined;
   const openai = (meta as { openai?: unknown }).openai;
@@ -1054,7 +1142,7 @@ function translateChunk(
               : undefined;
       const signature = reasoningSignatureFromChunk(chunk);
       const responsesProviderOptions = runtime
-        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        ? responsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
@@ -1092,7 +1180,7 @@ function translateChunk(
     case 'reasoning-end': {
       const signature = reasoningSignatureFromChunk(chunk);
       const responsesProviderOptions = runtime
-        ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
+        ? responsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
       const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
@@ -1169,6 +1257,48 @@ function translateChunk(
   }
 }
 
+function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] {
+  const result: ModelMessage[] = [];
+  let images: Exclude<UserContent, string> = [];
+  const flush = () => {
+    if (images.length === 0) return;
+    result.push({ role: 'user', content: images });
+    images = [];
+  };
+  for (const message of messages) {
+    if (message.role !== 'tool') {
+      flush();
+      result.push(message);
+      continue;
+    }
+    result.push({
+      ...message,
+      content: message.content.map((part) => {
+        if (part.type !== 'tool-result' || part.output.type !== 'content') return part;
+        return {
+          ...part,
+          output: {
+            ...part.output,
+            value: part.output.value.map((content) => {
+              if (content.type !== 'file' || !content.mediaType.startsWith('image/'))
+                return content;
+              images.push(
+                { type: 'text', text: `Image from tool ${part.toolName} (${part.toolCallId}):` },
+                content,
+              );
+              return { type: 'text', text: 'Image supplied below.' };
+            }),
+          },
+        };
+      }),
+    });
+  }
+  // Chat tool messages are text-only; attach images after the whole result group
+  // so an assistant's parallel tool calls stay paired before the next user message.
+  flush();
+  return result;
+}
+
 /**
  * OpenAI Responses reserves the provider name `tool_search`. Keep Maka's
  * persisted/history name intact and translate only the provider-bound copy.
@@ -1176,6 +1306,7 @@ function translateChunk(
 function remapModelMessageToolNames(
   messages: readonly ModelMessage[],
   providerToolName: (name: string) => string,
+  providerTextToolName: (name: string) => string,
 ): ModelMessage[] {
   const remapContent = <T extends { type: string }>(content: readonly T[]): T[] =>
     content.map((part) => {
@@ -1194,7 +1325,7 @@ function remapModelMessageToolNames(
           ) {
             remapped.output = {
               ...remapped.output,
-              value: remapProviderToolNamesInText(remapped.output.value, providerToolName),
+              value: remapProviderToolNamesInText(remapped.output.value, providerTextToolName),
             };
           }
         }
@@ -1252,6 +1383,8 @@ function compileProviderTool(
   switch (tool.kind) {
     case 'openai-apply-patch':
       return openAiApplyPatchProviderTool;
+    case 'codex-apply-patch':
+      return codexApplyPatchProviderTool;
     case 'openai-web-search':
       return openai.tools.webSearch({
         ...(tool.searchContextSize ? { searchContextSize: tool.searchContextSize } : {}),

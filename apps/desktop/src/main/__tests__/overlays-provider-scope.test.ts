@@ -111,6 +111,19 @@ describe('OverlaysRoot', () => {
     await act(async () => root.unmount());
   });
 
+  test('an omitted section opens Settings without changing the persisted section', async () => {
+    const { root } = installReactRenderer();
+    const persisted: string[] = [];
+    const services = createFakeOverlaysServices({
+      settingsSection: { persist: (section) => { persisted.push(section); } },
+    });
+    await act(async () => renderRoot(root, services));
+    await act(async () => latest!.commands.openSettingsSection());
+    assert.equal(latest?.selectors.settings.open, true);
+    assert.deepEqual(persisted, []);
+    await act(async () => root.unmount());
+  });
+
   test('opens Settings through the persisted section and settles focus only when closed', async () => {
     const { root } = installReactRenderer();
     const persisted: string[] = [];
@@ -174,23 +187,23 @@ describe('OverlaysRoot', () => {
     const cancelled: string[] = [];
     const services = createFakeOverlaysServices({
       search: {
-        thread: async (request, requestId) => {
-          queries.push([request.query, requestId]);
-          return [];
+        recall: async (request, requestId) => {
+          queries.push([request.terms.join(' '), requestId]);
+          return { passages: [], gaps: '', searchedEverySession: true };
         },
-        cancelThread: async (requestId) => { cancelled.push(requestId); },
+        cancelRecall: async (requestId) => { cancelled.push(requestId); },
       },
     });
     await act(async () => renderRoot(root, services));
     const commands = latest!.commands;
-    await commands.searchThread({ query: 'deploy' } as Parameters<
-      OverlaysShellProjection['commands']['searchThread']
+    await commands.searchRecall({ terms: ['deploy'] } as Parameters<
+      OverlaysShellProjection['commands']['searchRecall']
     >[0], 'search-1');
     await act(async () => commands.openSearch());
     await act(async () => commands.closeSearch());
-    assert.equal(latest!.commands.searchThread, commands.searchThread);
-    assert.equal(latest!.commands.cancelSearchThread, commands.cancelSearchThread);
-    await commands.cancelSearchThread('search-1');
+    assert.equal(latest!.commands.searchRecall, commands.searchRecall);
+    assert.equal(latest!.commands.cancelSearchRecall, commands.cancelSearchRecall);
+    await commands.cancelSearchRecall('search-1');
     assert.deepEqual(queries, [['deploy', 'search-1']]);
     assert.deepEqual(cancelled, ['search-1']);
     await act(async () => root.unmount());

@@ -463,6 +463,12 @@ test('retires a link on every terminal record and on no other outcome', async ()
       ),
       ['not-owned', 'plain'],
     );
+    assert.deepEqual(
+      (await store.readActiveWorkHubAssignmentsByTarget([target.id], undefined, true)).map(
+        ({ actionId }) => actionId,
+      ),
+      ['not-owned', 'stopped', 'plain'],
+    );
   } finally {
     await store.close?.();
     await rm(root, { recursive: true, force: true });

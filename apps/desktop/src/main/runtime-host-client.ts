@@ -77,6 +77,7 @@ import {
   type ExternalSessionCatalogQueryResult,
   type ExternalSessionImportResult,
   type ExternalSessionSourceQueryResult,
+  type WorkspaceTarget,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
   type InteractionAnswerInput,
@@ -100,11 +101,6 @@ import {
   PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
-  type QueueEntriesReorderInput,
-  type QueueEntryPromoteInput,
-  type QueueEntryRetractInput,
-  type QueueEntryUpdateInput,
-  type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -137,6 +133,8 @@ import {
   type ExecutionBoundarySummary,
   type SessionLifecycleState,
   type SessionMetadataPatch,
+  type SessionRemovePreviewInput,
+  type SessionRemovePreviewResult,
   type SessionUpdateResult,
   type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
@@ -165,11 +163,22 @@ const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
+type QueueMutationOperation =
+  | "queue.entry.promote"
+  | "queue.entry.retract"
+  | "queue.entry.update"
+  | "queue.entries.reorder";
+
+type QueueMutationInput<K extends QueueMutationOperation> = Omit<
+  OperationInput<K>,
+  "originHostEpoch"
+>;
+
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
  * the caller decided against, so nothing was destroyed and nothing is wrong.
  */
-export type SessionRemoveDisposition = "removed" | "restored";
+export type SessionRemoveDisposition = "removed" | "restored" | "too_recent";
 
 /**
  * How a remove settled together with what it archived. `archivedSubtaskCount`
@@ -211,6 +220,10 @@ export interface DesktopRuntimeHostSession {
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap;
+  readonly transcriptWatermark: number | null;
+  /** The subscription's own death certificate. Read this before trusting a
+   * `connection_closed` mask thrown by a racing transcript read. */
+  readonly deathCause: Error | undefined;
   readonly events: AsyncIterable<SubscriptionFrame>;
   /** Frames are held by the Host until this resolves. */
   ready(): Promise<void>;
@@ -493,10 +506,12 @@ export class DesktopRuntimeHostClient {
   setDefaultConnectionTarget(
     expectedCatalogRevision: number,
     target: OperationInput<"connection.catalog.set-default-target">["target"],
+    enableModel?: boolean,
   ): Promise<OperationOutput<"connection.catalog.set-default-target">> {
     return this.request("connection.catalog.set-default-target", {
       expectedCatalogRevision,
       target,
+      ...(enableModel === undefined ? {} : { enableModel }),
     });
   }
 
@@ -527,8 +542,9 @@ export class DesktopRuntimeHostClient {
 
   fetchConnectionModels(
     connectionId: string,
+    preserveSelection?: boolean,
   ): Promise<OperationOutput<"connection.models.fetch">> {
-    return this.request("connection.models.fetch", { connectionId });
+    return this.request("connection.models.fetch", { connectionId, ...(preserveSelection === undefined ? {} : { preserveSelection }) });
   }
 
   testConnection(
@@ -711,6 +727,17 @@ export class DesktopRuntimeHostClient {
     } catch {
       return { kind: "saved_refresh_failed", disposition: result.kind };
     }
+  }
+
+  /**
+   * Recall over this Host's own corpus.
+   *
+   * Recall runs inside the Host — the Session manager, fact store, and
+   * material fetch are all Host-owned — so this is a request, not a scan.
+   * Desktop issues one per Host and merges; it never reads the transcripts.
+   */
+  queryRecall(input: OperationInput<'recall.query'>): Promise<OperationOutput<'recall.query'>> {
+    return this.request('recall.query', input);
   }
 
   async listSessions(): Promise<SessionCatalogProjection[]> {
@@ -1031,6 +1058,7 @@ export class DesktopRuntimeHostClient {
   async importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
+    readonly workspace?: WorkspaceTarget;
   }): Promise<ExternalSessionImportResult<SessionCatalogProjection>> {
     const result = await this.request("external-session.import", input);
     return result.kind === 'imported'
@@ -1083,6 +1111,30 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  /**
+   * Re-point an existing Session at another workspace, at the revision the
+   * caller read.
+   *
+   * Deliberately a single attempt. The target can carry a working directory the
+   * caller read from that same revision — a `host_path` taken from the Session
+   * while detaching it from every project — and retrying against a fresher one
+   * would commit that stale directory under the new revision, undoing whatever
+   * the concurrent write did. A conflict is the answer, not a replay.
+   */
+  async relocateSessionWorkspace(
+    sessionId: string,
+    expectedRevision: number,
+    workspace: WorkspaceTarget,
+  ): Promise<SessionCatalogProjection> {
+    const result = await this.request("session.workspace.relocate", {
+      sessionId,
+      expectedRevision,
+      workspace,
+    });
+    if (result.kind === "committed") return requireSessionProjection(result.session);
+    throw revisionConflict("relocate", sessionId);
+  }
+
   async setSessionReadMarker(
     sessionId: string,
     readThroughMessageId: string,
@@ -1128,7 +1180,7 @@ export class DesktopRuntimeHostClient {
    */
   async removeSession(
     sessionId: string,
-    options: { requireArchived?: boolean } = {},
+    options: { requireArchived?: boolean; requireArchivedForMs?: number } = {},
   ): Promise<SessionRemoveOutcome> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
@@ -1138,23 +1190,29 @@ export class DesktopRuntimeHostClient {
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
+        ...(options.requireArchivedForMs === undefined
+          ? {}
+          : { requireArchivedForMs: options.requireArchivedForMs }),
       });
       if (result.kind === "removed") {
         return { disposition: "removed", archivedSubtaskCount: result.archivedSubtaskCount ?? 0 };
+      }
+      // The Host's clock says it was archived too recently: kept, not failed.
+      if (result.kind === "too_recent") {
+        return { disposition: "too_recent", archivedSubtaskCount: 0 };
       }
     }
     throw revisionConflict("remove", sessionId);
   }
 
   /**
-   * How many linked subtasks a delete of this parent would move to the archive,
-   * per the Host's own removal plan. The delete confirm warns off this so the
-   * renderer never re-derives the plan from a catalog projection that omits the
-   * operator marker and copy state.
+   * What deleting these Sessions, one `removeSession` each, would remove and
+   * archive, per the Host's own removal plans. A delete confirm states this so
+   * the renderer never re-derives a plan from a catalog projection that omits
+   * the operator marker and copy state. One bounded page; callers page.
    */
-  async previewSessionRemoval(sessionId: string): Promise<number> {
-    const result = await this.request("session.remove.preview", { sessionId });
-    return result.archivableSubtaskCount;
+  previewSessionRemoval(input: SessionRemovePreviewInput): Promise<SessionRemovePreviewResult> {
+    return this.request("session.remove.preview", input);
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
@@ -1284,39 +1342,37 @@ export class DesktopRuntimeHostClient {
   }
 
   retractQueueEntry(
-    input: Omit<QueueEntryRetractInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.retract", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.retract">,
+  ): Promise<OperationOutput<"queue.entry.retract">> {
+    return this.#mutateQueue("queue.entry.retract", input);
   }
 
   promoteQueueEntry(
-    input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.promote", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.promote">,
+  ): Promise<OperationOutput<"queue.entry.promote">> {
+    return this.#mutateQueue("queue.entry.promote", input);
   }
 
   updateQueueEntry(
-    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.update", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.update">,
+  ): Promise<OperationOutput<"queue.entry.update">> {
+    return this.#mutateQueue("queue.entry.update", input);
   }
 
   reorderQueueEntries(
-    input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entries.reorder", {
+    input: QueueMutationInput<"queue.entries.reorder">,
+  ): Promise<OperationOutput<"queue.entries.reorder">> {
+    return this.#mutateQueue("queue.entries.reorder", input);
+  }
+
+  #mutateQueue<K extends QueueMutationOperation>(
+    operation: K,
+    input: QueueMutationInput<K>,
+  ): Promise<OperationOutput<K>> {
+    return this.request(operation, {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
-    });
+    } as OperationInput<K>);
   }
 
   interruptTurn(
@@ -1385,12 +1441,6 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"turn.stop">,
   ): Promise<OperationOutput<"turn.stop">> {
     return this.request("turn.stop", input);
-  }
-
-  regenerateTurn(
-    input: OperationInput<"turn.regenerate">,
-  ): Promise<OperationOutput<"turn.regenerate">> {
-    return this.request("turn.regenerate", input);
   }
 
   queryTurnResume(
@@ -1563,12 +1613,6 @@ export class DesktopRuntimeHostClient {
     return this.request("agent.graph.stop", input);
   }
 
-  queryDeepResearch(
-    sessionId: string,
-  ): Promise<OperationOutput<"deep-research.query">> {
-    return this.request("deep-research.query", { sessionId });
-  }
-
   async listRuntimeResources(sessionId: string): Promise<ShellRunUpdate[]> {
     this.#assertOpen();
     try {
@@ -1700,11 +1744,13 @@ export class DesktopRuntimeHostClient {
 
   async listSessionTurnLandmarks(
     sessionId: string,
+    turnId: string | null = null,
   ): Promise<OperationOutput<'session.turn_landmarks.query'>> {
     this.#assertOpen();
     return this.request('session.turn_landmarks.query', {
       sessionId,
-      maxLandmarks: 64,
+      maxLandmarks: turnId === null ? 64 : 1,
+      turnId,
     });
   }
 
@@ -1811,6 +1857,10 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  generatePromptSuggestion(sessionId: string) {
+    return this.request('session.prompt-suggestion.generate', { sessionId }, 7000);
+  }
+
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
@@ -1849,6 +1899,14 @@ class DesktopSessionHandle implements DesktopRuntimeHostSession {
     this.activeAssistantStreams = subscription.activeAssistantStreams;
     this.transcriptBootstrap = subscription.transcriptBootstrap;
     this.events = subscription;
+  }
+
+  get transcriptWatermark(): number | null {
+    return this.subscription.transcriptWatermark;
+  }
+
+  get deathCause(): Error | undefined {
+    return this.subscription.deathCause;
   }
 
   ready(): Promise<void> {

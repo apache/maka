@@ -335,6 +335,71 @@ describe('recovery persistence authority', () => {
     assert.ok(scan.issues.some(({ code }) => code === 'invocation_identity_conflict'));
   });
 
+  it('checks parent tool dependencies after the whole batch, including identity and cycles', () => {
+    const parent = linkedOperationEvents({
+      prefix: 'parent',
+      invocationId: 'parent-invocation',
+      operationId: 'parent-operation',
+      toolCallId: 'parent-call',
+    });
+    const child = linkedOperationEvents({
+      prefix: 'child',
+      invocationId: 'child-invocation',
+      operationId: 'child-operation',
+      toolCallId: 'child-call',
+      parentOperationId: 'parent-operation',
+      parentToolCallId: 'parent-call',
+    });
+
+    // Dependency interpretation is final-state based: a transaction may stage
+    // the child first as long as its parent is present before validation ends.
+    assert.equal(scanToolLedger([...child, ...parent]).hasCorruption, false);
+
+    assert.deepEqual(scanToolLedger(child).issues, [
+      {
+        code: 'parent_operation_missing',
+        eventId: 'child-dispatch',
+        operationId: 'child-operation',
+        toolCallId: 'child-call',
+      },
+    ]);
+
+    const conflictingChild = linkedOperationEvents({
+      prefix: 'conflicting-child',
+      invocationId: 'conflicting-child-invocation',
+      operationId: 'conflicting-child-operation',
+      toolCallId: 'conflicting-child-call',
+      parentOperationId: 'parent-operation',
+      parentToolCallId: 'not-the-parent-call',
+    });
+    assert.ok(
+      scanToolLedger([...parent, ...conflictingChild]).issues.some(
+        ({ code }) => code === 'parent_identity_conflict',
+      ),
+    );
+
+    const first = linkedOperationEvents({
+      prefix: 'cycle-a',
+      invocationId: 'cycle-a-invocation',
+      operationId: 'cycle-a-operation',
+      toolCallId: 'cycle-a-call',
+      parentOperationId: 'cycle-b-operation',
+      parentToolCallId: 'cycle-b-call',
+    });
+    const second = linkedOperationEvents({
+      prefix: 'cycle-b',
+      invocationId: 'cycle-b-invocation',
+      operationId: 'cycle-b-operation',
+      toolCallId: 'cycle-b-call',
+      parentOperationId: 'cycle-a-operation',
+      parentToolCallId: 'cycle-a-call',
+    });
+    assert.deepEqual(
+      scanToolLedger([...first, ...second]).issues.map(({ code }) => code),
+      ['parent_dependency_cycle', 'parent_dependency_cycle'],
+    );
+  });
+
   it('rejects prospective generic transitions that would corrupt a clean ledger', () => {
     const duplicateCall = callEvent({ id: 'call-event-duplicate' });
     assert.deepEqual(
@@ -345,6 +410,7 @@ describe('recovery persistence authority', () => {
       }),
       {
         ok: false,
+        source: 'candidate',
         code: 'duplicate_call',
         eventId: 'call-event-duplicate',
         toolCallId: 'provider-call-1',
@@ -361,11 +427,96 @@ describe('recovery persistence authority', () => {
       }),
       {
         ok: false,
+        source: 'candidate',
         code: 'identity_conflict',
         eventId: 'outcome-event-1',
         operationId: 'operation-1',
         toolCallId: 'provider-call-1',
       },
+    );
+  });
+
+  it('interprets a complete tool recovery ledger with the shared rules', () => {
+    const ledger = [
+      callEvent(),
+      dispatchEvent(),
+      reconcileEvent(),
+      outcomeEvent(),
+      decisionEvent(),
+    ];
+    const expected = {
+      operations: [
+        {
+          toolCallId: 'provider-call-1',
+          toolName: 'Write',
+          operationId: 'operation-1',
+          callEvent: ledger[0],
+          dispatchEvent: ledger[1],
+          responseEvent: ledger[3],
+          reconcileEvents: [ledger[2]],
+          decisionEvents: [ledger[4]],
+          issues: [],
+        },
+      ],
+      issues: [],
+      hasCorruption: false,
+    };
+
+    assert.deepEqual(scanToolLedger(ledger), expected);
+  });
+
+  it('distinguishes candidate rejection from existing corruption without changing inputs', () => {
+    const existingEvents = [callEvent()];
+    const before = structuredClone(existingEvents);
+    const invalid = callEvent({ id: 'duplicate-call' });
+
+    assert.deepEqual(
+      validateToolLedgerTransition({
+        existingEvents,
+        candidateEvents: [invalid],
+        expectedTransition: 'generic_append',
+      }),
+      {
+        ok: false,
+        source: 'candidate',
+        code: 'duplicate_call',
+        eventId: 'duplicate-call',
+        toolCallId: 'provider-call-1',
+      },
+    );
+    assert.deepEqual(existingEvents, before);
+
+    assert.deepEqual(
+      validateToolLedgerTransition({
+        existingEvents: [callEvent(), invalid],
+        candidateEvents: [dispatchEvent()],
+        expectedTransition: 't1_prepare',
+      }),
+      {
+        ok: false,
+        source: 'existing',
+        code: 'duplicate_call',
+        eventId: 'duplicate-call',
+        toolCallId: 'provider-call-1',
+      },
+    );
+  });
+
+  it('validates retries from the supplied durable facts without retaining candidates', () => {
+    const existingEvents = [callEvent()];
+    const before = structuredClone(existingEvents);
+    const dispatch = dispatchEvent();
+    const input = {
+      existingEvents,
+      candidateEvents: [dispatch],
+      expectedTransition: 't1_prepare' as const,
+    };
+    assert.deepEqual(validateToolLedgerTransition(input), { ok: true });
+    assert.deepEqual(validateToolLedgerTransition(input), { ok: true });
+    assert.deepEqual(existingEvents, before);
+    assert.deepEqual(
+      validateToolLedgerTransition({ ...input, existingEvents: [...existingEvents, dispatch] }),
+      { ok: true },
     );
   });
 
@@ -511,6 +662,64 @@ function dispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
     ...overrides,
   });
+}
+
+function linkedOperationEvents(input: {
+  prefix: string;
+  invocationId: string;
+  operationId: string;
+  toolCallId: string;
+  parentOperationId?: string;
+  parentToolCallId?: string;
+}): [RuntimeEvent, RuntimeEvent] {
+  const execution = {
+    invocationId: input.invocationId,
+    runId: `${input.prefix}-run`,
+    turnId: `${input.prefix}-turn`,
+  };
+  const parentRefs =
+    input.parentOperationId && input.parentToolCallId
+      ? {
+          parentOperationId: input.parentOperationId,
+          parentToolCallId: input.parentToolCallId,
+        }
+      : {};
+  return [
+    callEvent({
+      id: `${input.prefix}-call`,
+      ...execution,
+      content: {
+        kind: 'function_call',
+        id: input.toolCallId,
+        name: 'Write',
+        args: { path: 'notes.txt', content: 'after' },
+      },
+      refs: {
+        operationId: input.operationId,
+        toolCallId: input.toolCallId,
+        ...parentRefs,
+      },
+    }),
+    dispatchEvent({
+      id: `${input.prefix}-dispatch`,
+      ...execution,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: input.operationId,
+          providerToolCallId: input.toolCallId,
+          toolName: 'Write',
+          canonicalArgsHash: EXPECTED_ARGS_HASH,
+          recoveryMode: 'reconcile',
+        },
+      },
+      refs: {
+        operationId: input.operationId,
+        toolCallId: input.toolCallId,
+        ...parentRefs,
+      },
+    }),
+  ];
 }
 
 function reconcileEvent(): RuntimeEvent {

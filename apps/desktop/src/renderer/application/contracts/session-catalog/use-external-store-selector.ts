@@ -1,0 +1,83 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { useMemo } from 'react';
+import { useSnapshotReader, type SnapshotReader } from '../snapshot-reader.js';
+
+/** The reading half of a selector-based store, such as Session Catalog. */
+export interface ExternalStore<S> {
+  getState(): S;
+  subscribe(listener: () => void): () => void;
+}
+
+/**
+ * Subscribe to one derived reading of a renderer store (#1985, #4109).
+ *
+ * Fixed-purpose readers bind their target here and deliver a stable snapshot;
+ * they do not accept arbitrary selectors. Session UI uses this overload so
+ * notification scope stays inside its authority.
+ *
+ * For selector-based stores such as Catalog, `select` must be a stable
+ * (module-level) function, and whatever it varies by
+ * — a session id, say — is passed as `arg` rather than captured. That is what
+ * lets the snapshot be memoized instead of published through a render-phase ref
+ * write, which React permits only for lazy initialization: a discarded
+ * concurrent render would otherwise hand its selector to the committed
+ * subscription. Changing `arg` rebuilds the cache, so the first render after
+ * switching sessions already reads the new one.
+ *
+ * The cache is keyed by the STATE the value was derived from, because
+ * `useSyncExternalStore` reads a snapshot several times per store state and
+ * demands the same value each time. A selector that derives a fresh object
+ * would otherwise loop, so keying it here is what makes `isEqual` a plain
+ * fewer-renders optimization: it carries a value's identity ACROSS a state the
+ * selection did not actually change.
+ */
+export function useExternalStoreSelector<T, A>(reader: (arg: A) => SnapshotReader<T>, arg: A, active?: boolean): T;
+export function useExternalStoreSelector<S, T, A = undefined>(
+  store: ExternalStore<S>,
+  select: (state: S, arg: A) => T,
+  arg?: A,
+  isEqual?: (a: T, b: T) => boolean,
+): T;
+export function useExternalStoreSelector<S, T, A>(
+  store: ExternalStore<S> | ((arg: A) => SnapshotReader<T>),
+  selectOrArg: ((state: S, arg: A) => T) | A,
+  arg?: A | boolean,
+  isEqual?: (a: T, b: T) => boolean,
+): T {
+  const reader = useMemo(() => {
+    if (typeof store === 'function') return store(selectOrArg as A);
+    const select = selectOrArg as (state: S, arg: A) => T;
+    let cache: { state: S; value: T } | null = null;
+    const getSnapshot = (): T => {
+      const state = store.getState();
+      if (cache && cache.state === state) return cache.value;
+      const next = select(state, arg as A);
+      const value = cache && (Object.is(cache.value, next) || isEqual?.(cache.value, next) === true)
+        ? cache.value
+        : next;
+      cache = { state, value };
+      return value;
+    };
+    return { subscribe: store.subscribe, getSnapshot };
+  }, [store, selectOrArg, arg, isEqual]);
+
+  return useSnapshotReader(reader, typeof store === 'function' ? arg as boolean | undefined : undefined);
+}

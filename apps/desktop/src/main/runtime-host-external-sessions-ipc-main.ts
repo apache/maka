@@ -18,13 +18,17 @@
  */
 
 import type { SessionChangedReason } from '@maka/core/session';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import type {
   ExternalSessionCatalogQueryInput,
   ExternalSessionCatalogQueryResult,
   ExternalSessionImportResult,
   ExternalSessionSourceQueryResult,
   SessionCatalogProjection,
+  WorkspaceTarget,
 } from '@maka/runtime-host/protocol';
 import {
   decodeExternalSessionCatalogQueryInput,
@@ -49,12 +53,15 @@ type ExternalSessionClient = {
   importExternalSession(input: {
     readonly adapterId: string;
     readonly sourceSessionId: string;
+    readonly workspace?: WorkspaceTarget;
   }): Promise<ExternalSessionImportResult<SessionCatalogProjection>>;
 };
 
 export interface RuntimeHostExternalSessionsIpcDeps {
   readonly client: ExternalSessionClient;
   readonly emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
+  /** Resolves the Desktop-selected workspace on the target Host. */
+  readonly resolveImportWorkspace: () => Promise<WorkspaceTarget>;
 }
 
 export function registerRuntimeHostExternalSessionsIpc(
@@ -65,9 +72,8 @@ export function registerRuntimeHostExternalSessionsIpc(
     deps.client.listExternalSessionSources(),
   );
   handleReconnectableRead(ipcMain, 'external-sessions:list', async (_event, input: unknown) => {
-    const result = await deps.client.listExternalSessions(
-      decodeExternalSessionCatalogQueryInput(input),
-    );
+    const query = decodeExternalSessionCatalogQueryInput(input);
+    const result = await deps.client.listExternalSessions(query);
     return {
       ...result,
       sessions: result.sessions.map(({ hostCwd, ...session }) => ({
@@ -77,10 +83,13 @@ export function registerRuntimeHostExternalSessionsIpc(
     };
   });
   ipcMain.handle('external-sessions:import', async (_event, input: unknown) => {
+    const request = decodeExternalSessionImportInput(input);
+    const workspace = await deps.resolveImportWorkspace();
     try {
-      const result = await deps.client.importExternalSession(
-        decodeExternalSessionImportInput(input),
-      );
+      const result = await deps.client.importExternalSession({
+        ...request,
+        workspace,
+      });
       if (result.kind === 'source_limit_exceeded') {
         return {
           ok: false,
@@ -97,29 +106,38 @@ export function registerRuntimeHostExternalSessionsIpc(
     } catch (error) {
       if (
         error instanceof RuntimeHostOperationError &&
-        error.operation === 'external-session.import'
+        error.operation === 'external-session.import' &&
+        error.code !== 'commit_outcome_unknown'
       ) {
-        if (error.code === 'commit_outcome_unknown') {
-          // "Unknown" means the task may well be in the catalog, so tell the
-          // shell to read it again. Without this, the only trace of a maybe-
-          // committed import is the banner on the page, and the page is gone the
-          // moment the user leaves Settings -- which is exactly when they come
-          // back and import the same conversation a second time. No id: the
-          // whole point is that we do not know which task, if any, landed.
-          deps.emitSessionsChanged('created');
-          return {
-            ok: false,
-            reason: 'commit_outcome_unknown',
-          } satisfies ExternalSessionImportIpcResult;
-        }
         const reason = classifyImportFailure(error);
         if (reason !== undefined) {
           return { ok: false, reason } satisfies ExternalSessionImportIpcResult;
         }
+        throw error;
       }
-      throw error;
+      if (isDefinitelyUndispatchedImport(error)) throw error;
+      // The task may be in the catalog, but no uncertain response carries an
+      // operation-specific Session id. A malformed response is equally
+      // uncertain: input was canonical before this call, so only an explicit
+      // not_dispatched interruption proves that this request did not run.
+      // Re-importing is nevertheless a supported operation that creates an
+      // independent task, so this per-request outcome must not become client
+      // eligibility state.
+      deps.emitSessionsChanged('created');
+      return {
+        ok: false,
+        reason: 'commit_outcome_unknown',
+      } satisfies ExternalSessionImportIpcResult;
     }
   });
+}
+
+function isDefinitelyUndispatchedImport(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostRequestInterruptedError &&
+      error.operation === 'external-session.import' &&
+    error.dispatch === 'not_dispatched'
+  );
 }
 
 /**

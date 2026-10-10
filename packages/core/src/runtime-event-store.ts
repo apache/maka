@@ -18,7 +18,11 @@
  */
 
 import type { RuntimeEvent } from './runtime-event.js';
-import type { RuntimeInvocationRecord } from './runtime-invocation.js';
+import { runtimeHandoffPause } from './runtime-handoff.js';
+import {
+  mayBeTranscriptLedgerInvocationId,
+  type RuntimeInvocationRecord,
+} from './runtime-invocation.js';
 import type {
   ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
@@ -40,6 +44,48 @@ export interface RuntimeRecoveryBundleCommit {
   reconcileRuntimeEvent: RuntimeEvent;
   outcomeRuntimeEvent?: RuntimeEvent;
   decisionRuntimeEvent: RuntimeEvent;
+}
+
+export interface RuntimeInvocationRecoveryInventoryEntry {
+  readonly sessionId: string;
+  readonly invocationId: string;
+  /**
+   * Settled invocations normally need no further fields. Identity is retained
+   * only when the persisted id could belong to transcript conversion and the
+   * runtime must apply its exact deterministic-id check.
+   */
+  readonly identity?: Pick<
+    RuntimeInvocationRecord,
+    'sessionId' | 'invocationId' | 'runId' | 'turnId' | 'openedAt'
+  >;
+  /** Present only when recovery must inspect this invocation's full evidence. */
+  readonly candidate?: RuntimeInvocationRecord;
+}
+
+export function runtimeInvocationRecoveryInventoryFromInvocations(
+  invocations: readonly RuntimeInvocationRecord[],
+): RuntimeInvocationRecoveryInventoryEntry[] {
+  return invocations.map((invocation) => {
+    const base = {
+      sessionId: invocation.sessionId,
+      invocationId: invocation.invocationId,
+    };
+    if (!invocation.terminalEvent || runtimeHandoffPause(invocation.terminalEvent)) {
+      return { ...base, candidate: invocation };
+    }
+    return mayBeTranscriptLedgerInvocationId(invocation.invocationId)
+      ? {
+          ...base,
+          identity: {
+            sessionId: invocation.sessionId,
+            invocationId: invocation.invocationId,
+            runId: invocation.runId,
+            turnId: invocation.turnId,
+            openedAt: invocation.openedAt,
+          },
+        }
+      : base;
+  });
 }
 
 /**
@@ -70,6 +116,14 @@ export class DurableStoreWriteError extends Error {
   }
 }
 
+/** One consistent read of the inputs needed to project a complete Session. */
+export interface RuntimeSessionEventSnapshot {
+  readonly invocations: RuntimeInvocationRecord[];
+  /** Per-run event order, including merged mutable partial presentation. */
+  readonly eventsByRun: ReadonlyMap<string, RuntimeEvent[]>;
+  readonly durableEventOrdinalById: ReadonlyMap<string, number>;
+}
+
 export interface RuntimeEventStore {
   /** Canonical stores fail the active run closed on every durable write error. */
   readonly durability?: 'best_effort' | 'canonical';
@@ -93,6 +147,15 @@ export interface RuntimeEventStore {
    * still the terminal event.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  /**
+   * Narrow startup inventory. Every opening contributes a minimal existence
+   * marker. Full identity is retained only for transcript-namespace ambiguity;
+   * opening and terminal payloads are decoded only for unfinished invocations
+   * and durable handoff pauses that recovery must inspect.
+   */
+  listInvocationRecoveryInventory?(
+    sessionIds: readonly string[],
+  ): Promise<RuntimeInvocationRecoveryInventoryEntry[]>;
   /**
    * One invocation by run id, absent when no opening fact names it. A store
    * that indexes openings answers this in one read; stores without the fast
@@ -143,7 +206,24 @@ export interface RuntimeEventStore {
     runId: string,
     event: RuntimeEvent,
   ): Promise<void>;
+  /**
+   * Recovery-only terminal barrier for a T1-without-T2 run. The writer must
+   * commit the terminal fact and settle exactly these dispatched operations in
+   * one transaction; an ordinary terminal append still rejects them.
+   */
+  ensureRecoveredTerminalRuntimeEventDurable?(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+    unsettledOperationIds: readonly string[],
+  ): Promise<void>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /**
+   * Batch full-view reads in one snapshot, sharing decoded events between the
+   * invocation inventory and run histories. Optional for stores without batch
+   * support; consumers retain the individual-reader path in that case.
+   */
+  readSessionRuntimeSnapshot?(sessionId: string): Promise<RuntimeSessionEventSnapshot>;
   /** Session-wide immutable append order. */
   readSessionRuntimeEventEntries(
     sessionId: string,
@@ -169,6 +249,20 @@ export interface RuntimeEventStore {
    * rather than moved out from under anyone.
    */
   resequenceSessionEventOrdinals(sessionId: string): Promise<void>;
+  /**
+   * Recall's narrowing over the ledger: the Sessions among `sessionIds` whose
+   * event payloads contain one of the folded `terms`, plus every Session with
+   * an in-flight partial stream. A superset of the Sessions that project a
+   * matching message — the caller projects each one and re-runs the real
+   * predicate. Stores without this fast path leave recall to read every
+   * transcript.
+   */
+  listSessionsWithRuntimeEventText?(
+    sessionIds: readonly string[],
+    terms: readonly string[],
+  ): Promise<string[]>;
+  /** Events of kinds that project to searchable messages, for recall's idf term. */
+  countRuntimeEventMessages?(sessionIds: readonly string[]): Promise<number>;
 }
 
 /** One invocation by run id, through the store's fast path when it has one. */
@@ -215,6 +309,10 @@ export interface RuntimeContinuationAuthorityStore extends RuntimeEventStore {
   readContinuationClaimStateByBoundary(
     boundaryDigest: RuntimeBoundaryDigest,
   ): Promise<ContinuationClaimStateV1 | undefined>;
+  /** Unsettled claim targets among the selected Sessions, for restart recovery. */
+  listUnsettledContinuationClaimsForRecovery?(
+    sessionIds: readonly string[],
+  ): Promise<ContinuationClaimStateV1[]>;
   listContinuationClaimsForRecovery(sessionId: string): Promise<ContinuationClaimStateV1[]>;
   commitContinuationStart(input: {
     claim: ContinuationClaimV1;

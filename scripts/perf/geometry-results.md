@@ -30,8 +30,9 @@ authority admits it and restores the reading anchor at commit.
 - Ordinary CI runs `GEOMETRY_REPETITIONS=1 node scripts/perf/geometry-ablation.mjs --assert-stable`.
   Three fixed-range production stories cover mixed Turns, tools and long code.
   Cold upward scrolling must keep height drift and reverse motion within 1px.
-- `apps/desktop/e2e/transcript-scroll-cost.spec.ts` covers bounded paging and
-  reading anchors across range changes with consecutive native wheel ticks.
+- `apps/desktop/e2e/partial-history-notice.spec.ts` covers bounded paging across
+  preload and Host storage; the geometry of a range change is covered by the
+  browser stories above, not by native wheel ticks.
 - Performance commands and comparison limits are in [CI.md](CI.md).
   Timing success alone does not establish statistical non-regression.
 

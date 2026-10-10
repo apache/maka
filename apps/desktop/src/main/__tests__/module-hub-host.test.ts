@@ -38,7 +38,7 @@ test('Module Hub resolves all four leaf routes and no chat route', () => {
   }
 });
 
-test('Host maps each route to one existing leaf and preserves the MCP exception', () => {
+test('Host maps each route to one Module Hub leaf', () => {
   const desktopRoot = resolve(
     fileURLToPath(new URL('../../../', import.meta.url)),
   );
@@ -58,6 +58,5 @@ test('Host maps each route to one existing leaf and preserves the MCP exception'
     assert.equal(source.split(leaf).length - 1, 1, leaf);
   }
   assert.match(source, /route === 'mcp'/);
-  assert.match(source, /MCP keeps its existing page-owned/);
   assert.match(source, /return null;/);
 });

@@ -1,0 +1,8 @@
+{
+  "epoch": 169,
+  "files": [
+    "packages/runtime-host/src/protocol/recall.ts",
+    "packages/runtime-host/src/protocol/operations.ts"
+  ],
+  "reason": "Adds the recall.query operation spec and registers its key. A new operation key is a compatible extension: a peer that predates it never sends recall.query and never receives one, so every existing request and response decodes byte-for-byte as before. Nothing already on the wire changes shape or meaning."
+}

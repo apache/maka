@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import type { ShellRunSnapshotResult, ShellRunUpdate, ToolResultContent } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import { shellRunStateProjection } from '@maka/core/shell-run-result';
 import {
   type BackgroundTaskStopper,
   type PtyControlWriter,
@@ -63,11 +64,10 @@ import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import { boundedFailureDiagnostic } from './failure-diagnostic.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import {
-  boundedRuntimeResourceSnapshot,
+  boundedRuntimeResourceState,
   canonicalRuntimeResources,
   createRuntimeResourcePage,
   runtimeResourceRevision,
-  runtimeResourceSnapshotFromResult,
 } from './runtime-resource-projection.js';
 
 const MAX_CONTROL_REPLAYS = 128;
@@ -89,8 +89,8 @@ interface RuntimeResourceManager
     RuntimeResourceReader,
     BackgroundTaskStopper,
     PtyControlWriter {
-  inspectResource(sessionId: string, ref: string): Promise<ShellRunSnapshotResult>;
   getLivePtySnapshot(sessionId: string, ref: string): ShellRunPtySnapshot | null;
+  inspectResource(sessionId: string, ref: string): Promise<ShellRunSnapshotResult>;
   terminateAll(): Promise<void>;
 }
 
@@ -475,16 +475,14 @@ export class HostRuntimeResourceCoordinator
           return {
             ok: true as const,
             result: decodeRuntimeResourceStartResult({
-              resource: boundedRuntimeResourceSnapshot(
-                await this.#manager.inspectResource(input.sessionId, launched.ref),
-              ),
+              resource: boundedRuntimeResourceState(shellRunStateProjection(launched)),
             }),
           };
-        } catch (inspectError) {
+        } catch (replyError) {
           // The command is already live but the operation must not report a
           // success it cannot honor: stop it so a client retry cannot
           // double-execute (#3210 review). Best-effort — the surfaced error
-          // stays the inspection failure.
+          // stays the reply failure.
           try {
             await this.#manager.stopBackgroundTask(
               input.sessionId,
@@ -493,9 +491,9 @@ export class HostRuntimeResourceCoordinator
               'client',
             );
           } catch {
-            /* keep the inspection failure as the surfaced cause */
+            /* keep the reply failure as the surfaced cause */
           }
-          throw inspectError;
+          throw replyError;
         }
       });
     } catch (error) {
@@ -527,8 +525,11 @@ export class HostRuntimeResourceCoordinator
         if (sessionFailure)
           return mutationFailure('runtime.resource.controller.acquire', sessionFailure);
         try {
-          const snapshot = await this.#manager.inspectResource(input.sessionId, input.ref);
-          if (snapshot.mode !== 'pty' || !isActiveShellRunStatus(snapshot.status)) {
+          const pty = this.#manager.getLivePtySnapshot(input.sessionId, input.ref);
+          if (!pty) {
+            // No live handle: read through the manager so a stale active record
+            // is repaired to orphaned; the reply is a conflict either way.
+            await this.#manager.inspectResource(input.sessionId, input.ref);
             return mutationFailure('runtime.resource.controller.acquire', {
               code: 'operation_conflict',
               message: 'Only an active PTY Runtime Resource can be controlled',
@@ -561,14 +562,6 @@ export class HostRuntimeResourceCoordinator
           };
           this.#controllers.set(key, controller);
           this.#controllerResources.set(identity, key);
-          const pty = this.#manager.getLivePtySnapshot(input.sessionId, input.ref);
-          if (!pty) {
-            this.#releaseController(key);
-            return mutationFailure('runtime.resource.controller.acquire', {
-              code: 'operation_conflict',
-              message: 'Runtime Resource PTY is no longer available',
-            });
-          }
           return {
             ok: true,
             result: boundedControllerAcquireResult(
@@ -639,7 +632,6 @@ export class HostRuntimeResourceCoordinator
           const result = decodeRuntimeResourceControllerControlResult({
             controllerId: input.controllerId,
             sequence: input.sequence,
-            resource: boundedRuntimeResourceSnapshot(runtimeResourceSnapshotFromResult(controlled)),
           });
           this.#rememberReplay({
             connectionId: context.connectionId,
@@ -726,12 +718,7 @@ export class HostRuntimeResourceCoordinator
             'client',
           );
           this.#releaseControllerIfTerminal(input.sessionId, input.ref, result);
-          return {
-            ok: true,
-            result: decodeRuntimeResourceStopResult({
-              resource: boundedRuntimeResourceSnapshot(runtimeResourceSnapshotFromResult(result)),
-            }),
-          };
+          return { ok: true, result: decodeRuntimeResourceStopResult({}) };
         } catch (error) {
           return this.#resourceFailure('runtime.resource.stop', error);
         }

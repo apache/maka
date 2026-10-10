@@ -30,6 +30,7 @@ import { invocationOpening } from './fixtures/invocation-opening.js';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { AgentGraphScheduleRevisionConflictError } from '@maka/core/agent-graph-schedule';
+import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core/agent-graph-supervisor-wake';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
@@ -79,6 +80,38 @@ for (const backend of ['Local', 'Memory'] as const) {
     backend === 'Local'
       ? localExecutionPersistenceProvider
       : createMemoryExecutionPersistenceProvider();
+  test(backend + ': graph wake exhaustion passes through the execution facade', async () => {
+    await withProvider(make(), async ({ graphControlStore: graph }) => {
+      await graph.claimAgentGraphSupervisorWake({
+        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: 'session-1',
+      });
+      const started = await graph.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        turnId: 'turn-1',
+      });
+      assert.equal(started.acquired, true);
+      await graph.completeAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        status: 'retryable_failed',
+        failureReason: 'provider failure',
+      });
+      const exhausted = await graph.exhaustAgentGraphSupervisorWake(
+        'graph-1',
+        'wake-1',
+        'attempt limit',
+      );
+      assert.equal(exhausted.status, 'exhausted');
+      assert.deepEqual(await graph.listRetryableAgentGraphSupervisorWakes(), []);
+    });
+  });
   test(
     backend + ': plugin executor routes survive configuration and catalog projection',
     async () => {
@@ -193,6 +226,52 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': recovery message evidence has equivalent UTF-8 byte budgets', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const promptText = '需要按 UTF-8 字节计量';
+      const prompt: RuntimeEvent = {
+        id: 'recovery-budget-prompt',
+        sessionId: 'recovery-budget-session',
+        invocationId: 'recovery-budget-invocation',
+        runId: 'recovery-budget-run',
+        turnId: 'recovery-budget-turn',
+        ts: 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: promptText },
+      };
+      await s.appendRuntimeEvent(prompt.sessionId, prompt.runId, prompt);
+      const query = {
+        sessionId: prompt.sessionId,
+        turnIds: [prompt.turnId],
+        eventIds: [prompt.id],
+      };
+      const complete = await s.readRecoveryMessageEvents({
+        ...query,
+        budget: { maxRecords: 1, maxBytes: 16 * 1024 },
+      });
+      assert.equal(complete.status, 'complete');
+      if (complete.status !== 'complete') throw new Error('expected recovery evidence');
+      assert.deepEqual(complete.records, [prompt]);
+      assert.equal(complete.sourceRecordCount, 1);
+      assert.ok(complete.storedBytes > promptText.length);
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 0, maxBytes: 16 * 1024 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+      assert.deepEqual(
+        await s.readRecoveryMessageEvents({
+          ...query,
+          budget: { maxRecords: 1, maxBytes: 1 },
+        }),
+        { status: 'limit_exceeded' },
+      );
+    });
+  });
   test(backend + ': transcript projection consumes bounded detached event iterators', async () => {
     await withProvider(make(), async ({ runtimeEventStore: s }) => {
       const run = {
@@ -408,17 +487,6 @@ for (const backend of ['Local', 'Memory'] as const) {
       assert.deepEqual(await read('newer', 1, 2), [
         { invocationId: settled.invocationId, first: 1, last: 2, ordinals: [1, 2] },
       ]);
-      assert.deepEqual(
-        (await s.readTranscriptLandmarks(sessionId, 6, 8)).map((landmark) => ({
-          invocationId: landmark.invocation.invocationId,
-          first: landmark.firstOrdinal,
-          prompt: landmark.prompt?.event.id,
-        })),
-        [
-          { invocationId: settled.invocationId, first: 1, prompt: 'settled-prompt' },
-          { invocationId: running.invocationId, first: 4, prompt: 'running-prompt' },
-        ],
-      );
 
       await s.importConversationCopyRuntimeEvents(sessionId, [
         {
@@ -432,6 +500,155 @@ for (const backend of ['Local', 'Memory'] as const) {
       assert.equal(commits.length, 7);
     });
   });
+  test(
+    backend + ': a transcript Turn spans every visible invocation carrying its turnId',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: s }) => {
+        const sessionId = 'turn-extent-session';
+        const invocation = (name: string, turnId = `${name}-turn`) => ({
+          sessionId,
+          runId: `${name}-run`,
+          turnId,
+          invocationId: `${name}-invocation`,
+        });
+        const outer = invocation('outer');
+        const inner = invocation('inner');
+        const resumed = invocation('resumed', outer.turnId);
+        const hidden = invocation('hidden');
+        const later = invocation('later');
+        const opened = (run: typeof outer, opening: Parameters<typeof invocationOpening>[0] = {}) =>
+          buildInvocationOpenedEvent({
+            id: `${run.invocationId}-opened`,
+            run,
+            openedAt: 1,
+            opening: invocationOpening(opening),
+          });
+        const text = (run: typeof outer, id: string, role: 'user' | 'model'): RuntimeEvent => ({
+          ...run,
+          id,
+          ts: 2,
+          partial: false,
+          role,
+          author: role === 'user' ? 'user' : 'agent',
+          content: { kind: 'text', text: id },
+        });
+        const ending = (run: typeof outer): RuntimeEvent => ({
+          ...run,
+          id: `${run.invocationId}-ended`,
+          ts: 3,
+          partial: false,
+          role: 'system',
+          author: 'system',
+          actions: { endInvocation: true },
+          status: 'completed',
+        });
+        for (const event of [
+          opened(outer), // 1
+          text(outer, 'outer-prompt', 'user'), // 2
+          opened(inner), // 3
+          text(inner, 'inner-prompt', 'user'), // 4
+          ending(inner), // 5
+          opened(hidden, { lineage: { parentRunId: outer.runId } }), // 6
+          text(hidden, 'hidden-answer', 'model'), // 7
+          opened(resumed, {
+            source: {
+              kind: 'handoff',
+              rootRunId: outer.runId,
+              sourceInvocationId: outer.invocationId,
+              sourceRunId: outer.runId,
+              sourceTurnId: outer.turnId,
+              sourceRuntimeEventHighWater: 2,
+              claimId: 'handoff-claim',
+              boundaryDigest: `sha256:${'0'.repeat(64)}`,
+            },
+          }), // 8
+          text(resumed, 'resumed-answer', 'model'), // 9
+          ending(resumed), // 10
+          opened(later), // 11
+          text(later, 'later-prompt', 'user'), // 12
+        ]) {
+          await s.appendRuntimeEvent(sessionId, event.runId, event);
+        }
+
+        const extents = (turns: Awaited<ReturnType<typeof s.readTranscriptTurns>>) =>
+          turns.map(({ turnId, firstOrdinal, lastOrdinal, prompt }) => ({
+            turnId,
+            firstOrdinal,
+            lastOrdinal,
+            prompt: prompt?.event.id,
+          }));
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { throughOrdinal: 12, limit: 8 })),
+          [
+            { turnId: outer.turnId, firstOrdinal: 1, lastOrdinal: 10, prompt: 'outer-prompt' },
+            { turnId: inner.turnId, firstOrdinal: 3, lastOrdinal: 5, prompt: 'inner-prompt' },
+            { turnId: later.turnId, firstOrdinal: 11, lastOrdinal: 12, prompt: 'later-prompt' },
+          ],
+        );
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { throughOrdinal: 10, limit: 1 })),
+          [{ turnId: inner.turnId, firstOrdinal: 3, lastOrdinal: 5, prompt: 'inner-prompt' }],
+        );
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { turnId: outer.turnId })).map(
+            ({ lastOrdinal }) => lastOrdinal,
+          ),
+          [10],
+        );
+        assert.deepEqual(await s.readTranscriptTurns(sessionId, { turnId: hidden.turnId }), []);
+        const crossings: number[] = [];
+        for (let ordinal = 1; ordinal <= 13; ordinal += 1) {
+          if (await s.readTranscriptTurnCrossing(sessionId, ordinal)) crossings.push(ordinal);
+        }
+        assert.deepEqual(crossings, [2, 3, 4, 5, 6, 7, 8, 9, 10, 12]);
+
+        // Repair renumbers every ordinal, so the extents move with them.
+        await s.resequenceSessionEventOrdinals(sessionId);
+        const entries = await s.readSessionRuntimeEventEntries(sessionId);
+        if (backend === 'Local') {
+          assert.ok(s.readSessionRuntimeSnapshot, 'the production facade must expose batch reads');
+          const snapshot = await s.readSessionRuntimeSnapshot(sessionId);
+          assert.deepEqual(snapshot.invocations, await s.listSessionInvocations(sessionId));
+          assert.deepEqual(
+            snapshot.durableEventOrdinalById,
+            new Map(entries.map(({ event, ordinal }) => [event.id, ordinal])),
+          );
+          for (const invocation of snapshot.invocations) {
+            assert.deepEqual(
+              snapshot.eventsByRun.get(invocation.runId),
+              await s.readRuntimeEvents(sessionId, invocation.runId),
+            );
+          }
+        }
+        const ordinalsOf = (turnId: string) =>
+          entries.filter((entry) => entry.event.turnId === turnId).map((entry) => entry.ordinal);
+        const [moved] = await s.readTranscriptTurns(sessionId, { turnId: outer.turnId });
+        assert.deepEqual(
+          [moved?.firstOrdinal, moved?.lastOrdinal],
+          [Math.min(...ordinalsOf(outer.turnId)), Math.max(...ordinalsOf(outer.turnId))],
+        );
+
+        // The opening decides visibility, so events committed before it count.
+        const early = invocation('early');
+        await s.appendRuntimeEvent(sessionId, early.runId, text(early, 'early-prompt', 'user'));
+        await s.appendRuntimeEvent(sessionId, early.runId, opened(early));
+        const earlyOrdinals = (await s.readSessionRuntimeEventEntries(sessionId))
+          .filter((entry) => entry.event.turnId === early.turnId)
+          .map((entry) => entry.ordinal);
+        assert.deepEqual(
+          extents(await s.readTranscriptTurns(sessionId, { turnId: early.turnId })),
+          [
+            {
+              turnId: early.turnId,
+              firstOrdinal: Math.min(...earlyOrdinals),
+              lastOrdinal: Math.max(...earlyOrdinals),
+              prompt: 'early-prompt',
+            },
+          ],
+        );
+      });
+    },
+  );
   test(backend + ': steering reorder preserves unselected and followup queue slots', async () => {
     await withProvider(make(), async ({ sessionStore: s }, root) => {
       const session = await s.create(sessionInput(root));
@@ -621,6 +838,97 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': imported message projection finishes before commit starts', async (t) => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      let commitStarted = false;
+      const originalReplace = String.prototype.replace;
+      t.mock.method(
+        String.prototype,
+        'replace',
+        function (this: string, ...args: Parameters<typeof originalReplace>) {
+          if (String(this) === 'force projection failure') {
+            throw new Error('forced projection failure');
+          }
+          return Reflect.apply(originalReplace, this, args) as string;
+        },
+      );
+      await assert.rejects(
+        s.createImportedSession(
+          sessionInput(root),
+          [
+            {
+              type: 'user',
+              id: 'imported-user',
+              turnId: 'imported-turn',
+              ts: 1,
+              text: 'force projection failure',
+            },
+          ],
+          { adapterId: 'fake', sourceSessionId: 'source' },
+          { onCommitStarted: () => (commitStarted = true) },
+        ),
+        /forced projection failure/,
+      );
+      assert.equal(commitStarted, false);
+      assert.deepEqual(await s.listHeaders(), []);
+    });
+  });
+  test(backend + ': external import lookup excludes staged Sessions', async () => {
+    await withProvider(make(), async ({ sessionStore: s }, root) => {
+      const createImport = (sourceSessionId: string) =>
+        s.createImportedSession(
+          sessionInput(root),
+          [
+            {
+              type: 'user',
+              id: `imported-${sourceSessionId}`,
+              turnId: `turn-${sourceSessionId}`,
+              ts: 1,
+              text: `imported ${sourceSessionId}`,
+            },
+          ],
+          {
+            adapterId: 'fake',
+            sourceSessionId,
+          },
+        );
+      const published = await createImport('shared-source');
+      const stagedShared = await createImport('shared-source');
+      const stagedOnly = await createImport('staged-only');
+      await s.updateHeader(published.id, { transcriptLedgerVersion: 1 });
+
+      assert.deepEqual(
+        await s.lookupExternalSessionImports(
+          'fake',
+          ['shared-source', 'staged-only', 'missing'],
+          8,
+        ),
+        [
+          {
+            sourceSessionId: 'shared-source',
+            livePublishedImportCount: 1,
+            recentSessionIds: [published.id],
+          },
+        ],
+      );
+
+      assert.deepEqual(
+        (await s.list()).map((session) => session.id),
+        [published.id],
+      );
+
+      const page = await s.listCatalogPage(undefined, undefined, 8);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') throw new Error('Expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [published.id],
+      );
+      await assert.rejects(s.readCatalogRecord(stagedShared.id), SessionNotFoundError);
+      await assert.rejects(s.readCatalogRecord(stagedOnly.id), SessionNotFoundError);
+      assert.equal((await s.readCatalogRecord(published.id)).header.id, published.id);
+    });
+  });
   test(
     backend + ': catalog pagination visits mixed-case tied IDs exactly once in Local order',
     async () => {
@@ -856,6 +1164,100 @@ for (const backend of ['Local', 'Memory'] as const) {
       }
     });
   });
+  test(
+    backend + ': nested Code Mode tool progress stays outside the immutable ledger',
+    async () => {
+      await withProvider(make(), async ({ runtimeEventStore: r }) => {
+        const { prepared, outcome } = toolInputs();
+        const parentRefs = {
+          parentToolCallId: 'code-cell',
+          parentOperationId: 'code-cell-operation',
+        };
+        const parentArgs = { code: 'await tools.Read({ path: "/workspace/README.md" })' };
+        const parentEvents: RuntimeEvent[] = [
+          {
+            ...prepared.runtimeEvent,
+            id: 'parent-call',
+            content: {
+              kind: 'function_call',
+              id: parentRefs.parentToolCallId,
+              name: 'CodeMode',
+              args: parentArgs,
+            },
+          },
+          {
+            ...prepared.dispatchRuntimeEvent,
+            id: 'parent-dispatch',
+            refs: {
+              operationId: parentRefs.parentOperationId,
+              toolCallId: parentRefs.parentToolCallId,
+            },
+            actions: {
+              toolDispatch: {
+                ...prepared.dispatchRuntimeEvent.actions!.toolDispatch!,
+                operationId: parentRefs.parentOperationId,
+                providerToolCallId: parentRefs.parentToolCallId,
+                toolName: 'CodeMode',
+                canonicalArgsHash: canonicalToolArgsHash('CodeMode', parentArgs),
+              },
+            },
+          },
+        ];
+        const nested = (event: RuntimeEvent): RuntimeEvent => ({
+          ...event,
+          origin: 'code_mode',
+          modelVisibility: 'hidden',
+          refs: { ...event.refs, ...parentRefs },
+        });
+        prepared.runtimeEvent = nested(prepared.runtimeEvent);
+        prepared.dispatchRuntimeEvent = nested(prepared.dispatchRuntimeEvent);
+        outcome.runtimeEvent = nested(outcome.runtimeEvent);
+        const { sessionId, runId } = prepared.runtimeEvent;
+        const progress: RuntimeEvent = {
+          ...outcome.runtimeEvent,
+          id: 'progress',
+          ts: 11,
+          partial: true,
+          content: undefined,
+          refs: { toolCallId: prepared.providerToolCallId, ...parentRefs },
+        };
+
+        await r.importConversationCopyRuntimeEvents(sessionId, [{ runId, events: parentEvents }]);
+        await r.commitToolPrepared(prepared);
+        for (let index = 0; index < 3; index += 1) {
+          await r.appendRuntimeEvent(sessionId, runId, {
+            ...progress,
+            id: `progress-${index}`,
+            ts: 11 + index,
+          });
+        }
+        const live = (await r.readRuntimeEvents(sessionId, runId)).filter((event) => event.partial);
+        assert.equal(live.length, 1, 'nested progress coalesces into one presentation snapshot');
+        assert.deepEqual(live[0]?.refs, progress.refs);
+        assert.equal(live[0]?.origin, 'code_mode');
+        assert.equal(live[0]?.modelVisibility, 'hidden');
+        assert.deepEqual(await r.readImmutableRuntimeEvents(sessionId, runId), [
+          ...parentEvents,
+          prepared.runtimeEvent,
+          prepared.dispatchRuntimeEvent,
+        ]);
+
+        await r.commitToolOutcome(outcome);
+        await r.appendRuntimeEvent(sessionId, runId, { ...progress, id: 'late-progress', ts: 21 });
+        assert.deepEqual(
+          await r.readRuntimeEvents(sessionId, runId),
+          [
+            ...parentEvents,
+            prepared.runtimeEvent,
+            prepared.dispatchRuntimeEvent,
+            outcome.runtimeEvent,
+          ],
+          'the durable result clears the snapshot and late progress cannot recreate it',
+        );
+        assert.equal((await r.readSessionRuntimeEventEntries(sessionId)).length, 5);
+      });
+    },
+  );
   test(
     backend + ': conversation copy rebuilds Tool T1/T2 projections and exact retries',
     async () => {
@@ -1279,6 +1681,38 @@ for (const backend of ['Local', 'Memory'] as const) {
       });
     },
   );
+  test(backend + ': the archive writer alone stamps and clears the archive time', async () => {
+    await withProvider(make(), async (stores, root) => {
+      const s = stores.sessionStore,
+        session = await s.create(sessionInput(root));
+      const archivedAt = async () => (await s.readCatalogRecord(session.id)).summary.archivedAt;
+      assert.equal(await archivedAt(), undefined);
+      const before = Date.now();
+      const [archived] = await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: 1 }],
+        true,
+      );
+      const first = await archivedAt();
+      assert.ok(first !== undefined && first >= before && first <= Date.now());
+      await s.updateHeader(session.id, { name: 'Renamed' });
+      const renamed = await s.readHeaderRecordSnapshot(session.id);
+      await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: renamed.revision }],
+        true,
+      );
+      assert.equal(await archivedAt(), first);
+      await s.setSessionsArchivedVersioned(
+        [{ sessionId: session.id, expectedVersion: renamed.revision }],
+        false,
+      );
+      assert.equal(await archivedAt(), undefined);
+      assert.equal(
+        Object.hasOwn((await s.readCatalogRecord(session.id)).summary, 'archivedAt'),
+        false,
+      );
+      assert.equal(archived!.header.isArchived, true);
+    });
+  });
   test(
     backend + ': active WorkHub linkage requires target evidence and enforces bounds',
     async () => {
@@ -1870,6 +2304,32 @@ for (const backend of ['Local', 'Memory'] as const) {
         (await s.readImmutableRuntimeEvents('tool-session', 'tool-run'))[0]!.author,
         'user',
       );
+    });
+  });
+  test(backend + ': unknown-outcome terminal settles dispatched tools atomically', async () => {
+    await withProvider(make(), async ({ runtimeEventStore: s }) => {
+      const { prepared } = toolInputs();
+      await s.commitToolPrepared(prepared);
+      const terminal: RuntimeEvent = {
+        ...prepared.dispatchRuntimeEvent,
+        id: 'unknown-outcome-terminal',
+        status: 'failed',
+        actions: {
+          endInvocation: true,
+          stateDelta: { recovered: true, recoveryReason: 'outcome_unknown' },
+        },
+      };
+      await assert.rejects(
+        s.ensureTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal),
+      );
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      await s.ensureRecoveredTerminalRuntimeEventDurable('tool-session', 'tool-run', terminal, [
+        prepared.operationId,
+      ]);
+      assert.equal((await s.listUnsettledToolOperations('tool-session')).length, 0);
+      assert.equal((await s.readImmutableRuntimeEvents('tool-session', 'tool-run')).length, 3);
     });
   });
   for (const stage of ['commitToolPrepared', 'commitToolOutcome'] as const) {

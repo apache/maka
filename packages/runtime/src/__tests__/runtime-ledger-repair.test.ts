@@ -350,6 +350,67 @@ test('does not import Host-handed-off transcript messages as synthetic runs', as
   }
 });
 
+test('an imported turn that opens on an assistant reply still materializes', async () => {
+  // An external Agent can resume a conversation on the model's answer without
+  // ever recording the user's turn. That answer is conversation the copy was
+  // made for, and dropping the turn would leave the Session holding a message
+  // the Ledger never kept.
+  const root = await mkdtemp(join(tmpdir(), 'maka-assistant-first-import-'));
+  const sessions = createSessionStore(root);
+  const runs = createSqliteAgentRunStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const ts = Date.now();
+    const session = await sessions.createImportedSession(
+      {
+        cwd: '/repo',
+        llmConnectionSlug: 'opencode',
+        model: 'opencode/zen',
+        permissionMode: 'ask',
+      },
+      [
+        {
+          type: 'assistant',
+          id: 'a-first',
+          turnId: 'turn-first',
+          ts,
+          text: 'I renamed the parser entry point.',
+          modelId: 'opencode/zen',
+        },
+        {
+          type: 'turn_state',
+          id: 'a-first-state',
+          turnId: 'turn-first',
+          ts: ts + 1,
+          status: 'completed',
+        },
+      ],
+      { adapterId: 'opencode', sourceSessionId: 'assistant-first' },
+    );
+    const repair = new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
+    });
+
+    await repair.materializeTranscriptLedger(session);
+
+    const [run] = await runtimeEvents.listSessionInvocations(session.id);
+    assert.ok(run, 'the turn is converted');
+    assert.equal(runtimeInvocationOutcome(run), 'completed');
+    const events = await runtimeEvents.readRuntimeEvents(session.id, run.runId);
+    assert.deepEqual(
+      events.flatMap((event) => (event.content ? [event.content.kind] : [])),
+      ['invocation_opened', 'text'],
+    );
+  } finally {
+    await runtimeEvents.close?.();
+    runs.close?.();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('an imported turn with no terminal state is repaired to failed', async () => {
   // The behaviour the adapter now avoids, pinned so the reason for emitting a
   // cutoff cannot quietly stop being true.
@@ -1103,6 +1164,79 @@ test('converts a legacy transcript larger than one page without reading it whole
       [...openedAt].sort((left, right) => left - right),
     );
     assert.equal(new Set(openedAt).size, turnCount);
+  } finally {
+    runtimeEvents.close();
+    await sessions.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('keeps interleaved turns through their final state across a page boundary', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-interleaved-turn-repair-'));
+  const sessions = createSessionStore(root);
+  const runtimeEvents = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+
+  try {
+    const ts = Date.now();
+    const session = await sessions.create({
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+    await sessions.appendMessages(session.id, [
+      { type: 'user', id: 'a-user', turnId: 'turn-a', ts, text: 'first' },
+      { type: 'user', id: 'b-user', turnId: 'turn-b', ts: ts + 1, text: 'second' },
+      ...Array.from({ length: 254 }, (_, index) => ({
+        type: 'assistant' as const,
+        id: `b-assistant-${index}`,
+        turnId: 'turn-b',
+        ts: ts + 2 + index,
+        text: `fragment ${index}`,
+        modelId: 'gpt-5',
+      })),
+      {
+        type: 'turn_state',
+        id: 'a-running',
+        turnId: 'turn-a',
+        ts: ts + 256,
+        status: 'running',
+      },
+      {
+        type: 'turn_state',
+        id: 'a-failed',
+        turnId: 'turn-a',
+        ts: ts + 257,
+        status: 'failed',
+        errorClass: 'tool_failed',
+      },
+      {
+        type: 'turn_state',
+        id: 'a-completed',
+        turnId: 'turn-a',
+        ts: ts + 258,
+        status: 'completed',
+      },
+      {
+        type: 'turn_state',
+        id: 'b-state',
+        turnId: 'turn-b',
+        ts: ts + 259,
+        status: 'completed',
+      },
+    ]);
+
+    await new RuntimeLedgerRepair({
+      runtimeEventStore: runtimeEvents,
+      readMessagesAfter: (sessionId, request) => sessions.readMessagesAfter(sessionId, request),
+    }).materializeTranscriptLedger(await sessions.readHeader(session.id));
+
+    const invocations = await runtimeEvents.listSessionInvocations(session.id);
+    assert.equal(invocations.length, 2);
+    assert.ok(invocations.every((run) => runtimeInvocationOutcome(run) === 'completed'));
+    assert.ok(
+      invocations.every((run) => runtimeInvocationFailureClass(run) !== 'missing_terminal_event'),
+    );
   } finally {
     runtimeEvents.close();
     await sessions.close?.();

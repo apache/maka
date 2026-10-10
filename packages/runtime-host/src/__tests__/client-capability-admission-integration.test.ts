@@ -77,6 +77,7 @@ test('cancels managed approval owners and joiners with the canonical provider id
     const interactions = createInteractionCoordinator(store);
     const runOwner = interactions.bindRun(RUN);
     const capabilities = new HostClientCapabilityCoordinator({
+      isSessionRetired: async () => false,
       activation: new RuntimePolicyActivationGate(),
       onModelToolsChanged: () => undefined,
       interactions,

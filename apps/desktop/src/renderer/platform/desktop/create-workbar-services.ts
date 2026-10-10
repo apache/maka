@@ -19,9 +19,13 @@
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { ShellRunUpdate } from '@maka/core/events';
-import { isTerminalShellRunStatus } from '@maka/core/shell-run';
-import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../../../shared/runtime-host-identity.js';
+import { AttachmentIngestBlockedError } from '@maka/core/attachments';
+import {
+  isDesktopTerminalShellRun,
+  isTerminalShellRunStatus,
+} from '@maka/core/shell-run';
 import type { WorkbarServices } from '../../features/workbar';
+import { createReviewBaseBranchPreferences } from './review-base-branch-preferences.js';
 import { readSettledMessagesFrom } from './session-message-settlement.js';
 import { expectSessionUpdate } from './create-session-settings-services.js';
 
@@ -49,10 +53,10 @@ const DEFAULT_DEPENDENCIES: DesktopWorkbarServiceDependencies = {
 };
 
 function isDesktopTerminal(update: ShellRunUpdate): boolean {
-  return update.ownership.kind === 'local' &&
-    update.sourceTurnId.startsWith(DESKTOP_TERMINAL_LAUNCH_PREFIX) &&
-    update.sourceTurnId === update.sourceToolCallId &&
-    update.result.mode === 'pty';
+  return (
+    update.ownership.kind === 'local' &&
+    isDesktopTerminalShellRun({ ...update, mode: update.result.mode })
+  );
 }
 
 /** The only Desktop-to-Workbar adapter. It narrows the preload bridge by tool. */
@@ -88,6 +92,7 @@ export function createDesktopWorkbarServices(
         // with its structured content (#4804).
         ...(content?.quotes ? { quotes: content.quotes } : {}),
         ...(content?.attachmentItems ? { attachmentItems: content.attachmentItems } : {}),
+        ...(content?.retainedAttachments ? { retainedAttachments: content.retainedAttachments } : {}),
       },
       { waitForHostAdmission: true },
     );
@@ -95,6 +100,9 @@ export function createDesktopWorkbarServices(
       if (result.reason === 'outcome_unknown') {
         return { kind: 'outcome_unknown' };
       }
+      // Keep the classified refusal so the companion can name the attachment
+      // rule that blocked the send, as the main composer does.
+      if (result.reason === 'attachment_blocked') throw new AttachmentIngestBlockedError(result.code);
       throw new Error('Runtime Host refused the follow-up Message');
     }
     return result.disposition === 'turn_started' && result.turnId
@@ -103,11 +111,14 @@ export function createDesktopWorkbarServices(
   };
 
   return {
+    reviewBaseBranchPreference: createReviewBaseBranchPreferences(),
     popupMenu: (input) => bridge.appWindow.popupMenu(input),
     review: {
       read: (input) => bridge.gitReview.read(input),
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
+      subscribeSessionChanges: (handler) =>
+        bridge.sessions.subscribeChanges(handler),
     },
     terminal: {
       start: (sessionId) => bridge.shellRuns.start(sessionId),
@@ -196,14 +207,10 @@ export function createDesktopWorkbarServices(
         bridge.sessions.retractQueueEntry(sessionId, entryId),
       promoteQueueEntry: (sessionId, entryId) =>
         bridge.sessions.promoteQueueEntry(sessionId, entryId),
-      updateQueueEntry: (sessionId, entryId, expectedQueueRevision, text) =>
-        bridge.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text),
-      reorderQueueEntries: (sessionId, entryIds) =>
-        bridge.sessions.reorderQueueEntries(sessionId, entryIds),
+      reorderQueueEntries: (sessionId, entryIds, revision) =>
+        bridge.sessions.reorderQueueEntries(sessionId, entryIds, revision),
       setPermissionMode: async (sessionId, mode) =>
         expectSessionUpdate(await bridge.sessions.setPermissionMode(sessionId, mode)),
-      regenerateTurn: (sessionId, input) =>
-        bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>
         bridge.sessions.respondToSandboxBoundary(sessionId, response),
       respondToClientCapability: (sessionId, response) =>

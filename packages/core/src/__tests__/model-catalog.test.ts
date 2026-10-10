@@ -50,7 +50,7 @@ function verdict(input: BuildModelCatalogInput) {
 
 test('catalog transport preserves independent limits and their unmodified defaults', () => {
   const [entry] = buildModelCatalogEntries({
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     models: [{ id: 'custom', contextWindow: 64000, inputLimit: 32000 }],
     modelOverrides: { custom: { contextWindow: 200000 } },
   });
@@ -60,6 +60,29 @@ test('catalog transport preserves independent limits and their unmodified defaul
   assert.equal(decoded.inputLimit, 32000);
   assert.equal(decoded.defaultContextWindow, 64000);
   assert.equal(decoded.defaultInputLimit, 32000);
+});
+
+test('GPT-6 Sol and Luna use GPT labels and expose supported thinking levels', () => {
+  const models = [{ id: 'gpt-6-sol' }, { id: 'gpt-6-luna' }];
+  for (const providerType of ['openai', 'openai-codex'] as const) {
+    const entries = buildModelCatalogEntries({ providerType, models, modelSource: 'fetched' });
+    assert.deepEqual(
+      entries.map(({ id, displayName, thinkingLevels }) => ({ id, displayName, thinkingLevels })),
+      [
+        {
+          id: 'gpt-6-sol',
+          displayName: 'GPT-6 Sol',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+        {
+          id: 'gpt-6-luna',
+          displayName: 'GPT-6 Luna',
+          thinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+        },
+      ],
+      providerType,
+    );
+  }
 });
 
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
@@ -144,7 +167,7 @@ test('an empty output modality list is not evidence against chat', () => {
   // A provider that declared no output modality and a generator bug that
   // dropped them produce the same shape. Blocking on it would be guessing.
   const undeclared = {
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'relay-quiet',
     models: [{ id: 'relay-quiet', modalities: { input: ['text' as const], output: [] } }],
     modelSource: 'fetched' as const,
@@ -156,7 +179,7 @@ test('an explicit chat capability outranks the declared output modality', () => 
   // A provider that says both is contradicting itself, and the direct claim
   // about chat is the more specific one.
   const contradictory = {
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'relay-omni',
     models: [
       {
@@ -179,7 +202,7 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
       connection: {
         slug: 'relay',
         name: 'Relay',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
         defaultModel: 'custom-default',
         enabled: true,
         models: [{ id: 'relay-static-model' }],
@@ -190,7 +213,7 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
       hasSecret: true,
     });
   const catalog = (modelSource: 'fetched' | 'fallback') => ({
-    providerType: 'openai-compatible' as const,
+    providerType: 'custom' as const,
     defaultModel: 'custom-default',
     models: [{ id: 'relay-static-model' }],
     modelSource,
@@ -332,31 +355,31 @@ test('catalog provenance follows the projected model facts marker used in produc
 test('fallback provider catalogs include projected facts-backed models', () => {
   const entries = buildConnectionModelCatalogEntries({
     connection: {
-      slug: 'opencode-free-facts',
-      providerType: 'opencode-free',
-      defaultModel: 'custom-free-model',
+      slug: 'ark-facts',
+      providerType: 'volcengine-ark',
+      defaultModel: 'custom-model',
       models: [
         {
-          id: 'custom-free-model',
+          id: 'custom-model',
           contextWindow: 128_000,
         },
       ],
       modelSource: 'fallback',
     },
   });
-  const entry = entries.find((candidate) => candidate.id === 'custom-free-model');
+  const entry = entries.find((candidate) => candidate.id === 'custom-model');
   assert.equal(entry?.contextWindow, 128_000);
 });
 
 test('fallback provider catalogs apply facts to known fallback models', () => {
   const entries = buildConnectionModelCatalogEntries({
     connection: {
-      slug: 'opencode-free-known-facts',
-      providerType: 'opencode-free',
-      defaultModel: 'nemotron-3-ultra-free',
+      slug: 'ark-known-facts',
+      providerType: 'volcengine-ark',
+      defaultModel: 'doubao-seed-2-0-pro-260215',
       models: [
         {
-          id: 'nemotron-3-ultra-free',
+          id: 'doubao-seed-2-0-pro-260215',
           contextWindow: 200_000,
           inputLimit: 200_000,
           capabilities: { chat: true },
@@ -365,7 +388,7 @@ test('fallback provider catalogs apply facts to known fallback models', () => {
       modelSource: 'fallback',
     },
   });
-  const entry = entries.find((candidate) => candidate.id === 'nemotron-3-ultra-free');
+  const entry = entries.find((candidate) => candidate.id === 'doubao-seed-2-0-pro-260215');
   assert.equal(entry?.contextWindow, 200_000);
 });
 
@@ -494,7 +517,7 @@ test('catalog preserves the image default through overrides and the wire', () =>
     for (const declared of [undefined, false, true]) {
       const [entry] = resolveConnectionModelCatalog({
         slug: 'relay',
-        providerType: 'openai-compatible',
+        providerType: 'custom',
         defaultModel: 'custom-vision',
         modelSource: 'fetched',
         models: [{ id: 'custom-vision', capabilities: { vision: reported } }],

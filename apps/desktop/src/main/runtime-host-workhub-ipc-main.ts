@@ -17,18 +17,27 @@
  * under the License.
  */
 
-import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import {
+  isWorkHubCreateDefaults,
+  WORKHUB_COORDINATION_SESSION_ID,
+  type WorkHubCreateDefaults,
+} from '@maka/core/session';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
 import { prepareIngestItems, resolveAttachmentRefs } from './attachment-ingest.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import { handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
+import { handleReconnectableRead, handleReconciledControl, rethrowReconnectableReadFailure, type ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import type {
   WorkHubAnswerInput,
   WorkHubAnswerResult,
+  WorkHubCoordinationSessionResolution,
   WorkHubPrepareAttachmentsResult,
 } from '../shared/workhub-conversation.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
+import {
+  readWorkHubNewWorkDefaults,
+  writeWorkHubNewWorkDefaults,
+} from './workhub-new-work-defaults.js';
 
 type RuntimeHostWorkHubClient = Pick<
   DesktopRuntimeHostClient,
@@ -38,6 +47,7 @@ type RuntimeHostWorkHubClient = Pick<
   | 'resolveWorkHubCoordinationSession'
   | 'getWorkHubSession'
   | 'queryTurn'
+  | 'hostId'
   | 'hostEpoch'
 >;
 
@@ -51,10 +61,23 @@ export function registerRuntimeHostWorkHubIpc(
   ipcMain: ReconnectableReadIpcMain,
   options: RuntimeHostWorkHubIpcOptions,
 ): void {
-  ipcMain.handle('workhub:getSession', async () => toDesktopHostSessionSummary(await client.getWorkHubSession()));
-  ipcMain.handle('workhub:resolveCoordinationSession', () =>
-    client.resolveWorkHubCoordinationSession(),
+  handleReconnectableRead(ipcMain, 'workhub:getSession', async () =>
+    toDesktopHostSessionSummary(await client.getWorkHubSession()),
   );
+  ipcMain.handle('workhub:resolveCoordinationSession', async (): Promise<WorkHubCoordinationSessionResolution> => {
+    try {
+      return await client.resolveWorkHubCoordinationSession();
+    } catch (error) {
+      if (
+        error instanceof RuntimeHostOperationError &&
+        error.operation === 'workhub.coordination.resolve' &&
+        error.code === 'model_required'
+      ) {
+        return { kind: 'model_required' };
+      }
+      throw error;
+    }
+  });
   type Attempt = WorkHubAnswerInput & { readonly originHostEpoch: string };
   const unknown = (attempt: Attempt): WorkHubAnswerResult => ({
     kind: 'unknown', originHostEpoch: attempt.originHostEpoch,
@@ -105,6 +128,16 @@ export function registerRuntimeHostWorkHubIpc(
     reconciliationUnavailable: async (attempt) => unknown(attempt),
   });
   ipcMain.handle('workhub:configureModel', (_event, input) => client.configureWorkHubModel(input));
+  ipcMain.handle('workhub:getNewWorkDefaults', () => readWorkHubNewWorkDefaults(client.hostId));
+  ipcMain.handle('workhub:setNewWorkDefaults', (_event, value: unknown) => {
+    if (!isWorkHubCreateDefaults(value) || value.permissionMode !== undefined) {
+      throw new Error('Invalid WorkHub new-work defaults');
+    }
+    writeWorkHubNewWorkDefaults(
+      client.hostId,
+      value as Omit<WorkHubCreateDefaults, 'permissionMode'>,
+    );
+  });
   ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown): Promise<WorkHubPrepareAttachmentsResult> => {
     if (!options.attachmentIngest) throw new Error('WorkHub attachments are unavailable');
     try {

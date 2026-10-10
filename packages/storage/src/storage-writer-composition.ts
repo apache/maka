@@ -17,11 +17,14 @@
  * under the License.
  */
 
+import {
+  openArchiveRetentionStore,
+  type InteractiveArchiveRetentionStore,
+} from './archive-retention-store.js';
 import { openInteractiveArtifactStoreForWrite } from './artifact-stores.js';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { openInteractiveContextOffloadStoreForWrite } from './context-offload-store.js';
 import { openInteractiveDailyReviewAuthorityForWrite } from './daily-review-authority.js';
-import { openInteractiveDeepResearchStoreForWrite } from './deep-research-authority.js';
 import { openInteractiveExecutionStoresForWrite } from './execution-stores.js';
 import type { ExecutionPersistenceProvider } from './execution-persistence-provider.js';
 import type { InteractiveGoalAuthorityWriter } from './goal-authority.js';
@@ -29,12 +32,28 @@ import { openInteractiveLongTermMemoryStoreForWrite } from './long-term-memory-s
 import { openInteractiveMemoryBundleStoreForWrite } from './memory-bundle-store.js';
 import { openInteractivePlanStoreForWrite } from './plan-authority.js';
 import { openInteractiveProjectCatalogForWrite } from './project-catalog-authority.js';
-import { assertStorageRootLease, type StorageRootLease } from './root-authority.js';
+import {
+  assertStorageRootLease,
+  runWithStorageRootLease,
+  type StorageRootLease,
+} from './root-authority.js';
 import { openInteractiveRuntimePolicyStoresForWrite } from './runtime-policy-stores.js';
 import { openInteractiveScheduledTaskStoreForWrite } from './scheduled-task-store.js';
 import { openInteractiveSessionTodoStoreForWrite } from './session-todo-authority.js';
 import { openInteractiveShellRunStoreForWrite } from './shell-run-authority.js';
+import {
+  openStorageFootprintReader,
+  type SessionStorageFootprint,
+  type StorageFootprint,
+} from './storage-footprint.js';
 import { openInteractiveUsageStoresForWrite } from './usage-stores.js';
+
+export type {
+  SessionStorageFootprint,
+  StorageFootprint,
+  StorageFootprintKind,
+  StorageFootprintTotal,
+} from './storage-footprint.js';
 
 export interface OpenStorageWriterCompositionOptions {
   /** One trusted backend for the complete execution transaction domain. */
@@ -53,7 +72,6 @@ export interface StorageWriterComposition {
   readonly runtimePolicy: Awaited<ReturnType<typeof openInteractiveRuntimePolicyStoresForWrite>>;
   readonly scheduledTasks: Awaited<ReturnType<typeof openInteractiveScheduledTaskStoreForWrite>>;
   readonly plan: Awaited<ReturnType<typeof openInteractivePlanStoreForWrite>>;
-  readonly deepResearch: Awaited<ReturnType<typeof openInteractiveDeepResearchStoreForWrite>>;
   readonly dailyReview: Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>;
   readonly goal: InteractiveGoalAuthorityWriter;
   readonly memoryBundle: Awaited<ReturnType<typeof openInteractiveMemoryBundleStoreForWrite>>;
@@ -65,7 +83,16 @@ export interface StorageWriterComposition {
   readonly contextOffloadUnavailable?: { readonly cause: unknown };
   readonly usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
   readonly shellRuns: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
+  readonly footprint: InteractiveStorageFootprintReader;
+  /** The archived-task retention document, bound to the composition's write lease. */
+  readonly archiveRetention: InteractiveArchiveRetentionStore;
   close(): Promise<void>;
+}
+
+/** Read-only State Root size measurement, bound to the composition's write lease. */
+export interface InteractiveStorageFootprintReader {
+  measure(): Promise<StorageFootprint>;
+  measureSessions(sessionIds: readonly string[]): Promise<readonly SessionStorageFootprint[]>;
 }
 
 const activeCompositions = new WeakSet<object>();
@@ -141,10 +168,6 @@ async function createComposition(
     closeWriter,
   );
   const plan = await openWriter(() => openInteractivePlanStoreForWrite(lease), closeWriter);
-  const deepResearch = await openWriter(
-    () => openInteractiveDeepResearchStoreForWrite(lease),
-    closeWriter,
-  );
   const dailyReview = await openWriter(
     () => openInteractiveDailyReviewAuthorityForWrite(lease),
     closeWriter,
@@ -184,13 +207,27 @@ async function createComposition(
     () => openInteractiveShellRunStoreForWrite(lease),
     closeWriter,
   );
+  const footprintReader = await openWriter(
+    async () =>
+      openStorageFootprintReader(lease.canonicalPath, {
+        ...(contextOffload ? { contextOffload } : {}),
+      }),
+    (reader) => reader.close(),
+  );
+  const footprint: InteractiveStorageFootprintReader = Object.freeze({
+    measure: () =>
+      runWithStorageRootLease(lease, 'interactive', 'write', () => footprintReader.measure()),
+    measureSessions: (sessionIds: readonly string[]) =>
+      runWithStorageRootLease(lease, 'interactive', 'write', () =>
+        footprintReader.measureSessions(sessionIds),
+      ),
+  });
   return Object.freeze({
     execution,
     projectCatalog,
     runtimePolicy,
     scheduledTasks,
     plan,
-    deepResearch,
     dailyReview,
     goal,
     memoryBundle,
@@ -201,6 +238,8 @@ async function createComposition(
     ...(contextOffloadUnavailable ? { contextOffloadUnavailable } : {}),
     usage,
     shellRuns,
+    footprint,
+    archiveRetention: openArchiveRetentionStore(lease),
     close,
   });
 }

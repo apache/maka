@@ -170,7 +170,9 @@ export function buildContinuationReplaySegment(input: {
     );
   }
 
-  const modelPlan = buildRuntimeEventModelReplayPlan(input.prefix.events);
+  const modelPlan = buildRuntimeEventModelReplayPlan(input.prefix.events, {
+    allowRepairedAssistantPrefix: true,
+  });
   const eventIndexes = new Map(
     input.prefix.events.map((event, index) => [event.id, index] as const),
   );

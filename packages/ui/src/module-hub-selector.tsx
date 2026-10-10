@@ -21,7 +21,6 @@ import type { ReactNode } from 'react';
 import { Tab, TabList } from '@astryxdesign/core';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
-import { ICON_SIZE, Blocks, CalendarCheck, Plug, Sun } from './icons.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export type ModuleHubHeader = {
@@ -42,7 +41,7 @@ type ModuleHubSelectorProps =
       onChange(value: AutomationModule): void;
     };
 
-type SelectorOption = readonly [value: string, label: string, icon: ReactNode];
+type SelectorOption = readonly [value: string, label: string];
 
 function Selector(props: {
   value: string;
@@ -57,8 +56,8 @@ function Selector(props: {
       aria-label={props.ariaLabel}
       onChange={props.onChange}
     >
-      {props.options.map(([value, label, icon]) => (
-        <Tab key={value} value={value} label={label} icon={icon} />
+      {props.options.map(([value, label]) => (
+        <Tab key={value} value={value} label={label} />
       ))}
     </TabList>
   );
@@ -68,8 +67,8 @@ export function ModuleHubSelector(props: ModuleHubSelectorProps) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs;
   if (props.hub === 'extensions') {
     const options = [
-      ['skills', copy.extensions.skills, <Blocks key="skills" size={ICON_SIZE.chrome} aria-hidden="true" />],
-      ['mcp', copy.extensions.mcp, <Plug key="mcp" size={ICON_SIZE.chrome} aria-hidden="true" />],
+      ['skills', copy.extensions.skills],
+      ['mcp', copy.extensions.mcp],
     ] as const;
     const selectedLabel = options.find(([value]) => value === props.value)?.[1] ?? copy.extensions.skills;
     return (
@@ -83,8 +82,8 @@ export function ModuleHubSelector(props: ModuleHubSelectorProps) {
   }
 
   const options = [
-    ['scheduled-tasks', copy.automations.scheduledTasks, <CalendarCheck key="scheduled-tasks" size={ICON_SIZE.chrome} aria-hidden="true" />],
-    ['daily-review', copy.automations.dailyReview, <Sun key="daily-review" size={ICON_SIZE.chrome} aria-hidden="true" />],
+    ['scheduled-tasks', copy.automations.scheduledTasks],
+    ['daily-review', copy.automations.dailyReview],
   ] as const;
   const selectedLabel = options.find(([value]) => value === props.value)?.[1] ?? copy.automations.scheduledTasks;
   return (

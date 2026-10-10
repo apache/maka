@@ -22,7 +22,7 @@ import {
   markNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from '../../../new-task-reload-intent.js';
+} from '../../../application/contracts/new-task-reload-intent.js';
 import type {
   TaskEntryCatalog,
   TaskEntryHost,

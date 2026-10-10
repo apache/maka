@@ -194,7 +194,7 @@ describe('runtime policy stores', () => {
       // Create persists the typed projection — and only the projection
       // (the extras bag never entered the picture).
       const connection = await createConnection(stores, 0, {
-        ...connectionDraft('my-relay', 'openai-compatible', 'My Relay'),
+        ...connectionDraft('my-relay', 'custom', 'My Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['relay-model'],
         modelOverrides: declared,
@@ -302,7 +302,7 @@ describe('runtime policy stores', () => {
         'relay-model-2': { contextWindow: 64_000 as const },
       };
       const connection = await createConnection(stores, 0, {
-        ...connectionDraft('prune-relay', 'openai-compatible', 'Prune Relay'),
+        ...connectionDraft('prune-relay', 'custom', 'Prune Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['relay-model', 'relay-model-2'],
         modelOverrides: declared,
@@ -371,7 +371,7 @@ describe('runtime policy stores', () => {
       // Same ids, different provider. A relay may serve `claude-*` names as its
       // own identifiers, so nothing here may be rewritten on Anthropic's behalf.
       const connection = await createConnection(stores, 0, {
-        ...connectionDraft('alias-relay', 'openai-compatible', 'Alias Relay'),
+        ...connectionDraft('alias-relay', 'custom', 'Alias Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['claude-haiku-4-5-20251001'],
         modelOverrides: { 'claude-haiku-4-5-20251001': { vision: true } },
@@ -407,7 +407,7 @@ describe('runtime policy stores', () => {
   test('a model refresh keeps the selection, and an explicit change prunes it', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {
-        ...connectionDraft('refresh-relay', 'openai-compatible', 'Refresh Relay'),
+        ...connectionDraft('refresh-relay', 'custom', 'Refresh Relay'),
         baseUrl: 'https://relay.example/v1',
         enabledModelIds: ['model-a', 'model-b'],
         modelOverrides: {
@@ -787,6 +787,89 @@ describe('runtime policy stores', () => {
         persisted.connections.map(({ providerType }) => providerType),
         ['gemini-cli', 'google'],
       );
+    });
+  });
+
+  test('upgrades v2 legacy custom connection types to custom and persists schema v3 on write', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const legacy = [
+        ['11111111-1111-4111-8111-111111111111', 'openai-compatible', 'openai-chat'],
+        ['22222222-2222-4222-8222-222222222222', 'openai-responses-compatible', 'openai-responses'],
+        ['33333333-3333-4333-8333-333333333333', 'anthropic-compatible', 'anthropic-messages'],
+      ] as const;
+      const path = join(root, 'connection-catalog.json');
+      await writeFile(
+        path,
+        `${JSON.stringify({
+          schemaVersion: 2,
+          revision: 3,
+          defaultTarget: null,
+          connections: legacy.map(([connectionId, providerType]) => ({
+            connectionId,
+            revision: 1,
+            slug: `${providerType}-relay`,
+            name: providerType,
+            providerType,
+            // Older builds let a relay's endpoint be cleared; that row must still read.
+            ...(providerType === 'anthropic-compatible'
+              ? {}
+              : { baseUrl: 'https://relay.example/v1' }),
+            enabled: true,
+            // Listed but disabled: enabling it later must still get hosted search.
+            enabledModelIds: ['relay-model'],
+            models: [{ id: 'deepseek-v4-flash' }],
+            modelSource: 'fetched',
+            modelsFetchedAt: 1,
+            modelOverrides: { 'relay-model': { contextWindow: 64_000 } },
+          })),
+        })}\n`,
+        'utf8',
+      );
+
+      const expected = legacy.map(([connectionId, providerType, defaultApiProtocol]) => ({
+        connectionId,
+        slug: `${providerType}-relay`,
+        providerType: 'custom',
+        defaultApiProtocol,
+        modelOverrides: {
+          'relay-model': { contextWindow: 64_000 },
+          // The Anthropic type inferred hosted search for this model.
+          ...(providerType === 'anthropic-compatible'
+            ? { 'deepseek-v4-flash': { capabilities: { webSearch: true } } }
+            : {}),
+        },
+      }));
+      const project = (connections: readonly ConnectionCatalogEntry[]) =>
+        connections.map(
+          ({ connectionId, slug, providerType, defaultApiProtocol, modelOverrides }) => ({
+            connectionId,
+            slug,
+            providerType,
+            defaultApiProtocol,
+            modelOverrides,
+          }),
+        );
+      const snapshot = await stores.connectionCatalog.getSnapshot();
+      assert.deepEqual(project(snapshot.connections), expected);
+
+      const first = snapshot.connections[0]!;
+      const updated = await stores.connectionCatalog.update({
+        expected: connectionBasis(first),
+        changes: {
+          name: 'Renamed relay',
+          baseUrl: first.baseUrl,
+          enabled: first.enabled,
+          enabledModelIds: first.enabledModelIds,
+          modelOverrides: first.modelOverrides ?? null,
+        },
+      });
+      assert.equal(updated.kind, 'committed');
+      const persisted = JSON.parse(await readFile(path, 'utf8')) as {
+        schemaVersion: number;
+        connections: ConnectionCatalogEntry[];
+      };
+      assert.equal(persisted.schemaVersion, 3);
+      assert.deepEqual(project(persisted.connections), expected);
     });
   });
 
@@ -1913,6 +1996,35 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('enables a chosen model and switches the default in one catalog commit', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const a = await createConnection(stores, 0, connectionDraft('relay-a', 'custom', 'Relay A'));
+      await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: 1,
+        target: { connectionId: a.connectionId, modelId: 'gpt-5' },
+      });
+      const b = await createConnection(stores, 2, {
+        ...connectionDraft('relay-b', 'custom', 'Relay B'),
+        enabledModelIds: [],
+        modelOverrides: { 'relay-model': { contextWindow: 128000 } },
+      });
+      const before = await stores.connectionCatalog.getSnapshot();
+      const input = {
+        expectedCatalogRevision: before.revision,
+        target: { connectionId: b.connectionId, modelId: 'relay-model' },
+        enableModel: true,
+      };
+      const committed = await stores.connectionCatalog.setDefaultTarget(input);
+      assert.equal(committed.kind, 'committed');
+      const after = await stores.connectionCatalog.getSnapshot();
+      assert.equal(after.revision, before.revision + 1);
+      assert.deepEqual(after.defaultTarget, input.target);
+      assert.deepEqual(after.connections[1]?.enabledModelIds, ['relay-model']);
+      assert.equal(after.connections[1]?.revision, b.revision + 1);
+      assert.deepEqual(after.connections[0], before.connections[0]);
+    });
+  });
+
   test('rejects a stated default target that names an unselected model', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
@@ -1929,6 +2041,34 @@ describe('runtime policy stores', () => {
       const unchanged = await stores.connectionCatalog.getSnapshot();
       assert.equal(unchanged.defaultTarget, null);
       assert.equal(unchanged.revision, catalog.revision);
+    });
+  });
+
+  test('keeps both the selection and old default on a stale or invalid enable-and-default request', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const a = await createConnection(stores, 0, connectionDraft('default-a', 'custom', 'A'));
+      await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: 1,
+        target: { connectionId: a.connectionId, modelId: 'gpt-5' },
+      });
+      const b = await createConnection(stores, 2, {
+        ...connectionDraft('default-b', 'custom', 'B'),
+        enabledModelIds: [],
+        modelOverrides: { known: {} },
+      });
+      const before = await stores.connectionCatalog.getSnapshot();
+      for (const [revision, modelId, kind] of [
+        [before.revision - 1, 'known', 'revision_conflict'],
+        [before.revision, 'unknown', 'invalid_default_target'],
+      ] as const) {
+        const result = await stores.connectionCatalog.setDefaultTarget({
+          expectedCatalogRevision: revision,
+          target: { connectionId: b.connectionId, modelId },
+          enableModel: true,
+        });
+        assert.equal(result.kind, kind);
+        assert.deepEqual(await stores.connectionCatalog.getSnapshot(), before);
+      }
     });
   });
 
@@ -4098,7 +4238,7 @@ describe('runtime policy stores', () => {
       try {
         const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
         const connection = await createConnection(stores, 0, {
-          ...connectionDraft('my-relay', 'openai-compatible', 'Custom relay'),
+          ...connectionDraft('my-relay', 'custom', 'Custom relay'),
           baseUrl: 'https://relay.example.test/v1',
         });
         connectionId = connection.connectionId;
@@ -4107,7 +4247,7 @@ describe('runtime policy stores', () => {
           `${JSON.stringify({
             schemaVersion: 1,
             connectionId,
-            providerType: connection.providerType,
+            providerType: 'openai-compatible',
             suppliedSecret: null,
             baseUrl: connection.baseUrl,
             enabledModelIds: ['relay/new'],
@@ -4137,6 +4277,8 @@ describe('runtime policy stores', () => {
         // selected model is enabled while a declaration the wizard never
         // offered remains intact.
         assert.deepEqual(catalog.connections[0]?.enabledModelIds, ['relay/new', 'gpt-5']);
+        assert.equal(catalog.connections[0]?.providerType, 'custom');
+        assert.equal(catalog.connections[0]?.defaultApiProtocol, 'openai-chat');
         assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
       } finally {
         await successor.close();
@@ -4219,7 +4361,7 @@ describe('runtime policy stores', () => {
         const connection = await createConnection(
           stores,
           0,
-          connectionDraft('my-relay', 'openai-compatible', 'Custom relay'),
+          connectionDraft('my-relay', 'custom', 'Custom relay'),
         );
         const credential = await stores.credentialVault.set({
           locator: connectionCredential(connection, 'api_key'),
@@ -4233,8 +4375,9 @@ describe('runtime policy stores', () => {
           `${JSON.stringify({
             schemaVersion: 2,
             connectionId: connection.connectionId,
-            slug: 'openai-compatible',
+            slug: 'custom-2',
             providerType: connection.providerType,
+            defaultApiProtocol: connection.defaultApiProtocol,
             suppliedSecret: 'must-not-replace-original',
             baseUrl: connection.baseUrl,
             enabledModelIds: ['gpt-5'],
@@ -4841,6 +4984,9 @@ function connectionDraft(
     slug,
     name,
     providerType,
+    ...(providerType === 'custom'
+      ? { defaultApiProtocol: 'openai-chat' as const, baseUrl: 'https://relay.example/v1' }
+      : {}),
     enabled: true,
     enabledModelIds: ['gpt-5'],
   };
@@ -4974,3 +5120,32 @@ async function withTempDir(run: (base: string) => Promise<void>): Promise<void> 
     await rm(base, { recursive: true, force: true });
   }
 }
+
+test('Jev policy and credentials persist in Host stores without exposing the key in projections', async () => {
+  await withInteractiveOwner(async ({ stores }) => {
+    const before = await stores.runtimePolicy.getSnapshot();
+    assert.equal(before.policy.jev?.enabled ?? false, false);
+    const changed = await stores.runtimePolicy.mutate({
+      expectedRevision: before.revision,
+      operation: { kind: 'set_jev', value: { enabled: true } },
+    });
+    assert.equal(changed.kind, 'committed');
+    assert.equal((await stores.runtimePolicy.getSnapshot()).policy.jev?.enabled, true);
+    const locator = { scope: 'jev', kind: 'api_key' } as const;
+    const saved = await stores.credentialVault.set({
+      locator,
+      expected: null,
+      secret: 'jev-test-secret',
+    });
+    assert.equal(saved.kind, 'committed');
+    const projection = await stores.credentialVault.getSnapshot();
+    assert.equal(JSON.stringify(projection).includes('jev-test-secret'), false);
+    const material = await stores.operations.exportCredentialMaterial(locator);
+    assert.equal(material?.secret, 'jev-test-secret');
+    const status = await getCredentialStatus(stores.credentialVault, locator);
+    assert.equal(status.configured, true);
+    if (status.configured)
+      await stores.credentialVault.delete({ expected: credentialBasis(status) });
+    assert.equal(await stores.operations.exportCredentialMaterial(locator), null);
+  });
+});

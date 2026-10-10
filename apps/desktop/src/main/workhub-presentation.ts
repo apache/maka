@@ -17,16 +17,27 @@
  * under the License.
  */
 
-import { BrowserWindow, View, WebContentsView, globalShortcut, ipcMain, screen, systemPreferences } from 'electron';
+import { BrowserWindow, View, WebContentsView, globalShortcut, ipcMain, screen, shell, systemPreferences } from 'electron';
 import type { WorkHubHost, WorkHubMainNavigation, WorkHubPresentationSnapshot } from '../shared/workhub-presentation.js';
 import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
+import { isExternalUrl } from './external-link-guard.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
-import { focusWindow, showWindowInactive, type WindowRevealMode } from './window-reveal.js';
+import { focusWindow, type WindowRevealMode } from './window-reveal.js';
+import { auxiliaryWindowRegistry } from './auxiliary-window-registry.js';
 
 const COMMAND = 'workhub-presentation:command';
 const SHORTCUT = 'CommandOrControl+Shift+K';
 const RESIZE_DURATION = 420;
+const FLOATING_MIN_WIDTH = 360;
+
+function floatingMinWidth(areaWidth: number): number {
+  return Math.min(FLOATING_MIN_WIDTH, areaWidth);
+}
+
+function clampFloatingWidth(width: number, areaWidth: number): number {
+  return Math.min(Math.max(width, floatingMinWidth(areaWidth)), areaWidth);
+}
 
 export interface WorkHubPresentationDeps {
   mainWindow(): BrowserWindow | undefined;
@@ -63,6 +74,12 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let placement: 'docked' | 'floating' = 'docked';
   let shortcutRegistered = false;
   let disposed = false;
+  // The app is closing every window for an update install (#5783): the
+  // floating panel must not veto its close, and a closing Desktop must not
+  // re-parent the conversation into a fresh panel; the conversation goes down
+  // with its window. Cleared by what shows the app carried on instead: a
+  // Desktop window attaching or a summon.
+  let releasedForQuit = false;
   let ipcRegistered = false;
   let rendererReady = false;
   let rendererCrashed = false;
@@ -74,6 +91,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
   let interactionPending = false;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
   let resizeTarget: Electron.Rectangle | undefined;
+  let expectedFloatingBounds: Electron.Rectangle | undefined;
   let resizeViewportHeight: number | undefined;
   let viewportInset = 0;
   let floatingRadius: number | undefined;
@@ -113,7 +131,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (!view || view.webContents.isDestroyed() || !rendererReady || !parent || parent.isDestroyed()) return;
     // A cold summon stays hidden until the renderer has mounted its composer.
     // Reuse focusPending so hide/disable can cancel it before ready arrives.
-    if (placement === 'floating' && progressRequest === undefined) focusWindow(parent, deps.revealMode);
+    if (placement === 'floating' && progressRequest === undefined) {
+      auxiliaryWindowRegistry.focus(parent, deps.revealMode);
+    }
     if (!parent.isVisible()) return;
     if (placement === 'docked' && (!host.visible || host.occluded)) return;
     view.webContents.focus();
@@ -140,15 +160,36 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     container.setVisible(false);
     container.addChildView(view);
     view.setBackgroundColor('#00000000');
-    const release = deps.onViewCreated?.(view.webContents, container);
-    releaseView = typeof release === 'function' ? release : undefined;
-    view.webContents.once('destroyed', releaseViewRegistration);
-    installMainWindowPermissionPolicy(view.webContents, entry.url);
-    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    view.webContents.on('will-navigate', (event) => event.preventDefault());
-    view.webContents.on('will-frame-navigate', (event) => event.preventDefault());
-    view.webContents.on('will-attach-webview', (event) => event.preventDefault());
     const contents = view.webContents;
+    const release = deps.onViewCreated?.(contents, container);
+    releaseView = typeof release === 'function' ? release : undefined;
+    contents.once('destroyed', releaseViewRegistration);
+    installMainWindowPermissionPolicy(contents, entry.url);
+    // Keep remote pages out of the WorkHub renderer while preserving the
+    // user-facing assistant-link contract used by the main Desktop window.
+    // WorkHub is a local conversation surface, not the embedded browser.
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isExternalUrl(url)) void shell.openExternal(url).catch(() => {});
+      return { action: 'deny' };
+    });
+    contents.on('will-navigate', (event, url) => {
+      // Let the initial Vite dev-server or packaged entry load settle in place.
+      const current = contents.getURL();
+      if (current === url) return;
+      event.preventDefault();
+      if (isExternalUrl(url)) void shell.openExternal(url).catch(() => {});
+    });
+    contents.on('will-frame-navigate', (event) => {
+      if (!event.isMainFrame) {
+        event.preventDefault();
+        return;
+      }
+      const current = contents.getURL();
+      if (current === event.url) return;
+      event.preventDefault();
+      if (isExternalUrl(event.url)) void shell.openExternal(event.url).catch(() => {});
+    });
+    contents.on('will-attach-webview', (event) => event.preventDefault());
     contents.once('render-process-gone', (_event, details) => {
       if (!ownsWebContents(contents)) return;
       disposeView();
@@ -156,7 +197,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       changed();
       reportError(new Error(`WorkHub renderer exited: ${details.reason}`));
     });
-    void loadMainRenderer(view.webContents, entry, 'workhub').catch(reportError);
+    void loadMainRenderer(contents, entry, 'workhub').catch(reportError);
     changed();
     return view;
   }
@@ -179,6 +220,13 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function resizeFloating(bounds: Electron.Rectangle, animate: boolean): void {
     const window = floating!;
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const width = clampFloatingWidth(bounds.width, area.width);
+    bounds = {
+      ...bounds,
+      width,
+      x: Math.max(area.x, Math.min(bounds.x, area.x + area.width - width)),
+    };
     if (resizeTarget && bounds.x === resizeTarget.x && bounds.y === resizeTarget.y &&
       bounds.width === resizeTarget.width && bounds.height === resizeTarget.height) return;
     const initial = window.getBounds();
@@ -204,6 +252,17 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
         cancelFloatingAnimation();
         return;
       }
+      // A native caller can resize the floating window while a renderer-driven
+      // layout animation is in flight. Once its bounds no longer match the
+      // frame we submitted, the native resize owns the geometry; do not let a
+      // stale animation target overwrite it on the next tick.
+      const current = window.getBounds();
+      if (current.x !== previous.x || current.y !== previous.y || current.width !== previous.width || current.height !== previous.height) {
+        expectedFloatingBounds = undefined;
+        cancelFloatingAnimation(true);
+        fitFloating(false);
+        return;
+      }
       const progress = Math.min(1, (performance.now() - started) / RESIZE_DURATION);
       // A critically damped response gives the glass a soft start and a long
       // landing without overshooting the screen or scaling the live editor.
@@ -214,6 +273,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       const bottom = Math.round(initial.y + initial.height + (bounds.y + bounds.height - initial.y - initial.height) * eased);
       const next = { width, height, x: Math.round(center - width / 2), y: bottom - height };
       if (next.x !== previous.x || next.y !== previous.y || next.width !== previous.width || next.height !== previous.height) {
+        expectedFloatingBounds = next;
         window.setBounds(next);
         fitFloating();
         previous = next;
@@ -247,7 +307,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (view && !view.webContents.isDestroyed()) view.webContents.send('workhub-presentation:viewport-inset', inset / view.webContents.getZoomFactor());
   }
 
-  function fitFloating(): void {
+  function fitFloating(rememberExpandedHeight = true): void {
     if (!floating || floating.isDestroyed() || parent !== floating || !view) return;
     const { width, height } = floating.getContentBounds();
     // Clip in the native parent so resizing does not rebuild a renderer mask.
@@ -260,7 +320,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const canvasHeight = resizeViewportHeight ?? height;
     setViewportInset(canvasHeight - height);
     setViewBounds({ x: 0, y: height - canvasHeight, width, height: canvasHeight });
-    if (progressRequest === undefined && conversationExpanded && !resizeTarget) expandedHeight = height;
+    if (rememberExpandedHeight && progressRequest === undefined && conversationExpanded && !resizeTarget) expandedHeight = height;
   }
 
   function ensureFloating(): BrowserWindow {
@@ -268,11 +328,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const width = Math.min(520, area.width);
     const height = Math.min(conversationExpanded ? expandedHeight : compactHeight, area.height);
-    floating = new BrowserWindow({
-      title: 'WorkHub', show: false, width, height,
+    floating = auxiliaryWindowRegistry.create('workhub', {
+      title: 'WorkHub', width, height,
       type: process.platform === 'darwin' ? 'panel' : undefined,
       x: area.x + Math.round((area.width - width) / 2), y: Math.max(area.y, area.y + area.height - height - 96),
-      minWidth: Math.min(360, width), minHeight: Math.min(80, height),
+      minWidth: floatingMinWidth(width), minHeight: Math.min(80, height),
       resizable: conversationExpanded,
       alwaysOnTop: true, autoHideMenuBar: true, maximizable: false, fullscreenable: false,
       frame: false, transparent: true, backgroundColor: '#00000000',
@@ -283,18 +343,38 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     // A macOS panel can accompany fullscreen apps without turning Maka into
     // a Dock-less accessory application.
     if (process.platform === 'darwin') floating.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
-    floating.on('resize', fitFloating);
+    const window = floating;
+    window.on('resize', () => {
+      const current = window.getBounds();
+      if (expectedFloatingBounds && current.x === expectedFloatingBounds.x && current.y === expectedFloatingBounds.y &&
+        current.width === expectedFloatingBounds.width && current.height === expectedFloatingBounds.height) {
+        fitFloating();
+        return;
+      }
+      if (resizeTarget) {
+        expectedFloatingBounds = undefined;
+        cancelFloatingAnimation(true);
+        fitFloating(false);
+        return;
+      }
+      fitFloating();
+    });
     floating.on('hide', () => deps.onVisibilityChanged?.());
     floating.on('minimize', () => deps.onVisibilityChanged?.());
     floating.on('show', () => deps.onVisibilityChanged?.());
     floating.on('restore', () => deps.onVisibilityChanged?.());
-    floating.on('close', (event) => {
+    const panel = floating;
+    panel.on('close', (event) => {
       if (disposed) return;
+      if (releasedForQuit) {
+        if (parent === panel) releaseConversationForQuit();
+        return;
+      }
       event.preventDefault();
       ++presentationRevision;
       hideFloating();
     });
-    return floating;
+    return panel;
   }
 
   function updateDockedBounds(): void {
@@ -337,6 +417,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function detach(positionAtDefault = false): void {
     if (!deps.isEnabled() || disposed) return;
+    releasedForQuit = false;
     cancelFloatingAnimation();
     ensureView();
     const target = ensureFloating();
@@ -350,7 +431,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     target.setResizable(conversationExpanded);
     conversationBounds = undefined;
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-    const width = Math.min(old.width, area.width);
+    const width = clampFloatingWidth(old.width, area.width);
     const height = Math.min(conversationExpanded ? expandedHeight : compactHeight, area.height);
     const bounds = {
       width, height,
@@ -371,7 +452,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     expandOnFocus = true;
     const current = floating.getBounds();
     const area = screen.getDisplayMatching(current).workArea;
-    const width = Math.min(conversationBounds?.width ?? 520, area.width);
+    const width = clampFloatingWidth(conversationBounds?.width ?? 520, area.width);
     const height = Math.min(expandedHeight, area.height);
     clearProgressRequest();
     conversationBounds = undefined;
@@ -383,7 +464,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
       y: Math.max(area.y, Math.min(current.y + current.height - height, area.y + area.height - height)),
     }, true);
     // Expansion may beat progress-ready and unmount its paint callback.
-    showWindowInactive(floating, deps.revealMode);
+    auxiliaryWindowRegistry.show('workhub', floating, deps.revealMode);
     // A send acknowledgement can arrive after the user has switched
     // apps. Growing the conversation must not steal focus back.
     if (floating.isFocused()) focusComposer();
@@ -457,9 +538,14 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
 
   function attachMainWindow(main: BrowserWindow): void {
     if (mainListeners.has(main)) return;
+    releasedForQuit = false;
     const contents = main.webContents;
     const onClose = () => {
       if (disposed || parent !== main || !view) return;
+      if (releasedForQuit) {
+        releaseConversationForQuit();
+        return;
+      }
       cancelFloatingAnimation();
       // BrowserWindow disposal must never own the conversation's lifetime.
       attach(ensureFloating());
@@ -539,8 +625,8 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (typeof value.visible !== 'boolean' || (value.occluded !== undefined && typeof value.occluded !== 'boolean') || !value.rect ||
               ![value.rect.x, value.rect.y, value.rect.width, value.rect.height].every((n) => typeof n === 'number' && Number.isFinite(n)) ||
               value.rect.width < 0 || value.rect.height < 0) throw new Error('Invalid WorkHub host');
-            if (value.workbar && (typeof value.workbar.collapsed !== 'boolean' || !['right', 'bottom'].includes(value.workbar.placement))) throw new Error('Invalid WorkHub workbar');
-            const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement;
+            if (value.workbar && (typeof value.workbar.collapsed !== 'boolean' || !['right', 'bottom'].includes(value.workbar.placement) || (value.workbar.togglePosition !== undefined && !['titlebar', 'edge'].includes(value.workbar.togglePosition)))) throw new Error('Invalid WorkHub workbar');
+            const workbarChanged = host.workbar?.collapsed !== value.workbar?.collapsed || host.workbar?.placement !== value.workbar?.placement || host.workbar?.togglePosition !== value.workbar?.togglePosition;
             // Native child views sit above the main renderer's top layer. Keep
             // a still frame behind its menus/dialogs while yielding native input.
             if (placement === 'docked' && value.visible && value.occluded && !host.occluded && view && container?.getVisible() &&
@@ -569,7 +655,7 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (isMain) throw new Error('Only the WorkHub view can present its progress');
             if (typeof payload !== 'number' || !Number.isSafeInteger(payload)) throw new Error('Invalid progress request');
             if (payload === progressRequest && payload === presentationRevision && deps.isEnabled()) {
-              showWindowInactive(floating ?? null, deps.revealMode);
+              auxiliaryWindowRegistry.show('workhub', floating, deps.revealMode);
               view?.webContents.setBackgroundThrottling(true);
               changed();
             }
@@ -610,8 +696,10 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             const animate = conversationExpanded !== value.expanded || !!resizeTarget;
             if (conversationExpanded !== value.expanded) floating.setResizable(value.expanded);
             conversationExpanded = value.expanded;
-            if (bounds.height !== height) {
-              resizeFloating({ ...bounds, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) }, animate);
+            const width = clampFloatingWidth(bounds.width, area.width);
+            const x = Math.max(area.x, Math.min(bounds.x, area.x + area.width - width));
+            if (bounds.height !== height || bounds.width !== width || bounds.x !== x) {
+              resizeFloating({ ...bounds, x, width, height, y: Math.max(area.y, Math.min(bounds.y + bounds.height - height, area.y + area.height - height)) }, animate);
             }
             return;
           }
@@ -625,6 +713,11 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
             if (typeof payload !== 'string' || payload.length > 4096) throw new Error('Invalid session key');
             parseDesktopSessionKey(payload);
             await navigateMain({ kind: 'session', sessionKey: payload }, revision);
+            return;
+          case 'settings':
+            if (payload !== 'models') throw new Error('Invalid WorkHub settings section');
+            if (floating && !floating.isDestroyed()) hideFloating();
+            await navigateMain({ kind: 'settings', section: 'models' }, revision);
             return;
           default: throw new Error('Unknown WorkHub presentation command');
         }
@@ -688,6 +781,24 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (previous && !previous.webContents.isDestroyed()) previous.webContents.close({ waitForBeforeUnload: false });
   }
 
+  function releaseForQuit(): void {
+    releasedForQuit = true;
+  }
+
+  /**
+   * The window carrying the conversation is closing for real. Let the view go
+   * with it and return to the docked resting state, so a Desktop window that
+   * appears afterwards starts a fresh conversation instead of touching a
+   * destroyed panel.
+   */
+  function releaseConversationForQuit(): void {
+    clearProgressRequest();
+    expandOnFocus = false;
+    placement = 'docked';
+    disposeView();
+    changed();
+  }
+
   function dispose(): void {
     if (disposed) return;
     disposed = true;
@@ -695,9 +806,9 @@ export function createWorkHubPresentation(deps: WorkHubPresentationDeps) {
     if (ipcRegistered) ipcMain.removeHandler(COMMAND);
     for (const cleanup of mainListeners.values()) cleanup();
     disposeView();
-    if (floating && !floating.isDestroyed()) floating.destroy();
+    auxiliaryWindowRegistry.destroy(floating);
     floating = undefined;
   }
 
-  return { registerIpc, refreshSettings, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: (turnId?: string) => enqueue(() => prepareControl(turnId)), finishControl: () => { controlTurnId = undefined; }, show: async () => { if (disposed) throw new Error('WorkHub presentation is disposed'); ++presentationRevision; detach(); }, toggle, dispose };
+  return { registerIpc, refreshSettings, attachMainWindow, getSnapshot, ownsWebContents, send, prepareControl: (turnId?: string) => enqueue(() => prepareControl(turnId)), finishControl: () => { controlTurnId = undefined; }, show: async () => { if (disposed) throw new Error('WorkHub presentation is disposed'); ++presentationRevision; detach(); }, toggle, releaseForQuit, dispose };
 }

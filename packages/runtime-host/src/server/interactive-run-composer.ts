@@ -23,10 +23,6 @@ import {
   isSideConversationSession,
 } from '@maka/core/side-conversation';
 import { type RunCompositionSourceRevision } from '@maka/core/run-composition';
-import {
-  buildDeepResearchSystemPromptFragment,
-  isDeepResearchSession,
-} from '@maka/core/deep-research';
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
 import { createHash } from 'node:crypto';
@@ -55,7 +51,6 @@ import {
 } from '@maka/runtime/skills';
 import { buildSessionTodoTools, type SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import { buildWorkspaceInstructionsPromptFragment } from '@maka/runtime/system-prompt/workspace-instructions';
-import { isDeepResearchToolAllowed } from '@maka/runtime/deep-research-tools';
 import { listRunnableBuiltinAgentDefinitions } from '@maka/runtime/agent-catalog';
 import { renderPlanModePrompt, selectCollaborationTools } from '@maka/runtime/plan-mode';
 import { routeWebFetchTools } from '@maka/runtime/web-fetch-tool';
@@ -129,9 +124,6 @@ export interface InteractiveRunComposerInput {
     readonly mode: 'agent' | 'plan';
     readonly permissionMode?: PermissionMode;
   };
-  readonly deepResearch?: {
-    readonly tools: readonly MakaTool[];
-  };
   readonly resolveProfileSystemPrompt?: (
     context: HostModelPromptContext,
     basePrompt: string,
@@ -165,7 +157,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.goalTools,
         input.parentAgentTools,
         input.plan,
-        input.deepResearch?.tools,
       );
   const clientCapabilityTools =
     input.boundTools !== undefined ||
@@ -177,11 +168,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     const additionalTools = hasToolCeiling
       ? []
       : (input.resolveAdditionalTools?.(stableHostTools) ?? []);
-    const unscopedCandidateTools = [...stableHostTools, ...additionalTools];
-    const routedCandidateTools = input.deepResearch
-      ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
-      : unscopedCandidateTools;
-    const candidateTools = projectHostedExecutionTools(routedCandidateTools, input.toolProfile);
+    const candidateTools = projectHostedExecutionTools(
+      [...stableHostTools, ...additionalTools],
+      input.toolProfile,
+    );
     const selectedTools = input.plan
       ? selectCollaborationTools({
           mode: input.plan.mode,
@@ -262,7 +252,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               input.plan?.mode === 'plan'
                 ? renderPlanModePrompt({ fullAccess: input.plan.permissionMode === 'bypass' })
                 : undefined,
-              input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
               input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
             ]);
         // Keep each turn's source revisions independent while sharing identical
@@ -344,7 +333,6 @@ export interface InteractiveRunComposerFactoryInput
   readonly childTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
-  readonly deepResearchTools?: readonly MakaTool[];
   /** Internal dependency seam for deterministic Host shell-resolution tests. */
   readonly resolveTurnShellPlan?: typeof resolveTurnShellPlan;
 }
@@ -499,9 +487,6 @@ export function createInteractiveRunComposerFactory(
               },
             }
           : {}),
-        ...(isDeepResearchSession(backendContext.header.labels) && !backendContext.tools
-          ? { deepResearch: { tools: requireDeepResearchTools(input.deepResearchTools) } }
-          : {}),
         skillBudget: contextWindow === null ? {} : { contextWindow },
         shell,
         ...(input.resolveProfileSystemPrompt
@@ -546,7 +531,6 @@ function buildDefaultHostTools(
   goalTools: readonly MakaTool[] = [],
   parentAgentTools: readonly MakaTool[] = [],
   plan?: InteractiveRunComposerInput['plan'],
-  deepResearchTools: readonly MakaTool[] = [],
 ): MakaTool[] {
   // Full access has no boundary to widen, so neither the Bash declaration nor
   // the widening tool is offered. An unknown mode is not Full access.
@@ -583,7 +567,6 @@ function buildDefaultHostTools(
     ...goalTools.map((tool) => tool.name),
     ...parentAgentTools.map((tool) => tool.name),
     ...planTools.map((tool) => tool.name),
-    ...deepResearchTools.map((tool) => tool.name),
   ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
@@ -599,13 +582,7 @@ function buildDefaultHostTools(
     ...goalTools,
     ...parentAgentTools,
     ...planTools,
-    ...deepResearchTools,
   ];
-}
-
-function requireDeepResearchTools(tools: readonly MakaTool[] | undefined): readonly MakaTool[] {
-  if (!tools) throw new Error('Runtime Host Deep Research tools are not composed');
-  return tools;
 }
 
 function filterToolGroups(groups: readonly ToolGroup[], names: ReadonlySet<string>): ToolGroup[] {

@@ -45,6 +45,7 @@ import {
   type WorkHubRetirementResult,
 } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import type { WorkHubTargetExecutionAuthority } from '../server/workhub-target-execution-authority.js';
 
 const CONTEXT: ConnectionContext = {
   hostEpoch: 'workhub-action-gate-test',
@@ -54,6 +55,45 @@ const CONTEXT: ConnectionContext = {
 };
 
 describe('WorkHub Coordination Action Gate', () => {
+  test('claims before target repair and rechecks it at final admission', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    const calls: string[] = [];
+    effects.targetExecution = {
+      prepare: async () => {
+        assert.equal(effects.actionClaims.size, 1);
+        calls.push('prepare');
+      },
+      assertReady: async () => {
+        calls.push('assert-ready');
+      },
+    };
+    const originalAssign = effects.assign;
+    effects.assign = async (input) => {
+      calls.push('assign');
+      await input.validateFreshTarget?.();
+      return originalAssign.call(effects, input);
+    };
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const candidates = await gate.candidates();
+
+    await gate.act(
+      {
+        actionId: 'model-tool-call',
+        coordinationRunId: 'coordination-run',
+        userText: 'Continue Payments',
+        candidateSetId: candidates.candidateSetId,
+        proposal: {
+          disposition: 'delegate_existing',
+          candidateRef: candidates.candidates[0]!.candidateRef,
+        },
+      },
+      CONTEXT,
+      'coordination-turn',
+    );
+
+    assert.deepEqual(calls, ['prepare', 'assign', 'assert-ready']);
+  });
+
   test('delegation content remains separate from authorization and survives durable replay', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     const gate = new WorkHubCoordinationActionGate(effects);
@@ -284,6 +324,33 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.actionClaims.has('resume-action'), false);
   });
 
+  test('lets the resume effect skip repair on replay and recheck inside fresh admission', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    delegatedTo(effects, 'payments');
+    const calls: string[] = [];
+    effects.targetExecution = {
+      prepare: async () => {
+        calls.push('prepare');
+      },
+      assertReady: async () => {
+        calls.push('assert-ready');
+      },
+    };
+
+    await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'resume-with-repair',
+        coordinationRunId: 'coordination-run',
+        userText: 'Resume Payments',
+        proposal: resumeProposal('payments'),
+      },
+      CONTEXT,
+      'coordination-turn',
+    );
+
+    assert.deepEqual(calls, ['prepare', 'assert-ready']);
+  });
+
   test('resume refuses a Session that does not own exactly one delegation', async () => {
     const none = fakeEffects([session('payments', { name: 'Payments' })]);
     await assert.rejects(
@@ -434,7 +501,7 @@ describe('WorkHub Coordination Action Gate', () => {
     });
     assert.equal(effects.retirements.length, 1);
     assert.equal(effects.stopRequests.size, 1);
-    assert.equal(effects.stopResolutions.size, 1);
+    assert.equal(effects.stopResolutions.size, 2);
 
     const replay = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
     assert.deepEqual(replay, first);
@@ -882,8 +949,8 @@ describe('WorkHub Coordination Action Gate', () => {
     );
 
     assert.deepEqual(retried, first);
-    assert.equal(retirements, 1);
-    assert.equal(effects.stopResolutions.size, 1);
+    assert.equal(retirements, 2);
+    assert.equal(effects.stopResolutions.size, 3);
   });
 
   test('a committed stop converges once its target Session is durably removed', async () => {
@@ -936,7 +1003,7 @@ describe('WorkHub Coordination Action Gate', () => {
       await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
       resolved,
     );
-    assert.equal(effects.stopResolutions.size, 1);
+    assert.equal(effects.stopResolutions.size, 2);
   });
 
   test('keeps display names as stop evidence rather than admission authority', async () => {
@@ -1212,6 +1279,32 @@ describe('WorkHub Coordination Action Gate', () => {
 
     const first = await gate.act(input, CONTEXT);
     const replay = await gate.act(input, CONTEXT);
+
+    assert.deepEqual(replay, first);
+    assert.equal(effects.assignments.length, 1);
+  });
+
+  test('replays the same action when only its Coordination execution identity changes', async () => {
+    const effects = fakeEffects([session('payments')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const input = {
+      actionId: 'delegate-after-host-retry',
+      coordinationRunId: 'coordination-run-before-crash',
+      userText: 'Continue payments',
+      candidateSetId: snapshot.candidateSetId,
+      proposal: {
+        disposition: 'delegate_existing' as const,
+        candidateRef: snapshot.candidates[0]!.candidateRef,
+      },
+    };
+
+    const first = await gate.act(input, CONTEXT, 'coordination-turn-before-crash');
+    const replay = await gate.act(
+      { ...input, coordinationRunId: 'coordination-run-after-crash' },
+      CONTEXT,
+      'coordination-turn-after-crash',
+    );
 
     assert.deepEqual(replay, first);
     assert.equal(effects.assignments.length, 1);
@@ -1740,6 +1833,7 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
   const actionClaims = new Map<string, WorkHubActionClaim>();
   return {
     sessions: [...initialSessions],
+    targetExecution: undefined as WorkHubTargetExecutionAuthority | undefined,
     actionClaims,
     removedSessionIds: new Set<string>(),
 
@@ -1776,7 +1870,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       targetTurnId?: string;
     },
     async resume(input: WorkHubDelegationResumeInput) {
+      await input.prepareTargetExecution?.();
       await input.validateFreshTarget();
+      await input.assertTargetExecutionReady?.();
       this.resumeCalls.push(input);
       return {
         disposition: 'resume_work' as const,
@@ -1817,11 +1913,16 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     async readSupersession(delegationId: string) {
       return supersessions.get(delegationId);
     },
-    async readStopRequest(delegationId: string) {
-      return stopRequests.get(delegationId);
+    async readStopRequest(delegationId: string, actionId?: string) {
+      const first = stopRequests.get(delegationId);
+      return !actionId || first?.actionId === actionId
+        ? first
+        : stopRequests.get(JSON.stringify([delegationId, actionId]));
     },
-    async readStopResolution(delegationId: string) {
-      return stopResolutions.get(delegationId);
+    async readStopResolution(delegationId: string, actionId?: string) {
+      return actionId
+        ? stopResolutions.get(JSON.stringify([delegationId, actionId]))
+        : stopResolutions.get(delegationId);
     },
 
     async assign(input: WorkHubDelegationAssignmentInput) {
@@ -1903,7 +2004,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       return aborted;
     },
     async prepareStop(input: WorkHubDelegationStopInput) {
-      const existing = stopRequests.get(input.stopsDelegationId);
+      const first = stopRequests.get(input.stopsDelegationId);
+      const key =
+        first && first.actionId !== input.actionId
+          ? JSON.stringify([input.stopsDelegationId, input.actionId])
+          : input.stopsDelegationId;
+      const existing = stopRequests.get(key);
       if (existing) return existing;
       const requested: WorkHubDelegationStopRequestedMessage = {
         type: 'workhub_coordination',
@@ -1922,12 +2028,14 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         targetSessionName: input.targetSessionName,
         userText: input.userText,
       };
-      stopRequests.set(input.stopsDelegationId, requested);
+      stopRequests.set(key, requested);
+
       return requested;
     },
     async resolveStop(input: WorkHubDelegationStopResolutionInput) {
       const request = input.request;
-      const existing = stopResolutions.get(request.stopsDelegationId);
+      const key = JSON.stringify([request.stopsDelegationId, request.actionId]);
+      const existing = stopResolutions.get(key);
       if (existing) return existing;
       const resolved: WorkHubDelegationStopResolvedMessage = {
         type: 'workhub_coordination',
@@ -1945,7 +2053,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         outcome: input.outcome,
         ...(input.targetTurnId ? { targetTurnId: input.targetTurnId } : {}),
       };
-      stopResolutions.set(request.stopsDelegationId, resolved);
+      stopResolutions.set(key, resolved);
+      if (
+        stopResolutions.get(request.stopsDelegationId)?.outcome === undefined ||
+        stopResolutions.get(request.stopsDelegationId)?.outcome === 'not_owned'
+      )
+        stopResolutions.set(request.stopsDelegationId, resolved);
       return resolved;
     },
     async readDelegationRetirement(

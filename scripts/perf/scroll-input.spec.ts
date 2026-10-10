@@ -23,11 +23,12 @@ import { test, expect } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { withE2eWindow } from '../../apps/desktop/e2e/fixtures';
+import { PROMPT_RAIL_PROMPT_COUNT } from '../../apps/desktop/src/main/e2e-fixture/seed-helpers';
 import { outputDir, report, summarize } from './report.mjs';
 
 test('dense upward input with real Host history', async () => {
   test.setTimeout(180_000);
-  const targetTurn = 60;
+  const targetTurn = PROMPT_RAIL_PROMPT_COUNT - 60;
   const samples: Array<Record<string, number>> = [];
   await mkdir(outputDir, { recursive: true });
   await withE2eWindow(
@@ -44,9 +45,9 @@ test('dense upward input with real Host history', async () => {
       const browser = await cdp.send('Browser.getVersion');
       for (let trial = 0; trial < 3; trial++) {
         await page.reload();
-        await expect(page.locator('.maka-turn[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(
-          1,
-        );
+        await expect(
+          page.locator(`.maka-turn[data-turn-id="turn-prompt-rail-${PROMPT_RAIL_PROMPT_COUNT}"]`),
+        ).toHaveCount(1);
         await page.evaluate(() => document.fonts.ready);
         await expect(page.locator('.maka-markdown-pending')).toHaveCount(0);
         await page.waitForTimeout(600);
@@ -58,12 +59,11 @@ test('dense upward input with real Host history', async () => {
           deltaX: 0,
           deltaY: -120,
         };
-        // Release follow through native input, then locate the existing top edge.
-        // This setup is not counted as user travel or input latency.
+        // Release follow through native input. This setup is not counted as user
+        // travel or input latency.
         await cdp.send('Input.dispatchMouseEvent', input);
         await page.evaluate(() => {
           const root = document.querySelector<HTMLElement>('[data-chat-scroll-container]')!;
-          root.scrollTo({ top: 0, behavior: 'instant' });
           const p = ((window as any).__denseScroll = {
             running: true,
             phase: 'input',
@@ -113,7 +113,7 @@ test('dense upward input with real Host history', async () => {
           };
           requestAnimationFrame(frame);
         });
-        let reachedTurn = 120;
+        let reachedTurn = PROMPT_RAIL_PROMPT_COUNT;
         let ticks = 0;
         for (; ticks < 300; ticks++) {
           await cdp.send('Input.dispatchMouseEvent', input);
@@ -186,9 +186,10 @@ test('dense upward input with real Host history', async () => {
           publicationsAfterInput: changes.filter((frame: any) => frame.ms >= releasedAt).length,
           firstPublicationAfterReleaseMs: firstReleased ? firstReleased.ms - releasedAt : -1,
         };
-        expect(row.maxMounted, 'a fetched page must not mount all of its Turn bodies').toBeLessThan(
-          Math.max(...raw.ranges.map((frame: any) => frame.ids.length)) / 2,
-        );
+        expect(
+          row.maxMounted,
+          'scrolling through history must not keep every Turn it passes mounted',
+        ).toBeLessThan(PROMPT_RAIL_PROMPT_COUNT - targetTurn);
         samples.push(row);
         console.log(JSON.stringify(row));
         await writeFile(
@@ -203,8 +204,7 @@ test('dense upward input with real Host history', async () => {
           targetTurn,
           samples,
           viewport: '1352x932',
-          conditions:
-            'Three trials on the current Desktop + Host build. Native CDP input at >=16ms driver spacing, up to 300 ticks to reach Turn 60, checked every 20 ticks. Frame timestamps only; DOM ranges sampled on child-list mutation without layout reads.',
+          conditions: `Three trials on the current Desktop + Host build. Native CDP input at >=16ms driver spacing, up to 300 ticks to reach Turn ${targetTurn}, checked every 20 ticks. Frame timestamps only; DOM ranges sampled on child-list mutation without layout reads.`,
           limits:
             'Actual wheel intervals recorded; not exact touchpad replay or end-to-end input latency. DOM range changes are observable, pending store rows are not counted. Mutation observer overhead remains. -1 means no post-release range publication was observed.',
         },

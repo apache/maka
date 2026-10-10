@@ -733,7 +733,6 @@ h2 {
   }
 }
 
-/* Get Maka: three paths */
 .tile.get {
   flex-direction: row;
   gap: 40px;
@@ -745,10 +744,10 @@ h2 {
   flex-direction: column;
   gap: 8px;
 }
-.paths3 {
+.paths {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 24px;
 }
 .path {
@@ -894,15 +893,6 @@ h2 {
   border-top: 1px solid var(--border);
   margin: 40px 0;
 }
-.doc .note {
-  display: inline-block;
-  font: 500 11px / 1.4 var(--font-family-code);
-  color: var(--warning-text);
-  border: 1px solid color-mix(in srgb, var(--warning-text) 40%, transparent);
-  border-radius: 999px;
-  padding: 3px 10px;
-  margin-bottom: 12px;
-}
 .doc .status {
   margin: 32px 0 48px;
   border: 1px solid var(--border);
@@ -917,7 +907,7 @@ h2 {
 }
 .doc .status .row {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) auto;
+  grid-template-columns: 150px minmax(0, 1fr);
   gap: 16px;
   align-items: center;
   padding: 12px 16px;
@@ -935,14 +925,6 @@ h2 {
 }
 .doc .status .row span {
   color: var(--muted-foreground);
-}
-.doc .status .row small {
-  font: 500 11px / 1 var(--font-family-code);
-  color: var(--muted-foreground);
-  white-space: nowrap;
-}
-.doc .status .row small.warn {
-  color: var(--warning-text);
 }
 .doc .step {
   display: block;
@@ -1111,7 +1093,7 @@ h2 {
   .get-h {
     flex-basis: auto;
   }
-  .paths3 {
+  .paths {
     grid-template-columns: 1fr;
   }
   .reads {

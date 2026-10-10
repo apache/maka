@@ -25,20 +25,26 @@ import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, applyLiveTurnBufferEvent, reconcileLiveTurnBuffer } from '@maka/ui';
 import type { StoredMessage } from '@maka/core/session';
 import { act, createElement } from 'react';
-import { LiveTurnReconciler } from '../../renderer/features/conversation/index.js';
+import { LiveTurnReconciler } from '../../renderer/features/conversation/testing.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
-import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
+import { normalizeSessionSummaryForDisplay } from '../../renderer/application/contracts/session-status-presentation.js';
+import {
+  createSessionCatalogController,
+  selectSessionById,
+} from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
+import { useExternalStoreSelector } from '../../renderer/application/contracts/session-catalog/use-external-store-selector.js';
 import {
   clearAppShellSessionUiStateForSession,
   createAppShellSessionUiStateController,
   createInitialAppShellSessionUiState,
   type AppShellSessionUiState,
-} from '../../renderer/app-shell-session-ui-state.js';
+} from '../../renderer/features/conversation/testing.js';
 import {
   createTranscriptRestoreLifecycle,
-  refreshTranscriptTurnLandmarks,
   restoreSessionTranscriptRange,
+  shellSessionRowEqual,
 } from '../../renderer/features/conversation/testing.js';
+import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
@@ -73,7 +79,7 @@ it('reconciles late predecessor content after its durable answer is already load
       const next = reconcileLiveTurnBuffer(current.session!, durable);
       return next === current.session ? current : { ...current, session: next ?? [] };
     });
-    await act(async () => { root.render(createElement(LiveTurnReconciler, { controller, activeId: 'session', messages, reconcile })); });
+    await act(async () => { root.render(createElement(LiveTurnReconciler, { readLiveTurns: controller.reads.liveTurns, activeId: 'session', messages, reconcile })); });
     await act(async () => {
       controller.setLiveTurnBySession((current) => ({ ...current, session: applyLiveTurnBufferEvent(current.session, {
         type: 'text_delta', id: 'late-A', turnId: 'A', messageId: 'answer-A', ts: 1, text: 'Alpha',
@@ -103,6 +109,21 @@ function seededState(): AppShellSessionUiState {
 }
 
 describe('session live run display state', () => {
+  it('keeps background authority separate from parent status and discards cached activity', () => {
+    for (const backgroundActivity of ['idle', 'running', 'waiting_for_user', 'blocked'] as const) {
+      const live = { id: 'root', status: 'running', runningTurnIds: [], backgroundActivity } as unknown as SessionSummary;
+      const normalized = normalizeSessionSummaryForDisplay(live);
+      assert.equal(normalized.status, 'active');
+      assert.equal(normalized.backgroundActivity, backgroundActivity);
+      const cached = normalizeSessionSummaryForDisplay({ ...live, localState: 'cached' as const });
+      assert.equal(cached.status, 'active');
+      assert.equal(Object.hasOwn(cached, 'backgroundActivity'), false);
+    }
+    assert.equal(Object.hasOwn(normalizeSessionSummaryForDisplay({
+      id: 'unknown', status: 'active',
+    } as SessionSummary), 'backgroundActivity'), false);
+  });
+
   it('keeps persisted running as a fallback only while live state is unknown', () => {
     const unknown = { id: 'unknown', status: 'running' } as SessionSummary;
     const knownEmpty = {
@@ -150,10 +171,38 @@ describe('app shell session UI state controller', () => {
     assert.equal(next.liveTurnBySession, state.liveTurnBySession);
   });
 
+  it('does not republish a fresh-but-equal execution projection', () => {
+    const controller = createAppShellSessionUiStateController();
+    const projection = {
+      type: 'host_execution' as const,
+      available: true,
+      rootTurn: { sessionId: 'session', turnId: 'turn', runId: 'run', status: 'running' as const },
+    };
+    controller.setExecution('session', projection);
+    const state = controller.getState();
+    let notifications = 0;
+    controller.reads.summary('session').subscribe(() => {
+      notifications += 1;
+    });
+
+    // The observation channel resends an equivalent projection on unrelated
+    // metadata events — a fresh identity carrying the same content.
+    controller.setExecution('session', { ...projection, rootTurn: { ...projection.rootTurn } });
+    assert.equal(controller.getState(), state);
+    assert.equal(notifications, 0);
+
+    controller.setExecution('session', {
+      ...projection,
+      rootTurn: { ...projection.rootTurn, status: 'completed' as const, terminalEventId: 'evt-1' },
+    });
+    assert.equal(notifications, 1);
+  });
+
   it('records event-stream health without notifying render subscribers', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    const state = controller.getState();
+    controller.reads.load('session').subscribe(() => {
       notifications += 1;
     });
     const snapshot = healthSnapshot('session');
@@ -161,6 +210,7 @@ describe('app shell session UI state controller', () => {
     controller.setSessionEventHealthBySession((current) => ({ ...current, session: snapshot }));
 
     assert.equal(controller.sessionEventHealthBySessionRef.current.session, snapshot);
+    assert.equal(controller.getState(), state, 'stream health must not replace observable state');
     assert.equal(notifications, 0, 'stream health has no render consumer, so it must not force one');
 
     controller.setMessageLoadErrorBySession((current) => ({ ...current, session: 'failed' }));
@@ -183,22 +233,26 @@ describe('app shell session UI state controller', () => {
   it('owns per-session transcript reading anchors without notifying render subscribers', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    const state = controller.getState();
+    controller.reads.load('drop').subscribe(() => {
       notifications += 1;
     });
 
-    controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop', sequence: 7 });
-    controller.setTranscriptReadingAnchor('keep', { turnId: 'turn-keep', sequence: 11 });
     controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop' });
+    assert.equal(controller.getState(), state, 'setting an anchor must not replace observable state');
+    controller.setTranscriptReadingAnchor('keep', { turnId: 'turn-keep' });
+    assert.equal(controller.getState(), state, 'setting another anchor must not replace observable state');
 
     assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {
-      drop: { turnId: 'turn-drop', sequence: 7 },
-      keep: { turnId: 'turn-keep', sequence: 11 },
+      drop: { turnId: 'turn-drop' },
+      keep: { turnId: 'turn-keep' },
     });
     assert.equal(notifications, 0, 'reading anchors have no live render subscriber');
 
     controller.setTranscriptReadingAnchor('keep', undefined);
+    assert.equal(controller.getState(), state, 'removing an anchor must not replace observable state');
     controller.clearSessionUiState('drop');
+    assert.equal(controller.getState(), state, 'clearing a ref-only Session must not replace observable state');
 
     assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {});
     assert.equal(notifications, 0);
@@ -207,7 +261,7 @@ describe('app shell session UI state controller', () => {
   it('publishes unavailable transcript restores only until they are consumed', () => {
     let notifications = 0;
     const controller = createAppShellSessionUiStateController();
-    controller.subscribe(() => {
+    controller.reads.load('session').subscribe(() => {
       notifications += 1;
     });
 
@@ -224,167 +278,57 @@ describe('app shell session UI state controller', () => {
     assert.equal(notifications, 2);
   });
 
-  it('clears Owner landmarks and ignores their late response when the active Session becomes a Guest', async () => {
-    let resolveOwner!: (value: { throughSequence: number; landmarks: string[] }) => void;
-    let index: { sessionId: string; throughSequence: number | null; turns: readonly string[] } | undefined = {
-      sessionId: 'owner-session', throughSequence: 0, turns: ['previous-owner-turn'],
-    };
-    const dispose = refreshTranscriptTurnLandmarks({
-      sessionId: 'owner-session',
-      newestDurablePromptSequence: 1,
-      list: () => new Promise<{ throughSequence: number; landmarks: string[] }>((resolve) => {
-        resolveOwner = resolve;
-      }),
-      isCurrent: () => true,
-      setIndex: (value) => { index = value; },
-    });
-    // The shell cleans up the Owner effect and passes no ownerActiveId for Guests.
-    dispose?.();
-    refreshTranscriptTurnLandmarks<string>({
-      sessionId: undefined,
-      newestDurablePromptSequence: 1,
-      list: async () => assert.fail('Guests cannot query Owner turn landmarks'),
-      isCurrent: () => true,
-      setIndex: (value) => { index = value; },
-    });
-    resolveOwner({ throughSequence: 1, landmarks: ['owner-turn'] });
-    await Promise.resolve();
-    assert.equal(index, undefined);
-  });
-
-  it('enriches a Turn-only reading anchor when its range sequence arrives later', async () => {
-    let anchor: { turnId: string; sequence?: number } | undefined;
-    restoreSessionTranscriptRange({
-      lifecycle: createTranscriptRestoreLifecycle(),
-      sessionId: 'session',
-      readingAnchor: { turnId: 'turn' },
-      controller: {
-        store: {
-          sessionId: 'session',
-          range: () => ({ sessionId: 'session' }),
-          pendingNavigation: () => undefined,
-          sequenceForTurn: () => 17,
-          newestDurableUserSequence: () => 17,
-          snapshot: () => ({ messages: [] }),
-        },
-        loadAround: async () => assert.fail('the resident Turn must not load another range'),
-      },
-      isCurrent: () => true,
-      setReadingAnchor: (_sessionId, next) => {
-        anchor = next;
-      },
-      onError: (error) => assert.fail(String(error)),
-    });
-
-    assert.deepEqual(anchor, { turnId: 'turn', sequence: 17 });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.deepEqual(anchor, { turnId: 'turn', sequence: 17 });
-  });
-
-  it('does not enrich a reading anchor from another Session range', () => {
-    let sequenceReads = 0;
-    let anchor: { turnId: string; sequence?: number } | undefined;
+  it('does not restore a reading anchor from another Session range', () => {
+    let anchor: { turnId: string } | undefined = { turnId: 'turn' };
     restoreSessionTranscriptRange({
       lifecycle: createTranscriptRestoreLifecycle(),
       sessionId: 'active',
       readingAnchor: { turnId: 'turn' },
       controller: {
         store: {
-          sessionId: 'stale',
-          range: () => ({ sessionId: 'stale' }),
-          pendingNavigation: () => undefined,
-          sequenceForTurn: () => {
-            sequenceReads += 1;
-            return 17;
-          },
-          newestDurableUserSequence: () => 17,
+          range: () => ({ sessionId: 'stale', hasOlder: false, ready: true }),
           snapshot: () => ({ messages: [] }),
         },
-        loadAround: async () => assert.fail('a stale range must not load'),
+        loadEarlier: async () => assert.fail('a stale range must not load'),
       },
       isCurrent: () => true,
       setReadingAnchor: (_sessionId, next) => {
         anchor = next;
       },
+      onRestoreUnavailable: () => assert.fail('a stale range cannot declare the anchor unavailable'),
       onError: (error) => assert.fail(String(error)),
     });
 
-    assert.equal(sequenceReads, 0);
-    assert.equal(anchor, undefined);
+    assert.deepEqual(anchor, { turnId: 'turn' });
   });
 
-  it('abandons a Turn-only restore that remains absent after the range is ready', async () => {
-    let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'missing' };
+  it('abandons a restore that remains absent once no earlier history is left', async () => {
+    let anchor: { turnId: string } | undefined = { turnId: 'missing' };
     let unavailable: { sessionId: string; turnId: string } | undefined;
-    const options = {
+    restoreSessionTranscriptRange({
       lifecycle: createTranscriptRestoreLifecycle(),
       sessionId: 'session',
       readingAnchor: { turnId: 'missing' },
       controller: {
         store: {
-          sessionId: 'session',
-          range: () => ({ sessionId: 'session' }),
-          pendingNavigation: () => undefined,
-          sequenceForTurn: () => null,
-          newestDurableUserSequence: () => null,
-          snapshot: () => ({ messages: [] }),
+          range: () => ({ sessionId: 'session', hasOlder: false, ready: true }),
+          snapshot: () => ({ messages: [{ turnId: 'latest' }] }),
         },
-        loadAround: async () => assert.fail('a Turn-only anchor has no load target'),
+        loadEarlier: async () => assert.fail('all history is already loaded'),
       },
       isCurrent: () => true,
-      setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
+      setReadingAnchor: (_sessionId, next) => {
         anchor = next;
       },
-      onRestoreUnavailable: (sessionId: string, turnId: string) => {
+      onRestoreUnavailable: (sessionId, turnId) => {
         unavailable = { sessionId, turnId };
       },
-      onError: (error: unknown) => assert.fail(String(error)),
-    };
-
-    restoreSessionTranscriptRange(options);
+      onError: (error) => assert.fail(String(error)),
+    });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.equal(anchor, undefined);
     assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'missing' });
-  });
-
-  it('abandons a known-sequence restore when loadAround cannot make the Turn resident', async () => {
-    let loadedSequence: number | undefined;
-    let unavailable: { sessionId: string; turnId: string } | undefined;
-    let anchor: { turnId: string; sequence?: number } | undefined = { turnId: 'removed', sequence: 23 };
-    const options = {
-      lifecycle: createTranscriptRestoreLifecycle(),
-      sessionId: 'session',
-      readingAnchor: { turnId: 'removed', sequence: 23 },
-      controller: {
-        store: {
-          sessionId: 'session',
-          range: () => ({ sessionId: 'session' }),
-          pendingNavigation: () => undefined,
-          sequenceForTurn: () => null,
-          newestDurableUserSequence: () => 29,
-          snapshot: () => ({ messages: [{ id: 'latest' }] }),
-        },
-        loadAround: async (sequence: number) => {
-          loadedSequence = sequence;
-        },
-      },
-      isCurrent: () => true,
-      setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
-        anchor = next;
-      },
-      onRestoreUnavailable: (sessionId: string, turnId: string) => {
-        unavailable = { sessionId, turnId };
-      },
-      onError: (error: unknown) => assert.fail(String(error)),
-    };
-
-    restoreSessionTranscriptRange(options);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    assert.equal(loadedSequence, 23);
-    assert.equal(anchor, undefined);
-    assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'removed' });
   });
 
   it('keeps the synchronous live-turn ref aligned with reducer updates', () => {
@@ -392,5 +336,182 @@ describe('app shell session UI state controller', () => {
     const projection = [armLiveTurn('turn-1')];
     controller.setLiveTurnBySession((current) => ({ ...current, session: projection }));
     assert.equal(controller.liveTurnBySessionRef.current.session, projection);
+  });
+});
+
+describe('shellSessionRowEqual', () => {
+  const row: DesktopSessionSummary = {
+    id: 'session-1',
+    revision: 7,
+    activityAt: 100,
+    name: 'session one',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'default',
+    connectionLocked: false,
+    model: 'model',
+    permissionMode: 'ask',
+    runtimeHostId: 'host',
+    profileId: 'profile',
+    profileName: 'Local',
+    profileKind: 'local',
+  };
+
+  it('holds identity across rail-only bookkeeping', () => {
+    const patched: DesktopSessionSummary = {
+      ...row,
+      revision: 8,
+      activityAt: 200,
+      isFlagged: true,
+      hasUnread: true,
+      lastMessagePreview: 'newest line',
+      statusUpdatedAt: 150,
+    };
+    assert.equal(shellSessionRowEqual(row, patched), true);
+    assert.equal(shellSessionRowEqual(row, row), true);
+  });
+
+  it('republishes when a rendered field moves', () => {
+    assert.equal(shellSessionRowEqual(row, { ...row, status: 'running' }), false);
+    assert.equal(shellSessionRowEqual(row, { ...row, name: 'renamed' }), false);
+    assert.equal(shellSessionRowEqual(row, { ...row, permissionMode: 'bypass' }), false);
+    assert.equal(
+      shellSessionRowEqual(row, { ...row, lastMessageAt: 200 }),
+      false,
+    );
+    assert.equal(shellSessionRowEqual(row, undefined), false);
+  });
+
+  it('republishes for a field the rail-only list does not know about', () => {
+    // A row field added later is not in NON_RENDERED_ROW_KEYS, so it must
+    // fail closed: compare, differ, republish — never silently keep identity.
+    const future = { ...row, fieldAddedNextMonth: 'a' } as DesktopSessionSummary;
+    const later = { ...row, fieldAddedNextMonth: 'b' } as DesktopSessionSummary;
+    assert.equal(shellSessionRowEqual(future, later), false);
+    assert.equal(shellSessionRowEqual(future, row), false);
+  });
+
+  it('orders same-revision rows by the live run epoch (#5713)', async () => {
+    const { root } = installReactRenderer();
+    try {
+      const catalog = createSessionCatalogController();
+      catalog.commitSessions([{
+        ...row,
+        revision: 5,
+        runningTurnIds: ['turn-1'],
+        runHostGeneration: 'host-1',
+        runEpoch: 2,
+      }]);
+
+      // A read taken before the turn started lands after the running patch:
+      // same revision, same host generation, older epoch — it must not flip
+      // the row back to idle.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runHostGeneration: 'host-1',
+          runEpoch: 1,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-1'],
+        'the older live state must not overwrite the newer',
+      );
+
+      // A genuinely newer epoch updates the row even at the same revision.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: [],
+          runHostGeneration: 'host-1',
+          runEpoch: 3,
+        });
+      });
+      assert.deepEqual(selectSessionById(catalog.getState(), row.id)?.runningTurnIds, []);
+
+      // A Host restart is a new generation: the previous host is gone, so
+      // its row cannot out-rank the restarted host's first read, whatever
+      // each side's epoch counter reads — a wall clock is not monotonic
+      // across processes (#5713 review round two).
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: ['turn-2'],
+          runHostGeneration: 'host-2',
+          runEpoch: 1,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-2'],
+        'the restarted host must take over the row',
+      );
+
+      // Within the restarted generation the counter orders reads again.
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 5,
+          runningTurnIds: ['turn-2'],
+          runHostGeneration: 'host-2',
+          runEpoch: 0,
+        });
+      });
+      assert.deepEqual(
+        selectSessionById(catalog.getState(), row.id)?.runningTurnIds,
+        ['turn-2'],
+        'the older read of the restarted generation must not win',
+      );
+    } finally { cleanupFakeDom(); }
+  });
+
+  it('keeps a catalog row subscriber mounted through rail-only patches', async () => {
+    const { root } = installReactRenderer();
+    try {
+      const catalog = createSessionCatalogController();
+      catalog.commitSessions([row]);
+      let renders = 0;
+      function Probe() {
+        useExternalStoreSelector(catalog, selectSessionById, row.id, shellSessionRowEqual);
+        renders += 1;
+        return null;
+      }
+      await act(async () => { root.render(createElement(Probe)); });
+      assert.equal(renders, 1);
+
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 8,
+          isFlagged: true,
+          hasUnread: true,
+          lastMessagePreview: 'newest line',
+          activityAt: 200,
+        });
+      });
+      assert.equal(renders, 1, 'rail-only bookkeeping must not republish a row subscriber');
+
+      await act(async () => {
+        catalog.commitPatch(row.id, {
+          ...row,
+          revision: 9,
+          isFlagged: true,
+          hasUnread: true,
+          lastMessagePreview: 'newest line',
+          activityAt: 200,
+          name: 'renamed',
+        });
+      });
+      assert.equal(renders, 2, 'a rendered-field change still republishes');
+    } finally { cleanupFakeDom(); }
   });
 });

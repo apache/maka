@@ -15,6 +15,10 @@
 /.maka-shots export-ignore
 /maka-proposal-zh-review.txt export-ignore
 
+# Repository-only plugin examples are tested from a Git checkout, but are not
+# ASF source-release inputs.
+/scripts/plugins export-ignore
+
 # DeepSeek Harness remains available to repository development and benchmarks,
 # but its external runtime dependency closure is not an ASF source-release input.
 /packages/eval/harbor/deepseek-harness-toolchain/package.json export-ignore

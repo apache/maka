@@ -20,6 +20,10 @@
 import { Menu, type BrowserWindow } from 'electron';
 import type { NativeMenuRequest } from '../shared/native-menu.js';
 
+// A Menu collected while its popup is still open crashes the native close
+// path, so each popup owns a reference until its callback reports it closed.
+const openMenus = new Set<Menu>();
+
 export function popupNativeMenu(window: BrowserWindow, input: unknown): Promise<string | null> {
   const request = input as NativeMenuRequest | undefined;
   if (!request || !Number.isFinite(request.x) || !Number.isFinite(request.y) ||
@@ -38,7 +42,13 @@ export function popupNativeMenu(window: BrowserWindow, input: unknown): Promise<
     })));
     // Menu coordinates are relative to window content, in DIP rather than CSS pixels.
     const zoom = window.webContents.getZoomFactor();
-    menu.popup({ window, x: Math.round(request.x * zoom), y: Math.round(request.y * zoom),
-      callback: () => resolve(selected) });
+    openMenus.add(menu);
+    try {
+      menu.popup({ window, x: Math.round(request.x * zoom), y: Math.round(request.y * zoom),
+        callback: () => { openMenus.delete(menu); resolve(selected); } });
+    } catch (error) {
+      openMenus.delete(menu);
+      throw error;
+    }
   });
 }

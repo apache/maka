@@ -43,7 +43,10 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import type { HostWorkHubRoutingModel } from '../server/execution-model-authority.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { SessionOperationFailure } from '../server/session-catalog-coordinator.js';
+import {
+  SessionOperationFailure,
+  WorkHubDefaultModelRequiredError,
+} from '../server/session-catalog-coordinator.js';
 import {
   WorkHubActionEffectFailure,
   type WorkHubActionGateEffects,
@@ -676,17 +679,31 @@ describe('Host WorkHub Coordination coordinator', () => {
           store,
           () => undefined,
           async () => {
-            throw new SessionOperationFailure(
-              'operation_unavailable',
-              'No default Session model is configured',
-            );
+            throw new WorkHubDefaultModelRequiredError('No default Session model is configured');
+          },
+        ).handlers['workhub.coordination.resolve']({}, CONTEXT),
+        {
+          ok: false,
+          error: {
+            code: 'model_required',
+            message: 'WorkHub Coordination Session requires an available default model',
+          },
+        },
+      );
+      assert.deepEqual(
+        await coordinator(
+          root,
+          store,
+          () => undefined,
+          async () => {
+            throw new SessionOperationFailure('operation_conflict', 'Concurrent target change');
           },
         ).handlers['workhub.coordination.resolve']({}, CONTEXT),
         {
           ok: false,
           error: {
             code: 'operation_conflict',
-            message: 'WorkHub Coordination Session requires an available default model',
+            message: 'WorkHub Coordination Session target is unavailable',
           },
         },
       );
@@ -2417,3 +2434,125 @@ function persistTestAssignmentAction(
     return { turnId: result.turnId };
   };
 }
+
+for (const crash of [false, true, 'not_owned'] as const)
+  test(`concurrent stop actions preserve both requests and delegation-level terminal evidence (crash=${crash})`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-concurrent-stop-'));
+    const store = createSessionStore(root);
+    try {
+      const target = await store.create({
+        cwd: root,
+        name: 'Payments',
+        llmConnectionSlug: 'test',
+        model: 'test',
+        permissionMode: 'ask',
+      });
+      const admission = new SessionAdmissionGate();
+      const barrier = deferred<void>();
+      let armed = false;
+      let waiting = 0;
+      const runMany = admission.runMany.bind(admission);
+      const observed = admission;
+      observed.runMany = async (ids, operation) => {
+        if (armed && ids.includes(target.id) && ++waiting <= 2) {
+          if (waiting === 2) barrier.resolve();
+          await barrier.promise;
+        }
+        return runMany(ids, operation);
+      };
+      let retirements = 0;
+      const workhub = coordinator(root, store, undefined, undefined, undefined, observed, {
+        assign: persistTestAssignmentAction(store, 'source-turn'),
+        retireDelegation: async () => ({
+          outcome: crash === 'not_owned' && ++retirements === 1 ? 'not_owned' : 'stop_delivered',
+          targetTurnId: 'source-turn',
+        }),
+      });
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+      assert.ok(candidates.ok);
+      assert.equal(
+        (
+          await workhub.act(
+            {
+              actionId: 'source',
+              userText: 'Fix payments',
+              candidateSetId: candidates.result.candidateSetId,
+              proposal: {
+                disposition: 'delegate_existing',
+                candidateRef: candidates.result.candidates.find((c) => c.sessionId === target.id)!
+                  .candidateRef,
+              },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        true,
+      );
+      const assignment = (await store.readWorkHubAssignment('source'))!;
+      if (crash === true) {
+        const append = store.appendMessages.bind(store);
+        let fail = true;
+        store.appendMessages = async (sessionId, messages) => {
+          if (
+            fail &&
+            messages.some(
+              (m) => m.type === 'workhub_coordination' && m.kind === 'delegation_stop_resolved',
+            )
+          ) {
+            fail = false;
+            throw new Error('crash before first stop resolution');
+          }
+          return append(sessionId, messages);
+        };
+      }
+      armed = true;
+      const outcomes = await Promise.all(
+        ['stop-one', 'stop-two'].map((actionId) =>
+          workhub.act(
+            {
+              actionId,
+              userText: 'Stop payments',
+              proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
+            },
+            CONTEXT,
+          ),
+        ),
+      );
+      assert.equal(outcomes.filter((o) => o.ok).length, crash === true ? 1 : 2);
+      const records = await Promise.all(
+        ['stop-one', 'stop-two'].map((id) =>
+          store.readWorkHubStopRequest(assignment.delegationId, id),
+        ),
+      );
+      assert.deepEqual(
+        records.map((r) => r?.actionId),
+        ['stop-one', 'stop-two'],
+      );
+      assert.notEqual(records[0]?.id, records[1]?.id);
+      const resolutions = await Promise.all(
+        ['stop-one', 'stop-two'].map((id) =>
+          store.readWorkHubStopResolution(assignment.delegationId, id),
+        ),
+      );
+      assert.equal(
+        (await store.readWorkHubStopResolution(assignment.delegationId))?.outcome,
+        'stop_delivered',
+      );
+      if (crash === 'not_owned') {
+        assert.deepEqual(resolutions.map((r) => r?.outcome).sort(), [
+          'not_owned',
+          'stop_delivered',
+        ]);
+        assert.deepEqual(
+          resolutions.map((r) => r?.actionId),
+          ['stop-one', 'stop-two'],
+        );
+      }
+
+      assert.equal((await store.readActiveWorkHubAssignmentsByTarget([target.id])).length, 0);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });

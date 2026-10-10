@@ -34,12 +34,17 @@ import {
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
-import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import {
+  type ProviderRuntimeAdapter,
+  type RuntimeExecutionConnection,
+} from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
+  modelOverride,
   resolveThinkingLevel,
-  supportsRelayFastServiceTier,
+  THINKING_LEVELS,
+  supportsCustomFastServiceTier,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   type ThinkingOptions,
@@ -52,8 +57,8 @@ import {
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
 import { openResponsesUrl } from './provider-urls.js';
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
+import { deepSeekWebSearchCodec } from './deepseek-web-search-codec.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
-import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
@@ -101,6 +106,30 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   } as const;
   const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);
 
+  const openResponsesSdkModel = () => {
+    const contract = reasoningReplay.kind === 'responses' ? reasoningReplay.contract : undefined;
+    if (contract?.adapter !== 'open-responses') return undefined;
+    const finalizeBody = createOpenResponsesCompatibilityFinalizer(contract.compatibility);
+    // Request customization is applied first; provider compatibility is
+    // the final authority before network dispatch, so an overlay cannot
+    // re-enable storage or violate the provider's tool-choice contract.
+    const responsesFetch = finalizeBody
+      ? createRequestCustomizationFetch(baseFetch, {
+          ...requestCustomization,
+          finalizeBody,
+        })
+      : requestFetch;
+    return createOpenResponses({
+      name: connection.providerType,
+      apiKey,
+      url: openResponsesUrl(baseURL),
+      fetch: responsesFetch,
+      ...(connection.providerType === 'deepseek'
+        ? { experimental_extensions: [deepSeekWebSearchCodec] }
+        : {}),
+    })(modelId);
+  };
+
   switch (adapter.kind) {
     case 'anthropic':
       return createAnthropic({
@@ -123,6 +152,10 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       }).responses(modelId);
 
     case 'openai': {
+      if (wire === 'openai-responses') {
+        const model = openResponsesSdkModel();
+        if (model) return model;
+      }
       const openai = createOpenAI({
         apiKey,
         baseURL,
@@ -151,26 +184,8 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        if (reasoningReplay.contract.adapter === 'open-responses') {
-          const finalizeBody = createOpenResponsesCompatibilityFinalizer(
-            reasoningReplay.contract.compatibility,
-          );
-          // Request customization is applied first; provider compatibility is
-          // the final authority before network dispatch, so an overlay cannot
-          // re-enable storage or violate the provider's tool-choice contract.
-          const responsesFetch = finalizeBody
-            ? createRequestCustomizationFetch(baseFetch, {
-                ...requestCustomization,
-                finalizeBody,
-              })
-            : requestFetch;
-          return createOpenResponses({
-            name: runtimeProviderName(adapter, connection),
-            apiKey,
-            url: openResponsesUrl(baseURL),
-            fetch: responsesFetch,
-          })(modelId);
-        }
+        const model = openResponsesSdkModel();
+        if (model) return model;
         return createOpenAI({
           apiKey,
           baseURL,
@@ -193,7 +208,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           )
         : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
-        name: runtimeProviderName(adapter, connection),
+        name: connection.providerType,
         apiKey,
         baseURL,
         // Ask every Chat Completions server for stream usage unless the
@@ -444,6 +459,36 @@ function claudeThinkingMode(
     : 'legacy';
 }
 
+/**
+ * The level that asks this model for the least reasoning it accepts, for
+ * callers that want none but cannot rely on `'off'` surviving
+ * `resolveThinkingLevel`.
+ *
+ * `'off'` is used when the model declares it. It is also used when the model
+ * declares no levels, or is a Claude model on Anthropic Messages, because on
+ * those paths an omitted parameter already means no extended thinking, while
+ * the lowest effort would switch adaptive thinking on. That holds for Claude,
+ * not for every Anthropic Messages route: Kimi's K3 and kimi-for-coding think
+ * by default when no level is sent.
+ *
+ * Everywhere else a dropped `'off'` omits the effort parameter, and the
+ * provider then runs its default reasoning (medium on GPT-5, GPT-6 and o3,
+ * dynamic on Gemini 3). So this returns the model's lowest declared level
+ * instead, which the wire builders send explicitly.
+ */
+export function leastReasoningThinkingLevel(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+  runtime = resolveModelRuntime(connection, modelId),
+): ThinkingLevel {
+  const variants = thinkingVariantsForConnection(connection, modelId);
+  if (variants.length === 0 || variants.includes('off')) return 'off';
+  if (runtime.wire === 'anthropic-messages' && claudeFamilyId(modelId).startsWith('claude-')) {
+    return 'off';
+  }
+  return THINKING_LEVELS.find((level) => variants.includes(level)) ?? 'off';
+}
+
 export function buildProviderOptions(
   connection: RuntimeExecutionConnection,
   modelId: string,
@@ -467,6 +512,21 @@ function buildThinkingProviderOptions(
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
   const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
   switch (connection.providerType) {
+    case 'custom':
+      // Messages needs a thinking mode beside the effort. A declared level is
+      // the user's statement the gateway thinks, so it always gets adaptive.
+      // Messages has no `minimal` effort; `low` is its lowest.
+      if (runtime.wire === 'anthropic-messages') {
+        return level
+          ? {
+              anthropic: {
+                thinking: { type: 'adaptive', display: 'summarized' },
+                effort: level === 'minimal' ? 'low' : level,
+              },
+            }
+          : {};
+      }
+      return buildFamilyWire(connection, modelId, level, thinkingOptions, thinkingLevel, runtime);
     case 'kimi-coding-plan': {
       // Kimi's coding route has no off wire. Check the raw argument, not the
       // normalized level: the entry gate above drops unsupported levels to
@@ -646,20 +706,20 @@ function withParallelToolCallOptions(
 
   let providerKey: string;
   let optionKey: 'parallelToolCalls' | 'parallel_tool_calls';
-  if (runtime.adapter.kind === 'openai' || runtime.adapter.kind === 'openai-codex') {
+  if (runtime.wire === 'openai-responses') {
+    // parallelToolCalls is an @ai-sdk/openai provider option; the Open
+    // Responses SDK has no namespaced switch for it.
+    if (runtime.reasoningReplay.contract.adapter !== 'openai') {
+      return options;
+    }
+    providerKey = 'openai';
+    optionKey = 'parallelToolCalls';
+  } else if (runtime.adapter.kind === 'openai') {
     providerKey = 'openai';
     optionKey = 'parallelToolCalls';
   } else if (runtime.adapter.kind === 'openai-compatible') {
-    if (runtime.wire === 'openai-responses') {
-      if (runtime.reasoningReplay.contract.adapter !== 'openai') {
-        return options;
-      }
-      providerKey = 'openai';
-      optionKey = 'parallelToolCalls';
-    } else {
-      providerKey = openAiCompatibleProviderOptionsKey(runtime.adapter, connection);
-      optionKey = 'parallel_tool_calls';
-    }
+    providerKey = openAiCompatibleProviderOptionsKey(connection);
+    optionKey = 'parallel_tool_calls';
   } else {
     return options;
   }
@@ -684,19 +744,12 @@ function buildFamilyWire(
 ): SharedV4ProviderOptions {
   const { adapter, wire, reasoningReplay } = runtime;
   const explicitReasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
-  const serviceTier =
-    wire === 'openai-responses' &&
-    reasoningReplay.kind === 'responses' &&
-    reasoningReplay.contract.adapter === 'openai' &&
-    supportsRelayFastServiceTier(connection.providerType, modelId)
-      ? connection.modelOverrides?.[modelId]?.serviceTier
-      : undefined;
   // Provider selection and reasoning continuation are independent. The OpenAI
   // provider reads its provider-options namespace; the Open Responses provider
   // consumes a provider-native reasoningEffort through the same namespace,
   // keyed by the provider name getAIModel passes to createOpenResponses.
   if (wire === 'openai-responses') {
-    // Connection-aware: a relay model's declared variants count too.
+    // Connection-aware: a custom model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     if (reasoningReplay.contract.adapter === 'open-responses') {
       // @ai-sdk/open-responses@2.0.34 passes a provider-native reasoningEffort
@@ -705,15 +758,13 @@ function buildFamilyWire(
       // sends `xhigh` to high, not max). The SDK resolves providerOptions
       // under the raw provider `name` — no camelCase alias, unlike
       // openai-compatible — so key by the same name getAIModel passes.
-      return explicitReasoningEffort || serviceTier
-        ? {
-            [runtimeProviderName(adapter, connection)]: {
-              ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
-              ...(serviceTier ? { serviceTier } : {}),
-            },
-          }
+      return explicitReasoningEffort
+        ? { [connection.providerType]: { reasoningEffort: explicitReasoningEffort } }
         : {};
     }
+    const serviceTier = supportsCustomFastServiceTier(connection, modelId)
+      ? modelOverride(connection, modelId)?.serviceTier
+      : undefined;
     const reasoningEffort =
       explicitReasoningEffort ??
       (requestedLevel === undefined ? defaultOpenAiReasoningEffort(modelId) : undefined);
@@ -744,24 +795,20 @@ function buildFamilyWire(
       (requestedLevel === undefined ? defaultOpenAiReasoningEffort(modelId) : undefined);
     if (reasoningEffort) {
       return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: { reasoningEffort },
+        [openAiCompatibleProviderOptionsKey(connection)]: { reasoningEffort },
       };
     }
   }
-  if (!explicitReasoningEffort && !serviceTier) return {};
+  if (!explicitReasoningEffort) return {};
   switch (adapter.kind) {
     case 'openai-compatible':
       return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: {
-          ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
+        [openAiCompatibleProviderOptionsKey(connection)]: {
+          reasoningEffort: explicitReasoningEffort,
         },
       };
     case 'openai':
-      return {
-        openai: {
-          ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
-        },
-      };
+      return { openai: { reasoningEffort: explicitReasoningEffort } };
     case 'anthropic':
       // Anthropic-protocol models declare no `none` effort, so an off
       // choice only exists where an explicit case wires it.
@@ -801,9 +848,6 @@ function toCamelCase(name: string): string {
  * A metadata reader keyed by the raw `connection.providerType` would
  * silently read nothing for dashed providers.
  */
-function openAiCompatibleProviderOptionsKey(
-  adapter: RuntimeProviderAdapter,
-  connection: RuntimeExecutionConnection,
-): string {
-  return toCamelCase(runtimeProviderName(adapter, connection));
+function openAiCompatibleProviderOptionsKey(connection: RuntimeExecutionConnection): string {
+  return toCamelCase(connection.providerType);
 }

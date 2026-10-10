@@ -167,6 +167,30 @@ test('keeps settled math stable while the live Markdown tail grows and flushes',
   await act(() => root.unmount());
 });
 
+test('keeps inline math when a digit chunk lands after the committed closer', async () => {
+  const { container, root } = streamingRoot();
+
+  function render(text: string) {
+    return root.render(
+      <LocaleProvider locale="en">
+        <MarkdownBody text={text} />
+      </LocaleProvider>,
+    );
+  }
+
+  await act(() => render('v2 \\(x + 1\\)'));
+  assert.ok(container.querySelector('.maka-math .katex'));
+
+  await act(() => render('v2 \\(x + 1\\)3'));
+  assert.ok(container.querySelector('.maka-math .katex'));
+
+  await act(() => render('v2 \\(x + 1\\)3 done'));
+  assert.ok(container.querySelector('.maka-math .katex'));
+  assert.match(container.textContent ?? '', /3 done/);
+
+  await act(() => root.unmount());
+});
+
 test('never exposes math transport syntax as a formula crosses the display cursor', async () => {
   const frames: FrameRequestCallback[] = [];
   const { container, root } = streamingRoot((callback) => {

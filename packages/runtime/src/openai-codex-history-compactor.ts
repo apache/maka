@@ -22,6 +22,7 @@ import type {
   HistoryCompactSummaryInput,
 } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { nonEmpty } from './context-budget-helpers.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   historyCompactCheckpointToModelMessage,
@@ -339,10 +340,6 @@ function isStreamErrorPart(value: unknown): value is { type: 'error'; error: unk
   return Boolean(
     value && typeof value === 'object' && (value as Record<string, unknown>).type === 'error',
   );
-}
-
-function nonEmpty(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 interface AiSdkModule {

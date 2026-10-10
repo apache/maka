@@ -18,12 +18,12 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import type { MakaBridge } from '../../preload/bridge-contract.js';
 import { createDesktopTaskEntryServices } from '../../renderer/platform/desktop/create-task-entry-services.js';
 
 describe('createDesktopTaskEntryServices', () => {
-  it('maps only the Task Entry catalog and Project selection operations', async () => {
+  it('maps Task Entry catalog and Host-scoped Project operations', async () => {
     const calls: Array<{ name: string; args: unknown[] }> = [];
     let changeHandler: (() => void) | undefined;
     let changes = 0;
@@ -52,7 +52,21 @@ describe('createDesktopTaskEntryServices', () => {
           return cancelled;
         },
       },
-    } as unknown as Pick<MakaBridge, 'newTasks'>;
+      projects: {
+        rename: async (...args: unknown[]) =>
+          calls.push({ name: 'renameProject', args }),
+        archive: async (...args: unknown[]) =>
+          calls.push({ name: 'archiveProject', args }),
+        restore: async (...args: unknown[]) =>
+          calls.push({ name: 'restoreProject', args }),
+      },
+      sessions: {
+        moveToProject: async (...args: unknown[]) => {
+          calls.push({ name: 'moveToProject', args });
+          return { ok: true, session: {} };
+        },
+      },
+    } as unknown as Pick<MakaBridge, 'app' | 'newTasks' | 'projects' | 'sessions'>;
     const services = createDesktopTaskEntryServices(bridge);
     const host = { profileId: 'remote', hostId: 'host-1' };
 
@@ -63,6 +77,13 @@ describe('createDesktopTaskEntryServices', () => {
     changeHandler?.();
     await services.catalog.addProject(host);
     await services.catalog.relinkProject(host, 'project-1');
+    await services.catalog.renameProject(host, 'project-1', 'Renamed');
+    await services.catalog.archiveProject(host, 'project-1');
+    await services.catalog.restoreProject(host, 'project-1');
+    assert.deepEqual(
+      await services.sessions.relocateWorkspace('session-1', 'project-1'),
+      { ok: true },
+    );
     unsubscribe();
 
     assert.deepEqual(calls, [
@@ -70,8 +91,90 @@ describe('createDesktopTaskEntryServices', () => {
       { name: 'subscribeChanges', args: [] },
       { name: 'addProject', args: [host] },
       { name: 'relinkProject', args: [host, 'project-1'] },
+      { name: 'renameProject', args: ['project-1', 'Renamed', host] },
+      { name: 'archiveProject', args: ['project-1', host] },
+      { name: 'restoreProject', args: ['project-1', host] },
+      {
+        name: 'moveToProject',
+        args: ['session-1', 'project-1'],
+      },
     ]);
     assert.equal(changes, 1);
     assert.equal(disposed, 1);
+  });
+
+  describe('folders', () => {
+    const defaultHost = { profileId: 'default-profile', hostId: 'default-host' };
+    const previousWindow = globalThis.window;
+
+    afterEach(() => {
+      globalThis.window = previousWindow;
+    });
+
+    function folderServices(openPath: (...args: unknown[]) => Promise<unknown>) {
+      // The default Host is resolved through the shared default-Host helper,
+      // which reads the global bridge rather than the injected one.
+      globalThis.window = {
+        maka: { runtimeHostProfiles: { getDefaultHost: async () => defaultHost } },
+      } as unknown as Window & typeof globalThis;
+      return createDesktopTaskEntryServices({
+        app: { openPath },
+      } as unknown as Pick<MakaBridge, 'app' | 'newTasks' | 'projects' | 'sessions'>).folders;
+    }
+
+    it('opens a task folder through the task, and other folders on the default Host', async () => {
+      const calls: unknown[][] = [];
+      const folders = folderServices(async (...args) => {
+        calls.push(args);
+        return { ok: true, opened: '/tmp' };
+      });
+
+      assert.deepEqual(await folders.openProjectFolder('session-1'), { kind: 'opened' });
+      assert.deepEqual(await folders.openProjectFolder(), { kind: 'opened' });
+      assert.deepEqual(await folders.openWorkspaceFolder(), { kind: 'opened' });
+      assert.deepEqual(calls, [
+        ['project', 'session-1'],
+        ['project', undefined, defaultHost],
+        ['workspace', undefined, defaultHost],
+      ]);
+    });
+
+    it('reports a refusal against the task or the default Host profile', async () => {
+      const folders = folderServices(async () => ({ ok: false, reason: 'missing' }));
+
+      assert.deepEqual(await folders.openProjectFolder('session-1'), {
+        kind: 'refused',
+        reason: 'missing',
+        diagnosticTarget: { sessionId: 'session-1' },
+      });
+      assert.deepEqual(await folders.openWorkspaceFolder(), {
+        kind: 'refused',
+        reason: 'missing',
+        diagnosticTarget: { profileId: 'default-profile' },
+      });
+    });
+
+    it('keeps the Host authority of a failed request', async () => {
+      const failure = new Error('unavailable');
+      const folders = folderServices(async () => {
+        throw failure;
+      });
+
+      const workspace = await folders.openWorkspaceFolder();
+      const task = await folders.openProjectFolder('session-key');
+      const project = await folders.openProjectFolder();
+
+      assert.equal(workspace.kind, 'failed');
+      assert.deepEqual(
+        [workspace, task, project].map((result) =>
+          result.kind === 'failed' ? result.diagnosticTarget : result.kind,
+        ),
+        [
+          { profileId: 'default-profile' },
+          { sessionId: 'session-key' },
+          { profileId: 'default-profile' },
+        ],
+      );
+    });
   });
 });

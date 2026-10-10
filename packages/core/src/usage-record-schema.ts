@@ -88,7 +88,6 @@ const RETIRED_CONTEXT_BUDGET_KEYS = [
   'archiveRetrievalFailures',
   'archiveRetrievalSkippedReasonCounts',
   'archiveRetrievalFailureReasonCounts',
-  'historySearchMatches',
   'historyAroundRetrievedEvents',
   'historyAroundEstimatedTokens',
   'historyAroundSkippedEvents',

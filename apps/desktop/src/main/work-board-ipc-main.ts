@@ -49,6 +49,12 @@ export function registerWorkBoardIpc(input: {
   readonly mainWindowController: MainWindowController;
   readonly store?: WorkBoardStore;
   /**
+   * Resolves the store lazily when its schema owner is ready.  Registration
+   * itself must stay synchronous so gated renderer IPC never races handler
+   * installation during startup.
+   */
+  readonly resolveStore?: () => WorkBoardStore | Promise<WorkBoardStore>;
+  /**
    * Proves that a linked Session belongs to the live Host target and, when
    * the board item is project-scoped, to that item's project.
    */
@@ -58,7 +64,30 @@ export function registerWorkBoardIpc(input: {
   ) => Promise<boolean>;
   readonly now?: () => number;
 }): WorkBoardIpcRegistration {
-  const store = input.store ?? createWorkBoardStore(input.workspaceRoot);
+  let store = input.store;
+  let closed = false;
+  let storeResolution: Promise<WorkBoardStore> | undefined;
+  const resolveStore = async (): Promise<WorkBoardStore> => {
+    if (closed) throw new Error('Work Board IPC registration is closed');
+    if (store) return store;
+    storeResolution ??= (async () => {
+      const resolved = await (input.resolveStore ?? (() => createWorkBoardStore(input.workspaceRoot)))();
+      if (closed) {
+        resolved.close();
+        throw new Error('Work Board IPC registration is closed');
+      }
+      store = resolved;
+      return resolved;
+    })();
+    try {
+      return await storeResolution;
+    } catch (error) {
+      // A failed Host/schema attempt must be retryable after the Host
+      // reconnects; keep successful resolution cached for all later calls.
+      if (!store) storeResolution = undefined;
+      throw error;
+    }
+  };
   const now = input.now ?? Date.now;
   const emitChanged = (): void => {
     input.mainWindowController.send('workBoard:changed', {
@@ -71,6 +100,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:list',
     async (_event, query: unknown): Promise<WorkBoardIpcResult<WorkBoardPage>> => {
       try {
+        const store = await resolveStore();
         return { ok: true, value: await store.list(query) };
       } catch (error) {
         return { ok: false, ...workBoardFailure(error) };
@@ -82,6 +112,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:create',
     async (_event, item: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const created = await store.create(item);
         emitChanged();
         return { ok: true, value: created };
@@ -100,6 +131,7 @@ export function registerWorkBoardIpc(input: {
       options?: unknown,
     ): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const updated = await store.update(
           requireWorkBoardId(id),
           patch,
@@ -117,6 +149,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:archive',
     async (_event, id: unknown, options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const archived = await store.archive(
           requireWorkBoardId(id),
           options as WorkBoardMutationOptions | undefined,
@@ -133,6 +166,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:unarchive',
     async (_event, id: unknown, options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const unarchived = await store.unarchive(
           requireWorkBoardId(id),
           options as WorkBoardMutationOptions | undefined,
@@ -153,6 +187,7 @@ export function registerWorkBoardIpc(input: {
       options?: unknown,
     ): Promise<WorkBoardIpcResult<null>> => {
       try {
+        const store = await resolveStore();
         await store.remove(requireWorkBoardId(id), options as WorkBoardMutationOptions | undefined);
         emitChanged();
         return { ok: true, value: null };
@@ -166,6 +201,7 @@ export function registerWorkBoardIpc(input: {
     'workBoard:linkSession',
     async (_event, id: unknown, link: unknown, _options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
       try {
+        const store = await resolveStore();
         const itemId = requireWorkBoardId(id);
         const item = await store.get(itemId);
         if (!item || item.scope.kind !== 'project') {
@@ -198,7 +234,10 @@ export function registerWorkBoardIpc(input: {
   );
 
   return {
-    close: () => store.close(),
+    close: () => {
+      closed = true;
+      store?.close();
+    },
   };
 }
 

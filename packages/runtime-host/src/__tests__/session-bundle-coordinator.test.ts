@@ -57,6 +57,7 @@ test('prepares a bundle under the authority the Host already holds', async () =>
         fenced.push(sessionId);
         return operation([sessionId]);
       },
+      recoverInterruptedSessions: async () => {},
       onImported: () => {},
     });
 
@@ -77,6 +78,31 @@ test('prepares a bundle under the authority the Host already holds', async () =>
   });
 });
 
+test('repairs interrupted Sessions while the export subtree is fenced', async () => {
+  await withLease(async (lease, canonicalRoot) => {
+    const order: string[] = [];
+    const coordinator = new HostSessionBundleCoordinator({
+      lease,
+      fenceSubtree: async (sessionId, operation) => {
+        order.push(`fence:${sessionId}`);
+        return operation([sessionId, 'child-1']);
+      },
+      recoverInterruptedSessions: async (sessionIds) => {
+        order.push(`recover:${sessionIds.join(',')}`);
+      },
+      onImported: () => {},
+    });
+
+    const outcome = await coordinator.export({
+      sessionId: 'session-1',
+      destination: join(canonicalRoot, 'out.maka-session'),
+    });
+
+    assert.equal(outcome.ok, false);
+    assert.deepEqual(order, ['fence:session-1', 'recover:session-1,child-1']);
+  });
+});
+
 test('accepts a bundle without fencing Sessions that are not here yet', async () => {
   await withLease(async (lease, canonicalRoot) => {
     let fenced = false;
@@ -86,6 +112,7 @@ test('accepts a bundle without fencing Sessions that are not here yet', async ()
         fenced = true;
         return operation([sessionId]);
       },
+      recoverInterruptedSessions: async () => {},
       onImported: () => {},
     });
 
@@ -115,6 +142,7 @@ test('a fence that refuses a running Session refuses the export', async () => {
       fenceSubtree: async () => {
         throw new Error('Session configuration cannot change while a linked Turn is active');
       },
+      recoverInterruptedSessions: async () => {},
       onImported: () => {},
     });
 
@@ -140,6 +168,7 @@ test('a busy subtree is refused as busy, not as a broken Host', async () => {
           'Session configuration cannot change while a linked Turn is active',
         );
       },
+      recoverInterruptedSessions: async () => {},
       onImported: () => {},
     });
 
@@ -162,6 +191,7 @@ test('refuses a subtree whose membership changed, not only its size', async () =
       // The caller was shown two Sessions; a third finished spawning while the
       // save dialog was open.
       fenceSubtree: async (sessionId, operation) => operation([sessionId, 'child-1', 'child-2']),
+      recoverInterruptedSessions: async () => {},
       onImported: () => {},
     });
 
@@ -181,6 +211,7 @@ test('exports when the subtree is what the caller was shown', async () => {
     const coordinator = new HostSessionBundleCoordinator({
       lease,
       fenceSubtree: async (sessionId, operation) => operation([sessionId, 'child-1']),
+      recoverInterruptedSessions: async () => {},
       onImported: () => {},
     });
 

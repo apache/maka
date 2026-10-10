@@ -59,6 +59,7 @@ import {
 } from '@maka/core/runtime-event';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import type { AttachmentRef, DirectoryReference, QuoteRef } from '@maka/core/events';
+import type { RuntimeInvocationLineage } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type {
   ModelMessage,
@@ -66,6 +67,7 @@ import type {
   UserContent,
   UserModelMessage,
 } from './model-protocol.js';
+import { runtimeInvocationFailureClass } from './runtime-event-read-model.js';
 import {
   decodeEffectiveToolResultProjection,
   durableProjectionToToolResultOutput,
@@ -74,8 +76,225 @@ import {
 import { MATERIALIZED_IMAGE_TOKENS } from '@maka/core/attachments';
 import { estimateTokens, stableJsonLength, turnKey } from './context-budget-helpers.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
+import { resolveRuntimeRecovery } from './recovery-resolver.js';
 
 export const PROVIDER_REPLAY_PROJECTION_VERSION = 2;
+
+export interface PriorUnknownToolOutcome {
+  readonly callEventId: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly operationId: string;
+}
+
+export type PriorUnknownToolOutcomeProjection =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'blocked'; readonly reason: string }
+  | {
+      readonly kind: 'projected';
+      readonly outcomes: readonly PriorUnknownToolOutcome[];
+    };
+
+/**
+ * An admitted root has the lineage its kind implies; an explicit user message
+ * has none at all. Exact emptiness, not a list of per-field negatives, so a
+ * lineage field added later cannot quietly widen what retires an unknown.
+ */
+function lineageIsEmpty(lineage: RuntimeInvocationLineage | undefined): boolean {
+  if (lineage === undefined) return true;
+  return Object.values(lineage).every((value) => value === undefined);
+}
+
+/**
+ * Retire an unknown only after the conversation demonstrably moved on with the
+ * model informed. While an unknown is active this gate admits explicit user
+ * turns alone, so a later user-rooted, fresh, lineage-free invocation that
+ * completed is exactly the turn the unknown was projected into. Retried,
+ * regenerated, branched, and sub-agent turns carry lineage; continuations and
+ * handoffs are not `fresh`; Goal, schedule, wake, and compaction runs root in
+ * their own authority kinds; every other automated turn fails at this gate
+ * before it could complete.
+ */
+function unknownOutcomeRetired(
+  invocation: RuntimeInvocationRecord,
+  invocations: readonly RuntimeInvocationRecord[] | undefined,
+): boolean {
+  const terminalTs = invocation.terminalEvent?.ts;
+  if (terminalTs === undefined) return false;
+  return (invocations ?? []).some(
+    (later) =>
+      later.invocationId !== invocation.invocationId &&
+      later.openedAt > terminalTs &&
+      later.terminalEvent?.status === 'completed' &&
+      later.opening.root.kind === 'user' &&
+      later.opening.source.kind === 'fresh' &&
+      lineageIsEmpty(later.opening.lineage),
+  );
+}
+
+/**
+ * Admit only sealed T1-without-T2 facts for a manual fresh message. The
+ * synthetic tool response is request-local; it is never appended to the event
+ * ledger and must not be mistaken for evidence that the tool settled.
+ */
+export function inspectPriorUnknownToolOutcomes(
+  events: readonly RuntimeEvent[],
+  invocations: readonly RuntimeInvocationRecord[] | undefined,
+): PriorUnknownToolOutcomeProjection {
+  const eventsByInvocationId = new Map<string, RuntimeEvent[]>();
+  for (const event of events) {
+    const invocationEvents = eventsByInvocationId.get(event.invocationId) ?? [];
+    invocationEvents.push(event);
+    eventsByInvocationId.set(event.invocationId, invocationEvents);
+  }
+  const invocationById = new Map(
+    (invocations ?? []).map((run) => [run.invocationId, run] as const),
+  );
+  const indeterminate = [];
+  for (const [invocationId, invocationEvents] of eventsByInvocationId) {
+    const invocation = invocationById.get(invocationId);
+    const sealedUnknown =
+      invocation?.terminalEvent &&
+      invocation.terminalEvent.status === 'failed' &&
+      runtimeInvocationFailureClass(invocation) === 'outcome_unknown';
+    if (sealedUnknown && invocation && unknownOutcomeRetired(invocation, invocations)) {
+      // The explicit turn this unknown was projected into completed with the
+      // model informed; the conversation moved on. Without this the sealed
+      // invocation would re-fire on every later turn forever.
+      continue;
+    }
+    const recovery = resolveRuntimeRecovery(invocationEvents);
+    if (recovery.hasCorruption) {
+      // Strict per-invocation framing is authoritative only for an invocation
+      // that claims an unknown tool outcome. Other groups are ordinary
+      // history — request-time context legitimately carries compaction
+      // artifacts (pruned or archived tool results, checkpoint transitions,
+      // tolerated orphans) that strict single-invocation framing rejects.
+      if (sealedUnknown) {
+        return { kind: 'blocked', reason: 'prior tool history is corrupt' };
+      }
+      continue;
+    }
+    indeterminate.push(
+      ...recovery.decisions.filter((decision) => decision.status === 'indeterminate'),
+    );
+  }
+  // Only a dispatch without its response is an unknown tool effect. A call
+  // that never crossed T1 provably produced no side effect, so other
+  // indeterminate shapes keep their pre-existing projection behavior and are
+  // not this gate's concern.
+  const dispatchedUnknown = indeterminate.filter(
+    (decision) => decision.reason === 'dispatch_without_response',
+  );
+  if (dispatchedUnknown.length === 0) return { kind: 'none' };
+  if (
+    dispatchedUnknown.some(
+      (decision) =>
+        !decision.operationId || !decision.callRuntimeEventId || !decision.dispatchRuntimeEventId,
+    )
+  ) {
+    return { kind: 'blocked', reason: 'prior tool outcome is not a sealed dispatched operation' };
+  }
+
+  const eventsById = new Map(events.map((event) => [event.id, event] as const));
+  const outcomes: PriorUnknownToolOutcome[] = [];
+  for (const decision of dispatchedUnknown) {
+    const callEvent = eventsById.get(decision.callRuntimeEventId!);
+    const dispatchEvent = eventsById.get(decision.dispatchRuntimeEventId!);
+    const call = callEvent?.content;
+    const invocation = callEvent ? invocationById.get(callEvent.invocationId) : undefined;
+    const dispatch = dispatchEvent?.actions?.toolDispatch;
+    if (
+      !callEvent ||
+      call?.kind !== 'function_call' ||
+      !dispatch ||
+      dispatchEvent.invocationId !== callEvent.invocationId ||
+      dispatch.operationId !== decision.operationId ||
+      dispatch.providerToolCallId !== call.id ||
+      dispatch.toolName !== call.name ||
+      !decision.operationId ||
+      !invocation?.terminalEvent ||
+      invocation.sessionId !== callEvent.sessionId ||
+      invocation.runId !== callEvent.runId ||
+      invocation.turnId !== callEvent.turnId ||
+      invocation.terminalEvent.sessionId !== callEvent.sessionId ||
+      invocation.terminalEvent.runId !== callEvent.runId ||
+      invocation.terminalEvent.turnId !== callEvent.turnId ||
+      invocation.terminalEvent.invocationId !== callEvent.invocationId ||
+      !isTerminalRuntimeEvent(invocation.terminalEvent) ||
+      invocation.terminalEvent.status !== 'failed' ||
+      runtimeInvocationFailureClass(invocation) !== 'outcome_unknown'
+    ) {
+      return { kind: 'blocked', reason: 'prior unknown tool outcome has no sealed invocation' };
+    }
+    // Hidden nested operations are an implementation detail of their parent
+    // tool. Validate their durable boundary above, but never surface their
+    // names or operation identities in model-visible request context.
+    if (callEvent.modelVisibility === 'hidden') continue;
+    outcomes.push({
+      callEventId: callEvent.id,
+      toolCallId: call.id,
+      toolName: call.name,
+      operationId: decision.operationId,
+    });
+  }
+  if (outcomes.length === 0) return { kind: 'none' };
+
+  // The unknown is carried only by the request-local tool responses below
+  // (appendPriorUnknownToolResponses): the system prompt stays byte-stable,
+  // so the provider's cached request prefix is never churned per event.
+  return { kind: 'projected', outcomes };
+}
+
+/** Insert request-only tool responses beside their calls so provider history stays well-formed. */
+export function appendPriorUnknownToolResponses(
+  events: readonly RuntimeEvent[],
+  projection: Extract<PriorUnknownToolOutcomeProjection, { kind: 'projected' }>,
+): RuntimeEvent[] {
+  const byCallEventId = new Map(
+    projection.outcomes.map((outcome) => [outcome.callEventId, outcome] as const),
+  );
+  const projected: RuntimeEvent[] = [];
+  for (const event of events) {
+    projected.push(event);
+    const outcome = byCallEventId.get(event.id);
+    const call = event.content;
+    if (!outcome || call?.kind !== 'function_call') continue;
+    projected.push({
+      id: `model-projection:outcome-unknown:${event.id}`,
+      invocationId: event.invocationId,
+      runId: event.runId,
+      sessionId: event.sessionId,
+      turnId: event.turnId,
+      ts: event.ts,
+      partial: false,
+      role: 'tool',
+      author: 'tool',
+      origin: event.origin ?? 'provider',
+      modelVisibility: event.modelVisibility ?? 'visible',
+      content: {
+        kind: 'function_response',
+        id: call.id,
+        name: call.name,
+        result: {
+          kind: 'text',
+          text: `outcome_unknown: ${call.name} was dispatched, but no durable result was recorded. Its effect may have happened. Inspect current state before deciding whether to repeat it.`,
+          uncertainOutcome: { code: 'outcome_unknown', retrySafe: false },
+        },
+        isError: true,
+      },
+      refs: {
+        operationId: outcome.operationId,
+        toolCallId: call.id,
+        ...(event.refs?.parentToolCallId ? { parentToolCallId: event.refs.parentToolCallId } : {}),
+        ...(event.refs?.parentOperationId
+          ? { parentOperationId: event.refs.parentOperationId }
+          : {}),
+      },
+    });
+  }
+  return projected;
+}
 
 /**
  * Resolve the RuntimeEvents whose provider-owned reasoning may cross the
@@ -202,7 +421,7 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
     // history-compact gate drops a model-visible event (#4804).
     if (content.kind === 'text') {
       for (const quote of content.quotes ?? []) {
-        total += quote.text.length + (quote.label?.length ?? 0);
+        total += formatQuoteRefs([quote]).length;
       }
       for (const attachment of content.attachments ?? []) {
         // Weight the block the projection actually emits, not the display
@@ -295,6 +514,7 @@ export type RuntimeEventReplayFallbackGate =
   | 'runtime_replay_unsupported_semantics';
 
 export type RuntimeEventReplayDiagnosticCode =
+  | 'repaired_prefix_dropped'
   | 'partial_skipped'
   | 'unsupported_role'
   | 'unsupported_content'
@@ -519,6 +739,13 @@ export interface RuntimeEventModelReplayPlan {
 export interface BuildRuntimeEventModelReplayPlanOptions {
   includeSystemEvents?: boolean;
   /**
+   * Preserve repaired assistant content before the first model-visible user.
+   *
+   * This is reserved for continuations that passed their separate provider
+   * replay admission. Ordinary projections default to a user-led history.
+   */
+  allowRepairedAssistantPrefix?: boolean;
+  /**
    * Turn IDs known — from the FULL prior ledger — to contain tool activity.
    *
    * The signed-thinking-in-tool-turn skip (see `turnsWithToolActivity` in the
@@ -531,6 +758,47 @@ export interface BuildRuntimeEventModelReplayPlanOptions {
    * unions them with tool activity found in `events`.
    */
   toolActivityTurnIds?: ReadonlySet<string>;
+}
+
+export interface RuntimeEventProviderHistoryBoundary {
+  events: readonly RuntimeEvent[];
+  diagnostic?: RuntimeEventReplayDiagnostic;
+}
+
+/**
+ * Apply the canonical provider-history boundary before any consumer-specific
+ * RuntimeEvent projection. Repaired content stays durable and UI-visible; only
+ * the provider request view drops an assistant prefix before its first user.
+ */
+export function applyRuntimeEventProviderHistoryBoundary(
+  events: readonly RuntimeEvent[],
+  options: Pick<BuildRuntimeEventModelReplayPlanOptions, 'allowRepairedAssistantPrefix'> = {},
+): RuntimeEventProviderHistoryBoundary {
+  if (options.allowRepairedAssistantPrefix) return { events };
+  const firstUserIndex = events.findIndex(
+    (event) =>
+      !isPartialRuntimeEvent(event) &&
+      event.role === 'user' &&
+      runtimeEventHasModelVisibleContent(event),
+  );
+  const boundaryEnd = firstUserIndex < 0 ? events.length : firstUserIndex;
+  const repairedAssistantIndex = events.findIndex(
+    (event) =>
+      event.refs?.storedMessageId !== undefined &&
+      event.role === 'model' &&
+      (event.content?.kind === 'text' || event.content?.kind === 'thinking'),
+  );
+  if (repairedAssistantIndex < 0 || repairedAssistantIndex >= boundaryEnd) return { events };
+  const repairedAssistant = events[repairedAssistantIndex]!;
+  return {
+    events: firstUserIndex < 0 ? [] : events.slice(firstUserIndex),
+    diagnostic: diagnostic(
+      repairedAssistant,
+      'repaired_prefix_dropped',
+      'repaired assistant prefix dropped before provider replay user boundary',
+      { droppedEventCount: firstUserIndex < 0 ? events.length : firstUserIndex },
+    ),
+  };
 }
 
 /**
@@ -561,8 +829,12 @@ export function buildRuntimeEventModelReplayPlan(
   options: BuildRuntimeEventModelReplayPlanOptions = {},
 ): RuntimeEventModelReplayPlan {
   const includeSystemEvents = options.includeSystemEvents ?? false;
+  const boundary = applyRuntimeEventProviderHistoryBoundary(events, options);
+  const replayEvents = boundary.events;
   const items: RuntimeEventModelReplayItem[] = [];
-  const diagnostics: RuntimeEventReplayDiagnostic[] = [];
+  const diagnostics: RuntimeEventReplayDiagnostic[] = boundary.diagnostic
+    ? [boundary.diagnostic]
+    : [];
   const callsById = new Map<
     string,
     {
@@ -593,7 +865,7 @@ export function buildRuntimeEventModelReplayPlan(
   // are step-paired — without it every sliced tool turn would degrade.
   const pairedToolTurnIds = new Set<string>();
   const unpairedToolTurnIds = new Set<string>();
-  for (const event of events) {
+  for (const event of replayEvents) {
     if (isPartialRuntimeEvent(event)) continue;
     if (event.modelVisibility === 'hidden') continue;
     if (event.content?.kind === 'function_call' && event.turnId) {
@@ -605,7 +877,7 @@ export function buildRuntimeEventModelReplayPlan(
     if (!pairedToolTurnIds.has(id)) unpairedToolTurnIds.add(id);
   }
 
-  for (const event of events) {
+  for (const event of replayEvents) {
     if (isPartialRuntimeEvent(event)) {
       diagnostics.push(
         diagnostic(event, 'partial_skipped', 'partial RuntimeEvent skipped for model replay'),
@@ -1156,8 +1428,36 @@ function formatAttachmentRefs(attachments: readonly AttachmentRef[]): string {
 function formatQuoteRefs(quotes: readonly QuoteRef[]): string {
   return quotes
     .map((q) => {
-      const label = q.label === undefined ? '' : ` label="${q.label.replace(/"/g, "'")}"`;
-      return `<quoted_excerpt${label}>\n${q.text}\n</quoted_excerpt>`;
+      const attributes = [
+        q.label === undefined ? undefined : `label="${quoteAttribute(q.label)}"`,
+        q.comment === undefined ? undefined : `comment="${quoteAttribute(q.comment)}"`,
+        q.sourceSessionId === undefined
+          ? undefined
+          : `source_session="${quoteAttribute(q.sourceSessionId)}"`,
+        q.sourceCapturedAt === undefined ? undefined : `captured_at="${q.sourceCapturedAt}"`,
+        q.sourceTruncated === undefined ? undefined : `truncated="${q.sourceTruncated}"`,
+      ].filter((attribute): attribute is string => attribute !== undefined);
+      const opening =
+        attributes.length > 0 ? `<quoted_excerpt ${attributes.join(' ')}>` : '<quoted_excerpt>';
+      // A literal closing tag inside the excerpt would end the block early
+      // and let the text that follows open a second, forged excerpt — one
+      // whose comment attribute reads as the user's own words. The body is
+      // otherwise verbatim, so only the tag boundary itself is neutralised.
+      const body = q.text.replace(/<(\/?)quoted_excerpt/gi, '\\u003c$1quoted_excerpt');
+      return `${opening}\n${body}\n</quoted_excerpt>`;
     })
     .join('\n');
+}
+
+/**
+ * One escaping rule for every attribute on a projected tag. A quote inside a
+ * double-quoted attribute would end the value early, and a newline would put
+ * the opening tag's boundary where a reader expects prose, so both are folded.
+ */
+function quoteAttribute(value: string): string {
+  return value
+    .replace(/["<&>]/g, (character) =>
+      character === '"' ? "'" : `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    )
+    .replace(/\s+/g, ' ');
 }

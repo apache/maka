@@ -61,6 +61,7 @@ import {
   type SessionCatalogRecord,
   type CreateStableSessionRequest,
   type CoordinationTranscriptIndexRecord,
+  type ArchiveRetentionCandidate,
 } from '../session-store-contract.js';
 import { buildSessionHeader, normalizeSessionHeader, toSummary } from '../session-store-values.js';
 import { isValidConversationCopyTransition } from '../session-conversation-copy.js';
@@ -72,10 +73,7 @@ import {
   normalizeProvenSteeringMessageHandoff,
   type PendingMessageAdmission,
 } from '../message-admission-store.js';
-import {
-  projectSessionCatalogMessages,
-  lastMessagePreviewForMessages,
-} from '../session-message-projection.js';
+import { projectSessionCatalogMessages } from '../session-message-projection.js';
 import {
   type MemoryExecutionAuthority,
   copy,
@@ -233,22 +231,65 @@ function updatePublic(
   }
   return update(s, id, patch, version);
 }
+/**
+ * The archive lifecycle writer, mirroring SQLite: only a real transition moves
+ * the archive time, so an archived Session keeps the time it first entered.
+ */
+function setArchived(
+  s: MemoryState,
+  id: string,
+  isArchived: boolean,
+  archivedAt: number,
+  version?: number,
+): Header {
+  const current = requireHeader(s, id);
+  const next = update(s, id, { isArchived }, version, true);
+  if (next === current) return next;
+  if (isArchived) rows<number>(s, 'archivedAt').set(id, archivedAt);
+  else rows(s, 'archivedAt').delete(id);
+  return next;
+}
+/** The rows the archived-task page lists, less graph operators and pinned families. */
+function archiveRetentionCandidates(s: MemoryState): ArchiveRetentionCandidate[] {
+  const all = [...headers(s).values()];
+  const family = (h: SessionHeader) => h.revisionRootSessionId ?? h.id;
+  const pinned = new Set(all.filter((r) => r.header.isFlagged).map((r) => family(r.header)));
+  return all
+    .filter(({ header: h }) => h.isArchived && !h.isFlagged && h.id !== HUB && !h.role)
+    .filter(({ header: h }) => h.conversationCopy?.state !== 'preparing')
+    .filter(({ header: h }) => h.transcriptLedgerVersion !== 0 && !h.subagentParent?.graph)
+    .filter(
+      ({ header: h }) => !h.subagentParent || !headers(s).has(h.subagentParent.parentSessionId),
+    )
+    .filter(({ header: h }) => !pinned.has(family(h)))
+    .map((r) => {
+      const archivedAt = rows<number>(s, 'archivedAt').get(r.header.id);
+      return archivedAt === undefined ? r : { ...r, archivedAt };
+    });
+}
+
 function catalog(s: MemoryState, id: string): SessionCatalogRecord {
   const record = requireHeader(s, id);
   const preview = rows<string>(s, 'previews').get(id);
+  const archivedAt = rows<number>(s, 'archivedAt').get(id);
   return {
     ...record,
     activityAt: record.header.lastMessageAt ?? record.header.createdAt,
     summary: {
       ...toSummary(record.header),
       ...(preview === undefined ? {} : { lastMessagePreview: preview }),
+      ...(archivedAt === undefined ? {} : { archivedAt }),
     },
   };
 }
-function project(s: MemoryState, id: string, values: readonly StoredMessage[]): void {
+function project(
+  s: MemoryState,
+  id: string,
+  values: readonly StoredMessage[],
+  projection = projectSessionCatalogMessages(values),
+): void {
   const current = requireHeader(s, id);
-  const projection = projectSessionCatalogMessages(values);
-  const preview = lastMessagePreviewForMessages(values);
+  const preview = projection.lastMessagePreview;
   if (preview !== undefined) rows(s, 'previews').set(id, preview);
   const visible = values.some((m) => m.type === 'user' || m.type === 'assistant');
   if (visible || projection.lastMessageAt !== undefined) {
@@ -261,10 +302,18 @@ function project(s: MemoryState, id: string, values: readonly StoredMessage[]): 
   }
 }
 function append(s: MemoryState, id: string, inputs: readonly StoredMessage[]): void {
+  const canonicalValues = inputs.map((input) => decodeCanonicalMessage(copy(input)));
+  appendCanonical(s, id, canonicalValues);
+}
+function appendCanonical(
+  s: MemoryState,
+  id: string,
+  canonicalValues: readonly StoredMessage[],
+  projection = projectSessionCatalogMessages(canonicalValues),
+): void {
   requireHeader(s, id);
   const list = messages(s).get(id)!;
-  for (const input of inputs) {
-    const message = decodeCanonicalMessage(copy(input));
+  for (const message of canonicalValues) {
     const previous = list.find((m) => m.id === message.id);
     if (previous) {
       if (!equal(previous, message)) conflict('Message identity changed');
@@ -272,7 +321,7 @@ function append(s: MemoryState, id: string, inputs: readonly StoredMessage[]): v
     }
     list.push(message);
   }
-  project(s, id, inputs);
+  project(s, id, canonicalValues, projection);
 }
 function probe(s: MemoryState, id: string, fingerprint: string) {
   assertSafeSessionId(id);
@@ -361,6 +410,7 @@ function remove(s: MemoryState, id: string, group: Set<string>): void {
     conflict('Session has live child Sessions outside retirement');
   headers(s).delete(id);
   messages(s).delete(id);
+  rows(s, 'archivedAt').delete(id);
   rows(s, 'tombstones').set(id, true);
   rows(s, 'cleanup').set(id, true);
   rows(s, 'goals').delete(id);
@@ -416,33 +466,42 @@ export function createMemorySessionStore(
     createStableSession: async (request, initial) =>
       write('session.createStable', (s) => stable(s, root, request, initial)),
     probeStableSessionCreate: async (id, fingerprint) => read((s) => probe(s, id, fingerprint)),
-    createImportedSession: async (input, values, origin) =>
-      write('session.import', (s) => {
-        const h = {
-          ...buildSessionHeader(root, input),
-          externalOrigin: copy(origin),
-          transcriptLedgerVersion: 0 as const,
-        };
+    createImportedSession: async (input, values, origin, options) => {
+      const canonicalValues = values.map((value) => decodeCanonicalMessage(copy(value)));
+      const h = {
+        ...buildSessionHeader(root, input),
+        externalOrigin: copy(origin),
+        transcriptLedgerVersion: 0 as const,
+      };
+      const catalogProjection = projectSessionCatalogMessages(canonicalValues);
+      options?.onCommitStarted?.();
+      return write('session.import', (s) => {
         insert(s, h);
-        append(s, h.id, values);
+        appendCanonical(s, h.id, canonicalValues, catalogProjection);
         return requireHeader(s, h.id).header;
-      }),
+      });
+    },
     lookupExternalSessionImports: async (adapterId, sourceIds, limit) =>
       read((s) =>
-        sourceIds.map((sourceSessionId) => {
+        sourceIds.flatMap((sourceSessionId) => {
           const matches = [...headers(s).values()].filter(
             (h) =>
+              h.header.transcriptLedgerVersion !== 0 &&
               h.header.externalOrigin?.adapterId === adapterId &&
               h.header.externalOrigin.sourceSessionId === sourceSessionId,
           );
-          return {
-            sourceSessionId,
-            livePublishedImportCount: matches.length,
-            recentSessionIds: matches
-              .sort((x, y) => y.header.createdAt - x.header.createdAt)
-              .slice(0, limit)
-              .map((h) => h.header.id),
-          };
+          return matches.length === 0
+            ? []
+            : [
+                {
+                  sourceSessionId,
+                  livePublishedImportCount: matches.length,
+                  recentSessionIds: matches
+                    .sort((x, y) => y.header.createdAt - x.header.createdAt)
+                    .slice(0, limit)
+                    .map((h) => h.header.id),
+                },
+              ];
         }),
       ),
     createSubagent: async (input, initial) =>
@@ -492,6 +551,7 @@ export function createMemorySessionStore(
         const ordinary = id !== HUB && header.role === undefined;
         const coordination = id === HUB && header.role === WORKHUB_COORDINATION_SESSION_ROLE;
         if (
+          header.transcriptLedgerVersion === 0 ||
           header.conversationCopy?.state === 'preparing' ||
           (!ordinary && !(roleScope === 'recoverable' && coordination))
         )
@@ -645,13 +705,14 @@ export function createMemorySessionStore(
       write('session.remove', (s) => remove(s, id, new Set([id])));
     },
     setSessionsArchivedVersioned: async (ids, isArchived) =>
-      write('session.archive', (s) =>
-        ids.map(({ sessionId, expectedVersion }) => {
-          const result = update(s, sessionId, { isArchived }, expectedVersion, true);
+      write('session.archive', (s) => {
+        const archivedAt = Date.now();
+        return ids.map(({ sessionId, expectedVersion }) => {
+          const result = setArchived(s, sessionId, isArchived, archivedAt, expectedVersion);
           if (isArchived) rows(s, 'goals').delete(sessionId);
           return result;
-        }),
-      ),
+        });
+      }),
     removeSessionsVersioned: async (ids, archive = []) =>
       write('session.retire', (s) => {
         const group = new Set(ids.map((i) => i.sessionId));
@@ -665,9 +726,10 @@ export function createMemorySessionStore(
               h.revision,
             );
         }
+        const archivedAt = Date.now();
         for (const i of archive) {
           if (group.has(i.sessionId)) conflict('Cannot archive and remove the same Session');
-          update(s, i.sessionId, { isArchived: true }, undefined, true);
+          setArchived(s, i.sessionId, true, archivedAt);
           rows(s, 'goals').delete(i.sessionId);
         }
         for (const i of ids) if (headers(s).has(i.sessionId)) remove(s, i.sessionId, group);
@@ -682,6 +744,50 @@ export function createMemorySessionStore(
         rows(s, 'cleanup').delete(id);
       });
     },
+    listArchiveRetentionCandidates: async (query) =>
+      read((s) => {
+        const order = (r: ArchiveRetentionCandidate) => r.archivedAt ?? -1;
+        const after = query.after;
+        return archiveRetentionCandidates(s)
+          .filter(
+            (r) =>
+              query.archivedBefore === undefined ||
+              r.archivedAt === undefined ||
+              r.archivedAt < query.archivedBefore,
+          )
+          .sort(
+            (a, b) =>
+              order(a) - order(b) ||
+              (a.header.id < b.header.id ? -1 : a.header.id > b.header.id ? 1 : 0),
+          )
+          .filter(
+            (r) =>
+              !after ||
+              order(r) > (after.archivedAt ?? -1) ||
+              (order(r) === (after.archivedAt ?? -1) && r.header.id > after.sessionId),
+          )
+          .slice(0, query.limit);
+      }),
+    countArchiveRetentionCandidates: async (enabledAt) =>
+      read((s) => {
+        const starts = new Map<string, number>();
+        for (const r of archiveRetentionCandidates(s)) {
+          const family = r.header.revisionRootSessionId ?? r.header.id;
+          const start = Math.max(r.archivedAt ?? enabledAt, enabledAt);
+          starts.set(family, Math.max(starts.get(family) ?? start, start));
+        }
+        return starts.size === 0
+          ? { families: 0 }
+          : { families: starts.size, firstStart: Math.min(...starts.values()) };
+      }),
+    readLatestSessionMetadataTime: async () =>
+      read((s) => {
+        const times = [
+          ...[...headers(s).values()].map((r) => r.committedAt),
+          ...rows<number>(s, 'archivedAt').values(),
+        ];
+        return times.length === 0 ? undefined : Math.max(...times);
+      }),
     reconcileOrphanedAgentGraphRetirements: async () =>
       write('session.reconcileRetirement', (s) => {
         const ids = [...headers(s).values()]
@@ -888,21 +994,48 @@ export function createMemorySessionStore(
           ? m
           : undefined;
       }),
-    readWorkHubStopRequest: async (id) =>
+    readWorkHubStopRequest: async (id, actionId) =>
       read((s) => {
-        const m = hubMessage(s, 'whq_' + suffix(id));
+        const first = hubMessage(s, 'whq_' + suffix(id));
+        const m =
+          actionId &&
+          first?.type === 'workhub_coordination' &&
+          first.kind === 'delegation_stop_requested' &&
+          first.actionId !== actionId
+            ? hubMessage(s, 'whq_' + suffix(JSON.stringify([id, actionId])))
+            : first;
         return m?.type === 'workhub_coordination' && m.kind === 'delegation_stop_requested'
           ? m
           : undefined;
       }),
-    readWorkHubStopResolution: async (id) =>
+    readWorkHubStopResolution: async (id, actionId) =>
       read((s) => {
-        const m = hubMessage(s, 'whz_' + suffix(id));
+        if (!actionId) {
+          const terminal = hubMessage(s, 'whzt_' + suffix(id));
+          if (
+            terminal?.type === 'workhub_coordination' &&
+            terminal.kind === 'delegation_stop_resolved' &&
+            terminal.outcome !== 'not_owned'
+          )
+            return terminal;
+        }
+        const scoped = actionId
+          ? hubMessage(s, 'whz_' + suffix(JSON.stringify([id, actionId])))
+          : undefined;
+        const primary = hubMessage(s, 'whz_' + suffix(id));
+        const m =
+          scoped ??
+          (actionId &&
+          primary?.type === 'workhub_coordination' &&
+          primary.kind === 'delegation_stop_resolved' &&
+          primary.actionId !== actionId
+            ? undefined
+            : primary);
         return m?.type === 'workhub_coordination' && m.kind === 'delegation_stop_resolved'
           ? m
           : undefined;
       }),
-    readActiveWorkHubAssignmentsByTarget: async (ids, limit) =>
+    readActiveWorkHubAssignmentsByTarget: async (ids, limit, includeStopped) =>
       read((s) => {
         ids.forEach(assertSafeSessionId);
         if (
@@ -925,8 +1058,11 @@ export function createMemorySessionStore(
                 !memoryRootSourceReceipt(s, m.targetSessionId, m.targetMessageId))
             )
               return false;
-            const resolution = hubMessage(s, 'whz_' + suffix(m.delegationId));
+            const resolution =
+              hubMessage(s, 'whzt_' + suffix(m.delegationId)) ??
+              hubMessage(s, 'whz_' + suffix(m.delegationId));
             if (
+              !includeStopped &&
               resolution?.type === 'workhub_coordination' &&
               resolution.kind === 'delegation_stop_resolved' &&
               resolution.outcome !== 'not_owned'
@@ -1229,6 +1365,7 @@ function selectCatalog(s: MemoryState, filter: Parameters<SessionAuthorityStore[
     .filter(
       (r) =>
         r.header.role !== WORKHUB_COORDINATION_SESSION_ROLE &&
+        r.header.transcriptLedgerVersion !== 0 &&
         r.header.conversationCopy?.state !== 'preparing' &&
         (filter?.subagentParentSessionId === undefined ||
           r.header.subagentParent?.parentSessionId === filter.subagentParentSessionId),

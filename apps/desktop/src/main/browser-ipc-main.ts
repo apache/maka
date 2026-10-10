@@ -22,7 +22,7 @@ import { isWorkHubCoordinationSessionId } from '@maka/core/session';
 import { createBrowserViewHost } from './browser/automation-host.js';
 import { provideBrowserViewHost } from './browser/browser-host.js';
 import { releaseBrowserSession, revokeHiddenBrowserActions } from './browser/session.js';
-import type { BrowserViewRect } from './browser/logic.js';
+import { type BrowserViewRect, viewportBoundsAtScale } from './browser/logic.js';
 import type { createMainWindowController } from './main-window.js';
 import {
   desktopSessionResourceKey,
@@ -33,6 +33,9 @@ import {
 
 interface BrowserIpcDeps {
   mainWindowController: ReturnType<typeof createMainWindowController>;
+  auxiliaryWindowRegistry: {
+    rendererParent(contents: Electron.WebContents): Electron.View | undefined;
+  };
   isHostActive(scope: DesktopTargetScope): boolean;
 }
 
@@ -46,11 +49,23 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     documentId?: string;
     generation: number;
     sessionId: string | null;
+    /** Last renderer CSS-pixel rect, retained so native bounds follow zoom changes. */
+    viewport: BrowserViewRect | null;
   }
 
   const selections = new Map<Electron.WebContents, RendererSelection>();
   const observedRenderers = new WeakSet<Electron.WebContents>();
-  const views = deps.mainWindowController.getBrowserViews();
+  const ownsRenderer = (contents: Electron.WebContents): boolean =>
+    !contents.isDestroyed() && (deps.mainWindowController.isMainRenderer(contents) ||
+      deps.auxiliaryWindowRegistry.rendererParent(contents) !== undefined);
+  const browserParentForRenderer = (contents: Electron.WebContents): Electron.View | undefined => {
+    if (contents.isDestroyed()) return undefined;
+    if (deps.mainWindowController.isMainRenderer(contents)) {
+      const window = BrowserWindow.fromWebContents(contents);
+      return window && !window.isDestroyed() ? window.contentView : undefined;
+    }
+    return deps.auxiliaryWindowRegistry.rendererParent(contents);
+  };
 
   const isCoordination = (sessionId: string): boolean =>
     isWorkHubCoordinationSessionId(parseDesktopSessionResourceKey(sessionId).sessionId);
@@ -60,24 +75,29 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   const ownerForSession = (sessionId: string): Electron.WebContents | undefined => {
     let owner: Electron.WebContents | undefined;
     for (const [contents, selection] of selections) {
-      if (selection.sessionId !== sessionId || !deps.mainWindowController.ownsRenderer(contents)) continue;
+      if (selection.sessionId !== sessionId || !ownsRenderer(contents)) continue;
       if (!deps.mainWindowController.isMainRenderer(contents)) return contents;
       owner = contents;
     }
     return owner;
   };
+  const parentForSession = (sessionId: string): Electron.View | undefined => {
+    const owner = ownerForSession(sessionId);
+    return owner ? browserParentForRenderer(owner) : undefined;
+  };
+  const views = deps.mainWindowController.getBrowserViews(parentForSession);
 
   const isSessionShown = (sessionId: string): boolean => {
     const owner = ownerForSession(sessionId);
     if (!owner) return false;
-    const parent = deps.mainWindowController.browserParentForRenderer(owner);
+    const parent = browserParentForRenderer(owner);
     const window = BrowserWindow.fromWebContents(owner);
     return !!parent?.getVisible() && !!window && !window.isDestroyed() &&
       window.isVisible() && !window.isMinimized();
   };
   const canRunInBackground = (sessionId: string): boolean => {
     const owner = ownerForSession(sessionId);
-    if (!owner || !deps.mainWindowController.browserParentForRenderer(owner)) return false;
+    if (!owner || !browserParentForRenderer(owner)) return false;
     const ref = parseDesktopSessionResourceKey(sessionId);
     return isWorkHubCoordinationSessionId(ref.sessionId) && deps.isHostActive(ref);
   };
@@ -86,13 +106,42 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     revokeHiddenBrowserActions((sessionId) => isSessionShown(sessionId) || canRunInBackground(sessionId));
   };
 
+  const applyViewport = (
+    contents: Electron.WebContents,
+    selection: RendererSelection,
+    options: { reparent: boolean },
+  ): void => {
+    const sessionId = selection.sessionId;
+    if (!sessionId) return;
+    const view = views.get(sessionId);
+    const parent = browserParentForRenderer(contents);
+    if (!view || !parent) return;
+    if (!selection.viewport) {
+      if (view.hasParent(parent)) view.park();
+      return;
+    }
+    // getBoundingClientRect reports renderer CSS px, while native View bounds
+    // use window DIP. They are equal only at 100% renderer zoom.
+    const bounds = viewportBoundsAtScale(selection.viewport, contents.getZoomFactor());
+    if (!bounds) {
+      if (view.hasParent(parent)) view.setViewport(null);
+      return;
+    }
+    // A zoom event from a renderer that no longer presents a shared page must
+    // not steal it back from its current native parent.
+    if (!options.reparent && !view.hasParent(parent)) return;
+    if (options.reparent) view.setParent(parent);
+    view.setViewport(bounds);
+  };
+
   const relinquishSession = (contents: Electron.WebContents): void => {
     const selection = selections.get(contents);
     const sessionId = selection?.sessionId;
     if (!selection || !sessionId) return;
     const view = views.get(sessionId);
-    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    const parent = browserParentForRenderer(contents);
     selection.sessionId = null;
+    selection.viewport = null;
     if (view && parent && view.hasParent(parent)) {
       view.park();
     }
@@ -107,7 +156,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
   const observeRenderer = (contents: Electron.WebContents): void => {
     if (observedRenderers.has(contents)) return;
     observedRenderers.add(contents);
-    const parent = deps.mainWindowController.browserParentForRenderer(contents);
+    const parent = browserParentForRenderer(contents);
     const window = BrowserWindow.fromWebContents(contents);
     const parkPresentedPages = () => {
       if (!parent) return;
@@ -116,11 +165,16 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
         if (view?.hasParent(parent) && !view.hasOwner(parent)) view.park();
       }
     };
+    const syncZoomedViewport = () => {
+      const selection = selections.get(contents);
+      if (selection?.viewport) applyViewport(contents, selection, { reparent: false });
+    };
     window?.on('close', parkPresentedPages);
     window?.on('hide', revokeHiddenActions);
     window?.on('minimize', revokeHiddenActions);
     window?.on('show', revokeHiddenActions);
     window?.on('restore', revokeHiddenActions);
+    contents.on('zoom-changed', syncZoomedViewport);
     contents.on('render-process-gone', () => clearRendererSelection(contents));
     contents.once('destroyed', () => {
       window?.removeListener('close', parkPresentedPages);
@@ -128,6 +182,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       window?.removeListener('minimize', revokeHiddenActions);
       window?.removeListener('show', revokeHiddenActions);
       window?.removeListener('restore', revokeHiddenActions);
+      contents.removeListener('zoom-changed', syncZoomedViewport);
       const owned = views.sessionIds().filter((sessionId) =>
         parent && views.get(sessionId)?.hasOwner(parent),
       );
@@ -142,18 +197,12 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const frame = event.senderFrame;
     if (
       !frame || frame.frameToken !== event.sender.mainFrame.frameToken ||
-      !deps.mainWindowController.ownsRenderer(event.sender)
+      !ownsRenderer(event.sender)
     ) return undefined;
     observeRenderer(event.sender);
     return event.sender;
   };
 
-  deps.mainWindowController.setBrowserViewParentResolver((sessionId) => {
-    const owner = ownerForSession(sessionId);
-    return owner
-      ? deps.mainWindowController.browserParentForRenderer(owner)
-      : undefined;
-  });
   provideBrowserViewHost(createBrowserViewHost(views, isSessionShown, canRunInBackground));
 
   const requireBrowserTarget = (scope: unknown, target: unknown): string | undefined => {
@@ -201,15 +250,18 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const previousOwner = sessionId ? ownerForSession(sessionId) : undefined;
     if (previousOwner && previousOwner !== contents && (!isCoordination(sessionId!) ||
       deps.mainWindowController.isMainRenderer(previousOwner) === deps.mainWindowController.isMainRenderer(contents))) return;
-    if (selection.sessionId && selection.sessionId !== sessionId) relinquishSession(contents);
+    const changed = selection.sessionId !== sessionId;
+    if (selection.sessionId && changed) relinquishSession(contents);
     if (!sessionId) {
       selection.sessionId = null;
+      selection.viewport = null;
       revokeHiddenActions();
       return;
     }
     selection.sessionId = sessionId;
+    if (changed) selection.viewport = null;
     if (isCoordination(sessionId) && !deps.mainWindowController.isMainRenderer(contents)) {
-      const parent = deps.mainWindowController.browserParentForRenderer(contents);
+      const parent = browserParentForRenderer(contents);
       if (parent) views.get(sessionId)?.setOwner(parent);
     }
     revokeHiddenActions();
@@ -223,7 +275,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const contents = ownedRenderer(event);
     if (!contents) return undefined;
     const sessionId = requireBrowserTarget(scope, target);
-    return sessionId && deps.mainWindowController.browserParentForRenderer(contents) &&
+    return sessionId && browserParentForRenderer(contents) &&
       selections.get(contents)?.sessionId === sessionId
       ? sessionId
       : undefined;
@@ -235,7 +287,7 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
     const selection = selections.get(contents);
     if (documentId === selection?.documentId) return;
     relinquishSession(contents);
-    selections.set(contents, { documentId, generation: 0, sessionId: null });
+    selections.set(contents, { documentId, generation: 0, sessionId: null, viewport: null });
     revokeHiddenActions();
   });
 
@@ -267,20 +319,15 @@ export function registerBrowserIpc(deps: BrowserIpcDeps): BrowserIpcController {
       return;
     }
     if (!target) return;
-    const view = views.get(target);
-    const parent = deps.mainWindowController.browserParentForRenderer(contents);
-    if (!view || !parent) return;
-    if (input.rect) {
-      view.setParent(parent);
-      view.setViewport(input.rect);
-    } else if (view.hasParent(parent)) {
-      view.park();
-    }
+    const selection = selections.get(contents);
+    if (!selection) return;
+    selection.viewport = input?.rect ?? null;
+    applyViewport(contents, selection, { reparent: true });
   });
 
   ipcMain.handle('browser:capture-page', (event, scope: unknown, target: unknown) => {
     const selected = selectedTarget(event, scope, target);
-    const parent = deps.mainWindowController.browserParentForRenderer(event.sender);
+    const parent = browserParentForRenderer(event.sender);
     const view = selected ? views.get(selected) : undefined;
     return parent && view?.hasParent(parent) ? view.capturePage() : undefined;
   });
