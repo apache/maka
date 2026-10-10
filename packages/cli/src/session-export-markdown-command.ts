@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { stat, writeFile } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { exportSessionTranscriptMarkdown } from '@maka/runtime/session-transcript-export';
 
 const USAGE =
@@ -71,6 +71,10 @@ export async function runMakaSessionExportMarkdownCli(args: string[]): Promise<n
     return 1;
   }
   // Aligned with the bundle exporter: an existing path is never overwritten.
+  // The stat is only the friendly precheck; the exclusive creation below is
+  // what actually refuses existing destinations — a file created after this
+  // check, or a dangling symlink the check reads as absent, both land on EEXIST
+  // instead of being truncated or followed.
   if (
     await stat(parsed.destination)
       .then(() => true)
@@ -88,7 +92,21 @@ export async function runMakaSessionExportMarkdownCli(args: string[]): Promise<n
     process.stderr.write(`${JSON.stringify(result.reason)}\n`);
     return FAILURE_EXIT_CODES[result.reason.kind] ?? 1;
   }
-  await writeFile(parsed.destination, result.markdown, 'utf8');
+  let destination: Awaited<ReturnType<typeof open>>;
+  try {
+    destination = await open(parsed.destination, 'wx');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      process.stderr.write(`${JSON.stringify({ kind: 'destination_exists' })}\n`);
+      return FAILURE_EXIT_CODES.destination_exists;
+    }
+    throw error;
+  }
+  try {
+    await destination.writeFile(result.markdown, 'utf8');
+  } finally {
+    await destination.close();
+  }
   process.stdout.write(
     `${JSON.stringify({
       session: parsed.sessionId,

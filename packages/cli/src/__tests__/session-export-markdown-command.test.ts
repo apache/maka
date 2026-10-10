@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -111,6 +111,33 @@ describe('maka session-export-markdown', () => {
 
     assert.equal(exit, 5);
     assert.equal(await readFile(destination, 'utf8'), 'do not touch\n');
+  });
+
+  test('refuses a dangling symlink destination without following it', async () => {
+    const workspaceRoot = await makeWorkspace();
+    const sessionId = await seedSession(workspaceRoot);
+    const target = join(workspaceRoot, 'target.md');
+    const destination = join(workspaceRoot, 'link.md');
+    await symlink(target, destination);
+
+    const exit = await runMakaSessionExportMarkdownCli([
+      '--workspace-root',
+      workspaceRoot,
+      '--session',
+      sessionId,
+      '--out',
+      destination,
+    ]);
+
+    assert.equal(exit, 5);
+    assert.equal(
+      await readFile(target, 'utf8').then(
+        () => 'written',
+        () => 'absent',
+      ),
+      'absent',
+    );
+    assert.equal((await lstat(destination)).isSymbolicLink(), true);
   });
 
   test('reports a missing session with exit code 2', async () => {

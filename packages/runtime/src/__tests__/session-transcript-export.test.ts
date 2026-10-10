@@ -22,7 +22,11 @@ import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage/session-store';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
+import { seedInvocation } from './invocation-fixture.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
   exportSessionTranscriptMarkdown,
@@ -334,4 +338,159 @@ test('renderer stays a pure function over stored messages', () => {
   assert.ok(markdown.endsWith('\n'));
   assert.ok(markdown.includes('## You'));
   assert.ok(markdown.includes('## Maka'));
+});
+
+/**
+ * A completed invocation as current sessions actually persist it: the runtime
+ * event ledger is the transcript authority, and `session_messages` stays empty.
+ */
+async function seedLedgerTurn(workspaceRoot: string, sessionId: string): Promise<void> {
+  const runtime = createSqliteRuntimeStore(join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME));
+  try {
+    const { invocationId } = await seedInvocation(runtime, {
+      sessionId,
+      runId: 'run-1',
+      turnId: 'turn-1',
+      openedAt: 1,
+    });
+    const base = { sessionId, invocationId, runId: 'run-1', turnId: 'turn-1' };
+    const events: RuntimeEvent[] = [
+      {
+        id: 'e-user',
+        ...base,
+        ts: 2,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'list the files' },
+      },
+      {
+        id: 'e-steer',
+        ...base,
+        ts: 3,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'include the hidden ones', steering: true },
+      },
+      {
+        id: 'e-answer',
+        ...base,
+        ts: 4,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'Here are all the files.' },
+      },
+      {
+        id: 'e-terminal',
+        ...base,
+        ts: 5,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        actions: { endInvocation: true },
+      },
+    ];
+    for (const event of events) {
+      await runtime.appendRuntimeEvent(sessionId, 'run-1', event);
+    }
+  } finally {
+    runtime.close();
+  }
+}
+
+test('exports a ledger-backed session the read model projects, not zero rows', async () => {
+  await withWorkspace('transcript-export-ledger', async (workspaceRoot) => {
+    const sessionId = await createSession(workspaceRoot, 'Ledger session');
+    await seedLedgerTurn(workspaceRoot, sessionId);
+
+    const result = await exportSessionTranscriptMarkdown({
+      workspaceRoot,
+      sessionId,
+      now: () => 0,
+    });
+    assert.ok(result.ok, JSON.stringify(result));
+    // Three spoken messages plus the turn_state row the terminal event
+    // projects — operational rows ride in the stream and render nowhere.
+    assert.equal(result.messageCount, 4);
+    assert.ok(result.markdown.includes('list the files'));
+    assert.ok(result.markdown.includes('include the hidden ones'));
+    assert.ok(result.markdown.includes('Here are all the files.'));
+  });
+});
+
+test('redacts shell_run fallbacks and terminal labels before rendering', () => {
+  const markdown = renderSessionTranscriptMarkdown(
+    'Redact',
+    [
+      userMessage('u1', 'turn-1', 1, 'run it'),
+      toolCallMessage({ id: 'call-1', turnId: 'turn-1', ts: 2, toolName: 'Bash' }),
+      {
+        type: 'tool_result',
+        id: 'r1',
+        turnId: 'turn-1',
+        ts: 3,
+        toolUseId: 'call-1',
+        isError: false,
+        content: {
+          kind: 'terminal',
+          cwd: '/tmp',
+          cmd: 'echo sk-cmd-secret',
+          status: 'completed',
+          exitCode: 0,
+          output: 'token sk-output-secret done',
+        },
+      },
+      toolCallMessage({ id: 'call-2', turnId: 'turn-1', ts: 4, toolName: 'Bash' }),
+      {
+        type: 'tool_result',
+        id: 'r2',
+        turnId: 'turn-1',
+        ts: 5,
+        toolUseId: 'call-2',
+        isError: false,
+        content: {
+          kind: 'shell_run',
+          ref: { kind: 'workspace_file', relativePath: 'runs/shell-1' },
+          status: 'completed',
+          cwd: '/tmp',
+          cmd: 'curl -H "Authorization: Bearer sk-shell-secret" https://example.test',
+          startedAt: 1,
+          updatedAt: 2,
+          revision: 1,
+          mode: 'pipes',
+        },
+      },
+    ] as StoredMessage[],
+    { now: () => 0 },
+  );
+  for (const secret of ['sk-cmd-secret', 'sk-output-secret', 'sk-shell-secret']) {
+    assert.equal(markdown.includes(secret), false, secret);
+  }
+});
+
+test('renders every user message in a turn, steering included', () => {
+  const markdown = renderSessionTranscriptMarkdown(
+    'Steering',
+    [
+      userMessage('u1', 'turn-1', 1, 'list the files'),
+      assistantMessage({ id: 'a1', turnId: 'turn-1', ts: 2, text: 'Here are the visible ones.' }),
+      {
+        type: 'user',
+        id: 'u2',
+        turnId: 'turn-1',
+        ts: 3,
+        text: 'include the hidden ones',
+        steeringEventId: 'e-steer',
+      },
+      assistantMessage({ id: 'a2', turnId: 'turn-1', ts: 4, text: 'Here are all of them.' }),
+    ] as StoredMessage[],
+    { now: () => 0 },
+  );
+  assert.equal(markdown.match(/## You/g)?.length, 2);
+  assert.ok(markdown.includes('list the files'));
+  assert.ok(markdown.includes('include the hidden ones'));
+  assert.ok(markdown.includes('Here are all of them.'));
 });

@@ -23,10 +23,11 @@
  * The three surfaces each expose a partial slice of a transcript — the Desktop
  * export renders only what the viewport has loaded, and the TUI copy is
  * clipboard-bound — so this is the read-side path that hands out the whole
- * Session: `readMessagesSnapshot` reads every stored row, and the renderer
- * keeps the Desktop export's shape (`## You` / `### Tool calls` / `## Maka`)
- * while restoring what it deliberately drops for the clipboard. Differences,
- * per the #5958 discussion:
+ * Session: messages come from the runtime event ledger (the transcript
+ * authority current sessions write; sessions older than the ledger fall back
+ * to their stored rows), and the renderer keeps the Desktop export's shape
+ * (`## You` / `### Tool calls` / `## Maka`) while restoring what it
+ * deliberately drops for the clipboard. Differences, per the #5958 discussion:
  *
  * - **tool results** are included: they are exactly what a debugging reader
  *   needs, and every string that reaches the file passes `redactSecrets`.
@@ -40,10 +41,13 @@
  */
 
 import { stat } from 'node:fs/promises';
+import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { userFacingText } from '@maka/core/session';
 import { redactSecrets } from '@maka/core/redaction';
+import { openRuntimeEventReadPersistence } from '@maka/storage/runtime-event-persistence';
 import { createSessionStore } from '@maka/storage/session-store';
+import { RuntimeReadModel } from './runtime-read-model.js';
 
 export interface ExportSessionTranscriptMarkdownInput {
   workspaceRoot: string;
@@ -80,7 +84,9 @@ export async function exportSessionTranscriptMarkdown(
     } catch {
       return { ok: false, reason: { kind: 'session_not_found' } };
     }
-    const messages = await store.readMessagesSnapshot(input.sessionId);
+    const messages = await readSessionMessages(input.workspaceRoot, input.sessionId, () =>
+      store.readMessagesSnapshot(input.sessionId),
+    );
     const markdown = renderSessionTranscriptMarkdown(sessionName, messages, {
       includeThinking: input.includeThinking,
       now: input.now,
@@ -94,6 +100,36 @@ export async function exportSessionTranscriptMarkdown(
 export interface RenderSessionTranscriptMarkdownOptions {
   includeThinking?: boolean;
   now?: () => number;
+}
+
+/**
+ * Current sessions write the runtime event ledger and leave the legacy message
+ * rows empty, so the ledger read model is read first and the legacy rows only
+ * serve sessions that predate it. A ledger read that fails to open (no
+ * operational-state database) also lands on the legacy rows; a ledger that
+ * exists but projects with hard diagnostics fails the export instead of
+ * reporting success with zero messages.
+ */
+async function readSessionMessages(
+  workspaceRoot: string,
+  sessionId: string,
+  readLegacyRows: () => Promise<StoredMessage[]>,
+): Promise<StoredMessage[]> {
+  const persistence = await openRuntimeEventReadPersistence({ workspaceRoot }).catch(
+    () => undefined,
+  );
+  if (!persistence) return readLegacyRows();
+  try {
+    // The read store carries every method the read model calls; the runtime
+    // reader fragment is narrower than the full write store interface.
+    const readModel = new RuntimeReadModel({
+      runtimeEventStore: persistence.runtimeEventStore as unknown as RuntimeEventStore,
+    });
+    const projected = await readModel.getSessionMessages(sessionId);
+    return projected.length > 0 ? projected : readLegacyRows();
+  } finally {
+    persistence.close();
+  }
 }
 
 /**
@@ -132,8 +168,11 @@ export function renderSessionTranscriptMarkdown(
 
   for (const turnId of turnOrder) {
     const turnMessages = byTurn.get(turnId) ?? [];
-    const user = turnMessages.find((message) => message.type === 'user');
-    if (user && user.type === 'user') {
+    // A physical turn can hold the opening user message plus steering messages
+    // sent mid-turn; exporting only the first would drop the corrections while
+    // keeping the responses to them.
+    for (const user of turnMessages) {
+      if (user.type !== 'user') continue;
       lines.push('---');
       lines.push('');
       lines.push('## You');
@@ -212,12 +251,17 @@ function renderToolResult(result: ToolResultMessage): string[] {
   }
   if (content.kind === 'terminal') {
     const exit = content.exitCode === undefined ? '' : ` → exit ${content.exitCode}`;
+    // The command itself is attacker-visible text and can carry secrets that
+    // never touch `output`; the label gets the same treatment as the body.
     return renderResultBody(
-      `${label} — ${content.cwd} $ ${content.cmd}${exit}`,
+      redactSecrets(`${label} — ${content.cwd} $ ${content.cmd}${exit}`),
       redactSecrets(terminalOutput(content.output)),
     );
   }
-  return renderResultBody(label, safeJson(content));
+  // Structured results (shell_run, web_search, image, …) reach this fallback
+  // whole; serializing them verbatim would leak fields the text branch would
+  // have redacted.
+  return renderResultBody(label, redactSecrets(safeJson(content)));
 }
 
 function renderResultBody(label: string, body: string): string[] {
