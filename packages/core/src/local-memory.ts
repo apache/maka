@@ -751,7 +751,7 @@ function stripPromptContent(entry: LocalMemoryRawEntry): LocalMemoryEntryPreview
   return preview;
 }
 
-// 所有条目读取和编辑路径共享围栏状态，代码示例中的标题与元数据不能分割记忆。
+// All entry readers and editors share fence state so code examples cannot split entries.
 function createMemoryCodeFenceTracker(): (line: string) => boolean {
   let fence: { marker: string; length: number } | undefined;
   return (line) => {
@@ -774,7 +774,7 @@ function createMemoryCodeFenceTracker(): (line: string) => boolean {
 }
 
 function parseMetaComment(line: string): Record<string, string> | null {
-  // 四空格或 tab 缩进属于代码示例，不能覆盖条目的身份与状态。
+  // Four-space or tab indentation denotes a code example, not entry identity or state.
   const match = /^ {0,3}<!--\s*maka-memory:\s*(.*?)\s*-->[ \t]*$/.exec(line);
   if (!match) return null;
   const meta: Record<string, string> = {};
