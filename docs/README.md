@@ -74,10 +74,10 @@ This page is the authority map for Maka documentation. Code and contract tests r
 ### Computer use
 
 - [Foundation contract](./computer-use-foundation-contract.md)
-- [Model-loop foundation](./computer-use-model-loop-foundation.md)
-- [Evidence classes](./computer-use-evidence-classes.md)
-- [Provider evidence contract](./computer-use-provider-evidence.md)
-- [Host events contract](./computer-use-host-events-contract.md)
+- [Model-loop foundation](./computer-use-model-loop-foundation.md) ([中文](./computer-use-model-loop-foundation.zh-CN.md))
+- [Evidence classes](./computer-use-evidence-classes.md) ([中文](./computer-use-evidence-classes.zh-CN.md))
+- [Provider evidence contract](./computer-use-provider-evidence.md) ([中文](./computer-use-provider-evidence.zh-CN.md))
+- [Host events contract](./computer-use-host-events-contract.md) ([中文](./computer-use-host-events-contract.zh-CN.md))
 
 ### Frontend and validation
 
