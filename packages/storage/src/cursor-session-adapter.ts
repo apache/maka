@@ -95,16 +95,21 @@ export interface CursorSessionAdapterOptions {
 
 /**
  * Cursor's app-data root per platform, the directory that holds
- * `User/globalStorage`. Pure so tests can pin all three platforms without
- * touching the real home directory; separators are written per platform so
- * the layout is stable no matter where the test runs.
+ * `User/globalStorage`. macOS keys on the platform, Windows on `APPDATA`
+ * (which the Windows runtime always sets and POSIX installs leave unset), and
+ * everything else lands on the XDG layout — Cursor's documented roots. Pure so
+ * tests can pin all three without touching the real environment.
  */
-export function defaultCursorHome(platform: NodeJS.Platform, home: string): string {
+export function defaultCursorHome(
+  platform: NodeJS.Platform,
+  home: string,
+  appData?: string,
+): string {
   if (platform === 'darwin') {
     return `${home}/Library/Application Support/Cursor/User/globalStorage`;
   }
-  if (platform === 'win32') {
-    return `${home}\\AppData\\Roaming\\Cursor\\User\\globalStorage`;
+  if (appData !== undefined && appData.length > 0) {
+    return `${appData}/Cursor/User/globalStorage`;
   }
   return `${home}/.config/Cursor/User/globalStorage`;
 }
@@ -119,7 +124,8 @@ export class CursorSessionAdapter implements ExternalSessionAdapter {
   readonly #maxConvertedBytes: number;
 
   constructor(options: CursorSessionAdapterOptions = {}) {
-    this.#home = options.cursorHome ?? defaultCursorHome(process.platform, homedir());
+    this.#home =
+      options.cursorHome ?? defaultCursorHome(process.platform, homedir(), process.env.APPDATA);
     this.#stateDbPath = options.stateDbPath;
     this.#maxRawBytes = options.maxRawBytes ?? CURSOR_TRANSCRIPT_MAX_RAW_BYTES;
     this.#maxRows = options.maxRows ?? CURSOR_TRANSCRIPT_MAX_ROWS;

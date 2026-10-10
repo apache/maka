@@ -465,9 +465,15 @@ describe('CursorSessionAdapter', () => {
       defaultCursorHome('linux', '/home/u'),
       '/home/u/.config/Cursor/User/globalStorage',
     );
+    // Windows roots at %APPDATA%, which the Windows runtime always sets and
+    // POSIX installs leave unset — the fact the layout actually keys on.
+    assert.equal(
+      defaultCursorHome('win32', 'C:\\Users\\u', 'C:\\Users\\u\\AppData\\Roaming'),
+      'C:\\Users\\u\\AppData\\Roaming/Cursor/User/globalStorage',
+    );
     assert.equal(
       defaultCursorHome('win32', 'C:\\Users\\u'),
-      'C:\\Users\\u\\AppData\\Roaming\\Cursor\\User\\globalStorage',
+      'C:\\Users\\u/.config/Cursor/User/globalStorage',
     );
   });
 
