@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
   ? string
@@ -236,11 +236,11 @@ const enCopy: ShellRemainingCopy = {
   },
 };
 
-const COPY = {
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ShellRemainingCopy>()({
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
-} satisfies UiCatalog<ShellRemainingCopy>;
+})) satisfies UiCatalog<ShellRemainingCopy>;
 
 export function getShellRemainingCopy(locale: UiLocale): ShellRemainingCopy {
   return COPY[locale];

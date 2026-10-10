@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { EnvironmentRuntimeHostProfile, HostHandoffBlocker, HostHandoffPhase, RuntimeHostRemoteCompatibilityError } from '@maka/runtime-host/client';
 import { compareProductReleaseVersions } from '@maka/runtime-host/operator';
 import type { DesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
@@ -118,7 +118,7 @@ interface WslHandoffGuidance {
   readonly development: string;
 }
 
-const GUIDANCE = {
+const GUIDANCE = resolveUiMessageCatalog(defineUiMessageCatalog<WslHandoffGuidance>()({
   en: {
     client: 'Update Desktop to a build compatible with this Host. The Host will not be downgraded.',
     binding: 'The WSL management binding is unavailable. Restore it through Runtime Host settings before updating.',
@@ -140,4 +140,4 @@ const GUIDANCE = {
     target: '目前 Desktop 無法驗證合適的替換套件。請更新 Desktop，或透過開發環境明確管理選定的開發套件；現有 Host 會被保留。',
     development: '選定的開發構建',
   },
-} satisfies UiCatalog<WslHandoffGuidance>;
+}));

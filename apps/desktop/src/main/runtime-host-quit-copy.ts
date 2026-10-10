@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { MessageBoxOptions } from 'electron';
 
 export interface RuntimeHostQuitDialog<Decision extends string> {
@@ -54,7 +54,7 @@ interface RuntimeHostQuitCopy {
   readonly keepRunning: string;
 }
 
-const COPY = {
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<RuntimeHostQuitCopy>()({
   en: {
     activeTitle: 'Maka is still working',
     activeMessage: 'Background work is still running.',
@@ -79,4 +79,4 @@ const COPY = {
     stopAndQuit: '停止工作並結束',
     keepRunning: '繼續執行 Maka',
   },
-} satisfies UiCatalog<RuntimeHostQuitCopy>;
+}));

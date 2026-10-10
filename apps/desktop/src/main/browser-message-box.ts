@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog } from '@maka/core/ui-locale';
+import { defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -649,4 +649,4 @@ function escapeHtml(value: string): string {
   });
 }
 
-const CLOSE_LABEL = { 'zh-CN': '关闭', 'zh-TW': '關閉', en: 'Close' } satisfies UiCatalog<string>;
+const CLOSE_LABEL = resolveUiMessageCatalog(defineUiMessageCatalog<string>()({ 'zh-CN': '关闭', 'zh-TW': '關閉', en: 'Close' }));

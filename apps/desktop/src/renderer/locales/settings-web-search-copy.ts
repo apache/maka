@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 import type { WebSearchCredentialStatus, WebSearchErrorReason } from '@maka/core/web-search';
 
@@ -37,7 +37,7 @@ export type WebSearchSettingsCopy = {
   errors: Record<WebSearchErrorReason, string>;
 };
 
-const SETTINGS_WEB_SEARCH_COPY = {
+const SETTINGS_WEB_SEARCH_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<WebSearchSettingsCopy>()({
   'zh-CN': {
     saveFailed: '保存联网搜索设置失败', saveStatusFailed: '保存联网搜索状态失败', keySaved: '已保存 Tavily 密钥', keySavedDetail: '可点击「测试」做一次真实请求验证。',
     credentialsCleared: '已清空 Tavily 凭据', credentialsClearedDetail: '联网搜索已自动关闭。', credentialValid: 'Tavily 凭据可用', resultCount: (count) => `返回 ${count} 条结果。`,
@@ -89,6 +89,6 @@ const SETTINGS_WEB_SEARCH_COPY = {
     sources: { model: 'Source: current model connection', envWithSaved: 'Source: environment variable (saved key available as backup)', env: 'Source: environment variable', saved: 'Source: key saved on this device', none: 'Source: not configured' },
     errors: { invalid_query: 'Enter a valid search query.', incognito_active: 'Web search is unavailable in incognito mode.', not_configured: 'The selected search source is not configured.', invalid_credentials: 'The search provider rejected the current credential. Update it and try again.', rate_limited: 'The search provider is receiving too many requests. Try again later.', network_error: 'The network request failed. Check your connection and try again.', timeout: 'The search request timed out. Try again.', unsupported_provider: 'The current model does not support hosted search, or Maka has not implemented its protocol yet. Select Tavily to continue.', experimental_disabled: 'The experimental web search feature is currently disabled.' },
   },
-} satisfies UiCatalog<WebSearchSettingsCopy>;
+})) satisfies UiCatalog<WebSearchSettingsCopy>;
 
 export function getWebSearchSettingsCopy(locale: UiLocale): WebSearchSettingsCopy { return SETTINGS_WEB_SEARCH_COPY[locale]; }

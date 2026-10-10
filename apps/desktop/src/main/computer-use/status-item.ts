@@ -20,7 +20,7 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { Menu as MenuType, Tray } from 'electron';
-import { resolveSystemUiLocale, type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
+import { resolveSystemUiLocale, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { CuOverlayHook } from '@maka/runtime/computer-use-types';
 
 // Electron is CommonJS, and named imports from it fail outside a main process.
@@ -130,24 +130,23 @@ interface StatusItemCopy {
   /** Codex's empty state. Reachable only if a menu outlives its rows. */
   empty: string;
 }
-
-const COPY: UiCatalog<StatusItemCopy> = {
-  'zh-CN': {
+const copyZhCn: StatusItemCopy = {
     stopUsing: (appName) => `停止操作 ${appName}`,
     stopUnnamed: '停止 Computer Use',
     empty: '没有正在进行的任务',
-  },
-  'zh-TW': {
+  };
+const copyZhTw: StatusItemCopy = {
     stopUsing: (appName) => `停止操作 ${appName}`,
     stopUnnamed: '停止 Computer Use',
     empty: '沒有正在進行的任務',
-  },
-  en: {
+  };
+const copyEn: StatusItemCopy = {
     stopUsing: (appName) => `Stop Using ${appName}`,
     stopUnnamed: 'Stop Computer Use',
     empty: 'No Active Sessions',
-  },
-};
+  };
+
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<StatusItemCopy>()({ 'zh-CN': copyZhCn, 'zh-TW': copyZhTw, en: copyEn }));
 
 function defaultResolveLocale(): UiLocale {
   // Lazy on purpose: tool assembly runs at module load, before

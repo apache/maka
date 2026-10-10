@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface DiagnosticsCopy {
   readonly previousMainProcessInterruption: {
@@ -27,7 +27,7 @@ export interface DiagnosticsCopy {
   };
 }
 
-const COPY_BY_LOCALE = {
+const COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<DiagnosticsCopy>()({
   'zh-CN': {
     previousMainProcessInterruption: {
       title: 'Maka 已恢复',
@@ -49,7 +49,7 @@ const COPY_BY_LOCALE = {
       copyDiagnostics: 'Copy report',
     },
   },
-} satisfies UiCatalog<DiagnosticsCopy>;
+})) satisfies UiCatalog<DiagnosticsCopy>;
 
 export function getDiagnosticsCopy(locale: UiLocale): DiagnosticsCopy {
   return COPY_BY_LOCALE[locale];

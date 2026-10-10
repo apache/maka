@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { readFile, writeFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import type { IpcMain } from 'electron';
@@ -662,8 +662,8 @@ function sanitizeStrategy(value: unknown): ConnectionConflictStrategy {
   return value === 'overwrite' ? 'overwrite' : 'skip';
 }
 
-const CONFIG_DIALOG_COPY = {
+const CONFIG_DIALOG_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<{ exportTitle: string; importTitle: string }>()({
   'zh-CN': { exportTitle: '导出 Maka 配置', importTitle: '导入 Maka 配置' },
   'zh-TW': { exportTitle: '匯出 Maka 設定', importTitle: '匯入 Maka 設定' },
   en: { exportTitle: 'Export Maka configuration', importTitle: 'Import Maka configuration' },
-} satisfies UiCatalog<{ exportTitle: string; importTitle: string }>;
+}));

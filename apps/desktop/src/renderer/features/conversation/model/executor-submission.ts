@@ -22,7 +22,7 @@ import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { NewChatModel } from './shell-chat-model-selection.js';
 import type { SessionSummary } from '@maka/core/session';
 
@@ -47,7 +47,7 @@ export interface ExecutorSubmission {
     Partial<Pick<ExecutorCatalogEntry, 'models' | 'modes'>>;
 }
 
-const SUBMISSION_COPY = {
+const SUBMISSION_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<{ attachments: string; unavailable: string; invalid: string }>()({
   en: {
     attachments: 'Remove unsupported attachments or select Maka. Your draft is preserved.',
     unavailable: 'Check External Agents settings or start a new task.',
@@ -63,7 +63,7 @@ const SUBMISSION_COPY = {
     unavailable: '請檢查外部 Agent 設定，或建立新任務。',
     invalid: '所選 Agent 設定已失效，請重新選擇。',
   },
-} satisfies UiCatalog<{ attachments: string; unavailable: string; invalid: string }>;
+}));
 
 export function executorSubmissionError(
   input: ExecutorSubmission,

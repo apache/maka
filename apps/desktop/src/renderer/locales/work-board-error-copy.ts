@@ -17,13 +17,13 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import { lookupCopy } from '@maka/core/ui-locale';
 import type { WorkBoardErrorCode } from '../../shared/work-board-ipc.js';
 
 type WorkBoardErrorCopy = Record<WorkBoardErrorCode, string>;
 
-const WORK_BOARD_ERROR_COPY = {
+const WORK_BOARD_ERROR_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<WorkBoardErrorCopy>()({
   'zh-CN': {
     invalid_input: '这项操作无效，请检查后重试',
     not_found: '这条事项已不存在',
@@ -48,7 +48,7 @@ const WORK_BOARD_ERROR_COPY = {
     must_archive_first: 'Archive this item before deleting it.',
     unknown: 'The action failed. Try again later.',
   },
-} satisfies UiCatalog<WorkBoardErrorCopy>;
+})) satisfies UiCatalog<WorkBoardErrorCopy>;
 
 export function getWorkBoardErrorCopy(locale: UiLocale): WorkBoardErrorCopy {
   return WORK_BOARD_ERROR_COPY[locale];

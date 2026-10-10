@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 import type { ClientSettingsChange } from './client-settings-tools.js';
 
 type ConfirmationCopy = {
@@ -28,7 +28,7 @@ type ConfirmationCopy = {
   buttons: [string, string];
 };
 
-const COPY = {
+const COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ConfirmationCopy>()({
   'zh-CN': {
     labels: { theme: '主题', palette: '配色', uiLocale: '界面语言', runComplete: '系统通知', keepSystemAwake: '保持系统唤醒' },
     on: '开启',
@@ -50,7 +50,7 @@ const COPY = {
     message: "Allow Maka to update this client's settings?",
     buttons: ['Apply changes', 'Cancel'],
   },
-} satisfies UiCatalog<ConfirmationCopy>;
+}));
 
 export function clientSettingsConfirmation(
   changes: readonly ClientSettingsChange[],

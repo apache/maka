@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type DailyReviewSettingsCopy = {
   defaultModel: string;
@@ -39,7 +39,7 @@ export type DailyReviewSettingsCopy = {
   modelHelp: string;
 };
 
-const SETTINGS_DAILY_REVIEW_COPY = {
+const SETTINGS_DAILY_REVIEW_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<DailyReviewSettingsCopy>()({
   'zh-CN': {
     defaultModel: '跟随任务默认',
     saveFailed: '保存每日回顾设置失败',
@@ -97,7 +97,7 @@ const SETTINGS_DAILY_REVIEW_COPY = {
     model: 'Analysis model',
     modelHelp: 'Follows the current task default when unspecified.',
   },
-} satisfies UiCatalog<DailyReviewSettingsCopy>;
+})) satisfies UiCatalog<DailyReviewSettingsCopy>;
 
 export function getDailyReviewSettingsCopy(locale: UiLocale): DailyReviewSettingsCopy {
   return SETTINGS_DAILY_REVIEW_COPY[locale];

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'orphaned';
 type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
@@ -180,9 +180,7 @@ export interface ToolActivityCopy {
     readOnly: string;
   };
 }
-
-const TOOL_ACTIVITY_COPY = {
-  'zh-CN': {
+const toolActivityCopyZhCn: ToolActivityCopy = {
     errorLabel: '错误',
     status: { sandboxBlocked: '可能被沙箱阻止', interrupted: '已中断' },
     output: { redacted: '[已脱敏]', truncated: '输出已截断' },
@@ -289,8 +287,8 @@ const TOOL_ACTIVITY_COPY = {
       subagentStatus: { completed: '已完成', failed: '失败', cancelled: '已取消', running: '运行中', waiting_for_user: '等待用户输入' },
       readOnly: '只读',
     },
-  },
-  'zh-TW': {
+  };
+const toolActivityCopyZhTw: ToolActivityCopy = {
     errorLabel: '錯誤',
     status: { sandboxBlocked: '可能被沙箱阻止', interrupted: '已中斷' },
     output: { redacted: '[已脫敏]', truncated: '輸出已截斷' },
@@ -397,8 +395,8 @@ const TOOL_ACTIVITY_COPY = {
       subagentStatus: { completed: '已完成', failed: '失敗', cancelled: '已取消', running: '執行中', waiting_for_user: '等待使用者輸入' },
       readOnly: '只讀',
     },
-  },
-  en: {
+  };
+const toolActivityCopyEn: ToolActivityCopy = {
     errorLabel: 'Error',
     status: { sandboxBlocked: 'Possibly blocked by sandbox', interrupted: 'Interrupted' },
     output: { redacted: '[Redacted]', truncated: 'Output truncated' },
@@ -502,8 +500,9 @@ const TOOL_ACTIVITY_COPY = {
       subagentStatus: { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', running: 'Running', waiting_for_user: 'Waiting for user input' },
       readOnly: 'Read only',
     },
-  },
-} satisfies UiCatalog<ToolActivityCopy>;
+  };
+
+const TOOL_ACTIVITY_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<ToolActivityCopy>()({ 'zh-CN': toolActivityCopyZhCn, 'zh-TW': toolActivityCopyZhTw, en: toolActivityCopyEn }));
 
 export function getToolActivityCopy(locale: UiLocale): ToolActivityCopy {
   return TOOL_ACTIVITY_COPY[locale];

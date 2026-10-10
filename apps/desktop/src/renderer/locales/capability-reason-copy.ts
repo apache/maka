@@ -18,11 +18,11 @@
  */
 
 import type { CapabilityReasonCode } from '@maka/core/capabilities';
-import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export type CapabilityReasonCopy = Record<CapabilityReasonCode, string>;
 
-const CAPABILITY_REASON_COPY = {
+const CAPABILITY_REASON_COPY = resolveUiMessageCatalog(defineUiMessageCatalog<CapabilityReasonCopy>()({
   'zh-CN': {
     disabled: '该能力当前已关闭。',
     platform_credentials_missing: '未配置平台凭据',
@@ -98,7 +98,7 @@ const CAPABILITY_REASON_COPY = {
     notifications_unsupported: 'Electron notifications are unavailable',
     permission_probe_failed: 'Permission probe failed',
   },
-} satisfies UiCatalog<CapabilityReasonCopy>;
+})) satisfies UiCatalog<CapabilityReasonCopy>;
 
 export function getCapabilityReasonCopy(locale: UiLocale): CapabilityReasonCopy {
   return CAPABILITY_REASON_COPY[locale];

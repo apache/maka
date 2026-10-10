@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiLocale, defineUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
 
 export interface AppUpdateCopy {
   readonly installFailedTitle: string;
@@ -31,7 +31,7 @@ export interface AppUpdateCopy {
   readonly retryFailedFallback: string;
 }
 
-const COPY_BY_LOCALE = {
+const COPY_BY_LOCALE = resolveUiMessageCatalog(defineUiMessageCatalog<AppUpdateCopy>()({
   'zh-CN': {
     installFailedTitle: '无法安装更新',
     installFailedFallback: '请稍后重试。',
@@ -65,7 +65,7 @@ const COPY_BY_LOCALE = {
     retryFailedTitle: 'Could not retry update download',
     retryFailedFallback: 'Try again later, or download the latest version manually.',
   },
-} satisfies UiCatalog<AppUpdateCopy>;
+}));
 
 export function getAppUpdateCopy(locale: UiLocale): AppUpdateCopy {
   return COPY_BY_LOCALE[locale];
