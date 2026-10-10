@@ -215,6 +215,10 @@ test('draft request previews follow the relay protocol, custom prefixes and endp
     'https://relay.example/proxy/responses');
   assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/', 'openai-responses'),
     'https://relay.example/responses');
+  assert.equal(providerRequestUrlPreview('azure-foundry', 'https://tenant.example/openai/v1'),
+    'https://tenant.example/openai/v1/chat/completions');
+  assert.equal(providerRequestUrlPreview('amazon-bedrock-api-key', 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1', 'openai-responses'),
+    'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses');
 });
 
 test('switching a custom connection protocol replaces the full OpenAI endpoint', () => {
@@ -238,5 +242,6 @@ test('empty, incomplete, unsaveable and unsupported protocol drafts have no requ
     assert.equal(providerRequestUrlPreview('custom', draft), null, draft);
   }
   assert.equal(providerRequestUrlPreview('openai', 'https://relay.example/v1'), null);
+  assert.equal(providerRequestUrlPreview('amazon-bedrock-api-key', 'https://bedrock-runtime.us-east-1.amazonaws.com/anthropic', 'anthropic-messages'), null);
   assert.equal(providerRequestUrlPreview('custom', 'https://relay.example/v1', 'anthropic-messages'), null);
 });

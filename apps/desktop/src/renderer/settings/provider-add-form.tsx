@@ -132,6 +132,8 @@ export function AddProviderForm(props: {
   }>({ baseUrl: defaults.baseUrl, defaultApiProtocol: 'openai-chat' });
   const { baseUrl, defaultApiProtocol } = endpoint;
   const isCustom = props.providerType === 'custom';
+  const canChooseApiProtocol = isCustom || props.providerType === 'azure-foundry' ||
+    props.providerType === 'amazon-bedrock-api-key';
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState(recommendedDefaultModel);
@@ -383,7 +385,7 @@ export function AddProviderForm(props: {
         name: name || display.name,
         providerType: props.providerType,
         baseUrl: resolvedBaseUrl,
-        ...(isCustom ? { defaultApiProtocol } : {}),
+        ...(canChooseApiProtocol ? { defaultApiProtocol } : {}),
         defaultModel: createdDefaultModel,
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
         ...(Object.keys(normalizedRequestHeaders).length > 0
@@ -782,7 +784,7 @@ export function AddProviderForm(props: {
             )}
           </ProviderEndpointField>
         )}
-        {isCustom && (
+        {canChooseApiProtocol && (
           <Selector
             label={copy.connectionApiProtocol}
             description={copy.connectionApiProtocolHelp}

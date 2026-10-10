@@ -67,7 +67,7 @@ describe('Moonshot provider regions', () => {
 
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
   it('marks tenant- or region-scoped API providers as user-endpoint connections', () => {
-    for (const type of ['azure-foundry', 'amazon-bedrock'] as const) {
+    for (const type of ['azure-foundry', 'amazon-bedrock-api-key'] as const) {
       const definition = PROVIDER_REGISTRY[type];
       assert.equal(definition.authKind, 'api_key');
       assert.equal(definition.baseUrl, '');
@@ -76,6 +76,27 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
           definition.runtimeAdapter.requireBaseUrl,
       );
       assert.equal(definition.category, 'custom');
+      assert.deepEqual(Object.keys(definition.protocolAdapters ?? {}).sort(), [
+        'anthropic-messages',
+        'openai-responses',
+      ]);
+    }
+  });
+
+  it('declares a working runtime adapter for every selectable API protocol', () => {
+    for (const type of ['azure-foundry', 'amazon-bedrock-api-key'] as const) {
+      const definition = PROVIDER_REGISTRY[type];
+      assert.equal(definition.runtimeAdapter.kind, 'openai-compatible');
+      assert.deepEqual(definition.protocolAdapters?.['openai-responses'], {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      });
+      assert.deepEqual(definition.protocolAdapters?.['anthropic-messages'], {
+        kind: 'anthropic',
+        auth: 'api-key',
+        normalizeBaseUrl: true,
+      });
     }
   });
 

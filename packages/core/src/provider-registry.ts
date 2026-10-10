@@ -1532,6 +1532,14 @@ const providerRegistry = {
     fallbackModels: [],
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', requireBaseUrl: true },
+    protocolAdapters: {
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
+    },
     modelDiscovery: { kind: 'protocol' },
     // Foundry endpoints are resource-specific and must be supplied by the user.
     category: 'custom',
@@ -1539,13 +1547,21 @@ const providerRegistry = {
     signupUrl: 'https://ai.azure.com/',
     catalogOrder: 42,
   },
-  'amazon-bedrock': {
+  'amazon-bedrock-api-key': {
     label: 'Amazon Bedrock',
     baseUrl: '',
     authKind: 'api_key',
     fallbackModels: [],
     status: 'ready',
     runtimeAdapter: { kind: 'openai-compatible', requireBaseUrl: true },
+    protocolAdapters: {
+      'openai-responses': {
+        kind: 'openai',
+        apiProtocol: 'openai-responses',
+        responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      'anthropic-messages': { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true },
+    },
     // Bedrock's OpenAI-compatible endpoint and model-list availability vary
     // by endpoint family and region. A custom endpoint remains user supplied.
     modelDiscovery: { kind: 'protocol' },

@@ -400,14 +400,27 @@ export function decodeDefaultApiProtocol(
   value: unknown,
   providerType: ProviderType,
 ): ModelApiProtocol | undefined {
-  if (providerType !== 'custom') {
-    if (value !== undefined) {
-      throw domainError('only a custom connection has a default API protocol');
+  const supportsProtocol = (protocol: ModelApiProtocol): boolean =>
+    protocol === 'openai-chat'
+      ? providerType === 'custom' ||
+        PROVIDER_REGISTRY[providerType].runtimeAdapter.kind === 'openai-compatible' ||
+        PROVIDER_REGISTRY[providerType].protocolAdapters?.[protocol] !== undefined
+      : PROVIDER_REGISTRY[providerType].protocolAdapters?.[protocol] !== undefined;
+  if (value === undefined) {
+    if (providerType === 'custom') {
+      throw domainError('custom connection default API protocol is invalid');
     }
     return undefined;
   }
   if (!isModelApiProtocol(value)) {
-    throw domainError('custom connection default API protocol is invalid');
+    throw domainError('connection default API protocol is invalid');
+  }
+  if (!supportsProtocol(value)) {
+    throw domainError(
+      providerType === 'custom'
+        ? 'custom connection default API protocol is invalid'
+        : 'provider does not support this default API protocol',
+    );
   }
   return value;
 }
