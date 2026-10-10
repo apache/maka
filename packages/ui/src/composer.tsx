@@ -611,9 +611,110 @@ export const Composer = forwardRef<
   const inputHandleRef = useRef<ChatComposerInputHandle>(null);
   /** ChatComposerInput's root, from which the editable node is resolved. */
   const inputRootRef = useRef<HTMLDivElement>(null);
+  /** Selection to restore after a toolbar control changes composer settings. */
+  const thinkingSelectionRef = useRef<{ range: Range; value: string } | null>(null);
   function editableNode(): HTMLElement | null {
     return inputRootRef.current?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
   }
+  function rememberThinkingSelection() {
+    if (thinkingSelectionRef.current) return;
+    const editable = editableNode();
+    const selection = document.getSelection();
+    if (!editable || !selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (!editable.contains(range.commonAncestorContainer)) return;
+    thinkingSelectionRef.current = {
+      range: range.cloneRange(),
+      value: inputHandleRef.current?.getValue() ?? editable.textContent ?? '',
+    };
+  }
+  function restoreThinkingSelection() {
+    const pending = thinkingSelectionRef.current;
+    thinkingSelectionRef.current = null;
+    if (!pending) return;
+    const editable = editableNode();
+    const currentValue = editable ? inputHandleRef.current?.getValue() ?? editable.textContent ?? '' : '';
+    if (
+      !editable ||
+      currentValue !== pending.value ||
+      !editable.contains(pending.range.startContainer) ||
+      !editable.contains(pending.range.endContainer)
+    ) return;
+    editable.focus();
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(pending.range);
+  }
+  useEffect(() => {
+    const form = formRef.current;
+    if (!form) return undefined;
+    let control: Element | null = null;
+    let opened = false;
+    let frame: number | undefined;
+    const scheduleRestore = () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = undefined;
+        // Wait for the surface to close and return focus. Bottom sheets do so
+        // after their exit animation; closed-state typeahead never opens one.
+        if (!opened || control?.getAttribute('aria-expanded') !== 'false') return;
+        if (document.activeElement !== control && document.activeElement !== editableNode()) return;
+        restoreThinkingSelection();
+        control = null;
+        opened = false;
+      });
+    };
+    const rememberForThinkingControl = (event: Event) => {
+      const target = event.target as Element | null;
+      const selector = target?.closest?.('.maka-thinking-level-selector [role="combobox"]');
+      if (event.type === 'focusin') {
+        if (selector === control && opened) scheduleRestore();
+        else if (!opened && target?.closest?.('[contenteditable="true"]')) {
+          thinkingSelectionRef.current = null;
+        }
+        return;
+      }
+      const key = event.type === 'keydown'
+        ? (event as unknown as globalThis.KeyboardEvent).key : undefined;
+      const activating = event.type === 'pointerdown'
+        || key === 'Enter' || key === ' ' || key === 'ArrowDown' || key === 'ArrowUp';
+      if (selector && activating && selector.getAttribute('aria-expanded') !== 'true'
+        && selector.getAttribute('aria-disabled') !== 'true'
+        && selector.getAttribute('aria-readonly') !== 'true'
+        && !(selector as HTMLButtonElement).disabled) {
+        thinkingSelectionRef.current = null;
+        rememberThinkingSelection();
+        control = thinkingSelectionRef.current ? selector : null;
+        opened = false;
+        observer.disconnect();
+        if (control) observer.observe(control, { attributes: true, attributeFilter: ['aria-expanded'] });
+      } else if (event.type === 'pointerdown' && !selector
+        && !document.getElementById(control?.getAttribute('aria-controls') ?? '')?.contains(target)) {
+        // A deliberate click elsewhere owns focus and must not revive a range.
+        thinkingSelectionRef.current = null;
+        control = null;
+        opened = false;
+      }
+    };
+    // Selector exposes disclosure through ARIA, not an onOpenChange prop.
+    // Watching the shared trigger covers native/executor, reselect and cancel.
+    const observer = new window.MutationObserver(() => {
+      if (!control) return;
+      if (control.getAttribute('aria-expanded') === 'true') opened = true;
+      else if (opened) scheduleRestore();
+    });
+    form.addEventListener('pointerdown', rememberForThinkingControl, true);
+    form.addEventListener('focusin', rememberForThinkingControl, true);
+    form.addEventListener('keydown', rememberForThinkingControl, true);
+    return () => {
+      observer.disconnect();
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      thinkingSelectionRef.current = null;
+      form.removeEventListener('pointerdown', rememberForThinkingControl, true);
+      form.removeEventListener('focusin', rememberForThinkingControl, true);
+      form.removeEventListener('keydown', rememberForThinkingControl, true);
+    };
+  }, []);
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
   const [modelPickerNonce, setModelPickerNonce] = useState(0);
