@@ -209,6 +209,16 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
         },
       },
       {
+        providerType: 'azure-foundry',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'amazon-bedrock-api-key',
+        via: 'protocolAdapters.openai-responses',
+        contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
         providerType: 'custom',
         via: 'protocolAdapters.openai-responses',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
