@@ -33,7 +33,7 @@ function fixture() {
   const deps: Parameters<typeof createWorkHubRuntime>[0] = {
     isCurrent: () => current,
     client: () => client,
-    createContext: async () => ({ workspace: { kind: 'project', projectId: 'project' }, defaults: { permissionMode: 'ask' } }),
+    createContext: async () => ({ workspace: { kind: 'project', projectId: 'project' } }),
     changed: (...args) => { changes.push(args); },
   };
   const client = {
@@ -54,7 +54,6 @@ test('task delegation binds the tool action to the Host turn and trusted creatio
   assert.deepEqual(f.requests, [{
     turnId: 'turn', actionId: 'tool-call', proposal: { disposition: 'create_new', title: 'Fix login' },
     delegationText: 'Implement and test the login fix', create: { workspace: { kind: 'project', projectId: 'project' } },
-    newWorkDefaults: { permissionMode: 'ask' },
   }]);
   assert.ok('actionId' in result);
   assert.equal(result.actionId, 'tool-call');
@@ -95,11 +94,9 @@ test('nested tool calls produce stable task identities accepted by both Host act
 
 test('linked task operations remain operations at the Host protocol boundary', async () => {
   const f = fixture();
-  await f.runtime.actTasks(scope, 'turn', 'correct-action', {
-    operation: 'correct',
-    replacesActionId: 'old-action',
-    candidateSetId: 'set',
-    target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
+  await f.runtime.actTasks(scope, 'turn', 'steer-action', {
+    operation: 'delegate_existing',
+    candidateRef: 'candidate',
     text: 'Move the delegated work',
   });
   await f.runtime.actTasks(scope, 'turn', 'stop-action', {
@@ -115,14 +112,11 @@ test('linked task operations remain operations at the Host protocol boundary', a
   assert.deepEqual(f.requests, [
     {
       turnId: 'turn',
-      actionId: 'correct-action',
+      actionId: 'steer-action',
       proposal: {
-        operation: 'correct',
-        replacesActionId: 'old-action',
-        target: { disposition: 'delegate_existing', candidateRef: 'candidate' },
+        disposition: 'delegate_existing', candidateRef: 'candidate',
       },
       delegationText: 'Move the delegated work',
-      candidateSetId: 'set',
     },
     {
       turnId: 'turn',
@@ -141,14 +135,14 @@ test('linked task operations remain operations at the Host protocol boundary', a
   ]);
 });
 
-test('the task tool exposes correction as a linked operation, not a disposition', () => {
+test('the task tool rejects atomic correction operations', () => {
   const correction = {
     operation: 'correct',
     replacesActionId: 'old-action',
     target: { disposition: 'create_new', title: 'Replacement' },
     text: 'Correct the earlier delegation',
   };
-  assert.deepEqual(workHubTasksSchema.parse(correction), correction);
+  assert.equal(workHubTasksSchema.safeParse(correction).success, false);
   assert.equal(
     workHubTasksSchema.safeParse({ ...correction, operation: 'replace' }).success,
     false,

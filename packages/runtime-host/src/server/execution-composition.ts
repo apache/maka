@@ -19,7 +19,6 @@
 
 import { createWorkHubResultRuntime } from './workhub-result-runtime.js';
 import { createWorkHubInspectionTool } from './workhub-inspection-tool.js';
-import { createJevRoutingModel } from './jev-routing-model.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
@@ -171,7 +170,6 @@ import {
   createHostPluginModel,
   createHostSessionEffectModel,
   createHostPromptSuggestionModel,
-  type HostWorkHubRoutingModel,
   type HostSessionEffectModel,
 } from './execution-model-authority.js';
 import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
@@ -319,7 +317,6 @@ export interface CreateExecutionRuntimeHostCompositionOptions {
 export interface ExecutionRuntimeHostCompositionDependencies {
   readonly executionPersistenceProvider?: ExecutionPersistenceProvider;
   readonly primaryBackendFactory?: BackendFactory;
-  readonly workHubRoutingModel?: HostWorkHubRoutingModel;
   readonly generateSessionTitle?: HostSessionEffectModel['generateTitle'];
   readonly oauthAuthorization?: Pick<
     HostOAuthCoordinatorInput,
@@ -1563,6 +1560,8 @@ export async function createExecutionRuntimeHostComposition(
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
       toolBoundaryProtocol: stores.runtimeEventStore.toolBoundaryProtocol,
+      resolveExecutionPolicy: (sessionId, runId) =>
+        requireRootCoordinator(rootCoordinator).readExecutionPolicyForRun(sessionId, runId),
       backends,
       subagentCatalog,
       assertChildExecutorAvailable: (parentSessionId, executorId) => {
@@ -1825,37 +1824,9 @@ export async function createExecutionRuntimeHostComposition(
       },
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
       context.owner.capability.rootId,
-      async (input) => {
-        // Explicit injection remains an experiment seam. Injected models own
-        // policy/egress checks and cancellation; this bypasses the production
-        // Jev preparation deadline (including its transcript-read protection).
-        if (dependencies.workHubRoutingModel)
-          return workHubCoordination.prepareRoutingDecision(input);
-        // One admission budget covers policy/transcript reads, both Jev asks,
-        // candidate resolution and transport cleanup; it is not per request.
-        const signal = AbortSignal.any([
-          ...(input.inputClosedSignal ? [input.inputClosedSignal] : []),
-          AbortSignal.timeout(8_000),
-        ]);
-        try {
-          const { policy } = await readDuringBackendCreation(
-            () => runtimePolicyStores.runtimePolicy.getSnapshot(),
-            signal,
-          );
-          if (!policy.jev?.enabled || policy.privacy.incognitoActive) return undefined;
-          return await readDuringBackendCreation(
-            () =>
-              workHubCoordination.prepareRoutingDecision({ ...input, inputClosedSignal: signal }),
-            signal,
-          );
-        } catch {
-          if (!input.inputClosedSignal?.aborted) {
-            const failure = signal.aborted ? 'timeout' : 'preparation_unavailable';
-            console.warn(`[runtime-host] Jev routing fallback: ${failure}`);
-          }
-          return undefined;
-        }
-      },
+      // Fresh WorkHub Turns use the coordinating Agent directly. Persisted
+      // routing decisions remain readable for recovery of historical Turns.
+      undefined,
     );
     const coordinator = rootCoordinator;
     const pluginModel = createHostPluginModel({
@@ -2311,25 +2282,6 @@ export async function createExecutionRuntimeHostComposition(
       runtimePolicy: {
         resolveExecutionConnection: (locator) =>
           runtimePolicyStores.operations.resolveExecutionConnection(locator),
-        connectionCatalog: runtimePolicyStores.connectionCatalog,
-      },
-      requestForm: (input) => interactions.requestForm(input),
-      updateModel: async (input, operationContext) => {
-        const outcome = await sessionCatalog.handlers['session.configuration.update'](
-          {
-            sessionId: input.sessionId,
-            expectedRevision: input.expectedRevision,
-            patch: { modelTarget: input.modelTarget },
-          },
-          operationContext,
-        );
-        if (!outcome.ok) {
-          throw new WorkHubActionEffectFailure(
-            outcome.error.code === 'invalid_request' ? 'operation_conflict' : outcome.error.code,
-            outcome.error.message,
-          );
-        }
-        return outcome.result.kind === 'committed' ? 'committed' : 'revision_conflict';
       },
     });
     /**
@@ -2370,8 +2322,6 @@ export async function createExecutionRuntimeHostComposition(
       return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
     };
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
-      routingModel:
-        dependencies.workHubRoutingModel ?? createJevRoutingModel({ stores: runtimePolicyStores }),
       requestForm: (input) => interactions.requestForm(input),
       targetExecution: workHubTargetExecution,
       configureModel: (input) => sessionCatalog.configureWorkHubModel(input),
@@ -2613,6 +2563,20 @@ export async function createExecutionRuntimeHostComposition(
                     'A target root Turn is being admitted',
                   );
                 }
+                const permissionMode = (
+                  await stores.sessionStore.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID)
+                ).permissionMode;
+                if (rootState.kind === 'active') {
+                  const running = (
+                    await stores.runtimeEventStore.listSessionInvocations(input.targetSessionId)
+                  ).find((run) => run.runId === rootState.runId);
+                  if (running?.opening.configuration.permissionMode !== permissionMode) {
+                    throw new WorkHubActionEffectFailure(
+                      'session_busy',
+                      'The target is running with different permissions. Stop the owned execution before delegating with WorkHub permissions.',
+                    );
+                  }
+                }
                 const steered = rootState.kind === 'active';
                 const turnId = steered ? rootState.turnId : `wht_${suffix}`;
                 const runId = steered ? rootState.runId : `whr_${suffix}`;
@@ -2649,6 +2613,13 @@ export async function createExecutionRuntimeHostComposition(
                       : 1,
                     kind: 'delegation_assigned',
                     returnResults: true,
+                    executionPermissionMode:
+                      input.create?.defaults?.permissionMode ??
+                      (
+                        await stores.sessionStore.readHeaderSnapshot(
+                          WORKHUB_COORDINATION_SESSION_ID,
+                        )
+                      ).permissionMode,
                     actionId: input.actionId,
                     actionFingerprint: input.actionFingerprint,
                     coordinationTurnId: input.coordinationTurnId ?? input.actionId,
@@ -2692,6 +2663,11 @@ export async function createExecutionRuntimeHostComposition(
                 // Keep the durable steering identity and its live queue owner
                 // under one Session admission. A terminal transition must not
                 // observe the committed Message before the queue does.
+                if (steered)
+                  requireSessionManager(manager).returnExecutionQuestions(
+                    input.targetSessionId,
+                    runId,
+                  );
                 await messages.consumePendingAdmissionsAdmitted(input.targetSessionId, lease);
                 try {
                   await continuityCoordinator.refreshCanonical(
@@ -2731,7 +2707,6 @@ export async function createExecutionRuntimeHostComposition(
       stores,
       executions: coordinator,
       messages,
-      interactions,
       admission: sessionAdmission,
       readTurnResult: createTurnResultReader({
         stores,

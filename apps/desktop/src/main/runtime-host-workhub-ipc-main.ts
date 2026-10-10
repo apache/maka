@@ -18,9 +18,7 @@
  */
 
 import {
-  isWorkHubCreateDefaults,
   WORKHUB_COORDINATION_SESSION_ID,
-  type WorkHubCreateDefaults,
 } from '@maka/core/session';
 import { AttachmentIngestBlockedError } from '@maka/core/attachments';
 import { RuntimeHostOperationError, RuntimeHostRequestInterruptedError } from '@maka/runtime-host/client';
@@ -34,10 +32,6 @@ import type {
   WorkHubPrepareAttachmentsResult,
 } from '../shared/workhub-conversation.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
-import {
-  readWorkHubNewWorkDefaults,
-  writeWorkHubNewWorkDefaults,
-} from './workhub-new-work-defaults.js';
 
 type RuntimeHostWorkHubClient = Pick<
   DesktopRuntimeHostClient,
@@ -128,16 +122,6 @@ export function registerRuntimeHostWorkHubIpc(
     reconciliationUnavailable: async (attempt) => unknown(attempt),
   });
   ipcMain.handle('workhub:configureModel', (_event, input) => client.configureWorkHubModel(input));
-  ipcMain.handle('workhub:getNewWorkDefaults', () => readWorkHubNewWorkDefaults(client.hostId));
-  ipcMain.handle('workhub:setNewWorkDefaults', (_event, value: unknown) => {
-    if (!isWorkHubCreateDefaults(value) || value.permissionMode !== undefined) {
-      throw new Error('Invalid WorkHub new-work defaults');
-    }
-    writeWorkHubNewWorkDefaults(
-      client.hostId,
-      value as Omit<WorkHubCreateDefaults, 'permissionMode'>,
-    );
-  });
   ipcMain.handle('workhub:prepareAttachments', async (event, items: unknown): Promise<WorkHubPrepareAttachmentsResult> => {
     if (!options.attachmentIngest) throw new Error('WorkHub attachments are unavailable');
     try {

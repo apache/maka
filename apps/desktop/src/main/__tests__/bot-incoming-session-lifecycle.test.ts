@@ -126,3 +126,21 @@ describe('bot session lifecycle bindings', () => {
     assert.deepEqual(replies, ['Maka 暂时无法处理这条消息：请求超时']);
   });
 });
+
+test('WorkHub routing bypasses Bot Session creation, explore preparation and reset commands', async () => {
+  let routed = 0;
+  let closed = false;
+  const unexpected = async (): Promise<never> => { throw new Error('Bot Session must not be used'); };
+  const service = createBotIncomingMainService({
+    sessions: { createSession: unexpected, prepareSession: unexpected, runTurn: unexpected },
+    botRegistry: { sendMessage: unexpected } as unknown as BotRegistry,
+    workHub: {
+      async handle(_message, accept) { assert.equal(accept?.(), true); routed++; return true; },
+      async close() { closed = true; },
+    },
+  });
+  await service.handleBotIncomingMessage({ platform: 'qq', userId: 'user', userName: 'User', chatId: 'chat', isGroup: false, receivedAt: 1, text: '重置', sourceMessageId: 'source' });
+  assert.equal(routed, 1);
+  await service.close();
+  assert.equal(closed, true);
+});

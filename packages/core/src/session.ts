@@ -1111,6 +1111,8 @@ export interface WorkHubDelegationAssignedMessage extends WorkHubCoordinationMes
   kind: 'delegation_assigned';
   /** New delegations opt into Host-owned asynchronous result delivery. */
   returnResults?: true;
+  /** WorkHub permission policy captured for this execution, not a Session mutation. */
+  executionPermissionMode?: PermissionMode;
   delegationId: string;
   targetTurnId: string;
   targetMessageId: string;
@@ -1466,6 +1468,7 @@ const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
       'attachments',
       'targetAttachments',
       'returnResults',
+      'executionPermissionMode',
       'create',
       'steered',
       'replacesActionId',
@@ -1882,6 +1885,8 @@ function isWorkHubCoordinationMessage(message: Record<string, unknown>): boolean
     typeof message.targetSessionName === 'string' &&
     message.targetSessionName.trim().length > 0 &&
     (message.returnResults === undefined || message.returnResults === true) &&
+    (message.executionPermissionMode === undefined ||
+      isPermissionMode(message.executionPermissionMode)) &&
     (message.steered === undefined || message.steered === true) &&
     ((message.schemaVersion === WORKHUB_COORDINATION_RECORD_SCHEMA_VERSION &&
       message.replacesActionId === undefined &&

@@ -29,7 +29,7 @@ import {
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import { z } from 'zod';
-import type { MakaTool } from '@maka/runtime/tool-runtime';
+import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
@@ -249,6 +249,40 @@ function tool(name: string): MakaTool {
     impl: async () => name,
   };
 }
+test('delegated workers return missing information without opening a human interaction', async () => {
+  let delegated = false;
+  const composer = createFixtureComposer({ returnMissingInformation: () => delegated });
+  const question = composer.tools.find((tool) => tool.name === 'AskUserQuestion')!;
+  const questions = {
+    questions: [
+      { question: 'Which environment should I deploy to?', options: [{ label: 'Staging' }] },
+    ],
+  };
+  // The already resolved tool must observe steering received after backend creation.
+  delegated = true;
+  const result = await question.impl(
+    questions as never,
+    {
+      sessionId: 'worker',
+      turnId: 'turn',
+      runId: 'run',
+      toolCallId: 'question',
+      cwd: '/workspace',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+      askUserQuestion: () => assert.fail('worker must return control to coordinator'),
+    } as unknown as MakaToolContext,
+  );
+  assert.equal((result as { status: string }).status, 'missing_information');
+  assert.deepEqual((result as { questions: unknown }).questions, questions);
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'worker',
+    turnId: 'turn',
+    cwd: '/workspace',
+  });
+  assert.match(prompt.text ?? '', /information is missing/u);
+});
+
 test('WorkHub v2 binds control, tasks, attachment reading and user questions while legacy WorkHub stays tool-free', () => {
   const control = tool('mcp__desktop_workhub__control');
   const tasks = tool('mcp__desktop_workhub__tasks');
