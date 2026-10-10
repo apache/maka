@@ -1,3 +1,7 @@
+---
+translation_status: source-only
+last_verified: 2026-10-10
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -72,7 +76,8 @@ Scheduled tasks keep Runtime Host resident even when the initiating client exits
 requires no Desktop. Local and bot notifications wait durably for a native-effect provider before
 crossing the delivery boundary. Once invocation starts, an unknown outcome is recorded as failed
 and is never replayed. Other interactive clients can create and manage the global catalog through
-the same Host protocol. The separate Headless runtime is outside this interactive authority boundary.
+the same Host protocol. Standalone headless invocation (scripts and CI) runs through the minimal
+Eval kernel and is outside this interactive authority boundary.
 
 ## Key files
 
