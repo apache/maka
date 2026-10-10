@@ -92,6 +92,7 @@ import type {
   AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import { loadSessionUsageSummaryVia } from './usage-summary.js';
 import type { RuntimeHostObservationIpcResult } from '../shared/runtime-host-observation-ipc.js';
 import {
   projectDesktopExternalSessionCatalogItem,
@@ -1171,7 +1172,10 @@ async function listGuestSessionMountCatalog(): Promise<DesktopSessionSummary[]> 
     }
     if (!('session' in mount) || mount.session === undefined) continue;
     const session = decodeSharedSessionCatalogProjection(mount.session);
-    const summary = projectDesktopSharedSessionSummary(session);
+    const summary = projectDesktopSharedSessionSummary(session, {
+      cached: !('readiness' in mount) || mount.readiness !== 'ready' ||
+        !('sessionState' in mount) || mount.sessionState !== 'live',
+    });
     const projected = projectDesktopSessionSummary(
       {
         hostId: mount.hostId,
@@ -1362,12 +1366,7 @@ async function loadSessionTracePage(
 async function loadSessionUsageSummary(
   sessionId: string,
 ): Promise<Result<DesktopSessionUsageSummary>> {
-  const session = await runtimeHostSessionRef(sessionId);
-  return invokeWhenReady(
-    'usage:summary',
-    session.scope,
-    { range: 'all', sessionId: session.sessionId },
-  ) as Promise<Result<DesktopSessionUsageSummary>>;
+  return loadSessionUsageSummaryVia(invokeWhenReady, await runtimeHostSessionRef(sessionId));
 }
 
 async function updateDailyReviewConfig(
@@ -1984,8 +1983,17 @@ const makaBridge = {
         { select: false, ...(name === undefined ? {} : { name }) },
       ) as
         | { ok: true; project: ProjectRecord; path: string }
-        | { ok: false; reason: 'cancelled' };
+        | { ok: false; reason: 'cancelled' }
+        | { ok: false; reason: 'archived'; projectId: string };
       return result.ok ? { ok: true as const, project: result.project } : result;
+    },
+    async restoreProject(host: DesktopNewTaskHostRef, projectId: string) {
+      const project = await ipcRenderer.invoke(
+        'projects:restore',
+        await runtimeHostScope(host),
+        projectId,
+      ) as ProjectRecord;
+      return { ok: true as const, project };
     },
     async relinkProject(host: DesktopNewTaskHostRef, projectId: string) {
       return invokeWhenReady(
@@ -3017,7 +3025,9 @@ const makaBridge = {
       });
     },
     add(host?: DesktopRuntimeHostRef, options?: { name?: string }): Promise<
-      { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
+      | { ok: true; project: ProjectRecord; path: string }
+      | { ok: false; reason: 'cancelled' }
+      | { ok: false; reason: 'archived'; projectId: string }
     > {
       return invokeSelectedRuntimeHost(host, 'projects:add', options);
     },

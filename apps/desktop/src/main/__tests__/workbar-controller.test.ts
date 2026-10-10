@@ -26,7 +26,7 @@ import { act, createElement, StrictMode, useLayoutEffect } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { LocaleProvider, type ToastApi } from '@maka/ui';
+import { LocaleProvider, ToastProvider, type ToastApi } from '@maka/ui';
 import {
   cleanupFakeDom,
   fakeMediaQueryMatches,
@@ -315,12 +315,16 @@ function renderWorkBoardComposition(
     createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(
-        TaskEntryServicesProvider,
-        { services: taskEntryServices },
+        ToastProvider,
+        null,
         createElement(
-          WorkbarServicesProvider,
-          { services: workbarServices },
-          createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(WorkBoardCompositionProbe, { ownerRef })),
+          TaskEntryServicesProvider,
+          { services: taskEntryServices },
+          createElement(
+            WorkbarServicesProvider,
+            { services: workbarServices },
+            createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(WorkBoardCompositionProbe, { ownerRef })),
+          ),
         ),
       ),
     }),

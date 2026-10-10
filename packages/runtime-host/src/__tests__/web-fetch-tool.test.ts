@@ -62,14 +62,16 @@ test('real health probe falls back to GET and bounds stalled responses', async (
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
-  const service = createHostWebFetchService({
-    policy: resolver({
-      kind: 'ready',
-      networkProxy: createDefaultRuntimePolicy().networkProxy,
-      secretMaterial: {},
-    }),
-    probeTimeoutMs: 100,
+  const policy = resolver({
+    kind: 'ready',
+    networkProxy: createDefaultRuntimePolicy().networkProxy,
+    secretMaterial: {},
   });
+  // Test the short timeout against the stalled endpoint. Normal HEAD/GET
+  // fallback must not depend on the runner scheduling two requests in 100 ms,
+  // but a hung fallback should still fail promptly rather than after 30 s.
+  const service = createHostWebFetchService({ policy, probeTimeoutMs: 5_000 });
+  const boundedService = createHostWebFetchService({ policy, probeTimeoutMs: 100 });
   const input = { sessionId: 'session-1', abortSignal: new AbortController().signal };
   try {
     assert.equal(
@@ -78,7 +80,7 @@ test('real health probe falls back to GET and bounds stalled responses', async (
     );
     assert.deepEqual(methods, ['HEAD', 'GET']);
     await assert.rejects(
-      service.probe({ ...input, url: `http://127.0.0.1:${address.port}/stalled` }),
+      boundedService.probe({ ...input, url: `http://127.0.0.1:${address.port}/stalled` }),
       /timed out/,
     );
   } finally {

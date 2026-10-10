@@ -224,14 +224,12 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   }
   if (revisionSend && revision) {
     const actionCopy = ports.revisionUnavailableCopy;
-    if (staging.hasPendingContext) {
-      ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
-      return false;
-    }
     if (slashCommand) {
       ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
       return false;
     }
+    // The attachments / mixed-context refusals live inside the revision
+    // lifecycle (prepareRevisionSend), which toasts and stops the send.
     if (!(await ports.prepareRevisionSend(text))) return false;
   }
   if (slashCommand?.kind === 'compact') {
@@ -363,7 +361,12 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   const expectedRevisionDraft = revisionSend
     ? ports.revisionDraftRef.current
     : undefined;
-  const quotes = staging.quotesForSend();
+  // The re-key lands the plate's current quotes on the branch child before
+  // this send, while this invocation's captured submission still holds the
+  // source bucket's snapshot — read the re-keyed owner explicitly so the
+  // replacement carries exactly what the user staged, edits included
+  // (#5274 review).
+  const quotes = staging.quotesForSend(expectedRevisionDraft?.draftSessionId);
   const ok = await ports.send(text, pending, {
     waitForHostAdmission: revisionSend,
     targetSessionId: expectedRevisionDraft?.draftSessionId,
@@ -376,7 +379,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   });
   if (ok !== false) {
     staging.clearSubmittedContext(pending);
-    if (quotes) staging.clearQuotes();
+    // A revision's quotes now live under the branch child's bucket; clear
+    // that owner explicitly rather than the snapshot the submission captured.
+    if (quotes) staging.clearQuotes(expectedRevisionDraft?.draftSessionId);
     ports.settleNewTaskImageNoticeOwner(sessionId);
     if (sessionId) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
   }

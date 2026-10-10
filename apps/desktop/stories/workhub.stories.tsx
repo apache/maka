@@ -106,7 +106,7 @@ function makeServices(failFirst: boolean, withHistory: boolean | 'usage', colore
     enqueueMessage: async () => 'admitted',
     queryMessageExecutions: async () => ({ resolutions: [] }),
     surface: 'workhub', initialLocale: 'zh-CN', subscribeAppearance: () => () => {},
-    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right', togglePosition: 'edge' } }), setHost: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, openSettings: async () => {}, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
+    presentation: { ready: async () => {}, progressReady: async () => {}, resizeProgress: async () => {}, expandProgress: async () => {}, getSnapshot: async () => ({ placement: progress ? 'floating' : 'docked', floatingVisible: progress, progressRequest: progress ? 1 : undefined, shortcutRegistered: true, rendererCrashed: false, workbar: { collapsed: true, placement: 'right', togglePosition: 'edge' } }), setHost: async () => {}, captureBackdrop: async () => {}, setConversationLayout: async () => {}, detach: async () => {}, dock: async () => {}, hide: async () => {}, openUsage: async () => { writes.panel('inspector'); }, toggleWorkbar: async () => { writes.panel('toggle'); }, openSession: async (id) => { writes.open(id); }, openSettings: async () => {}, subscribe: () => () => {}, onViewportInset: () => () => {}, onFocusComposer: () => () => {}, onOpenMain: () => () => {} },
     control: { getSnapshot: async () => ({ revision: 0, phase: 'idle', canUndo: false }), subscribe: () => () => {}, stop: async () => {}, undo: async () => {} },
     bindBrowserSession: () => {},
     resolve: async () => sessionId, subscribeHosts: () => () => {}, subscribeAvailability: () => () => {},
@@ -685,7 +685,12 @@ export const RetryWhileWorkFiltered: Story = {
     await userEvent.click(editor);
     await userEvent.keyboard('FILTERED_RETRY_PROBE{Enter}');
     await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Temporary Host failure'));
-    await userEvent.click(canvasElement.querySelector('.workhub-message-rail') as HTMLElement);
+    // The send follows the latest Turn, and the virtualized transcript may still
+    // be unmounting older Turns when the failure lands. Clicking the first rail
+    // could target a node that detaches between hover and press (#5995); the
+    // newest linked Turn's rail stays mounted while following the latest Turn.
+    const rails = canvasElement.querySelectorAll<HTMLElement>('.workhub-message-rail');
+    await userEvent.click(rails[rails.length - 1]!);
     await waitFor(() => expect(canvas.getByRole('button', { name: '显示全部对话' })).toBeInTheDocument());
     await userEvent.click(canvas.getByRole('button', { name: /^重试$/ }));
     await waitFor(() => expect(writes.answer).toHaveBeenCalledTimes(2));

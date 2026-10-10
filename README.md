@@ -64,7 +64,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 ### Requirements
 
-- Node.js 22.19 or newer (CI uses Node.js 24);
+- Node.js 22.19 or newer on the 22 line, or Node.js 24 or newer (CI uses Node.js 24; Node.js 23 is not supported);
 - npm (the lockfile and scripts use npm; the current `packageManager` is npm 11);
 - Git;
 - `ripgrep`, used by Runtime's `Grep` tool.
@@ -171,7 +171,7 @@ packages/eval/         Experiment cells, attempts, results, and executor/subject
 packages/computer-use/ Computer-use backend selection, host lifecycle, and protocol adapters
 packages/cli/          TUI and non-interactive CLI
 packages/ui/           Shared conversation, Markdown, Artifact, and UI primitives
-native/                Rust: the direct-peer addon for Runtime Host and the gitoxide helper
+native/                Rust: the Runtime Host direct-peer addon and Windows task launcher, and the gitoxide helper
 website/               Astro source for maka.apache.org
 
 docs/                  Architecture, product, security, privacy, and test contracts

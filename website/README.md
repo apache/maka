@@ -49,4 +49,4 @@ Colour, radius and surface tokens are the desktop app's defaults, copied by valu
 | Push of a release-candidate tag (`v*-rc*`) | `site/<tag>-staging` | https://maka-<tag>.staged.apache.org |
 | `workflow_dispatch` with a `stage` name | `site/<stage>-staging` | https://maka-<stage>.staged.apache.org |
 
-A `workflow_dispatch` without a `stage` name publishes only from `main`; any other ref fails instead of overwriting the live site. The published `.asf.yaml` carries just `publish: whoami: asf-site` and `staging: autostage: site/*`, the same layout Apache OpenDAL uses; the repository settings in the root `.asf.yaml` stay on `main`, the only branch asfyaml reads them from. Nothing else in the repository is published.
+A `workflow_dispatch` without a `stage` name publishes only from `main`; any other ref fails instead of overwriting the live site. The published `.asf.yaml` carries just `publish: whoami: asf-site` and `staging: profile: ~, autostage: site/*`, the same layout Apache OpenDAL uses; the repository settings in the root `.asf.yaml` stay on `main`, the only branch asfyaml reads them from. Nothing else in the repository is published.

@@ -1289,8 +1289,8 @@ function AppShellContent({
         height="fill"
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
-        aria-hidden={shellObscured ? 'true' : undefined}
-        inert={shellObscured || undefined}
+        aria-hidden={shellObscured}
+        inert={shellObscured}
         sideNav={
           <ModuleHub.ModuleHubScheduledTasksBoundary
             render={(scheduledTasks) => (
@@ -1451,6 +1451,7 @@ function AppShellContent({
               >
                 {sessionsSelected ? (
                   <Conversation.ConversationTranscriptRegion surface={ChatMessageSurface}
+                visible={!shellObscured}
                 activeSession={activeSessionForView}
                 userLabel={userLabel}
                 memoryActive={memoryActive}

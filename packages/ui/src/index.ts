@@ -202,3 +202,4 @@ export {
 export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
 export { ChoicePanel, type ChoicePanelOption } from './choice-panel.js';
 export { formatCompactTokenCount } from './compact-token-count.js';
+export * from './revision-staged-context.js';

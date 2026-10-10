@@ -40,6 +40,7 @@ import {
 } from '@maka/core/runtime-invocation';
 import {
   type SessionHeader,
+  type WorkHubDelegationAssignedMessage,
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
 } from '@maka/core/session';
@@ -237,8 +238,11 @@ import { resolveSandboxBoundaryRootSession } from './sandbox-boundary-graph-wake
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
-import { SessionAdmissionGate } from './session-admission-gate.js';
+import { SessionAdmissionGate, type SessionAdmissionLease } from './session-admission-gate.js';
+import { workHubResultOrigin } from './workhub-result-coordinator.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import { SessionBackgroundActivityProjection } from './session-background-activity.js';
+import { SessionInteractionActivityProjection } from './session-interaction-activity.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostStorageMaintenance } from './storage-maintenance.js';
@@ -812,6 +816,12 @@ export async function createExecutionRuntimeHostComposition(
         ) => Promise<string[]>)
       | undefined;
     const hostChanges = new HostChangeFeed();
+    const backgroundActivity = new SessionBackgroundActivityProjection({
+      hostGeneration: context.hostEpoch,
+      graph: (sessionId) => graphCoordinator?.readSessionActivity(sessionId) ?? 'idle',
+      supervisor: (sessionId) => graphSupervisorWake?.readSessionActivity(sessionId) ?? 'idle',
+      publish: (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+    });
     // Startup, once, in the background: the Host owns the model catalog, so it
     // is the one process that gets to ask models.dev what is true today. On any
     // failure the build's committed snapshot stands.
@@ -1062,6 +1072,17 @@ export async function createExecutionRuntimeHostComposition(
       domainModuleDrainBegun = true;
       beginRuntimeHostDomainModuleDrain(domainModules);
     };
+    const interactionActivity = new SessionInteractionActivityProjection({
+      interactions: stores.interactionStore,
+      sandboxBoundaries: stores.sessionStore,
+      onChanged: (sessionId) => graphCoordinator?.refreshSessionInteractionActivity(sessionId),
+      onError: (sessionId, error) =>
+        console.warn(
+          '[runtime-host] Could not refresh Session interaction activity',
+          sessionId,
+          error,
+        ),
+    });
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
       sandboxBoundaries: stores.sessionStore,
@@ -1072,6 +1093,10 @@ export async function createExecutionRuntimeHostComposition(
           interactions: interactionProjection,
         }),
       refreshCanonicalContinuity: async (sessionId, admission, attention) => {
+        // This also runs without an open Session subscription; sidebar activity
+        // must observe every canonical answer, withdrawal, and Run closure.
+        // The presentation refresh isolates failures so canonical work still runs.
+        await interactionActivity.refresh(sessionId);
         await continuityCoordinator.refreshCanonical(sessionId, admission, attention);
         sessionAdmission.detach(() => workHubResults?.notify(sessionId));
       },
@@ -1243,6 +1268,8 @@ export async function createExecutionRuntimeHostComposition(
         executeHostedExecutionToSettlement(requireRootCoordinator(rootCoordinator), input),
       stopRoot: (identity, input) =>
         requireRootCoordinator(rootCoordinator).stopRoot(identity, input),
+      stopRootRun: (identity, input) =>
+        requireRootCoordinator(rootCoordinator).stopRootRun(identity, input),
       stopSession: (sessionId, input) =>
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };
@@ -1621,6 +1648,9 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       newId: randomUUID,
       acquireResidency: () => context.acquireResidency('agent-graph'),
+      readTurnPendingInteractionCount: (sessionId, turnId) =>
+        interactionActivity.readTurnPendingInteractionCount(sessionId, turnId),
+      onSessionActivityChanged: (sessionId) => backgroundActivity.changed(sessionId),
       onReconciliation: (rootSessionId, result) => {
         void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
       },
@@ -2152,6 +2182,7 @@ export async function createExecutionRuntimeHostComposition(
         }
       },
       acquireResidency: () => context.acquireResidency('agent-graph-supervisor'),
+      onSessionActivityChanged: (sessionId) => backgroundActivity.changed(sessionId),
       onError: () => context.requestDrain(),
     });
     const goalExecutionCoordinator = new HostGoalExecutionCoordinator({
@@ -2230,6 +2261,7 @@ export async function createExecutionRuntimeHostComposition(
       turnIndex: requireTranscriptReader(transcriptReader),
       runtimePolicy: runtimePolicyStores,
       manager,
+      readBackgroundActivity: (sessionId) => backgroundActivity.snapshot(sessionId),
       admission: sessionAdmission,
       continuity: continuityCoordinator,
       workspaceResolver,
@@ -2300,6 +2332,43 @@ export async function createExecutionRuntimeHostComposition(
         return outcome.result.kind === 'committed' ? 'committed' : 'revision_conflict';
       },
     });
+    /**
+     * One delegation-retirement read for both consumers: the coordination
+     * coordinator's own actions and the archive guard's relationship check.
+     * A finished Turn retires the delegation long before anything removes its
+     * ledger row, so "live" must come from the execution, not the ledger.
+     */
+    const readWorkHubDelegationRetirement = async (
+      assignment: WorkHubDelegationAssignedMessage,
+      admission?: SessionAdmissionLease,
+    ): Promise<'retired' | 'not_retired' | 'recovering'> => {
+      const disposition = admission
+        ? await messages.readMessageExecutionDispositionAdmitted(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+            admission,
+          )
+        : await messages.readMessageExecutionDisposition(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+          );
+      if (disposition.kind === 'recovering') return 'recovering';
+      if (disposition.kind === 'pending') return 'not_retired';
+      if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
+        return 'retired';
+      }
+      const identity = {
+        sessionId: assignment.targetSessionId,
+        turnId: disposition.turnId,
+        runId: disposition.runId,
+      };
+      const latest = await coordinator.readLatestRootTurnLineage(identity);
+      if (isActiveWorkHubRoot(coordinator, latest)) return 'not_retired';
+      // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
+      // root is not evidence that its work ended.
+      const snapshot = await coordinator.read(latest);
+      return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
+    };
     workHubCoordination = new HostWorkHubCoordinationCoordinator({
       routingModel:
         dependencies.workHubRoutingModel ?? createJevRoutingModel({ stores: runtimePolicyStores }),
@@ -2317,34 +2386,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
-        readDelegationRetirement: async (assignment, admission) => {
-          const disposition = admission
-            ? await messages.readMessageExecutionDispositionAdmitted(
-                assignment.targetSessionId,
-                assignment.targetMessageId,
-                admission,
-              )
-            : await messages.readMessageExecutionDisposition(
-                assignment.targetSessionId,
-                assignment.targetMessageId,
-              );
-          if (disposition.kind === 'recovering') return 'recovering';
-          if (disposition.kind === 'pending') return 'not_retired';
-          if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
-            return 'retired';
-          }
-          const identity = {
-            sessionId: assignment.targetSessionId,
-            turnId: disposition.turnId,
-            runId: disposition.runId,
-          };
-          const latest = await coordinator.readLatestRootTurnLineage(identity);
-          if (isActiveWorkHubRoot(coordinator, latest)) return 'not_retired';
-          // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
-          // root is not evidence that its work ended.
-          const snapshot = await coordinator.read(latest);
-          return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
-        },
+        readDelegationRetirement: readWorkHubDelegationRetirement,
         // Resolve and resume only the execution lineage owned by this
         // delegation. A Session-wide latest-failure query could otherwise
         // continue unrelated work started directly in the same Session.
@@ -2786,6 +2828,23 @@ export async function createExecutionRuntimeHostComposition(
       root: coordinator,
       messages,
       interactions,
+      workHub: {
+        readDelegationRetirement: (assignment, admission) =>
+          readWorkHubDelegationRetirement(assignment, admission),
+        hasUndeliveredResult: async (assignment, admission) => {
+          if (!workHubResults || !assignment.returnResults) return false;
+          // Same observation delivery is keyed on; the transcript content is
+          // not needed to identify the result event.
+          const observed = await workHubResults.inspect(assignment, admission, false);
+          if (!observed) return false;
+          // Root admission is the delivery receipt (see startWorkHubResult).
+          const receipt = await stores.agentRunStore.readRootTurnAdmission(
+            WORKHUB_COORDINATION_SESSION_ID,
+            workHubResultOrigin(assignment, observed).eventId,
+          );
+          return !receipt;
+        },
+      },
       goals: requireGoal(goal),
       scheduledTasks,
       resources: runtimeResources,
@@ -2833,6 +2892,7 @@ export async function createExecutionRuntimeHostComposition(
         'turn.stop': turnControl.handlers['turn.stop'],
         'usage.query': usagePricing.handlers['usage.query'],
       },
+      runSettlementCoverage: (from, to) => usagePricing.runSettlementCoverage(from, to),
       context: {
         hostEpoch: context.hostEpoch,
         connectionId: 'hosted-execution',

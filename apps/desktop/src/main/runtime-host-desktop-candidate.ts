@@ -36,6 +36,9 @@ import {
   type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,
   connectRuntimeHostProfile,
+  DEFAULT_ELECTION_DEADLINE_MS,
+  ELECTION_DEADLINE_MS_ENV_VAR,
+  electionDeadlineMsFromEnvironment,
   type RuntimeHostPeerClient,
   type RuntimeHostConnectionPhase,
   type RuntimeHostSshInteraction,
@@ -492,6 +495,19 @@ function redactRuntimeHostStderr(stderr: string): string {
   return redacted.replace(/\S+/gu, (token) => redactSecrets(token));
 }
 
+// Resolved from the client's own constant and env channel: a Desktop-only
+// fallback let the readiness wait expire inside a still-valid election window.
+export function resolveDesktopCandidateReadyTimeoutMs(
+  electionDeadlineMs: number | undefined,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  return (
+    electionDeadlineMs ??
+    electionDeadlineMsFromEnvironment(environment[ELECTION_DEADLINE_MS_ENV_VAR]) ??
+    DEFAULT_ELECTION_DEADLINE_MS
+  );
+}
+
 async function startProfileDesktopRuntimeHostCandidate(
   input: DesktopRuntimeHostCandidateStartInput,
   profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput["profileTarget"]>,
@@ -511,7 +527,7 @@ async function startProfileDesktopRuntimeHostCandidate(
     ...(input.handshakeTimeoutMs === undefined
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-    readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
+    readyTimeoutMs: resolveDesktopCandidateReadyTimeoutMs(input.electionDeadlineMs),
     ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
     ...(input.refreshPeerRoutes === undefined
       ? {}

@@ -122,6 +122,11 @@ export interface ModelAdapterInput {
 export interface ModelAdapterStreamInput {
   model: unknown;
   messages: ModelMessage[];
+  /**
+   * Leading messages that later requests replay unchanged; the rest is
+   * request-only context and never owns a prompt-cache breakpoint.
+   */
+  historyMessageCount?: number;
   tools: ModelToolSet;
   activeTools: string[];
   /** Observe each successfully pulled SDK stream part before semantic translation. */
@@ -337,8 +342,13 @@ export class ModelAdapter {
       sdkTools[TOOL_SEARCH_PROVIDER_NAME] = sdkTools[TOOL_SEARCH_NAME];
       delete sdkTools[TOOL_SEARCH_NAME];
     }
+    const messages = withAnthropicHistoryCacheBreakpoint(
+      input.messages,
+      input.historyMessageCount,
+      this.input.providerOptions,
+    );
     const fullMessages =
-      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(input.messages) : input.messages;
+      this.runtime.wire === 'openai-chat' ? lowerChatToolImages(messages) : messages;
     const responsesLane =
       input.continuationKey && usesNativeOpenAiResponses(this.input.connection, this.runtime)
         ? input.continuationKey
@@ -1255,6 +1265,33 @@ function translateChunk(
     default:
       return [];
   }
+}
+
+function withAnthropicHistoryCacheBreakpoint(
+  messages: ModelMessage[],
+  historyMessageCount: number | undefined,
+  providerOptions: Record<string, unknown> | undefined,
+): ModelMessage[] {
+  const cacheControl = (providerOptions?.anthropic as { cacheControl?: unknown } | undefined)
+    ?.cacheControl;
+  if (
+    cacheControl === undefined ||
+    historyMessageCount === undefined ||
+    historyMessageCount >= messages.length
+  ) {
+    return messages;
+  }
+  return messages.map((message, index) =>
+    index === historyMessageCount - 1
+      ? ({
+          ...message,
+          providerOptions: {
+            ...message.providerOptions,
+            anthropic: { ...message.providerOptions?.anthropic, cacheControl },
+          },
+        } as ModelMessage)
+      : message,
+  );
 }
 
 function lowerChatToolImages(messages: readonly ModelMessage[]): ModelMessage[] {

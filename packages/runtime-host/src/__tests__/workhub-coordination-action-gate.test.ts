@@ -230,7 +230,8 @@ describe('WorkHub Coordination Action Gate', () => {
         },
         CONTEXT,
       ),
-      (error) => error instanceof WorkHubActionGateFailure && error.code === 'candidate_set_stale',
+      (error) =>
+        error instanceof WorkHubActionGateFailure && error.code === 'candidate_unavailable',
     );
     assert.equal(effects.assignments.length, 0);
 
@@ -263,6 +264,31 @@ describe('WorkHub Coordination Action Gate', () => {
       (error) =>
         error instanceof WorkHubActionGateFailure && error.code === 'candidate_unavailable',
     );
+    assert.equal(effects.assignments.length, 1);
+  });
+
+  test('a title commit on another Session does not invalidate a delegation', async () => {
+    const effects = fakeEffects([session('payments'), session('design')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const offered = await gate.candidates();
+    const target = offered.candidates.find((candidate) => candidate.sessionId === 'payments')!;
+
+    // An unrelated Session's automatic title landing between reading candidates
+    // and delegating is the race the WorkHub flake loses (#4785).
+    effects.sessions[1] = session('design', { name: 'Design review', lastMessageAt: 99 });
+
+    const result = await gate.act(
+      {
+        actionId: 'unrelated-title',
+        userText: 'Continue payments',
+        candidateSetId: offered.candidateSetId,
+        proposal: { disposition: 'delegate_existing', candidateRef: target.candidateRef },
+      },
+      CONTEXT,
+    );
+
+    assert.equal(result.disposition, 'delegate_existing');
+    assert.equal(result.targetSessionId, 'payments');
     assert.equal(effects.assignments.length, 1);
   });
 

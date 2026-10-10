@@ -20,8 +20,8 @@
 /**
  * Unchanged-text edit-and-resend regression (PR #5815 follow-up).
  *
- * The production fix removed the `text.trim() === revision.originalText.trim()`
- * early return from the composer's submit path. The existing
+ * The production fix removed the unchanged-text early return from the
+ * revision send path. The existing
  * `app-shell-revision-actions.test.ts` suite only calls `prepareRevisionSend()`
  * directly, so it cannot tell whether the real submit path still short-circuits
  * unchanged text. This suite mounts the real ChatComposerRegion, wires its
@@ -214,7 +214,15 @@ async function mountRevisionWorld(): Promise<RevisionWorld> {
     },
     composerRef: composer,
     readMessages: () => [userMessage('turn-1', ORIGINAL_TEXT)],
-    hasPendingAttachments: () => false,
+    staging: {
+      captureSubmission: () => ({ hasPendingContext: false }),
+      stagedContext: () => ({
+        quotes: [],
+        attachments: [],
+        restoreQuotes: () => {},
+        clearQuotes: () => [],
+      }),
+    },
     openSessionInChat: (sessionId: string) => {
       selectionRevision += 1;
       activeIdRef.current = sessionId;

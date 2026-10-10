@@ -409,6 +409,7 @@ type ResolvedClaimedAgentGraphIntentInput = Omit<
 > & {
   claim: AgentGraphIntentClaim;
   hostedGraphExecution?: RuntimeHostedAgentGraphExecutionCapability;
+  onHostAdmission?: () => void;
 };
 
 const CHILD_AGENT_SUMMARY_MAX_CHARS = 4_000;
@@ -903,7 +904,16 @@ export class SessionManager {
   >();
   private readonly claimedAgentGraphIntentRuns = new Map<
     string,
-    { requestFingerprint: string; promise: Promise<ClaimedAgentGraphIntentResult> }
+    {
+      requestFingerprint: string;
+      owner: {
+        identity: RuntimeMessageRunIdentity;
+        execution: RuntimeExecutionClaim;
+        hostAdmitted: boolean;
+        stopTask?: Promise<void>;
+      };
+      promise: Promise<ClaimedAgentGraphIntentResult>;
+    }
   >();
   private readonly claimedAgentGraphSessionTails = new Map<string, Promise<void>>();
 
@@ -2948,11 +2958,33 @@ export class SessionManager {
       return await inFlight.promise;
     }
     const runtimeExecution = this.runtimeKernel.claimExecution(claim.targetSessionId);
-    const promise = this.enqueueClaimedAgentGraphIntent(resolved, runtimeExecution).finally(() =>
-      runtimeExecution.release(),
-    );
+    const owner: {
+      identity: RuntimeMessageRunIdentity;
+      execution: RuntimeExecutionClaim;
+      hostAdmitted: boolean;
+      stopTask?: Promise<void>;
+    } = {
+      identity: {
+        sessionId: claim.targetSessionId,
+        runId: claim.targetRunId,
+        turnId: claim.targetTurnId,
+      },
+      execution: runtimeExecution,
+      hostAdmitted: false,
+    };
+    resolved.onHostAdmission = () => {
+      owner.hostAdmitted = true;
+    };
+    const promise = this.enqueueClaimedAgentGraphIntent(resolved, runtimeExecution, async () => {
+      runtimeExecution.release();
+      // Keep the existing Session slot until scoped backend cleanup completes.
+      // Other queued claims retain their own uncancelled runtime capabilities.
+      await owner.stopTask?.catch(() => undefined);
+      await this.runtimeKernel.waitForExecutionStop?.(runtimeExecution);
+    });
     this.claimedAgentGraphIntentRuns.set(claim.claimId, {
       requestFingerprint,
+      owner,
       promise,
     });
     try {
@@ -2967,6 +2999,7 @@ export class SessionManager {
   private enqueueClaimedAgentGraphIntent(
     input: ResolvedClaimedAgentGraphIntentInput,
     runtimeExecution: RuntimeExecutionClaim,
+    release: () => Promise<void>,
   ): Promise<ClaimedAgentGraphIntentResult> {
     const sessionId = input.claim.targetSessionId;
     const previous = this.claimedAgentGraphSessionTails.get(sessionId) ?? Promise.resolve();
@@ -2984,7 +3017,8 @@ export class SessionManager {
         }
         enteredQueue = true;
         return this.runClaimedAgentGraphIntentOnce(input, runtimeExecution);
-      });
+      })
+      .finally(release);
     const tail = queuedExecution.then(
       () => {},
       () => {},
@@ -3001,7 +3035,10 @@ export class SessionManager {
       rejectStopped = reject;
     });
     const onRuntimeStop = (): void => {
-      if (!enteredQueue) rejectStopped(runtimeExecution.stopSignal.reason);
+      if (!enteredQueue) {
+        runtimeExecution.release();
+        rejectStopped(runtimeExecution.stopSignal.reason);
+      }
     };
     runtimeExecution.stopSignal.addEventListener('abort', onRuntimeStop, { once: true });
     if (runtimeExecution.stopSignal.aborted) onRuntimeStop();
@@ -3074,6 +3111,9 @@ export class SessionManager {
           claim,
           input.hostedGraphExecution,
         );
+        if (input.hostedGraphExecution && runtimeExecution.stopSignal.aborted)
+          throw runtimeExecution.stopSignal.reason;
+        input.onHostAdmission?.();
         await this.consumeLinkedRootExecution({
           sessionId: child.id,
           turnId: claim.targetTurnId,
@@ -3123,16 +3163,23 @@ export class SessionManager {
 
     // An invocation is what makes a Turn exist on the ledger, so the run listing
     // is the whole occupancy check: a Turn with durable content has one.
-    const turnOwner = (await this.listInvocations(child.id)).find(
-      (candidate) => candidate.turnId === claim.targetTurnId,
-    );
+    const invocations = await this.listInvocations(child.id);
+    const turnOwner = invocations.find((candidate) => candidate.turnId === claim.targetTurnId);
     if (turnOwner) {
       throw new Error(
         `Claimed graph turn ${claim.targetTurnId} is already owned by run ${turnOwner.runId}`,
       );
     }
-    if (child.isArchived || child.status === 'aborted') {
+    if (child.isArchived) {
       throw new Error('Claimed graph execution target child session is terminated');
+    }
+    if (child.status === 'aborted') {
+      const latest = [...invocations].sort((left, right) => right.openedAt - left.openedAt)[0];
+      // A graph stop ends one activation, not the reusable operator. Only a
+      // durable graph-supervisor stop permits a new claim on an aborted child.
+      if (latest?.terminalEvent?.actions?.stateDelta?.abortSource !== 'graph.supervisor') {
+        throw new Error('Claimed graph execution target child session is terminated');
+      }
     }
     if (input.abortSignal?.aborted) {
       throw new Error('Claimed graph execution was cancelled before runtime admission');
@@ -3149,11 +3196,26 @@ export class SessionManager {
     let aborted = false;
     let stopPromise: Promise<void> | undefined;
     const userMessageId = await this.claimedGraphUserMessageId(claim, input.hostedGraphExecution);
+    if (input.hostedGraphExecution && runtimeExecution.stopSignal.aborted)
+      throw runtimeExecution.stopSignal.reason;
+    // Host runs this gate in its Session admission lease immediately before
+    // the durable admission. Until it passes, a graph stop only cancels the
+    // local capability and the gate refuses the Turn; after it passes, the
+    // stop must go through the Host fence.
+    const hostedAdmitExecution = input.hostedGraphExecution
+      ? async (): Promise<'executing' | 'cancelled'> => {
+          if (runtimeExecution.stopSignal.aborted) return 'cancelled';
+          const admission = admitExecution ? await admitExecution() : 'executing';
+          if (admission === 'cancelled' || runtimeExecution.stopSignal.aborted) return 'cancelled';
+          input.onHostAdmission?.();
+          return 'executing';
+        }
+      : admitExecution;
     const execution = this.consumeLinkedRootExecution({
       ...identity,
       userMessageId,
       execution: rootExecution,
-      ...(admitExecution ? { admitExecution } : {}),
+      ...(hostedAdmitExecution ? { admitExecution: hostedAdmitExecution } : {}),
       content: { text: input.prompt },
       start: ({ runId, userMessageId, onRunStarted }) =>
         this.sendMessage(
@@ -3895,6 +3957,75 @@ export class SessionManager {
     };
   }
 
+  /** Stop the captured graph activation, never a newer Run or a queued sibling. */
+  async stopAgentGraphActivation(
+    identity: RuntimeMessageRunIdentity,
+    input: StopSessionInput = { source: 'graph_supervisor' },
+  ): Promise<void> {
+    const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
+      ? this.deps.messageAuthority
+      : undefined;
+    // Until the Host admission gate passes, the capability is only local
+    // ownership: cancel it synchronously, and both the pre-submission check
+    // and that gate refuse the Turn. Once admitted, Host must commit its
+    // durable fence before Runtime stop.
+    if (authority) {
+      const admission = await this.deps.hostedAgentGraphExecution?.readRootTurnAdmissionIdentity(
+        identity.sessionId,
+        identity.turnId,
+      );
+      if (admission && admission.runId !== identity.runId) {
+        throw new Error('Graph stop identity does not match its durable admission');
+      }
+      // A recovered local claim can be new while the Host already owns its Run.
+      // Recheck the gate after the durable read closes that lookup race.
+      if (admission || this.findGraphRuntimeActivation(identity)?.hostAdmitted) {
+        await authority.stopRootRun(identity, input);
+        return;
+      }
+    }
+    await this.stopGraphRuntimeActivation(identity, input);
+  }
+
+  /** Whether a failed stop left cleanup retained for this exact graph activation. */
+  hasPendingAgentGraphActivationStop(identity: RuntimeMessageRunIdentity): boolean {
+    return this.runtimeKernel.hasPendingRunStop?.(identity) ?? false;
+  }
+
+  private findGraphRuntimeActivation(identity: RuntimeMessageRunIdentity) {
+    return [...this.claimedAgentGraphIntentRuns.values()]
+      .map((entry) => entry.owner)
+      .find(
+        (candidate) =>
+          candidate.identity.sessionId === identity.sessionId &&
+          candidate.identity.runId === identity.runId &&
+          candidate.identity.turnId === identity.turnId,
+      );
+  }
+
+  private stopGraphRuntimeActivation(
+    identity: RuntimeMessageRunIdentity,
+    input: StopSessionInput,
+  ): Promise<void> {
+    const owner = this.findGraphRuntimeActivation(identity);
+    if (owner) {
+      if (owner.stopTask) return owner.stopTask;
+      if (!this.runtimeKernel.stopExecution) {
+        throw new Error('Runtime kernel does not support scoped graph activation stops');
+      }
+      const task = this.runtimeKernel.stopExecution(owner.execution, input);
+      owner.stopTask = task;
+      void task.catch(() => {
+        if (owner.stopTask === task) owner.stopTask = undefined;
+      });
+      return task;
+    }
+    if (!this.runtimeKernel.stopRun) {
+      throw new Error('Runtime kernel does not support exact Run stops');
+    }
+    return this.runtimeKernel.stopRun(identity, input);
+  }
+
   async stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
     const hostedAuthority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
@@ -3911,17 +4042,27 @@ export class SessionManager {
     );
   }
 
-  async deliverHostedRootStop(sessionId: string, input: StopSessionInput = {}): Promise<void> {
+  async deliverHostedRootStop(
+    sessionId: string,
+    input: StopSessionInput = {},
+    identity?: RuntimeMessageRunIdentity,
+  ): Promise<void> {
+    if (identity && identity.sessionId !== sessionId) {
+      throw new Error('Hosted stop identity belongs to another Session');
+    }
     const authority = isRuntimeHostedRootAuthority(this.deps.messageAuthority)
       ? this.deps.messageAuthority
       : undefined;
     await this.#stopSessionTree(
       sessionId,
-      this.runtimeKernel.stopSession(sessionId, input),
+      identity
+        ? this.stopGraphRuntimeActivation(identity, input)
+        : this.runtimeKernel.stopSession(sessionId, input),
       (childSessionId) =>
         authority
           ? authority.stopSession(childSessionId, input)
           : this.runtimeKernel.stopSession(childSessionId, input),
+      identity,
     );
   }
 
@@ -3929,6 +4070,7 @@ export class SessionManager {
     sessionId: string,
     ownStop: Promise<void>,
     stopChild: (childSessionId: string) => Promise<void>,
+    parentIdentity?: RuntimeMessageRunIdentity,
   ): Promise<void> {
     // Observe immediately while child lookup runs; await below still propagates the original error.
     void ownStop.catch(() => undefined);
@@ -3938,7 +4080,12 @@ export class SessionManager {
       const children = await this.listChildSessions(sessionId);
       childStops = await Promise.allSettled(
         children
-          .filter((child) => child.subagentParent?.lifecycle === 'foreground')
+          .filter(
+            (child) =>
+              child.subagentParent?.lifecycle === 'foreground' &&
+              (!parentIdentity ||
+                child.subagentParent.spawnedBy.parentTurnId === parentIdentity.turnId),
+          )
           .map((child) => stopChild(child.id)),
       );
     } catch (error) {
