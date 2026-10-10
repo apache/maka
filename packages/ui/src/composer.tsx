@@ -167,6 +167,55 @@ function placeCaretAtEnd(editable: HTMLElement): boolean {
   return true;
 }
 
+/** The line box around a range's first client rect (glyph rects are
+ *  shorter than the line), or null when the range paints nothing — a caret
+ *  before a newline character has no rect. */
+function caretLineBox(range: Range, lineHeight: number): { top: number; bottom: number } | null {
+  const rect = range.getClientRects()[0];
+  if (!rect) return null;
+  const height = Number.isFinite(lineHeight) && lineHeight > rect.height ? lineHeight : rect.height;
+  const top = rect.top - (height - rect.height) / 2;
+  return { top, bottom: top + height };
+}
+
+/** The last painted leaf before a collapsed range — a text character or an
+ *  element such as a token chip — as a range of its own, found in document
+ *  order within `root`; null at the very start of the content. Inline
+ *  wrappers nest text, so the leaf may be a sibling of an ancestor rather
+ *  than of the caret's own node. */
+function rangeBeforeCaret(range: Range, root: Node): Range | null {
+  let node: Node | null = range.startContainer;
+  let offset = range.startOffset;
+  const before = document.createRange();
+  if (node.nodeType === Node.TEXT_NODE && offset > 0) {
+    before.setStart(node, offset - 1);
+    before.setEnd(node, offset);
+    return before;
+  }
+  let candidate: Node | null = node.nodeType === Node.TEXT_NODE ? null : (node.childNodes[offset - 1] ?? null);
+  for (;;) {
+    while (!candidate) {
+      if (!node || node === root) return null;
+      candidate = node.previousSibling;
+      node = node.parentNode;
+    }
+    while (candidate.lastChild) candidate = candidate.lastChild;
+    if (candidate.nodeType !== Node.TEXT_NODE) {
+      before.selectNode(candidate);
+      return before;
+    }
+    offset = (candidate.textContent ?? '').length;
+    if (offset > 0) {
+      before.setStart(candidate, offset - 1);
+      before.setEnd(candidate, offset);
+      return before;
+    }
+    // An empty text node paints nothing: keep looking before it.
+    node = candidate;
+    candidate = null;
+  }
+}
+
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
 export interface ComposerSkillOption {
@@ -614,6 +663,53 @@ export const Composer = forwardRef<
   function editableNode(): HTMLElement | null {
     return inputRootRef.current?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
   }
+  /**
+   * Reveal the caret after a scripted edit. A native keypress scrolls the
+   * caret into view as part of the edit; the `execCommand` paths the
+   * composer uses for Shift/Alt+Enter, multi-line inserts and plain-text
+   * pastes do not (measured in Chromium against the editor's own styles:
+   * past the `COMPOSER_MAX_ROWS` cap the scroll height grows, `scrollTop`
+   * stays put and the caret sits below the viewport until the next
+   * keystroke). This happens wherever the caret lands off-screen — at the
+   * draft end, and just as well when a break in the bottom row pushes the
+   * rest of the line down.
+   *
+   * At the draft end Chromium parks the caret before a placeholder newline
+   * whose collapsed range has no client rect; the same holds for a caret at
+   * the start of any newline text. Those positions are located from the
+   * character before the caret instead: the caret is on the line below it.
+   */
+  function revealCaretAfterEdit() {
+    const editable = editableNode();
+    const selection = document.getSelection();
+    if (!editable || !selection?.isCollapsed || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (!editable.contains(range.startContainer)) return;
+    const tail = range.cloneRange();
+    tail.selectNodeContents(editable);
+    tail.setStart(range.startContainer, range.startOffset);
+    const rest = tail.cloneContents();
+    for (const br of rest.querySelectorAll('br')) br.replaceWith('\n');
+    const after = rest.textContent ?? '';
+    if (after === '' || after === '\n') {
+      // Nothing but the placeholder follows: the caret is on the last line.
+      editable.scrollTop = editable.scrollHeight;
+      return;
+    }
+    const lineHeight = Number.parseFloat(getComputedStyle(editable).lineHeight);
+    let line = caretLineBox(range, lineHeight);
+    if (!line) {
+      const previous = rangeBeforeCaret(range, editable);
+      const previousLine = previous && caretLineBox(previous, lineHeight);
+      if (!previousLine) return;
+      line = { top: previousLine.top + lineHeight, bottom: previousLine.bottom + lineHeight };
+    }
+    const box = editable.getBoundingClientRect();
+    const viewTop = box.top + editable.clientTop;
+    const viewBottom = viewTop + editable.clientHeight;
+    if (line.bottom > viewBottom) editable.scrollTop += line.bottom - viewBottom;
+    else if (line.top < viewTop) editable.scrollTop -= viewTop - line.top;
+  }
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
   const [modelPickerNonce, setModelPickerNonce] = useState(0);
@@ -1010,6 +1106,7 @@ export const Composer = forwardRef<
         if (index > 0) document.execCommand('insertLineBreak');
         if (line) document.execCommand('insertText', false, line);
       }
+      revealCaretAfterEdit();
     };
     root.addEventListener('beforeinput', onBeforeInput);
     return () => root.removeEventListener('beforeinput', onBeforeInput);
@@ -1563,6 +1660,7 @@ export const Composer = forwardRef<
     if (event.altKey || event.shiftKey) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
+      revealCaretAfterEdit();
       return;
     }
     event.preventDefault();
@@ -2207,11 +2305,13 @@ export const Composer = forwardRef<
                       // primitive that creates a browser undo transaction.
                       // Migrate when Astryx exposes a transactional plain-text
                       // insertion authority.
-                      return document.execCommand(
+                      const inserted = document.execCommand(
                         'insertHTML',
                         false,
                         plainTextContainer.innerHTML.replace(/\r\n?|\n/g, '<br>'),
                       );
+                      revealCaretAfterEdit();
+                      return inserted;
                     } finally {
                       plainTextPasteInputActiveRef.current = false;
                       if (menuWasOpen) {
