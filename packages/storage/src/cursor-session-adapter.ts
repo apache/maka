@@ -155,49 +155,54 @@ export class CursorSessionAdapter implements ExternalSessionAdapter {
     if (!SESSION_ID_PATTERN.test(sessionId)) {
       throw new Error(`cursor session id is not usable: ${sessionId}`);
     }
-    return this.#withDatabase((db) => {
-      // The composer record is itself a source row: size it before anything
-      // materializes it, and count it against both budgets, or a single fat
-      // record imports under a tiny budget.
-      const composerBytes = composerRecordBytes(db, sessionId);
-      if (composerBytes === undefined || composerBytes === 0) {
-        throw new ExternalSessionNotFoundError();
-      }
-      if (composerBytes > this.#maxRawBytes) {
-        throw new ExternalSessionLimitError(
-          'record_bytes',
-          this.#maxRawBytes,
-          `Cursor transcript contains a source record larger than ${this.#maxRawBytes} bytes`,
-        );
-      }
-      // Sized above, so materializing the record now stays inside the budget.
-      const composer = readComposerRecord(db, sessionId);
-      if (!composer) throw new ExternalSessionNotFoundError();
-      const name = sanitizeExternalSessionTitle(composer.name) || sessionId;
-      const headers = Array.isArray(composer.fullConversationHeadersOnly)
-        ? composer.fullConversationHeadersOnly
-        : [];
-      if (headers.length + 1 > this.#maxRows) {
-        throw new ExternalSessionLimitError(
-          'records',
-          this.#maxRows,
-          `Cursor transcript exceeds ${this.#maxRows} source rows`,
-        );
-      }
-      const bubbles = readBubbles(db, sessionId, headers, this.#maxRawBytes - composerBytes);
-      return {
-        sourceSessionId: sessionId,
-        metadata: {
-          name,
-          cwd: '',
-        },
-        messages: convertTranscript(sessionId, bubbles, {
-          fallbackTs: composer.lastUpdatedAt ?? composer.createdAt ?? 0,
-          maxConvertedBytes: this.#maxConvertedBytes,
-          maxMessages: this.#maxMessages,
-        }),
-      };
-    });
+    return this.#withDatabase((db) =>
+      // One deferred snapshot for the size probe, the composer read, and the
+      // bubble walk: a Cursor writer committing between them must not leave
+      // the guard holding one row's size and the reader holding another's.
+      withReadSnapshot(db, () => {
+        // The composer record is itself a source row: size it before anything
+        // materializes it, and count it against both budgets, or a single fat
+        // record imports under a tiny budget.
+        const composerBytes = composerRecordBytes(db, sessionId);
+        if (composerBytes === undefined || composerBytes === 0) {
+          throw new ExternalSessionNotFoundError();
+        }
+        if (composerBytes > this.#maxRawBytes) {
+          throw new ExternalSessionLimitError(
+            'record_bytes',
+            this.#maxRawBytes,
+            `Cursor transcript contains a source record larger than ${this.#maxRawBytes} bytes`,
+          );
+        }
+        // Sized above, so materializing the record now stays inside the budget.
+        const composer = readComposerRecord(db, sessionId);
+        if (!composer) throw new ExternalSessionNotFoundError();
+        const name = sanitizeExternalSessionTitle(composer.name) || sessionId;
+        const headers = Array.isArray(composer.fullConversationHeadersOnly)
+          ? composer.fullConversationHeadersOnly
+          : [];
+        if (headers.length + 1 > this.#maxRows) {
+          throw new ExternalSessionLimitError(
+            'records',
+            this.#maxRows,
+            `Cursor transcript exceeds ${this.#maxRows} source rows`,
+          );
+        }
+        const bubbles = readBubbles(db, sessionId, headers, this.#maxRawBytes - composerBytes);
+        return {
+          sourceSessionId: sessionId,
+          metadata: {
+            name,
+            cwd: '',
+          },
+          messages: convertTranscript(sessionId, bubbles, {
+            fallbackTs: composer.lastUpdatedAt ?? composer.createdAt ?? 0,
+            maxConvertedBytes: this.#maxConvertedBytes,
+            maxMessages: this.#maxMessages,
+          }),
+        };
+      }),
+    );
   }
 
   async #resolvedDatabasePath(): Promise<string | undefined> {
@@ -347,6 +352,26 @@ export interface CursorBubble {
   readonly text?: unknown;
   readonly createdAt?: unknown;
   readonly toolFormerData?: unknown;
+}
+
+/** One deferred snapshot across the size probe, the composer read, and the
+ * bubble walk, so a concurrent Cursor writer cannot split them.
+ */
+function withReadSnapshot<T>(db: CursorDatabase, read: () => T): T {
+  db.exec('BEGIN DEFERRED');
+  try {
+    const result = read();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Preserve the read failure. Closing the read-only connection releases
+      // any transaction SQLite could not roll back explicitly.
+    }
+    throw error;
+  }
 }
 
 function readComposerRecord(db: CursorDatabase, sessionId: string): ComposerRecord | undefined {
