@@ -93,6 +93,20 @@ export default {
           impl: async (input: any, call: any) =>
             JSON.parse(JSON.stringify(await impl(input, call))),
         });
+      register('MemoryStatus', 'Read permitted source registrations and last known index maintenance status without importing, scanning sources or starting a model.', z.object({}), async () => {
+          await ctx.sessionQuery.historyList();
+          const indexes = [];
+          for (const index of store.list()) {
+            try {
+              const allowed = await controller.indexVisible(index.id);
+              store.assertIndexVisible(index.id, allowed);
+              indexes.push({ id: index.id, name: index.name,
+                freshness: controller.freshness(index.id, allowed) });
+            } catch { indexes.push({ id: index.id, unavailable: true }); }
+          }
+          return { sources: [...ctx.sessionQuery.historySources(), ...ctx.sources.list()], indexes,
+            notice: '来源已注册不等于授权有效。此处显示上次检查状态；不会导入历史、刷新来源或整理索引。' };
+      });
       register(
         'MemorySources',
         'List permitted history sources. Each source has its own opaque revisions.',
@@ -207,11 +221,12 @@ export default {
       );
       register(
         'MemoryIndexCreate',
-        'Standardize a request to organize an index: natural-language criterion plus an exact history cursor from MemoryRange. Runs an ordinary independent Maka Agent with its normal tools. It chooses searches, types and organization; no batch queue or content schema. Returns the actual result/progress. New source arrivals remain incremental.',
+        'Standardize a request to organize an index: natural-language criterion plus an exact history cursor from MemoryRange. Runs an ordinary independent Maka Agent with its normal tools. It chooses searches, types and organization; no batch queue or content schema. Returns background progress immediately by default; use MemoryIndexRead to inspect completion. Set background=false only when explicitly waiting for the full result. New source arrivals remain incremental.',
         z.object({
           name: z.string().min(1).max(160),
           instructions: z.string().min(1).max(8000),
           cursor: id,
+          background: z.boolean().default(true),
         }),
         async (input: any, call: any) => {
           const cursor = store.cursor(input.cursor),
@@ -221,6 +236,10 @@ export default {
           const index = store.create(input.name, input.instructions, [], cursor.sources);
           store.begin(index.id, cursor.id, allowed);
           await controller.attach(index.id, call);
+          if (input.background !== false) {
+            void controller.maintain(index.id).catch(() => {});
+            return controller.summary(index.id, allowed);
+          }
           return controller.wait(index.id, call.abortSignal);
         },
         true,

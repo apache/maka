@@ -18,6 +18,7 @@
  */
 
 import { build } from 'esbuild';
+import { copyFile } from 'node:fs/promises';
 await build({
   entryPoints: ['src/host.ts'],
   outfile: 'dist/host.mjs',
@@ -26,3 +27,5 @@ await build({
   format: 'esm',
   target: 'node22',
 });
+
+await copyFile('src/client.js', 'dist/client.js');

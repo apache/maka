@@ -80,6 +80,8 @@ export interface MakaClientSidebarFooterProps {
 /** Stable owner props for an additive primary-navigation contribution. */
 export interface MakaClientSidebarNavigationProps {
   readonly collapsed: boolean;
+  /** Open a desktop Session in the native conversation, preserving Host identity. */
+  readonly openSession?: (sessionId: string) => void;
 }
 
 /** Stable owner props for one plugin-owned Settings navigation control. */

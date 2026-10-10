@@ -67,6 +67,17 @@ export class InitiativeStore {
       this.save(s); this.log('configured', { sessionId: s.sessionId, intervalMs }); return s;
     });
   }
+  bind(binding: { sessionId: string; cwd: string }, instructions: string) {
+    return this.transaction(() => {
+      this.fence();
+      const old = this.get();
+      if (old) return old; // One durable entry, including concurrent windows and upgrades.
+      const s = { version: 2, ...binding, instructions, intervalMs: 1800000,
+        enabled: false, revision: 1, nextAt: null, active: null,
+        lastError: null, lastCheckedAt: null };
+      this.save(s); this.log('bound', { sessionId: s.sessionId }); return s;
+    });
+  }
   recover() {
     return this.update(s => {
       if (!s) return;

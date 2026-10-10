@@ -43,16 +43,18 @@ test('sidebar navigation plugins render between New Task and WorkHub', () => {
     onOpenSettings: () => undefined,
     workHubEntry: { active: false, label: 'WorkHub', onSelect: () => undefined },
   };
+  let exposed: ((id: string) => void) | undefined;
+  const selected: string[] = [];
   const slots = new MakaClientSlotCore();
   slots.register(
     { name: 'sidebar.navigation', id: 'fixture-long-task' },
-    ({ collapsed }) => <span data-collapsed={collapsed}>PLUGIN NAV</span>,
+    ({ collapsed, openSession }) => { exposed = openSession; return <span data-collapsed={collapsed}>PLUGIN NAV</span>; },
   );
 
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
       <SessionRailProvider
-        data={{ sessions: [], groupVariant: 'conversation', onSelectSession: () => undefined }}
+        data={{ sessions: [], groupVariant: 'conversation', onSelectSession: id => selected.push(id) }}
         chrome={chrome}
       >
         <MakaClientSlotProvider core={slots}>
@@ -67,4 +69,7 @@ test('sidebar navigation plugins render between New Task and WorkHub', () => {
   const workHub = markup.indexOf('WorkHub');
   assert.ok(newTask >= 0 && pluginItem > newTask && workHub > pluginItem, markup);
   assert.match(markup, /data-collapsed="false"/u);
+  const desktopId = JSON.stringify(['host-two', 'assistant']);
+  exposed?.(desktopId);
+  assert.deepEqual(selected, [desktopId]);
 });

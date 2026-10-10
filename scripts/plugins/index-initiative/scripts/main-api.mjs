@@ -43,6 +43,7 @@ export const alias = {
 };
 const exports = [
   ['runtime', 'plugin-session-query-service', 'PluginSessionQueryService'],
+  ['runtime', 'plugin-source-service', 'PluginSourceService'],
   ['core', 'recall', 'listRecallHistorySessions'],
   ['runtime', 'plan-mode', 'selectCollaborationTools'],
   ['runtime', 'plugin-kernel', 'Context'],

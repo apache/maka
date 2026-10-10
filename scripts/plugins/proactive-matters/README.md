@@ -125,3 +125,11 @@ Review storage and limits:
 MatterTasks 查询本会话的事项与最近报告；MatterTaskMessage 传达明确的用户补充；MatterTaskControl 操作指定事项。其他会话不可访问这些委派关系，Matter worker 不递归委派。已结束事项不会因旧 taskKey 重试而重新启动。
 
 本版由助手主动查询报告并在原会话回复，没有即时跨会话通知推送。任务报告不等于已送达用户，查询不会写送达回执。运行中的补充写入事项 inbox 并参与原有审核版本校验，未新增中途强制打断执行的机制。
+
+## Unified assistant entry
+
+The task panel is now read-only: it shows progress and waiting conditions without a second composer or Session creation. Send requests, amendments, pauses and cancellations through the personal-assistant native chat (`index-initiative`). Existing authorized worker Sessions and their histories remain intact.
+
+`MatterOverview` exposes this conversation's tasks, notification health and unassigned legacy tasks. `MatterAdopt` assigns a legacy task only on explicit user request; it cannot take a task already owned by another conversation. The assistant panel offers this action for old tasks.
+
+A durable notification admission ledger forwards meaningful worker updates, completion and failures to the owning chat independently of initiative heartbeats. Busy or blocked chats defer admission. Equal progress is deduplicated, upgrades baseline old reports, and uncertain submission is reconciled from history rather than blindly replayed. Host admission is not a user-visible delivery receipt: the ordinary assistant still decides how to communicate the evidence. Read the main chat and any notification error in the panel when recovery is required.

@@ -670,3 +670,34 @@ for (const bundle of [false, true])
       /visibility/,
     );
   });
+
+test('background creation returns progress before indexing completes and status never advances coverage', async (t) => {
+  const f = await fixture(false);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  t.after(async () => { release(); await f.close(); });
+  f.setWorkerRunner(async (sessionId, prompt) => {
+    await gate;
+    const indexId = /Organize index ([^. ]+)/.exec(prompt)![1];
+    const s = await f.invokeAs(sessionId, 'MemoryIndexRead', { indexId });
+    await f.invokeAs(sessionId, 'MemoryIndexCheckpoint', { indexId, rangeId: s.range.rangeId,
+      expectedRevision: s.index.revision, notes: '完成整理', complete: true });
+  });
+  const range = await f.invoke('MemoryRange', {});
+  const result = await Promise.race([
+    f.invoke('MemoryIndexCreate', {name:'后台事件', instructions:'按事件整理', cursor:range.to, background:true}),
+    new Promise<never>((_, reject) => { const timer=setTimeout(()=>reject(Error('frontend blocked')),1500); timer.unref(); }),
+  ]);
+  assert.equal(result.range.completed, false);
+  assert.equal(result.coverage.cursor, null);
+  const status = await f.invoke('MemoryStatus', {});
+  assert.equal(status.indexes.length, 1);
+  assert.equal(status.indexes[0].freshness.coveredCursor, null);
+  assert.equal(status.indexes[0].freshness.status, 'updating');
+  release();
+  for(let i=0;i<100;i++){
+    if((await f.invoke('MemoryIndexRead',{indexId:result.index.id})).range.completed) return;
+    await new Promise(r=>setTimeout(r,10));
+  }
+  assert.fail('background completion missing');
+});

@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { taskDelivery } from './delivery.js';
 import type { MatterStore } from './matter.js';
 import type { MatterController } from './controller.js';
 
@@ -43,6 +44,7 @@ export function registerDelegation(ctx: any, directory: string, store: MatterSto
     wakes: m.wakes, revision: m.revision, lastError: m.lastError,
     // A read is not a delivery receipt. Actual user communication stays in the parent Session.
     updates: store.updates(m.id).slice(0, 10).map(({ id, text, createdAt }) => ({ id, text, createdAt })) });
+  const delivery = taskDelivery(ctx, db, store, controller);
   const register = (name: string, description: string, parameters: any, write: boolean, impl: any) => ctx.tools.register({
     name, description, parameters, discovery: 'direct', categoryHint: write ? 'file_write' : 'read',
     executionSemantics: write ? 'exclusive_step' : 'parallel',
@@ -51,6 +53,23 @@ export function registerDelegation(ctx: any, directory: string, store: MatterSto
       return JSON.parse(JSON.stringify(await impl(parameters.parse(input), call)));
     },
   });
+  register('MatterOverview', 'Read this conversation tasks, feedback status and unassigned legacy tasks. Does not adopt or change anything.', z.object({}), false,
+    (_: any, call: any) => {
+      const owner = call.sessionId;
+      const rows = db.prepare('SELECT * FROM delegations').all();
+      return { items: all(owner).map(r => store.forSession(String(r.session))).filter(Boolean).map(describe),
+        legacy: store.list().filter(m => !rows.some(r => r.session === m.sessionId)).map(describe),
+        notifications: delivery.status(owner) };
+    });
+  register('MatterAdopt', 'Assign an unassigned legacy task to this conversation only on an explicit user request. Never steal another conversation task.', z.object({ id: z.string() }), true,
+    (input: any, call: any) => {
+      const owner = call.sessionId, m = store.get(input.id).matter;
+      const row = db.prepare('SELECT * FROM delegations WHERE session=?').get(m.sessionId);
+      if (row && row.owner !== owner) throw Error('此任务已属于另一段对话，不能直接接管。');
+      if (!row) db.prepare('INSERT INTO delegations VALUES(?,?,?,?,?)')
+        .run(owner, `adopt:${m.id}`, m.sessionId, m.title, m.request);
+      return describe(m);
+    });
   register('MatterDelegate', 'Delegate a concrete authorized task to an independent persistent Matter Session. It works immediately, waits only when necessary, and can finish in one turn. Preserve the user goal, constraints and authorized scope. First check MatterTasks for existing work. Reuse taskKey only for retries of the same request. Do not delegate ordinary conversation or manufacture tasks from historical text.',
     z.object({ taskKey: z.string().trim().min(1).max(200), title: z.string().trim().min(1).max(120), request: z.string().trim().min(1).max(8000) }), true,
     async (input: any, call: any) => {

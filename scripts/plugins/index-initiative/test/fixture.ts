@@ -27,24 +27,30 @@ import * as Main from '../.artifacts/main-api.mjs';
 export async function fixture(options: any = {}) {
   const root = await mkdtemp(join(tmpdir(), 'initiative-test-'));
   const ctx = new Main.Context(), agents = new Main.PluginAgentService(ctx);
+  new Main.PluginSourceService(ctx, agents);
+  {
+    const llm = new Main.PluginLlmService(ctx, agents);
+    llm.bindRuntime({ generate: async () => ({ text: JSON.stringify({ approved: true, feedback: 'Controlled review accepted' }), modelId: 'fixture-review' }) });
+  }
   const tools = new Main.PluginToolService(ctx, { agents }), prompts = new Main.PluginSystemPromptService(ctx);
   const turns = new Main.PluginTurnFinishService(ctx), query = new Main.PluginSessionQueryService(ctx, agents);
   const sessions = new Map<string, any[]>([
     ['project', [{ id: 'deadline', type: 'user', text: 'Demo is Friday; prepare a backup checklist if delivery slips.' }]],
     ['supplier', [{ id: 'promise', type: 'assistant', text: 'Supplier promises delivery Thursday.' }]],
   ]);
-  query.bindRuntime({ list: async () => [], read: async () => undefined, search: async () => ({ items: [] }),
+  query.bindRuntime({ list: async () => [], read: async (id: string) => workers.has(id) ? { session: { id, cwd: root }, messages: [] } : undefined, search: async () => ({ items: [] }),
     historyList: async () => [...sessions].map(([id, messages]) => ({ id, title: id, historyRevision: JSON.stringify(messages) })),
     historyRead: async (id: string) => ({ session: { id }, messages: sessions.get(id) }),
   });
   const workers = new Map<string, any>([['owner', { status: 'idle', transcript: [] }]]); let runner: any; let indexRunner: any; let beforeRun: any; let queued = false; let cancels = 0;
   const invokeAs = async (sessionId: string, name: string, input: any, turnId = 'foreground') => {
     const tool = tools.resolve(sessionId, []).tools.find((t: any) => t.name === name); assert.ok(tool, name);
-    return tool.impl(tool.parameters.parse(input), { sessionId, turnId, toolCallId: randomUUID(), cwd: root, abortSignal: new AbortController().signal, permissionMode: 'default' });
+    return tool.impl(tool.parameters.parse(name === 'MemoryIndexCreate' ? { background: false, ...input } : input), { sessionId, turnId, toolCallId: randomUUID(), cwd: root, abortSignal: new AbortController().signal, permissionMode: 'default' });
   };
   agents.bindRuntime({
     create: async (input: any) => { assert.equal(input.background, true); const id = randomUUID(); workers.set(id, { status: 'idle' }); return { id, sessionId: id, root: false }; },
     resume: async ({ sessionId }: any) => ({ id: sessionId, sessionId, root: false }),
+    inbox: async () => [],
     transcript: async (id: string) => workers.get(id)?.transcript ?? [],
     snapshot: async (id: string) => ({ agent: { status: workers.get(id)?.status ?? 'idle' } }),
     cancel: async (id: string) => { cancels++; workers.get(id).status = 'idle'; },
@@ -80,14 +86,17 @@ export async function fixture(options: any = {}) {
   const install = async (directory: string, id: string, config: any, bundle?: string) => {
     await data.mutate({ extensionId: id, scopeId: 'profile' }, 'storage', [{ key: 'data-directory', value: join(root, id) }]);
     const target = join(root, id + '-package'); await mkdir(join(target, 'dist'), { recursive: true });
-    for (const file of ['maka.extension.json', 'dist/host.mjs']) await copyFile(join(directory, file), join(target, file));
+    for (const file of ['maka.extension.json', 'dist/host.mjs', ...(id !== 'dev.maka.memory-network' ? ['dist/client.js'] : [])]) await copyFile(join(directory, file), join(target, file));
     const patch = JSON.parse(await readFile(join(directory, 'maka.composition.json'), 'utf8')); patch[0].entry.config = config;
     await writeFile(join(target, 'maka.composition.json'), JSON.stringify(patch));
     const result = await platform.installPackage(bundle ?? target); assert.deepEqual(result.failures, []);
   };
   await install(resolve('../memory-network'), 'dev.maka.memory-network', { tickMs: 60000, runTimeoutMs: 5000 });
+  if (options.matters) await install(resolve('../proactive-matters'), 'dev.maka.proactive-matters', { tickMs: 20, runTimeoutMs: 5000 });
   await install(resolve('.'), 'dev.maka.index-initiative', { tickMs: options.tickMs ?? 10, runTimeoutMs: options.runTimeoutMs ?? 5000 }, options.bundle);
-  return { root, ctx, tools, turns, prompts, workers, sessions, invokeAs, cancels: () => cancels,
+  if (options.matters) await until(async () => { try { await invokeAs('owner', 'MatterOverview', {}); return true; } catch { return false; } });
+  return { root, ctx, platform, tools, turns, prompts, workers, sessions, invokeAs,
+    remote: async (name: string, input: any = {}) => (await bridge.prepareInvoke({ extensionId: 'dev.maka.index-initiative' }, name, input))(), cancels: () => cancels,
     invoke: (name: string, input: any = {}) => invokeAs('owner', name, input),
     setIndexRunner: (fn: any) => { indexRunner = fn; },
     setRunner: (fn: any) => { runner = fn; }, setGate: (fn: any, q = false) => { beforeRun = fn; queued = q; },

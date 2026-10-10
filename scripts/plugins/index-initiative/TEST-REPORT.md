@@ -38,3 +38,13 @@ The next Flash run used the same snapshots/indexes, the broader proactive task a
 ## Notification-priority run
 
 One Flash turn completed using the same ten-session inputs and manual indexes, with notification selection/ranking as the primary task. The model prioritized memory-index progress, initiative quality, an unverified PR, and an unanswered research question. It did not create a draft and did submit a user-facing update. Its claim that only controlled tests existed contradicted the live-test evidence it then cited; self-evaluation artifact contamination also remained. Web access failed/timed out, so no PR status was verified. Local evidence: `.artifacts/live-priority/USER-UPDATE.md` and `RESULTS.md`. Build and typecheck passed.
+
+## 2026-10-10 — unified assistant usability
+
+- Initiative: 13 controlled tests; Memory: 52; Matters: 61 (including real Client module rendering and the three-plugin integration); shared UI: 6 relevant slot/navigation tests.
+- All three plugins built, type-checked and packaged. Shared UI built and type-checked. `git diff --check` passed.
+- Cold start binds one native conversation without model execution, heartbeat, archive import or index construction. Enabling in the UI explicitly checks immediately; failures remain visible and require explicit recovery.
+- The integrated test installs all three plugins in one Host test platform, creates an index in the background, delegates a separate task, commits wait, resumes on its timer, completes, and admits feedback into the owning conversation with initiative disabled.
+- Notification tests cover normal admission once, uncertain responses both with and without corresponding transcript evidence, and explicit legacy adoption without stealing another conversation's task.
+- Tests use controlled execution/review models and fixture sources. They validate wiring, persistence and UI behavior; this run did not reauthorize Feishu, import user data, call a paid model or evaluate recommendation quality.
+- The shipped desktop must include the generic sidebar `openSession` slot property. The tests do not mean an already-running older installed desktop has been upgraded.

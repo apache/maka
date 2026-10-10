@@ -187,7 +187,7 @@ export async function fixture(bundle = true, config: any = {}) {
   const invokeAs = async (sessionId: string, name: string, input: any) => {
     const tool = tools.resolve(sessionId, []).tools.find((x: any) => x.name === name);
     assert.ok(tool, name);
-    const result = await tool.impl(tool.parameters.parse(input), {
+    const result = await tool.impl(tool.parameters.parse(name === 'MemoryIndexCreate' ? { background: false, ...input } : input), {
       sessionId,
       turnId: 'turn-1',
       toolCallId: randomUUID(),

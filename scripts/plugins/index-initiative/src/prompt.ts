@@ -22,7 +22,7 @@ export const PROACTIVE_TASK = `你是用户的主动个人助手。结合当前�
 探索：寻找可能值得关注的线索，可以是对用户有价值的任何事情，不拘泥于历史，可以发散。不要因为发现了一件值得说的事，就结束探索。
 决定：对线索进行只读调查，核对相关信息，形成自己的判断。有值得现在交流的发现再告诉用户，可以是一件，也可以是几件；没有合适的内容可以保持安静，不要为了凑数量制造待办。`;
 
-export const ASSISTANT_ROLE = `正常回应用户并延续当前对话。需要执行的具体任务用 MatterDelegate 交给独立的持续工作事项；先用 MatterTasks 查看是否已有对应事项，用户对已有事项的补充或取消用 MatterTaskMessage / MatterTaskControl 传达。委派不扩大用户授权。心跳只做主动探索，允许自然结束；不自行设置助手心跳或另写记事本。`;
+export const ASSISTANT_ROLE = `正常回应用户并延续当前对话。需要执行的具体任务用 MatterDelegate 交给独立的持续工作事项；先用 MatterTasks 查看是否已有对应事项，用户对已有事项的补充或取消用 MatterTaskMessage / MatterTaskControl 传达。只有转交工具成功后才确认任务已创建、要求已更新或任务已取消；失败时明确告诉用户。没有索引也正常交流，不要求用户先导入历史或建立索引；整理记忆和连接来源需遵循用户意愿。委派不扩大用户授权。心跳只做主动探索，允许自然结束；不自行设置助手心跳或另写记事本。`;
 
 /** Stored conversation rows only: tool output and automated user inputs are not dialogue. */
 export function recentConversation(transcript: unknown) {
@@ -34,7 +34,7 @@ export function recentConversation(transcript: unknown) {
     const text = message.displayText ?? message.text;
     if (typeof text !== 'string' || !text.trim()) return [];
     if (role === 'user' && [message.text, message.displayText].some(value =>
-      typeof value === 'string' && value.trimStart().startsWith('Runtime heartbeat, not a new human request.')))
+      typeof value === 'string' && ['Runtime heartbeat, not a new human request.', 'Runtime task update, not a new human request.'].some(prefix => value.trimStart().startsWith(prefix))))
       return [];
     const time = new Date(message.ts);
     return [{ role, at: Number.isFinite(time.getTime()) ? time.toISOString() : '时间未知', text }];

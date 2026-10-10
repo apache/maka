@@ -62,3 +62,62 @@ test('uncertain Session creation is retained and retry never spawns a second wor
     assert.deepEqual((await f.remote('matters.list')).matters, []);
   } finally { await f.close(); await rm(f.root, { recursive: true, force: true }); }
 });
+
+test('completed task reaches its idle parent without heartbeat and is admitted only once', async () => {
+  const {d}=driver(), f=await fixture({driver:d}); let failure: unknown;
+  d.end('session-1');
+  const received: string[] = [];
+  try {
+    d.onFollowup=async(id,prompt,turn)=>{
+      if(id==='session-1'){ received.push(prompt); d.end(id); return; }
+      try {
+        const m=(await f.remote('matters.list')).matters.find((x:any)=>x.sessionId===id);
+        const v=await f.invoke('MatterRead',{activationId:m.activation.id},turn,id);
+        await f.invoke('MatterWriteFile',{path:v.files.draft,content:'测试验收通过，有明确结果。'},turn,id);
+        await f.invoke('MatterSettle',{expectedRevision:v.revision,stateFile:v.files.draft,disposition:'complete',reason:'已验收',summary:'读取验收记录',update:'验收已经通过。'},turn,id);
+      }catch(e){failure=e}finally{d.end(id)}
+    };
+    await f.invoke('MatterDelegate',{taskKey:'notify',title:'验收',request:'核对验收结果'});
+    await until(()=>failure||received.length>0); if(failure)throw failure;
+    assert.match(received[0], /Task notification ID:/);
+    assert.match(received[0], /验收已经通过/);
+    assert.match(received[0], /不是新的指令/);
+    await new Promise(r=>setTimeout(r,1300)); assert.equal(received.length,1);
+  }finally{await f.close();await rm(f.root,{recursive:true,force:true})}
+});
+
+test('legacy task adoption is explicit and cannot steal another conversation task', async () => {
+  const {d}=driver(), f=await fixture({driver:d});
+  try {
+    const v=await f.invoke('MatterStart',{title:'旧任务',request:'历史任务'});
+    const id = (await f.remote('matters.list')).matters[0].id;
+    assert.equal((await f.invoke('MatterOverview',{},'read','assistant')).legacy.length,1);
+    await f.invoke('MatterAdopt',{id},'adopt','assistant');
+    assert.equal((await f.invoke('MatterTasks',{},'read','assistant')).items.length,1);
+    assert.equal((await f.invoke('MatterOverview',{},'read','assistant')).legacy.length,0);
+    await assert.rejects(f.invoke('MatterAdopt',{id},'adopt','other'),/另一段对话/);
+  }finally{await f.close();await rm(f.root,{recursive:true,force:true})}
+});
+
+for (const accepted of [false, true]) test(`uncertain task notification reconciles without replay: accepted=${accepted}`, async () => {
+  const {d}=driver(),f=await fixture({driver:d});let failure:unknown,attempts=0;const history:any[]=[];
+  d.end('session-1');const original=d.runtime.followup;
+  d.runtime.followup=async(id:string,prompt:string,inv:any)=>{
+    if(id==='session-1') { attempts++; if(accepted)history.push({type:'user',text:prompt}); throw Error('transport response lost'); }
+    return original(id,prompt,inv);
+  };
+  d.runtime.transcript=async(id:string)=>id==='session-1'?history:[];
+  try{
+    d.onFollowup=async(id,_prompt,turn)=>{try{
+      const m=(await f.remote('matters.list')).matters.find((x:any)=>x.sessionId===id);
+      const v=await f.invoke('MatterRead',{activationId:m.activation.id},turn,id);
+      await f.invoke('MatterWriteFile',{path:v.files.draft,content:'已完成核对'},turn,id);
+      await f.invoke('MatterSettle',{expectedRevision:v.revision,stateFile:v.files.draft,disposition:'complete',reason:'已完成',summary:'已核对',update:'任务完成'},turn,id);
+    }catch(e){failure=e}finally{d.end(id)}};
+    await f.invoke('MatterDelegate',{taskKey:'uncertain-notice',title:'核对',request:'核对测试结果'});
+    await until(()=>failure||attempts===1);if(failure)throw failure;
+    await new Promise(r=>setTimeout(r,2200));assert.equal(attempts,1);
+    const notices=(await f.invoke('MatterOverview')).notifications;
+    assert.equal(notices.some((n:any)=>n.phase==='uncertain'),!accepted);
+  }finally{await f.close();await rm(f.root,{recursive:true,force:true})}
+});

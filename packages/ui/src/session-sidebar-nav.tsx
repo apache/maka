@@ -18,7 +18,7 @@
  */
 
 import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
-import { useSessionRailChrome } from './session-rail-context.js';
+import { useSessionRailChrome, useSessionRailData } from './session-rail-context.js';
 import { useSidebarUpdateProjection } from './sidebar-update-projection-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -31,6 +31,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 
 export function SessionSidebarNav() {
   const props = useSessionRailChrome();
+  const { onSelectSession } = useSessionRailData();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
@@ -67,7 +68,7 @@ export function SessionSidebarNav() {
       />
       <MakaClientSlotOutlet
         name="sidebar.navigation"
-        owner={{ collapsed: props.collapsed }}
+        owner={{ collapsed: props.collapsed, openSession: onSelectSession }}
       />
       {props.workHubEntry ? (
         <SideNavItem

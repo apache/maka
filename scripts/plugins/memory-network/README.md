@@ -24,7 +24,7 @@ Shared memory over retained originals. An index is a fallible navigation aid; or
 ## Lifecycle
 
 1. `MemoryRange` synchronizes available source versions and returns an exact opaque snapshot cursor (`to`). `from=null` describes existing information; with an index, `from` is that index's last completed snapshot. These are source-version boundaries, not dates or descriptions such as “the last 100 sessions.”
-2. `MemoryIndexCreate({name, instructions, cursor})` standardizes “organize this information according to this criterion.” A normal independent Maka Agent receives the criterion and exact range as an ordinary background task. It chooses searches, message types, grouping and tools itself. There is no batch queue, assigned chunk, event schema, prescribed directory tree or publication/acceptance workflow. The method returns the complete content directory, progress and any failure for the caller to inspect.
+2. `MemoryIndexCreate({name, instructions, cursor})` standardizes “organize this information according to this criterion.” A normal independent Maka Agent receives the criterion and exact range as an ordinary background task. It chooses searches, message types, grouping and tools itself. There is no batch queue, assigned chunk, event schema, prescribed directory tree or publication/acceptance workflow. By default it returns progress immediately while the worker continues independently; `MemoryIndexRead` exposes later completion or failure. Set `background=false` to wait for the full result when explicitly needed. Returning progress is not proof of completed coverage.
 3. Readers get the index and cursor information, then choose index documents, original links, session queries and incremental evidence to inspect. Reads and text edits never advance coverage.
 4. A configurable periodic schedule (12 hours by default) runs maintenance independently of foreground conversations. Source observations refresh when an index is read, when maintenance is due, or through MemoryRange/MemoryIndexMaintain. Index reads never launch the organizing Agent. No-change scheduled checks update observation time and schedule the next check without invoking a model. It receives the covered-to-current range, can revisit older originals, and maintains existing index content. `MemoryIndexCheckpoint` saves progress. The Agent sets `complete=true` after organizing the captured range, advancing coverage to that exact cursor. With `complete=false`, progress is saved without advancing coverage; after the turn finishes normally, the plugin sends a continuation to the same Session and fixed range. Completion quality is the Agent's judgment; there is no independent evaluator. Later arrivals remain incremental.
 
@@ -32,6 +32,7 @@ Shared memory over retained originals. An index is a fallible navigation aid; or
 
 | Tool | Purpose |
 | --- | --- |
+| `MemoryStatus` | Read permitted source registrations and last known index status without importing, scanning for changes or starting a model |
 | `MemorySources` | Discover permitted source adapters |
 | `MemoryRange` | Capture existing or incremental source boundaries without running a model |
 | `MemoryHistory` | Browse source/session records or query full messages within exact boundaries |

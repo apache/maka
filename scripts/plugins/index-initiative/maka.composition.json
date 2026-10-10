@@ -6,5 +6,13 @@
       "id": "index-initiative-host",
       "packageId": "dev.maka.index-initiative"
     }
+  },
+  {
+    "type": "insert",
+    "rootId": "desktop-ui",
+    "entry": {
+      "id": "index-initiative-ui",
+      "packageId": "dev.maka.index-initiative"
+    }
   }
 ]

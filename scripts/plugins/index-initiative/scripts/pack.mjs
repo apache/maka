@@ -30,6 +30,7 @@ for (const file of [
   'TEST-REPORT.md',
   'PROVENANCE.md',
   'dist/host.mjs',
+  'dist/client.js',
 ])
   await copyFile(file, stage + '/' + file);
 for (const name of ['LICENSE', 'NOTICE'])

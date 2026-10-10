@@ -24,10 +24,11 @@ import { z } from 'zod';
 import { InitiativeStore } from './store.js';
 import { InitiativeController } from './controller.js';
 import { ASSISTANT_ROLE, PROACTIVE_TASK } from './prompt.js';
+import { registerAssistant } from './assistant.js';
 export default {
   packageId: 'dev.maka.index-initiative',
   host: {
-    name: 'index-initiative', inject: ['agents', 'tools', 'storage', 'systemPrompt'],
+    name: 'index-initiative', inject: ['agents', 'tools', 'storage', 'systemPrompt', 'clientBridge', 'sessionQuery'],
     async apply(ctx: any, config: any = {}) {
       if (ctx.maka?.rootId !== 'profile') throw Error('Initiative requires profile scope');
       const limits = { tickMs: config.tickMs ?? 5000, runTimeoutMs: config.runTimeoutMs ?? 600000 };
@@ -47,6 +48,7 @@ export default {
       const activate = () => { controller.start(); return () => controller.close(); };
       if (ctx.makaTransaction) ctx.makaTransaction.stage('initiative-scheduler', activate, ctx);
       else ctx.effect(activate, 'initiative-scheduler');
+      registerAssistant(ctx, store, controller);
       const visible = (call: any) => {
         const s = store.get();
         if (s && s.sessionId !== call.sessionId) throw Error('Initiative is outside this conversation');

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "dev.maka.index-initiative",
-  "displayName": "主动观察",
-  "description": "跨多个记忆 index 核对原文并自主判断下一步。",
+  "displayName": "个人助手",
+  "description": "统一聊天入口、主动探索和任务反馈；无需预先导入历史。",
   "runtime": {
     "entry": "dist/host.mjs"
   },
@@ -23,5 +23,8 @@
   },
   "composition": {
     "patch": "maka.composition.json"
+  },
+  "client": {
+    "entry": "dist/client.js"
   }
 }
