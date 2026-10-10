@@ -135,6 +135,67 @@ export interface AttemptStore {
   runExclusive<T>(operation: () => Promise<T>): Promise<T>;
 }
 
+/** Shared admission runs before either local scheduling or fleet worker registration. */
+export async function prepareExperimentExecution(
+  spec: ExperimentSpec,
+  cells: readonly ExperimentCell[],
+  executor: ExperimentExecutor,
+  adapters: readonly SubjectAdapter[],
+): Promise<void> {
+  const subjects = new Map(adapters.map((subject) => [subject.kind, subject]));
+  if (executor.kind !== spec.executor.kind) throw new Error('executor kind mismatch');
+
+  for (const cell of cells) {
+    executor.validate?.(cell);
+    const subject = subjects.get(cell.subject.kind);
+    if (!subject) throw new Error(`missing subject adapter: ${cell.subject.kind}`);
+    subject.validate?.(cell);
+  }
+  for (const subject of subjects.values()) {
+    const cellsForSubject = cells.filter((cell) => cell.subject.kind === subject.kind);
+    if (cellsForSubject.length > 0) {
+      await subject.prepare?.({ spec, cells: cellsForSubject });
+    }
+  }
+}
+
+export interface CellExecutionEvidence {
+  execution: 'completed' | 'subject_failed' | 'not_started' | 'unknown';
+  verification: 'valid' | 'invalid' | 'not_run';
+  cleanup: 'confirmed' | 'unknown';
+}
+
+/** Execute once through the same lifecycle used by runExperiment, retaining stage evidence. */
+export async function executeExperimentCell(
+  executor: ExperimentExecutor,
+  subject: SubjectAdapter,
+  cell: ExperimentCell,
+  subjectCredentialNames: readonly string[],
+  signal?: AbortSignal,
+): Promise<{ result: EvalResult } & CellExecutionEvidence> {
+  const evidence: CellExecutionEvidence = {
+    execution: 'not_started',
+    verification: 'not_run',
+    cleanup: 'unknown',
+  };
+  const result = await executeCell(
+    executor,
+    subject,
+    cell,
+    subjectCredentialNames,
+    signal,
+    evidence,
+  );
+  // An executor can invalidate an otherwise completed verification during finalization.
+  if (
+    evidence.verification === 'valid' &&
+    (result.score === null || result.status === 'infra_failed' || result.status === 'indeterminate')
+  ) {
+    evidence.verification = 'invalid';
+  }
+  return { result, ...evidence };
+}
+
 export async function runExperiment(input: {
   readonly spec: ExperimentSpec;
   readonly store: AttemptStore;
@@ -151,20 +212,7 @@ export async function runExperiment(input: {
     const subjectCredentialNames = [
       ...new Set(input.spec.subjects.flatMap((subject) => subject.credentials)),
     ];
-    if (input.executor.kind !== input.spec.executor.kind) throw new Error('executor kind mismatch');
-
-    for (const cell of selected) {
-      input.executor.validate?.(cell);
-      const subject = subjects.get(cell.subject.kind);
-      if (!subject) throw new Error(`missing subject adapter: ${cell.subject.kind}`);
-      subject.validate?.(cell);
-    }
-    for (const subject of subjects.values()) {
-      const cellsForSubject = selected.filter((cell) => cell.subject.kind === subject.kind);
-      if (cellsForSubject.length > 0) {
-        await subject.prepare?.({ spec: input.spec, cells: cellsForSubject });
-      }
-    }
+    await prepareExperimentExecution(input.spec, selected, input.executor, input.subjects);
     await runTaskGroups(
       groupTaskCells(selected),
       input.spec.execution.maxConcurrentTaskGroups,
@@ -178,7 +226,7 @@ export async function runExperiment(input: {
           const subject = subjects.get(cell.subject.kind)!;
           if (selectSubjectResult(attempts, subject, cell)) return;
           const startedAt = (input.now ?? Date.now)();
-          const result = await executeCell(
+          const { result } = await executeExperimentCell(
             input.executor,
             subject,
             cell,
@@ -286,12 +334,14 @@ async function executeCell(
   subject: SubjectAdapter,
   cell: ExperimentCell,
   subjectCredentialNames: readonly string[],
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  evidence: CellExecutionEvidence,
 ): Promise<EvalResult> {
   try {
     const attempt = await executor.runAttempt(
       { cell, subjectCredentialNames, ...(signal ? { signal } : {}) },
       async ({ context, verify }) => {
+        evidence.execution = 'unknown';
         let execution: SubjectExecutionResult;
         try {
           execution = decodeSubjectExecution(
@@ -303,6 +353,12 @@ async function executeCell(
         } catch {
           return failure('infra_failed', 'subject execution failed');
         }
+        evidence.execution =
+          execution.status === 'completed'
+            ? 'completed'
+            : execution.status === 'failed'
+              ? 'subject_failed'
+              : 'unknown';
         if (
           signal?.aborted ||
           execution.status === 'infra_failed' ||
@@ -311,7 +367,10 @@ async function executeCell(
           return fromUncertainSubject(execution, signal?.aborted === true);
         }
         try {
+          evidence.verification = 'invalid';
           const verified = decodeVerification(await verify());
+          evidence.verification =
+            verified.status !== 'infra_failed' && verified.score !== null ? 'valid' : 'invalid';
           return {
             score: verified.score,
             usage: execution.usage,
@@ -338,7 +397,11 @@ async function executeCell(
         attempt.artifacts,
       );
     }
-    if (attempt.kind === 'settled') return decodeEvalResult(attempt.value);
+    if (attempt.kind === 'settled') {
+      const result = decodeEvalResult(attempt.value);
+      evidence.cleanup = 'confirmed';
+      return result;
+    }
     const failureReason =
       attempt.cause === 'host-cancelled'
         ? 'executor cancelled before verification completed'
