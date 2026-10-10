@@ -36,7 +36,7 @@
 import { stubConversationServices } from '../src/renderer/features/conversation/testing.js';
 import { useMemo, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { fireEvent, expect, userEvent, waitFor, within } from 'storybook/test';
 import { slashCommandsForSurface } from '@maka/core/slash-command-catalog';
 import { Composer, ToastProvider } from '@maka/ui';
 import {
@@ -488,7 +488,7 @@ export const SelectedSkillsLeaveThePickerUntilRemoved: Story = {
     // Reopen through the other entry point; it shares the same filtered list.
     await userEvent.click(overlay().getByRole('button', { name: '添加上下文' }));
     const contextMenu = overlay().getByRole('menu', { name: '添加上下文' });
-    await userEvent.click(within(contextMenu).getByRole('menuitem', { name: /选择技能/ }));
+    await fireEvent.click(within(contextMenu).getByRole('menuitem', { name: /选择技能/ }));
     const reopened = await overlay().findByRole('listbox', { name: MENU_LABEL });
     await expect(within(reopened).queryByRole('option', { name: /Project Only/ })).toBeNull();
     await expect(within(reopened).getByRole('option', { name: /Workspace Only/ })).toBeVisible();
@@ -626,7 +626,7 @@ export const ContextSwitchStartsWithALoadingCatalog: Story = {
 
     await waitFor(() => expect(skillsRow).toHaveAttribute('aria-busy', 'true'));
     await expect(skillsRow).not.toHaveAttribute('aria-disabled', 'true');
-    await userEvent.click(skillsRow);
+    await fireEvent.click(skillsRow);
     await waitFor(() => expect(menu).toBeVisible(), { timeout: 5_000 });
     await expect(editor(canvasElement)).toHaveTextContent('');
     await expect(page.queryByRole('listbox', { name: /技能/ })).not.toBeInTheDocument();
@@ -641,7 +641,7 @@ export const ContextSwitchStartsWithALoadingCatalog: Story = {
     const settledRow = within(
       page.getByRole('menu', { name: '添加上下文' }),
     ).getByRole('menuitem', { name: /选择技能/ });
-    await userEvent.click(settledRow);
+    await fireEvent.click(settledRow);
     await waitFor(
       () => expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible(),
       { timeout: 5_000 },

@@ -19,7 +19,7 @@
 
 import { useState, type CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
-import { expect, fn, spyOn, userEvent, waitFor, within } from 'storybook/test';
+import { fireEvent, expect, fn, spyOn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { SessionEvent } from '@maka/core/events';
@@ -1307,7 +1307,7 @@ export const ChangesBaseBranchPicker: Story = {
     const search = within(picker).getByRole('combobox');
     await userEvent.type(search, 'payments');
     await waitFor(() => expect(within(listbox).getAllByRole('option')).toHaveLength(1));
-    await userEvent.click(within(listbox).getByRole('option', { name: longName }));
+    await fireEvent.click(within(listbox).getByRole('option', { name: longName }));
     await waitFor(() => expect(trigger).toHaveTextContent(longName));
     await userEvent.click(trigger);
     const reopened = await body.findByRole('listbox');

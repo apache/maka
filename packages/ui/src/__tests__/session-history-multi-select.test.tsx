@@ -154,6 +154,9 @@ async function mount(
 ): Promise<Harness> {
   const original = {
     document: globalThis.document,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
     window: globalThis.window,
     IS_REACT_ACT_ENVIRONMENT: (
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -161,7 +164,7 @@ async function mount(
   };
   const { document, window } = parseHTML('<div id="root"></div>');
   installDomStubs(window);
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(globalThis, { document, window, Element: window.Element, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true });
 
   const sessions = options.sessions ?? ['a', 'b', 'c', 'd'].map((id) => summary(id));
   const opened: string[] = [];
@@ -469,6 +472,9 @@ test('a rail with no selection wired up behaves exactly as before', async () => 
   // story that renders rows alone — keeps plain clicks and gains no chrome.
   const original = {
     document: globalThis.document,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
     window: globalThis.window,
     IS_REACT_ACT_ENVIRONMENT: (
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -476,7 +482,7 @@ test('a rail with no selection wired up behaves exactly as before', async () => 
   };
   const { document, window } = parseHTML('<div id="root"></div>');
   installDomStubs(window);
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(globalThis, { document, window, Element: window.Element, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true });
   const sessions = ['a', 'b'].map((id) => summary(id));
   const opened: string[] = [];
   const container = document.querySelector('#root');

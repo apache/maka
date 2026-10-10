@@ -88,6 +88,9 @@ async function mountRail(
 ) {
   const original = {
     document: globalThis.document,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    Node: globalThis.Node,
     window: globalThis.window,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
@@ -95,7 +98,7 @@ async function mountRail(
   };
   const { document, window } = parseHTML('<div id="root"></div>');
   installDomStubs(window);
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  Object.assign(globalThis, { document, window, Element: window.Element, HTMLElement: window.HTMLElement, Node: window.Node, IS_REACT_ACT_ENVIRONMENT: true });
 
   const moves: Array<{ sessionId: string; projectId: string | null }> = [];
   const data: SessionRailData = {
