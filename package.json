@@ -129,8 +129,8 @@
     "yaml": "2.9.1"
   },
   "allowScripts": {
-    "@astryxdesign/cli@0.6.3": false,
-    "@astryxdesign/core@0.6.3": false,
+    "@astryxdesign/cli@0.6.6": false,
+    "@astryxdesign/core@0.6.6": false,
     "@jackwener/opencli@1.8.8": false,
     "electron-winstaller@5.4.0": true,
     "esbuild@0.28.2": true,
