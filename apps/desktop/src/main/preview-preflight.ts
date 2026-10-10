@@ -250,7 +250,7 @@ export function classifyLoopbackEndpoint(input: {
       status: 'verified',
       evidence: `HEAD / at ${input.origin} answered with HTTP ${probe.status} to the Desktop main process.`,
       boundary:
-        'An answer proves a listener at this origin and nothing more: not that any particular page exists there, not that it loads, and not that the embedded browser shares this loopback namespace.',
+        'An answer proves a listener at this origin on the Desktop machine and nothing more: not that any particular page exists there, not that it loads, and, when the Runtime Host runs remotely, not that the listener is the server the agent started.',
     };
   }
   // The rule this whole tool exists for: a connection outcome can produce

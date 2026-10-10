@@ -25,9 +25,11 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import type { MakaTool, MakaToolContext } from '@maka/runtime/tool-runtime';
 import { parseNavigable } from '../browser/logic.js';
 import {
@@ -160,6 +162,9 @@ describe('preview preflight capability classification', () => {
     assert.equal(capability.status, 'verified');
     assert.match(capability.evidence, /HTTP 404/u);
     assert.match(capability.boundary ?? '', /not that any particular page exists there/u);
+    // A remote Runtime Host's server and the Desktop loopback are different machines.
+    assert.match(capability.boundary ?? '', /on the Desktop machine/u);
+    assert.match(capability.boundary ?? '', /Runtime Host runs remotely/u);
   });
 
   it('never turns a failed connection into an unsupported capability', () => {
@@ -310,6 +315,24 @@ describe('artifact preview offer', () => {
     // The handoff may only name a tool this same offer grants.
     const named = names.filter((name) => ARTIFACT_PREVIEW_HANDOFF.includes(name));
     assert.deepEqual(named, ['ArtifactPreview']);
+  });
+
+  it('is the toolset Desktop boot publishes for the artifact preview offer', () => {
+    // Boot cannot be constructed in a unit test, so pin its wiring from source,
+    // as main-startup-lifetime.test.ts does for other boot contracts. Without
+    // this, boot could stop publishing the preflight and no test would fail.
+    const boot = readFileSync(
+      fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
+      'utf8',
+    );
+    const offer = boot.indexOf("offerId: 'desktop_artifact_preview'");
+    const next = boot.indexOf('offerId:', offer + 1);
+    assert.ok(offer >= 0 && next > offer, 'boot declares the desktop_artifact_preview offer');
+    assert.match(
+      boot.slice(offer, next),
+      /tools: buildArtifactPreviewOfferTools\(\{\s*preflight: createPreviewPreflightAuthority\(\),/u,
+      'the offer publishes the preflight from the production authority',
+    );
   });
 });
 
