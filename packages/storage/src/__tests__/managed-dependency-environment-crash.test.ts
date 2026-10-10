@@ -172,7 +172,11 @@ function dependencySource() {
 async function waitForChildReady(child: ChildProcess): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let output = '';
-    const timeout = setTimeout(() => finish(new Error('owner child did not become ready')), 15_000);
+    let diagnostics = '';
+    const timeout = setTimeout(
+      () => finish(new Error(`owner child did not become ready: ${diagnostics}`)),
+      15_000,
+    );
     const finish = (error?: Error) => {
       clearTimeout(timeout);
       child.stdout?.off('data', onData);
@@ -186,9 +190,14 @@ async function waitForChildReady(child: ChildProcess): Promise<void> {
       output += chunk.toString('utf8');
       if (output.includes('READY\n')) finish();
     };
-    const onErrorData = (chunk: Buffer) => finish(new Error(chunk.toString('utf8')));
+    // READY is the startup protocol; stderr may contain Node 22 SQLite warnings.
+    // Keep bounded diagnostics for exit/timeout failures without rejecting warnings.
+    const onErrorData = (chunk: Buffer) => {
+      diagnostics = (diagnostics + chunk.toString('utf8')).slice(-8_192);
+    };
     const onError = (error: Error) => finish(error);
-    const onExit = (code: number | null) => finish(new Error(`owner child exited early: ${code}`));
+    const onExit = (code: number | null) =>
+      finish(new Error(`owner child exited early: ${code}: ${diagnostics}`));
     child.stdout?.on('data', onData);
     child.stderr?.on('data', onErrorData);
     child.on('error', onError);
