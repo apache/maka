@@ -71,6 +71,16 @@
       "dataDirectory": {
         "type": "string",
         "description": "CLI 消息缓存基础目录，首次写入 message-cache-directory；账号/应用子目录独立，留空自动创建。"
+      },
+      "syncIntervalMinutes": {
+        "type": "number",
+        "default": 30,
+        "description": "用户开启定期同步后的默认间隔；安装时不自动开启。"
+      },
+      "syncOverlapHours": {
+        "type": "number",
+        "default": 24,
+        "description": "定期同步重查最近小时数；不保证窗口之前的修改或删除。"
       }
     }
   },

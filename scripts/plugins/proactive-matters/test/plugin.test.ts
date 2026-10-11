@@ -58,9 +58,15 @@ test('latest main installs the real bundle; same session wakes, refreshes files,
     request: '文件通过检查后完成',
   });
   assert.ok(first.activationId);
-  const finishContext = { sessionId: 'session-1', turnId: 'turn-initial', signal: new AbortController().signal };
+  const finishContext = {
+    sessionId: 'session-1',
+    turnId: 'turn-initial',
+    signal: new AbortController().signal,
+  };
   assert.equal((await f.turns.evaluate(finishContext)).allow, false);
-  assert.deepEqual(await f.turns.evaluate({ ...finishContext, sessionId: 'ordinary-session' }), { allow: true });
+  assert.deepEqual(await f.turns.evaluate({ ...finishContext, sessionId: 'ordinary-session' }), {
+    allow: true,
+  });
   assert.equal((await f.platform.clientSnapshot()).entries.length, 1);
   const prompt = await f.systemPrompt.assemble(
     { sessionId: 'session-1', turnId: 'turn-initial', cwd: f.root },
@@ -233,6 +239,8 @@ test('ordinary Plan mode excludes every mutating Matter tool, including activati
     'MatterSettle',
     'MatterWriteFile',
     'MatterDelegate',
+    'MatterDelegationRecover',
+    'MatterFeedbackRetry',
     'MatterAdopt',
     'MatterTaskMessage',
     'MatterTaskControl',
@@ -245,10 +253,11 @@ test('ordinary Plan mode excludes every mutating Matter tool, including activati
     writes.sort(),
   );
   const selected = selectCollaborationTools({ mode: 'plan', tools, hasActiveExecution: false });
-  assert.deepEqual(
-    selected.map((tool) => tool.name).sort(),
-    ['MatterOverview', 'MatterReadFile', 'MatterTasks'],
-  );
+  assert.deepEqual(selected.map((tool) => tool.name).sort(), [
+    'MatterOverview',
+    'MatterReadFile',
+    'MatterTasks',
+  ]);
   assert.equal(
     selectCollaborationTools({ mode: 'agent', tools, hasActiveExecution: false }).length,
     tools.length,

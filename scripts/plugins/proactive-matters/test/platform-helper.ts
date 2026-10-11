@@ -103,6 +103,20 @@ export async function fixture(options: any = {}) {
   const driver = options.driver ?? new AgentDriver();
   if (!options.driver) driver.add();
   agents.bindRuntime(driver.runtime);
+  const query = new Main.PluginSessionQueryService(ctx, agents);
+  query.bindRuntime({
+    list: async () =>
+      [...driver.sessions].map(([id, s]: any) => ({
+        id,
+        title: s.name,
+        labels: s.labels,
+        parentSessionId: s.parentSessionId,
+        cwd: root,
+      })),
+    read: async (id: string) =>
+      driver.sessions.has(id) ? { session: { id, cwd: root }, messages: [] } : undefined,
+    search: async () => ({ items: [] }),
+  });
   const reviewCalls: any[] = [];
   const llm = new Main.PluginLlmService(ctx, agents);
   llm.bindRuntime({

@@ -58,7 +58,10 @@ test('assistant entry opens one Host-qualified native conversation; never render
     runtime: any,
     root: any,
     f: any;
-  let items: any[] = [];
+  let items: any[] = [],
+    indexes: any[] = [];
+  let sourceSync: any;
+  const recoveryCalls: any[] = [];
   const opened: string[] = [],
     calls: string[] = [];
   const ownerId = JSON.stringify(['host-one', 'assistant']);
@@ -100,6 +103,7 @@ test('assistant entry opens one Host-qualified native conversation; never render
       remote: {
         call: async (input: any) => {
           calls.push(input.method);
+          if (input.method === 'assistant.recover') recoveryCalls.push(input.input);
           if (input.method === 'assistant.bind')
             state = {
               sessionId: 'assistant',
@@ -123,7 +127,8 @@ test('assistant entry opens one Host-qualified native conversation; never render
                   ? { state }
                   : {
                       state,
-                      memory: { installed: true, sources: [], indexes: [] },
+                      memory: { installed: true, sources: [], indexes },
+                      sourceSync,
                       tasks: { installed: true, items, legacy: [] },
                     },
           };
@@ -220,6 +225,42 @@ test('assistant entry opens one Host-qualified native conversation; never render
     await click('‹ 返回跟进列表');
     assert.equal(window.document.querySelector('.pa-detail'), null);
     assert.equal(created, 1, 'panel drilldown must not create another conversation');
+    sourceSync = {
+      installed: true,
+      range: { startTime: 1, endTime: 2 },
+      schedule: { enabled: false, error: '来源暂时离线' },
+    };
+    indexes = [
+      {
+        id: 'index-one',
+        name: '工作事项',
+        freshness: {
+          status: 'maintenance_failed',
+          lastMaintenanceError: '网络错误',
+          maintenanceEnabled: false,
+        },
+      },
+    ];
+    await click('记忆与来源');
+    await click('刷新记忆状态');
+    assert.match(window.document.body.textContent!, /来源同步需要处理/);
+    assert.match(window.document.body.textContent!, /更早消息的修改/);
+    await click('开启定期同步');
+    await click('同步一次');
+    await click('恢复维护');
+    await click('现在整理');
+    assert.deepEqual(
+      recoveryCalls.map((x) => [x.kind, x.action]),
+      [
+        ['source', 'enable'],
+        ['source', 'check'],
+        ['index', 'resume'],
+        ['index', 'maintain'],
+      ],
+    );
+    assert.equal(recoveryCalls[2].indexId, 'index-one');
+    assert.equal(created, 1);
+
     await React.act(async () => {
       await runtime.close();
       root.unmount();

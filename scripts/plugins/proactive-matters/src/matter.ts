@@ -73,6 +73,8 @@ export interface Matter {
   runCount: number;
   maxRuns: number;
   lastError: string | null;
+  retryAt?: number | null;
+  admissionFailures?: number;
   lastUpdate: string | null;
   createdAt: number;
   updatedAt: number;
@@ -188,6 +190,7 @@ export interface MatterStore {
     review?: MatterReview,
   ): Matter;
   finish(id: string, activationId: string, error?: string): void;
+  deferAdmission(id: string, activationId: string, reason: string): void;
   control(id: string, action: 'pause' | 'resume' | 'cancel' | 'check'): Matter;
   edit(id: string, revision: number, stateText: string): Matter;
   recover(): void;

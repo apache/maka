@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { createCliSources } from './cli-sources.js';
 import { createCli } from './cli.js';
 import { createFeishuSource } from './adapter.js';
+import { SyncSchedule } from './sync-schedule.js';
 import { MessageCache } from './message-cache.js';
 import { MessageSync, type MessageApi } from './message-sync.js';
 export default {
@@ -60,6 +61,7 @@ export default {
         throw Error('Invalid message source time scope');
       let cache: MessageCache;
       let sync: MessageSync;
+      let schedule: SyncSchedule;
       let api: MessageApi, verify: (caller: any) => Promise<void>;
       if (config.cliPath) {
         const stored = async (name: string, initial: () => string) => {
@@ -87,6 +89,7 @@ export default {
         cache = new MessageCache(directory, { ...config, containers, startTime, endTime }, key);
         ctx.effect(
           () => async () => {
+            await schedule?.close();
             await sync?.close();
             cache.close();
           },
@@ -179,10 +182,17 @@ export default {
       }))
         ctx.sources.register(s);
       sync = new MessageSync(cache!, api, verify);
+      schedule = new SyncSchedule(sync, config);
+      const activate = () => {
+        schedule.start();
+        return () => schedule.close();
+      };
+      if (ctx.makaTransaction) ctx.makaTransaction.stage('feishu-sync-schedule', activate, ctx);
+      else ctx.effect(activate, 'feishu-sync-schedule');
       for (const [name, description, parameters, impl] of [
         [
           'FeishuSync',
-          'Explicitly download messages in [startTime,endTime) Unix seconds. Code paginates chat history then searches IDs and mgets originals in batches <=50. Resumes partial jobs; reuses complete ranges unless refresh=true. Only complete batches publish. Does not guarantee all historical replies. No index model or scheduled sync.',
+          'Explicitly download messages in [startTime,endTime) Unix seconds. Code paginates chat history then searches IDs and mgets originals in batches <=50. Resumes partial jobs; reuses complete ranges unless refresh=true. Only complete batches publish. Does not guarantee all historical replies. No index model. FeishuSyncControl separately enables optional periodic source sync.',
           z.object({
             startTime: z.number().int().nonnegative(),
             endTime: z.number().int().nonnegative(),
@@ -195,9 +205,41 @@ export default {
           'Read one persisted sync job (latest if jobId is omitted): range, phase, pages, discovered/completed chats, downloaded messages, timestamps and errors. Does not download or organize an index.',
           z.object({ jobId: z.string().optional() }),
           async (input: any, caller: any) => {
-            await verify(caller);
-            return sync.status(input.jobId);
+            try {
+              await verify(caller);
+            } catch (error) {
+              const state = schedule.get();
+              // Expose control health, not cached message/job data, when identity cannot be checked.
+              return {
+                configured: true,
+                synchronized: null,
+                authorization: 'failed',
+                error: String(error),
+                schedule: {
+                  enabled: state.enabled,
+                  intervalMinutes: state.intervalMinutes,
+                  nextAt: state.nextAt,
+                  running: state.running,
+                },
+              };
+            }
+            return {
+              ...sync.status(input.jobId),
+              authorization: 'verified',
+              checkedAt: Date.now(),
+              schedule: schedule.get(),
+            };
           },
+        ],
+        [
+          'FeishuSyncControl',
+          'On user request enable/pause periodic message sync or check once. Default off; enabled cadence defaults to 30 minutes, overlap 24 hours. Resumes partial pages; never runs an index model. Pause stops future checks, preserving the current batch.',
+          z.object({
+            action: z.enum(['enable', 'pause', 'check']),
+            intervalMinutes: z.number().int().min(5).max(1440).optional(),
+            overlapHours: z.number().int().min(1).max(168).optional(),
+          }),
+          (input: any, caller: any) => schedule.control(input, caller.invocation),
         ],
       ] as const)
         ctx.tools.register({
@@ -205,8 +247,8 @@ export default {
           description,
           parameters,
           discovery: 'direct',
-          categoryHint: name === 'FeishuSync' ? 'file_write' : 'read',
-          executionSemantics: name === 'FeishuSync' ? 'exclusive_step' : 'parallel',
+          categoryHint: name !== 'FeishuSyncStatus' ? 'file_write' : 'read',
+          executionSemantics: name !== 'FeishuSyncStatus' ? 'exclusive_step' : 'parallel',
           impl: async (input: any, call: any) =>
             JSON.parse(JSON.stringify(await impl(parameters.parse(input), { invocation: call }))),
         });

@@ -84,7 +84,7 @@ Background workers use ordinary persistent Maka Sessions and inherit the initiat
 | `tickMs` | 30000 | Lightweight due-time checks; does not scan sources on each tick |
 | `intervalMs` | 43200000 | Default maintenance interval (12 hours), overridable per index |
 | `threshold` | 100 | Legacy configuration accepted but ignored; scheduling is time based |
-| `retryMs` | 60000 | Delay before retrying an unsuccessful round |
+| `retryMs` | 60000 | Initial failed-round retry delay; exponential backoff capped at one hour |
 | `runTimeoutMs` | 600000 | Timeout for each worker turn, reset on continuation |
 | `dataDirectory` | generated | Persisted plugin data location |
 
@@ -125,7 +125,7 @@ Current limits: metadata enumeration is still a scoped rescan rather than an ups
 
 Known pending changes only describe the last successful scan. Zero is never a promise that sources have not changed since. MemoryIndexList, MemoryIndexRead and every form of MemoryIndexContent automatically refresh observations before returning, preserving visibility checks. External sources enumerate metadata without eagerly reading bodies. Callers can pass coveredCursor as from and observedCursor as to directly to `MemoryHistory`; repeated reads do not consume the delta. No preliminary MemoryRange call is required. A failed scan returns knownPending=null and preserves the last successful cursor/check time; it is not evidence that sources have no new changes. Refreshing observations never moves completed coverage or changes index contents.
 
-The scheduler persists the next check and per-index override in the existing worker record. Each due round either resumes an unfinished immutable range, or captures a new range and only invokes the Agent if there are changes. Successful completion schedules the next check after the configured interval. No-change checks preserve the organization timestamp and index revision. Failures preserve coverage and schedule a retry. A database lease and per-index running map protect reloads and overlapping calls; unfinished work is resumed without absorbing later arrivals.
+The scheduler persists the next check and per-index override in the existing worker record. Each due round either resumes an unfinished immutable range, or captures a new range and only invokes the Agent if there are changes. Successful completion schedules the next check after the configured interval. No-change checks preserve the organization timestamp and index revision. Failures preserve coverage and schedule a retry with persisted exponential backoff (up to one hour); successful maintenance resets the failure counter. A database lease and per-index running map protect reloads and overlapping calls; unfinished work is resumed without absorbing later arrivals.
 
 `MemoryIndexControl({indexId,action:"configure",intervalMs:43200000})` adjusts an interval without unpausing. `action:"pause"` prevents later scheduled checks; `action:"resume"` schedules the next check after the interval. Existing paused workers stay paused on upgrade. Work arriving during a round is left for the next source check. During a round, entries may be partially updated while the completed coverage boundary stays unchanged; this is explicitly exposed as `partialUpdate`.
 

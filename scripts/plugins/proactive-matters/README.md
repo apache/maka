@@ -21,7 +21,7 @@
 
 独立 Host + Client 插件，位于 `scripts/plugins/proactive-matters/`。Maka runtime 只提供通用的 turn 结束前插件检查接口；事项状态与退出规则仍由插件实现，不依赖旧分支内置的 MatterService、Goal 或 Automation。
 
-从「长任务」窗口新建一个独立对话并委托持续跟进；插件保持这个 session，登记绝对时间唤醒，让普通 agent loop 每轮基于当前情况决定行动。普通对话不会自动加入持续跟进。状态与计划是先前判断的参考，不是必须照着执行的流程。
+从「个人助手」原生聊天通过 MatterDelegate 委托独立工作会话；插件保持这个 session，登记绝对时间唤醒，让普通 agent loop 每轮基于当前情况决定行动。普通对话不会自动加入持续跟进。状态与计划是先前判断的参考，不是必须照着执行的流程。
 
 ## Scope and acceptance criterion
 
@@ -124,12 +124,20 @@ Review storage and limits:
 
 MatterTasks 查询本会话的事项与最近报告；MatterTaskMessage 传达明确的用户补充；MatterTaskControl 操作指定事项。其他会话不可访问这些委派关系，Matter worker 不递归委派。已结束事项不会因旧 taskKey 重试而重新启动。
 
-本版由助手主动查询报告并在原会话回复，没有即时跨会话通知推送。任务报告不等于已送达用户，查询不会写送达回执。运行中的补充写入事项 inbox 并参与原有审核版本校验，未新增中途强制打断执行的机制。
+本版通过持久化反馈记录把进展送回发起会话。任务报告和 Host 接收都不等于用户已看到回复；查询不会写送达回执。运行中的补充写入事项 inbox 并参与原有审核版本校验，未新增中途强制打断执行的机制。
 
 ## Unified assistant entry
 
-The task panel is now read-only: it shows progress and waiting conditions without a second composer or Session creation. Send requests, amendments, pauses and cancellations through the personal-assistant native chat (`index-initiative`). Existing authorized worker Sessions and their histories remain intact.
+The task panel shows progress and waiting conditions without a second composer. It also opens the existing worker conversation and offers explicit pause/resume and recovery actions. Send requests, amendments, pauses and cancellations through the personal-assistant native chat (`index-initiative`). Existing authorized worker Sessions and their histories remain intact.
 
 `MatterOverview` exposes this conversation's tasks, notification health and unassigned legacy tasks. `MatterAdopt` assigns a legacy task only on explicit user request; it cannot take a task already owned by another conversation. The assistant panel offers this action for old tasks.
 
-A durable notification admission ledger forwards meaningful worker updates, completion and failures to the owning chat independently of initiative heartbeats. Busy or blocked chats defer admission. Equal progress is deduplicated, upgrades baseline old reports, and uncertain submission is reconciled from history rather than blindly replayed. Host admission is not a user-visible delivery receipt: the ordinary assistant still decides how to communicate the evidence. Read the main chat and any notification error in the panel when recovery is required.
+A durable notification ledger forwards meaningful worker updates, completion, permission/input requests and failures to the owning chat independently of initiative heartbeats. Busy or blocked chats defer admission. Equal progress is deduplicated, upgrades baseline old reports, and uncertain submission is reconciled from history rather than blindly replayed. Host admission is not a user-visible delivery receipt: the ordinary assistant still decides how to communicate the evidence. Read the main chat and any notification error in the panel when recovery is required.
+
+## Recovery and feedback closure
+
+- Delegation creation persists a unique identity before asking Host to create a Session. An interrupted creation remains visible in `MatterOverview.pending` / `MatterTasks.pending`. `MatterDelegationRecover` matches that exact identity and parent through Host session queries, then enrolls the same worker. No unique match means an explicit unresolved result, not another worker. Pre-upgrade unresolved `creating:` records without a matching Host identity cannot be automatically recovered.
+- Feedback records distinguish pending, accepted, awaiting_reply, uncertain and delivered. Delivered means visible assistant text in the corresponding conversation segment/turn, not that the human read it. Commentary, tool results and unrelated later replies are excluded. Explicit `MatterFeedbackRetry` rechecks history before retrying feedback; it never restarts work. Superseded pending updates and cancelled tasks are not replayed. Existing admitted upgrade records remain baselined.
+- A busy parent delays delivery. Task permissions/input remain in the worker's native UI and are surfaced in the assistant panel; the execution watchdog does not time out waiting for the user. The Host exposes pending interaction through its generic Agent snapshot, not a Matter-specific API.
+- Explicitly rejected, unbound wake admissions persist a backoff and keep the original inputs, without consuming execution budget. Unknown outcomes and interrupted executing tasks remain paused for inspection/resume. Recovery never blindly repeats external effects.
+- Background Sessions inherit the parent model, connection, thinking level and permission mode. Runtime-owned permission controls remain authoritative.

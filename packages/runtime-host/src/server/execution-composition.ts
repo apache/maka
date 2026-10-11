@@ -1697,6 +1697,10 @@ export async function createExecutionRuntimeHostComposition(
         id: session.id,
         ...(session.name ? { title: session.name } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
+        ...(session.labels?.length ? { labels: session.labels } : {}),
+        ...(session.model ? { model: session.model } : {}),
+        ...(session.llmConnectionSlug ? { llmConnectionSlug: session.llmConnectionSlug } : {}),
+        ...(session.executorId ? { executorId: session.executorId } : {}),
         ...(session.status ? { status: session.status } : {}),
         ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.statusUpdatedAt || session.lastMessageAt
@@ -1831,15 +1835,27 @@ export async function createExecutionRuntimeHostComposition(
     pluginAgents.bindRuntime({
       create: async (options, initiator) => {
         if (options.background) {
+          if (
+            options.labels &&
+            (options.labels.length > 16 ||
+              options.labels.some(
+                (label) => typeof label !== 'string' || !label.trim() || label.length > 200,
+              ))
+          )
+            throw new Error(
+              'Background Session labels must contain at most 16 non-empty strings of at most 200 characters',
+            );
           const parent = await stores.sessionStore.readHeaderSnapshot(initiator.sessionId);
           const session = await requireSessionManager(manager).createSession(
             {
               cwd: parent.cwd,
               name: options.name ?? 'Plugin background worker',
+              ...(options.labels ? { labels: [...options.labels] } : {}),
               parentSessionId: parent.id,
               llmConnectionSlug: parent.llmConnectionSlug,
               ...(parent.llmConnectionId ? { llmConnectionId: parent.llmConnectionId } : {}),
               ...(parent.model ? { model: parent.model } : {}),
+              ...(parent.thinkingLevel ? { thinkingLevel: parent.thinkingLevel } : {}),
               permissionMode: parent.permissionMode,
               ...(parent.executorId ? { executorId: parent.executorId } : {}),
               ...(parent.toolMode ? { toolMode: parent.toolMode } : {}),
@@ -1926,7 +1942,19 @@ export async function createExecutionRuntimeHostComposition(
       snapshot: async (id, initiator) => {
         const session = (await visibleAgentSessions(initiator)).find((item) => item.id === id);
         if (!session) throw new Error('Agent was not found');
-        return { agent: describeAgent(session), root: coordinator.readRootState(id) };
+        // A live root may be waiting on durable interaction while its Session still says running.
+        // Expose this through the generic plugin snapshot so background plugins can defer safely.
+        const pending = await stores.interactionStore.listPending({ sessionId: id });
+        const boundaries = await stores.sessionStore.listPendingSandboxBoundaryRequests(id);
+        const needsInput = pending.length > 0 || boundaries.length > 0;
+        return {
+          agent: {
+            ...describeAgent(session),
+            ...(needsInput ? { status: 'waiting_for_user' } : {}),
+          },
+          root: coordinator.readRootState(id),
+          pendingInteractions: pending.length + boundaries.length,
+        };
       },
       inbox: async (id, initiator) => {
         if (!(await visibleAgentSessions(initiator)).some((session) => session.id === id))

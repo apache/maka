@@ -437,6 +437,15 @@ export class MemoryController {
       ? (w.nextCheckAt ?? (w.lastCheckedAt || w.lastSuccess || Date.now()) + this.interval(indexId))
       : null;
   }
+  retryState(indexId: string) {
+    const failures = (this.store.worker(indexId)?.failures ?? 0) + 1;
+    return {
+      failures,
+      nextCheckAt:
+        Date.now() +
+        Math.min(3600000, (this.config.retryMs ?? 60000) * 2 ** Math.min(failures - 1, 6)),
+    };
+  }
   freshness(indexId: string, visible: string[], running = this.runs.has(indexId)) {
     const w = this.store.worker(indexId),
       work = this.store.work(indexId);
@@ -470,6 +479,9 @@ export class MemoryController {
                 : 'no_changes_at_last_check',
       partialUpdate: !!work && !work.completed,
       maintenanceEnabled: this.enabled(indexId),
+      startStatus: w?.startStatus ?? null,
+      continuationStopReason: w?.continuationStopReason ?? null,
+      retryFailures: w?.failures ?? 0,
       intervalMs: this.interval(indexId),
       nextCheckAt: this.nextCheck(indexId),
       notice:
@@ -689,7 +701,7 @@ export class MemoryController {
             ...this.store.worker(id),
             startStatus: 'failed',
             lastError: String(error),
-            nextCheckAt: Date.now() + (this.config.retryMs ?? 60000),
+            ...this.retryState(id),
           });
         return { status: 'failed', indexId, error: String(error) };
       })
@@ -814,6 +826,7 @@ export class MemoryController {
             ? Date.now()
             : this.store.worker(id).lastSuccess,
           lastError: null,
+          failures: 0,
           nextCheckAt: Date.now() + this.interval(id),
         });
     } catch (error) {
@@ -822,7 +835,7 @@ export class MemoryController {
         this.store.saveWorker(id, {
           ...this.store.worker(id),
           lastError: String(error),
-          nextCheckAt: Date.now() + (this.config.retryMs ?? 60000),
+          ...this.retryState(id),
         });
     }
     return {
@@ -875,6 +888,7 @@ export class MemoryController {
           this.store.saveWorker(indexId, {
             ...this.store.worker(indexId),
             lastError: undefined,
+            failures: 0,
             nextCheckAt: Date.now() + this.interval(indexId),
           });
           return {
@@ -931,13 +945,14 @@ Range ID: ${work.id}. Update existing entries and links when new evidence change
         ...this.store.worker(indexId),
         lastSuccess: Date.now(),
         lastError: undefined,
+        failures: 0,
         nextCheckAt: Date.now() + this.interval(indexId),
       });
     } catch (error) {
       this.store.saveWorker(indexId, {
         ...this.store.worker(indexId),
         lastError: String(error),
-        nextCheckAt: Date.now() + (this.config.retryMs ?? 60000),
+        ...this.retryState(indexId),
       });
       if (signal.aborted) await agent?.cancel().catch(() => {});
     }

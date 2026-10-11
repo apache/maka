@@ -41,7 +41,16 @@ export default {
   packageId: PACKAGE_ID,
   host: {
     name: 'proactive-matters',
-    inject: ['tools', 'agents', 'storage', 'systemPrompt', 'clientBridge', 'turns', 'llm'],
+    inject: [
+      'tools',
+      'agents',
+      'storage',
+      'systemPrompt',
+      'clientBridge',
+      'turns',
+      'llm',
+      'sessionQuery',
+    ],
     async apply(ctx: any, config: any = {}) {
       if (
         !Number.isSafeInteger(config.tickMs ?? 5000) ||

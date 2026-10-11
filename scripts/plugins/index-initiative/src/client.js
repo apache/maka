@@ -84,6 +84,15 @@ window.__MakaModuleLoader__.load({
           });
           return opening;
         };
+        const openTask = async (sessionId) => {
+          const host = await window.maka.runtimeHostProfiles?.getDefaultHost?.();
+          const matches = (await window.maka.sessions.list()).filter(
+            (s) =>
+              runtimeId(s.id) === sessionId && (!hostId(s.id) || hostId(s.id) === host?.hostId),
+          );
+          if (matches.length !== 1) throw Error('无法定位任务会话，请确认 Host 在线。');
+          navigate(matches[0].id);
+        };
         const time = (value) =>
           value
             ? new Date(value).toLocaleString('zh-CN', {
@@ -129,11 +138,12 @@ window.__MakaModuleLoader__.load({
             if (!visible) return;
             let live = true,
               timer,
-              readMemory = true;
+              readMemory = true,
+              polls = 0;
             const poll = async () => {
               try {
                 const value = await ctx.remote.call('assistant.status', {
-                  includeMemory: readMemory,
+                  includeMemory: readMemory || polls++ % 6 === 0,
                 });
                 if (live) {
                   setData((prior) => ({ ...prior, ...value }));
@@ -157,7 +167,7 @@ window.__MakaModuleLoader__.load({
             try {
               await fn();
               const value = await ctx.remote.call('assistant.status', {
-                includeMemory: false,
+                includeMemory: true,
               });
               setData((prior) => ({ ...prior, ...value }));
             } catch (e) {
@@ -166,6 +176,7 @@ window.__MakaModuleLoader__.load({
               setBusy(false);
             }
           };
+          const recover = (input) => act(() => ctx.remote.call('assistant.recover', input));
           const control = (action) =>
             act(() =>
               ctx.remote.call('assistant.control', {
@@ -178,7 +189,8 @@ window.__MakaModuleLoader__.load({
           if (!visible) return null;
           const state = data?.state,
             memory = data?.memory,
-            tasks = data?.tasks;
+            tasks = data?.tasks,
+            sourceSync = data?.sourceSync;
           const task = tasks?.items.find((t) => t.id === selected);
           const items = tasks?.items || [];
           const active = items.filter((t) => !['completed', 'cancelled'].includes(t.status));
@@ -224,6 +236,8 @@ window.__MakaModuleLoader__.load({
               ),
             );
           const memoryIssue =
+            sourceSync?.error ||
+            sourceSync?.schedule?.error ||
             memory?.error ||
             memory?.indexes?.some(
               (i) =>
@@ -317,6 +331,14 @@ window.__MakaModuleLoader__.load({
                 'section',
                 { className: 'pa-settings', id: 'pa-settings' },
                 h('h3', {}, '主动发现'),
+                h('p', { className: 'pa-muted' }, data?.readiness?.notice),
+                h(
+                  'small',
+                  {},
+                  `当前模型：${data?.readiness?.model || data?.readiness?.executor || '请在聊天中选择'}${data?.readiness?.connection ? ' · ' + data.readiness.connection : ''}`,
+                ),
+                data?.readiness?.sessionError &&
+                  h('p', { className: 'pa-error' }, '助手会话读取失败，请检查 Host 连接。'),
                 h(
                   'p',
                   {},
@@ -377,10 +399,39 @@ window.__MakaModuleLoader__.load({
                 { role: 'alert', className: 'pa-error pa-inset' },
                 '任务读取失败：' + tasks.error,
               ),
+            ...(tasks?.pending || []).map((p) =>
+              h(
+                'div',
+                { key: p.taskKey, className: 'pa-inset' },
+                h('strong', {}, p.title),
+                h('p', {}, p.status === 'creating' ? '正在创建任务' : p.message),
+                h(
+                  'button',
+                  {
+                    disabled: busy || p.status === 'creating',
+                    onClick: () => recover({ kind: 'delegation', taskKey: p.taskKey }),
+                  },
+                  '核对并恢复',
+                ),
+              ),
+            ),
             ...(tasks?.notifications || [])
               .filter((n) => n.error)
               .map((n, i) =>
-                h('p', { key: i, className: 'pa-error pa-inset' }, '任务反馈：' + n.error),
+                h(
+                  'div',
+                  { key: i, className: 'pa-inset' },
+                  h('p', { className: 'pa-error' }, '任务反馈：' + n.error),
+                  n.id &&
+                    h(
+                      'button',
+                      {
+                        disabled: busy,
+                        onClick: () => recover({ kind: 'feedback', notificationId: n.id }),
+                      },
+                      '核对并重试反馈',
+                    ),
+                ),
               ),
             task
               ? h(
@@ -392,6 +443,34 @@ window.__MakaModuleLoader__.load({
                     '‹ 返回跟进列表',
                   ),
                   h('h3', {}, task.title),
+                  ['waiting_for_user', 'blocked'].includes(task.runtimeStatus) &&
+                    h('p', { className: 'pa-error' }, '需要授权或补充信息，请打开任务会话处理。'),
+                  task.retryAt && h('p', {}, `等待 Host 接收，下次重试 ${time(task.retryAt)}`),
+                  task.runtimeError &&
+                    h('p', { className: 'pa-error' }, '任务会话暂时不可用，请检查 Host。'),
+                  h(
+                    'div',
+                    { className: 'pa-actions' },
+                    h(
+                      'button',
+                      { disabled: busy, onClick: () => act(() => openTask(task.sessionId)) },
+                      '打开任务会话',
+                    ),
+                    !['completed', 'cancelled'].includes(task.status) &&
+                      h(
+                        'button',
+                        {
+                          disabled: busy,
+                          onClick: () =>
+                            recover({
+                              kind: 'task',
+                              id: task.id,
+                              action: task.status === 'paused' ? 'resume' : 'pause',
+                            }),
+                        },
+                        task.status === 'paused' ? '恢复任务' : '暂停任务',
+                      ),
+                  ),
                   h(
                     'div',
                     { className: 'pa-step' },
@@ -508,6 +587,73 @@ window.__MakaModuleLoader__.load({
                 'section',
                 { className: 'pa-memory', id: 'pa-memory' },
                 h('h3', {}, '信息与记忆'),
+                sourceSync?.installed &&
+                  h(
+                    'div',
+                    {},
+                    h('strong', {}, '飞书消息同步'),
+                    h(
+                      'p',
+                      {},
+                      sourceSync.schedule?.running
+                        ? '同步中 · 仅完整批次发布'
+                        : sourceSync.schedule?.enabled
+                          ? `定期同步已开启 · 每 ${sourceSync.schedule.intervalMinutes} 分钟`
+                          : '定期同步未开启',
+                    ),
+                    h(
+                      'small',
+                      {},
+                      `最近成功 ${time(sourceSync.schedule?.lastSuccessAt || (sourceSync.status === 'complete' ? sourceSync.finishedAt : null))} · 下次 ${sourceSync.schedule?.enabled ? time(sourceSync.schedule.nextAt) : '未安排'}`,
+                    ),
+                    sourceSync.range &&
+                      h(
+                        'p',
+                        { className: 'pa-muted' },
+                        `最近批次范围 ${time(sourceSync.range.startTime * 1000)} — ${time(sourceSync.range.endTime * 1000)}`,
+                      ),
+                    (sourceSync.error || sourceSync.schedule?.error) &&
+                      h(
+                        'details',
+                        { className: 'pa-error' },
+                        h('summary', {}, '来源同步需要处理'),
+                        h('p', {}, sourceSync.error || sourceSync.schedule?.error),
+                        h(
+                          'small',
+                          {},
+                          '授权或账号问题请在飞书 CLI 重新登录并核对扩展账号设置，然后重试。',
+                        ),
+                      ),
+                    h(
+                      'div',
+                      { className: 'pa-actions' },
+                      h(
+                        'button',
+                        {
+                          disabled: busy,
+                          onClick: () =>
+                            recover({
+                              kind: 'source',
+                              action: sourceSync.schedule?.enabled ? 'pause' : 'enable',
+                            }),
+                        },
+                        sourceSync.schedule?.enabled ? '暂停同步' : '开启定期同步',
+                      ),
+                      h(
+                        'button',
+                        {
+                          disabled: busy || sourceSync.schedule?.running,
+                          onClick: () => recover({ kind: 'source', action: 'check' }),
+                        },
+                        '同步一次',
+                      ),
+                    ),
+                    h(
+                      'small',
+                      {},
+                      '开启后默认每 30 分钟检查最近 24 小时；休眠后补查缺口。不会导入全部历史，也不保证更早消息的修改已同步。',
+                    ),
+                  ),
                 h(
                   'button',
                   {
@@ -529,7 +675,11 @@ window.__MakaModuleLoader__.load({
                   h(
                     React.Fragment,
                     {},
-                    h('p', { className: 'pa-muted' }, '历史导入可选；这里不会自动导入或启动整理。'),
+                    h(
+                      'p',
+                      { className: 'pa-muted' },
+                      '历史导入可选；打开面板不会自动导入或启动整理；点击「现在整理」会运行模型。',
+                    ),
                     h(
                       'p',
                       {},
@@ -561,6 +711,46 @@ window.__MakaModuleLoader__.load({
                         'div',
                         { key: i.id, className: 'pa-index' },
                         h('strong', {}, i.name || '不可访问的索引'),
+                        i.freshness &&
+                          h(
+                            'small',
+                            {},
+                            `来源观察 ${time(i.freshness.lastCheckedAt)} · 下次整理 ${i.freshness.maintenanceEnabled ? time(i.freshness.nextCheckAt) : '已暂停'}`,
+                          ),
+                        i.freshness?.lastMaintenanceError &&
+                          h(
+                            'details',
+                            { className: 'pa-error' },
+                            h('summary', {}, '整理需要处理'),
+                            h('p', {}, i.freshness.lastMaintenanceError),
+                          ),
+                        !i.unavailable &&
+                          h(
+                            'div',
+                            { className: 'pa-actions' },
+                            h(
+                              'button',
+                              {
+                                disabled: busy,
+                                onClick: () =>
+                                  recover({
+                                    kind: 'index',
+                                    indexId: i.id,
+                                    action: i.freshness?.maintenanceEnabled ? 'pause' : 'resume',
+                                  }),
+                              },
+                              i.freshness?.maintenanceEnabled ? '暂停维护' : '恢复维护',
+                            ),
+                            h(
+                              'button',
+                              {
+                                disabled: busy || i.freshness?.status === 'updating',
+                                onClick: () =>
+                                  recover({ kind: 'index', indexId: i.id, action: 'maintain' }),
+                              },
+                              '现在整理',
+                            ),
+                          ),
                         h(
                           'small',
                           {},

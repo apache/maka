@@ -45,9 +45,7 @@ async function setup(t: any, config: any = {}) {
     await f.close();
   });
   const worker = () =>
-    JSON.parse(
-      String(db.prepare('select payload from workers where index_id=?').get(id)!.payload),
-    );
+    JSON.parse(String(db.prepare('select payload from workers where index_id=?').get(id)!.payload));
   const patch = (x: any) =>
     db
       .prepare('update workers set payload=? where index_id=?')
@@ -60,7 +58,9 @@ test('all index reads refresh observations without organizing or consuming incre
   assert.equal(first.freshness.intervalMs, 43200000);
   const reads = f.reads.length;
   let modelCalls = 0;
-  f.setBeforeWorker(async () => { modelCalls++; });
+  f.setBeforeWorker(async () => {
+    modelCalls++;
+  });
   const entryPoints = [
     read,
     async () => (await f.invoke('MemoryIndexList', {})).find((x: any) => x.id === id),
@@ -80,7 +80,11 @@ test('all index reads refresh observations without organizing or consuming incre
     assert.equal(observed.freshness.status, 'pending');
     assert.match(observed.freshness.notice, /索引读取会自动刷新来源范围/);
     assert.ok(observed.freshness.notice.includes(`coveredCursor="${first.coverage.cursor}"`));
-    const request = { from: observed.freshness.coveredCursor, to: observed.freshness.observedCursor, mode: 'messages' };
+    const request = {
+      from: observed.freshness.coveredCursor,
+      to: observed.freshness.observedCursor,
+      mode: 'messages',
+    };
     const delta = await f.invoke('MemoryHistory', request);
     assert.equal(delta.items.length, i + 1);
     assert.deepEqual((await f.invoke('MemoryHistory', request)).items, delta.items);
@@ -201,9 +205,7 @@ test('pause and interval survive plugin reload; explicit one-shot maintain does 
   assert.equal(paused.freshness.maintenanceEnabled, false);
   assert.equal(paused.freshness.intervalMs, 123456);
   assert.equal(paused.freshness.nextCheckAt, null);
-  f.sessions
-    .get('chat-b')!
-    .push({ id: 'more', type: 'user', text: 'Vendor contacted yesterday' });
+  f.sessions.get('chat-b')!.push({ id: 'more', type: 'user', text: 'Vendor contacted yesterday' });
   patch({ nextCheckAt: 0 });
   await sleep(70);
   assert.equal((await read()).maintenance.running, false);
@@ -292,9 +294,7 @@ test('an unrelated unavailable provider does not block discovery, local indexing
   });
   await f.invoke('MemoryRange', { sources: ['test.unavailable'] });
   offline = true;
-  assert.ok(
-    (await f.invoke('MemorySources', {})).some((s: any) => s.id === 'test.unavailable'),
-  );
+  assert.ok((await f.invoke('MemorySources', {})).some((s: any) => s.id === 'test.unavailable'));
   assert.ok(
     (await f.invoke('MemoryIndexList', {})).some((s: any) => s.id === id && !s.unavailable),
   );
@@ -310,12 +310,29 @@ test('an unrelated unavailable provider does not block discovery, local indexing
   assert.equal(second.backgroundFinished, true);
   await f.invoke('MemoryIndexMaintain', { indexId: id });
   assert.equal((await read()).maintenance.lastError, undefined);
-  await assert.rejects(
-    f.invoke('MemoryRange', { sources: ['test.unavailable'] }),
-    /signed out/,
-  );
+  await assert.rejects(f.invoke('MemoryRange', { sources: ['test.unavailable'] }), /signed out/);
   f.setIncognito(true);
   await assert.rejects(f.invoke('MemorySources', {}), /Incognito/);
   await assert.rejects(f.invoke('MemoryIndexList', {}), /Incognito/);
   await assert.rejects(f.invoke('MemoryOriginal', { ref: history.items[0].ref }), /Incognito/);
+});
+
+test('repeated maintenance failure backs off without changing coverage and resets after recovery', async (t) => {
+  const { f, first, id, worker } = await setup(t, { tickMs: 60000, retryMs: 100000 });
+  f.sessions.get('chat-b')!.push({ id: 'late', type: 'user', text: 'New evidence' });
+  f.setHistoryError(true);
+  await f.invoke('MemoryIndexMaintain', { indexId: id });
+  const firstRetry = worker();
+  assert.equal(firstRetry.failures, 1);
+  await f.invoke('MemoryIndexMaintain', { indexId: id });
+  const second = worker();
+  assert.equal(second.failures, 2);
+  assert.ok(second.nextCheckAt > firstRetry.nextCheckAt + 99000);
+  assert.equal(
+    (await f.invoke('MemoryIndexRead', { indexId: id })).freshness.coveredCursor,
+    first.coverage.cursor,
+  );
+  f.setHistoryError(false);
+  await f.invoke('MemoryIndexMaintain', { indexId: id });
+  assert.equal(worker().failures, 0);
 });

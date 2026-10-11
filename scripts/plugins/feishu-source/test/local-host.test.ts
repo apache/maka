@@ -118,6 +118,24 @@ console.log(JSON.stringify(args[0]==='auth'?status:{ok:true,identity:'user',data
   const chats = after.find((x) => x[2].endsWith('/chats'));
   assert.equal(JSON.parse(chats[chats.indexOf('--params') + 1]).types, 'p2p,group');
   assert.deepEqual(writes, []);
+  writeFileSync(
+    cli,
+    `#!${process.execPath}\nconsole.log(JSON.stringify({appId:'other',identities:{user:{openId:'other',status:'ready'}}}));\n`,
+    { mode: 0o700 },
+  );
+  const unavailable = await tools.find((x) => x.name === 'FeishuSyncStatus').impl({}, {});
+  assert.equal(unavailable.synchronized, null);
+  assert.equal(unavailable.authorization, 'failed');
+  assert.equal(
+    unavailable.jobId,
+    undefined,
+    'failed identity must not disclose cached job details',
+  );
+  assert.equal(typeof unavailable.schedule.enabled, 'boolean');
+  assert.equal(
+    (await tools.find((x) => x.name === 'FeishuSyncControl').impl({ action: 'pause' }, {})).enabled,
+    false,
+  );
 });
 
 test('initial CLI storage persists configured base directory and a 32-byte signing key', async (t) => {

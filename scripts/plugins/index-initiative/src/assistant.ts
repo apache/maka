@@ -65,13 +65,84 @@ export function registerAssistant(
         taskState.error = String(error);
       }
     }
+    let sourceState: any = { installed: !!tool('FeishuSyncStatus') };
+    if (includeMemory && sourceState.installed && state) {
+      try {
+        sourceState = { ...sourceState, ...(await invoke('FeishuSyncStatus')) };
+      } catch (error) {
+        sourceState.error = String(error);
+      }
+    }
+    let session: any, sessionError: string | undefined;
+    if (state) {
+      try {
+        session = await controller.asOwner(state, () => ctx.sessionQuery.read(state.sessionId));
+      } catch (error) {
+        sessionError = String(error);
+      }
+    }
     return {
       state,
+      ...(includeMemory ? { sourceSync: sourceState } : {}),
+      readiness: {
+        conversation: state ? 'bound' : 'not_bound',
+        memory: !!memory,
+        tasks: !!tasks,
+        model: session?.session?.model ?? null,
+        connection: session?.session?.llmConnectionSlug ?? null,
+        executor: session?.session?.executorId ?? null,
+        sessionError,
+        sessionAvailable: !!session,
+        notice:
+          '模型沿用当前聊天配置；请在聊天模型选择器确认连接。来源注册不代表授权或同步成功，历史导入可选。',
+      },
       ...(includeMemory ? { memory: memoryState } : {}),
       tasks: taskState,
       hostRequired: true,
     };
   };
+  // Fixed tool allowlist. The client cannot invoke arbitrary tools or supply a Session identity.
+  ctx.clientBridge.rpc({
+    name: 'assistant.recover',
+    invoke: (input: any) => {
+      const args = z
+        .discriminatedUnion('kind', [
+          z.object({
+            kind: z.literal('task'),
+            id: z.string(),
+            action: z.enum(['pause', 'resume', 'cancel', 'check']),
+          }),
+          z.object({ kind: z.literal('delegation'), taskKey: z.string() }),
+          z.object({ kind: z.literal('feedback'), notificationId: z.string() }),
+          z.object({
+            kind: z.literal('source'),
+            action: z.enum(['enable', 'pause', 'check']),
+            intervalMinutes: z.number().int().min(5).max(1440).optional(),
+          }),
+          z.object({
+            kind: z.literal('index'),
+            indexId: z.string(),
+            action: z.enum(['resume', 'pause', 'maintain']),
+          }),
+        ])
+        .parse(input);
+      controller.ready();
+      if (args.kind === 'task')
+        return invoke('MatterTaskControl', { id: args.id, action: args.action });
+      if (args.kind === 'delegation')
+        return invoke('MatterDelegationRecover', { taskKey: args.taskKey });
+      if (args.kind === 'feedback')
+        return invoke('MatterFeedbackRetry', { notificationId: args.notificationId });
+      if (args.kind === 'source')
+        return invoke('FeishuSyncControl', {
+          action: args.action,
+          ...(args.intervalMinutes ? { intervalMinutes: args.intervalMinutes } : {}),
+        });
+      if (args.action === 'maintain')
+        return invoke('MemoryIndexMaintain', { indexId: args.indexId, background: true });
+      return invoke('MemoryIndexControl', { indexId: args.indexId, action: args.action });
+    },
+  });
   ctx.clientBridge.rpc({ name: 'assistant.binding', invoke: () => ({ state: store.get() }) });
   ctx.clientBridge.rpc({ name: 'assistant.status', invoke: summary });
   ctx.clientBridge.rpc({
@@ -80,8 +151,18 @@ export function registerAssistant(
       const { sessionId } = z.object({ sessionId: z.string().min(1).max(300) }).parse(input);
       controller.ready();
       if (store.get()) return store.get();
-      // Use Host metadata, never a client-supplied cwd or a guessed Session identity.
-      const snapshot = await ctx.sessionQuery.read(sessionId);
+      // Bootstrap only a read invocation for the explicitly selected native Session.
+      // Persist its Host cwd; process.cwd() is never used to run assistant work.
+      const snapshot = await ctx.agents.withInvocation(
+        {
+          sessionId,
+          cwd: process.cwd(),
+          turnId: 'assistant-bind',
+          toolCallId: randomUUID(),
+          abortSignal: controller.abort.signal,
+        },
+        () => ctx.sessionQuery.read(sessionId),
+      );
       if (!snapshot?.session?.cwd) throw Error('无法读取助手会话，请确认对应 Host 在线后重试。');
       return store.bind({ sessionId, cwd: snapshot.session.cwd }, PROACTIVE_TASK);
     },

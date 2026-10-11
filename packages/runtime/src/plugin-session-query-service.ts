@@ -32,6 +32,10 @@ export interface PluginSessionSummary {
   readonly cwd?: string;
   readonly status?: string;
   readonly parentSessionId?: string;
+  readonly labels?: readonly string[];
+  readonly model?: string;
+  readonly llmConnectionSlug?: string;
+  readonly executorId?: string;
   readonly updatedAt?: string | number;
   /** Opaque durable content revision, independent of the event timestamp. */
   readonly historyRevision?: string;

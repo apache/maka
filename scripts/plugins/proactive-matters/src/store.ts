@@ -497,7 +497,8 @@ class SqliteMatterStore implements MatterStore {
   claim(id: string): MatterSnapshot | null {
     return this.transaction(() => {
       const m = this.read(id);
-      if (terminal(m) || m.status === 'paused' || m.activation) return null;
+      if (terminal(m) || m.status === 'paused' || m.activation || (m.retryAt ?? 0) > this.now())
+        return null;
       const batch = this.eventBatch(id);
       const { events } = batch;
       if (!events.length) return null;
@@ -535,6 +536,8 @@ class SqliteMatterStore implements MatterStore {
       if (!m.activation!.turnId.startsWith('pending:'))
         throw new Error('Activation is already bound to another turn');
       m.activation!.turnId = turnId;
+      m.retryAt = null;
+      m.admissionFailures = 0;
       this.db.prepare('UPDATE matter_runs SET turn_id=? WHERE id=?').run(turnId, activationId);
       return this.write(m, 'bind_turn', { activationId, turnId });
     });
@@ -837,6 +840,26 @@ class SqliteMatterStore implements MatterStore {
       .prepare('INSERT OR IGNORE INTO matter_updates VALUES(?,?,?,?,0)')
       .run(key, m.id, value, this.now());
   }
+  deferAdmission(id: string, activationId: string, reason: string): void {
+    this.transaction(() => {
+      const m = this.read(id);
+      if (
+        m.activation?.id !== activationId ||
+        !m.activation.turnId.startsWith('pending:') ||
+        m.activation.settled
+      )
+        throw Error('Only an explicitly rejected, unbound wake can be retried');
+      m.admissionFailures = (m.admissionFailures ?? 0) + 1;
+      m.retryAt = this.now() + Math.min(3600000, 30000 * 2 ** Math.min(m.admissionFailures - 1, 7));
+      m.lastError = reason;
+      m.activation = null;
+      m.runCount--; // No model execution was admitted.
+      this.db
+        .prepare('UPDATE matter_runs SET ended_at=?,outcome=? WHERE id=?')
+        .run(this.now(), 'admission_rejected', activationId);
+      this.write(m, 'admission_retry', { reason, retryAt: m.retryAt });
+    });
+  }
   finish(id: string, activationId: string, error?: string): void {
     this.transaction(() => {
       const m = this.read(id);
@@ -876,6 +899,8 @@ class SqliteMatterStore implements MatterStore {
         if (m.runCount >= m.maxRuns) m.maxRuns += 100;
         m.status = 'active';
         m.lastError = null;
+        m.retryAt = null;
+        m.admissionFailures = 0;
         m.waitingFor = null;
         this.insertEvent(id, {
           key: this.newId(),

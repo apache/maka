@@ -64,7 +64,7 @@ export class MessageSync {
       finishedAt: job.finishedAt,
       error: job.error,
       notice:
-        '仅完整同步任务对记忆发布；范围为 [startTime,endTime)，单位秒。聊天历史加消息搜索不保证获取飞书全部历史或所有旧话题回复；不会自动同步。',
+        '仅完整同步任务对记忆发布；范围为 [startTime,endTime)，单位秒。聊天历史加消息搜索不保证获取飞书全部历史或所有旧话题回复；定期同步需通过 FeishuSyncControl 单独开启。',
     };
   }
   async sync(input: { startTime: number; endTime: number; refresh?: boolean }, caller: any) {
@@ -92,6 +92,8 @@ export class MessageSync {
     if (job.status === 'complete') return { ...this.status(job.id), reused: true };
     let running = this.runs.get(job.id);
     if (!running) {
+      if (this.runs.size)
+        throw Error('Another message sync is running; retry this range after it finishes');
       running = this.run(job, caller).finally(() => this.runs.delete(job.id));
       this.runs.set(job.id, running);
     }
@@ -111,6 +113,7 @@ export class MessageSync {
     try {
       while (job.phase !== 'complete') {
         caller.invocation.abortSignal?.throwIfAborted();
+        caller.assertActive?.();
         if (job.phase === 'discover') {
           if (job.containers.length) {
             job.phase = 'history';
@@ -131,6 +134,7 @@ export class MessageSync {
             undefined,
             caller,
           );
+          caller.assertActive?.();
           if (!Array.isArray(data.items)) throw Error('Invalid chat directory');
           job.chatsPage = this.next(data);
           if (!job.chatsPage) job.phase = 'history';
@@ -163,6 +167,7 @@ export class MessageSync {
             undefined,
             caller,
           );
+          caller.assertActive?.();
           if (!Array.isArray(data.items)) throw Error('Invalid message page');
           const page = this.next(data);
           this.cache.page(
@@ -178,6 +183,7 @@ export class MessageSync {
         }
         if (job.phase === 'publish') {
           await this.verify({ ...caller, invocation: { ...caller.invocation } });
+          caller.assertActive?.();
           this.cache.publish(job);
           continue;
         }
@@ -214,11 +220,13 @@ export class MessageSync {
             throw Error('mget omitted an original; cannot assume deletion');
           messages.push(...found.items.filter((m: any) => this.inScope(m, job)));
         }
+        caller.assertActive?.();
         job.searchPage = this.next(data);
         if (!job.searchPage) job.phase = 'publish';
         this.cache.page(job, messages, { kind: 'search', next: job.searchPage });
       }
     } catch (e) {
+      caller.assertActive?.();
       // Save ONLY the last committed page state. In-memory mutations from a failed page are discarded.
       const durable = this.cache.job(job.id);
       durable.status = 'incomplete';

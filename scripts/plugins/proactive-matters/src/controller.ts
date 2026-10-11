@@ -102,13 +102,20 @@ export class MatterController {
       if (
         this.runs.has(m.id) ||
         m.activation ||
+        (m.retryAt ?? 0) > Date.now() ||
         ['paused', 'completed', 'cancelled'].includes(m.status)
       )
         continue;
       if (!this.store.get(m.id).events.length) continue;
-      const agent = await this.agent(m.sessionId);
-      const snapshot = await agent.snapshot();
-      if (snapshot?.agent?.status === 'running') continue; // do not inject into active human conversation
+      let agent: any, snapshot: any;
+      try {
+        agent = await this.agent(m.sessionId);
+        snapshot = await agent.snapshot();
+      } catch (error) {
+        this.lastError = String(error);
+        continue;
+      }
+      if (['running', 'waiting_for_user', 'blocked'].includes(snapshot?.agent?.status)) continue; // do not inject into active human conversation
       const current = this.store.get(m.id).matter;
       if (
         !this.active ||
@@ -124,14 +131,17 @@ export class MatterController {
   }
   private async run(m: Matter, agent: any, alreadyStarted = false) {
     const activationId = m.activation!.id;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const watchdogAbort = new AbortController();
     let queued = false;
     try {
       if (!alreadyStarted) {
         const result = await agent.followup(
           buildMatterPrompt(this.store.workspace(m.id, activationId)),
         );
-        if (result.disposition === 'blocked') throw new Error('Host rejected this wake');
+        if (result.disposition === 'blocked') {
+          this.store.deferAdmission(m.id, activationId, 'Host 暂未接收唤醒，将自动重试。');
+          return;
+        }
         if (result.disposition === 'turn_started') {
           const latest = this.store.get(m.id).matter;
           if (
@@ -143,22 +153,32 @@ export class MatterController {
         else throw new Error('Unexpected wake admission result');
       }
       // A queued wake binds via MatterRead(activationId). Never re-submit an uncertain wake.
-      const watchdog = new Promise<never>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error('Activation timed out; inspect effects before resuming')),
-          this.options.runTimeoutMs ?? 600_000,
-        );
-        timeout.unref?.();
-      });
+      const watchdog = async () => {
+        const budget = this.options.runTimeoutMs ?? 600_000;
+        let deadline = Date.now() + budget;
+        while (true) {
+          await delay(Math.min(1000, budget), undefined, { signal: watchdogAbort.signal });
+          const status = (await agent.snapshot())?.agent?.status;
+          // Human approval/input is not model execution time. Keep the request alive.
+          if (['waiting_for_user', 'blocked'].includes(status)) deadline = Date.now() + budget;
+          else if (Date.now() >= deadline)
+            throw Error('Activation timed out; inspect effects before resuming');
+        }
+      };
       const completion = async () => {
         if (queued) {
           while (this.store.get(m.id).matter.activation?.turnId.startsWith('pending:')) {
             await delay(25, undefined, { signal: this.stopping.signal });
           }
         }
-        await agent.whenIdle(this.stopping.signal);
+        while (true) {
+          await agent.whenIdle(this.stopping.signal);
+          const status = (await agent.snapshot())?.agent?.status;
+          if (!['waiting_for_user', 'blocked'].includes(status)) break;
+          await delay(100, undefined, { signal: this.stopping.signal });
+        }
       };
-      await Promise.race([completion(), watchdog]);
+      await Promise.race([completion(), watchdog()]);
       if (this.store.get(m.id).matter.activation?.turnId.startsWith('pending:'))
         throw new Error(
           'Queued wake ended without claiming its activation; inspect conversation before resuming',
@@ -167,13 +187,21 @@ export class MatterController {
     } catch (e) {
       this.lastError = String(e);
       const live = this.store.get(m.id).matter;
+      if (
+        live.activation?.id === activationId &&
+        live.activation.turnId.startsWith('pending:') &&
+        /Runtime Host is not ready for Plugin Agent messages/.test(String(e))
+      ) {
+        this.store.deferAdmission(m.id, activationId, String(e));
+        return;
+      }
       if (live.activation?.id === activationId) {
         // Commit the fault before stopping, so no later Matter write can proceed.
         this.store.finish(m.id, activationId, String(e));
         await agent.cancel().catch(() => {});
       }
     } finally {
-      clearTimeout(timeout);
+      watchdogAbort.abort();
     }
   }
   async enroll(input: { title: string; request: string }, call: MakaToolContext) {

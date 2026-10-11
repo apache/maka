@@ -266,14 +266,20 @@ test('waiting requires a concrete condition', (t) => {
   const f = fixture(t);
   const m = f.store.claim(f.m.id)!.matter;
   assert.throws(
-    () => f.store.settle(m.id, m.activation!.id, {
-      expectedRevision: m.revision,
-      stateText: 'Checked current facts.',
-      disposition: 'wait',
-      wakes: [{ kind: 'at', at: f.time() + 60000 }],
-      summary: 'Checked',
-      reason: 'Wait',
-    }, 'missing-condition'),
+    () =>
+      f.store.settle(
+        m.id,
+        m.activation!.id,
+        {
+          expectedRevision: m.revision,
+          stateText: 'Checked current facts.',
+          disposition: 'wait',
+          wakes: [{ kind: 'at', at: f.time() + 60000 }],
+          summary: 'Checked',
+          reason: 'Wait',
+        },
+        'missing-condition',
+      ),
     /waiting condition/,
   );
   assert.equal(f.store.get(m.id).matter.revision, m.revision);
@@ -625,4 +631,28 @@ test('legacy revision history migrates once without inventing activation summari
     readFileSync(f.store.workspace(m.id, next.activation!.id).files.changes, 'utf8'),
     before,
   );
+});
+
+test('explicit admission rejection retries durably without consuming input or execution budget', (t) => {
+  const f = fixture(t);
+  const first = f.store.claim(f.m.id)!;
+  const events = first.events.map((e) => e.id);
+  f.store.deferAdmission(f.m.id, first.matter.activation!.id, 'Host not ready');
+  assert.equal(f.store.get(f.m.id).matter.status, 'active');
+  assert.equal(f.store.get(f.m.id).matter.runCount, 0);
+  f.reopen();
+  f.store.recover();
+  assert.equal(f.store.claim(f.m.id), null);
+  f.advance(30001);
+  const retry = f.store.claim(f.m.id)!;
+  assert.deepEqual(
+    retry.events.map((e) => e.id),
+    events,
+  );
+  f.store.bindTurn(f.m.id, retry.matter.activation!.id, 'actual-host-turn');
+  assert.throws(
+    () => f.store.deferAdmission(f.m.id, retry.matter.activation!.id, 'unknown result'),
+    /Only an explicitly rejected/,
+  );
+  assert.equal(f.store.get(f.m.id).matter.admissionFailures, 0);
 });

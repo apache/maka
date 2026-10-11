@@ -55,6 +55,8 @@ export interface PluginAgentDescriptor {
 export interface PluginAgentCreateOptions {
   /** Create an independent persistent Session. Does not inherit the caller turn lifetime. */
   readonly background?: boolean;
+  /** Persistent background Session labels, e.g. an opaque plugin recovery identity. */
+  readonly labels?: readonly string[];
   readonly name?: string;
   readonly sessionId?: string;
   readonly cwd?: string;

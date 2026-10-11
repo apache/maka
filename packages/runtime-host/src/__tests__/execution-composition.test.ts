@@ -161,6 +161,70 @@ test('Plugin Agent background messages cannot race Root Turn startup recovery', 
   });
 });
 
+test('Plugin Agent snapshot exposes pending interaction without losing ownership or inherited model settings', async (t) => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    let runtime!: PluginAgentRuntime;
+    const bind = PluginAgentService.prototype.bindRuntime;
+    t.mock.method(
+      PluginAgentService.prototype,
+      'bindRuntime',
+      function (this: PluginAgentService, bound: PluginAgentRuntime) {
+        runtime = bound;
+        return bind.call(this, bound);
+      },
+    );
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
+    try {
+      const parent = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        thinkingLevel: 'medium',
+      });
+      const invocation = {
+        sessionId: parent.id,
+        turnId: randomUUID(),
+        cwd: root,
+        abortSignal: new AbortController().signal,
+      };
+      const child = await runtime.create(
+        { background: true, name: 'Awaiting input', labels: ['plugin-recovery:example'] },
+        invocation,
+      );
+      const sessions = await manager.listSessions();
+      const header = sessions.find((s) => s.id === child.sessionId)!;
+      assert.deepEqual(header.labels, ['plugin-recovery:example']);
+      assert.equal(header.name, 'Awaiting input');
+      assert.equal(header.model, parent.model);
+      assert.equal(header.permissionMode, parent.permissionMode);
+      assert.equal(header.thinkingLevel, parent.thinkingLevel);
+      await runtime.followup(child.sessionId, FAKE_ASK_USER_QUESTION_PROMPT, invocation);
+      await waitFor(
+        async () =>
+          ((await runtime.snapshot(child.sessionId, invocation)) as any).agent.status ===
+          'waiting_for_user',
+        5000,
+      );
+      const snapshot = (await runtime.snapshot(child.sessionId, invocation)) as any;
+      assert.ok(snapshot.pendingInteractions > 0);
+      await assert.rejects(
+        runtime.snapshot(child.sessionId, { ...invocation, sessionId: randomUUID() }),
+        /not found/,
+      );
+      await runtime.cancel(child.sessionId, invocation);
+      await waitFor(
+        async () =>
+          ((await runtime.snapshot(child.sessionId, invocation)) as any).pendingInteractions === 0,
+        5000,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('idle schedules and armed or paused Goals allow production handoff and recover in the successor', {
   timeout: 20_000,
 }, async () => {
