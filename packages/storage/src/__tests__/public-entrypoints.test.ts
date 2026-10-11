@@ -140,17 +140,16 @@ test('every published entrypoint target is emitted by the build', async () => {
  * means removing the entry, and publishing a *new* consumer-less entrypoint
  * fails outright, which is the direction this guard exists to hold.
  *
- * `./model-call-ledger` is on the list without this change touching it: it was
- * already published, and `repairPendingModelCallProjections` lost its last
- * caller when `canonical-usage-reader` was rewritten on `main`. It is listed
- * here rather than unpublished for the same reason as the rest — retiring a
- * subpath that already shipped is a compatibility call of its own.
+ * `./model-call-ledger` was on this list until the usage-unknown seam
+ * (`fix(usage)`): it had been published without consumers since
+ * `repairPendingModelCallProjections` lost its last caller when
+ * `canonical-usage-reader` was rewritten on `main`; the auxiliary-call
+ * recorder in runtime-host is its first external consumer again.
  */
 const PREEXISTING_UNCONSUMED_ENTRYPOINTS = [
   './activation-secret-injector',
   './encrypted-file-managed-secret-store',
   './managed-secret-store',
-  './model-call-ledger',
   './write-queue',
 ];
 

@@ -19,13 +19,61 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
+  type ModelCallLedger,
+  NO_RUN_TURN_ID,
+  type UsageUnknownModelCallRecord,
+} from '../model-call-ledger.js';
+import {
+  appendAuthorityEvent,
   modelCallAttempt as attempt,
   MODEL_CALL_NOW as NOW,
+  withLedger,
   withProjectedAttempts,
 } from './fixtures/model-call-attempt.js';
 
 const ALL = { range: 'all' } as const;
+
+/**
+ * Seeds rows the way production writes them: run-owned attempts through the
+ * AgentRun authority's projection, calls no run owns through the usage-unknown
+ * seam. Ownership follows the writer, so a test cannot fake a no-run row by
+ * projecting a sentinel turn value.
+ */
+async function withRecordedAttempts(
+  projected: readonly ModelCallAttempt[],
+  noRun: readonly UsageUnknownModelCallRecord[],
+  run: (ledger: ModelCallLedger) => Promise<void>,
+): Promise<void> {
+  await withLedger(async (ledger, root) => {
+    projected.forEach((value, index) => {
+      appendAuthorityEvent(root, index, value, value.sessionId, value.runId);
+    });
+    await ledger.catchUpProjection();
+    for (const record of noRun) await ledger.recordUsageUnknownAttempt(record);
+    await run(ledger);
+  });
+}
+
+/** A failed auxiliary Host call, as the usage-unknown seam records it. */
+function usageUnknownAttempt(
+  overrides: Partial<UsageUnknownModelCallRecord> = {},
+): UsageUnknownModelCallRecord {
+  return {
+    attemptId: 'auxiliary-failure',
+    completedAt: NOW - 100,
+    sessionId: 'session-1',
+    logicalCallId: 'auxiliary-failure',
+    turnId: NO_RUN_TURN_ID,
+    callKind: 'goal_evaluation',
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    latencyMs: 5,
+    status: 'failed',
+    ...overrides,
+  };
+}
 
 describe('Usage answers over the canonical ledger', () => {
   test('a total never counts unpriced spend as zero, and says so in coverage', async () => {
@@ -95,6 +143,174 @@ describe('Usage answers over the canonical ledger', () => {
         assert.equal(projection.coverage.usageMissingAttempts, 1);
         assert.equal(projection.coverage.unpricedAttempts, 1);
         assert.equal(projection.totalTokens.total, 0);
+      },
+    );
+  });
+
+  test('ledger coverage counts usage-unknown rows recorded outside any run', async () => {
+    // A failed auxiliary call (#5691) is accounted the same honest way as a
+    // run's own unsettled dispatch, and the ledger-wide coverage — what
+    // `summary()`/`logs()` report to every client — must see both. Excluding
+    // the no-run rows here would hide a real unknown-usage call from the
+    // public provenance and let an incomplete total read as complete; keeping
+    // a hosted run to its own rows is settlement's separate job.
+    await withRecordedAttempts(
+      [
+        attempt({
+          attemptId: 'run-dispatch',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      [usageUnknownAttempt()],
+      async (ledger) => {
+        const { projection } = ledger.summary(ALL, NOW);
+        assert.equal(projection.coverage.usageMissingAttempts, 2);
+        assert.equal(projection.coverage.usageReportedAttempts, 0);
+        assert.equal(projection.totalRequests, 2);
+      },
+    );
+  });
+
+  test('run settlement coverage guards every session in the window, not the auxiliary sentinel', async () => {
+    // Settlement guards the window-wide totals, so it must count every
+    // Session's unsettled dispatch in that window (#5890): the pre-window
+    // session filter here would have let a delegated child's missing usage
+    // settle as complete. The `no_run` sentinel — the failed auxiliary call
+    // the usage-unknown seam recorded — belongs to no run and stays out.
+    await withRecordedAttempts(
+      [
+        attempt({
+          attemptId: 'other-session-dispatch',
+          sessionId: 'session-2',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+        attempt({
+          attemptId: 'run-reported',
+          logicalCallId: 'call-2',
+        }),
+        attempt({
+          attemptId: 'run-partial',
+          logicalCallId: 'call-3',
+          usageBasis: 'partial',
+          outputTokens: undefined,
+        }),
+        attempt({
+          attemptId: 'run-missing-dispatch',
+          logicalCallId: 'call-4',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      [usageUnknownAttempt()],
+      async (ledger) => {
+        // The run's own missing dispatch and the other session's (a delegated
+        // child's) both count; the `no_run` sentinel does not.
+        assert.deepEqual(ledger.runSettlementCoverage(NOW - 1_000, NOW), {
+          usageMissingAttempts: 2,
+          usagePartialAttempts: 1,
+        });
+      },
+    );
+  });
+
+  test('run settlement coverage excludes the no-run sentinel, not an execution named like it', async () => {
+    // The exclusion must key on how a row was recorded (`no_run`), never on
+    // the turn value: a hosted execution whose id is the client-chosen
+    // `auxiliary` owns rows under `turn_id = 'auxiliary'`, and with window
+    // scoping (#5890) those must keep counting while the genuine sentinel row
+    // next to them stays out — or this execution's missing-usage dispatch
+    // disappears and `incompleteUsageReason` releases the environment with
+    // unknown usage.
+    await withRecordedAttempts(
+      [
+        attempt({
+          attemptId: 'run-reported',
+          sessionId: 'auxiliary',
+          runId: 'run-auxiliary',
+          turnId: 'auxiliary',
+          logicalCallId: 'call-reported',
+        }),
+        attempt({
+          attemptId: 'run-missing-dispatch',
+          sessionId: 'auxiliary',
+          runId: 'run-auxiliary',
+          turnId: 'auxiliary',
+          logicalCallId: 'call-missing',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      [usageUnknownAttempt({ sessionId: 'auxiliary' })],
+      async (ledger) => {
+        // The run-owned missing dispatch is this execution's unsettled
+        // obligation and counts inside the window; the failed auxiliary call
+        // is nobody's (`no_run`) and stays excluded. Public coverage keeps
+        // counting both.
+        assert.deepEqual(ledger.runSettlementCoverage(NOW - 1_000, NOW), {
+          usageMissingAttempts: 1,
+          usagePartialAttempts: 0,
+        });
+        assert.equal(
+          ledger.summary({ range: 'all' }, NOW).projection.coverage.usageMissingAttempts,
+          2,
+        );
+      },
+    );
+  });
+
+  test('run settlement coverage reads the window, not one session (#5890 review)', async () => {
+    // Settlement guards the window-wide totals that #readUsage reads, so its
+    // coverage must read the same window: a child Session's missing dispatch
+    // inside the window is exactly the undercount that would otherwise settle
+    // as complete, and a window-external row is nobody's obligation here.
+    await withRecordedAttempts(
+      [
+        attempt({
+          attemptId: 'outside-window-missing',
+          completedAt: NOW - 5_000,
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+        attempt({ attemptId: 'root-ok' }),
+        attempt({
+          attemptId: 'child-missing',
+          sessionId: 'session-1-child',
+          status: 'failed',
+          usageBasis: 'missing',
+          inputTokens: undefined,
+          outputTokens: undefined,
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      [],
+      async (ledger) => {
+        assert.deepEqual(ledger.runSettlementCoverage(NOW - 1_000, NOW), {
+          usageMissingAttempts: 1,
+          usagePartialAttempts: 0,
+        });
       },
     );
   });

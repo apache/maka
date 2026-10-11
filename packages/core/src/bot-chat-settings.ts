@@ -72,11 +72,15 @@ export interface BotChannelSettings {
   allowedUserIds?: ReadonlyArray<string>;
 }
 
+export type BotMessageHandling = 'task' | 'workhub';
+
 export interface BotChatSettings {
+  messageHandling?: BotMessageHandling;
   channels: Record<BotProvider, BotChannelSettings>;
 }
 
 export type BotChatSettingsPatch = Partial<{
+  messageHandling: BotMessageHandling;
   channels: Partial<Record<BotProvider, Partial<BotChannelSettings>>>;
 }>;
 
@@ -127,6 +131,7 @@ export function createDefaultBotChannel(provider: BotProvider): BotChannelSettin
 
 export function createDefaultBotChatSettings(): BotChatSettings {
   return {
+    messageHandling: 'task',
     channels: Object.fromEntries(
       BOT_PROVIDERS.map((provider) => [provider, createDefaultBotChannel(provider)]),
     ) as Record<BotProvider, BotChannelSettings>,
@@ -139,6 +144,7 @@ export function mergeBotChatSettings(
 ): BotChatSettings {
   return {
     ...current,
+    ...(patch?.messageHandling ? { messageHandling: patch.messageHandling } : {}),
     channels: {
       ...current.channels,
       ...Object.fromEntries(
@@ -169,6 +175,7 @@ export function normalizeBotChatSettings(
   rawSettings: Partial<BotChatSettings> | undefined,
 ): BotChatSettings {
   return {
+    messageHandling: rawSettings?.messageHandling === 'workhub' ? 'workhub' : 'task',
     channels: Object.fromEntries(
       BOT_PROVIDERS.map((provider) => {
         const rawChannel = rawSettings?.channels?.[provider] as

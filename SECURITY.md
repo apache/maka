@@ -208,9 +208,10 @@ privacy commitments:
   consumer tests own the full enforcement inventory.
 - **Token boundary.** Cleartext API keys / OAuth tokens / bot
   tokens NEVER cross the main→renderer IPC boundary.
-  `apps/desktop/src/main/__tests__/web-search-boundary.test.ts` and
-  `claude-subscription-ipc-boundary.test.ts` enforce this for Tavily
-  and Claude subscription credentials.
+  `apps/desktop/src/main/__tests__/settings-ipc-helpers.test.ts` enforces
+  this for Tavily and bot credentials, and
+  `runtime-host-connections-ipc-main.test.ts` for Connection credentials
+  (including OAuth subscriptions and custom headers).
 
 ## 3. Scope of vulnerability reports
 
@@ -262,9 +263,9 @@ Credential-test requests may submit an unsaved cleartext token so the
 user can verify it before saving. The main process accepts it for that
 single request and does not echo it in the response.
 
-The static-analysis contract tests for this policy:
-- `apps/desktop/src/main/__tests__/web-search-boundary.test.ts`
-- `apps/desktop/src/main/__tests__/claude-subscription-ipc-boundary.test.ts`
+The contract tests for this policy:
+- `apps/desktop/src/main/__tests__/settings-ipc-helpers.test.ts`
+- `apps/desktop/src/main/__tests__/runtime-host-connections-ipc-main.test.ts`
 
 ## 5. Versioning
 

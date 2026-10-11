@@ -185,6 +185,115 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('records a usage-unknown auxiliary call as a canonical row without token counts', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const changed: string[] = [];
+      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
+        changed.push(sessionId),
+      );
+      try {
+        // An auxiliary call aborted mid-flight knows no token counts. Its row
+        // must say so (usage_basis 'missing', no tokens) instead of posing as a
+        // free call — the same facts the run-path projection records.
+        const record = {
+          attemptId: 'goal_evaluation_session-aux_call-1',
+          completedAt: Date.UTC(2026, 0, 1),
+          sessionId: 'session-aux',
+          logicalCallId: 'goal_evaluation_session-aux_call-1',
+          turnId: 'auxiliary',
+          callKind: 'goal_evaluation' as const,
+          connectionSlug: 'conn-aux',
+          providerId: 'openai',
+          modelId: 'gpt-5',
+          latencyMs: 120,
+          status: 'aborted' as const,
+          errorClass: 'AbortError',
+        };
+        await stores.modelCalls.recordUsageUnknownAttempt(record);
+        assert.deepEqual(changed, ['session-aux']);
+
+        const summary = await stores.modelCalls.modelCallSummary({ range: 'all' }, Date.now());
+        assert.equal(summary.projection.totalRequests, 1);
+        assert.equal(summary.projection.totalCostUsd, 0);
+        assert.equal(summary.projection.totalTokens.total, 0);
+        // The ledger-wide coverage counts the row: a real unknown-usage call
+        // must stay visible in the public provenance even though it belongs to
+        // no run. Keeping a hosted run to its own rows is the run-scoped
+        // settlement coverage's job, asserted against the same stores below.
+        assert.equal(summary.projection.coverage.usageMissingAttempts, 1);
+        assert.equal(summary.projection.coverage.usageReportedAttempts, 0);
+        assert.equal(summary.unreadableRecords, 0);
+        // The settlement coverage excludes the no-run sentinel row — its
+        // usage_basis never enters any run's window scope — so an auxiliary
+        // failure cannot flip a hosted run to indeterminate.
+        assert.deepEqual(await stores.modelCalls.modelCallRunSettlementCoverage(0, Date.now()), {
+          usageMissingAttempts: 0,
+          usagePartialAttempts: 0,
+        });
+
+        const logs = await stores.modelCalls.modelCallLogs({ range: 'all' }, Date.now(), 0, 10);
+        assert.equal(logs.projection.total, 1);
+        const row = logs.projection.rows[0];
+        assert.ok(row);
+        assert.equal(row.callId, 'goal_evaluation_session-aux_call-1');
+        assert.equal(row.callKind, 'goal_evaluation');
+        assert.equal(row.status, 'aborted');
+        assert.equal(row.errorClass, 'AbortError');
+
+        // The schema CHECK is the hard edge: a missing-usage row carries no
+        // token counts at all, so no total can mistake it for a free call.
+        const db = acquireOperationalStateDatabase(root);
+        try {
+          const stored = db.database
+            .prepare(
+              `SELECT usage_basis, cost_basis, cost_usd, input_tokens, output_tokens,
+                      cache_read_input_tokens, cache_miss_input_tokens,
+                      cache_write_input_tokens, reasoning_tokens,
+                      status, session_id, turn_id
+               FROM usage_model_call_attempts WHERE attempt_id = ?`,
+            )
+            .get('goal_evaluation_session-aux_call-1');
+          assert.deepEqual(
+            { ...stored },
+            {
+              usage_basis: 'missing',
+              cost_basis: 'unpriced',
+              cost_usd: null,
+              input_tokens: null,
+              output_tokens: null,
+              cache_read_input_tokens: null,
+              cache_miss_input_tokens: null,
+              cache_write_input_tokens: null,
+              reasoning_tokens: null,
+              status: 'aborted',
+              session_id: 'session-aux',
+              turn_id: 'auxiliary',
+            },
+          );
+        } finally {
+          db.close();
+        }
+
+        // Re-recording the same attempt upserts in place instead of double
+        // counting the call.
+        await stores.modelCalls.recordUsageUnknownAttempt({
+          ...record,
+          latencyMs: 130,
+        });
+        const resummarized = await stores.modelCalls.modelCallSummary({ range: 'all' }, Date.now());
+        assert.equal(resummarized.projection.totalRequests, 1);
+        assert.deepEqual(changed, ['session-aux', 'session-aux']);
+      } finally {
+        unsubscribe();
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
   test('publishes the owning Session after a durable tool-usage write', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);

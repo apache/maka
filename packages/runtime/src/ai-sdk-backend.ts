@@ -178,7 +178,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   recordToolInvocation?: ToolTelemetryRecorder;
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
   runtimeCommitSink?: RuntimeCommitSink;
-  /** Durable session-lifetime cumulative usage checkpoint after each completed provider step. */
+  /** Durable cumulative usage after completed steps and explicitly metered failed requests. */
   recordUsageCheckpoint?: (
     usage: NormalizedAiSdkUsage & { costUsd?: number },
   ) => void | Promise<void>;
@@ -243,6 +243,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 }
 
 export interface ResolvedSystemPrompt {
+  /** Require a tool step until the Host-owned prerequisite is settled. */
+  readonly requireToolCall?: boolean;
   text?: string;
   /** Per-step ephemeral user-role context, resolved once per logical request. */
   contexts?: readonly { readonly name: string; readonly text: string }[];
@@ -321,6 +323,16 @@ export class AiSdkBackend implements AgentBackend {
    * read back as absent.
    */
   private readonly activeTurns = new Set<AiSdkTurn>();
+  /**
+   * Deferred-tool activations for this Session backend. `tool_search` only
+   * adds names; Turn end and compaction do not clear them. Clearing at Turn
+   * end would change the provider tool list and miss the prompt cache on the
+   * next Turn. Compaction already invalidates that cache, so clearing there
+   * would change the prefix a second time. Concurrent Runs on this backend
+   * share the map, so a search in one Run is visible on a sibling Run's next
+   * step. A rebuilt backend starts empty.
+   */
+  private readonly sessionActiveTools = new Map<string, string>();
   private readonly compaction: AiSdkCompaction;
   private readonly turnSessionState: AiSdkSessionState = {};
   constructor(input: AiSdkBackendInput) {
@@ -542,6 +554,7 @@ export class AiSdkBackend implements AgentBackend {
         providerTelemetry: this.providerTelemetry,
         compaction: this.compaction,
         snapshotToolAvailability: () => this.snapshotToolAvailability(),
+        sessionActiveTools: this.sessionActiveTools,
         codeCellAdmission: this.codeCellAdmission,
         resolvedProviderOptions: this.resolvedProviderOptions,
         session: this.turnSessionState,

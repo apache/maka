@@ -371,6 +371,12 @@ export function BotChatSettingsPage(props: {
   if (!detailOpen) {
     return (
       <BotChatOverview
+        messageHandling={props.settings.botChat.messageHandling}
+        onMessageHandlingChange={(messageHandling) => {
+          void props.onUpdate({ botChat: { messageHandling } }).catch((error) => {
+            toast.error(settingsActionErrorMessage(error, locale));
+          });
+        }}
         channels={props.settings.botChat.channels}
         statuses={statuses}
         statusLoadError={statusLoadError}

@@ -39,6 +39,7 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
   type SessionHeader,
+  type SessionBackgroundActivity,
 } from '@maka/core/session';
 import {
   SessionConfigurationTransitionError,
@@ -70,6 +71,7 @@ import {
   type HostSessionCatalogCoordinatorOptions,
 } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { SessionBackgroundActivityProjection } from '../server/session-background-activity.js';
 
 type CatalogStores = HostSessionCatalogCoordinatorOptions['stores'];
 type CatalogTurnIndex = HostSessionCatalogCoordinatorOptions['turnIndex'];
@@ -293,6 +295,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
   }
   assert.deepEqual(outcome.result.session.labels, ['new-user-label', 'mode:deep_research']);
   assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
+  assert.equal(Object.hasOwn(outcome.result.session, 'backgroundActivity'), false);
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -361,6 +364,97 @@ test('ordinary catalog lookup hides the WorkHub Coordination Session', async () 
     ok: true,
     result: { kind: 'session', session: null },
   });
+});
+
+test('catalog get and list retain Graph activity after the parent Turn completes', async () => {
+  let backgroundActivity: SessionBackgroundActivity = 'running';
+  const fixture = createFixture({
+    manager: { runningTurnIds: () => [] },
+    readBackgroundActivity: (sessionId) => {
+      assert.equal(sessionId, 'session-1');
+      return {
+        backgroundActivity,
+        backgroundActivityVersion: { hostGeneration: 'host-1', revision: 3 },
+      };
+    },
+  });
+  for (const activity of ['running', 'waiting_for_user', 'blocked', 'idle'] as const) {
+    backgroundActivity = activity;
+    for (const input of [
+      { kind: 'get', sessionId: fixture.sessionId },
+      { kind: 'list_start' },
+    ] as const) {
+      const outcome = await fixture.coordinator.handlers['session.catalog.query'](input, context);
+      assert.ok(outcome.ok);
+      const result = outcome.result;
+      const session =
+        result.kind === 'session'
+          ? result.session
+          : result.kind === 'page'
+            ? result.sessions[0]
+            : undefined;
+      assert.ok(session && !('kind' in session));
+      assert.equal(session.backgroundActivity, activity);
+      assert.deepEqual(session.backgroundActivityVersion, {
+        hostGeneration: 'host-1',
+        revision: 3,
+      });
+      assert.deepEqual(
+        session.liveRunState?.runningTurnIds,
+        [],
+        'child turns are never parent turns',
+      );
+      assert.equal(session.status, 'active', 'the completed parent is not rewritten as running');
+    }
+  }
+});
+
+test('Guest shared queries do not expose activity transitions in private Sessions', async () => {
+  const graph = new Map<string, SessionBackgroundActivity>();
+  const projection = new SessionBackgroundActivityProjection({
+    hostGeneration: 'host-1',
+    graph: (id) => graph.get(id) ?? 'idle',
+    supervisor: () => 'idle',
+    publish: () => undefined,
+  });
+  const grant = {
+    grantId: 'shared-observation-grant',
+    principalId: 'guest-1',
+    sessionId: 'session-1',
+    kind: 'session_observation' as const,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const fixture = createFixture({
+    readBackgroundActivity: (sessionId) => projection.snapshot(sessionId),
+    sessionAccessAuthority: {
+      activeSessionGrantForPrincipal: (principalId, kind) => {
+        assert.equal(principalId, grant.principalId);
+        assert.equal(kind, grant.kind);
+        return grant;
+      },
+    },
+  });
+  const guestContext = { ...context, principal: grant.principalId };
+  const queryShared = async () => {
+    const outcome = await fixture.coordinator.handlers['session.shared.query']({}, guestContext);
+    assert.ok(outcome.ok);
+    assert.ok(outcome.result.session);
+    return outcome.result.session;
+  };
+  for (const sharedActivity of ['idle', 'running', 'idle', 'running'] as const) {
+    graph.set(fixture.sessionId, sharedActivity);
+    projection.changed(fixture.sessionId);
+    const shared = await queryShared();
+    assert.equal(shared.id, fixture.sessionId);
+    assert.equal(shared.backgroundActivity, sharedActivity);
+    for (const activity of ['running', 'waiting_for_user', 'blocked', 'idle'] as const) {
+      graph.set('private-session', activity);
+      projection.changed('private-session');
+      assert.deepEqual(await queryShared(), shared);
+    }
+  }
+  const final = await queryShared();
+  assert.deepEqual(final.backgroundActivityVersion, { hostGeneration: 'host-1', revision: 3 });
 });
 
 test('catalog queries de-duplicate Runtime live turn ids in stable order', async () => {
@@ -2151,6 +2245,8 @@ function createFixture(
     readonly stores?: Partial<CatalogStores>;
     readonly turnIndex?: Partial<CatalogTurnIndex>;
     readonly manager?: Partial<ConfigurationAuthority>;
+    readonly readBackgroundActivity?: HostSessionCatalogCoordinatorOptions['readBackgroundActivity'];
+    readonly sessionAccessAuthority?: HostSessionCatalogCoordinatorOptions['sessionAccessAuthority'];
     readonly continuity?: Partial<SessionContinuity>;
     readonly connection?: FixtureConnection;
     readonly runtimePolicy?: RuntimePolicy;
@@ -2243,6 +2339,12 @@ function createFixture(
     turnIndex,
     runtimePolicy,
     manager,
+    ...(options.readBackgroundActivity
+      ? { readBackgroundActivity: options.readBackgroundActivity }
+      : {}),
+    ...(options.sessionAccessAuthority
+      ? { sessionAccessAuthority: options.sessionAccessAuthority }
+      : {}),
     admission: new SessionAdmissionGate(),
     continuity,
     workspaceResolver: new HostWorkspaceResolver(

@@ -100,6 +100,7 @@ apps/desktop/src/renderer/features/storage-usage/ui/archive-retention-section.ts
 apps/desktop/src/renderer/features/storage-usage/ui/storage-usage-section.tsx
 apps/desktop/src/renderer/features/storage-usage/ui/task-storage-size.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
+apps/desktop/src/renderer/features/task-entry/ui/project-registration-boundary.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-provider.tsx
 apps/desktop/src/renderer/features/usage/services-context.tsx
@@ -325,6 +326,7 @@ packages/ui/src/tool-activity.tsx
 packages/ui/src/tool-activity/diff-code-preview.tsx
 packages/ui/src/tool-activity/tool-code-block.tsx
 packages/ui/src/tool-activity/tool-result-preview.tsx
+packages/ui/src/transcript-disclosure.tsx
 packages/ui/src/transcript-scroll-authority.tsx
 packages/ui/src/ui.tsx
 packages/ui/src/user-question-prompt.tsx

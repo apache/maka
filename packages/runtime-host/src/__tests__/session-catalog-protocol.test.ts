@@ -25,6 +25,7 @@ import {
   decodeHostFrame,
   decodeSessionCatalogItem,
   decodeSessionCatalogQueryResult,
+  decodeSharedSessionCatalogProjection,
   HOST_OPERATION_SPECS,
   SESSION_CATALOG_PAGE_MAX_ITEMS,
   SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
@@ -32,10 +33,91 @@ import {
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
+  test('preserves unknown and authoritative background activity for Owner and Guest catalogs', () => {
+    const shared = {
+      kind: 'shared_session',
+      id: 'shared',
+      revision: 1,
+      createdAt: 1,
+      activityAt: 1,
+      name: 'Shared',
+      status: 'active',
+    };
+    assert.equal(
+      Object.hasOwn(decodeSessionCatalogItem(projection()), 'backgroundActivity'),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(decodeSharedSessionCatalogProjection(shared), 'backgroundActivity'),
+      false,
+    );
+    for (const backgroundActivity of ['idle', 'running', 'waiting_for_user', 'blocked'] as const) {
+      const owner = projection({ backgroundActivity });
+      assert.deepEqual(decodeSessionCatalogItem(owner), owner);
+      assert.deepEqual(decodeSharedSessionCatalogProjection({ ...shared, backgroundActivity }), {
+        ...shared,
+        backgroundActivity,
+      });
+    }
+    for (const backgroundActivity of [null, false, [], {}, 'completed', 'unknown']) {
+      assert.throws(
+        () => decodeSessionCatalogItem({ ...projection(), backgroundActivity }),
+        isProtocolError,
+      );
+      assert.throws(
+        () => decodeSharedSessionCatalogProjection({ ...shared, backgroundActivity }),
+        isProtocolError,
+      );
+    }
+  });
+
   test('publishes canonical catalog activity without the redundant last-used timestamp', () => {
     const catalog = projection();
 
     assert.deepEqual(decodeSessionCatalogItem(catalog), catalog);
+  });
+
+  test('validates activity observation versions in Owner and Guest catalogs', () => {
+    const shared = {
+      kind: 'shared_session',
+      id: 'shared',
+      revision: 1,
+      createdAt: 1,
+      activityAt: 1,
+      name: 'Shared',
+      status: 'active',
+    };
+    for (const [decode, row] of [
+      [decodeSessionCatalogItem, projection()],
+      [decodeSharedSessionCatalogProjection, shared],
+    ] as const) {
+      const versioned = {
+        ...row,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: 'host-1', revision: 0 },
+      };
+      assert.deepEqual(decode(versioned), versioned);
+      assert.throws(
+        () => decode({ ...row, backgroundActivityVersion: versioned.backgroundActivityVersion }),
+        isProtocolError,
+      );
+      for (const version of [
+        null,
+        {},
+        { revision: 1 },
+        { hostGeneration: 'host-1' },
+        { hostGeneration: '', revision: 1 },
+        { hostGeneration: 'host-1', revision: -1 },
+        { hostGeneration: 'host-1', revision: 1.5 },
+        { hostGeneration: 'host-1', revision: Number.MAX_SAFE_INTEGER + 1 },
+        { hostGeneration: 'host-1', revision: 1, extra: true },
+      ]) {
+        assert.throws(
+          () => decode({ ...versioned, backgroundActivityVersion: version }),
+          isProtocolError,
+        );
+      }
+    }
   });
 
   test('decodes versioned live run state without collapsing absent and known-empty', () => {

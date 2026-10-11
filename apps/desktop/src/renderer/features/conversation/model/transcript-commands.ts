@@ -22,7 +22,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type { ConversationWorkspace } from './conversation-workspace.js';
 import { transcriptErrorMessage, transcriptRefreshTitle } from '../../../application/contracts/transcript-copy.js';
 export function createTranscriptCommands(workspace: ConversationWorkspace, feedback: { current: { locale: UiLocale; toast: Pick<ReturnType<typeof useToast>, 'error'> } }) {
-  const { ui, activeIdRef, transcriptRangeRef } = workspace;
+  const { ui, activeIdRef, transcriptRangeRef, observationRef } = workspace;
   const reportError = (sessionId: string, error: unknown) => {
     const { locale, toast } = feedback.current;
     const message = transcriptErrorMessage(error, locale, 'refresh');
@@ -51,10 +51,16 @@ export function createTranscriptCommands(workspace: ConversationWorkspace, feedb
       }
     },
     async retryMessages(sessionId: string) {
-      if (activeIdRef.current !== sessionId || !ui.messageRetryPending.claim(sessionId)) return;
-      const controller = transcriptRangeRef.current;
-      try { await controller?.reload(); }
-      catch (error) { if (activeIdRef.current === sessionId && transcriptRangeRef.current === controller) reportError(sessionId, error); }
+      const observation = observationRef.current;
+      if (!observation || observation.sessionId !== sessionId || !workspace.commands.isSessionSelected(sessionId)
+        || !ui.messageRetryPending.claim(sessionId)) return;
+      // The controller reports a failed reload through the observation's onError, as for its own
+      // reloads, except over the cached transcript, where only this Retry can answer the click.
+      try { await observation.controller.reload(); }
+      catch (error) {
+        if (observation.controller.holdsCachedTranscript() && observationRef.current === observation
+          && workspace.commands.isSessionSelected(sessionId)) reportError(sessionId, error);
+      }
       finally { ui.messageRetryPending.release(sessionId); }
     },
   };

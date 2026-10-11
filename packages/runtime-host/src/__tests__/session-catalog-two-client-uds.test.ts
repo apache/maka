@@ -324,6 +324,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       assert.deepEqual(querySessionReconciled(await querySession(desktop, created.id)), {
         ...configuredSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: host.hostEpoch, revision: 0 },
       });
       const unchangedConfiguration = await desktop.request('session.configuration.update', {
         sessionId: configuredSession.id,
@@ -380,6 +382,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       assert.deepEqual(querySessionReconciled(await querySession(tui, narrowedSession.id)), {
         ...relocatedSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: host.hostEpoch, revision: 0 },
       });
 
       await setDefaultModel(desktop, connectionId, WIRE_OVERSIZED_MODEL_ID);
@@ -418,6 +422,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       assert.deepEqual(querySessionReconciled(await querySession(desktop, relocatedSession.id)), {
         ...relocatedSession,
         liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE,
+        backgroundActivity: 'idle',
+        backgroundActivityVersion: { hostGeneration: host.hostEpoch, revision: 0 },
       });
       await setDefaultModel(tui, connectionId, 'gpt-5');
 
@@ -803,8 +809,15 @@ test('stable Session creation survives response loss and Host restart', {
     const retrying = await connectClient(root);
     try {
       const retried = requireSessionProjection(await retrying.request('session.create', input));
-      const { liveRunState, ...persistedCommitted } = committed;
+      const { liveRunState, backgroundActivity, backgroundActivityVersion, ...persistedCommitted } =
+        committed;
       expectKnownEmptyLiveRunState(liveRunState);
+      assert.equal(backgroundActivity, 'idle');
+      assert.equal(backgroundActivityVersion?.revision, 0);
+      assert.ok(backgroundActivityVersion?.hostGeneration);
+      assert.equal(Object.hasOwn(retried, 'backgroundActivityVersion'), false);
+      assert.equal(Object.hasOwn(retried, 'liveRunState'), false);
+      assert.equal(Object.hasOwn(retried, 'backgroundActivity'), false);
       assert.deepEqual(retried, persistedCommitted);
     } finally {
       await retrying.close();

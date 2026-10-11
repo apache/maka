@@ -43,6 +43,18 @@ export const PRICED_COST = `CASE WHEN cost_basis = 'priced' THEN COALESCE(cost_u
 /** Only a provider failure is an error. */
 const ERROR_ROW = `status = 'failed'`;
 
+/**
+ * The turn placeholder on rows recorded outside any AgentRun — failed and
+ * aborted auxiliary Host model calls (#5691). Such a row is honest accounting
+ * (real spend shape, unknown usage), so the ledger-wide coverage counts it.
+ * The value is a placeholder for the table's required turn column, not the
+ * settlement discriminator: rows carry a `no_run` column written by whichever
+ * seam recorded them, because a hosted execution legally named `auxiliary`
+ * owns rows under this same turn value (#5890 review). Shared with the writer
+ * so the placeholder cannot drift.
+ */
+export const NO_RUN_TURN_ID = 'auxiliary';
+
 export const TOKEN_SUMS = `
   SUM(COALESCE(input_tokens, 0)) AS input,
   SUM(COALESCE(output_tokens, 0)) AS output,
@@ -57,6 +69,19 @@ export const COVERAGE_SUMS = `
   SUM(cost_basis = 'priced') AS pricedAttempts,
   SUM(cost_basis = 'unpriced') AS unpricedAttempts,
   SUM(usage_basis = 'reported') AS usageReportedAttempts,
+  SUM(usage_basis = 'partial') AS usagePartialAttempts,
+  SUM(usage_basis = 'missing') AS usageMissingAttempts`;
+
+/**
+ * Coverage a hosted execution's settlement may hold a run to (#5691): the
+ * rows the run owns — the ones its Session's event-stream projection
+ * recorded, outside the `no_run` mark the usage-unknown seam writes. The
+ * ownership exclusion is the query's WHERE clause, not an aggregate here, so
+ * this stays narrower than the ledger-wide {@link COVERAGE_SUMS} on purpose:
+ * one answers "what does the ledger hold unknown-usage rows for", the other
+ * "what did this run leave unsettled".
+ */
+export const RUN_SETTLEMENT_COVERAGE_SUMS = `
   SUM(usage_basis = 'partial') AS usagePartialAttempts,
   SUM(usage_basis = 'missing') AS usageMissingAttempts`;
 
