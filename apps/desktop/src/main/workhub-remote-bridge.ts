@@ -32,7 +32,7 @@ import type { DesktopRuntimeHostClient, DesktopRuntimeHostSession } from './runt
 import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../renderer/application/contracts/workhub-topic-association.js';
 import { formatRemoteChoices, parseRemoteChoices } from './workhub-remote-choices.js';
 
-type Source = Pick<BotIncomingMessage, 'platform' | 'chatId' | 'userId' | 'sourceMessageId'> & { targetSessionId?: string; associationTargetSessionId?: string; associationTurnId?: string };
+type Source = Pick<BotIncomingMessage, 'platform' | 'chatId' | 'userId' | 'sourceMessageId'> & { targetSessionId?: string; associationTargetSessionId?: string | null; associationTurnId?: string };
 interface State {
   version: 1 | 2;
   through: number | null;
@@ -124,10 +124,10 @@ export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
     }
     if (message.type === 'tool_result') {
       const source = state.actions[clientCapabilityEntityId(message.toolUseId)];
-      const topic = source?.associationTargetSessionId && source.associationTurnId === message.turnId
+      const topic = source?.associationTargetSessionId !== undefined && source.associationTurnId === message.turnId
         ? readWorkHubTopicAssociation(message, source.associationTargetSessionId) : undefined;
       if (topic && state.turns[message.turnId] && sameChat(source!, state.turns[message.turnId]!)) {
-        state.turns[message.turnId] = { ...state.turns[message.turnId]!, targetSessionId: topic.targetSessionId };
+        state.turns[message.turnId] = { ...state.turns[message.turnId]!, targetSessionId: topic.targetSessionId ?? undefined };
       }
     }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {

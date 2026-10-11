@@ -31,7 +31,7 @@ import { AsyncFrameQueue, runtimeHostSessionFixture } from './runtime-host-sessi
 
 type Deps = Parameters<typeof createWorkHubRemoteBridge>[0];
 const message = (chatId: string, text: string, sourceMessageId = text): BotIncomingMessage => ({ platform: 'qq', chatId, userId: 'owner', userName: 'Owner', isGroup: false, text, sourceMessageId, receivedAt: 1 });
-async function fixture(workName = 'SQL 入门') {
+async function fixture(workName: string | ((id: string) => string) = 'SQL 入门') {
   const directory = await mkdtemp(join(tmpdir(), 'workhub-remote-'));
   const sends: { chat: string; text: string }[] = [];
   const starts: { turnId: string; text: string }[] = [];
@@ -55,7 +55,7 @@ async function fixture(workName = 'SQL 入门') {
         close: async () => { ownEvents.end(); },
       });
     },
-    getSession: async () => ({ name: workName } as never),
+    getSession: async (id) => ({ name: typeof workName === 'function' ? workName(id) : workName } as never),
     resolveWorkHubCoordinationSession: async () => ({ sessionId }),
     answerWorkHubCoordination: async (input) => { if (busy) throw new RuntimeHostOperationError('workhub.coordination.answer', 'session_busy', 'busy'); starts.push(input); return { turnId: input.turnId }; },
     answerInteraction: async (input) => { answers.push(input); pending = []; return {} as never; },
@@ -263,5 +263,97 @@ test('the latest WeChat follow-up carries its associated work heading without a 
     assert.equal(f.starts.length, 1, 'association does not dispatch work');
     await f.restart();
     assert.equal(f.sends.length, 1, 'already delivered answers are not resent');
+  } finally { await f.close(); }
+});
+
+function association(turnId: string, id: string, targetSessionId: string | null, reason = 'unrelated'): [StoredMessage, StoredMessage] {
+  const request = targetSessionId === null ? { operation: 'associate', targetSessionId, reason } : { operation: 'associate', targetSessionId };
+  const receipt = targetSessionId === null ? request : { ...request, targetSessionKey: JSON.stringify(['host', targetSessionId]), targetSessionName: 'SQL 入门' };
+  return [
+    { type: 'tool_call', id, turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request } },
+    { type: 'tool_result', id: `${id}-result`, turnId, ts: 2, toolUseId: id, isError: false, content: { kind: 'json', value: { structuredContent: receipt } } },
+  ];
+}
+
+for (const reason of ['unrelated', 'overview', 'ambiguous']) {
+  test(`a same-turn ${reason} correction clears the remote heading across restart`, async () => {
+    const f = await fixture();
+    try {
+      await f.bridge.handle(message('one', '这不是 SQL 的问题'));
+      const turnId = f.starts[0]!.turnId;
+      const initial = association(turnId, 'initial', 'sql');
+      const correction = association(turnId, 'correction', null, reason);
+      if (reason === 'overview' && correction[1].type === 'tool_result') correction[1].content = { kind: 'text', text: JSON.stringify({ operation: 'associate', targetSessionId: null, reason }) };
+      await f.transcript([...initial, correction[0]], false);
+      await f.restart();
+      await f.transcript([...initial, ...correction], false);
+      await f.restart();
+      await f.transcript([...initial, ...correction,
+        { type: 'assistant', id: 'answer', turnId, ts: 3, text: '这是通用回答。', modelId: 'test' },
+      ]);
+      assert.deepEqual(f.sends, [{ chat: 'one', text: '这是通用回答。' }]);
+      assert.equal(f.starts.length, 1, 'association corrections do not dispatch work');
+      await f.restart();
+      assert.equal(f.sends.length, 1, 'a cleared heading does not break delivery deduplication');
+    } finally { await f.close(); }
+  });
+}
+
+for (const invalid of ['error', 'wrapped-error', 'target', 'turn', 'call', 'reason', 'missing-reason']) {
+  test(`a ${invalid} clearing receipt cannot erase the current remote heading`, async () => {
+    const f = await fixture();
+    try {
+      await f.bridge.handle(message('one', 'SQL 问题'));
+      const turnId = f.starts[0]!.turnId;
+      const initial = association(turnId, 'initial', 'sql');
+      const correction = association(turnId, 'correction', null);
+      const result = correction[1];
+      assert.equal(result.type, 'tool_result');
+      if (result.type !== 'tool_result') return;
+      if (invalid === 'error') result.isError = true;
+      if (invalid === 'turn') correction[0].turnId = 'another-turn';
+      if (invalid === 'call') result.toolUseId = 'another-call';
+      if (invalid === 'target') correction[0] = association(turnId, 'correction', 'cs336')[0];
+      if (invalid === 'wrapped-error') result.content = { kind: 'json', value: { isError: true, structuredContent: { operation: 'associate', targetSessionId: null, reason: 'unrelated' } } };
+      if (invalid === 'reason' || invalid === 'missing-reason') result.content = { kind: 'json', value: { operation: 'associate', targetSessionId: null, ...(invalid === 'reason' ? { reason: 'invalid' } : {}) } };
+      await f.transcript([...initial, ...correction,
+        { type: 'assistant', id: 'answer', turnId, ts: 3, text: 'SQL 回答。', modelId: 'test' },
+      ]);
+      assert.deepEqual(f.sends, [{ chat: 'one', text: '[SQL 入门]\nSQL 回答。' }]);
+    } finally { await f.close(); }
+  });
+}
+
+for (const chat of ['one', 'two']) {
+  test(`a clearing receipt cannot cross turns in chat ${chat}`, async () => {
+    const f = await fixture();
+    try {
+      await f.bridge.handle(message('one', 'SQL 问题'));
+      await f.bridge.handle(message(chat, '另一个 SQL 问题'));
+      const first = f.starts[0]!.turnId;
+      const second = f.starts[1]!.turnId;
+      const correction = association(first, 'correction', null);
+      correction[1].turnId = second;
+      await f.transcript([...association(first, 'first', 'sql'), ...association(second, 'second', 'sql'), ...correction,
+        { type: 'assistant', id: 'answer-first', turnId: first, ts: 3, text: '第一条回答。', modelId: 'test' },
+        { type: 'assistant', id: 'answer-second', turnId: second, ts: 4, text: '第二条回答。', modelId: 'test' },
+      ]);
+      assert.deepEqual(f.sends, [
+        { chat: 'one', text: '[SQL 入门]\n第一条回答。' },
+        { chat, text: '[SQL 入门]\n第二条回答。' },
+      ]);
+    } finally { await f.close(); }
+  });
+}
+
+test('a same-turn topic switch uses the corrected work heading', async () => {
+  const f = await fixture((id) => id === 'cs336' ? 'CS336' : 'SQL 入门');
+  try {
+    await f.bridge.handle(message('one', '其实是 CS336'));
+    const turnId = f.starts[0]!.turnId;
+    await f.transcript([...association(turnId, 'initial', 'sql'), ...association(turnId, 'switch', 'cs336'),
+      { type: 'assistant', id: 'answer', turnId, ts: 3, text: '课程回答。', modelId: 'test' },
+    ]);
+    assert.deepEqual(f.sends, [{ chat: 'one', text: '[CS336]\n课程回答。' }]);
   } finally { await f.close(); }
 });
