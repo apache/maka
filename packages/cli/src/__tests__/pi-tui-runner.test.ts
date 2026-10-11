@@ -8805,6 +8805,63 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('drains a retraction started before /new re-keys', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RetractingDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+    try {
+      driver.startBlockingTurn();
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+      terminal.input('queued resend');
+      terminal.input('\r');
+      await waitFor(() => driver.queuedRows.length === 1);
+      driver.turnGate.resolve();
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+
+      // The Shift+Left retraction is held on the Host call when /new arrives:
+      // startNewSession re-keys onto a fresh Session while the Host has
+      // already removed the queued entries, so a response landing after the
+      // re-key would be discarded by the new-session fence. /new waits in the
+      // same switch window as /session (#5265 review).
+      driver.retractGate = deferred<void>();
+      terminal.input('\x1b[1;2D'); // Shift+Left
+      await waitFor(() => driver.retractCalls === 1);
+      terminal.input('/new');
+      terminal.input('\r');
+      await Promise.race([waitFor(() => driver.startNewSessionCalls === 1), delay(50)]);
+      assert.equal(
+        driver.startNewSessionCalls,
+        0,
+        '/new parks behind the pending retraction: ' + driver.eventLog.join(','),
+      );
+
+      driver.retractGate.resolve();
+      await waitFor(() => driver.startNewSessionCalls === 1);
+      const retractDone = driver.eventLog.findIndex((entry) => entry.startsWith('retract-done:'));
+      assert.ok(retractDone !== -1, 'the retraction completed');
+      assert.ok(
+        editorInputText(terminal)?.includes('queued resend') === true,
+        'the retracted text must reach the editor instead of being discarded by the new-session re-key',
+      );
+    } finally {
+      exitMaka(terminal);
+      await Promise.race([
+        run,
+        delay(CLOSE_BUDGET_MS).then(() => {
+          throw new Error('TUI did not close during test cleanup');
+        }),
+      ]);
+    }
+  });
+
   test('drains a pending retraction before a navigation re-keys', async () => {
     // Every navigation re-key removes the queue entries a pending retraction
     // was asked for: the Host answers it while the driver still points at the

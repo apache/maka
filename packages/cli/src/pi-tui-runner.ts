@@ -3888,13 +3888,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
   };
 
-  const newSession = async (): Promise<boolean> => {
-    // `/new` must stay reachable while a Turn runs (#3210 review), so the busy
-    // lock never gates it — the end of the Turn does not either. A mid-turn
-    // detach's retraction-drain window leaves `detaching` as the only guard:
-    // startNewSession's re-key must not race the in-flight switch's (#5265
-    // review).
-    if (detaching) return false;
+  const runNewSession = async (): Promise<boolean> => {
+    // A retraction already in flight when /new landed must drain here, while
+    // the driver still points at the session it was asked for: the Host has
+    // already removed the queued entries, so a response arriving after
+    // startNewSession's re-key would be discarded by the fresh-session fence
+    // (#5265 review).
+    await settleRetractions();
     try {
       await input.driver.startNewSession();
     } catch {
@@ -3932,6 +3932,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     await discardCurrentSidePair();
     requestRender();
     return true;
+  };
+  const newSession = async (): Promise<boolean> => {
+    // `/new` must stay reachable while a Turn runs (#3210 review), so the busy
+    // lock never gates it — the end of the Turn does not either. A mid-turn
+    // detach's retraction-drain window leaves `detaching` as the only guard:
+    // startNewSession's re-key must not race the in-flight switch's (#5265
+    // review).
+    if (detaching) return false;
+    // Same switch window as `/session`: startNewSession re-keys the driver
+    // through asynchronous Host work, and a Shift+Left asked inside that
+    // window would address the session being replaced, whose entries the Host
+    // removes as the fresh Session is created (#5265 review).
+    return holdSwitchWindow(() => runNewSession());
   };
 
   const showHelp = () => {
