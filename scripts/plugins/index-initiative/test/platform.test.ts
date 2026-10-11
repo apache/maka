@@ -243,3 +243,17 @@ test('temporary model failure keeps scheduled discovery enabled; permission fail
     await f.close();
   }
 });
+
+test('assistant status remains a strict JSON value at the real Host RPC boundary', async () => {
+  const f = await fixture();
+  try {
+    await f.remote('assistant.bind', { sessionId: 'owner' });
+    for (const includeMemory of [true, false]) {
+      const result = await f.remote('assistant.status', { includeMemory });
+      assert.deepEqual(result, JSON.parse(JSON.stringify(result)));
+      assert.equal(result.readiness.sessionError, null);
+    }
+  } finally {
+    await f.close();
+  }
+});

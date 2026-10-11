@@ -91,7 +91,7 @@ export function registerAssistant(
         model: session?.session?.model ?? null,
         connection: session?.session?.llmConnectionSlug ?? null,
         executor: session?.session?.executorId ?? null,
-        sessionError,
+        sessionError: sessionError ?? null,
         sessionAvailable: !!session,
         notice:
           '模型沿用当前聊天配置；请在聊天模型选择器确认连接。来源注册不代表授权或同步成功，历史导入可选。',
