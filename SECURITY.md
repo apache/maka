@@ -33,9 +33,7 @@ attacker-influenced string.
 
 ## 1. Reporting a vulnerability
 
-Report privately by emailing **security@maka.app** (or open a
-private GitHub Security Advisory once that's enabled). Please do
-NOT open public issues for security vulnerabilities.
+Report privately by emailing **security@apache.org**. Please do NOT open public issues for security vulnerabilities.
 
 Useful reports include:
 
