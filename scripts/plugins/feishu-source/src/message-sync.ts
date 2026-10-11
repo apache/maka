@@ -41,26 +41,30 @@ export class MessageSync {
     readonly verify: (caller: any) => Promise<void>,
   ) {}
   status(jobId?: string) {
-    const jobs = jobId ? [this.cache.job(jobId)] : this.cache.jobs();
+    const job = jobId ? this.cache.job(jobId) : this.cache.latest();
+    const source = `feishu.${this.cache.scope.instanceId}.messages`;
+    if (!job) return { configured: true, synchronized: false, source };
+    const count = (sql: string) => Number(this.cache.db.prepare(sql).get(job.id)!.n);
     return {
-      jobs: jobs.map((j) => ({
-        jobId: j.id,
-        startTime: j.startTime,
-        endTime: j.endTime,
-        status: j.status,
-        phase: j.phase,
-        pages: j.pages,
-        messages: Number(
-          this.cache.db.prepare('SELECT COUNT(*) n FROM staged WHERE job=?').get(j.id)!.n,
-        ),
-        updatedAt: j.updatedAt,
-        completedAt: j.completedAt,
-        publication: j.publication,
-        error: j.error,
-      })),
-      publishedBoundary: this.cache.boundary(),
+      configured: true,
+      synchronized: job.status === 'complete',
+      source,
+      jobId: job.id,
+      status: job.status,
+      range: { startTime: job.startTime, endTime: job.endTime, containers: job.containers },
+      phase: job.phase,
+      pages: job.pages,
+      discoveredChats: count('SELECT COUNT(*) n FROM sync_chats WHERE job=?'),
+      completedChats: count(
+        "SELECT COUNT(*) n FROM sync_chats WHERE job=? AND json_extract(payload,'$.done')=1",
+      ),
+      downloadedMessages: count('SELECT COUNT(*) n FROM sync_members WHERE job=?'),
+      startedAt: job.startedAt,
+      updatedAt: job.updatedAt,
+      finishedAt: job.finishedAt,
+      error: job.error,
       notice:
-        '仅完整同步批次对记忆发布。聊天历史加消息搜索不保证获取飞书全部历史或所有旧话题回复；不会自动同步。',
+        '仅完整同步任务对记忆发布；范围为 [startTime,endTime)，单位秒。聊天历史加消息搜索不保证获取飞书全部历史或所有旧话题回复；不会自动同步。',
     };
   }
   async sync(input: { startTime: number; endTime: number; refresh?: boolean }, caller: any) {
@@ -93,42 +97,27 @@ export class MessageSync {
     }
     return running;
   }
-  private next(job: any, data: any, key: string) {
+  private next(data: any) {
     if (data.has_more && (typeof data.page_token !== 'string' || !data.page_token))
       throw Error('Missing provider pagination cursor');
-    const next = data.has_more ? data.page_token : undefined;
-    if (next) {
-      const marker = `${key}:${next}`;
-      if (job.seen.includes(marker)) throw Error('Repeated provider pagination cursor');
-      job.seen.push(marker);
-    }
-    return next;
+    return data.has_more ? (data.page_token as string) : null;
   }
   private inScope(m: any, job: any) {
     identifier(m.message_id);
     if (!Number.isFinite(Number(m.create_time))) throw Error('Missing original message timestamp');
-    const scope = this.cache.scope;
-    return (
-      Number(m.create_time) >= job.startTime * 1000 &&
-      Number(m.create_time) < job.endTime * 1000 &&
-      (!scope.containers.length ||
-        scope.containers.some((c: any) =>
-          c.type === 'chat' ? c.id === m.chat_id : c.id === m.thread_id,
-        ))
-    );
+    return this.cache.inScope(m, job) && this.cache.inScope(m);
   }
   private async run(job: any, caller: any) {
     try {
       while (job.phase !== 'complete') {
         caller.invocation.abortSignal?.throwIfAborted();
-        if (job.phase === 'chats') {
-          if (this.cache.scope.containers.length) {
-            job.chats = this.cache.scope.containers
-              .filter((c: any) => c.type === 'chat')
-              .map((c: any) => c.id);
-            // Explicit thread scope is resolved by bounded search, not full historical traversal.
+        if (job.phase === 'discover') {
+          if (job.containers.length) {
             job.phase = 'history';
-            this.cache.page(job, []);
+            this.cache.page(job, [], {
+              chats: job.containers.filter((c: any) => c.type === 'chat').map((c: any) => c.id),
+              count: false,
+            });
             continue;
           }
           const data = await this.api(
@@ -137,55 +126,66 @@ export class MessageSync {
             {
               types: 'p2p,group',
               page_size: '100',
-              ...(job.cursor ? { page_token: job.cursor } : {}),
+              ...(job.chatsPage ? { page_token: job.chatsPage } : {}),
             },
             undefined,
             caller,
           );
           if (!Array.isArray(data.items)) throw Error('Invalid chat directory');
-          job.chats = [
-            ...new Set([...job.chats, ...data.items.map((c: any) => identifier(c.chat_id))]),
-          ];
-          job.cursor = this.next(job, data, 'chats');
-          if (!job.cursor) job.phase = 'history';
-          this.cache.page(job, []);
+          job.chatsPage = this.next(data);
+          if (!job.chatsPage) job.phase = 'history';
+          this.cache.page(job, [], {
+            chats: data.items.map((c: any) => identifier(c.chat_id)),
+            kind: 'discover',
+            next: job.chatsPage,
+          });
           continue;
         }
         if (job.phase === 'history') {
-          if (job.chatIndex >= job.chats.length) {
+          const chat = this.cache.nextChat(job.id);
+          if (!chat) {
             job.phase = 'search';
-            job.cursor = undefined;
-            this.cache.page(job, []);
+            this.cache.save(job);
             continue;
           }
-          const chat = job.chats[job.chatIndex];
           const data = await this.api(
             'GET',
             '/im/v1/messages',
             {
               container_id_type: 'chat',
-              container_id: chat,
+              container_id: chat.id,
               start_time: String(job.startTime),
               end_time: String(job.endTime),
               sort_type: 'ByCreateTimeAsc',
               page_size: '50',
-              ...(job.cursor ? { page_token: job.cursor } : {}),
+              ...(chat.page ? { page_token: chat.page } : {}),
             },
             undefined,
             caller,
           );
           if (!Array.isArray(data.items)) throw Error('Invalid message page');
-          const messages = data.items.filter((m: any) => this.inScope(m, job));
-          job.cursor = this.next(job, data, `chat:${chat}`);
-          if (!job.cursor) job.chatIndex++;
-          this.cache.page(job, messages);
+          const page = this.next(data);
+          this.cache.page(
+            job,
+            data.items.filter((m: any) => this.inScope(m, job)),
+            {
+              chat: { id: chat.id, page, done: !page },
+              kind: `chat:${chat.id}`,
+              next: page,
+            },
+          );
+          continue;
+        }
+        if (job.phase === 'publish') {
+          await this.verify({ ...caller, invocation: { ...caller.invocation } });
+          this.cache.publish(job);
           continue;
         }
         if (job.phase !== 'search') throw Error('Unknown sync phase');
         const data = await this.api(
           'POST',
           '/im/v1/messages/search',
-          { page_size: '50', ...(job.cursor ? { page_token: job.cursor } : {}) },
+          { page_size: '50', ...(job.searchPage ? { page_token: job.searchPage } : {}) },
           {
             query: '',
             filter: { time_range: { start_time: iso(job.startTime), end_time: iso(job.endTime) } },
@@ -214,17 +214,14 @@ export class MessageSync {
             throw Error('mget omitted an original; cannot assume deletion');
           messages.push(...found.items.filter((m: any) => this.inScope(m, job)));
         }
-        job.cursor = this.next(job, data, 'search');
-        if (!job.cursor) job.phase = 'complete';
-        this.cache.page(job, messages);
+        job.searchPage = this.next(data);
+        if (!job.searchPage) job.phase = 'publish';
+        this.cache.page(job, messages, { kind: 'search', next: job.searchPage });
       }
-      // A new invocation forces account verification again at the publication boundary.
-      await this.verify({ ...caller, invocation: { ...caller.invocation } });
-      this.cache.publish(job);
     } catch (e) {
       // Save ONLY the last committed page state. In-memory mutations from a failed page are discarded.
       const durable = this.cache.job(job.id);
-      durable.status = 'failed';
+      durable.status = 'incomplete';
       durable.error = String(e);
       this.cache.save(durable);
     }

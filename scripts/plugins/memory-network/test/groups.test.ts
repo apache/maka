@@ -102,7 +102,7 @@ test('one group uses one Agent; independent checkpoints, numbers and complete=fa
     bindings.map((b) => b.groupNumber),
     [8, 2],
   );
-  assert.ok(bindings.every((b) => b.groupMembers.length === 2));
+  assert.ok(bindings.every((b) => b.groupIndexIds.length === 2));
   assert.equal(
     (
       await f.invoke('MemoryHistory', {
@@ -203,12 +203,12 @@ test('restart retains group session, numbering and completed members; paused mem
     );
     await checkpoint(f, session, b, true);
   });
-  // Synthetic legacy workers from the other implementation retain their one shared Session.
+  // Persisted local-format workers retain their one shared Session and groupIndexIds.
   const legacyDb = new DatabaseSync(join(f.root, 'data/network.sqlite'));
   for (const row of legacyDb.prepare('SELECT index_id,payload FROM workers').all()) {
     const worker = JSON.parse(String(row.payload));
-    worker.groupIndexIds = worker.groupMembers;
-    delete worker.groupMembers;
+    assert.deepEqual(worker.groupIndexIds, [a, b]);
+    assert.equal(worker.groupMembers, undefined);
     legacyDb
       .prepare('UPDATE workers SET payload=? WHERE index_id=?')
       .run(JSON.stringify(worker), String(row.index_id));

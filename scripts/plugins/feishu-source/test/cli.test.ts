@@ -300,3 +300,93 @@ test('refreshable pinned login can read; switched identities and unusable login 
     assert.equal(reads, allowed ? 1 : 0);
   }
 });
+
+for (const code of ['invalid_response', 'command_timeout', 'EAGAIN', 'EMFILE', 'ENFILE']) {
+  test(`transient ${code} retries auth and reads twice, then same invocation can recover`, async () => {
+    let authCalls = 0,
+      reads = 0,
+      fail = true;
+    const waits: number[] = [];
+    const { FeishuCliError } = await import('../src/cli.js');
+    const cli = createCli(
+      config,
+      async (args) => {
+        if (args[0] === 'auth') {
+          authCalls++;
+          if (fail) throw new FeishuCliError(code);
+          return status;
+        }
+        reads++;
+        if (reads < 3) throw new FeishuCliError(code);
+        return { ok: true, identity: 'user', data: { recovered: true } };
+      },
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+    const c = caller();
+    await assert.rejects(cli.verify(c), new RegExp(code));
+    assert.equal(authCalls, 3);
+    assert.deepEqual(waits, [250, 500]);
+    fail = false;
+    assert.deepEqual(await cli.call(['task', 'tasks', 'get'], c), { recovered: true });
+    assert.equal(authCalls, 4);
+    assert.equal(reads, 3);
+    assert.ok(waits.filter((x) => x === 250).length >= 2);
+    assert.ok(waits.filter((x) => x === 500).length >= 2);
+    await cli.verify(c);
+    assert.equal(authCalls, 4, 'successful identity remains cached');
+  });
+}
+test('command timeout is classified, read retry is bounded, auth denial and account mismatch never retry', async () => {
+  const waits: number[] = [];
+  let calls = 0;
+  const timeout = createCli(
+    config,
+    async (args) => {
+      if (args[0] === 'auth') return status;
+      calls++;
+      throw Object.assign(Error('private stderr must not escape'), {
+        killed: true,
+        signal: 'SIGTERM',
+      });
+    },
+    async (ms) => {
+      waits.push(ms);
+    },
+  );
+  await assert.rejects(timeout.call(['task', 'tasks', 'get'], caller()), /command_timeout/);
+  assert.equal(calls, 3);
+  for (const auth of [{ error: { code: 99991672 } }, { ...status, appId: 'wrong' }]) {
+    let attempts = 0;
+    const denied = createCli(
+      config,
+      async () => {
+        attempts++;
+        return auth;
+      },
+      async () => {
+        assert.fail('must not retry permission/account failure');
+      },
+    );
+    await assert.rejects(denied.verify(caller()), /99991672|account changed/);
+    assert.equal(attempts, 1);
+  }
+});
+test('abort during transient backoff stops retry and clears failed verification', async () => {
+  const { FeishuCliError } = await import('../src/cli.js');
+  const abort = new AbortController();
+  let calls = 0;
+  const cli = createCli(
+    config,
+    async () => {
+      calls++;
+      throw new FeishuCliError('EAGAIN');
+    },
+    async () => {
+      abort.abort(Error('cancel retry'));
+    },
+  );
+  await assert.rejects(cli.verify({ invocation: { abortSignal: abort.signal } }), /cancel retry/);
+  assert.equal(calls, 1);
+});

@@ -20,10 +20,11 @@
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { createCliSources } from './cli-sources.js';
 import { createCli } from './cli.js';
+import { createFeishuSource } from './adapter.js';
 import { MessageCache } from './message-cache.js';
 import { MessageSync, type MessageApi } from './message-sync.js';
 export default {
@@ -49,25 +50,6 @@ export default {
         )
       )
         throw Error('Invalid containers');
-      const legacyLocation = await ctx.storage.get('message-cache-directory');
-      if (legacyLocation.value)
-        throw Error(
-          'Legacy Feishu message-cache-directory found. Cache location is unchanged; provide the old account/app namespace and cache schema before migrating. No empty replacement cache was created.',
-        );
-      let location = await ctx.storage.get('data-directory');
-      if (!location.value) {
-        const path =
-          config.dataDirectory ??
-          join(homedir(), '.maka', 'plugin-data', 'dev.maka.feishu-source', randomUUID());
-        if (!isAbsolute(path)) throw Error('dataDirectory must be absolute');
-        try {
-          await ctx.storage.set('data-directory', path, { expectedRevision: location.revision });
-        } catch {
-          location = await ctx.storage.get('data-directory');
-          if (!location.value) throw Error('Unable to initialize message storage');
-        }
-        location = await ctx.storage.get('data-directory');
-      }
       const startTime = config.messageStartTime ?? (config.cliPath ? 0 : (config.startTime ?? 0));
       const endTime = config.messageEndTime ?? (config.cliPath ? undefined : config.endTime);
       if (
@@ -76,25 +58,39 @@ export default {
         (endTime !== undefined && (!Number.isSafeInteger(endTime) || endTime <= startTime))
       )
         throw Error('Invalid message source time scope');
-      const cache = new MessageCache(location.value, {
-        instanceId: config.instanceId,
-        accountId: config.accountId,
-        appId: config.appId,
-        domain: config.domain ?? 'feishu',
-        containers,
-        startTime,
-        ...(endTime === undefined ? {} : { endTime }),
-      });
-      let sync: MessageSync | undefined;
-      ctx.effect(
-        () => async () => {
-          await sync?.close();
-          cache.close();
-        },
-        'feishu-cache',
-      );
+      let cache: MessageCache;
+      let sync: MessageSync;
       let api: MessageApi, verify: (caller: any) => Promise<void>;
       if (config.cliPath) {
+        const stored = async (name: string, initial: () => string) => {
+          let record = await ctx.storage.get(name);
+          if (!record.value) {
+            try {
+              await ctx.storage.set(name, initial(), { expectedRevision: record.revision });
+            } catch {
+              record = await ctx.storage.get(name);
+              if (!record.value) throw Error('Unable to initialize ' + name);
+            }
+            record = await ctx.storage.get(name);
+          }
+          return record.value as string;
+        };
+        const directory = await stored(
+          'message-cache-directory',
+          () =>
+            config.dataDirectory ??
+            join(homedir(), '.maka', 'plugin-data', 'dev.maka.feishu-source', randomUUID()),
+        );
+        if (!isAbsolute(directory)) throw Error('dataDirectory must be absolute');
+        const key = await stored('cursor-signing-key', () => randomBytes(32).toString('base64url'));
+        cache = new MessageCache(directory, { ...config, containers, startTime, endTime }, key);
+        ctx.effect(
+          () => async () => {
+            await sync?.close();
+            cache.close();
+          },
+          'feishu-cache',
+        );
         const cli = createCli(config);
         verify = (caller) => cli.verify(caller);
         api = (method, path, params, body, caller) =>
@@ -156,21 +152,32 @@ export default {
           await verified.get(caller.invocation);
         };
       }
-      const source = cache.source(
-        `feishu.${config.instanceId}${config.cliPath ? '.messages' : ''}`,
-        verify,
-      );
-      if (config.cliPath)
-        for (const s of createCliSources({
-          ...config,
-          kinds: JSON.parse(config.kinds ?? '["documents","tasks","calendar"]'),
-          containers,
-          messageSource: source,
-          signingKey: cache.key,
-        }))
-          ctx.sources.register(s);
-      else ctx.sources.register(source);
-      sync = new MessageSync(cache, api, verify);
+      if (!config.cliPath) {
+        ctx.sources.register(
+          createFeishuSource(
+            { ...config, containers, startTime, endTime },
+            async () => {
+              throw Error('Use verified token transport');
+            },
+            fetch,
+            async (path, query, caller) => {
+              await verify(caller);
+              return api('GET', path, query, undefined, caller);
+            },
+          ),
+        );
+        return;
+      }
+      const source = cache!.source(`feishu.${config.instanceId}.messages`, verify);
+      for (const s of createCliSources({
+        ...config,
+        kinds: JSON.parse(config.kinds ?? '["documents","tasks","calendar"]'),
+        containers,
+        messageSource: source,
+        signingKey: cache!.key,
+      }))
+        ctx.sources.register(s);
+      sync = new MessageSync(cache!, api, verify);
       for (const [name, description, parameters, impl] of [
         [
           'FeishuSync',
@@ -184,7 +191,7 @@ export default {
         ],
         [
           'FeishuSyncStatus',
-          'Read persisted download progress, errors and published ranges; does not download or organize an index.',
+          'Read one persisted sync job (latest if jobId is omitted): range, phase, pages, discovered/completed chats, downloaded messages, timestamps and errors. Does not download or organize an index.',
           z.object({ jobId: z.string().optional() }),
           async (input: any, caller: any) => {
             await verify(caller);
@@ -198,7 +205,7 @@ export default {
           parameters,
           discovery: 'direct',
           categoryHint: name === 'FeishuSync' ? 'file_write' : 'read',
-          executionSemantics: 'parallel',
+          executionSemantics: name === 'FeishuSync' ? 'exclusive_step' : 'parallel',
           impl: async (input: any, call: any) =>
             JSON.parse(JSON.stringify(await impl(parameters.parse(input), { invocation: call }))),
         });

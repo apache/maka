@@ -232,14 +232,6 @@ test('packaged Feishu provider uses the real plugin service and complete memory 
   });
   const installed = await f.platform.installPackage(bundlePath);
   assert.deepEqual(installed.failures, []);
-  assert.equal(
-    (await f.invoke('MemorySourceQuery', { source: 'feishu.packaged-test', query: {} })).items
-      .length,
-    0,
-  );
-  const synced = await f.invoke('FeishuSync', { startTime: 1, endTime: 20 });
-  assert.equal(synced.jobs[0].status, 'complete');
-  const remoteReads = requests.filter((x) => !x.endsWith('user_info')).length;
   const sources = await f.invoke('MemorySources', {});
   assert.ok(sources.some((s) => s.id === 'feishu.packaged-test'));
   const range = await f.invoke('MemoryRange', { sources: ['maka', 'feishu.packaged-test'] });
@@ -281,12 +273,8 @@ test('packaged Feishu provider uses the real plugin service and complete memory 
     key: originalRead.backlinks[0].key,
   });
   assert.match(content.text, /设备到货/);
-  assert.equal(
-    requests.filter((x) => !x.endsWith('user_info')).length,
-    remoteReads,
-    'index reads do not fetch remote messages',
-  );
-  assert.ok(requests.includes('POST /open-apis/im/v1/messages/search'));
+  assert.ok(requests.includes('GET /open-apis/im/v1/messages'));
+  assert.ok(!requests.some((x) => x.startsWith('POST')));
 });
 
 test('native type filters skip remote body reads and account namespaces never share refs', async (t) => {

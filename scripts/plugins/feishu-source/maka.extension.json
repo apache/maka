@@ -62,7 +62,7 @@
       },
       "messageEndTime": {
         "type": "number",
-        "description": "可同步消息范围上界 Unix 秒，留空不限；读取来源仅访问已发布本地缓存。"
+        "description": "消息范围上界 Unix 秒，留空不限；CLI 模式读取已发布本地缓存，token 模式按需读取远端。"
       },
       "cliProfile": {
         "type": "string",
@@ -70,7 +70,7 @@
       },
       "dataDirectory": {
         "type": "string",
-        "description": "持久化消息同步进度、原文版本及游标签名密钥；留空自动创建。"
+        "description": "CLI 消息缓存基础目录，首次写入 message-cache-directory；账号/应用子目录独立，留空自动创建。"
       }
     }
   },

@@ -544,9 +544,9 @@ export class MemoryController {
             lastSuccess: worker.lastSuccess,
             lastError: worker.lastError,
             startStatus: worker.startStatus ?? null,
-            group: worker.groupMembers
+            group: worker.groupIndexIds
               ? {
-                  members: worker.groupMembers,
+                  members: worker.groupIndexIds,
                   number: worker.groupNumber,
                   sessionId: worker.sessionId,
                 }
@@ -658,7 +658,7 @@ export class MemoryController {
   }
   launch(indexId: string, scheduled = false) {
     this.assertOwner();
-    const members: string[] = this.store.worker(indexId)?.groupMembers ?? [indexId];
+    const members: string[] = this.store.worker(indexId)?.groupIndexIds ?? [indexId];
     // All members name the same job, even when a scheduled round excludes paused members.
     for (const id of members) if (this.runs.has(id)) return { status: 'reused', indexId: id };
     const selected = scheduled ? members.filter((id) => this.enabled(id)) : members;
@@ -711,10 +711,10 @@ export class MemoryController {
     const first = this.store.worker(ids[0]);
     for (const id of ids) {
       const old = this.store.worker(id);
-      if (old?.groupMembers && JSON.stringify(old.groupMembers) !== JSON.stringify(ids))
+      if (old?.groupIndexIds && JSON.stringify(old.groupIndexIds) !== JSON.stringify(ids))
         throw Error('Index already belongs to another group');
     }
-    const agent = first?.groupMembers
+    const agent = first?.groupIndexIds
       ? { sessionId: first.sessionId }
       : await this.ctx.agents.create({ background: true, name: 'Memory index group' });
     this.store.db
@@ -730,7 +730,7 @@ export class MemoryController {
           nextCheckAt: Date.now() + (this.config.intervalMs ?? 43200000),
           ...this.store.worker(id),
           sessionId: agent.sessionId,
-          groupMembers: ids,
+          groupIndexIds: ids,
         });
     });
   }

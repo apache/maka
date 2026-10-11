@@ -19,13 +19,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { MessageCache } from '../src/message-cache.js';
 import { MessageSync } from '../src/message-sync.js';
 import { createCli } from '../src/cli.js';
+const key = 'synthetic-persisted-signing-key';
 const scope = { instanceId: 'test', accountId: 'user', appId: 'app', containers: [], startTime: 0 };
 const caller = () => ({ invocation: { abortSignal: new AbortController().signal } });
 const raw = (id: string, extra: any = {}) => ({
@@ -38,7 +38,7 @@ const raw = (id: string, extra: any = {}) => ({
 });
 const setup = (t: any) => {
   const dir = mkdtempSync(join(tmpdir(), 'feishu-sync-'));
-  let cache = new MessageCache(dir, scope);
+  let cache = new MessageCache(dir, scope, key);
   t.after(() => {
     cache.close();
     rmSync(dir, { recursive: true, force: true });
@@ -50,7 +50,7 @@ const setup = (t: any) => {
     },
     restart: () => {
       cache.close();
-      cache = new MessageCache(dir, scope);
+      cache = new MessageCache(dir, scope, key);
       return cache;
     },
   };
@@ -77,10 +77,7 @@ test('failed pages resume after restart; partial refresh never replaces publishe
     return { items: [raw('root', { body: { content: revision } })], has_more: false };
   };
   const sync = new MessageSync(f.cache, api, ok);
-  assert.equal(
-    (await sync.sync({ startTime: 1, endTime: 4 }, caller())).jobs[0].status,
-    'complete',
-  );
+  assert.equal((await sync.sync({ startTime: 1, endTime: 4 }, caller())).status, 'complete');
   const before = f.cache.boundary();
   const count = requests.length;
   assert.equal((await sync.sync({ startTime: 1, endTime: 4 }, caller())).reused, true);
@@ -88,7 +85,7 @@ test('failed pages resume after restart; partial refresh never replaces publishe
   broken = true;
   revision = 'new';
   const failed = await sync.sync({ startTime: 1, endTime: 4, refresh: true }, caller());
-  assert.equal(failed.jobs[0].status, 'failed');
+  assert.equal(failed.status, 'incomplete');
   assert.equal(f.cache.boundary(), before);
   assert.ok(f.cache.rows().every((r) => String(r.body).includes('old')));
   f.restart();
@@ -98,8 +95,8 @@ test('failed pages resume after restart; partial refresh never replaces publishe
     { startTime: 1, endTime: 4 },
     caller(),
   );
-  assert.equal(retried.jobs[0].jobId, failed.jobs[0].jobId);
-  assert.equal(retried.jobs[0].status, 'complete');
+  assert.equal(retried.jobId, failed.jobId);
+  assert.equal(retried.status, 'complete');
   assert.ok(requests.every((x) => !x.includes('/chats') && !x.endsWith('/messages:')));
   assert.ok(f.cache.rows().every((r) => String(r.body).includes('new')));
   assert.ok(f.cache.rows(before).every((r) => String(r.body).includes('old')));
@@ -133,7 +130,7 @@ test('search deduplicates IDs and uses mget batches <=50, never one request per 
     ok,
   );
   const result = await sync.sync({ startTime: 1, endTime: 3 }, caller());
-  assert.equal(result.jobs[0].messages, 106);
+  assert.equal(result.downloadedMessages, 106);
   assert.deepEqual(
     batches.map((x) => x.length),
     [50, 50, 5],
@@ -169,9 +166,10 @@ test('local cursors bind publication, query, scope and persisted signing key; re
     restored.query({ limit: 1, cursor: page.next + 'bad' }, caller()),
     /Invalid/,
   );
-  const other = new MessageCache(f.dir, { ...scope, accountId: 'other' });
+  const other = new MessageCache(f.dir, { ...scope, accountId: 'other' }, key);
   try {
     assert.equal(other.rows().length, 0);
+    other.publish(other.begin(1, 3));
     await assert.rejects(
       other.source('other', ok).query({ limit: 1, cursor: page.next }, caller()),
       /scope/,
@@ -192,16 +190,13 @@ test('deletions are tombstones, missing mget originals and permission errors are
         ? { items: [{ meta_data: { message_id: 'gone' } }] }
         : { items: missing ? [] : [raw('gone', { deleted: true })] };
   const sync = new MessageSync(f.cache, api, ok);
-  assert.equal(
-    (await sync.sync({ startTime: 1, endTime: 3 }, caller())).jobs[0].status,
-    'complete',
-  );
+  assert.equal((await sync.sync({ startTime: 1, endTime: 3 }, caller())).status, 'complete');
   const source = f.cache.source('test', ok),
     o = (await source.query({}, caller())).items[0];
   assert.equal((await source.read(o, caller())).status, 'deleted');
   missing = true;
   const failed = await sync.sync({ startTime: 1, endTime: 3, refresh: true }, caller());
-  assert.match(failed.jobs[0].error, /cannot assume deletion/);
+  assert.match(failed.error, /cannot assume deletion/);
   await assert.rejects(
     f.cache
       .source('test', async () => {
@@ -231,7 +226,7 @@ test('same range concurrent callers share work and final identity failure does n
   await new Promise((r) => setTimeout(r, 5));
   release();
   const [x, y] = await Promise.all([a, b]);
-  assert.equal(x.jobs[0].jobId, y.jobs[0].jobId);
+  assert.equal(x.jobId, y.jobId);
   assert.equal(calls, 2);
   let checks = 0;
   const denied = new MessageSync(
@@ -243,7 +238,7 @@ test('same range concurrent callers share work and final identity failure does n
   );
   const old = f.cache.boundary();
   const failed = await denied.sync({ startTime: 4, endTime: 5 }, caller());
-  assert.equal(failed.jobs[0].status, 'failed');
+  assert.equal(failed.status, 'incomplete');
   assert.equal(f.cache.boundary(), old);
 });
 
@@ -255,7 +250,7 @@ test('repeated pagination and unapproved time ranges fail explicitly', async (t)
     ok,
   );
   const result = await sync.sync({ startTime: 1, endTime: 3 }, caller());
-  assert.match(result.jobs[0].error, /Repeated/);
+  assert.match(result.error, /Repeated/);
   assert.equal(f.cache.boundary(), 0);
   await assert.rejects(sync.sync({ startTime: 3, endTime: 1 }, caller()), /Time bounds/);
 });
@@ -307,14 +302,14 @@ test('plugin shutdown interrupts a download and retains the last committed page 
   await ready;
   await sync.close();
   const result = await running;
-  assert.equal(result.jobs[0].status, 'failed');
+  assert.equal(result.status, 'incomplete');
   assert.equal(f.cache.boundary(), 0);
   const resumed = await new MessageSync(f.cache, async () => ({ items: [] }), ok).sync(
     { startTime: 1, endTime: 3 },
     caller(),
   );
-  assert.equal(resumed.jobs[0].jobId, result.jobs[0].jobId);
-  assert.equal(resumed.jobs[0].status, 'complete');
+  assert.equal(resumed.jobId, result.jobId);
+  assert.equal(resumed.status, 'complete');
 });
 
 test('chat listing explicitly requests p2p and group on every page; both histories precede search', async (t) => {
@@ -340,7 +335,7 @@ test('chat listing explicitly requests p2p and group on every page; both histori
     },
     ok,
   ).sync({ startTime: 1, endTime: 3 }, caller());
-  assert.equal(result.jobs[0].status, 'complete');
+  assert.equal(result.status, 'complete');
   assert.equal(requests[1].params.page_token, 'second');
   assert.deepEqual(
     requests.filter((r) => r.path === '/im/v1/messages').map((r) => r.params.container_id),
@@ -352,12 +347,16 @@ test('chat listing explicitly requests p2p and group on every page; both histori
 
 test('configured chats remain restricted instead of enumerating all private and group chats', async (t) => {
   const f = setup(t);
-  const cache = new MessageCache(f.dir, {
-    ...scope,
-    containers: [{ type: 'chat', id: 'allowed' }],
-    startTime: 1,
-    endTime: 3,
-  });
+  const cache = new MessageCache(
+    f.dir,
+    {
+      ...scope,
+      containers: [{ type: 'chat', id: 'allowed' }],
+      startTime: 1,
+      endTime: 3,
+    },
+    key,
+  );
   t.after(() => cache.close());
   const sync = new MessageSync(
     cache,
@@ -369,51 +368,7 @@ test('configured chats remain restricted instead of enumerating all private and 
     },
     ok,
   );
-  assert.equal(
-    (await sync.sync({ startTime: 1, endTime: 3 }, caller())).jobs[0].status,
-    'complete',
-  );
+  assert.equal((await sync.sync({ startTime: 1, endTime: 3 }, caller())).status, 'complete');
   assert.equal(cache.rows().length, 1);
   await assert.rejects(sync.sync({ startTime: 0, endTime: 3 }, caller()), /scope/);
-});
-
-test('unmapped legacy sync_jobs is rejected read-only before schema writes, retaining all synthetic data', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'feishu-legacy-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const old = new DatabaseSync(join(dir, 'messages.sqlite'));
-  old.exec('CREATE TABLE sync_jobs(id TEXT PRIMARY KEY,request TEXT,status TEXT,payload TEXT)');
-  old
-    .prepare('INSERT INTO sync_jobs VALUES(?,?,?,?)')
-    .run('old', '{}', 'complete', '{"original":"synthetic"}');
-  const before = old.prepare('SELECT * FROM sync_jobs').all();
-  const schema = old.prepare('SELECT * FROM sqlite_master').all();
-  assert.throws(() => new MessageCache(dir, scope), /Unsupported legacy.*database unchanged/);
-  assert.throws(() => new MessageCache(dir, scope), /original\/version\/publication mapping/);
-  assert.deepEqual(old.prepare('SELECT * FROM sync_jobs').all(), before);
-  assert.deepEqual(old.prepare('SELECT * FROM sqlite_master').all(), schema);
-  old.close();
-  assert.deepEqual(readdirSync(dir), ['messages.sqlite']);
-});
-
-test('legacy cache location never silently creates a new empty data-directory', async () => {
-  const { default: plugin } = await import('../src/host.js');
-  const writes: any[] = [];
-  await assert.rejects(
-    plugin.host.apply(
-      {
-        maka: { rootId: 'profile' },
-        storage: {
-          get: async (key: string) => ({
-            value: key === 'message-cache-directory' ? '/synthetic/legacy-cache' : undefined,
-          }),
-          set: async (...args: any[]) => {
-            writes.push(args);
-          },
-        },
-      },
-      { instanceId: 'test', accountId: 'user', appId: 'app' },
-    ),
-    /Legacy Feishu message-cache-directory/,
-  );
-  assert.deepEqual(writes, []);
 });

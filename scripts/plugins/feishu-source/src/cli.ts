@@ -70,12 +70,31 @@ export function createCli(
             if (detail) break;
           } catch {}
         }
-        const code = detail?.code ?? error.code ?? 'invalid_response';
+        const code = error.killed
+          ? 'command_timeout'
+          : (detail?.code ?? error.code ?? 'invalid_response');
         throw new FeishuCliError(/^[A-Za-z0-9_]+$/.test(String(code)) ? code : 'invalid_response');
       }
     });
-  const invoke: CliRun = (args, signal) =>
-    execute([...args, ...(config.cliProfile ? ['--profile', config.cliProfile] : [])], signal);
+  const invoke: CliRun = async (args, signal) => {
+    signal?.throwIfAborted();
+    try {
+      return await execute(
+        [...args, ...(config.cliProfile ? ['--profile', config.cliProfile] : [])],
+        signal,
+      );
+    } catch (error: any) {
+      if (signal?.aborted) throw signal.reason;
+      if (error instanceof FeishuCliError) throw error;
+      const code = error.killed ? 'command_timeout' : (error.code ?? 'invalid_response');
+      throw new FeishuCliError(/^[A-Za-z0-9_]+$/.test(String(code)) ? code : 'invalid_response');
+    }
+  };
+  const transient = (error: unknown) =>
+    error instanceof FeishuCliError &&
+    ['invalid_response', 'command_timeout', 'EAGAIN', 'EMFILE', 'ENFILE'].includes(
+      String(error.code),
+    );
   const verified = new WeakMap<object, Promise<void>>();
   async function verify(caller: any) {
     const invocation = caller.invocation;
@@ -84,7 +103,19 @@ export function createCli(
     let pending = verified.get(invocation);
     if (!pending) {
       pending = (async () => {
-        const status = await invoke(['auth', 'status', '--json'], invocation.abortSignal);
+        let status: any;
+        for (let retry = 0; ; retry++) {
+          try {
+            status = await invoke(['auth', 'status', '--json'], invocation.abortSignal);
+            if (status?.error) throw new FeishuCliError(status.error.code ?? 'invalid_response');
+            if (!status || typeof status !== 'object') throw new FeishuCliError('invalid_response');
+            break;
+          } catch (error) {
+            invocation.abortSignal?.throwIfAborted();
+            if (!transient(error) || retry >= 2) throw error;
+            await pause(250 * 2 ** retry, invocation.abortSignal);
+          }
+        }
         // The CLI refreshes an expired access token on the next API read. Keep the
         // pinned identity checks; only a refreshable login may proceed.
         if (
@@ -96,7 +127,12 @@ export function createCli(
       })();
       verified.set(invocation, pending);
     }
-    await pending;
+    try {
+      await pending;
+    } catch (error) {
+      if (verified.get(invocation) === pending) verified.delete(invocation);
+      throw error;
+    }
   }
   const safe = new Set([
     'im +chat-list',
@@ -133,7 +169,9 @@ export function createCli(
       throw Error('CLI command is not in the read-only allowlist');
     await verify(caller);
     const signal = caller.invocation.abortSignal;
-    for (let attempt = 0; ; attempt++) {
+    let transientRetries = 0,
+      rateRetries = 0;
+    for (;;) {
       // Shared across sources and invocations: parallel metadata reads cannot create an unbounded burst.
       const slot = Math.max(Date.now(), nextRequestAt);
       nextRequestAt = slot + 250;
@@ -141,18 +179,24 @@ export function createCli(
       signal?.throwIfAborted();
       try {
         const result = await invoke([...args, '--as', 'user', '--format', 'json'], signal);
-        if (!result.ok) throw new FeishuCliError(result.error?.code ?? 'invalid_response');
+        if (!result?.ok) throw new FeishuCliError(result?.error?.code ?? 'invalid_response');
         if (result.identity !== 'user')
           throw Error('Feishu CLI did not return a successful user read');
         return result.data;
       } catch (error) {
+        signal?.throwIfAborted();
+        if (transient(error)) {
+          if (transientRetries >= 2) throw error;
+          await pause(250 * 2 ** transientRetries++, signal);
+          continue;
+        }
         if (
           !(error instanceof FeishuCliError) ||
           !['99991400', '429'].includes(String(error.code)) ||
-          attempt >= 3
+          rateRetries >= 3
         )
           throw error;
-        const backoff = 1000 * 2 ** attempt;
+        const backoff = 1000 * 2 ** rateRetries++;
         nextRequestAt = Math.max(nextRequestAt, Date.now() + backoff);
         await pause(backoff, signal);
       }
