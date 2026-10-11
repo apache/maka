@@ -19,7 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
+import { BaseBotAdapter, type BotIncomingMessage, type BotRegistry } from '@maka/runtime/bots';
+import { createDefaultBotChannel } from '@maka/core/bot-chat-settings';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 import { BotSessionUnavailableError } from '../bot-session-adapter.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
@@ -29,6 +30,12 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     timeoutMs: 1_000,
     message: 'Timed out waiting for bot lifecycle test',
   });
+}
+
+class IncomingAdapter extends BaseBotAdapter {
+  async start(): Promise<void> {}
+  async stop(): Promise<void> {}
+  receive(message: BotIncomingMessage): void { this.emitIncomingMessage(message); }
 }
 
 describe('bot session lifecycle bindings', () => {
@@ -127,7 +134,7 @@ describe('bot session lifecycle bindings', () => {
   });
 });
 
-test('WorkHub routing bypasses Bot Session creation, explore preparation and reset commands', async () => {
+test('channel admission precedes WorkHub routing, Bot Session creation and reset commands', async () => {
   let routed = 0;
   let closed = false;
   const unexpected = async (): Promise<never> => { throw new Error('Bot Session must not be used'); };
@@ -139,7 +146,15 @@ test('WorkHub routing bypasses Bot Session creation, explore preparation and res
       async close() { closed = true; },
     },
   });
-  await service.handleBotIncomingMessage({ platform: 'qq', userId: 'user', userName: 'User', chatId: 'chat', isGroup: false, receivedAt: 1, text: '重置', sourceMessageId: 'source' });
+  const adapter = new IncomingAdapter('qq', { ...createDefaultBotChannel('qq'), allowedUserIds: ['user'] });
+  const pending: Promise<void>[] = [];
+  adapter.on('message', (message: BotIncomingMessage) => pending.push(service.handleBotIncomingMessage(message)));
+  const message: BotIncomingMessage = { platform: 'qq', userId: 'outsider', userName: 'User', chatId: 'chat', isGroup: false, receivedAt: 1, text: '重置', sourceMessageId: 'source' };
+  adapter.receive(message);
+  await Promise.all(pending);
+  assert.equal(routed, 0);
+  adapter.receive({ ...message, userId: 'user' });
+  await Promise.all(pending);
   assert.equal(routed, 1);
   await service.close();
   assert.equal(closed, true);
