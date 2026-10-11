@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { applySensitivePatch } from './settings/network-settings.js';
+
 export type BotProvider =
   | 'telegram'
   | 'feishu'
@@ -59,15 +61,9 @@ export interface BotChannelSettings {
   lastTestAt?: number;
   lastError?: string;
   /**
-   * PR-BOT-USER-ALLOWLIST-0 (external bot research): platform-native user IDs
-   * permitted to message this bot. `undefined` or empty means no
-   * restriction (preserves the V0.1 behavior for existing installs).
-   * When non-empty, the bot bridge silently drops inbound messages from
-   * any other user — no acknowledgement is sent back, so unauthorized
-   * scanners cannot use bounce behavior to enumerate the bot's policy.
-   *
-   * Stored as a string array since Telegram IDs are 64-bit and JS
-   * `Number` loses precision past 2^53.
+   * Platform-native sender IDs. An absent or empty list allows everyone.
+   * A configured list is enforced by the shared adapter before routing.
+   * IDs stay strings to preserve Telegram's 64-bit values.
    */
   allowedUserIds?: ReadonlyArray<string>;
 }
@@ -149,15 +145,13 @@ export function mergeBotChatSettings(
       ...current.channels,
       ...Object.fromEntries(
         Object.entries(patch?.channels ?? {}).map(([provider, channelPatch]) => {
+          const previous = current.channels[provider as BotProvider];
           const merged = {
-            ...current.channels[provider as BotProvider],
+            ...previous,
             ...channelPatch,
+            token: applySensitivePatch(previous?.token, channelPatch?.token) ?? '',
+            appSecret: applySensitivePatch(previous?.appSecret, channelPatch?.appSecret),
           };
-          // PR-BOT-USER-ALLOWLIST-0: keep the persisted allowlist
-          // shape consistent on every save, not only on initial load.
-          // The renderer textarea sends an array; the normalize step
-          // trims/dedups/caps and downgrades the empty case to
-          // `undefined` (the V0.1 "no restriction" sentinel).
           if ('allowedUserIds' in (channelPatch ?? {})) {
             const normalized = normalizeAllowedUserIds(merged.allowedUserIds);
             if (normalized) merged.allowedUserIds = normalized;

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { MASKED_TOKEN_SENTINEL } from '../web-search.js';
+
 export type ProxyType = 'http' | 'https' | 'socks5';
 
 export const SENSITIVE_PLACEHOLDER = '••••••••' as const;
@@ -26,7 +28,8 @@ export function applySensitivePatch(
   prev: string | undefined,
   next: Sensitive | undefined,
 ): string | undefined {
-  if (next === undefined || next === SENSITIVE_PLACEHOLDER) return prev;
+  if (next === undefined || next === SENSITIVE_PLACEHOLDER || next === MASKED_TOKEN_SENTINEL)
+    return prev;
   if (next === '') return undefined;
   return next;
 }
