@@ -8613,6 +8613,47 @@ Slug openai-work<cursor>
     ]);
   });
 
+  test('traces the quote count on the live transient row of a quote-only submit', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HeldSubmitQuotedDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [storedUserMessage('user-1', 'turn-1', 'first question')],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('quotes:1'));
+    // A quote-only submit stores no text: until the Host echoes the message
+    // back, the live transient row is the only copy of the sent context. It
+    // must carry the quote trace instead of rendering an empty prompt
+    // (#5265 review).
+    terminal.input('\r');
+    await waitFor(() => driver.submittedQuotes.length === 1);
+    await waitFor(
+      () => plainTerminalOutput(terminal.output()).includes('· 1 quote'),
+      'the live transient row names the quotes it rode in on',
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('discards staged quotes only through the explicit /quotes clear', async () => {
     const terminal = new FakeTerminal();
     const driver = new QuotedRewindDriver(

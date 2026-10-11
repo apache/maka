@@ -1452,12 +1452,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   ) => {
     editor.addToHistory(text);
     const messageId = randomUUID();
-    appendUserPrompt(state, text, messageId, true);
+    // The staged quotes must be read before the live row renders: a
+    // quote-only submit has no text, so the row's quote trace is the only
+    // thing distinguishing it from an empty prompt until the Host echoes the
+    // message back (#5265 review).
+    const staged = effectiveStagedQuotes();
+    appendUserPrompt(state, text, messageId, true, staged.length);
     requestRender();
     // Quotes staged by a rewind (#5109) ride this message and only this one:
     // the staging clears as the message dispatches, and a refusal or failure
     // restages them for the retry.
-    const staged = effectiveStagedQuotes();
     const originSessionId = input.driver.getSessionId();
     // The lane the quotes were staged in must be read before the dispatch's
     // own clear: clearStagedQuotes() resets the flag, so a read after it

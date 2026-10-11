@@ -286,12 +286,17 @@ export function appendUserPrompt(
   text: string,
   messageId: string,
   transient = false,
+  quotes = 0,
 ): void {
   const entry = {
     kind: 'user',
     messageId,
     text,
     ...(transient ? { transient: true } : {}),
+    // The quote trace renders on the live row too: a quote-only submit stores
+    // no text, so without the count the row is an empty prompt until the Host
+    // echoes the message back (#5265 review).
+    ...(quotes > 0 ? { quotes } : {}),
   } as const;
   const existingIndex = state.entries.findIndex(
     (candidate) => candidate.kind === 'user' && candidate.messageId === messageId,
@@ -987,6 +992,9 @@ export function applyMakaSessionEventToTranscript(
 
     case 'steering_message':
       // A user interjection injected mid-turn; render it in place as a user turn.
+      // The event replaces this message's live transient row, so the quote
+      // count the row was showing must come along or a quote-only steer loses
+      // its trace the moment the Host acknowledges it (#5265 review).
       appendUserPrompt(
         state,
         event.content.displayText ?? event.content.text,
@@ -997,6 +1005,7 @@ export function applyMakaSessionEventToTranscript(
             entry.messageId === event.messageId &&
             entry.transient === true,
         ),
+        event.content.quotes?.length ?? 0,
       );
       break;
 
