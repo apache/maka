@@ -27,7 +27,6 @@ import {
   parseAllowedUserIdsFromText,
 } from '../bot-chat-settings.js';
 import { SENSITIVE_PLACEHOLDER } from '../settings/network-settings.js';
-import { MASKED_TOKEN_SENTINEL } from '../web-search.js';
 
 describe('bot chat settings owner', () => {
   test('preserves masked credentials and supports replacement, omission and explicit clearing', () => {
@@ -35,7 +34,7 @@ describe('bot chat settings owner', () => {
       const configured = mergeBotChatSettings(createDefaultBotChatSettings(), {
         channels: { [provider]: { token: 'stored-token', appSecret: 'stored-secret' } },
       });
-      for (const mask of [SENSITIVE_PLACEHOLDER, MASKED_TOKEN_SENTINEL]) {
+      for (const mask of [SENSITIVE_PLACEHOLDER, '••••••']) {
         const saved = mergeBotChatSettings(configured, {
           channels: { [provider]: { enabled: true, token: mask, appSecret: mask } },
         });

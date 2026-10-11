@@ -209,7 +209,6 @@ import { createBrowserSelectionCoordinator } from './browser-selection.js';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import {
   isWebSearchProvider,
-  MASKED_TOKEN_SENTINEL,
   normalizeWebSearchLimit,
   normalizeWebSearchQuery,
 } from '@maka/core/web-search';
@@ -232,7 +231,7 @@ import type { GoalState } from '@maka/runtime/goal-state';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import {
-  SENSITIVE_PLACEHOLDER,
+  isSensitivePlaceholder,
   type TestProxyInput,
 } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
@@ -1477,8 +1476,7 @@ function unsupportedWebSearchProvider(): WebSearchResponse {
 function webSearchCredentialOverride(value: unknown): string | undefined {
   return typeof value === 'string' &&
     value.length > 0 &&
-    value !== MASKED_TOKEN_SENTINEL &&
-    value !== SENSITIVE_PLACEHOLDER
+    !isSensitivePlaceholder(value)
     ? value
     : undefined;
 }
