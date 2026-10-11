@@ -62,3 +62,73 @@ test('a direct CS336 answer has a durable work association without starting exec
   ] as StoredMessage[][]) assert.deepEqual(workHubLinkedWork(invalid, [], 'Work'), []);
   await assert.rejects(runtime.actTasks({ hostId: 'host', targetEpoch: 'epoch' }, 'turn', 'bad-call', workHubTasksSchema.parse({ operation: 'associate', targetSessionId: 'unrelated' })), /discovery/);
 });
+
+async function topicReceipt(turnId: string, id: string, targetSessionId: string | null, reason = 'unrelated'): Promise<[StoredMessage, StoredMessage]> {
+  const request = workHubTasksSchema.parse({ operation: 'associate', targetSessionId, ...(targetSessionId === null ? { reason } : {}) });
+  const runtime = createWorkHubRuntime({
+    isCurrent: () => true,
+    client: () => ({
+      listWorkHubCoordinationCandidates: async () => ({ candidateSetId: 'set', candidates: ['sql', 'cs336'].map((sessionId) => ({ sessionId, sessionName: sessionId })) }),
+      actWorkHubCoordinationFromTurn: async () => { throw new Error('association must not execute work'); },
+    } as never),
+    createContext: async () => { throw new Error('association must not create work'); },
+    changed: () => { throw new Error('association must not change target'); },
+  });
+  const result = await runtime.actTasks({ hostId: 'host', targetEpoch: 'epoch' }, turnId, id, request);
+  return [
+    { type: 'tool_call', id, turnId, ts: 1, toolName: 'mcp__desktop_workhub__tasks', args: { request } },
+    { type: 'tool_result', id: `${id}-receipt`, turnId, ts: 2, toolUseId: id, isError: false, content: { kind: 'json', value: { structuredContent: result } } },
+  ];
+}
+
+for (const reason of ['unrelated', 'overview', 'ambiguous']) {
+  test(`Desktop retracts a same-turn topic after a successful ${reason} decision`, async () => {
+    const initial = await topicReceipt('turn', 'initial', 'sql');
+    const cleared = await topicReceipt('turn', 'clear', null, reason);
+    const other = await topicReceipt('other-turn', 'other', 'cs336');
+    assert.equal(workHubLinkedWork(initial, [], 'Work').length, 1);
+    const messages = [...initial, ...other, ...cleared];
+    const expected = workHubLinkedWork(other, [], 'Work');
+    assert.deepEqual(workHubLinkedWork(messages, [], 'Work'), expected);
+    assert.deepEqual(workHubLinkedWork(JSON.parse(JSON.stringify(messages)), [], 'Work'), expected);
+  });
+}
+
+test('Desktop uses the latest successful topic when switching or reassociating', async () => {
+  const initial = await topicReceipt('turn', 'initial', 'sql');
+  const switched = await topicReceipt('turn', 'switch', 'cs336');
+  const cleared = await topicReceipt('turn', 'clear', null);
+  const restored = await topicReceipt('turn', 'restore', 'sql');
+  assert.deepEqual(workHubLinkedWork([...initial, ...switched], [], 'Work'), workHubLinkedWork(switched, [], 'Work'));
+  assert.deepEqual(workHubLinkedWork([...initial, ...cleared, ...restored], [], 'Work'), workHubLinkedWork(restored, [], 'Work'));
+});
+
+test('Desktop ignores failed, mismatched, and orphaned topic clearing receipts', async () => {
+  const initial = await topicReceipt('turn', 'initial', 'sql');
+  const [call, result] = await topicReceipt('turn', 'clear', null);
+  assert.ok(result.type === 'tool_result' && call.type === 'tool_call');
+  if (result.type !== 'tool_result' || call.type !== 'tool_call') return;
+  const expected = workHubLinkedWork(initial, [], 'Work');
+  for (const invalid of [
+    [call, { ...result, isError: true }],
+    [call, { ...result, turnId: 'other-turn' }],
+    [{ ...call, turnId: 'other-turn' }, result],
+    [{ ...call, args: { request: { operation: 'associate', targetSessionId: 'sql' } } }, result],
+    [call, { ...result, toolUseId: 'other-call' }],
+    [result],
+  ] as StoredMessage[][]) assert.deepEqual(workHubLinkedWork([...initial, ...invalid], [], 'Work'), expected);
+});
+
+test('Desktop topic clearing preserves genuine delegation and result links', async () => {
+  const initial = await topicReceipt('turn', 'initial', 'sql');
+  const cleared = await topicReceipt('turn', 'clear', null);
+  const facts: StoredMessage[] = [
+    { type: 'tool_call', id: 'delegate', turnId: 'turn', ts: 3, toolName: 'mcp__desktop_workhub__tasks', args: { request: workHubTasksSchema.parse({ operation: 'delegate_existing', candidateRef: 'sql-candidate', text: 'Continue SQL work' }) } },
+    { type: 'tool_result', id: 'delegated', turnId: 'turn', ts: 4, toolUseId: 'delegate', isError: false, content: { kind: 'json', value: { structuredContent: { disposition: 'delegate_existing', targetSessionKey: JSON.stringify(['host', 'sql']) } } } },
+    { type: 'user', id: 'feedback', turnId: 'turn', ts: 5, text: 'result', origin: { kind: 'workhub_result', actionId: 'delegate', eventId: 'event', delegationId: 'delegation', targetSessionId: 'sql', targetTurnId: 'target-turn' } },
+  ];
+  const key = JSON.stringify(['host', 'workhub']);
+  const expected = workHubLinkedWork(facts, [], 'Work', key);
+  assert.deepEqual(expected.map(({ id }) => id), ['delegated', 'feedback']);
+  assert.deepEqual(workHubLinkedWork([...initial, ...facts, ...cleared], [], 'Work', key), expected);
+});

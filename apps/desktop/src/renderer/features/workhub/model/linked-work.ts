@@ -43,7 +43,7 @@ export function workHubLinkedWork(
   const workspaceName = (id: string) => workspaceNameFromCwd(sessionById.get(id)?.cwd);
   const associationCalls = new Map(messages.flatMap((message) => {
     const target = workHubAssociationTarget(message);
-    return target ? [[message.id, { target, turnId: message.turnId }] as const] : [];
+    return target !== undefined ? [[message.id, { target, turnId: message.turnId }] as const] : [];
   }));
   const taskCalls = new Set(messages.flatMap((message) =>
     message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks' ? [message.id] : [],
@@ -59,16 +59,25 @@ export function workHubLinkedWork(
     return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
   };
   const results = new Map(messages.flatMap((message) => message.type === 'tool_result' ? [[message.toolUseId, message] as const] : []));
+  // Association is mutable per turn. Fold only validated decisions in transcript
+  // order; clearing a topic must not retract actual execution/result links.
+  const topics = new Map<string, WorkHubLinkedWork>();
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue;
+    const call = associationCalls.get(message.toolUseId);
+    const topic = call?.turnId === message.turnId ? readWorkHubTopicAssociation(message, call.target) : undefined;
+    if (!topic) continue;
+    if (topic.targetSessionId === null) topics.delete(message.turnId);
+    else topics.set(message.turnId, {
+      id: message.id, coordinationTurnId: message.turnId,
+      targetSessionId: topic.targetSessionKey,
+      targetSessionName: sessionById.get(topic.targetSessionKey)?.name ?? topic.targetSessionName,
+      workspaceName: workspaceName(topic.targetSessionKey),
+    });
+  }
   return messages.flatMap((message): WorkHubLinkedWork[] => {
-    if (message.type === 'tool_result') {
-      const call = associationCalls.get(message.toolUseId);
-      const topic = call?.turnId === message.turnId ? readWorkHubTopicAssociation(message, call.target) : undefined;
-      if (topic) return [{ id: message.id, coordinationTurnId: message.turnId,
-        targetSessionId: topic.targetSessionKey,
-        targetSessionName: sessionById.get(topic.targetSessionKey)?.name ?? topic.targetSessionName,
-        workspaceName: workspaceName(topic.targetSessionKey),
-      }];
-    }
+    const topic = message.type === 'tool_result' ? topics.get(message.turnId) : undefined;
+    if (topic?.id === message.id) return [topic];
     // A result notification starts its own coordination turn. It remains
     // linked even when that turn only summarizes the result without tools,
     // or the original delegation is outside the loaded history window.
