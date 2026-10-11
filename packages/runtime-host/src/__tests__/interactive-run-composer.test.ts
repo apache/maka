@@ -457,3 +457,126 @@ function createFixtureComposer(
     ...overrides,
   });
 }
+
+test('WorkHub cannot browse or finish a follow-up before recording its topic', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+    'Read',
+    'AskUserQuestion',
+    'WorkHubResult',
+    'WorkHubInspect',
+  ];
+  const composer = createFixtureComposer({
+    toolProfile: 'workhub-coordination-v2',
+    boundTools: names.map(tool),
+  });
+  const prompt = await composer.resolveSystemPrompt({
+    sessionId: 'workhub',
+    turnId: 'lecture-follow-up',
+    cwd: '/workspace',
+  });
+  assert.equal((prompt as { requireToolCall?: boolean }).requireToolCall, true);
+  const browser = composer.tools.find(
+    ({ name }) => name === `mcp__desktop_browser__${WORKHUB_BROWSER_TOOL_NAMES[0]}`,
+  )!;
+  await assert.rejects(
+    async () => browser.impl({}, { turnId: 'lecture-follow-up' } as MakaToolContext),
+    /topic association/u,
+  );
+});
+
+test('WorkHub topic prerequisite settles only on successful receipts and resets per turn', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+    'Read',
+    'AskUserQuestion',
+    'WorkHubResult',
+    'WorkHubInspect',
+  ];
+  let result: unknown = { isError: true };
+  const tools = names.map((name) => ({ ...tool(name), impl: async () => result }));
+  const composer = createFixtureComposer({
+    toolProfile: 'workhub-coordination-v2',
+    boundTools: tools,
+  });
+  const context = { turnId: 't1' } as MakaToolContext;
+  const prompt = (turnId: string) =>
+    composer.resolveSystemPrompt({ sessionId: 'workhub', turnId, cwd: '/workspace' });
+  const tasks = composer.tools.find(({ name }) => name === 'mcp__desktop_workhub__tasks')!;
+  const args = { request: { operation: 'associate', targetSessionId: 'cs336' } };
+  await tasks.impl(args, context);
+  assert.equal((await prompt('t1')).requireToolCall, true);
+  result = {
+    structuredContent: {
+      operation: 'associate',
+      targetSessionId: 'cs336',
+      targetSessionKey: '["host","cs336"]',
+    },
+  };
+  await tasks.impl(args, context);
+  assert.equal((await prompt('t1')).requireToolCall, undefined);
+  assert.equal((await prompt('t2')).requireToolCall, true);
+  result = {
+    structuredContent: { operation: 'associate', targetSessionId: null, reason: 'unrelated' },
+  };
+  await tasks.impl(
+    { request: { operation: 'associate', targetSessionId: null, reason: 'unrelated' } },
+    { ...context, turnId: 't2' },
+  );
+  assert.equal((await prompt('t2')).requireToolCall, undefined);
+});
+
+test('WorkHub prepared capability execution also enforces and settles topic association', async () => {
+  const names = [
+    'mcp__desktop_workhub__control',
+    'mcp__desktop_workhub__tasks',
+    ...WORKHUB_BROWSER_TOOL_NAMES.map((name) => `mcp__desktop_browser__${name}`),
+    'Read',
+    'AskUserQuestion',
+    'WorkHubResult',
+    'WorkHubInspect',
+  ];
+  const tools = names.map((name) => ({
+    ...tool(name),
+    prepareExecution: async () => ({
+      execute: async () => ({
+        structuredContent: {
+          operation: 'associate',
+          targetSessionId: 'cs336',
+          targetSessionKey: '["host","cs336"]',
+        },
+      }),
+      cancel() {},
+    }),
+  }));
+  const composer = createFixtureComposer({
+    toolProfile: 'workhub-coordination-v2',
+    boundTools: tools,
+  });
+  const context = { turnId: 't' } as MakaToolContext;
+  const browser = composer.tools.find(
+    ({ name }) => name === 'mcp__desktop_browser__browser_navigate',
+  )!;
+  await assert.rejects(browser.prepareExecution!({}, context as never), /topic association/u);
+  const tasks = composer.tools.find(({ name }) => name === 'mcp__desktop_workhub__tasks')!;
+  const prepared = await tasks.prepareExecution!(
+    { request: { operation: 'associate', targetSessionId: 'cs336' } },
+    context as never,
+  );
+  assert.equal(
+    (await composer.resolveSystemPrompt({ sessionId: 'workhub', turnId: 't', cwd: '/workspace' }))
+      .requireToolCall,
+    true,
+  );
+  await prepared.execute(context as never);
+  assert.equal(
+    (await composer.resolveSystemPrompt({ sessionId: 'workhub', turnId: 't', cwd: '/workspace' }))
+      .requireToolCall,
+    undefined,
+  );
+  await browser.prepareExecution!({}, context as never);
+});

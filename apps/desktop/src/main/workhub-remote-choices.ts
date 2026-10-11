@@ -36,21 +36,38 @@ function questions(request: InteractionRequest): Question[] | undefined {
 }
 
 function optionMark(index: number): string {
-  return index < 26 ? `${String.fromCharCode(65 + index)}/${index + 1}` : String(index + 1);
+  return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
+}
+
+function isRecentWorkPicker(request: InteractionRequest): boolean {
+  return request.kind === 'question' && request.questions.length === 1
+    && /^(最近的工作|Recent work)[:：]?$/.test(request.questions[0]!.question.trim());
 }
 
 export function formatRemoteChoices(request: InteractionRequest, reference: string): string | undefined {
   const list = questions(request);
   if (!list?.length) return;
+  const recentWork = isRecentWorkPicker(request);
+  const replyHint = recentWork
+    ? '回复选项生成下一步 prompt, 回复 nxt 查看更多工作'
+    : list.length === 1
+    ? list[0]!.multiple ? '回复字母，可多选，如 AC。' : '回复选项，如 A。'
+    : list.some((question) => question.multiple)
+      ? '按题顺序回复，用 / 分隔；多选字母连写。'
+      : `按题顺序回复，如 ${'A'.repeat(list.length)}。`;
   return [
     `待回答 #${reference}`,
     ...(request.kind === 'form' ? [request.message] : []),
-    ...list.map((question, index) => [
-      `${index + 1}. ${question.label}${question.multiple ? '（多选）' : ''}`,
-      ...question.options.map((option, index) => `${optionMark(index)}. ${option.label}${option.description ? ` — ${option.description}` : ''}`),
-    ].join('\n')),
-    '按问题顺序回复字母或数字，例如 ACC 或 133。多选用 / 分隔问题，例如 AC / B / AD。',
-    `有多组问题时加编号：#${reference} ACC。也可以直接发文字补充。`,
+    ...list.map((question, index) => {
+      const title = `${list.length > 1 ? `${index + 1}. ` : ''}${question.label}${question.multiple ? '（多选）' : ''}`;
+      const options = question.options.map((option, index) => {
+        const description = recentWork && /^(取消|Cancel)$/i.test(option.label.trim())
+          ? '' : recentWork ? option.description?.replace(/\s*→\s*(?=下一步[:：])/g, '\n') : option.description;
+        return `${optionMark(index)}. ${option.label}${description ? `\n${description}` : ''}`;
+      }).join('\n\n');
+      return `${title}${recentWork ? '\n' : '\n\n'}${options}`;
+    }),
+    replyHint,
   ].join('\n\n');
 }
 
@@ -63,6 +80,9 @@ export function parseRemoteChoices(request: InteractionRequest, text: string): R
   const list = questions(request);
   if (!list?.length) return { kind: 'text' };
   const input = text.trim().toUpperCase();
+  if (input === 'NXT' && isRecentWorkPicker(request)) {
+    return { kind: 'answer', answer: { kind: 'question', answers: ['nxt'] } };
+  }
   // Ordinary language remains a WorkHub message. Only compact choice syntax
   // is interpreted here; permission requests are deliberately unsupported.
   if (!/^[A-Z0-9\s/,，、]+$/.test(input)) return { kind: 'text' };

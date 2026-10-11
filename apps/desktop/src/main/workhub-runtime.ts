@@ -71,6 +71,20 @@ export function createWorkHubRuntime(deps: WorkHubRuntimeDeps) {
         requireCurrent(scope);
         return { ...candidates, observedAt: Date.now(), stateMeaning: 'Session availability only: active is idle/available, not running. Use status with the exact targetTurnId for execution progress.' };
       }
+      if (input.operation === 'associate') {
+        if (input.targetSessionId === null) {
+          if (!input.reason) throw new Error('Unassociated topic requires a reason');
+          return { operation: 'associate' as const, targetSessionId: null, reason: input.reason };
+        }
+        const candidates = await client.listWorkHubCoordinationCandidates();
+        requireCurrent(scope);
+        const target = candidates.candidates.find((candidate) => candidate.sessionId === input.targetSessionId);
+        if (!target) throw new Error('Topic is outside current WorkHub discovery');
+        return { operation: 'associate' as const, targetSessionId: target.sessionId,
+          targetSessionName: target.sessionName,
+          targetSessionKey: desktopSessionKey({ hostId: scope.hostId, sessionId: target.sessionId }),
+        };
+      }
       if (input.operation === 'status') {
         const candidates = await client.listWorkHubCoordinationCandidates();
         requireCurrent(scope);

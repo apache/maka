@@ -19,6 +19,7 @@
 
 
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
+import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../../../../shared/workhub-topic-association.js';
 import { workspaceNameFromCwd } from './workspace-name.js';
 
 import type { StoredMessage } from '@maka/core/session';
@@ -40,6 +41,10 @@ export function workHubLinkedWork(
 ): WorkHubLinkedWork[] {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const workspaceName = (id: string) => workspaceNameFromCwd(sessionById.get(id)?.cwd);
+  const associationCalls = new Map(messages.flatMap((message) => {
+    const target = workHubAssociationTarget(message);
+    return target ? [[message.id, { target, turnId: message.turnId }] as const] : [];
+  }));
   const taskCalls = new Set(messages.flatMap((message) =>
     message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks' ? [message.id] : [],
   ));
@@ -55,6 +60,15 @@ export function workHubLinkedWork(
   };
   const results = new Map(messages.flatMap((message) => message.type === 'tool_result' ? [[message.toolUseId, message] as const] : []));
   return messages.flatMap((message): WorkHubLinkedWork[] => {
+    if (message.type === 'tool_result') {
+      const call = associationCalls.get(message.toolUseId);
+      const topic = call?.turnId === message.turnId ? readWorkHubTopicAssociation(message, call.target) : undefined;
+      if (topic) return [{ id: message.id, coordinationTurnId: message.turnId,
+        targetSessionId: topic.targetSessionKey,
+        targetSessionName: sessionById.get(topic.targetSessionKey)?.name ?? topic.targetSessionName,
+        workspaceName: workspaceName(topic.targetSessionKey),
+      }];
+    }
     // A result notification starts its own coordination turn. It remains
     // linked even when that turn only summarizes the result without tools,
     // or the original delegation is outside the loaded history window.

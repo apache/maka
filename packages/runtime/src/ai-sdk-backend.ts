@@ -243,6 +243,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 }
 
 export interface ResolvedSystemPrompt {
+  /** Require a tool step until the Host-owned prerequisite is settled. */
+  readonly requireToolCall?: boolean;
   text?: string;
   /** Per-step ephemeral user-role context, resolved once per logical request. */
   contexts?: readonly { readonly name: string; readonly text: string }[];

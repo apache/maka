@@ -145,6 +145,13 @@ export const workHubControlSchema = z.discriminatedUnion("operation", [
 
 export const workHubTasksSchema = z.discriminatedUnion("operation", [
   z.object({
+    operation: z.literal("associate"),
+    targetSessionId: z.string().min(1).nullable(),
+    reason: z.enum(["unrelated", "overview", "ambiguous"]).optional(),
+  }).strict().describe(
+    "Associate this conversation turn with an existing work without starting, steering, or resuming it. Use a Session identity from fresh candidates. Required on every turn before answering or acting. Set targetSessionId to null with reason unrelated, overview, or ambiguous only when no specific existing work can be identified; resolve shorthand and omitted subjects from recent context first. This records topic identity only, not execution or completion.",
+  ),
+  z.object({
     operation: z.literal("status"),
     targetSessionId: z.string().min(1),
     targetTurnId: z.string().min(1),

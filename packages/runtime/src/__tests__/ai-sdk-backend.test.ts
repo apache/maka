@@ -15859,6 +15859,7 @@ describe('AiSdkBackend steering durability and identity', () => {
         | 'loadTurnRuntimeEvents'
         | 'loadHistoryCompactCheckpoint'
         | 'contextBudget'
+        | 'systemPrompt'
       >
     > = {},
   ): AiSdkBackend =>
@@ -15897,6 +15898,47 @@ describe('AiSdkBackend steering durability and identity', () => {
       if (event.type === 'steering_message') return event;
     }
   };
+
+  test('a missing Host prerequisite retries locally and cannot silently complete', async () => {
+    const model = textCompletionModel('draft without attribution');
+    const durable = durableTurnHarness('turn-1', '讲义原文现在取到了吗？');
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      systemPrompt: () => ({
+        requireToolCall: true,
+        sourceRevisions: [],
+        contexts: [{ name: 'topic', text: 'Record topic first' }],
+      }),
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(model.doStreamCalls.length, 3);
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'end_turn'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'error'),
+      true,
+    );
+    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /draft without attribution/);
+    assert.notEqual(model.doStreamCalls[0]?.toolChoice?.type, 'required');
+  });
+
+  test('a settled Host prerequisite permits the next step to complete', async () => {
+    const model = textCompletionModel('answer');
+    const durable = durableTurnHarness('turn-1', 'follow-up');
+    let resolutions = 0;
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      systemPrompt: () => ({ requireToolCall: ++resolutions === 1, sourceRevisions: [] }),
+    });
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    assert.equal(model.doStreamCalls.length, 2);
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'end_turn'),
+      true,
+    );
+  });
 
   test('the final provider boundary waits for an asynchronous steering lease and asks the model again', async () => {
     // A tool-free turn runs exactly one provider step, and the top-of-loop

@@ -1165,6 +1165,7 @@ export class AiSdkTurn {
         : [...names];
     };
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
+    let missingPrerequisiteAttempts = 0;
     let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
 
@@ -2270,6 +2271,38 @@ export class AiSdkTurn {
           }
           const mayTakeAnotherStep = !stepLimitReached && !this.loopStopRequested && !this.aborted;
           if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
+            if (
+              (await input.handoffBoundary?.(
+                turnAbortController.signal,
+                maxSteps === undefined ? null : maxSteps - runtimeSteps,
+              )) === 'pause'
+            ) {
+              this.handoffPaused = true;
+              break agentLoop;
+            }
+            if (this.aborted || this.loopStopRequested) break agentLoop;
+            currentStepMessageId = this.deps.newId();
+            continue agentLoop;
+          }
+          // Enforce Host prerequisites locally: some providers reject required
+          // tool_choice in thinking mode. Never silently complete without the
+          // receipt; replay the draft and per-step reminder for bounded repair.
+          if (
+            returnedToolCalls.length === 0 &&
+            resolvedSystemPrompt.requireToolCall &&
+            !this.loopStopRequested &&
+            !this.aborted
+          ) {
+            if (
+              !mayTakeAnotherStep ||
+              !this.deps.backend.loadTurnRuntimeEvents ||
+              ++missingPrerequisiteAttempts > 2
+            ) {
+              throw new Error(
+                'Required turn prerequisite was not recorded; cannot complete this response.',
+              );
+            }
+            await queue.waitUntilConsumedThroughCurrent();
             if (
               (await input.handoffBoundary?.(
                 turnAbortController.signal,
