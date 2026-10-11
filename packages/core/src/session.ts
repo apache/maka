@@ -853,7 +853,10 @@ export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'
  * exactly the notes the runtime writes.
  */
 export function isUserVisibleSessionSystemNote(kind: string): boolean {
-  return isRuntimeSystemNoteKind(kind);
+  // `context_compaction_applied` is recorded the moment a compaction is applied —
+  // inside a still-running turn — so usage readers can order the boundary
+  // against request completions. `context_compacted` stays the display row.
+  return isRuntimeSystemNoteKind(kind) && kind !== 'context_compaction_applied';
 }
 
 /**
@@ -1301,6 +1304,7 @@ export interface TurnRecord {
  */
 export const RUNTIME_SYSTEM_NOTE_KINDS = [
   'context_compacted',
+  'context_compaction_applied',
   'context_compaction_failed_open',
   'context_window_suggestion',
   'context_window_overrun',

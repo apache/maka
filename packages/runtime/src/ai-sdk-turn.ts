@@ -998,6 +998,19 @@ export class AiSdkTurn {
     // fails the whole fallback closed (#972: incomplete usage is no usage).
     let completedStepUsage: NormalizedAiSdkUsage | undefined;
     let sawUnusableStepUsage = false;
+    const recordAccountedStepUsage = async (stepUsage: NormalizedAiSdkUsage): Promise<void> => {
+      completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
+      this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
+        this.deps.session.cumulativeUsageCheckpoint,
+        stepUsage,
+      );
+      await this.deps.backend.recordUsageCheckpoint?.({
+        ...this.deps.session.cumulativeUsageCheckpoint,
+        costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
+          this.deps.session.cumulativeUsageCheckpoint,
+        ),
+      });
+    };
     // Input tokens from the last completed step — the actual prompt token count
     // of the final API request. Used to compute contextRemaining for the TUI
     // statusline ctx segment (#1067): contextRemaining = contextWindow - this.
@@ -1007,6 +1020,10 @@ export class AiSdkTurn {
     // Output tokens of the same step: with the input they are the baseline the
     // next request is judged from (everything the model produced is re-sent).
     let lastStepOutputTokens: number | undefined;
+    // When that step's request finished: the settlement anchor carries it as
+    // `completedAt` so readers can order the measurement against a compaction's
+    // apply-time boundary (#5547) even where no provider tracker is wired.
+    let lastStepRequestCompletedAt: number | undefined;
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
     let runtimeSteps = 0;
@@ -1050,6 +1067,20 @@ export class AiSdkTurn {
       if (!contextCompactedNoteWritten && shouldAppendContextCompactedNote(contextBudget)) {
         contextCompactedNoteWritten = await this.recordSystemNote('context_compacted', turnId);
       }
+    };
+    // The apply-time boundary the usage reader orders measurements against:
+    // recorded when each compaction lands, so it exists mid-turn and a stop or
+    // stream error cannot erase it — unlike the settlement-time display note.
+    const recordCompactionApplied = async (): Promise<void> => {
+      // The consumer persists the hidden note and forwards the same boundary
+      // to live subscribers. Await its ack before dispatching the replacement
+      // prompt, so even a slow consumer observes the boundary before new usage.
+      await queue.pushAndWaitUntilConsumed({
+        type: 'context_compaction_applied',
+        id: this.deps.newId(),
+        turnId,
+        ts: this.deps.now(),
+      });
     };
     const trace = new RunTrace({
       sessionId: this.deps.backend.sessionId,
@@ -1165,6 +1196,7 @@ export class AiSdkTurn {
         : [...names];
     };
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
+    let missingPrerequisiteAttempts = 0;
     let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
 
@@ -1445,6 +1477,7 @@ export class AiSdkTurn {
           queue,
           capacityProviderTools,
           onMidTurnDiagnosticPatch,
+          recordCompactionApplied,
           this,
           this.automaticMemoryCompactionSupported()
             ? () => this.automaticMemoryCompactionDecision()
@@ -1848,6 +1881,15 @@ export class AiSdkTurn {
             // must not be reported as the already-handled watchdog timeout.
             consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
+            const meteredFailedRequest =
+              providerOutcome.kind === 'failed' &&
+              (providerOutcome.failure.kind === 'stream_truncated' ||
+                (providerOutcome.failure.kind === 'network' &&
+                  providerOutcome.failure.code === 'network_error'));
+            if (meteredFailedRequest) {
+              if (providerOutcome.usage) await recordAccountedStepUsage(providerOutcome.usage);
+              else sawUnusableStepUsage = true;
+            }
             if (providerOutcome.kind === 'completed') {
               // A compacted overflow retry only needs the conservative cap for
               // that one request. Once the provider accepts the request, the
@@ -1931,6 +1973,7 @@ export class AiSdkTurn {
               }
               lastStepInputTokens = stepUsage?.inputTokens;
               lastStepOutputTokens = stepUsage?.outputTokens;
+              lastStepRequestCompletedAt = this.deps.now();
               // A `finishReason: length` is deliberately not a trigger. The
               // reply may have been cut because the provider ran out of
               // window room, or because the provider's own output cap is
@@ -1938,19 +1981,7 @@ export class AiSdkTurn {
               // from outside, and an indistinguishable signal must not
               // drive an action; the cut reply is visible to the user
               // either way (#4559).
-              if (stepUsage) {
-                completedStepUsage = mergeNormalizedUsage(completedStepUsage, stepUsage);
-                this.deps.session.cumulativeUsageCheckpoint = mergeNormalizedUsage(
-                  this.deps.session.cumulativeUsageCheckpoint,
-                  stepUsage,
-                );
-                await this.deps.backend.recordUsageCheckpoint?.({
-                  ...this.deps.session.cumulativeUsageCheckpoint,
-                  costUsd: this.deps.providerTelemetry.normalizedUsageCostUsd(
-                    this.deps.session.cumulativeUsageCheckpoint,
-                  ),
-                });
-              }
+              if (stepUsage) await recordAccountedStepUsage(stepUsage);
               await flushStep();
               if (midTurnState) {
                 // Durability clock: step N's thinking/text completion events
@@ -2002,6 +2033,7 @@ export class AiSdkTurn {
                       activeTools: activeToolsForRequest,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
+                      onCompactionApplied: recordCompactionApplied,
                       origin: this,
                       ...(this.automaticMemoryCompactionSupported()
                         ? {
@@ -2083,7 +2115,7 @@ export class AiSdkTurn {
                 currentStepMessageId = this.deps.newId();
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
-                sawUnusableStepUsage = true;
+                if (!meteredFailedRequest || !providerOutcome.usage) sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts = MAX_PROVIDER_ATTEMPTS_PER_STEP;
@@ -2283,6 +2315,38 @@ export class AiSdkTurn {
             currentStepMessageId = this.deps.newId();
             continue agentLoop;
           }
+          // Enforce Host prerequisites locally: some providers reject required
+          // tool_choice in thinking mode. Never silently complete without the
+          // receipt; replay the draft and per-step reminder for bounded repair.
+          if (
+            returnedToolCalls.length === 0 &&
+            resolvedSystemPrompt.requireToolCall &&
+            !this.loopStopRequested &&
+            !this.aborted
+          ) {
+            if (
+              !mayTakeAnotherStep ||
+              !this.deps.backend.loadTurnRuntimeEvents ||
+              ++missingPrerequisiteAttempts > 2
+            ) {
+              throw new Error(
+                'Required turn prerequisite was not recorded; cannot complete this response.',
+              );
+            }
+            await queue.waitUntilConsumedThroughCurrent();
+            if (
+              (await input.handoffBoundary?.(
+                turnAbortController.signal,
+                maxSteps === undefined ? null : maxSteps - runtimeSteps,
+              )) === 'pause'
+            ) {
+              this.handoffPaused = true;
+              break agentLoop;
+            }
+            if (this.aborted || this.loopStopRequested) break agentLoop;
+            currentStepMessageId = this.deps.newId();
+            continue agentLoop;
+          }
           // Continuing the turn needs the durable current-run reader, for the
           // same reason the tool-call edge above demands it: the next request
           // has to carry the assistant output this step just produced, and only
@@ -2369,6 +2433,14 @@ export class AiSdkTurn {
             // are what the next request re-sends. No usable input count, no
             // anchor: the next turn then has no proactive fold until its first
             // accepted request.
+            const lastCompletedMainRequestAt =
+              providerRequestTracker?.latestCompletedMainRequestAt ?? lastStepRequestCompletedAt;
+            // This row lands after the compaction notes even when the
+            // anchored request completed BEFORE the compaction — the post-compaction
+            // retry never finished (#5547). The anchor is persisted whole as
+            // the durable fact it is; readers order it against the compaction's
+            // apply-time boundary via `completedAt` rather than trusting
+            // ledger position.
             const anchorInputTokens = finitePositive(lastStepInputTokens);
             const anchorOutputTokens =
               lastStepOutputTokens !== undefined && Number.isFinite(lastStepOutputTokens)
@@ -2406,6 +2478,9 @@ export class AiSdkTurn {
                 ? {
                     lastRequestAnchor: {
                       inputTokens: anchorInputTokens,
+                      ...(lastCompletedMainRequestAt !== undefined
+                        ? { completedAt: lastCompletedMainRequestAt }
+                        : {}),
                       ...(anchorOutputTokens !== undefined
                         ? { outputTokens: anchorOutputTokens }
                         : {}),

@@ -26,13 +26,15 @@ import { formatBotMessageForSession } from '@maka/core/bot-events';
 import type { BotMessageHandling } from '@maka/core/bot-chat-settings';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import { clientCapabilityEntityId } from '@maka/runtime-host/client-capability-entity-id';
 import { SESSION_TRANSCRIPT_PAGE_MAX_BYTES, type InteractionPendingSnapshot, type SessionContinuitySnapshot } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient, DesktopRuntimeHostSession } from './runtime-host-client.js';
+import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../renderer/application/contracts/workhub-topic-association.js';
 import { formatRemoteChoices, parseRemoteChoices } from './workhub-remote-choices.js';
 
-type Source = Pick<BotIncomingMessage, 'platform' | 'chatId' | 'userId' | 'sourceMessageId'>;
+type Source = Pick<BotIncomingMessage, 'platform' | 'chatId' | 'userId' | 'sourceMessageId'> & { targetSessionId?: string; associationTargetSessionId?: string | null; associationTurnId?: string };
 interface State {
-  version: 1;
+  version: 1 | 2;
   through: number | null;
   turns: Record<string, Source>;
   actions: Record<string, Source>;
@@ -45,7 +47,7 @@ export interface WorkHubRemoteBridge {
   close(): Promise<void>;
 }
 interface Deps {
-  client: Pick<DesktopRuntimeHostClient, 'openSession' | 'resolveWorkHubCoordinationSession' | 'answerWorkHubCoordination' | 'answerInteraction' | 'queryInteraction' | 'queryTurn' | 'subscribeSessionCatalogChanges'>;
+  client: Pick<DesktopRuntimeHostClient, 'openSession' | 'getSession' | 'resolveWorkHubCoordinationSession' | 'answerWorkHubCoordination' | 'answerInteraction' | 'queryInteraction' | 'queryTurn' | 'subscribeSessionCatalogChanges'>;
   botRegistry: Pick<BotRegistry, 'sendMessage'>;
   readMode(): Promise<BotMessageHandling>;
   statePath: string;
@@ -57,7 +59,7 @@ interface Deps {
  * belong to this Desktop/Host pair; task and interaction authority stays in Host.
  */
 export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
-  let state: State = { version: 1, through: null, turns: {}, actions: {}, inputs: {}, replies: {}, delivered: {} };
+  let state: State = { version: 2, through: null, turns: {}, actions: {}, inputs: {}, replies: {}, delivered: {} };
   let loaded = false;
   let closed = false;
   let session: DesktopRuntimeHostSession | undefined;
@@ -69,12 +71,15 @@ export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
     return next;
   };
   const reference = (id: string) => createHash('sha256').update(id).digest('hex').slice(0, 8);
-  const sameChat = (source: Source, message: BotIncomingMessage) => source.platform === message.platform && source.chatId === message.chatId && source.userId === message.userId;
+  const sameChat = (source: Source, message: Source) => source.platform === message.platform && source.chatId === message.chatId && source.userId === message.userId;
   async function load() {
     if (loaded) return;
     try {
       const value = JSON.parse(await readFile(deps.statePath, 'utf8')) as State;
-      if (value.version !== 1 || !value.turns || !value.actions || !value.inputs || !value.replies || !value.delivered || !(value.through === null || Number.isSafeInteger(value.through))) throw new Error('Invalid WorkHub remote routing state');
+      if ((value.version !== 1 && value.version !== 2) || !value.turns || !value.actions || !value.inputs || !value.replies || !value.delivered || !(value.through === null || Number.isSafeInteger(value.through))) throw new Error('Invalid WorkHub remote routing state');
+      // Rebuild missing action routes from the runtime transcript once. Keep
+      // delivery receipts so already-sent replies are not sent again.
+      if (value.version === 1) { value.version = 2; value.through = null; }
       state = value;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -89,7 +94,17 @@ export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
   }
   async function send(source: Source, text: string): Promise<void> {
     if (closed || deps.isActive?.() === false) throw new Error('WorkHub remote transport is inactive');
-    const sent = await deps.botRegistry.sendMessage(source.platform, source.chatId, text,
+    let name: string | undefined;
+    // Topic identity is useful on every remote reply, independent of timing
+    // or whether this turn delegated execution.
+    if (source.targetSessionId) {
+      try {
+        const target = await deps.client.getSession(source.targetSessionId);
+        if (target?.name.trim()) name = target.name.trim();
+      } catch (error) { deps.onError(error); }
+    }
+    const heading = name?.replace(/[\r\n]+/g, ' ').replace(/\[/g, '［').replace(/\]/g, '］');
+    const sent = await deps.botRegistry.sendMessage(source.platform, source.chatId, heading ? `[${heading}]\n${text}` : text,
       source.sourceMessageId ? { replyToMessageId: source.sourceMessageId } : undefined);
     if (!sent) throw new Error('WorkHub remote reply delivery failed');
   }
@@ -101,13 +116,27 @@ export function createWorkHubRemoteBridge(deps: Deps): WorkHubRemoteBridge {
     await save();
   }
   function observe(message: StoredMessage) {
+    // Modern transcript pages contain runtime tool calls, not the separate
+    // legacy delegation rows. Use the same action identity as actTasks.
+    if (message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks') {
+      const source = state.turns[message.turnId];
+      if (source) state.actions[clientCapabilityEntityId(message.id)] = { ...source, associationTargetSessionId: workHubAssociationTarget(message), associationTurnId: message.turnId };
+    }
+    if (message.type === 'tool_result') {
+      const source = state.actions[clientCapabilityEntityId(message.toolUseId)];
+      const topic = source?.associationTargetSessionId !== undefined && source.associationTurnId === message.turnId
+        ? readWorkHubTopicAssociation(message, source.associationTargetSessionId) : undefined;
+      if (topic && state.turns[message.turnId] && sameChat(source!, state.turns[message.turnId]!)) {
+        state.turns[message.turnId] = { ...state.turns[message.turnId]!, targetSessionId: topic.targetSessionId ?? undefined };
+      }
+    }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {
       const source = state.turns[message.coordinationTurnId];
       if (source) state.actions[message.actionId] = source;
     }
     if (message.type === 'user' && message.origin?.kind === 'workhub_result') {
       const source = state.actions[message.origin.actionId];
-      if (source) state.turns[message.turnId] = source;
+      if (source) state.turns[message.turnId] = { ...source, targetSessionId: message.origin.targetSessionId };
     }
     if (message.type === 'assistant' && state.turns[message.turnId] && message.text.trim()) state.replies[message.turnId] = message.text;
   }

@@ -25,7 +25,9 @@ import { formatRemoteChoices, parseRemoteChoices } from '../workhub-remote-choic
 const request: InteractionRequest = { kind: 'question', toolUseId: 'ask', questions: ['项目', '范围', '测试'].map((question) => ({ question, options: ['甲', '乙', '丙'].map((label) => ({ label })) })) };
 test('three questions travel in one message; ACC and 133 produce the same exact answers', () => {
   const text = formatRemoteChoices(request, 'abcd1234')!;
-  for (const label of ['1. 项目', '2. 范围', '3. 测试', '#abcd1234', 'C/3. 丙']) assert.ok(text.includes(label));
+  for (const label of ['1. 项目\n\nA. 甲', '2. 范围', '3. 测试', '#abcd1234', 'C. 丙']) assert.ok(text.includes(label));
+  assert.ok(!text.includes('A/1'));
+  assert.ok(text.endsWith('按题顺序回复，如 AAA。'));
   const expected = { kind: 'answer', answer: { kind: 'question', answers: ['甲', '丙', '丙'] } };
   assert.deepEqual(parseRemoteChoices(request, 'ACC'), expected);
   assert.deepEqual(parseRemoteChoices(request, '133'), expected);
@@ -44,4 +46,24 @@ test('task chooser sends opaque option values, and multi-select preserves all se
   assert.deepEqual(parseRemoteChoices(form, 'B / AC'), { kind: 'answer', answer: { kind: 'form', action: 'accept', values: { target: 'create_new', scope: ['ui', 'runtime'] } } });
   assert.equal(parseRemoteChoices(form, 'A / ABC').kind, 'invalid');
   assert.equal(parseRemoteChoices(form, 'A / AA').kind, 'invalid');
+});
+test('recent work picker separates progress and next step and accepts nxt without selecting work', () => {
+  const recent: InteractionRequest = { kind: 'question', toolUseId: 'ask', questions: [{
+    question: '最近的工作:', options: [
+      { label: 'SQL 入门', description: '进度：第 1 题待回答 → 下一步：写查询并检查' },
+      { label: '取消', description: '不生成任何草稿，也不开始任何工作' },
+    ],
+  }] };
+  assert.equal(formatRemoteChoices(recent, '7bbc30d2'), [
+    '待回答 #7bbc30d2', '', '最近的工作:', 'A. SQL 入门',
+    '进度：第 1 题待回答', '下一步：写查询并检查', '', 'B. 取消', '',
+    '回复选项生成下一步 prompt, 回复 nxt 查看更多工作',
+  ].join('\n'));
+  for (const text of ['nxt', ' NXT ']) assert.deepEqual(parseRemoteChoices(recent, text), {
+    kind: 'answer', answer: { kind: 'question', answers: ['nxt'] },
+  });
+  assert.deepEqual(parseRemoteChoices(recent, 'a'), {
+    kind: 'answer', answer: { kind: 'question', answers: ['SQL 入门'] },
+  });
+  assert.equal(parseRemoteChoices(request, 'nxt').kind, 'invalid');
 });

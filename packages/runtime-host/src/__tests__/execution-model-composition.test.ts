@@ -2149,7 +2149,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
   for (const crashCut of ['pending-message', 'admitted-root'] as const) {
     const base = await mkdtemp(join(tmpdir(), 'maka-workhub-cold-recovery-'));
     const root = join(base, 'interactive');
-    const provider = await startProvider();
+    const provider = await startProvider({ workHubAssociation: true });
     const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
     let owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
@@ -2197,6 +2197,47 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       );
       assert.ok(result.ok, JSON.stringify(result));
     };
+    const attachDesktop = (coordinator: HostClientCapabilityCoordinator) => {
+      const connection = coordinator.attachConnection(
+        clientCapabilityConnectionIdentity('desktop'),
+        {
+          send: async (frame) => {
+            if (frame.kind === 'client.capability.call') {
+              assert.deepEqual(frame.arguments, {
+                request: {
+                  operation: 'associate',
+                  targetSessionId: null,
+                  reason: 'unrelated',
+                },
+              });
+              queueMicrotask(() =>
+                connection.accept({
+                  kind: 'client.capability.accepted',
+                  invocationId: frame.invocationId,
+                  admissionEvidence: { kind: 'none' },
+                }),
+              );
+            } else if (frame.kind === 'client.capability.admitted') {
+              queueMicrotask(() =>
+                connection.accept({
+                  kind: 'client.capability.result',
+                  invocationId: frame.invocationId,
+                  result: {
+                    content: [],
+                    structuredContent: {
+                      operation: 'associate',
+                      targetSessionId: null,
+                      reason: 'unrelated',
+                    },
+                  },
+                }),
+              );
+            }
+          },
+        },
+      );
+      return connection;
+    };
     try {
       const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
       const created = await policy.connectionCatalog.create({
@@ -2229,9 +2270,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       await composition.recover();
       const capabilities = composition.clientCapabilities;
       assert.ok(capabilities instanceof HostClientCapabilityCoordinator);
-      const desktop = capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
-        send: async () => {},
-      });
+      const desktop = attachDesktop(capabilities);
       await registerDesktop('before-crash', ['control', 'tasks']);
       // Disconnect after binding succeeds, before its caller can admit the root.
       // Reconnect only after admission, before the real backend composes tools.
@@ -2251,9 +2290,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       let reconnected = false;
       capabilities.bindDurableRoot = async (input) => {
         if (input.sessionId === sessionId && disconnected && !reconnected) {
-          capabilities.attachConnection(clientCapabilityConnectionIdentity('desktop'), {
-            send: async () => {},
-          });
+          attachDesktop(capabilities);
           // Avoid the public replacement handler's pending-admission retry while
           // this admission is still preparing its backend.
           await registerDesktop(
@@ -2376,10 +2413,7 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       );
       assert.equal(recoveredCapabilities.snapshotForSession(sessionId), undefined);
 
-      composition.clientCapabilities!.attachConnection(
-        clientCapabilityConnectionIdentity('desktop'),
-        { send: async () => {} },
-      );
+      attachDesktop(recoveredCapabilities);
       await registerDesktop('incomplete-desktop', ['control']);
       assert.equal(
         provider.requests.length,
@@ -2405,7 +2439,11 @@ test('cold WorkHub recovery waits for Desktop tools across pending-message and a
       const requests = provider.requests
         .slice(requestsBeforeRecovery)
         .filter((request) => Array.isArray(request.body.tools));
-      assert.equal(requests.length, 1, 'the recovered successor executes exactly once');
+      assert.equal(
+        requests.length,
+        2,
+        'the recovered successor associates its topic then answers once',
+      );
       assert.equal(
         runtimeEnvironment(requests[0]!.body).cwd,
         (await recoveredStores.sessionStore.readHeader(sessionId)).cwd,
@@ -6190,7 +6228,7 @@ type ProviderFlow =
       readonly scenario: AgentGraphProviderScenario | GatedSwarmProviderScenario;
     };
 
-async function startProvider(): Promise<{
+async function startProvider(options: { workHubAssociation?: boolean } = {}): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
   configurePermissionUpdateFlow(input: {
@@ -6219,11 +6257,16 @@ async function startProvider(): Promise<{
   // because that estimate is anchored on exactly this number.
   let usageTracksPayload = false;
   const server = createServer((request, response) => {
-    void handleProviderRequest(request, response, requests, flow, usageTracksPayload).catch(
-      (error) => {
-        response.destroy(error as Error);
-      },
-    );
+    void handleProviderRequest(
+      request,
+      response,
+      requests,
+      flow,
+      usageTracksPayload,
+      options.workHubAssociation,
+    ).catch((error) => {
+      response.destroy(error as Error);
+    });
   });
   await listen(server);
   const address = server.address();
@@ -6296,6 +6339,7 @@ async function handleProviderRequest(
   requests: ProviderRequest[],
   flow: ProviderFlow,
   usageTracksPayload = false,
+  workHubAssociation = false,
 ): Promise<void> {
   assert.equal(request.method, 'POST');
   const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -6308,7 +6352,18 @@ async function handleProviderRequest(
   });
   if (request.url === '/v1/responses') {
     const serialized = JSON.stringify(body);
-    if (serialized.includes('Classify one WorkHub request')) {
+    if (
+      workHubAssociation &&
+      JSON.stringify(body.input).includes(
+        'Before answering or performing other work, record this turn',
+      )
+    ) {
+      respondProviderResponsesAssociation(
+        response,
+        requests.length,
+        responsesToolNames(body).includes('exec'),
+      );
+    } else if (serialized.includes('Classify one WorkHub request')) {
       respondProviderResponsesJsonText(
         response,
         JSON.stringify({ kind: 'routing', mode: 'continue' }),
@@ -6654,6 +6709,58 @@ function respondProviderResponsesText(response: ServerResponse, text: string): v
         model: 'deepseek-v4-flash',
         status: 'completed',
         output: [],
+        usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 },
+      },
+    },
+  ];
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
+}
+
+function respondProviderResponsesAssociation(
+  response: ServerResponse,
+  step: number,
+  codeMode: boolean,
+): void {
+  const args = { request: { operation: 'associate', targetSessionId: null, reason: 'unrelated' } };
+  const item = {
+    type: 'function_call',
+    id: `fc-associate-${step}`,
+    call_id: `call-associate-${step}`,
+    name: codeMode ? 'exec' : 'mcp__desktop_workhub__tasks',
+    arguments: JSON.stringify(
+      codeMode
+        ? { code: `return await tools.mcp__desktop_workhub__tasks(${JSON.stringify(args)})` }
+        : args,
+    ),
+    status: 'completed',
+  };
+  const envelope = {
+    id: `resp-associate-${step}`,
+    object: 'response',
+    created_at: 1,
+    model: 'deepseek-v4-flash',
+  };
+  const events = [
+    { type: 'response.created', response: { ...envelope, status: 'in_progress', output: [] } },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { ...item, arguments: '', status: 'in_progress' },
+    },
+    {
+      type: 'response.function_call_arguments.delta',
+      item_id: item.id,
+      output_index: 0,
+      delta: item.arguments,
+    },
+    { type: 'response.output_item.done', output_index: 0, item },
+    {
+      type: 'response.completed',
+      response: {
+        ...envelope,
+        status: 'completed',
+        output: [item],
         usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16 },
       },
     },

@@ -1681,8 +1681,11 @@ test('production WorkHub inspects an independent Session through its provider to
       for await (const chunk of request) body += chunk.toString();
       const input = JSON.parse(body);
       if (inspecting) inspectionRequests.push(input);
-      const call = inspecting && inspectionRequests.length === 1;
-      if (call) assert.match(body, /WorkHubInspect/);
+      const inspect = inspecting && inspectionRequests.length === 1;
+      const associate = inspecting && inspectionRequests.length === 2;
+      const call = inspect || associate;
+      if (inspect) assert.match(body, /WorkHubInspect/);
+      if (associate) assert.match(body, /mcp__desktop_workhub__tasks/);
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       const chunk = (delta: unknown, finish: string | null) =>
         `data: ${JSON.stringify({
@@ -1700,14 +1703,23 @@ test('production WorkHub inspects an independent Session through its provider to
                 tool_calls: [
                   {
                     index: 0,
-                    id: 'inspect-existing',
+                    id: inspect ? 'inspect-existing' : 'associate-existing',
                     type: 'function',
                     function: {
-                      name: 'WorkHubInspect',
-                      arguments: JSON.stringify({
-                        sessionId: targetSessionId,
-                        view: 'latest_reply',
-                      }),
+                      name: inspect ? 'WorkHubInspect' : 'mcp__desktop_workhub__tasks',
+                      arguments: JSON.stringify(
+                        inspect
+                          ? {
+                              sessionId: targetSessionId,
+                              view: 'latest_reply',
+                            }
+                          : {
+                              request: {
+                                operation: 'associate',
+                                targetSessionId,
+                              },
+                            },
+                      ),
                     },
                   },
                 ],
@@ -1751,7 +1763,37 @@ test('production WorkHub inspects an independent Session through its provider to
     };
     const desktop = composition.clientCapabilities!.attachConnection(
       clientCapabilityConnectionIdentity(context.connectionId),
-      { send: async () => {} },
+      {
+        send: async (frame) => {
+          if (frame.kind === 'client.capability.call') {
+            assert.deepEqual(frame.arguments, {
+              request: { operation: 'associate', targetSessionId },
+            });
+            queueMicrotask(() =>
+              desktop.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              }),
+            );
+          } else if (frame.kind === 'client.capability.admitted') {
+            queueMicrotask(() =>
+              desktop.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [],
+                  structuredContent: {
+                    operation: 'associate',
+                    targetSessionId,
+                    targetSessionKey: 'independent-release',
+                  },
+                },
+              }),
+            );
+          }
+        },
+      },
     );
     try {
       await composition.recover();
@@ -1818,7 +1860,7 @@ test('production WorkHub inspects an independent Session through its provider to
       assert.ok(answer.ok, JSON.stringify(answer));
       await waitFor(() => completed(WORKHUB_COORDINATION_SESSION_ID, 'inspection-turn'), 10000);
       assert.deepEqual(providerErrors, []);
-      assert.equal(inspectionRequests.length, 2);
+      assert.equal(inspectionRequests.length, 3);
       const resultMessage = inspectionRequests[1]!.messages.find(({ role }) => role === 'tool');
       assert.ok(resultMessage);
       assert.ok(resultMessage.content.startsWith('{'), resultMessage.content);

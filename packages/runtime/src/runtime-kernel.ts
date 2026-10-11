@@ -1350,6 +1350,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
         // next user send passively replays this standalone checkpoint, which
         // `shouldAppendContextCompactedNote` suppresses, so there is no
         // duplicate.
+        // The applied row is the apply-time boundary the usage reader orders
+        // measurements against; the note below stays the display row.
+        await run.recordSystemNote('context_compaction_applied').catch(() => {});
         await run.recordSystemNote('context_compacted').catch(() => {});
         notedTerminal = true;
       }

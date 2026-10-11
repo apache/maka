@@ -951,6 +951,102 @@ test('startup recovery budgets the legal 64-source admission from write ceilings
   }
 });
 
+test('forwards compaction boundaries while the root turn is still running', async () => {
+  const release = deferred<void>();
+  const boundaries = [1, 2].map((index) => ({
+    type: 'context_compaction_applied' as const,
+    id: `compaction-${index}`,
+    turnId: 'compaction-turn',
+    ts: 123456789 + index,
+  }));
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register(
+        'ai-sdk',
+        (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              for (const event of boundaries) yield event;
+              await release.promise;
+              yield {
+                type: 'complete',
+                id: 'compaction-complete',
+                turnId: input.turnId,
+                ts: Date.now(),
+                stopReason: 'end_turn',
+              };
+            }
+          })(context),
+      ),
+  });
+  const sink = new RecordingContinuitySink();
+  const continuity = fixture.currentContinuity();
+  const connectionId = 'compaction-observer';
+  const observer = continuity.attachConnection(connectionId, sink);
+  const context = operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId);
+  try {
+    const opened = await continuity.handlers['subscription.open'](
+      { sessionId: fixture.sessionId, transcript: { kind: 'none' } },
+      context,
+    );
+    assert.ok(opened.ok);
+    await continuity.handlers['subscription.ready'](
+      { subscriptionId: opened.result.subscriptionId },
+      context,
+    );
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      { sessionId: fixture.sessionId, turnId: 'compaction-turn', content: { text: 'compact' } },
+      context,
+    );
+    assertStartedTurn(started);
+    await waitFor(
+      () =>
+        sink.frames.filter(
+          (frame) =>
+            frame.kind === 'subscription.session_event' &&
+            frame.event.type === 'context_compaction_applied',
+        ).length === 2,
+    );
+    const forwarded = sink.frames.filter((frame) => frame.kind === 'subscription.session_event');
+    assert.deepEqual(
+      forwarded.map((frame) => frame.event),
+      boundaries,
+    );
+    assert.ok(
+      forwarded.every(
+        (frame) =>
+          frame.sessionId === fixture.sessionId && frame.runId === started.result.turn.runId,
+      ),
+    );
+    assert.equal(
+      (
+        await fixture.coordinator.read({
+          sessionId: fixture.sessionId,
+          turnId: 'compaction-turn',
+          runId: started.result.turn.runId,
+        })
+      ).status,
+      'running',
+    );
+    assert.equal(
+      sink.frames.some(
+        (frame) =>
+          frame.kind === 'subscription.session_projection' &&
+          frame.snapshot.rootTurn?.status === 'completed',
+      ),
+      false,
+    );
+    release.resolve();
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+  } finally {
+    release.resolve();
+    observer.close();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('startup recovery replays one admitted safe-boundary continuation without a UserMessage', async () => {
   const workspaceIdentity = 'workspace-safe-boundary-recovery';
   const fixture = await createFailureFixture({
