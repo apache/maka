@@ -339,10 +339,11 @@ export function useTaskEntryController(
 
   const addProjectForHost = useCallback(async (host: ReadyTaskEntryHost, name?: string): Promise<void> => {
     if (projectMutationPendingRef.current) return;
+    const customName = name?.trim() || undefined;
     if (host.capabilities.chooseHostDirectory) {
       directoryOpenerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setDirectoryHost(directoryHandoffForHost(host, name));
+      setDirectoryHost(directoryHandoffForHost(host, customName));
       return;
     }
     if (!host.capabilities.chooseClientDirectory) return;
@@ -350,7 +351,7 @@ export function useTaskEntryController(
     setPending(true);
     try {
       const result = await resolveProjectRegistration({
-        register: () => service.addProject({ profileId: host.profile.id, hostId: host.hostId }, name),
+        register: () => service.addProject({ profileId: host.profile.id, hostId: host.hostId }, customName),
         confirm: (onConfirm) => (input.confirm ?? toast.confirm)({
           onConfirm,
           title: copy.archivedProjectTitle,
@@ -521,7 +522,7 @@ export function useTaskEntryController(
           selectedProjectId: groupSelectedProjectId,
           onSelectProject: (projectId: string) => selectProject(host, projectId),
           ...(host.capabilities.chooseClientDirectory || host.capabilities.chooseHostDirectory
-            ? { onAdd: (name: string) => void addProjectForHost(host, name) }
+            ? { onAdd: (name?: string) => void addProjectForHost(host, name) }
             : {}),
           ...(host.capabilities.chooseClientDirectory
             ? { onRelink: (projectId: string) => void relinkProject(host, projectId) }
@@ -657,10 +658,11 @@ export function useTaskEntryController(
   const addSelectedProject = useCallback(
     (name?: string) => {
       // The workspace-readiness notice hands this straight to an onClick, so a
-      // MouseEvent can arrive where a name is expected. Only a real string is a
-      // name; anything else means "no name given".
+      // MouseEvent can arrive where a name is expected. Only a non-empty string
+      // is a custom name; anything else means "use the folder name".
       if (selectedHost) {
-        void addProjectForHost(selectedHost, typeof name === 'string' ? name : undefined);
+        const customName = typeof name === 'string' ? name.trim() : '';
+        void addProjectForHost(selectedHost, customName || undefined);
       }
     },
     [addProjectForHost, selectedHost],
@@ -685,7 +687,7 @@ export function useTaskEntryController(
   const openNewProject = useCallback(() => setNewProjectOpen(true), []);
   const newProjectDialog = useMemo(() => newProjectOpen ? {
     close: () => setNewProjectOpen(false),
-    submit: (name: string) => addSelectedProject(name),
+    submit: (name?: string) => addSelectedProject(name),
   } : undefined, [newProjectOpen, addSelectedProject]);
   const openFolder = useCallback(async (
     folder: TaskEntryFolder,

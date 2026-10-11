@@ -25,22 +25,23 @@ import { getConversationCopy } from './conversation-copy.js';
 import { useUiLocale } from './locale-context.js';
 
 /**
- * Naming a project before its folder is chosen.
+ * An optional custom name, then the folder the project lives in.
  *
  * A project is directory-backed, so this dialog cannot create one on its own —
- * it collects the one thing the folder picker cannot (a name) and hands it to
- * the caller, which then asks for the directory. The name therefore leads: by
- * the time the picker opens, the user has already said what this is, and the
- * project is registered under it rather than under the folder's basename.
+ * it collects a name only when the user typed one, and hands that through to
+ * the caller, which then asks for the directory. An empty field is a valid
+ * choice: the catalog names the project after the folder. A typed name is
+ * applied in the same add, so the project is registered under it rather than
+ * under the folder's basename.
  *
  * One button, no 取消: the header's close control and Escape are already two
- * ways out, the convention `SessionRenameDialog` set. The submit is disabled
- * while the field is empty, so there is nothing to validate on the way through.
+ * ways out, the convention `SessionRenameDialog` set. Choose folder is never
+ * gated on the name; leaving it blank is how you take the folder name.
  */
 export function NewProjectDialog(props: {
   onOpenChange(open: boolean): void;
-  /** The typed name, trimmed and non-empty; the caller opens the folder picker. */
-  onSubmit(name: string): void;
+  /** Trimmed custom name, or omitted when the field was left blank. */
+  onSubmit(name?: string): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).workspace;
   const [name, setName] = useState('');
@@ -62,16 +63,13 @@ export function NewProjectDialog(props: {
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
-  const trimmed = name.trim();
-
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     props.onOpenChange(false);
-    // Escape and the header's close control are the two ways out; an empty field
-    // cannot reach here, because the only submit affordance is disabled while it
-    // is empty. The guard stands for the browsers that run implicit submission
-    // through a disabled default button anyway.
-    if (trimmed) props.onSubmit(trimmed);
+    // A blank (or whitespace-only) name is not a name: omit it so the catalog's
+    // folder-basename fallback applies. A typed name still rides along.
+    const trimmed = name.trim();
+    props.onSubmit(trimmed || undefined);
   }
 
   return (
@@ -87,7 +85,6 @@ export function NewProjectDialog(props: {
                 variant="primary"
                 type="submit"
                 form="maka-new-project-form"
-                isDisabled={!trimmed}
                 label={copy.newProjectSubmit}
               />
             </HStack>

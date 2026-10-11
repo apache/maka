@@ -43,7 +43,8 @@ export interface AddSessionWorkspaceInput {
   sessionId: string;
   profileId: string;
   host: TaskEntryHostRef;
-  name: string;
+  /** Custom name from the New project dialog; omitted to use the folder name. */
+  name?: string;
   request?: SessionWorkspaceRecoveryRequest;
 }
 
@@ -148,7 +149,7 @@ export function useSessionWorkspaceRecovery({
       let projectId: string;
       if (adding) {
         const result = await resolveProjectRegistration({
-          register: () => service.addProject(input.host, input.name),
+          register: () => service.addProject(input.host, input.name?.trim() || undefined),
           confirm: (onConfirm) => (confirm ?? toast.confirm)({
             onConfirm,
             title: projectCopy.archivedProjectTitle,

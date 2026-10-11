@@ -427,7 +427,7 @@ export function TaskEntryWorkspacePickerConsumer({
               }),
               onAdd:
                 activeSession.profileKind === 'local' && activeGroup.hostId
-                  ? (name: string) => void owner.commands.addSessionWorkspace({
+                  ? (name?: string) => void owner.commands.addSessionWorkspace({
                       sessionId: activeSession.id,
                       profileId: activeSession.profileId,
                       host: { profileId: activeGroup.id, hostId: activeGroup.hostId! },

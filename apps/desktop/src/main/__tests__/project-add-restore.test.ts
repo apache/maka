@@ -150,6 +150,21 @@ async function submitNamedProject(repetitions = 1) {
   await submitProjectName(repetitions);
 }
 
+async function submitBlankProject() {
+  await click('New project');
+  const form = document.querySelector('#maka-new-project-form');
+  assert.ok(form);
+  const button = document.querySelector<HTMLButtonElement>(
+    'button[type="submit"][form="maka-new-project-form"]',
+  );
+  assert.ok(button, 'choose-folder stays available with an empty name');
+  assert.equal(button.disabled, false);
+  await act(async () => {
+    form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  });
+  await flushFrames();
+}
+
 async function submitProjectName(repetitions = 1) {
   const input = document.querySelector('input');
   assert.ok(input);
@@ -523,6 +538,20 @@ test('remote registration rejects same-tick duplicate submissions without invali
   assert.equal(registrations, 1);
   await act(async () => registration.resolve(restored));
   assert.deepEqual(accepted, [restored]);
+});
+
+test('Settings Add with a blank name still opens the folder picker', async () => {
+  const harness = installRenderer();
+  const names: unknown[] = [];
+  bridge({
+    add: async (_target: DesktopRuntimeHostRef, options?: { name?: string }) => {
+      names.push(options);
+      return { ok: true, project: restored };
+    },
+  });
+  await harness.render(createElement(components.SettingsFixture));
+  await submitBlankProject();
+  assert.deepEqual(names, [undefined]);
 });
 
 test('Settings Add stays single-flight while the folder picker is pending', async () => {

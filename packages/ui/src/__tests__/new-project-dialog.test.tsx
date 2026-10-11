@@ -20,8 +20,8 @@
 /**
  * Submitting the New project dialog must be the dialog's business, never the
  * browser's. The picker lives inside the composer's `<form>`, so a submit that
- * escaped this component would navigate the window — the failure these cases
- * pin down is `defaultPrevented`, not the name that travels.
+ * escaped this component would navigate the window. An empty name is a valid
+ * submit ("use the folder name"), not a reason to swallow the event.
  */
 
 import assert from 'node:assert/strict';
@@ -82,7 +82,7 @@ async function mountDialog() {
   installDomStubs(window);
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
 
-  const submitted: string[] = [];
+  const submitted: Array<string | undefined> = [];
   let openChanges = 0;
   const container = document.querySelector('#root');
   assert.ok(container);
@@ -103,8 +103,24 @@ async function mountDialog() {
   );
 
   return {
+    document,
     submitted,
     openChanges: () => openChanges,
+    type: async (value: string) => {
+      const input = document.querySelector('input');
+      assert.ok(input, 'no name field');
+      await act(() => {
+        input.value = value;
+        // linkedom does not run React's native input listener; call it the same
+        // way `project-add-restore` types into this field.
+        const propsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
+        assert.ok(propsKey, 'no react props on the name field');
+        const props = (input as unknown as Record<string, unknown>)[propsKey] as {
+          onChange: (event: { target: HTMLInputElement; defaultPrevented: boolean }) => void;
+        };
+        props.onChange({ target: input, defaultPrevented: false });
+      });
+    },
     submit: () => {
       const form = document.querySelector('#maka-new-project-form');
       assert.ok(form, 'no form');
@@ -135,16 +151,49 @@ test('a submit belongs to the dialog and never reaches the browser', async () =>
   }
 });
 
-test('an empty name submits nothing at all', async () => {
+test('an empty name still opens the folder picker', async () => {
   const dialog = await mountDialog();
   try {
+    const button = dialog.document.querySelector<HTMLButtonElement>(
+      'button[type="submit"][form="maka-new-project-form"]',
+    );
+    assert.ok(button, 'no choose-folder button');
+    assert.equal(button.disabled, false);
+
     let event!: Event;
     await act(() => {
       event = dialog.submit();
     });
 
     assert.equal(event.defaultPrevented, true);
-    assert.deepEqual(dialog.submitted, []);
+    assert.equal(dialog.openChanges(), 1);
+    assert.deepEqual(dialog.submitted, [undefined]);
+  } finally {
+    await dialog.dispose();
+  }
+});
+
+test('a typed name is trimmed and passed through', async () => {
+  const dialog = await mountDialog();
+  try {
+    await dialog.type('  Lab notes  ');
+    await act(() => {
+      dialog.submit();
+    });
+    assert.deepEqual(dialog.submitted, ['Lab notes']);
+  } finally {
+    await dialog.dispose();
+  }
+});
+
+test('a whitespace-only name is not a custom name', async () => {
+  const dialog = await mountDialog();
+  try {
+    await dialog.type('   ');
+    await act(() => {
+      dialog.submit();
+    });
+    assert.deepEqual(dialog.submitted, [undefined]);
   } finally {
     await dialog.dispose();
   }
