@@ -41,7 +41,6 @@ export const SLASH_COMMAND_CATALOG = [
   { id: 'move', session: 'required', surfaces: ['tui'] },
   { id: 'new', session: 'none', surfaces: ['tui'] },
   { id: 'permissions', session: 'required', surfaces: ['tui'] },
-  { id: 'quotes', session: 'none', surfaces: ['tui'] },
   { id: 'recap', session: 'required', surfaces: ['tui'] },
   { id: 'rename', session: 'required', surfaces: ['tui'] },
   { id: 'resume', session: 'required', surfaces: ['tui'] },

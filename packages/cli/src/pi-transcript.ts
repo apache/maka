@@ -172,14 +172,7 @@ const LIVE_TOOL_BUFFER_MAX_CHARS = 64 * 1024;
 const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 
 export type MakaPiTranscriptEntry =
-  | {
-      kind: 'user';
-      messageId: string;
-      text: string;
-      transient?: boolean;
-      /** Quote count the message rode in on; rendered as a trace line. */
-      quotes?: number;
-    }
+  | { kind: 'user'; messageId: string; text: string; transient?: boolean }
   | { kind: 'legacy_automation'; text: string }
   | { kind: 'goal_continuation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
@@ -239,8 +232,6 @@ export interface MakaPiTranscriptMetadata {
    * terminal goals leave no segment, matching the desktop chip.
    */
   goal?: GoalProjection | null;
-  /** QuoteRefs staged by a rewind, riding the next submit (#5109). */
-  stagedQuoteCount?: number;
   sideConversation?: {
     view: 'parent' | 'side';
     parentStatus?: MakaSideConversationParentStatus;
@@ -1096,12 +1087,10 @@ function storedMessagesToTranscriptEntries(
         } else if (message.origin?.kind === 'goal') {
           entries.push({ kind: 'goal_continuation', text: message.displayText ?? message.text });
         } else {
-          const quoteCount = message.quotes?.length;
           entries.push({
             kind: 'user',
             messageId: message.id,
             text: message.displayText ?? message.text,
-            ...(quoteCount ? { quotes: quoteCount } : {}),
           });
         }
         break;
@@ -1579,17 +1568,8 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
   const contentWidth = Math.max(1, width - 2);
   const lines = (() => {
     switch (entry.kind) {
-      case 'user': {
-        const lines = renderUserBlock(entry.text, contentWidth);
-        // A quote-only submit stores no text: without this trace the sent
-        // context would leave no row at all — an answer to an invisible
-        // prompt (#5109 review). The wording stays neutral: every quoted
-        // user message carries this field, desktop plain quotes included,
-        // not just a rewind's restaged ones.
-        if (entry.quotes === undefined) return lines;
-        const hint = `· ${entry.quotes} quote${entry.quotes === 1 ? '' : 's'}`;
-        return [...lines, ...renderUserBlock(hint, contentWidth)];
-      }
+      case 'user':
+        return renderUserBlock(entry.text, contentWidth);
       case 'legacy_automation':
         return renderLegacyAutomationBlock(entry.text, contentWidth);
       case 'goal_continuation':
@@ -1715,12 +1695,6 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     parts.push({ text: ansi.accent('swarm'), dropRank: 4 });
   } else if (metadata.orchestrationMode === 'graph') {
     parts.push({ text: ansi.accent('graph'), dropRank: 4 });
-  }
-  // Staged quotes ride the next submit; the accent salience mirrors the
-  // goal segment — a pending attachment to the next message the user must
-  // not miss. /quotes clear is how it leaves.
-  if (metadata.stagedQuoteCount) {
-    parts.push({ text: ansi.accent(`quotes:${metadata.stagedQuoteCount}`), dropRank: 3 });
   }
   // An autonomous goal burns tokens between prompts; it must never be
   // invisible. Terminal goals show nothing (the desktop chip hides them too).
