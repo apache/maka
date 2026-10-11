@@ -134,7 +134,11 @@ export class MessageSync {
           const data = await this.api(
             'GET',
             '/im/v1/chats',
-            { page_size: '100', ...(job.cursor ? { page_token: job.cursor } : {}) },
+            {
+              types: 'p2p,group',
+              page_size: '100',
+              ...(job.cursor ? { page_token: job.cursor } : {}),
+            },
             undefined,
             caller,
           );

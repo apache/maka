@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { sourceKey } from './store.js';
 import { CorpusStore } from './corpus.js';
 
@@ -29,7 +29,7 @@ export class MemoryController {
   private heartbeat?: ReturnType<typeof setInterval>;
   private owned = false;
   private ticking?: Promise<void>;
-  private scans = new Map<string, Promise<void>>();
+  private scans = new Map<string, { scope: string; promise: Promise<void> }>();
   private sourceReads = new Map<string, Promise<void>>();
   private runs = new Map<string, Promise<any>>();
   constructor(
@@ -248,7 +248,41 @@ export class MemoryController {
         'Remote content is read on demand. total=null means more candidates remain; no completeness claim. Types are native source kinds.',
     };
   }
-  private async scanSource(source: string) {
+  private sourceScope(source: string) {
+    const descriptor = this.ctx.sources.list().find((s: any) => s.id === source);
+    if (!descriptor) throw Error('Source is no longer available');
+    const canonical = (value: any): any =>
+      Array.isArray(value)
+        ? value.map(canonical)
+        : value && typeof value === 'object'
+          ? Object.fromEntries(
+              Object.keys(value)
+                .sort()
+                .map((key) => [key, canonical(value[key])]),
+            )
+          : value;
+    return (
+      'v1:' +
+      createHash('sha256')
+        .update(JSON.stringify(canonical(descriptor.scope ?? {})))
+        .digest('hex')
+    );
+  }
+  private async scanSource(source: string, scope: string) {
+    const assertScope = () => {
+      if (this.sourceScope(source) !== scope)
+        throw Error('Source scope changed during enumeration; retry with the current scope');
+    };
+    assertScope();
+    this.store.transaction(() => {
+      const saved = this.store.db
+        .prepare('SELECT scope FROM memory_source_scans WHERE source=?')
+        .get(source);
+      if (!saved || saved.scope !== scope) {
+        this.store.db.prepare('DELETE FROM memory_source_scans WHERE source=?').run(source);
+        this.store.db.prepare('DELETE FROM memory_source_scan_items WHERE source=?').run(source);
+      }
+    });
     const row = this.store.db
       .prepare('SELECT payload FROM memory_source_scans WHERE source=?')
       .get(source);
@@ -258,7 +292,9 @@ export class MemoryController {
     const seen = new Set<string>(state.seen);
     while (!state.complete) {
       this.abort.signal.throwIfAborted();
+      assertScope();
       const page = await this.ctx.sources.enumerate(source, state.cursor);
+      assertScope();
       if (page.next && seen.has(page.next)) throw Error('Source enumeration cursor repeated');
       if (page.next) seen.add(page.next);
       state.seen = [...seen];
@@ -271,9 +307,9 @@ export class MemoryController {
         for (const o of page.items) insert.run(source, o.id, JSON.stringify(o));
         this.store.db
           .prepare(
-            'INSERT INTO memory_source_scans VALUES(?,?) ON CONFLICT(source) DO UPDATE SET payload=excluded.payload',
+            'INSERT INTO memory_source_scans(source,scope,payload) VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET scope=excluded.scope,payload=excluded.payload',
           )
-          .run(source, JSON.stringify(state));
+          .run(source, scope, JSON.stringify(state));
       });
     }
     // Re-check current permission after the last page; staging is never a published collection.
@@ -282,6 +318,7 @@ export class MemoryController {
       .all(source)
       .map((r) => JSON.parse(String(r.payload)));
     const allowed = new Set(await this.ctx.sources.authorize(source, objects));
+    assertScope();
     this.store.rememberExternal(
       source,
       objects.filter((o) => allowed.has(o.id)),
@@ -293,11 +330,18 @@ export class MemoryController {
     const remoteSources = new Set(this.ctx.sources.list().map((s) => s.id));
     for (const source of sources.filter((s) => remoteSources.has(s))) {
       let scan = this.scans.get(source);
+      const scope = this.sourceScope(source);
+      if (scan && scan.scope !== scope) {
+        // Serialize scope replacements so old I/O cannot overwrite new staging.
+        await scan.promise.catch(() => {});
+        scan = this.scans.get(source);
+      }
       if (!scan) {
-        scan = this.scanSource(source).finally(() => this.scans.delete(source));
+        const promise = this.scanSource(source, scope).finally(() => this.scans.delete(source));
+        scan = { scope, promise };
         this.scans.set(source, scan);
       }
-      await scan;
+      await scan.promise;
     }
     for (const source of sources.filter((s) => !remoteSources.has(s)))
       for (const head of await this.ctx.sessionQuery.sourceList(source)) {

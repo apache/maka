@@ -42,6 +42,7 @@ function fixture(
     rmSync(root, { recursive: true, force: true });
   });
   return {
+    ctx,
     get store() {
       return store;
     },
@@ -110,4 +111,104 @@ test('repeated pagination cursor fails without publishing half a scan', async (t
   const f = fixture(t, async () => ({ items: [object('x')], next: 'same' }));
   await assert.rejects(f.controller.sync(['external']), /repeated/);
   assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_source_sets').get()!.n, 0);
+});
+
+for (const changed of [
+  { startTime: 20, chats: ['a'] },
+  { startTime: 10, chats: ['b'] },
+]) {
+  test(`scope changes discard interrupted staging, not published history: ${JSON.stringify(changed)}`, async (t) => {
+    let scope = { startTime: 10, chats: ['a'] };
+    let phase = 'initial';
+    const cursors: (string | undefined)[] = [];
+    const f = fixture(t, async (_: string, cursor?: string) => {
+      cursors.push(cursor);
+      if (phase === 'initial') return { items: [object('published')] };
+      if (phase === 'interrupted') {
+        if (cursor) throw Error('network unavailable');
+        return { items: [object('stale')], next: 'old-scope-page2' };
+      }
+      assert.equal(cursor, undefined, 'changed scope must start on page one');
+      return { items: [object('current')] };
+    });
+    f.ctx.sources.list = () => [{ id: 'external', scope }];
+    await f.controller.sync(['external']);
+    const original = f.store.references('external')[0];
+    const old = f.store.capture(['external'], [original.recordKey]);
+    phase = 'interrupted';
+    await assert.rejects(f.controller.sync(['external']), /network/);
+    f.restart();
+    scope = changed;
+    phase = 'changed';
+    cursors.length = 0;
+    await f.controller.sync(['external']);
+    assert.deepEqual(cursors, [undefined]);
+    assert.equal(
+      f.store.references('external').some((r) => r.object.id === 'stale'),
+      false,
+    );
+    assert.deepEqual(f.store.reference(original.ref), original);
+    assert.deepEqual(f.store.cursor(old.id), old);
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_source_scan_items').get()!.n, 0);
+    const published = JSON.parse(
+      String(f.store.db.prepare('SELECT payload FROM memory_source_sets').get()!.payload),
+    );
+    assert.deepEqual(published, [JSON.stringify(['external', 'current'])]);
+  });
+}
+
+test('scope change during final authorization cannot publish old staging; next call rescans', async (t) => {
+  let scope = { chats: ['old'] };
+  let change = true;
+  const reads: any[] = [];
+  const f = fixture(
+    t,
+    async (_: string, cursor?: string) => {
+      reads.push(cursor);
+      return { items: [object(scope.chats[0])] };
+    },
+    async (_: string, objects: any[]) => {
+      if (change) {
+        scope = { chats: ['new'] };
+        change = false;
+      }
+      return objects.map((o) => o.id);
+    },
+  );
+  f.ctx.sources.list = () => [{ id: 'external', scope }];
+  await assert.rejects(f.controller.sync(['external']), /scope changed/);
+  assert.equal(f.store.references().length, 0);
+  await f.controller.sync(['external']);
+  assert.deepEqual(reads, [undefined, undefined]);
+  assert.deepEqual(
+    f.store.references().map((r) => r.object.id),
+    ['new'],
+  );
+});
+
+test('concurrent replacement waits for old scoped I/O without publishing it or duplicating the new scan', async (t) => {
+  let scope = { chats: ['old'] };
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const calls: string[] = [];
+  const f = fixture(t, async () => {
+    const id = scope.chats[0];
+    calls.push(id);
+    if (id === 'old') await gate;
+    return { items: [object(id)] };
+  });
+  f.ctx.sources.list = () => [{ id: 'external', scope }];
+  const old = assert.rejects(f.controller.sync(['external']), /scope changed/);
+  scope = { chats: ['new'] };
+  const next = f.controller.sync(['external']);
+  const duplicate = f.controller.sync(['external']);
+  release();
+  await Promise.all([old, next, duplicate]);
+  assert.deepEqual(calls, ['old', 'new']);
+  assert.deepEqual(
+    f.store.references().map((r) => r.object.id),
+    ['new'],
+  );
 });

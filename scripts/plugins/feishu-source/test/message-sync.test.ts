@@ -19,9 +19,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { MessageCache } from '../src/message-cache.js';
 import { MessageSync } from '../src/message-sync.js';
 import { createCli } from '../src/cli.js';
@@ -314,4 +315,105 @@ test('plugin shutdown interrupts a download and retains the last committed page 
   );
   assert.equal(resumed.jobs[0].jobId, result.jobs[0].jobId);
   assert.equal(resumed.jobs[0].status, 'complete');
+});
+
+test('chat listing explicitly requests p2p and group on every page; both histories precede search', async (t) => {
+  const f = setup(t);
+  const requests: any[] = [];
+  const result = await new MessageSync(
+    f.cache,
+    async (method, path, params) => {
+      requests.push({ method, path, params });
+      if (path.endsWith('/chats')) {
+        assert.equal(method, 'GET');
+        assert.equal(params.types, 'p2p,group');
+        assert.equal(params.page_size, '100');
+        return params.page_token
+          ? { items: [{ chat_id: 'group' }], has_more: false }
+          : { items: [{ chat_id: 'private' }], has_more: true, page_token: 'second' };
+      }
+      if (path.endsWith('/search')) return { items: [] };
+      assert.equal(path, '/im/v1/messages');
+      assert.equal(params.start_time, '1');
+      assert.equal(params.end_time, '3');
+      return { items: [raw(params.container_id, { chat_id: params.container_id })] };
+    },
+    ok,
+  ).sync({ startTime: 1, endTime: 3 }, caller());
+  assert.equal(result.jobs[0].status, 'complete');
+  assert.equal(requests[1].params.page_token, 'second');
+  assert.deepEqual(
+    requests.filter((r) => r.path === '/im/v1/messages').map((r) => r.params.container_id),
+    ['private', 'group'],
+  );
+  assert.ok(requests.at(-1).path.endsWith('/search'));
+  assert.equal(f.cache.rows().length, 2);
+});
+
+test('configured chats remain restricted instead of enumerating all private and group chats', async (t) => {
+  const f = setup(t);
+  const cache = new MessageCache(f.dir, {
+    ...scope,
+    containers: [{ type: 'chat', id: 'allowed' }],
+    startTime: 1,
+    endTime: 3,
+  });
+  t.after(() => cache.close());
+  const sync = new MessageSync(
+    cache,
+    async (_method, path, params) => {
+      assert.ok(!path.endsWith('/chats'));
+      if (path.endsWith('/search')) return { items: [] };
+      assert.equal(params.container_id, 'allowed');
+      return { items: [raw('yes', { chat_id: 'allowed' }), raw('no', { chat_id: 'other' })] };
+    },
+    ok,
+  );
+  assert.equal(
+    (await sync.sync({ startTime: 1, endTime: 3 }, caller())).jobs[0].status,
+    'complete',
+  );
+  assert.equal(cache.rows().length, 1);
+  await assert.rejects(sync.sync({ startTime: 0, endTime: 3 }, caller()), /scope/);
+});
+
+test('unmapped legacy sync_jobs is rejected read-only before schema writes, retaining all synthetic data', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'feishu-legacy-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const old = new DatabaseSync(join(dir, 'messages.sqlite'));
+  old.exec('CREATE TABLE sync_jobs(id TEXT PRIMARY KEY,request TEXT,status TEXT,payload TEXT)');
+  old
+    .prepare('INSERT INTO sync_jobs VALUES(?,?,?,?)')
+    .run('old', '{}', 'complete', '{"original":"synthetic"}');
+  const before = old.prepare('SELECT * FROM sync_jobs').all();
+  const schema = old.prepare('SELECT * FROM sqlite_master').all();
+  assert.throws(() => new MessageCache(dir, scope), /Unsupported legacy.*database unchanged/);
+  assert.throws(() => new MessageCache(dir, scope), /original\/version\/publication mapping/);
+  assert.deepEqual(old.prepare('SELECT * FROM sync_jobs').all(), before);
+  assert.deepEqual(old.prepare('SELECT * FROM sqlite_master').all(), schema);
+  old.close();
+  assert.deepEqual(readdirSync(dir), ['messages.sqlite']);
+});
+
+test('legacy cache location never silently creates a new empty data-directory', async () => {
+  const { default: plugin } = await import('../src/host.js');
+  const writes: any[] = [];
+  await assert.rejects(
+    plugin.host.apply(
+      {
+        maka: { rootId: 'profile' },
+        storage: {
+          get: async (key: string) => ({
+            value: key === 'message-cache-directory' ? '/synthetic/legacy-cache' : undefined,
+          }),
+          set: async (...args: any[]) => {
+            writes.push(args);
+          },
+        },
+      },
+      { instanceId: 'test', accountId: 'user', appId: 'app' },
+    ),
+    /Legacy Feishu message-cache-directory/,
+  );
+  assert.deepEqual(writes, []);
 });

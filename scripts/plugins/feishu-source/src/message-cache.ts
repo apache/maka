@@ -18,7 +18,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { messageObject } from './adapter.js';
@@ -32,6 +32,25 @@ export class MessageCache {
     directory: string,
     readonly scope: any,
   ) {
+    const path = join(directory, 'messages.sqlite');
+    if (existsSync(path)) {
+      const existing = new DatabaseSync(path, { readOnly: true });
+      try {
+        const columns = existing
+          .prepare('PRAGMA table_info(sync_jobs)')
+          .all()
+          .map((r) => String(r.name))
+          .sort();
+        if (columns.length && columns.join(',') !== 'id,payload,range_key,scope')
+          throw Error(
+            'Unsupported legacy Feishu cache schema at ' +
+              path +
+              '; database unchanged. Migration requires the old cache DDL, request/payload shapes, original/version/publication mapping and account/app namespace rules. Do not create an empty replacement cache.',
+          );
+      } finally {
+        existing.close();
+      }
+    }
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(directory, 'messages.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;

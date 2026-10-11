@@ -203,6 +203,17 @@ test('restart retains group session, numbering and completed members; paused mem
     );
     await checkpoint(f, session, b, true);
   });
+  // Synthetic legacy workers from the other implementation retain their one shared Session.
+  const legacyDb = new DatabaseSync(join(f.root, 'data/network.sqlite'));
+  for (const row of legacyDb.prepare('SELECT index_id,payload FROM workers').all()) {
+    const worker = JSON.parse(String(row.payload));
+    worker.groupIndexIds = worker.groupMembers;
+    delete worker.groupMembers;
+    legacyDb
+      .prepare('UPDATE workers SET payload=? WHERE index_id=?')
+      .run(JSON.stringify(worker), String(row.index_id));
+  }
+  legacyDb.close();
   // Package reload creates a new controller against the same persisted workers/ranges.
   const { resolve } = await import('node:path');
   await f.platform.installPackage(resolve('release/memory-network.maka-extension'));

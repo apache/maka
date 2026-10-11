@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { migrateStore } from './migrate.js';
 
 export type Index = {
   id: string;
@@ -48,6 +49,7 @@ export class NetworkStore {
   readonly db: DatabaseSync;
   constructor(directory: string) {
     mkdirSync(directory, { recursive: true });
+    migrateStore(directory);
     this.db = new DatabaseSync(join(directory, 'network.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,session TEXT NOT NULL,message TEXT NOT NULL,hash TEXT NOT NULL,position INTEGER NOT NULL,body TEXT NOT NULL,observed INTEGER NOT NULL);

@@ -49,6 +49,11 @@ export default {
         )
       )
         throw Error('Invalid containers');
+      const legacyLocation = await ctx.storage.get('message-cache-directory');
+      if (legacyLocation.value)
+        throw Error(
+          'Legacy Feishu message-cache-directory found. Cache location is unchanged; provide the old account/app namespace and cache schema before migrating. No empty replacement cache was created.',
+        );
       let location = await ctx.storage.get('data-directory');
       if (!location.value) {
         const path =

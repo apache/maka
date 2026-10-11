@@ -52,7 +52,8 @@ export class CorpusStore extends NetworkStore {
     super(directory);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memory_source_scan_items(source TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(source,id));
-      CREATE TABLE IF NOT EXISTS memory_source_scans(source TEXT PRIMARY KEY,payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS memory_source_scans(source TEXT PRIMARY KEY,scope TEXT NOT NULL,payload TEXT NOT NULL);
+      INSERT OR IGNORE INTO memory_meta(key,value) VALUES('scan-scope-v1','1');
       CREATE TABLE IF NOT EXISTS memory_source_sets(source TEXT PRIMARY KEY,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS memory_worker_sessions(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS memory_source_records(key TEXT PRIMARY KEY,payload TEXT NOT NULL);
