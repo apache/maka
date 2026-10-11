@@ -18,7 +18,7 @@
  */
 
 import type { StoredMessage } from '@maka/core/session';
-import { parseDesktopSessionKey } from './runtime-host-identity.js';
+import { parseDesktopSessionKey } from '../../../shared/runtime-host-identity.js';
 
 /** Topic identity comes only from a successful, validated tasks association receipt. */
 export function readWorkHubTopicAssociation(message: StoredMessage, expectedSessionId: string) {

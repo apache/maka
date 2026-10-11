@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { workHubTasksSchema } from '../../shared/workhub-tool-schema.js';
 import { createWorkHubRuntime } from '../workhub-runtime.js';
-import { workHubLinkedWork } from '../../renderer/features/workhub/model/linked-work.js';
+import { workHubLinkedWork } from '../../renderer/features/workhub/testing.js';
 import type { StoredMessage } from '@maka/core/session';
 
 test('a direct CS336 answer has a durable work association without starting execution', async () => {
