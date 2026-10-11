@@ -64,12 +64,13 @@ export default {
       if (config.cliPath) {
         const stored = async (name: string, initial: () => string) => {
           let record = await ctx.storage.get(name);
-          if (!record.value) {
+          if (record.value === undefined || record.value === null) {
             try {
               await ctx.storage.set(name, initial(), { expectedRevision: record.revision });
             } catch {
               record = await ctx.storage.get(name);
-              if (!record.value) throw Error('Unable to initialize ' + name);
+              if (record.value === undefined || record.value === null)
+                throw Error('Unable to initialize ' + name);
             }
             record = await ctx.storage.get(name);
           }

@@ -50,7 +50,7 @@ console.log(JSON.stringify(args[0]==='auth'?status:{ok:true,identity:'user',data
   );
   const values = new Map<string, any>([
     ['message-cache-directory', base],
-    ['cursor-signing-key', 'existing-key'],
+    ['cursor-signing-key', Buffer.alloc(32, 7).toString('base64url')],
   ]);
   const writes: string[] = [],
     effects: any[] = [];

@@ -25,7 +25,7 @@ import { join } from 'node:path';
 import { MessageCache } from '../src/message-cache.js';
 import { MessageSync } from '../src/message-sync.js';
 import { createCli } from '../src/cli.js';
-const key = 'synthetic-persisted-signing-key';
+const key = Buffer.alloc(32, 7).toString('base64url');
 const scope = { instanceId: 'test', accountId: 'user', appId: 'app', containers: [], startTime: 0 };
 const caller = () => ({ invocation: { abortSignal: new AbortController().signal } });
 const raw = (id: string, extra: any = {}) => ({

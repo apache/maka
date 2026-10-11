@@ -33,7 +33,7 @@ const config = {
   containers: [],
   startTime: 0,
 };
-const key = 'persisted-test-key';
+const key = Buffer.alloc(32, 7).toString('base64url');
 const caller = () => ({ invocation: { abortSignal: new AbortController().signal } });
 const raw = (id: string, time = 2000, content = id, chat = 'chat') => ({
   message_id: id,

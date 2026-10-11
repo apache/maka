@@ -28,25 +28,29 @@ export const hash = (x: unknown) => createHash('sha256').update(JSON.stringify(x
 export class MessageCache {
   readonly db: DatabaseSync;
   readonly scope: any;
+  private readonly cursorScope: any;
+  private readonly signingKey: Buffer;
   constructor(
     directory: string,
     config: any,
     readonly key: string,
   ) {
+    this.signingKey = Buffer.from(key, 'base64url');
+    if (this.signingKey.length !== 32) throw Error('cursor-signing-key must decode to 32 bytes');
     const account = hash([config.instanceId, config.accountId, config.appId]);
     const path = join(directory, account, 'messages.sqlite');
     mkdirSync(join(directory, account), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
-    this.scope = {
+    this.cursorScope = {
       accountId: config.accountId,
       appId: config.appId,
       instanceId: config.instanceId,
       mode: 'local-originals',
       startTime: config.startTime ?? 0,
       endTime: config.endTime ?? null,
-      containers: config.containers ?? [],
     };
+    this.scope = { ...this.cursorScope, containers: config.containers ?? [] };
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS sync_jobs(id TEXT PRIMARY KEY,request TEXT NOT NULL,status TEXT NOT NULL,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sync_chats(job TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(job,id));
@@ -266,11 +270,11 @@ export class MessageCache {
   }
   encode(state: any) {
     const text = Buffer.from(JSON.stringify(state)).toString('base64url');
-    return text + '.' + createHmac('sha256', this.key).update(text).digest('hex');
+    return text + '.' + createHmac('sha256', this.signingKey).update(text).digest('hex');
   }
   decode(cursor: string) {
     const [text, mac, extra] = cursor.split('.');
-    if (extra || !mac || mac !== createHmac('sha256', this.key).update(text).digest('hex'))
+    if (extra || !mac || mac !== createHmac('sha256', this.signingKey).update(text).digest('hex'))
       throw Error('Invalid source cursor');
     return JSON.parse(Buffer.from(text, 'base64url').toString());
   }
@@ -302,7 +306,7 @@ export class MessageCache {
       const start = Math.max(this.scope.startTime, q.startTime ?? 0),
         end = Math.min(this.scope.endTime ?? Infinity, q.endTime ?? Infinity);
       if (start >= end) throw Error('Invalid time range');
-      const fingerprint = hash({ scope: this.scope, shape });
+      const fingerprint = hash({ scope: this.cursorScope, shape });
       const state = cursor
         ? this.decode(cursor)
         : { hash: fingerprint, highWater: this.boundary(), offset: 0 };
