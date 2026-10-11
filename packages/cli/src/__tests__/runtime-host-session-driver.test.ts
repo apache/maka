@@ -2138,6 +2138,36 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('returns retracted quotes so the TUI can restage them', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('retract-1'),
+    });
+    await driver.switchSession('session-1');
+
+    // A queued submit rode a QuoteRef: the Host stores the full
+    // MessageContent, so the retraction must hand the quotes back instead of
+    // letting them vanish with the queue row (#5109 review).
+    await driver.submitMessage!('Read this excerpt', {
+      messageId: 'message-1',
+      placement: 'next_turn',
+      quotes: [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
+    });
+    const retracted = await driver.retractQueued!();
+    assert.deepEqual(retracted.messageIds, ['message-1']);
+    assert.deepEqual(
+      retracted.quotes,
+      [{ text: 'a large pasted excerpt', label: 'earlier turn', sourceTurnId: 'turn-9' }],
+      'the quotes a queued submit rode in on come back with the retraction',
+    );
+  });
+
   test('submits an idle message under the caller-owned stable identity', async () => {
     const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
     const connection = new FakeConnection([subscription]);
@@ -3513,18 +3543,37 @@ class FakeConnection {
                 );
               })()
             : operation === 'queue.retract'
-              ? {
-                  hostEpoch: 'host-1',
-                  queueRevision: 3,
-                  retracted: [
-                    {
-                      entryId: 'entry-1',
-                      messageId: 'message-1',
-                      content: { text: 'Later' },
-                      placement: 'next_turn',
-                    },
-                  ],
-                }
+              ? (() => {
+                  // The Host returns the stored full MessageContent for every
+                  // retracted queue entry, quotes included: echo what the
+                  // recorded submit carried for this message.
+                  const submits = this.requests.filter(
+                    (request) => request.operation === 'turn.message.submit',
+                  );
+                  let submitted: { content: { text: string } } | undefined;
+                  for (let index = submits.length - 1; index >= 0; index -= 1) {
+                    const candidate = submits[index].input as {
+                      messageId?: string;
+                      content: { text: string };
+                    };
+                    if (candidate.messageId === 'message-1') {
+                      submitted = candidate;
+                      break;
+                    }
+                  }
+                  return {
+                    hostEpoch: 'host-1',
+                    queueRevision: 3,
+                    retracted: [
+                      {
+                        entryId: 'entry-1',
+                        messageId: 'message-1',
+                        content: submitted?.content ?? { text: 'Later' },
+                        placement: 'next_turn',
+                      },
+                    ],
+                  };
+                })()
               : operation === 'interaction.answer'
                 ? (input as OperationInput<'interaction.answer'>).answer.kind === 'form'
                   ? {
