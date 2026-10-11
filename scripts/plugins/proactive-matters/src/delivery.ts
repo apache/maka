@@ -114,12 +114,26 @@ export function taskDelivery(ctx: any, db: any, store: any, controller: any) {
             error: '后台任务需要授权或用户输入，请打开任务会话处理。',
           };
         } else if (!evidence.update && !['completed', 'paused'].includes(m.status)) continue;
+        // Waiting details are working state, not a new report. Reuse persisted receipts
+        // (including older IDs) when the public update, outcome and error are unchanged.
+        const sameReport = (previous: any) =>
+          previous.id === evidence.id &&
+          previous.status === evidence.status &&
+          previous.update === evidence.update &&
+          previous.error === evidence.error;
+        const prior = db
+          .prepare(
+            "SELECT id,payload FROM task_notifications WHERE owner=? AND matter=? AND payload IS NOT NULL AND phase!='superseded' ORDER BY rowid DESC",
+          )
+          .all(row.owner, m.id)
+          .find((n: any) => sameReport(JSON.parse(n.payload)));
+        const notificationId = prior?.id ?? key(row.owner, evidence);
         db.prepare(
           "UPDATE task_notifications SET phase='superseded',error=NULL WHERE owner=? AND matter=? AND id!=? AND phase IN ('pending','failed','awaiting_reply','uncertain','retry')",
-        ).run(row.owner, m.id, key(row.owner, evidence));
+        ).run(row.owner, m.id, notificationId);
         db.prepare(
           'INSERT OR IGNORE INTO task_notifications(id,owner,matter,phase,payload) VALUES(?,?,?,?,?)',
-        ).run(key(row.owner, evidence), row.owner, m.id, 'pending', JSON.stringify(evidence));
+        ).run(notificationId, row.owner, m.id, 'pending', JSON.stringify(evidence));
       } catch (e) {
         ownerErrors.set(row.owner, String(e));
       }
@@ -127,7 +141,7 @@ export function taskDelivery(ctx: any, db: any, store: any, controller: any) {
     const ownersSent = new Set<string>();
     for (const n of db
       .prepare(
-        "SELECT * FROM task_notifications WHERE phase NOT IN ('admitted','delivered','superseded') ORDER BY rowid",
+        "SELECT * FROM task_notifications WHERE phase NOT IN ('admitted','delivered','superseded','quiet') ORDER BY rowid",
       )
       .all()) {
       if (abort.signal.aborted) return;
@@ -156,6 +170,13 @@ export function taskDelivery(ctx: any, db: any, store: any, controller: any) {
             continue;
           }
           if (busy) continue;
+          const payload = n.payload ? JSON.parse(n.payload) : null;
+          if (receipt.seen && payload?.status === 'waiting' && !payload.error) {
+            // The ordinary assistant may decline to repeat interim progress. This is
+            // not a delivery receipt; completion/failure/needs-user still require one.
+            update(n.id, 'quiet');
+            continue;
+          }
           if (n.phase !== 'retry') {
             // Queued input can take time to appear. Poll history, never blindly replay it.
             if (!receipt.seen && Date.now() - n.sent_at < 30000 && n.phase !== 'sending') continue;
@@ -226,7 +247,8 @@ export function taskDelivery(ctx: any, db: any, store: any, controller: any) {
         .prepare('SELECT * FROM task_notifications WHERE id=? AND owner=?')
         .get(id, owner);
       if (!n) throw Error('反馈不属于此对话');
-      if (['admitted', 'delivered', 'superseded'].includes(n.phase)) return { phase: n.phase };
+      if (['admitted', 'delivered', 'superseded', 'quiet'].includes(n.phase))
+        return { phase: n.phase };
       if (!n.payload) throw Error('旧反馈缺少恢复证据，请在聊天中查询 MatterTasks。');
       update(id, 'retry');
       db.prepare('UPDATE task_notifications SET retry_at=0 WHERE id=?').run(id);
@@ -236,7 +258,7 @@ export function taskDelivery(ctx: any, db: any, store: any, controller: any) {
     status: (owner: string) => [
       ...db
         .prepare(
-          "SELECT id,matter,phase,error FROM task_notifications WHERE owner=? AND phase NOT IN ('admitted','delivered','superseded')",
+          "SELECT id,matter,phase,error FROM task_notifications WHERE owner=? AND phase NOT IN ('admitted','delivered','superseded','quiet')",
         )
         .all(owner),
       ...(ownerErrors.get(owner) || lastError

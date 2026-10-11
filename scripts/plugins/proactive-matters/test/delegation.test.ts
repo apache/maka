@@ -453,3 +453,102 @@ test('waiting for user approval remains active beyond execution timeout and is v
     await rm(f.root, { recursive: true, force: true });
   }
 });
+
+test('quiet interim progress is not an error or replayed for changed waiting details; completion still needs a receipt', async () => {
+  const { d } = driver();
+  let f = await fixture({ driver: d });
+  let runs = 0,
+    parentRuns = 0,
+    failure: unknown;
+  const history: any[] = [];
+  const followup = d.runtime.followup;
+  d.runtime.transcript = async (id: string) => (id === 'session-1' ? history : []);
+  d.runtime.followup = async (id: string, prompt: string, inv: any) => {
+    const result = await followup(id, prompt, inv);
+    if (id === 'session-1') history.push({ type: 'user', text: prompt, turnId: result.turnId });
+    return result;
+  };
+  d.onFollowup = async (id, _prompt, turn) => {
+    if (id === 'session-1') {
+      parentRuns++;
+      d.end(id);
+      return;
+    }
+    try {
+      runs++;
+      const m = (await f.remote('matters.list')).matters.find((m: any) => m.sessionId === id);
+      const v = await f.invoke('MatterRead', { activationId: m.activation.id }, turn, id);
+      await f.invoke(
+        'MatterWriteFile',
+        { path: v.files.draft, content: `Evidence round ${runs}` },
+        turn,
+        id,
+      );
+      await f.invoke(
+        'MatterSettle',
+        {
+          expectedRevision: v.revision,
+          stateFile: v.files.draft,
+          disposition: runs < 3 ? 'wait' : 'complete',
+          reason: '核对实际证据',
+          summary: '只读检查',
+          ...(runs < 3
+            ? {
+                waitingFor: `等待更新证据 ${runs}`,
+                wakes: [{ kind: 'at', at: Date.now() + 60000 }],
+              }
+            : {}),
+          ...(runs === 1
+            ? { update: '已安排跟进，不重复例行进度。' }
+            : runs === 3
+              ? { update: '确认验收完成。' }
+              : {}),
+        },
+        turn,
+        id,
+      );
+    } catch (e) {
+      failure = e;
+    } finally {
+      d.end(id);
+    }
+  };
+  try {
+    d.end('session-1');
+    const task = await f.invoke('MatterDelegate', {
+      taskKey: 'quiet-progress',
+      title: '验收',
+      request: '完成后再通知',
+    });
+    await until(() => failure || parentRuns === 1);
+    if (failure) throw failure;
+    await until(async () => !(await f.invoke('MatterOverview')).notifications.length);
+    const root = f.root;
+    await f.close();
+    f = await fixture({ root, reopen: true, driver: d });
+    await f.invoke('MatterTaskControl', { id: task.id, action: 'check' });
+    await until(
+      async () =>
+        failure ||
+        (runs === 2 && (await f.invoke('MatterTasks', { id: task.id })).status === 'waiting'),
+    );
+    if (failure) throw failure;
+    await new Promise((r) => setTimeout(r, 1200));
+    assert.equal(parentRuns, 1, 'old update plus changed waitingFor must not send a new notice');
+    assert.equal((await f.invoke('MatterOverview')).notifications.length, 0);
+    await f.invoke('MatterTaskControl', { id: task.id, action: 'check' });
+    await until(
+      async () =>
+        failure ||
+        (await f.invoke('MatterOverview')).notifications.some(
+          (n: any) => n.phase === 'awaiting_reply',
+        ),
+    );
+    if (failure) throw failure;
+    assert.equal(runs, 3);
+    assert.equal(parentRuns, 2);
+  } finally {
+    await f.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
