@@ -260,14 +260,14 @@ export const PROVIDER_DISPLAY_COPY = {
     en: { name: 'Cloudflare Workers AI', description: 'Cloudflare-hosted models over the account-scoped API.', badge: 'API' },
   },
   'azure-foundry': {
-    'zh-CN': { name: 'Azure AI Foundry', description: '使用 Foundry 终结点和 API 密钥连接已部署的 OpenAI 兼容模型。', badge: 'API' },
-    'zh-TW': { name: 'Azure AI Foundry', description: '使用 Foundry 端點與 API 金鑰連線已部署的 OpenAI 相容模型。', badge: 'API' },
-    en: { name: 'Azure AI Foundry', description: 'Connect a deployed OpenAI-compatible model with its Foundry endpoint and API key.', badge: 'API' },
+    'zh-CN': { name: 'Azure AI Foundry（API 密钥）', description: '仅支持使用 Foundry 终结点和 API 密钥连接模型。暂不支持 Entra ID；见 #6072。', badge: 'API' },
+    'zh-TW': { name: 'Azure AI Foundry（API 金鑰）', description: '僅支援使用 Foundry 端點與 API 金鑰連線模型。暫不支援 Entra ID；見 #6072。', badge: 'API' },
+    en: { name: 'Azure AI Foundry (API key)', description: 'Connect with a Foundry endpoint and API key. Entra ID is not supported yet; see #6072.', badge: 'API' },
   },
   'amazon-bedrock-api-key': {
-    'zh-CN': { name: 'Amazon Bedrock（API 密钥）', description: '使用 Bedrock API 密钥和区域 OpenAI 兼容端点连接模型；可为 Responses 或 Anthropic Messages 模型选择对应协议。', badge: 'API' },
-    'zh-TW': { name: 'Amazon Bedrock（API 金鑰）', description: '使用 Bedrock API 金鑰與區域 OpenAI 相容端點連線模型；可為 Responses 或 Anthropic Messages 模型選擇對應協定。', badge: 'API' },
-    en: { name: 'Amazon Bedrock (API key)', description: 'Use a Bedrock API key with its regional OpenAI-compatible endpoint and select Responses or Anthropic Messages for models that require them.', badge: 'API' },
+    'zh-CN': { name: 'Amazon Bedrock（API 密钥）', description: '仅支持 Bedrock API 密钥；可选择 Chat Completions、Responses 或 Anthropic Messages 协议。暂不支持 SigV4 或 IAM Identity Center；见 #6072。', badge: 'API' },
+    'zh-TW': { name: 'Amazon Bedrock（API 金鑰）', description: '僅支援 Bedrock API 金鑰；可選擇 Chat Completions、Responses 或 Anthropic Messages 協定。暫不支援 SigV4 或 IAM Identity Center；見 #6072。', badge: 'API' },
+    en: { name: 'Amazon Bedrock (API key)', description: 'API key only. Choose Chat Completions, Responses or Anthropic Messages; SigV4 and IAM Identity Center are not supported yet (#6072).', badge: 'API' },
   },
   huggingface: {
     'zh-CN': { name: 'Hugging Face', description: 'Inference Providers 路由，聚合多家托管模型', badge: '路由' },
