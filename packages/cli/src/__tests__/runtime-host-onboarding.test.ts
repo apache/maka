@@ -1245,6 +1245,25 @@ describe('projectProviders', () => {
     });
   });
 
+  test('CLI onboarding offers only supported protocols for cloud API-key entries', () => {
+    for (const providerType of ['azure-foundry', 'amazon-bedrock-api-key'] as const) {
+      const entries = listApiKeyOnboardableProviders().filter(
+        (provider) => provider.providerType === providerType,
+      );
+      assert.deepEqual(
+        entries.map((entry) => entry.defaultApiProtocol),
+        ['openai-chat', 'openai-responses', 'anthropic-messages'],
+      );
+      for (const entry of entries) {
+        assert.deepEqual(onboardingCreateTarget(entry), {
+          kind: 'create',
+          providerType,
+          defaultApiProtocol: entry.defaultApiProtocol,
+        });
+      }
+    }
+  });
+
   test('several non-canonical connections remain independently editable', () => {
     const entries = projectProviders(
       catalog([relay, { ...relay, connectionId: 'relay-2-id', slug: 'my-relay-2' }]),
