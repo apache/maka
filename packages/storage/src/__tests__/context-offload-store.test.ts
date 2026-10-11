@@ -46,6 +46,8 @@ import {
 
 after(removeTrackedControlDirectories);
 
+const SINGLE_FLIGHT_RACE_ROUNDS = 500;
+
 test('requires authentic Storage Root leases and writer facades', async () => {
   await assert.rejects(
     () =>
@@ -81,9 +83,8 @@ test('single-flights one limit-bound writer and snapshots admitted inputs', asyn
     );
     (mutableLimits.ownerMaxBytes as { tool_result_archive: number }).tool_result_archive = 0;
     (mutableLimits as { sessionLogicalBytes: number }).sessionLogicalBytes = 0;
-    const [first, second] = await Promise.all([opening, concurrentOpening]);
+    const [first, second] = await Promise.all([opening, concurrentOpening, conflictingOpening]);
     try {
-      await conflictingOpening;
       assert.strictEqual(second, first);
       assert.strictEqual(authenticateInteractiveContextOffloadWriter(first), first);
       const reader = createInteractiveContextOffloadReader(first);
@@ -146,6 +147,29 @@ test('single-flights one limit-bound writer and snapshots admitted inputs', asyn
       );
     } finally {
       await first.close();
+    }
+  });
+});
+
+test('binds the first caller limits whatever order concurrent lease checks finish in', async () => {
+  // Each open checks the root identity on disk before joining the single flight, and
+  // those checks finish in no fixed order, so replay the race enough times to observe it.
+  await withInteractiveOwner(async (owner) => {
+    for (let round = 0; round < SINGLE_FLIGHT_RACE_ROUNDS; round += 1) {
+      const [first, conflicting] = await Promise.allSettled([
+        openInteractiveContextOffloadStoreForWrite(owner.lease, { limits: testLimits() }),
+        openInteractiveContextOffloadStoreForWrite(owner.lease, {
+          limits: { ...testLimits(), workspacePhysicalBytes: 63 },
+        }),
+      ]);
+      await Promise.all(
+        [first, conflicting].map((outcome) =>
+          outcome.status === 'fulfilled' ? outcome.value.close() : undefined,
+        ),
+      );
+      assert.equal(first.status, 'fulfilled', `round ${round}: the first caller was rejected`);
+      assert.equal(conflicting.status, 'rejected', `round ${round}: the conflict was admitted`);
+      assert.match(String(conflicting.reason), /different limits/u);
     }
   });
 });

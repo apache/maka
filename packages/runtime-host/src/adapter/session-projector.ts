@@ -631,6 +631,14 @@ function projectSessionEvent(
   frame: Extract<SubscriptionFrame, { kind: 'subscription.session_event' }>,
 ): SessionEvent {
   const event = frame.event;
+  if (event.type === 'context_compaction_applied') {
+    return {
+      type: event.type,
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+    };
+  }
   if (event.type === 'steering_message') {
     const steering: SessionSteeringEvent = {
       type: 'steering_message',

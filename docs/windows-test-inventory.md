@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 53 |
-| platform-contract | 40 |
+| portable-candidate | 56 |
+| platform-contract | 48 |
 
-Total Windows-excluded declarations: **120**
+Total Windows-excluded declarations: **131**
 
 ## Inventory
 
@@ -87,8 +87,14 @@ Total Windows-excluded declarations: **120**
 | platform-contract | `packages/runtime/src/__tests__/filesystem-worker-smoke.test.ts` macOS filesystem worker smoke | `process.platform !== 'darwin'` |
 | platform-contract | `packages/runtime/src/__tests__/glob-search.test.ts` both Glob paths report permission failures and recover after permissions are restored | `process.platform === 'win32' \|\| process.getuid?.() === 0` |
 | portable-candidate | `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts` does not carry queued Unix PTY writes past native exit | `process.platform === 'win32' ? 'Unix PTY file-descriptor lifecycle only' : false` |
+| platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` POSIX cancellation delivers SIGTERM exactly once to the owned command | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` supervisor mirrors a command that dies from ${signal} | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` group-wide signals from the command do not end its supervisor | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/owned-child-process.test.ts` unexpected POSIX supervisor death terminates its command and cannot report success | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | portable-candidate | `packages/runtime/src/__tests__/shell-exec.test.ts` writes a legacy WSL Bash command through stdin | `process.platform === 'win32' ? 'uses /bin/sh as a portable stdin probe' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-exec.test.ts` bounds output drain after the root exits while a detached descendant retains stdout | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-owner-death.test.ts` ${mode} (stop already requested: ${beginStop}): owner SIGKILL terminates an admitted command before its delayed write | `beginStop && process.platform === 'win32' ? 'POSIX graceful SIGTERM window required' : false` |
+| platform-contract | `packages/runtime/src/__tests__/shell-owner-death.test.ts` owner SIGKILL also terminates a descendant that left the command group with setsid | `process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` latches timeout when the root exits during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` preserves cancellation when timeout fires during POSIX process discovery | `process.platform === 'win32' ? 'POSIX process discovery only' : false` |
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` ignores a Stop abort that occurs after another admitted Stop commits termination | `process.platform === 'win32' ? 'Windows termination has no asynchronous POSIX snapshot window' : false` |
@@ -103,6 +109,9 @@ Total Windows-excluded declarations: **120**
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` creates the target 0600 on POSIX | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` re-chmods a pre-existing world-readable target to 0600 on the next write | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` refuses to write through a pre-planted symlink at the temp path | `process.platform === 'win32'` |
+| platform-contract | `packages/storage/src/__tests__/git-entry.test.ts` inaccessible ${fixture.name} cannot downgrade identity or publish a marker | `process.platform === 'win32' \|\| process.getuid?.() === 0 ? 'Requires enforced POSIX permissions' : false` |
+| portable-candidate | `packages/storage/src/__tests__/git-entry.test.ts` a dangling HEAD symlink is not evidence that HEAD is absent | `process.platform === 'win32' ? 'Requires POSIX symlink support' : false` |
+| portable-candidate | `packages/storage/src/__tests__/git-entry.test.ts` failed ancestor ${shape} is not treated as an ordinary broken directory | `shape === 'gitdir-symlink' && process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
@@ -138,6 +147,8 @@ Total Windows-excluded declarations: **120**
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
+| platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unreadable ancestor Git repository fails closed until permissions return | `process.platform === 'win32' ? 'POSIX permissions are required for an unreadable HEAD fixture' : false` |
+| portable-candidate | `packages/storage/src/__tests__/workspace-identity.test.ts` a dangling .git symlink in the workspace itself blocks marker publication | `process.platform === 'win32' ? 'Windows symlink creation requires elevated privileges or Developer Mode' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
 | platform-contract | `scripts/macos-update-archive.test.mjs` the macOS update ZIP keeps bundle symlinks and modification times | `process.platform !== 'darwin' && 'the macOS update ZIP is built on macOS'` |
 | portable-candidate | `scripts/qualify-released-cli-state-root.test.mjs` starts the liveness window after a delayed Runtime Host Ready | `process.platform === 'win32'` |

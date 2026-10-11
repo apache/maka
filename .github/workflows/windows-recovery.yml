@@ -94,14 +94,17 @@ on:
       - 'packages/runtime-host/src/server/host-resource-probe.ts'
       - 'packages/runtime-host/src/server/skill-catalog-repository.ts'
       - 'packages/runtime-host/src/server/skill-catalog-transaction.ts'
+      - 'packages/runtime/src/__tests__/owned-child-process.test.ts'
+      - 'packages/runtime/src/__tests__/pipe-process-driver.test.ts'
       - 'packages/runtime/src/__tests__/runtime-continuation-crash.test.ts'
       - 'packages/runtime/src/__tests__/runtime-resume-crash.test.ts'
+      - 'packages/runtime/src/__tests__/shell-owner-death.test.ts'
       - 'packages/runtime/src/builtin-tools.ts'
       - 'packages/runtime/src/file-stable-write.ts'
       - 'packages/runtime/src/filesystem-worker/client.ts'
       - 'packages/runtime/src/filesystem-worker/launch-spec.ts'
       - 'packages/runtime/src/filesystem-worker/process-runner.ts'
-      - 'packages/runtime/src/pipe-process-driver.ts'
+      - 'packages/runtime/src/owned-child-process.ts'
       - 'packages/runtime/src/process-tree-terminator.ts'
       - 'packages/runtime/src/pty-process-driver.ts'
       - 'packages/runtime/src/ripgrep-guidance.ts'
@@ -112,7 +115,6 @@ on:
       - 'packages/runtime/src/sandbox/windows-profile.ts'
       - 'packages/runtime/src/sandbox/windows-sandbox.ts'
       - 'packages/runtime/src/shell-detect.ts'
-      - 'packages/runtime/src/shell-exec.ts'
       - 'packages/storage/src/__tests__/managed-dependency-environment.test.ts'
       - 'packages/storage/src/__tests__/root-authority.test.ts'
       - 'packages/storage/src/artifact-store.ts'
@@ -248,6 +250,27 @@ jobs:
           node.exe --test --test-concurrency=1 `
             packages/runtime/dist/__tests__/runtime-resume-crash.test.js `
             packages/runtime/dist/__tests__/runtime-continuation-crash.test.js
+
+      # Every Windows Bash command runs under the owning supervisor. Run its
+      # owner-death and lifecycle suites on a real Windows host. shell-exec's
+      # suite is written in POSIX shell syntax and is not portable yet.
+      - name: Verify shell command ownership
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            packages/runtime/dist/__tests__/owned-child-process.test.js `
+            packages/runtime/dist/__tests__/shell-owner-death.test.js `
+            packages/runtime/dist/__tests__/pipe-process-driver.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/shell-command-ownership.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/shell-command-ownership.tap"
+          # Most of these suites carry POSIX-only skips; pin how many still run
+          # here so a widened skip cannot leave the lane green while testing less.
+          if ($output -notcontains '# tests 20' -or $output -notcontains '# pass 12' -or $output -notcontains '# skipped 8') {
+            Write-Error 'Shell command ownership gate did not run exactly 12 passing Windows tests'
+            exit 1
+          }
 
       - name: Verify Runtime Host owner-death recovery
         shell: pwsh

@@ -213,6 +213,7 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('test does not dispatch new work');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {},
       },
       newId: randomUUID,
@@ -1166,6 +1167,7 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('unexpected operator dispatch');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {},
       },
       newId: randomUUID,
@@ -1252,6 +1254,7 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('unexpected operator dispatch');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {},
       },
       newId: randomUUID,
@@ -1324,6 +1327,7 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('unexpected operator dispatch');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {},
       },
       newId: randomUUID,
@@ -1374,6 +1378,7 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('epoch cutover cannot dispatch operators');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {
           stopStarted.resolve();
           await releaseStop.promise;
@@ -1490,6 +1495,7 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('epoch cutover cannot dispatch operators');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {},
       },
       newId: randomUUID,
@@ -1578,6 +1584,7 @@ describe('host-managed agent graph coordinator', () => {
           throw new Error('preset provider unavailable');
         },
         runClaimedAgentGraphIntent: manager.runClaimedAgentGraphIntent.bind(manager),
+        stopAgentGraphActivation: manager.stopAgentGraphActivation.bind(manager),
         stopSession: manager.stopSession.bind(manager),
       };
       const create = () =>
@@ -1956,6 +1963,7 @@ describe('host-managed agent graph coordinator', () => {
           runClaimedAgentGraphIntent: async () => {
             throw new Error('lifecycle reads cannot dispatch operators');
           },
+          stopAgentGraphActivation: async () => {},
           stopSession: async () => {},
         },
         newId: randomUUID,
@@ -2321,6 +2329,7 @@ describe('host-managed agent graph coordinator', () => {
         ],
       },
       runtime: {
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {
           started.resolve();
           await release.promise;
@@ -2429,6 +2438,7 @@ describe('host-managed agent graph coordinator', () => {
           })),
       },
       runtime: {
+        stopAgentGraphActivation: async () => {},
         stopSession: async (sessionId: string) => {
           stopped.push(sessionId);
           if (stopped.length === 2) markStopsStarted();
@@ -2507,6 +2517,7 @@ describe('host-managed agent graph coordinator', () => {
         runClaimedAgentGraphIntent: async () => {
           throw new Error('missing input must prevent runtime dispatch');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {},
       },
       newId: randomUUID,

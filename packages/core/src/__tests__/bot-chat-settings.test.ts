@@ -22,6 +22,7 @@ import { describe, test } from 'node:test';
 import {
   createDefaultBotChatSettings,
   mergeBotChatSettings,
+  normalizeBotChatSettings,
   parseAllowedUserIdsFromText,
 } from '../bot-chat-settings.js';
 
@@ -58,4 +59,16 @@ describe('bot chat settings owner', () => {
     assert.deepEqual(parsed.slice(0, 3), ['123', '456', 'user-0']);
     assert.equal(parsed.at(-1), 'user-47');
   });
+});
+
+test('remote message handling defaults safely and survives channel edits and reload', () => {
+  const defaults = createDefaultBotChatSettings();
+  assert.equal(defaults.messageHandling, 'task');
+  const configured = mergeBotChatSettings(defaults, { messageHandling: 'workhub' });
+  const edited = mergeBotChatSettings(configured, { channels: { qq: { enabled: true } } });
+  assert.equal(normalizeBotChatSettings(defaults, edited).messageHandling, 'workhub');
+  assert.equal(
+    normalizeBotChatSettings(defaults, { channels: edited.channels }).messageHandling,
+    'task',
+  );
 });

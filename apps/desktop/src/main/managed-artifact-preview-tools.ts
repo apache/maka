@@ -20,6 +20,19 @@
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
 import type { ArtifactPreviewEndpoint } from './managed-artifact-preview.js';
+import { buildPreviewPreflightTools, type PreviewPreflightAuthority } from './preview-preflight.js';
+
+/**
+ * Every tool the `desktop_artifact_preview` offer publishes. The preflight and
+ * the route it hands off to share one grant unit, so a caller told to use
+ * ArtifactPreview is never told about a tool it was not granted.
+ */
+export function buildArtifactPreviewOfferTools(input: {
+  readonly preflight: PreviewPreflightAuthority;
+  readonly prepare: (sessionId: string, artifactId: string, signal: AbortSignal) => Promise<ArtifactPreviewEndpoint>;
+}): readonly MakaTool[] {
+  return [...buildPreviewPreflightTools(input.preflight), ...buildManagedArtifactPreviewTools(input.prepare)];
+}
 
 export function buildManagedArtifactPreviewTools(
   prepare: (sessionId: string, artifactId: string, signal: AbortSignal) => Promise<ArtifactPreviewEndpoint>,

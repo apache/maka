@@ -685,6 +685,7 @@ export type SessionEvent =
   | ErrorEvent
   | CompleteEvent
   | AbortEvent
+  | ContextCompactionAppliedEvent
   | ContextCompactionStartedEvent;
 
 export interface TextDeltaEvent extends BaseEvent {
@@ -1432,6 +1433,15 @@ export interface AbortEvent extends BaseEvent {
  */
 export interface ContextCompactionStartedEvent extends BaseEvent {
   type: 'context_compaction_started';
+}
+
+/**
+ * A persisted compaction has taken over the request projection. Its timestamp
+ * invalidates older context measurements while the turn is still running.
+ * The runtime maps this event to a hidden system note before publishing it.
+ */
+export interface ContextCompactionAppliedEvent extends BaseEvent {
+  type: 'context_compaction_applied';
 }
 
 // ============================================================================

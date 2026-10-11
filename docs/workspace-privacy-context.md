@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-04
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -47,7 +47,7 @@ The current authority path is:
 
 - `apps/desktop/src/renderer/settings/general-settings-page.tsx` requests settings changes.
 - The effective state is the Runtime Host runtime policy: `packages/core/src/runtime-policy.ts` declares the readonly `privacy.incognitoActive` field and defaults it to `false`; patches are validated by the policy codec's `privacy patch` record rule.
-- Desktop surfaces resolve the effective state from the policy via `queryRuntimePolicy()` (for example `apps/desktop/src/main/runtime-host-search-ipc-main.ts`), and core-boundary consumers validate the projected context through `validateWorkspacePrivacyContext()` (`packages/core/src/incognito.ts`) before reading any field.
+- Desktop surfaces resolve the effective state from the policy via `queryRuntimePolicy()` (for example `apps/desktop/src/main/runtime-host-settings-ipc-main.ts`), and core-boundary consumers validate the projected context through `validateWorkspacePrivacyContext()` (`packages/core/src/incognito.ts`) before reading any field.
 
 Runtime Host omits notification attention from Session catalog changes while its privacy policy is active or cannot be read. Desktop does not use the local settings store to decide Host privacy.
 

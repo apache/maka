@@ -39,6 +39,7 @@ export type {
 export type { SessionMoveTarget } from './session-rail-context.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';
+export type { ContextUsageReading } from './context-usage-reading.js';
 export * from './conversation-copy.js';
 export * from './shared-ui-copy.js';
 export * from './skills-copy.js';
@@ -202,3 +203,6 @@ export {
 export { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
 export { ChoicePanel, type ChoicePanelOption } from './choice-panel.js';
 export { formatCompactTokenCount } from './compact-token-count.js';
+export * from './revision-staged-context.js';
+
+export { TranscriptDisclosure } from './transcript-disclosure.js';

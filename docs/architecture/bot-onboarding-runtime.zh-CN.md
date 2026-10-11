@@ -6,7 +6,7 @@ source_language: zh-CN
 implementation_status: current
 document_status: current
 translation_status: source-only
-last_verified: 2026-09-29
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -31,7 +31,7 @@ owners:
 
 # Maka IM 扫码接入 runtime architecture
 
-状态：Current（2026-09-29）
+状态：Current（2026-10-10）
 
 跟踪：[Bot onboarding V1 后续加固 #4327](https://github.com/apache/maka/issues/4327)
 

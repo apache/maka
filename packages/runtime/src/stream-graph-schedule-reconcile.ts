@@ -33,6 +33,7 @@ import type {
   AgentGraphProvisionedEdge,
 } from '@maka/core/agent-graph-topology';
 import type { SessionEvent } from '@maka/core/events';
+import type { RuntimeMessageRunIdentity } from './message-authority.js';
 import { claimAgentGraphRunnableIntent } from './stream-graph-admission.js';
 import type {
   AgentGraphDispatchedActivation,
@@ -57,9 +58,26 @@ import { stableHash } from './request-shape.js';
 
 const MAX_RECONCILIATION_ATTEMPTS = 8;
 const SCHEDULE_INTENT_SCHEMA_VERSION = 1 as const;
+// A failed control pass can park the wave it is stopping, and nothing else may
+// wake it. Retry with a capped backoff while that wave is still running.
+const CONTROL_RETRY_INITIAL_DELAY_MS = 100;
+const CONTROL_RETRY_MAX_DELAY_MS = 5_000;
+// The eighth consecutive failure of a stop or a control read lands about 11 s
+// after the first, once the backoff has reached its cap: a fault that clears
+// during the ramp is never reported as stuck, while a persistent one is
+// surfaced instead of leaving the graph parked behind a single failure record.
+const CONTROL_STUCK_FAILURES = 8;
 
 export interface AgentGraphScheduleStopController {
-  stopSession(sessionId: string, input: { source: 'graph_supervisor' }): Promise<void>;
+  stopAgentGraphActivation(
+    identity: RuntimeMessageRunIdentity,
+    input: { source: 'graph_supervisor' },
+  ): Promise<void>;
+  /**
+   * Whether a failed stop left cleanup retained for this exact activation. A
+   * terminal activation without it resolves without another runtime stop.
+   */
+  hasPendingAgentGraphActivationStop?(identity: RuntimeMessageRunIdentity): boolean;
 }
 
 export interface RenderAgentGraphScheduledWorkPromptInput {
@@ -87,6 +105,7 @@ export interface ReconcileAgentGraphScheduleInput {
   ): Promise<readonly AgentGraphRecord[]>;
   renderPrompt(input: RenderAgentGraphScheduledWorkPromptInput): string | Promise<string>;
   abortSignal?: AbortSignal;
+  subscribeToScheduleChanges?(listener: () => void): () => void;
   supervisor?: AgentGraphSupervisorObserver;
 }
 
@@ -171,6 +190,42 @@ export async function reconcileAgentGraphSchedule(
     throw new Error('Agent graph maxNewActivations must be a non-negative safe integer');
   }
 
+  const wake = createReconciliationWake();
+  // Install before reading the durable schedule: a commit during any await
+  // remains pending until this reconciliation consumes it.
+  const unsubscribe = input.subscribeToScheduleChanges?.(wake.notify);
+  try {
+    return await reconcileSchedule(input, wake);
+  } finally {
+    unsubscribe?.();
+  }
+}
+
+function createReconciliationWake() {
+  let pending = false;
+  let resolve!: () => void;
+  let next = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return {
+    notify() {
+      pending = true;
+      resolve();
+    },
+    async wait() {
+      if (!pending) await next;
+      pending = false;
+      next = new Promise<void>((done) => {
+        resolve = done;
+      });
+    },
+  };
+}
+
+async function reconcileSchedule(
+  input: ReconcileAgentGraphScheduleInput,
+  wake: ReturnType<typeof createReconciliationWake>,
+): Promise<AgentGraphScheduleReconciliationResult> {
   const processedIntentIds = new Set<string>();
   const dispatches: AgentGraphDispatchedActivation[] = [];
   const stops: AgentGraphScheduleStopResult[] = [];
@@ -179,6 +234,11 @@ export async function reconcileAgentGraphSchedule(
   // reconciliation; cache them per source graph so repeated snapshot reads do
   // not replay the full committed projection of a closed epoch.
   const selectedResultCache: SelectedResultCache = new Map();
+  // Exact stops that already succeeded in this reconciliation; later passes
+  // and wakes do not stop the same activation again.
+  const resolvedStops = new Set<string>();
+  // Consecutive stop failures per target, reset when the target resolves.
+  const stopFailureStreaks = new Map<string, number>();
   let newActivationCount = 0;
   let observedExistingActivationCount = 0;
   let snapshot = await readScheduleSnapshot(input, selectedResultCache);
@@ -197,9 +257,8 @@ export async function reconcileAgentGraphSchedule(
       );
     }
 
-    const stopWave = await applyScheduleStops(input, snapshot);
-    stops.push(...stopWave.stops);
-    for (const failure of stopWave.failures) recordReconciliationFailure(input, failures, failure);
+    const stopWave = await applyScheduleStops(input, snapshot, resolvedStops);
+    recordScheduleStops(input, stops, failures, stopFailureStreaks, stopWave);
     if (failures.length > 0) {
       snapshot = await readScheduleSnapshot(input, selectedResultCache);
       return reconciliationResult(
@@ -415,7 +474,8 @@ export async function reconcileAgentGraphSchedule(
       );
     }
 
-    const outcomes = await Promise.all(
+    let waveSettled = false;
+    const wave = Promise.all(
       prepared.map(async (work) => {
         const outcome = await dispatchScheduledWork(input, work, snapshot.schedule.revision);
         if (outcome.status === 'rejected') {
@@ -423,7 +483,74 @@ export async function reconcileAgentGraphSchedule(
         }
         return outcome;
       }),
-    );
+    ).finally(() => {
+      waveSettled = true;
+      wake.notify();
+    });
+    let controlReadFailure: AgentGraphScheduleReconciliationFailure | undefined;
+    let controlReadFailureStreak = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = CONTROL_RETRY_INITIAL_DELAY_MS;
+    try {
+      // A driver abort does not end this loop: the wave still owns its
+      // dispatches, and a child parked behind a failed stop settles only
+      // after a retry succeeds.
+      while (!waveSettled) {
+        await wake.wait();
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+        if (waveSettled) break;
+        let retry: boolean;
+        try {
+          const latest = await readScheduleSnapshot(input, selectedResultCache);
+          const controls = await applyScheduleStops(input, latest, resolvedStops);
+          recordScheduleStops(input, stops, failures, stopFailureStreaks, controls);
+          if (controlReadFailure) {
+            failures.splice(failures.indexOf(controlReadFailure), 1);
+            controlReadFailure = undefined;
+          }
+          controlReadFailureStreak = 0;
+          retry = controls.failures.length > 0;
+        } catch (error) {
+          if (controlReadFailure) failures.splice(failures.indexOf(controlReadFailure), 1);
+          controlReadFailureStreak += 1;
+          // Like a stop, a read failure notifies on its first occurrence and,
+          // once, when it has persisted long enough to be stuck.
+          controlReadFailure =
+            controlReadFailureStreak < CONTROL_STUCK_FAILURES
+              ? { phase: 'schedule', error }
+              : {
+                  phase: 'schedule',
+                  error: new Error(
+                    `Reading graph schedule controls is stuck after ${controlReadFailureStreak} consecutive failures and is still retrying`,
+                    { cause: error },
+                  ),
+                };
+          failures.push(controlReadFailure);
+          if (
+            controlReadFailureStreak === 1 ||
+            controlReadFailureStreak === CONTROL_STUCK_FAILURES
+          ) {
+            notifySupervisor(input.supervisor?.onReconciliationFailure, controlReadFailure);
+          }
+          retry = true;
+        }
+        // A failed stop can keep its child, and so this wave, parked until a
+        // retry succeeds. Back off instead of waiting for another commit.
+        if (retry) {
+          retryTimer = setTimeout(wake.notify, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, CONTROL_RETRY_MAX_DELAY_MS);
+        } else {
+          retryDelay = CONTROL_RETRY_INITIAL_DELAY_MS;
+        }
+      }
+    } finally {
+      clearTimeout(retryTimer);
+      // This wave remains the sole owner of all dispatched executions, even
+      // if a control-store read fails while processing a schedule wake.
+      await wave;
+    }
+    const outcomes = await wave;
     let stale = false;
     for (const outcome of outcomes) {
       if (outcome.status === 'stale') {
@@ -631,9 +758,59 @@ function selectedResultKey(selected: AgentGraphSelectedResultInput): string {
   return `${selected.sourceGraphId}\u0000${selected.resultId}`;
 }
 
+function recordScheduleStops(
+  input: ReconcileAgentGraphScheduleInput,
+  stops: AgentGraphScheduleStopResult[],
+  failures: AgentGraphScheduleReconciliationFailure[],
+  streaks: Map<string, number>,
+  controls: {
+    stops: AgentGraphScheduleStopResult[];
+    failures: AgentGraphScheduleReconciliationFailure[];
+  },
+): void {
+  stops.push(...controls.stops);
+  const resolvedTargets = new Set(controls.stops.map((stop) => stop.targetId));
+  for (const targetId of resolvedTargets) streaks.delete(targetId);
+  for (let index = failures.length - 1; index >= 0; index -= 1) {
+    const failure = failures[index]!;
+    if (failure.phase === 'stop' && failure.targetId && resolvedTargets.has(failure.targetId)) {
+      failures.splice(index, 1);
+    }
+  }
+  for (const failure of controls.failures) {
+    const targetId = failure.targetId ?? '';
+    const streak = (streaks.get(targetId) ?? 0) + 1;
+    streaks.set(targetId, streak);
+    // The stuck state travels in the message: supervisor notifications are
+    // structured clones and the durable client failure keeps only the reason.
+    const recorded: AgentGraphScheduleReconciliationFailure =
+      streak < CONTROL_STUCK_FAILURES
+        ? failure
+        : {
+            ...failure,
+            error: new Error(
+              `Stop for graph target ${targetId} is stuck after ${streak} consecutive failures and is still retrying`,
+              { cause: failure.error },
+            ),
+          };
+    // A retried stop that fails again replaces its earlier failure. The
+    // supervisor hears about the first failure and, once, about a stuck stop,
+    // not about every backoff attempt.
+    const previous = failures.findIndex(
+      (existing) => existing.phase === 'stop' && existing.targetId === failure.targetId,
+    );
+    if (previous >= 0) failures[previous] = recorded;
+    else failures.push(recorded);
+    if (streak === 1 || streak === CONTROL_STUCK_FAILURES) {
+      notifySupervisor(input.supervisor?.onReconciliationFailure, recorded);
+    }
+  }
+}
+
 async function applyScheduleStops(
   input: ReconcileAgentGraphScheduleInput,
   snapshot: ScheduleSnapshot,
+  resolvedStops: Set<string>,
 ): Promise<{
   stops: AgentGraphScheduleStopResult[];
   failures: AgentGraphScheduleReconciliationFailure[];
@@ -653,10 +830,12 @@ async function applyScheduleStops(
   const claimsByIntent = new Map(snapshot.claims.map((claim) => [claim.intentId, claim]));
   const activationTargets = graphActivationTargets(snapshot.observation);
   const immediate: AgentGraphScheduleStopResult[] = [];
-  const targetsBySession = new Map<
-    string,
-    Array<{ targetId: string; reason: string; activationId: string }>
-  >();
+  const targets: Array<{
+    targetId: string;
+    reason: string;
+    identity: RuntimeMessageRunIdentity;
+    status: 'stopped' | 'already_terminal';
+  }> = [];
   const failures: AgentGraphScheduleReconciliationFailure[] = [];
 
   for (const [targetId, reason] of requests) {
@@ -668,13 +847,28 @@ async function applyScheduleStops(
       ? activationTargets.get(claim.targetRunId)
       : activationTargets.get(targetId);
     if (activation && isTerminalActivationStatus(activation.status)) {
-      immediate.push({
-        targetId,
-        reason,
-        status: 'already_terminal',
+      const identity = {
         sessionId: activation.sessionId,
-        activationId: activation.activationId,
-      });
+        runId: activation.activationId,
+        turnId: activation.turnId,
+      };
+      // A durable terminal does not prove that backend cleanup succeeded.
+      // Retry the exact stop only while a failed stop retains cleanup for this
+      // Run; a settled historical target resolves without a runtime call.
+      if (
+        resolvedStops.has(stopTargetKey(targetId, identity)) ||
+        !input.stopController.hasPendingAgentGraphActivationStop?.(identity)
+      ) {
+        immediate.push({
+          targetId,
+          reason,
+          status: 'already_terminal',
+          sessionId: activation.sessionId,
+          activationId: activation.activationId,
+        });
+        continue;
+      }
+      targets.push({ targetId, reason, status: 'already_terminal', identity });
       continue;
     }
     if (work && claim) {
@@ -707,50 +901,53 @@ async function applyScheduleStops(
     }
     const sessionId = activation?.sessionId ?? claim!.targetSessionId;
     const activationId = activation?.activationId ?? claim!.targetRunId;
-    const sessionTargets = targetsBySession.get(sessionId) ?? [];
-    sessionTargets.push({
-      targetId,
-      reason,
-      activationId,
-    });
-    targetsBySession.set(sessionId, sessionTargets);
+    const turnId = activation?.turnId ?? claim!.targetTurnId;
+    const identity = { sessionId, runId: activationId, turnId };
+    if (resolvedStops.has(stopTargetKey(targetId, identity))) {
+      immediate.push({ targetId, reason, status: 'stopped', sessionId, activationId });
+      continue;
+    }
+    targets.push({ targetId, reason, status: 'stopped', identity });
   }
 
   const settled = await Promise.allSettled(
-    [...targetsBySession].map(async ([sessionId, targets]) => {
-      await input.stopController.stopSession(sessionId, { source: 'graph_supervisor' });
-      return targets.map(
-        (target): AgentGraphScheduleStopResult => ({
-          targetId: target.targetId,
-          reason: target.reason,
-          status: 'stopped',
-          sessionId,
-          activationId: target.activationId,
-        }),
-      );
+    targets.map(async (target): Promise<AgentGraphScheduleStopResult> => {
+      await input.stopController.stopAgentGraphActivation(target.identity, {
+        source: 'graph_supervisor',
+      });
+      return {
+        targetId: target.targetId,
+        reason: target.reason,
+        status: target.status,
+        sessionId: target.identity.sessionId,
+        activationId: target.identity.runId,
+      };
     }),
   );
   settled.forEach((result, index) => {
+    const target = targets[index]!;
     if (result.status === 'fulfilled') {
-      immediate.push(...result.value);
+      resolvedStops.add(stopTargetKey(target.targetId, target.identity));
+      immediate.push(result.value);
       return;
     }
-    const [sessionId, targets] = [...targetsBySession][index]!;
-    targets.forEach((target) => {
-      failures.push({
-        phase: 'stop',
-        targetId: target.targetId,
-        error: new Error(
-          `Failed to stop graph supervisor target ${target.targetId} in ${sessionId}`,
-          { cause: result.reason },
-        ),
-      });
+    failures.push({
+      phase: 'stop',
+      targetId: target.targetId,
+      error: new Error(
+        `Failed to stop graph supervisor target ${target.targetId} in ${target.identity.sessionId}`,
+        { cause: result.reason },
+      ),
     });
   });
   return {
     stops: immediate.sort((a, b) => compareIdentity(a.targetId, b.targetId)),
     failures,
   };
+}
+
+function stopTargetKey(targetId: string, identity: RuntimeMessageRunIdentity): string {
+  return [targetId, identity.sessionId, identity.runId, identity.turnId].join('\u0000');
 }
 
 async function dispatchScheduledWork(
@@ -1062,6 +1259,7 @@ function graphActivationTargets(observation: AgentGraphSupervisorObservation): M
   {
     sessionId: string;
     activationId: string;
+    turnId: string;
     status: string;
   }
 > {
@@ -1070,9 +1268,13 @@ function graphActivationTargets(observation: AgentGraphSupervisorObservation): M
     {
       sessionId: string;
       activationId: string;
+      turnId: string;
       status: string;
     }
   >();
+  const sourceByActivation = new Map(
+    observation.projection.records.map((record) => [record.activationId, record.source]),
+  );
   for (const binding of observation.projection.operators) {
     const state = observation.projection.state.operators[binding.operatorId];
     for (const activation of Object.values(state?.activations ?? {})) {
@@ -1081,9 +1283,12 @@ function graphActivationTargets(observation: AgentGraphSupervisorObservation): M
           `Graph activation ${activation.activationId} belongs to multiple operators`,
         );
       }
+      const source = sourceByActivation.get(activation.activationId);
+      if (!source) throw new Error(`Graph activation ${activation.activationId} has no source`);
       targets.set(activation.activationId, {
         sessionId: binding.sessionId,
         activationId: activation.activationId,
+        turnId: source.turnId,
         status: activation.status,
       });
     }

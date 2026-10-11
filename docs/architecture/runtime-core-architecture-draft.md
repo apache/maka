@@ -222,8 +222,8 @@ It is an orchestration boundary, not the model loop. A Backend should not own th
 `AgentRun` gives one execution a durable identity and lifecycle. At startup it:
 
 1. commits the invocation's opening fact as a RuntimeEvent;
-2. writes the user message and a `running` Turn projection for a top-level Run;
-3. writes the initial user `RuntimeEvent`;
+2. commits the initial user `RuntimeEvent` before any catalog/status write;
+3. writes the user message and a `running` Turn projection for a top-level Run;
 4. locks the Session's connection configuration;
 5. ensures a Backend exists and registers the active Run;
 6. builds model history from earlier RuntimeEvent ledgers.
@@ -260,7 +260,7 @@ The mapper is deterministic and does not own streaming, stop, disposal, or admis
 
 ### `AgentBackend`: where the model/tool loop actually runs
 
-For the default `AiSdkBackend`, the core loop remains inside `send()`. It:
+For the default `AiSdkBackend`, `send()` delegates each turn to an isolated `AiSdkTurn` (`packages/runtime/src/ai-sdk-turn.ts`), which owns the model/tool step loop and the per-turn `ToolRuntime`. The turn:
 
 1. resolves the model and prepares the tools visible in this turn;
 2. constructs provider messages from RuntimeEvent history and applies context-budget policy;
@@ -386,7 +386,7 @@ Continuing execution is a separate path. `safe_boundary_continuation` resumes fr
 ### Current costs
 
 - The migration period contains `SessionEvent`, `StoredMessage`, `RuntimeEvent`, and operational Run events, making event mapping expensive to maintain.
-- `AiSdkBackend` remains large and coordinates history, context budgets, tool availability, the step loop, usage, and telemetry.
+- `AiSdkBackend` still assembles history, context budgets, tool availability, usage, and telemetry, while the step loop itself lives in the `AiSdkTurn` it constructs.
 - The mapper is still a legacy-to-canonical bridge rather than consuming native RuntimeEvents from the Backend.
 - `SessionStore` and RuntimeEvent projection must cooperate for active and in-flight reads.
 - Startup recovery performs deterministic termination and repair, not arbitrary warm resume. Continuation is a separate path: `safe_boundary_continuation` resumes from a verified safe boundary, is marked by the continuation source on the invocation's opening fact, and is admitted and dispatched by `RuntimeKernel`; see [Chapter 8](./runtime-resume-architecture.md) for the difference.
@@ -403,7 +403,8 @@ Read the current implementation in this order:
 2. `packages/runtime/src/runtime-kernel.ts`: active Run/Backend control and main-path assembly.
 3. `packages/runtime/src/agent-run.ts`: durable lifecycle, history construction, and terminal commit.
 4. `packages/runtime/src/session-event-runtime-mapper.ts`: pure `SessionEvent → RuntimeEvent` mapping.
-5. `packages/runtime/src/ai-sdk-backend.ts`: the AI SDK model/tool step loop.
+5. `packages/runtime/src/ai-sdk-backend.ts`: backend assembly that delegates each `send()` to an isolated `AiSdkTurn`;
+5b. `packages/runtime/src/ai-sdk-turn.ts`: the AI SDK model/tool step loop and per-turn `ToolRuntime` ownership.
 6. `packages/runtime/src/model-adapter.ts`: provider stream adaptation.
 7. `packages/runtime/src/tool-runtime.ts`: sandbox boundaries, tool execution, and side-effect boundaries.
 8. `packages/core/src/runtime-event.ts`: the canonical RuntimeEvent contract.

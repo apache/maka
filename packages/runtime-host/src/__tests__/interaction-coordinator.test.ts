@@ -1827,6 +1827,7 @@ async function withGraphInteractionActivity(
         runClaimedAgentGraphIntent: async () => {
           throw new Error('An activity read cannot dispatch work');
         },
+        stopAgentGraphActivation: async () => {},
         stopSession: async () => {},
       },
       newId: randomUUID,

@@ -56,11 +56,19 @@ export function ComposerStagingProvider(props: {
           hasStagedQuotes: Boolean(quotes?.length),
           submittableAttachments: staging.submittableAttachments,
           directoryOptions: staging.directoryOptions,
-          quotesForSend: () => quotes,
+          // An explicit owner key reads the live plate — the revision send
+          // passes the branch child the lifecycle re-keyed the quotes onto
+          // mid-send (#5274 review); without one the snapshot answers.
+          quotesForSend: (ownerKey?: string) =>
+            ownerKey === undefined ? quotes : staging.quotesForSend(ownerKey),
           clearSubmittedContext: staging.clearSubmittedContext,
-          clearQuotes: () => staging.clearSubmittedQuotes(quotes ?? []),
+          clearQuotes: (ownerKey?: string) => {
+            if (ownerKey === undefined) staging.clearSubmittedQuotes(quotes ?? []);
+            else staging.clearQuotes(ownerKey);
+          },
         };
       },
+      stagedContext: staging.stagedContext,
       addQuote: staging.addQuote,
       resetImageNotice: (key) => staging.imageNoticeLifecycle.reset(key),
       transferImageNotice: (from, to) => staging.imageNoticeLifecycle.transfer(from, to),

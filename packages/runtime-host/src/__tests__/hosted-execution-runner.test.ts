@@ -26,6 +26,7 @@ import { HostHostedExecutionRunner } from '../server/hosted-execution-runner.js'
 test('hosted execution reads usage only after execution residencies settle', async () => {
   const residency = deferred();
   let usageRead = false;
+  const coverage = settlementCoverage();
   const runner = new HostHostedExecutionRunner({
     handlers: handlers({
       usage: () => {
@@ -33,7 +34,7 @@ test('hosted execution reads usage only after execution residencies settle', asy
         return usageSummary();
       },
     }),
-    runSettlementCoverage: settlementCoverage(),
+    runSettlementCoverage: coverage,
     context: context(),
     requestDrain: () => {},
     waitForExecutionResidencies: () => residency.promise,
@@ -61,6 +62,10 @@ test('hosted execution reads usage only after execution residencies settle', asy
     costUsd: 0.25,
   });
   assert.equal(usageRead, true);
+  // The completeness check must read the exact window the usage summary read
+  // (#5890 review): separating the two silently re-opens the delegated-Session
+  // undercount that window scoping closed.
+  assert.deepEqual(coverage.calls, [[100, 200]]);
 });
 
 test('a run-owned unsettled attempt refuses settlement with its fixed safe cause', async () => {
@@ -376,16 +381,24 @@ function usageSummary() {
 
 /**
  * The run-scoped incompleteness check's stub: a hosted execution owns no
- * usage-unknown rows unless the test says otherwise.
+ * usage-unknown rows unless the test says otherwise. Calls are recorded so a
+ * test can pin the window the runner passed in.
  */
 function settlementCoverage(
   overrides: { usageMissingAttempts?: number; usagePartialAttempts?: number } = {},
 ) {
-  return async (_from: number, _to: number) => ({
-    usageMissingAttempts: 0,
-    usagePartialAttempts: 0,
-    ...overrides,
-  });
+  const calls: Array<[number, number]> = [];
+  return Object.assign(
+    async (from: number, to: number) => {
+      calls.push([from, to]);
+      return {
+        usageMissingAttempts: 0,
+        usagePartialAttempts: 0,
+        ...overrides,
+      };
+    },
+    { calls },
+  );
 }
 
 function emptySkillInvocation() {

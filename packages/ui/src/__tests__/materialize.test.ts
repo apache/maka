@@ -257,6 +257,31 @@ describe("materializeTurns message metadata", () => {
     assert.deepEqual(turns.flatMap((turn) => turn.notes), []);
   });
 
+  test("hides the apply-time compaction boundary note that exists for usage ordering", () => {
+    // The applied row is the selector's compaction-time anchor; the settlement
+    // context_compacted row stays the one users see.
+    const turns = materializeTurns([
+      {
+        type: "system_note",
+        id: "applied",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_compaction_applied",
+      },
+      {
+        type: "system_note",
+        id: "compacted",
+        turnId: "t1",
+        ts: 2,
+        kind: "context_compacted",
+      },
+    ], "en");
+    assert.deepEqual(
+      turns.flatMap((turn) => turn.notes.map((note) => note.id)),
+      ["compacted"],
+    );
+  });
+
   test("localizes visible system notes", () => {
     const messages: StoredMessage[] = [
       {

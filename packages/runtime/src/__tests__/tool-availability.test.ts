@@ -441,15 +441,17 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.equal(active.has('lower_ranked_tool'), false);
   });
 
-  test('required orchestration tools are visible without changing activation state', () => {
+  test('required orchestration tools are visible without changing activation state', async () => {
     const active = new Map<string, string>();
     const plan = runtime().prepare(active, new Set(['docs_read']));
     assert.ok(plan.activeTools.includes('docs_read'));
     assert.equal(active.size, 0);
     assert.ok(plan.projectActiveTools!().activeTools.includes('docs_read'));
+    assert.doesNotMatch(searchTool(plan).description, /- docs_read/);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'docs_read' }, ctx), { activated: [] });
   });
 
-  test('activation maps isolate overlapping and subsequent turns', async () => {
+  test('distinct activation maps isolate overlapping prepares', async () => {
     const first = new Map<string, string>();
     const firstPlan = runtime().prepare(first);
     await searchTool(firstPlan).impl({ query: 'browser click' }, ctx);
@@ -457,6 +459,14 @@ describe('ToolAvailabilityRuntime — search activation', () => {
 
     const secondPlan = runtime().prepare(new Map());
     assert.ok(!secondPlan.activeTools.includes('browser_click'));
+  });
+
+  test('a shared activation map keeps schemas visible for a later prepare', async () => {
+    const shared = new Map<string, string>();
+    const firstPlan = runtime().prepare(shared);
+    await searchTool(firstPlan).impl({ query: 'browser click' }, ctx);
+    const laterPlan = runtime().prepare(shared);
+    assert.ok(laterPlan.activeTools.includes('browser_click'));
   });
 
   test('an ungrouped bound tool is deferred by default', () => {
@@ -523,5 +533,30 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     // The explicit group claims agent_spawn; only the remaining hinted tool is family-bucketed.
     assert.deepEqual(bySource.orchestration, ['agent_spawn']);
     assert.deepEqual(bySource.agents, ['agent_list']);
+  });
+
+  test('request_sandbox_boundary stays deferred until required', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('request_sandbox_boundary')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.ok(!plan.activeTools.includes('request_sandbox_boundary'));
+    assert.match(searchTool(plan).description, /- request_sandbox_boundary/);
+  });
+
+  test('required request_sandbox_boundary is visible without changing activation state', async () => {
+    const active = new Map<string, string>();
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('request_sandbox_boundary')],
+      {},
+      invalid,
+    ).prepare(active, new Set(['request_sandbox_boundary']));
+    assert.ok(plan.activeTools.includes('request_sandbox_boundary'));
+    assert.equal(active.size, 0);
+    assert.doesNotMatch(searchTool(plan).description, /- request_sandbox_boundary/);
+    assert.deepEqual(await searchTool(plan).impl({ query: 'request_sandbox_boundary' }, ctx), {
+      activated: [],
+    });
   });
 });

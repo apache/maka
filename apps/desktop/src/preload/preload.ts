@@ -1983,8 +1983,17 @@ const makaBridge = {
         { select: false, ...(name === undefined ? {} : { name }) },
       ) as
         | { ok: true; project: ProjectRecord; path: string }
-        | { ok: false; reason: 'cancelled' };
+        | { ok: false; reason: 'cancelled' }
+        | { ok: false; reason: 'archived'; projectId: string };
       return result.ok ? { ok: true as const, project: result.project } : result;
+    },
+    async restoreProject(host: DesktopNewTaskHostRef, projectId: string) {
+      const project = await ipcRenderer.invoke(
+        'projects:restore',
+        await runtimeHostScope(host),
+        projectId,
+      ) as ProjectRecord;
+      return { ok: true as const, project };
     },
     async relinkProject(host: DesktopNewTaskHostRef, projectId: string) {
       return invokeWhenReady(
@@ -2226,14 +2235,6 @@ const makaBridge = {
     async configureModel(coordinationSessionId: string, input: OperationInput<'workhub.coordination.configureModel'>) {
       const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
       return invokeWhenReady('workhub:configureModel', scope, input) as Promise<OperationOutput<'workhub.coordination.configureModel'>>;
-    },
-    async getNewWorkDefaults(coordinationSessionId: string) {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      return ipcRenderer.invoke('workhub:getNewWorkDefaults', scope) as Promise<Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>>;
-    },
-    async setNewWorkDefaults(coordinationSessionId: string, defaults: Omit<import('@maka/core/session').WorkHubCreateDefaults, 'permissionMode'>) {
-      const scope = await resolveDesktopWorkHubCoordinationCreateScope(coordinationSessionId, runtimeHostSessionRef);
-      await ipcRenderer.invoke('workhub:setNewWorkDefaults', scope, defaults);
     },
     resolveCoordinationSession(): Promise<string | { readonly kind: 'model_required' }> {
       return resolveDesktopWorkHubCoordinationSession(
@@ -3016,7 +3017,9 @@ const makaBridge = {
       });
     },
     add(host?: DesktopRuntimeHostRef, options?: { name?: string }): Promise<
-      { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
+      | { ok: true; project: ProjectRecord; path: string }
+      | { ok: false; reason: 'cancelled' }
+      | { ok: false; reason: 'archived'; projectId: string }
     > {
       return invokeSelectedRuntimeHost(host, 'projects:add', options);
     },

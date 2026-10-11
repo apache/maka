@@ -18,6 +18,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement, Fragment, type ReactNode } from 'react';
 import {
@@ -123,14 +124,18 @@ function HostProbe() {
   return null;
 }
 
-function RecoveryWorkspaceProbe({ local = false }: { local?: boolean }) {
+function RecoveryWorkspaceProbe({ local = false, sessionId = 'session-1', hostId = 'host-local' }: {
+  local?: boolean;
+  sessionId?: string;
+  hostId?: string;
+}) {
   return createElement(TaskEntryWorkspacePickerConsumer, {
     manageProjects() {},
     activeSession: local
       ? {
-          id: 'session-1',
+          id: sessionId,
           profileId: 'local',
-          runtimeHostId: 'host-local',
+          runtimeHostId: hostId,
           projectId: null,
           profileKind: 'local',
         }
@@ -175,11 +180,11 @@ function RecoveryShellProbe() {
   });
 }
 
-function LocalRecoveryShellProbe() {
+function LocalRecoveryShellProbe(props: { sessionId?: string; hostId?: string }) {
   return createElement(TaskEntryRoot, {
     children: (taskEntry) => {
       latestTaskEntry = taskEntry;
-      return createElement(RecoveryWorkspaceProbe, { local: true });
+      return createElement(RecoveryWorkspaceProbe, { local: true, ...props });
     },
   });
 }
@@ -221,6 +226,65 @@ afterEach(() => {
 });
 
 describe('TaskEntryRoot render scope', () => {
+  for (const transition of ['session', 'host', 'unmount'] as const) {
+    it(`invalidates a directory handoff on ${transition} change and rejects its retained callback`, async () => {
+      const { root } = installReactRenderer();
+      const picked = deferred<Awaited<ReturnType<TaskEntryServices['catalog']['addProject']>>>();
+      const calls: string[] = [];
+      const services = createFakeTaskEntryServices({
+        catalog: {
+          ...createFakeTaskEntryServices().catalog,
+          getCatalog: async () => localCatalog([project('project-a')]),
+          addProject: async () => { calls.push('add'); return picked.promise; },
+        },
+        sessions: { relocateWorkspace: async () => { calls.push('relocate'); return { ok: true }; } },
+      });
+      await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
+      await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+      const oldAdd = latestRecoveryPicker?.groups[0]?.onAdd;
+      assert.ok(oldAdd);
+      await act(async () => oldAdd('Imported'));
+      assert.equal(latestRecoveryPicker?.pending, true);
+      await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe, {
+        ...(transition === 'session' ? { sessionId: 'session-2' } : {}),
+        ...(transition === 'host' ? { hostId: 'replacement' } : {}),
+      })));
+      if (transition === 'unmount') await act(async () => root.unmount());
+      if (transition !== 'unmount') {
+        await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
+        await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+      }
+      await act(async () => { picked.resolve({ ok: true, project: project('project-b') }); });
+      await act(async () => oldAdd('Stale dialog'));
+      assert.deepEqual(calls, ['add']);
+      if (transition !== 'unmount') {
+        assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+        assert.equal(latestRecoveryPicker?.isMenuOpen, true);
+        assert.equal(latestRecoveryPicker?.pending, false);
+      }
+    });
+  }
+
+  it('does not let an already-submitted move close the next Session recovery picker', async () => {
+    const { root } = installReactRenderer();
+    const moved = deferred<Awaited<ReturnType<TaskEntryServices['sessions']['relocateWorkspace']>>>();
+    const calls: string[] = [];
+    const services = createFakeTaskEntryServices({
+      catalog: { ...createFakeTaskEntryServices().catalog, getCatalog: async () => localCatalog([project('project-a')]) },
+      sessions: { relocateWorkspace: async (sessionId) => { calls.push(sessionId); return moved.promise; } },
+    });
+    await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe)));
+    await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-1'));
+    await act(async () => latestRecoveryPicker?.groups[0]?.onSelectProject?.('project-a'));
+    await act(async () => renderProvider(root, services, createElement(LocalRecoveryShellProbe, { sessionId: 'session-2' })));
+    await act(async () => latestTaskEntry?.commands.openSessionWorkspaceRecovery('session-2'));
+    await act(async () => { moved.resolve({ ok: true }); });
+    assert.deepEqual(calls, ['session-1']);
+    assert.equal(latestRecoveryPicker?.showForActiveSession, true);
+    assert.equal(latestRecoveryPicker?.isMenuOpen, true);
+    assert.equal(latestRecoveryPicker?.pending, false);
+  });
+
   it('keeps a controller-only directory handoff below the shell frame', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({

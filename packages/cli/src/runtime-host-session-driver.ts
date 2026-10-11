@@ -59,10 +59,13 @@ import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   projectSessionCatalogSummary,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostResources,
   readRuntimeHostSessions,
+  RuntimeHostSessionCatalogRevisionChangedError,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
+  type RuntimeHostSessionCatalogPageCursor,
 } from '@maka/runtime-host/client';
 import {
   InteractionPendingSnapshot,
@@ -81,6 +84,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
 import type { RuntimeHostSessionChannelOpenResult } from './runtime-host-session-channel.js';
+import { SESSION_CATALOG_MAX_SCAN_PAGES } from './session-catalog-limits.js';
 import {
   getRuntimeHostSession,
   requireRuntimeHostSessionProjection as requireSession,
@@ -96,6 +100,7 @@ import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
   MakaSessionDriver,
+  MakaSessionListOptions,
   MakaSessionMoveResult,
   MakaSessionRewindResult,
   MakaSessionSwitchOptions,
@@ -107,6 +112,7 @@ import type {
   SessionResumeAvailability,
 } from './session-driver.js';
 import {
+  MakaSessionCatalogIncompleteError,
   inspectSessionResumeAvailability,
   skillInvocationBlockedMessage,
 } from './session-driver.js';
@@ -119,6 +125,10 @@ import {
 const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_CATALOG_ATTEMPTS = 3;
+// Sparse cwd or visibility matches must not turn a bounded lookup into a full Host scan.
+const MAX_SESSION_CATALOG_READ_ATTEMPTS = 8;
+const SESSION_CATALOG_READ_RETRY_BASE_DELAY_MS = 8;
+const SESSION_CATALOG_READ_RETRY_MAX_DELAY_MS = 64;
 
 /**
  * The host declined to start a safe-boundary continuation and explained why.
@@ -173,6 +183,7 @@ type RuntimeHostSessionDriverConnection = Pick<
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   createSession(input: CreateSessionRequest): Promise<SessionSummary>;
+  getSessionSummary(sessionId: string): Promise<SessionSummary | undefined>;
   readMessages(): Promise<StoredMessage[]>;
   getWorkspaceTarget(): WorkspaceTarget | undefined;
   resumeLatest(): AsyncIterable<SessionEvent>;
@@ -327,13 +338,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return projectSessionCatalogSummary(session);
   }
 
-  async listSessions(): Promise<SessionSummary[]> {
-    const sessions = (await readRuntimeHostSessions(this.#connection))
-      .flatMap(representableSession)
-      .filter((session) => !isSideConversationSession(session.labels))
-      .map(projectSessionCatalogSummary);
-    if (this.#executionLocation.kind === 'host') return sessions;
-    return sessions
+  async listSessions(options: MakaSessionListOptions = {}): Promise<SessionSummary[]> {
+    const sessions =
+      options.cwd !== undefined || options.limit !== undefined
+        ? await this.#readBoundedSessionCatalog(options.limit, options.cwd)
+        : (await readRuntimeHostSessions(this.#connection))
+            .flatMap(representableSession)
+            .filter((session) => !isSideConversationSession(session.labels));
+    const summaries = sessions.map(projectSessionCatalogSummary);
+    if (this.#executionLocation.kind === 'host') return summaries;
+    return summaries
       .map((session, index) => ({ session, index }))
       .sort((left, right) => {
         const cwdDelta =
@@ -344,8 +358,102 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .map(({ session }) => session);
   }
 
-  getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
+  async getSessionSummary(sessionId: string): Promise<SessionSummary | undefined> {
+    const projection = await getRuntimeHostSession(this.#connection, sessionId);
+    if (!projection) return undefined;
+    const [session] = representableSession(projection);
+    return session ? projectSessionCatalogSummary(session) : undefined;
+  }
+
+  async #readBoundedSessionCatalog(
+    limit: number | undefined,
+    cwd?: string,
+  ): Promise<SessionCatalogProjection[]> {
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+      throw new Error(`Session catalog limit must be a non-negative safe integer: ${limit}`);
+    }
+    if (limit === 0) return [];
+    for (let attempt = 0; attempt < MAX_SESSION_CATALOG_READ_ATTEMPTS; attempt += 1) {
+      try {
+        const sessions: SessionCatalogProjection[] = [];
+        const cursors = new Set<string>();
+        let cursor: RuntimeHostSessionCatalogPageCursor | undefined;
+        let pagesRead = 0;
+        while (pagesRead < SESSION_CATALOG_MAX_SCAN_PAGES) {
+          const page = await readRuntimeHostSessionCatalogPage(this.#connection, cursor);
+          pagesRead += 1;
+          for (const item of page.sessions) {
+            for (const session of representableSession(item)) {
+              if (
+                (cwd === undefined || session.workspace.hostCwd === cwd) &&
+                !isSideConversationSession(session.labels)
+              ) {
+                sessions.push(session);
+                if (limit !== undefined && sessions.length >= limit) break;
+              }
+            }
+            if (limit !== undefined && sessions.length >= limit) break;
+          }
+          if (!page.nextCursor) {
+            cursor = undefined;
+            break;
+          }
+          cursor = page.nextCursor;
+          if (limit !== undefined && sessions.length >= limit) {
+            throw new MakaSessionCatalogIncompleteError(
+              pagesRead,
+              sessions.map(projectSessionCatalogSummary),
+            );
+          }
+          if (cursors.has(cursor.cursor)) {
+            throw new Error('Runtime Host Session catalog returned a repeated cursor');
+          }
+          cursors.add(cursor.cursor);
+        }
+        if (cursor !== undefined && pagesRead === SESSION_CATALOG_MAX_SCAN_PAGES) {
+          throw new MakaSessionCatalogIncompleteError(
+            pagesRead,
+            sessions.map(projectSessionCatalogSummary),
+          );
+        }
+        return sessions;
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostSessionCatalogRevisionChangedError) ||
+          attempt + 1 === MAX_SESSION_CATALOG_READ_ATTEMPTS
+        ) {
+          throw error;
+        }
+        await new Promise<void>((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(
+              SESSION_CATALOG_READ_RETRY_BASE_DELAY_MS * 2 ** attempt,
+              SESSION_CATALOG_READ_RETRY_MAX_DELAY_MS,
+            ),
+          ),
+        );
+      }
+    }
+    throw new Error('Runtime Host Session catalog could not be read consistently');
+  }
+
+  async getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
     return inspectRuntimeHostSessionResumeAvailability(session, this.#executionLocation);
+  }
+
+  async getSessionResumeCandidateAvailability(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    const availability = await inspectRuntimeHostSessionResumeAvailability(
+      session,
+      this.#executionLocation,
+    );
+    if (!availability.available) return availability;
+    const plan = await this.#request('turn.resume.query', { sessionId: session.id });
+    return plan.disposition === 'ready'
+      ? { available: true }
+      : { available: false, reason: plan.reason };
   }
 
   async preparePrompt(
@@ -1862,9 +1970,8 @@ function inspectRuntimeHostSessionResumeAvailability(
   if (!summary.cwd) {
     return Promise.resolve({ available: false, reason: 'Missing working directory' });
   }
-  return location.kind === 'host'
-    ? Promise.resolve({ available: true })
-    : inspectSessionResumeAvailability(summary);
+  if (location.kind !== 'host') return inspectSessionResumeAvailability(summary);
+  return Promise.resolve({ available: true });
 }
 
 async function assertSessionResumeAvailable(

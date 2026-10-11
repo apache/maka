@@ -19,7 +19,7 @@
 
 import type { UiCatalog } from '@maka/core/ui-locale';
 export const workHubLiveCopy = {
-  en: { filterConversation: 'Filter conversation by Work', clearConversationFilter: 'Show all conversations', noWorkConversation: 'No conversations for this Work in this part of history.', work: 'Work', attachmentLimit: 'Attachment count or size exceeds the limit', attachmentUploadFailed: 'Attachment upload did not return a reference', reviewAttachments: 'Please review the attachments.', sendFailed: 'Could not send',
+  en: { selectedAnswers: 'Selected', clarifiedPreferences: 'Your answers', filterConversation: 'Filter conversation by Work', clearConversationFilter: 'Show all conversations', noWorkConversation: 'No conversations for this Work in this part of history.', work: 'Work', attachmentLimit: 'Attachment count or size exceeds the limit', attachmentUploadFailed: 'Attachment upload did not return a reference', reviewAttachments: 'Please review the attachments.', sendFailed: 'Could not send',
     retrySteering: 'Retry the original text and attachments with Cmd/Ctrl+Enter to resolve the previous submission first.',
     retryFollowup: 'Retry the original text and attachments with Enter to resolve the previous submission first.',
     sendUnknown: 'The Host has not confirmed this message. Retry checks the same submission.',
@@ -43,7 +43,7 @@ export const workHubLiveCopy = {
     restore: 'Bring WorkHub back',
     openWork: 'Open task', openResult: 'Open result',
   },
-  'zh-CN': { filterConversation: '筛选此 Work 的对话', clearConversationFilter: '显示全部对话', noWorkConversation: '这段历史中没有此 Work 的对话。', work: '工作', attachmentLimit: '附件数量或大小超过限制', attachmentUploadFailed: '附件上传失败', reviewAttachments: '请查看附件。', sendFailed: '发送失败',
+  'zh-CN': { selectedAnswers: '已选择', clarifiedPreferences: '你的补充', filterConversation: '筛选此 Work 的对话', clearConversationFilter: '显示全部对话', noWorkConversation: '这段历史中没有此 Work 的对话。', work: '工作', attachmentLimit: '附件数量或大小超过限制', attachmentUploadFailed: '附件上传失败', reviewAttachments: '请查看附件。', sendFailed: '发送失败',
     retrySteering: '请先保留原文和附件，用 Cmd/Ctrl+Enter 重试并确认上次提交结果。',
     retryFollowup: '请先保留原文和附件，用 Enter 重试并确认上次提交结果。',
     sendUnknown: 'Host 尚未确认这条消息。重试会核对原提交。',
@@ -67,7 +67,7 @@ export const workHubLiveCopy = {
     restore: '收回工作台',
     openWork: '打开任务', openResult: '打开结果',
   },
-  'zh-TW': { filterConversation: '篩選此 Work 的對話', clearConversationFilter: '顯示全部對話', noWorkConversation: '這段歷史中沒有此 Work 的對話。', work: '工作', attachmentLimit: '附件數量或大小超過限制', attachmentUploadFailed: '附件上傳失敗', reviewAttachments: '請查看附件。', sendFailed: '傳送失敗',
+  'zh-TW': { selectedAnswers: '已選擇', clarifiedPreferences: '你的補充', filterConversation: '篩選此 Work 的對話', clearConversationFilter: '顯示全部對話', noWorkConversation: '這段歷史中沒有此 Work 的對話。', work: '工作', attachmentLimit: '附件數量或大小超過限制', attachmentUploadFailed: '附件上傳失敗', reviewAttachments: '請查看附件。', sendFailed: '傳送失敗',
     retrySteering: '請先保留原文和附件，用 Cmd/Ctrl+Enter 重試並確認上次提交結果。',
     retryFollowup: '請先保留原文和附件，用 Enter 重試並確認上次提交結果。',
     sendUnknown: 'Host 尚未確認這則訊息。重試會核對原提交。',
