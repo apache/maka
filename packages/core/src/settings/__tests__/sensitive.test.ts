@@ -25,6 +25,7 @@ describe('applySensitivePatch', () => {
   test('handles plaintext, placeholder, empty string, and undefined', () => {
     assert.strictEqual(applySensitivePatch('old', 'new'), 'new');
     assert.strictEqual(applySensitivePatch('old', '••••••••'), 'old');
+    assert.strictEqual(applySensitivePatch('old', '••••••'), 'old');
     assert.strictEqual(applySensitivePatch('old', ''), undefined);
     assert.strictEqual(applySensitivePatch('old', undefined), 'old');
   });

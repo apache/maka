@@ -24,6 +24,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { LocaleProvider } from '@maka/ui';
+import { WorkHubEnablementProvider } from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
 import { WorkHubDock, WorkHubServicesProvider, type WorkHubServices } from '../../renderer/features/workhub/index.js';
 import type { WorkHubHost, WorkHubPresentationSnapshot } from '../../shared/workhub-presentation.js';
 
@@ -96,7 +97,8 @@ async function mount() {
   } } as unknown as WorkHubServices;
   root = createRoot(document.querySelector('#root')!);
   await act(async () => root!.render(createElement(LocaleProvider, { locale: 'en', children:
-    createElement(WorkHubServicesProvider, { services }, createElement(WorkHubDock, { enabled: true, workbar: { bottomOpen: false, rightCollapsed: true } })),
+    createElement(WorkHubEnablementProvider, { value: { isEnabled: () => true, subscribe: () => () => {} } },
+      createElement(WorkHubServicesProvider, { services }, createElement(WorkHubDock, { workbar: { bottomOpen: false, rightCollapsed: true } }))),
   })));
   const frame = async (count = 1) => {
     for (let index = 0; index < count; index++) await act(async () => {

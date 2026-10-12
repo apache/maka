@@ -69,6 +69,23 @@ test('shares one operational database and produces an online backup', async () =
   }
 });
 
+test('new runtime databases use incremental vacuum before operational schema creation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-operational-incremental-vacuum-'));
+  try {
+    const lease = acquireOperationalStateDatabase(root);
+    try {
+      assert.equal(
+        (lease.database.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum,
+        2,
+      );
+    } finally {
+      lease.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('atomically reapplies current owner schema without republishing its registry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-operational-current-convergence-'));
   const databasePath = join(root, 'runtime.sqlite');

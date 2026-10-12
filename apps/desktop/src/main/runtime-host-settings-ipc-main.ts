@@ -30,7 +30,7 @@ import type {
   CredentialStatus,
   RuntimePolicy,
 } from "@maka/core/runtime-policy";
-import { SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
+import { isSensitivePlaceholder, SENSITIVE_PLACEHOLDER } from "@maka/core/settings/network-settings";
 import type {
   TestProxyInput,
   TestProxySettings,
@@ -352,8 +352,8 @@ async function applyHostPatchWithoutLane(
   let skippedCredentials = 0;
   if (patch.jev) {
     const apiKey = patch.jev.apiKey;
-    const removingKey = typeof apiKey === "string" && apiKey !== SENSITIVE_PLACEHOLDER && !apiKey.trim();
-    if (apiKey !== undefined && apiKey !== SENSITIVE_PLACEHOLDER) {
+    const removingKey = typeof apiKey === "string" && !isSensitivePlaceholder(apiKey) && !apiKey.trim();
+    if (apiKey !== undefined && !isSensitivePlaceholder(apiKey)) {
       if (apiKey.trim()) await setCredential(client, JEV_CREDENTIAL, apiKey.trim());
       else await deleteCredential(client, JEV_CREDENTIAL);
     }
@@ -439,7 +439,7 @@ async function applyHostPatchWithoutLane(
       },
     }));
     const apiKey = webSearch.providers?.tavily?.apiKey;
-    if (apiKey !== undefined && apiKey !== SENSITIVE_PLACEHOLDER) {
+    if (apiKey !== undefined && !isSensitivePlaceholder(apiKey)) {
       if (apiKey.length === 0)
         await deleteCredential(client, WEB_SEARCH_CREDENTIAL);
       else await setCredential(client, WEB_SEARCH_CREDENTIAL, apiKey);

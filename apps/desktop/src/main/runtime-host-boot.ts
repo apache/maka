@@ -80,7 +80,6 @@ import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { createWorkHubControl } from './workhub-control.js';
 import { createWorkHubPresentation } from './workhub-presentation.js';
 import { createWorkHubRuntime } from './workhub-runtime.js';
-import { readWorkHubNewWorkDefaults } from './workhub-new-work-defaults.js';
 import { createWindowsAppTray } from './windows-app-tray.js';
 import { readableAppIconPath } from './app-icon-surface.js';
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
@@ -757,10 +756,6 @@ const workHubRuntime = createWorkHubRuntime({
     const target = requireWorkHubTarget(scope);
     return {
       workspace: await currentDesktopWorkspaceTarget(target.policy),
-      defaults: {
-        permissionMode: (await settingsStore.get()).chatDefaults.permissionMode,
-        ...readWorkHubNewWorkDefaults(target.client.hostId),
-      },
     };
   },
   changed: emitSessionsChanged,
@@ -1145,6 +1140,8 @@ const createLocalRuntimeHostManager = () => createRuntimeHostDesktopManager(
       releaseDesktopInteractionSession,
     },
     botRegistry,
+    readBotMessageHandling: async () => (await settingsStore.get()).botChat.messageHandling ?? 'task',
+    botWorkHubStateDirectory: join(userDataDir, 'workhub-remote'),
     resolveBotCreateTarget: async (target) => ({
       workspace: await currentDesktopWorkspaceTarget(target),
     }),

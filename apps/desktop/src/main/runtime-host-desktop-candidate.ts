@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { join } from 'node:path';
+import { createWorkHubRemoteBridge } from './workhub-remote-bridge.js';
+import type { BotMessageHandling } from '@maka/core/bot-chat-settings';
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
@@ -147,6 +150,8 @@ export interface DesktopRuntimeHostCandidateDeps {
   };
   readonly nativeCapabilities: DesktopNativeCapabilityProviderInput;
   readonly botRegistry: BotRegistry;
+  readonly readBotMessageHandling?: () => Promise<BotMessageHandling>;
+  readonly botWorkHubStateDirectory?: string;
   readonly resolveBotCreateTarget: (
     target: DesktopRuntimeHostTargetPolicy,
   ) => Promise<{ readonly workspace: WorkspaceTarget }>;
@@ -974,6 +979,14 @@ export async function createDesktopRuntimeHostCandidate(
     const botIncoming = target.access === 'owner'
       ? createBotIncomingMainService({
           botRegistry: deps.botRegistry,
+          ...(deps.readBotMessageHandling && deps.botWorkHubStateDirectory ? {
+            workHub: createWorkHubRemoteBridge({
+              client, botRegistry: deps.botRegistry, readMode: deps.readBotMessageHandling,
+              statePath: join(deps.botWorkHubStateDirectory, `${createHash('sha256').update(client.hostId).digest('hex')}.json`),
+              onError: reportError,
+              isActive: deps.isTargetActive,
+            }),
+          } : {}),
           sessions: createRuntimeHostBotSessionAdapter({
             client,
             resolveCreateTarget: () => deps.resolveBotCreateTarget(target),

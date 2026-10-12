@@ -17,23 +17,13 @@
  * under the License.
  */
 
-import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
-
-import { __TEST__ } from '../telegram-bridge.js';
-
-const { isAllowedUser } = __TEST__;
-
-describe('isAllowedUser', () => {
-  it('defaults open and otherwise requires an exact user-id match', () => {
-    const cases: Array<[string[] | undefined, string, boolean]> = [
-      [undefined, '12345', true],
-      [[], '12345', true],
-      [['12345', '67890'], '67890', true],
-      [['1234567890'], '123', false],
-    ];
-    for (const [allowlist, userId, expected] of cases) {
-      assert.equal(isAllowedUser(allowlist, userId), expected, `${allowlist}:${userId}`);
+/** A context measurement and its validity, ready for display. */
+export type ContextUsageReading =
+  | { readonly kind: 'unavailable' }
+  | {
+      readonly kind: 'measured';
+      readonly tokens: number;
+      /** Frozen alongside this measurement; never borrowed from another reading. */
+      readonly contextWindow?: number;
     }
-  });
-});
+  | { readonly kind: 'stale'; readonly reason: 'compaction' };

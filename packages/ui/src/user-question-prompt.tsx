@@ -90,6 +90,16 @@ export function UserQuestionPrompt(props: {
     setAnswerText('');
   }
 
+  function activate(value: string) {
+    if (interactionDisabled || responsePendingRef.current) return;
+    const selected: QuestionAnswerDraft = { kind: 'option', optionIndex: Number(value.slice('option:'.length)) };
+    const committed = drafts.map((candidate, index) => index === questionIndex ? selected : candidate);
+    setDrafts(committed);
+    setAnswerText('');
+    if (isLast) void submit(committed);
+    else moveTo(questionIndex + 1, committed);
+  }
+
   function onAnswerChange(value: string) {
     setAnswerText(value);
     if (value.trim() && draft?.kind === 'option') updateDraft(null);
@@ -163,6 +173,7 @@ export function UserQuestionPrompt(props: {
               value={selectedValue}
               disabled={interactionDisabled}
               onChange={select}
+              onActivate={activate}
               onConfirm={confirm}
               onEscape={() => inputRef.current?.focus()}
               options={question.options.map((option, index) => ({ value: `option:${index}`, label: option.label, description: option.description }))}
