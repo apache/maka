@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Context } from '@maka/runtime/plugin-kernel';
@@ -30,6 +30,9 @@ import { PluginSourceService } from '@maka/runtime/plugin-source-service';
 import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import { PersonalAssistantService } from '../assistant/service.js';
 import { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
+import { DatabaseSync } from 'node:sqlite';
+import { CorpusStore } from '../assistant/memory-network/corpus.js';
+import { createMatterStore } from '../assistant/proactive-matters/store.js';
 import { InitiativeStore } from '../assistant/index-initiative/store.js';
 import { PERSONAL_ASSISTANT_OPERATION_SPECS } from '../protocol/personal-assistant.js';
 import { operationAllowsRemoteOwner } from '../protocol/operations.js';
@@ -152,4 +155,176 @@ test('desktop API is an explicit allowlist; guest-style arbitrary tool and legac
   assert.throws(() =>
     spec.decodeInput({ method: 'assistant.binding', input: {}, sessionId: 'somebody-else' }),
   );
+});
+
+test('adopting all three stores preserves coverage, references, unfinished groups, and waiting tasks across repeated restarts', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const directories = Object.fromEntries(
+    ['memory-network', 'proactive-matters', 'index-initiative'].map((name) => [
+      name,
+      join(f.root, '旧数据 中文 #', name),
+    ]),
+  );
+  const memory = new CorpusStore(directories['memory-network']);
+  const messages = [{ id: 'original-1', type: 'user', text: '等供应商回复后核对交期' }];
+  memory.ingest('old-chat', messages);
+  memory.rememberRecord(
+    { key: 'old-chat', source: 'maka', id: 'old-chat', revision: 'v1' },
+    messages,
+  );
+  const cursor = memory.capture(['maka'], ['old-chat']);
+  const ref = memory.references()[0].ref;
+  const events = memory.create('事件', '保留来龙去脉', ['old-chat']);
+  const todos = memory.create('未完成', '只记尚未完成的承诺', ['old-chat']);
+  const work = memory.begin(events.id, cursor.id, ['old-chat']);
+  memory.write(events.id, 'vendor', `[供应商](memory-original:${ref})`, 0, ['old-chat']);
+  memory.checkpoint(events.id, work.id, 1, '已整理', true, ['old-chat'], 'old-worker');
+  const pending = memory.begin(todos.id, cursor.id, ['old-chat']);
+  const worker = {
+    sessionId: 'old-worker',
+    groupIndexIds: [events.id, todos.id],
+    groupNumber: 2,
+    status: 'paused',
+  };
+  memory.saveWorker(todos.id, worker);
+  memory.close();
+
+  const now = Date.now();
+  const tasks = createMatterStore(directories['proactive-matters'], { now: () => now });
+  const task = tasks.create({
+    sessionId: 'old-task',
+    cwd: f.root,
+    title: '交期核验',
+    request: '等供应商确认交期',
+  });
+  const active = tasks.claim(task.id)!.matter;
+  tasks.settle(
+    task.id,
+    active.activation!.id,
+    {
+      expectedRevision: active.revision,
+      stateText: '已询问供应商',
+      disposition: 'wait',
+      waitingFor: '供应商回复',
+      wakes: [{ kind: 'at', at: now + 86400000 }],
+      summary: '已询问',
+      reason: '等待回复',
+      update: '已经联系，等待确认',
+    },
+    'old-settle',
+  );
+  tasks.finish(task.id, active.activation!.id);
+  const savedTask = tasks.get(task.id);
+  const savedUpdates = tasks.updates();
+  tasks.close();
+  const initiative = new InitiativeStore(directories['index-initiative'], 'old-owner');
+  initiative.lease();
+  initiative.bind({ sessionId: 'old-assistant', cwd: f.root }, '原有推荐要求');
+  const savedBinding = initiative.get();
+  initiative.close();
+
+  for (const [name, directory] of Object.entries(directories))
+    await f.legacy.mutate({ extensionId: 'dev.maka.' + name, scopeId: 'profile' }, 'storage', [
+      { key: 'data-directory', value: directory },
+    ]);
+  const entries = Object.keys(directories).map((name) => ({
+    id: name,
+    packageId: 'dev.maka.' + name,
+    rootId: 'profile',
+    children: [],
+    config: { tickMs: 60000, intervalMs: 43200000, maxConcurrentJobs: 2 },
+  }));
+  for (let pass = 0; pass < 2; pass++) {
+    const service =
+      pass === 0 ? f.service : new PersonalAssistantService(f.directory, f.dependencies);
+    try {
+      await service.recover(f.legacy, entries as any);
+      service.start();
+      assert.deepEqual(((await service.call('assistant.binding', {})) as any).state, savedBinding);
+      const state = (await service.call('matters.list', {})) as any;
+      assert.equal(state.matters.length, 1);
+      assert.equal(state.matters[0].status, 'waiting');
+      assert.deepEqual(state.matters[0].wakes, savedTask.matter.wakes);
+      assert.equal(state.matters[0].stateText, savedTask.matter.stateText);
+      assert.deepEqual(state.matters[0].updates, savedUpdates);
+      const settings = JSON.parse(await readFile(join(f.directory, 'assistant.json'), 'utf8'));
+      for (const [name, directory] of Object.entries(directories)) {
+        assert.equal(settings[name].directory, directory);
+        assert.equal(settings[name].config.tickMs, 60000);
+      }
+    } finally {
+      await service.close();
+    }
+    const reopened = new CorpusStore(directories['memory-network']);
+    try {
+      assert.equal(reopened.boundary(events.id), cursor.id);
+      assert.equal(reopened.boundary(todos.id), null);
+      assert.deepEqual(reopened.work(todos.id), pending);
+      assert.deepEqual(reopened.worker(todos.id), worker);
+      assert.equal(
+        reopened.content(events.id, 'vendor', ['old-chat']).text,
+        `[供应商](memory-original:${ref})`,
+      );
+      assert.equal(reopened.original(ref, ['old-chat']).backlinks.length, 1);
+      assert.deepEqual(reopened.cursor(cursor.id), cursor);
+      assert.equal(reopened.pending(events.id, cursor.id, ['old-chat']), 0);
+    } finally {
+      reopened.close();
+    }
+  }
+  const resumed = createMatterStore(directories['proactive-matters'], {
+    now: () => now + 86400001,
+  });
+  try {
+    resumed.enqueueDue();
+    resumed.enqueueDue();
+    assert.equal(resumed.get(task.id).events.length, 1);
+    assert.ok(resumed.claim(task.id));
+    assert.equal(resumed.claim(task.id), null);
+    assert.deepEqual(resumed.updates(), savedUpdates);
+  } finally {
+    resumed.close();
+  }
+  for (const [name, filename] of [
+    ['memory-network', 'network.sqlite'],
+    ['proactive-matters', 'matters.sqlite'],
+    ['index-initiative', 'initiative.sqlite'],
+  ]) {
+    const db = new DatabaseSync(join(directories[name], filename), { readOnly: true });
+    try {
+      assert.equal(db.prepare('PRAGMA integrity_check').get()!.integrity_check, 'ok');
+    } finally {
+      db.close();
+    }
+  }
+});
+
+test('ambiguous or malformed adopted settings fail closed without creating replacement databases', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const entry = {
+    id: 'old',
+    packageId: 'dev.maka.memory-network',
+    rootId: 'profile',
+    children: [],
+    config: {},
+  };
+  await assert.rejects(
+    f.service.recover(f.legacy, [entry, { ...entry, id: 'duplicate' }] as any),
+    /Multiple legacy configurations/,
+  );
+  await assert.rejects(readFile(join(f.directory, 'assistant.json')), { code: 'ENOENT' });
+  await mkdir(f.directory, { recursive: true });
+  await writeFile(join(f.directory, 'assistant.json'), '{broken');
+  const service = new PersonalAssistantService(f.directory, f.dependencies);
+  try {
+    await assert.rejects(service.recover(f.legacy, []), SyntaxError);
+    assert.equal(await readFile(join(f.directory, 'assistant.json'), 'utf8'), '{broken');
+    await assert.rejects(readFile(join(f.directory, 'memory-network', 'network.sqlite')), {
+      code: 'ENOENT',
+    });
+  } finally {
+    await service.close();
+  }
 });

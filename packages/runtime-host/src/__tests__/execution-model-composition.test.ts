@@ -159,7 +159,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:e490f6055478bf8cdcef1aa85217de623f0954120a692358dbba2065ba6710fc';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:4bb0eb9897640ff723301f274e2b5c91ff704c65672036d7583bc2e846ed30a2';
+  'sha256:faa0f446721901dae3838877cdf03939dce25839ba3886e4aa41e993781df591';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -2899,6 +2899,20 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Edit',
       'Glob',
       'Grep',
+      'MatterAdopt',
+      'MatterDelegate',
+      'MatterDelegationRecover',
+      'MatterFeedbackRetry',
+      'MatterOverview',
+      'MatterTaskControl',
+      'MatterTaskMessage',
+      'MatterTasks',
+      'MemoryExtract',
+      'MemoryIndexContent',
+      'MemoryIndexList',
+      'MemoryIndexRead',
+      'MemoryOriginal',
+      'MemorySourceQuery',
       'Read',
       'Skill',
       'SkillSearch',
