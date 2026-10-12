@@ -28,7 +28,8 @@ window.__MakaModuleLoader__.load({
         let open = false,
           navigate,
           opening,
-          candidate;
+          candidate,
+          assistantSessionId;
         const listeners = new Set(),
           errors = new Set();
         const show = (value) => {
@@ -77,6 +78,7 @@ window.__MakaModuleLoader__.load({
               throw Error(
                 '找不到此 Host 的助手会话。请确认 Host 在线且会话未删除；不会另建会话丢失原记录。',
               );
+            assistantSessionId = ids[0];
             navigate(ids[0]);
             return ids[0];
           })().finally(() => {
@@ -117,14 +119,12 @@ window.__MakaModuleLoader__.load({
           pending: '有未整理信息',
           no_changes_at_last_check: '上次检查无新增',
         };
-        function Panel() {
+        function Panel({ settings = false } = {}) {
           const [visible, setVisible] = React.useState(open),
             [data, setData] = React.useState(null),
             [error, setError] = React.useState(''),
             [busy, setBusy] = React.useState(false),
             [selected, setSelected] = React.useState(null),
-            [settingsOpen, setSettingsOpen] = React.useState(false),
-            [memoryOpen, setMemoryOpen] = React.useState(false),
             interval = React.useRef(null);
           React.useEffect(() => {
             listeners.add(setVisible);
@@ -135,7 +135,7 @@ window.__MakaModuleLoader__.load({
             };
           }, []);
           React.useEffect(() => {
-            if (!visible) return;
+            if (!settings && !visible) return;
             let live = true,
               timer,
               readMemory = true,
@@ -160,7 +160,7 @@ window.__MakaModuleLoader__.load({
               live = false;
               clearTimeout(timer);
             };
-          }, [visible]);
+          }, [visible, settings]);
           const act = async (fn) => {
             setBusy(true);
             setError('');
@@ -186,7 +186,7 @@ window.__MakaModuleLoader__.load({
                   : {}),
               }),
             );
-          if (!visible) return null;
+          if (!settings && !visible) return null;
           const state = data?.state,
             memory = data?.memory,
             tasks = data?.tasks,
@@ -245,48 +245,26 @@ window.__MakaModuleLoader__.load({
                 ['check_failed', 'maintenance_failed'].includes(i.freshness?.status),
             );
           return h(
-            'aside',
-            { className: 'pa-panel', 'aria-label': '个人助手状态' },
+            settings ? 'section' : 'aside',
+            {
+              className: settings ? 'pa-panel pa-preferences' : 'pa-panel',
+              'aria-label': settings ? '个人助手设置' : '个人助手状态',
+            },
             h(
               'header',
               {},
               h('span', { className: 'pa-spark', 'aria-hidden': true }, '✧'),
-              h('strong', {}, '助手动态'),
-              h(
-                'button',
-                {
-                  className: 'pa-icon',
-                  onClick: () => setSettingsOpen(!settingsOpen),
-                  'aria-label': '助手设置',
-                  'aria-expanded': settingsOpen,
-                  'aria-controls': 'pa-settings',
-                  disabled: !state,
-                },
+              h('strong', {}, settings ? '个人助手' : '助手动态'),
+              !settings &&
                 h(
-                  'svg',
+                  'button',
                   {
-                    width: 16,
-                    height: 16,
-                    viewBox: '0 0 24 24',
-                    fill: 'none',
-                    stroke: 'currentColor',
-                    strokeWidth: 1.5,
-                    'aria-hidden': true,
+                    className: 'pa-icon',
+                    onClick: () => show(false),
+                    'aria-label': '收起助手状态',
                   },
-                  h('path', { d: 'M3 7h8m4 0h6M3 17h3m4 0h11' }),
-                  h('circle', { cx: 13, cy: 7, r: 2 }),
-                  h('circle', { cx: 8, cy: 17, r: 2 }),
+                  '−',
                 ),
-              ),
-              h(
-                'button',
-                {
-                  className: 'pa-icon',
-                  onClick: () => show(false),
-                  'aria-label': '收起助手状态',
-                },
-                '−',
-              ),
             ),
             h(
               'div',
@@ -326,7 +304,7 @@ window.__MakaModuleLoader__.load({
                 h('p', {}, state.lastError),
               ),
             state &&
-              settingsOpen &&
+              settings &&
               h(
                 'section',
                 { className: 'pa-settings', id: 'pa-settings' },
@@ -393,6 +371,13 @@ window.__MakaModuleLoader__.load({
                 ),
                 h('small', {}, 'Maka 的 Host 运行时检查。暂停主动发现不影响聊天和已交代的任务。'),
               ),
+            settings &&
+              !state &&
+              h(
+                'p',
+                { className: 'pa-inset pa-muted' },
+                '从侧栏打开「个人助手」即可开始。无需导入历史或建立索引。',
+              ),
             tasks?.error &&
               h(
                 'p',
@@ -405,14 +390,15 @@ window.__MakaModuleLoader__.load({
                 { key: p.taskKey, className: 'pa-inset' },
                 h('strong', {}, p.title),
                 h('p', {}, p.status === 'creating' ? '正在创建任务' : p.message),
-                h(
-                  'button',
-                  {
-                    disabled: busy || p.status === 'creating',
-                    onClick: () => recover({ kind: 'delegation', taskKey: p.taskKey }),
-                  },
-                  '核对并恢复',
-                ),
+                settings &&
+                  h(
+                    'button',
+                    {
+                      disabled: busy || p.status === 'creating',
+                      onClick: () => recover({ kind: 'delegation', taskKey: p.taskKey }),
+                    },
+                    '核对并恢复',
+                  ),
               ),
             ),
             ...(tasks?.notifications || [])
@@ -422,7 +408,8 @@ window.__MakaModuleLoader__.load({
                   'div',
                   { key: i, className: 'pa-inset' },
                   h('p', { className: 'pa-error' }, '任务反馈：' + n.error),
-                  n.id &&
+                  settings &&
+                    n.id &&
                     h(
                       'button',
                       {
@@ -448,29 +435,30 @@ window.__MakaModuleLoader__.load({
                   task.retryAt && h('p', {}, `等待 Host 接收，下次重试 ${time(task.retryAt)}`),
                   task.runtimeError &&
                     h('p', { className: 'pa-error' }, '任务会话暂时不可用，请检查 Host。'),
-                  h(
-                    'div',
-                    { className: 'pa-actions' },
+                  settings &&
                     h(
-                      'button',
-                      { disabled: busy, onClick: () => act(() => openTask(task.sessionId)) },
-                      '打开任务会话',
-                    ),
-                    !['completed', 'cancelled'].includes(task.status) &&
+                      'div',
+                      { className: 'pa-actions' },
                       h(
                         'button',
-                        {
-                          disabled: busy,
-                          onClick: () =>
-                            recover({
-                              kind: 'task',
-                              id: task.id,
-                              action: task.status === 'paused' ? 'resume' : 'pause',
-                            }),
-                        },
-                        task.status === 'paused' ? '恢复任务' : '暂停任务',
+                        { disabled: busy, onClick: () => act(() => openTask(task.sessionId)) },
+                        '打开任务会话',
                       ),
-                  ),
+                      !['completed', 'cancelled'].includes(task.status) &&
+                        h(
+                          'button',
+                          {
+                            disabled: busy,
+                            onClick: () =>
+                              recover({
+                                kind: 'task',
+                                id: task.id,
+                                action: task.status === 'paused' ? 'resume' : 'pause',
+                              }),
+                          },
+                          task.status === 'paused' ? '恢复任务' : '暂停任务',
+                        ),
+                    ),
                   h(
                     'div',
                     { className: 'pa-step' },
@@ -528,7 +516,8 @@ window.__MakaModuleLoader__.load({
                       h('summary', {}, `已结束 · ${finished.length}`),
                       ...finished.map(row),
                     ),
-                  !!tasks?.legacy?.length &&
+                  settings &&
+                    !!tasks?.legacy?.length &&
                     h(
                       'details',
                       { className: 'pa-history' },
@@ -555,34 +544,22 @@ window.__MakaModuleLoader__.load({
                       ),
                     ),
                 ),
-            h(
-              'footer',
-              {},
+            !settings &&
               h(
-                'button',
-                {
-                  onClick: () => setMemoryOpen(!memoryOpen),
-                  'aria-expanded': memoryOpen,
-                  'aria-controls': 'pa-memory',
-                },
-                '记忆与来源',
-                memoryIssue && h('span', { className: 'pa-error' }, ' · 需要处理'),
-              ),
-              h(
-                'span',
+                'footer',
                 {},
-                !memory
-                  ? '尚未读取'
-                  : !memory.installed
-                    ? '未安装'
-                    : memoryIssue
-                      ? '检查异常'
-                      : memory.indexes?.length
-                        ? `${memory.indexes.length} 个索引`
-                        : '尚无索引',
+                h(
+                  'span',
+                  {},
+                  memoryIssue
+                    ? '记忆与来源需要处理'
+                    : memory?.indexes?.length
+                      ? `${memory.indexes.length} 个记忆索引`
+                      : '记忆按需建立',
+                ),
+                h('span', {}, '配置见设置 › 个人助手'),
               ),
-            ),
-            memoryOpen &&
+            settings &&
               h(
                 'section',
                 { className: 'pa-memory', id: 'pa-memory' },
@@ -770,15 +747,33 @@ window.__MakaModuleLoader__.load({
           );
         }
 
-        function Entry({ openSession }) {
-          const [issue, setIssue] = React.useState(false);
+        function Entry(props) {
+          const { openSession, activeSessionId } = props;
+          const [issue, setIssue] = React.useState(false),
+            [boundId, setBoundId] = React.useState(assistantSessionId);
+          const selected = !!boundId && activeSessionId === boundId;
+          React.useEffect(() => {
+            navigate = openSession;
+            show(selected);
+            return () => show(false);
+          }, [openSession, selected]);
           React.useEffect(() => {
             let live = true,
               timer;
             const poll = async () => {
               try {
                 const { state } = await ctx.remote.call('assistant.binding', {});
-                if (live) setIssue(!!state?.lastError);
+                const host = await window.maka.runtimeHostProfiles?.getDefaultHost?.();
+                if (live) {
+                  setIssue(!!state?.lastError);
+                  setBoundId(
+                    state
+                      ? host?.hostId
+                        ? JSON.stringify([host.hostId, state.sessionId])
+                        : state.sessionId
+                      : undefined,
+                  );
+                }
               } catch {
                 if (live) setIssue(true);
               } finally {
@@ -819,31 +814,63 @@ window.__MakaModuleLoader__.load({
                   '●',
                 )
               : undefined,
+            isSelected: selected,
             'aria-label': '个人助手',
             label: '个人助手',
             size: 'md',
             onClick: () => {
+              if (!Object.hasOwn(props, 'activeSessionId')) {
+                setIssue(true);
+                show(true);
+                for (const fn of errors)
+                  fn('请同时更新 Maka 桌面端，以使用独立助手入口和专属会话列表。');
+                return;
+              }
               navigate = openSession;
-              show(true);
-              void openChat().catch((e) => {
-                for (const fn of errors) fn(e.message);
-              });
+              void openChat()
+                .then((id) => {
+                  setBoundId(id);
+                  show(true);
+                })
+                .catch((e) => {
+                  show(true);
+                  for (const fn of errors) fn(e.message);
+                });
             },
           });
         }
         ctx.slots.register(
-          { name: 'sidebar.navigation', id: 'personal-assistant', order: 40 },
+          {
+            name: 'sidebar.navigation',
+            id: 'personal-assistant',
+            order: 40,
+            sessionLabels: ['personal-assistant'],
+          },
           Entry,
         );
         ctx.slots.register(
           { name: 'shell.overlay', id: 'personal-assistant-status', order: 40 },
           Panel,
         );
+        ctx.slots.register(
+          { name: 'settings.navigation', id: 'personal-assistant', order: 40 },
+          ({ activePage, selectPage }) =>
+            h(SideNavItem, {
+              label: '个人助手',
+              size: 'md',
+              isSelected: activePage === 'personal-assistant',
+              onClick: () => selectPage('personal-assistant'),
+            }),
+        );
+        ctx.slots.register({ name: 'settings.page', key: 'personal-assistant' }, () =>
+          h(Panel, { settings: true }),
+        );
         ctx.style(
-          `.pa-panel{--pa-line:color-mix(in srgb,var(--foreground,#292929) 10%,transparent);--pa-muted:var(--muted-foreground,#777b83);--pa-hover:color-mix(in srgb,var(--foreground,#292929) 4%,transparent);position:fixed;box-sizing:border-box;right:24px;top:80px;width:min(348px,calc(100vw - 32px));max-height:calc(100dvh - 104px);overflow:auto;background:var(--background,#fff);color:var(--foreground,#292929);border:1px solid var(--pa-line);border-radius:14px;box-shadow:0 10px 35px #18202c12,0 2px 6px #18202c0a;z-index:1000;font-size:13px;line-height:1.5;color-scheme:inherit}
+          `.pa-preferences.pa-panel{position:static;width:100%;max-width:760px;max-height:none;overflow:visible;margin:24px auto;border:0;border-radius:0;box-shadow:none;z-index:auto}.pa-preferences header{padding:8px 16px 20px}.pa-preferences header strong{font-size:24px;font-weight:600}.pa-preferences .pa-settings,.pa-preferences .pa-memory{padding:24px 16px}.pa-preferences .pa-actions{flex-wrap:wrap}.pa-preferences .pa-status{font-size:13px}.pa-preferences small{font-size:12px}
+.pa-panel{--pa-line:color-mix(in srgb,var(--foreground,#292929) 10%,transparent);--pa-muted:var(--muted-foreground,#777b83);--pa-hover:color-mix(in srgb,var(--foreground,#292929) 4%,transparent);position:fixed;box-sizing:border-box;right:24px;top:80px;width:min(348px,calc(100vw - 32px));max-height:calc(100dvh - 104px);overflow:auto;background:var(--background,#fff);color:var(--foreground,#292929);border:1px solid var(--pa-line);border-radius:14px;box-shadow:0 10px 35px #18202c12,0 2px 6px #18202c0a;z-index:1000;font-size:13px;line-height:1.5;color-scheme:inherit}
 .pa-panel header{display:flex;align-items:center;gap:8px;padding:12px 12px 8px 16px}.pa-panel header strong{font-size:14px;font-weight:500;flex:1}.pa-spark{font-size:20px}.pa-panel button{font:inherit;cursor:pointer;border:0;border-radius:6px;background:transparent;color:inherit;padding:5px 7px;text-align:left}.pa-panel button:hover{background:var(--pa-hover)}.pa-panel button:disabled{opacity:.5;cursor:default}.pa-panel button:focus-visible,.pa-panel summary:focus-visible{outline:2px solid var(--ring,#648f76);outline-offset:-2px}.pa-panel .pa-icon{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;font-size:18px;color:var(--pa-muted)}
 .pa-status{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:0 16px 14px;font-size:11px;color:var(--pa-muted)}.pa-dot{width:6px;height:6px;flex-shrink:0;border-radius:50%;background:var(--pa-muted)}.pa-dot[data-state=enabled]{background:var(--success,#527965)}.pa-dot[data-state=error]{background:var(--destructive,#b34a54)}.pa-next{margin-left:auto;font-variant-numeric:tabular-nums}.pa-panel p{margin:7px 0;overflow-wrap:anywhere;white-space:pre-wrap}.pa-panel small,.pa-muted{color:var(--pa-muted);font-size:11px}.pa-panel .pa-error{color:var(--destructive,#b34a54)}.pa-panel .pa-inset{margin:10px 16px}.pa-panel h3{font-size:13px;font-weight:500;margin:0 0 8px}.pa-settings,.pa-memory{padding:14px 16px;border-top:1px solid var(--pa-line)}.pa-settings label{font-size:12px}.pa-panel input{box-sizing:border-box;width:70px;color:inherit;background:var(--pa-hover);border:1px solid var(--pa-line);border-radius:6px;padding:5px;font:inherit}.pa-actions{display:flex;gap:8px;margin:10px 0}.pa-actions button,.pa-memory>button,.pa-legacy button{border:1px solid var(--pa-line)}
-.pa-tasks,.pa-detail{border-top:1px solid var(--pa-line)}.pa-section-title{display:flex;justify-content:space-between;padding:12px 16px 4px;font-size:11px;color:var(--pa-muted)}.pa-panel .pa-task{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:9px;width:100%;padding:12px 16px;border-radius:0}.pa-task-mark{color:var(--pa-muted);font-size:16px}.pa-task-copy{min-width:0}.pa-task strong{display:block;font-weight:500;overflow-wrap:anywhere}.pa-task-summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;font-size:12px;color:var(--pa-muted);overflow-wrap:anywhere}.pa-task-time{max-width:90px;font-size:11px;color:var(--pa-muted);padding-top:2px;text-align:right;font-variant-numeric:tabular-nums}.pa-task-time>span{display:block;white-space:nowrap}.pa-empty{text-align:center;padding:24px 16px 28px;color:var(--pa-muted);font-size:12px}.pa-empty strong{display:block;color:var(--foreground,#292929);font-weight:500;font-size:13px}.pa-history{border-top:1px solid var(--pa-line);font-size:12px}.pa-panel summary{cursor:pointer}.pa-history>summary{padding:10px 16px;color:var(--pa-muted)}.pa-legacy{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:8px 16px}.pa-legacy>span{min-width:0;overflow-wrap:anywhere}.pa-legacy button{flex-shrink:0;font-size:11px}.pa-detail{padding:10px 16px 18px}.pa-panel .pa-back{padding:4px 0;margin-bottom:10px;color:var(--pa-muted);font-size:12px}.pa-detail h3{font-size:15px}.pa-step{border-left:1px solid var(--pa-line);padding-left:12px;margin:14px 0}.pa-panel footer{border-top:1px solid var(--pa-line);display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;color:var(--pa-muted);font-size:11px}.pa-index{padding:10px 0;display:flex;flex-direction:column;gap:4px}.pa-index strong{font-weight:500}.pa-memory details{margin:10px 0}@media(max-width:480px){.pa-panel{right:16px;top:64px;max-height:calc(100dvh - 80px)}}@media(pointer:coarse){.pa-panel button,.pa-panel summary{min-height:44px}.pa-panel .pa-icon{width:44px;height:44px}.pa-panel input{font-size:16px}}`,
+.pa-tasks,.pa-detail{border-top:1px solid var(--pa-line)}.pa-section-title{display:flex;justify-content:space-between;padding:12px 16px 4px;font-size:11px;color:var(--pa-muted)}.pa-panel .pa-task{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:9px;width:100%;padding:12px 16px;border-radius:0}.pa-task-mark{color:var(--pa-muted);font-size:16px}.pa-task-copy{min-width:0}.pa-task strong{display:block;font-weight:500;overflow-wrap:anywhere}.pa-task-summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;font-size:12px;color:var(--pa-muted);overflow-wrap:anywhere}.pa-task-time{max-width:90px;font-size:11px;color:var(--pa-muted);padding-top:2px;text-align:right;font-variant-numeric:tabular-nums}.pa-task-time>span{display:block;white-space:nowrap}.pa-empty{text-align:center;padding:24px 16px 28px;color:var(--pa-muted);font-size:12px}.pa-empty strong{display:block;color:var(--foreground,#292929);font-weight:500;font-size:13px}.pa-history{border-top:1px solid var(--pa-line);font-size:12px}.pa-panel summary{cursor:pointer}.pa-history>summary{padding:10px 16px;color:var(--pa-muted)}.pa-legacy{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:8px 16px}.pa-legacy>span{min-width:0;overflow-wrap:anywhere}.pa-legacy button{flex-shrink:0;font-size:11px}.pa-detail{padding:10px 16px 18px}.pa-panel .pa-back{padding:4px 0;margin-bottom:10px;color:var(--pa-muted);font-size:12px}.pa-detail h3{font-size:15px}.pa-step{border-left:1px solid var(--pa-line);padding-left:12px;margin:14px 0}.pa-panel footer{border-top:1px solid var(--pa-line);display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;color:var(--pa-muted);font-size:11px}.pa-index{padding:10px 0;display:flex;flex-direction:column;gap:4px}.pa-index strong{font-weight:500}.pa-memory details{margin:10px 0}@media(max-width:480px){.pa-panel:not(.pa-preferences){right:16px;top:64px;max-height:calc(100dvh - 80px)}}@media(pointer:coarse){.pa-panel button,.pa-panel summary{min-height:44px}.pa-panel .pa-icon{width:44px;height:44px}.pa-panel input{font-size:16px}}`,
         );
       },
     };

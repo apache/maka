@@ -23,6 +23,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   MakaClientSlotCore,
   MakaClientSlotProvider,
+  useMakaClientNavigationSessionLabels,
 } from '../client-plugin-slots.js';
 import { LocaleProvider } from '../locale-context.js';
 import { SessionRailProvider, type SessionRailChrome } from '../session-rail-context.js';
@@ -45,16 +46,17 @@ test('sidebar navigation plugins render between New Task and WorkHub', () => {
   };
   let exposed: ((id: string) => void) | undefined;
   const selected: string[] = [];
+  let active: string | undefined;
   const slots = new MakaClientSlotCore();
   slots.register(
     { name: 'sidebar.navigation', id: 'fixture-long-task' },
-    ({ collapsed, openSession }) => { exposed = openSession; return <span data-collapsed={collapsed}>PLUGIN NAV</span>; },
+    ({ collapsed, openSession, activeSessionId }) => { active = activeSessionId; exposed = openSession; return <span data-collapsed={collapsed}>PLUGIN NAV</span>; },
   );
 
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
       <SessionRailProvider
-        data={{ sessions: [], groupVariant: 'conversation', onSelectSession: id => selected.push(id) }}
+        data={{ sessions: [], navigationSessionId: '["host-two","assistant"]', groupVariant: 'conversation', onSelectSession: id => selected.push(id) }}
         chrome={chrome}
       >
         <MakaClientSlotProvider core={slots}>
@@ -70,6 +72,20 @@ test('sidebar navigation plugins render between New Task and WorkHub', () => {
   assert.ok(newTask >= 0 && pluginItem > newTask && workHub > pluginItem, markup);
   assert.match(markup, /data-collapsed="false"/u);
   const desktopId = JSON.stringify(['host-two', 'assistant']);
+  assert.equal(active, desktopId);
   exposed?.(desktopId);
   assert.deepEqual(selected, [desktopId]);
+});
+
+
+test('navigation label ownership follows plugin registration and unload, leaving catalog intact', () => {
+  const core = new MakaClientSlotCore();
+  const labels = ['fixture-owned'];
+  const remove = core.register({ name: 'sidebar.navigation', id: 'fixture', sessionLabels: labels }, () => null);
+  labels.push('not-registered');
+  function Read() { return <span>{[...useMakaClientNavigationSessionLabels()].join(',')}</span>; }
+  const render = () => renderToStaticMarkup(<MakaClientSlotProvider core={core}><Read /></MakaClientSlotProvider>);
+  assert.equal(render(), '<span>fixture-owned</span>');
+  remove();
+  assert.equal(render(), '<span></span>');
 });

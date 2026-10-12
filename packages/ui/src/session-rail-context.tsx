@@ -58,6 +58,8 @@ export interface SessionMoveTarget {
 export interface SessionRailData {
   sessions: readonly SessionSummary[];
   activeId?: string;
+  /** Native conversation selection before ordinary-list filtering. */
+  navigationSessionId?: string;
   streamingSessionIds?: ReadonlySet<string>;
   staleSessionIds?: ReadonlySet<string>;
   worktreeSessionIds?: ReadonlySet<string>;

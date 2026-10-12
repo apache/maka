@@ -23,6 +23,7 @@ import {
   Fragment,
   type ReactNode,
   useContext,
+  useMemo,
   useSyncExternalStore,
 } from 'react';
 import {
@@ -80,6 +81,8 @@ export interface MakaClientSidebarFooterProps {
 /** Stable owner props for an additive primary-navigation contribution. */
 export interface MakaClientSidebarNavigationProps {
   readonly collapsed: boolean;
+  /** Active native conversation, including Sessions owned by plugin entries. */
+  readonly activeSessionId?: string;
   /** Open a desktop Session in the native conversation, preserving Host identity. */
   readonly openSession?: (sessionId: string) => void;
 }
@@ -379,7 +382,10 @@ export type MakaClientSlotRegistrationOptions<
   readonly name: Name;
   readonly children?: Children;
   readonly registrant?: string;
-} & MakaClientKindOptions<Name, EntryKey, Match>;
+} & (Name extends 'sidebar.navigation' ? {
+  /** Sessions with these labels belong to this entry instead of the ordinary rail/palette. */
+  readonly sessionLabels?: readonly string[];
+} : object) & MakaClientKindOptions<Name, EntryKey, Match>;
 
 export interface MakaClientSlotRegistrar {
   register<
@@ -401,6 +407,7 @@ export interface MakaClientSlotRegistrar {
 }
 
 interface ErasedRegistrationOptions {
+  readonly sessionLabels?: readonly string[];
   readonly name: string;
   readonly key?: string;
   readonly id?: string;
@@ -414,6 +421,7 @@ interface ErasedRegistrationOptions {
 export interface MakaClientStoredSlotEntry {
   readonly component: MakaClientSlotComponent<Record<string, unknown>>;
   readonly options: {
+    readonly sessionLabels?: readonly string[];
     readonly key?: string;
     readonly id?: string;
     readonly order?: number;
@@ -562,6 +570,8 @@ export class MakaClientSlotCore implements MakaClientSlotRegistrar {
     const entry: MakaClientStoredSlotEntry = Object.freeze({
       component: component as MakaClientSlotComponent<Record<string, unknown>>,
       options: Object.freeze({
+        ...(options.name === 'sidebar.navigation' && options.sessionLabels
+          ? { sessionLabels: Object.freeze([...options.sessionLabels]) } : {}),
         ...(options.key === undefined ? {} : { key: options.key }),
         ...(options.id === undefined ? {} : { id: options.id }),
         ...(options.order === undefined ? {} : { order: options.order }),
@@ -779,6 +789,18 @@ export function useMakaClientSlotOccupied(
     () => core?.getVersion(name) ?? 0,
   );
   return (core?.activeEntries(name).length ?? 0) > 0;
+}
+
+/** Plugin navigation owns labelled Sessions without removing them from the catalog or Recall. */
+export function useMakaClientNavigationSessionLabels(): ReadonlySet<string> {
+  const core = useContext(MakaClientSlotHostContext)?.core;
+  const version = useSyncExternalStore(
+    listener => core?.subscribe('sidebar.navigation', listener) ?? (() => {}),
+    () => core?.getVersion('sidebar.navigation') ?? 0,
+    () => core?.getVersion('sidebar.navigation') ?? 0,
+  );
+  return useMemo(() => new Set(core?.activeEntries('sidebar.navigation')
+    .flatMap(entry => entry.options.sessionLabels ?? []) ?? []), [core, version]);
 }
 
 export function MakaClientSlotProvider(props: {

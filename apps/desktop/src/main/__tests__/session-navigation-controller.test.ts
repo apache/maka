@@ -21,6 +21,8 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
+import { MakaClientSlotCore, MakaClientSlotProvider } from '@maka/ui/client-plugin';
+import { selectPaletteSessions } from '../../renderer/application/contracts/session-catalog/session-rail-visibility.js';
 import { LocaleProvider, useSessionRailData, type SessionRailData } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
@@ -275,6 +277,34 @@ describe('useSessionNavigationReads', () => {
     latestRail = undefined;
   });
 
+  it('keeps the entry selected outside the rail, hides its overlay context in settings, and restores rows on unload', async () => {
+    const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
+    const sessions = [session('assistant', { labels: ['plugin-owned'] }), session('normal')];
+    catalog.commitSessions(sessions);
+    const core = new MakaClientSlotCore();
+    const remove = core.register({ name: 'sidebar.navigation', id: 'fixture', sessionLabels: ['plugin-owned'] }, () => null);
+    const render = (surfaceObscured = false) => root.render(createElement(MakaClientSlotProvider, { core },
+      createElement(LocaleProvider, { locale: 'en', children: null },
+        createElement(SessionNavigationServicesProvider, { services: fakeServices },
+          createElement(SessionNavigationProvider, {
+            catalog, activeSessionId: 'assistant', surfaceObscured,
+            hiddenSessionIds: new Set<string>(), projectScopes: [], streamingSessionIds: new Set<string>(),
+            ports: ports(sessions, 'assistant'), commandsRef: { current: null },
+            selection: { section: 'sessions' }, workHubActive: false,
+            onSelect: () => {}, onOpenSettings: () => {}, onNew: () => {},
+            onExitWorkHub: () => {}, onSelectSession: () => {},
+          }, createElement(RailProbe))))));
+    await act(async () => render());
+    assert.deepEqual(latestRail?.sessions.map(item => item.id), ['normal']);
+    assert.equal(latestRail?.navigationSessionId, 'assistant');
+    assert.equal(latestRail?.activeId, undefined);
+    await act(async () => render(true));
+    assert.equal(latestRail?.navigationSessionId, undefined);
+    await act(async () => { remove(); });
+    assert.deepEqual(latestRail?.sessions.map(item => item.id), ['assistant', 'normal']);
+  });
+
   it('projects linked, archived, hidden, side-conversation, Project, and Runtime Host Sessions once', async () => {
     const { root } = installReactRenderer();
     const catalog = createSessionCatalogController();
@@ -371,4 +401,20 @@ describe('createSessionOpenCommand', () => {
     );
     assert.equal(targets[1], null);
   });
+});
+
+
+it('plugin-owned Sessions stay addressable but are absent from ordinary and flagged rails', () => {
+  const assistant = session('assistant', { labels: ['plugin-owned'], isFlagged: true });
+  const normal = session('normal');
+  const sessions = [assistant, normal];
+  const labels = new Set(['plugin-owned']);
+  const rail = deriveSessionRail(sessions, assistant.id, item => sessionMatchesRail(item, labels));
+  assert.deepEqual(rail.sessions.map(item => item.id), ['normal']);
+  assert.equal(rail.activeRowId, undefined);
+  assert.equal(sessions.find(item => item.id === 'assistant'), assistant);
+  const catalog = createSessionCatalogController();
+  catalog.commitSessions(sessions);
+  assert.deepEqual(selectPaletteSessions(catalog.getState(), new Set(), labels).map(item => item.id), ['normal']);
+  assert.equal(sessionMatchesRail(assistant), true); // Removing the entry restores access via the ordinary list.
 });

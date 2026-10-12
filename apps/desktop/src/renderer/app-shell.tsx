@@ -2263,6 +2263,7 @@ function AppShellContent({
                 scheduledTasks={scheduledTasks}
                 catalog={sessionCatalogController}
                 activeSessionId={activeId}
+                surfaceObscured={shellObscured}
                 hiddenSessionIds={selectors.hiddenSessionIds}
                 projectScopes={taskEntry.selectors.projectScopes}
                 streamingSessionIds={streamingSessionIds}

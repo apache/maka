@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { useMakaClientNavigationSessionLabels } from '@maka/ui/client-plugin';
+
 import {
   useCallback,
   useLayoutEffect,
@@ -85,6 +87,8 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
   /** The rail subscribes the catalog itself: its rows are the churn it displays. */
   catalog: SessionCatalogController;
   activeSessionId: string | undefined;
+  /** Suppress plugin conversation overlays while settings or a modal owns the surface. */
+  surfaceObscured?: boolean;
   hiddenSessionIds: ReadonlySet<string>;
   projectScopes: readonly SessionNavigationProjectScope[];
   streamingSessionIds: ReadonlySet<string>;
@@ -113,6 +117,7 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  const entryLabels = useMakaClientNavigationSessionLabels();
   const staleSessionIds = useExternalStoreSelector(
     props.catalog,
     selectStaleSessionIds,
@@ -122,9 +127,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   const rail = useMemo(
     () =>
       deriveSessionRail(sessions, props.activeSessionId, (session) =>
-        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session),
+        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session, entryLabels),
       ),
-    [sessions, props.activeSessionId, props.hiddenSessionIds],
+    [sessions, props.activeSessionId, props.hiddenSessionIds, entryLabels],
   );
   const controller = useSessionNavigationController({
     rail,
@@ -258,6 +263,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     () => ({
       sessions: rail.sessions,
       activeId: props.workHubActive ? undefined : rail.activeRowId,
+      navigationSessionId: props.workHubActive || props.surfaceObscured ? undefined : props.activeSessionId,
       streamingSessionIds: props.streamingSessionIds,
       staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
@@ -290,6 +296,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       staleSessionIds,
       props.streamingSessionIds,
       props.workHubActive,
+      props.activeSessionId,
+      props.surfaceObscured,
       rowActions,
       sessionBadge,
     ],

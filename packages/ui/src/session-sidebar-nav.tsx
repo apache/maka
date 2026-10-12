@@ -31,7 +31,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 
 export function SessionSidebarNav() {
   const props = useSessionRailChrome();
-  const { onSelectSession } = useSessionRailData();
+  const { onSelectSession, navigationSessionId } = useSessionRailData();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
@@ -68,7 +68,7 @@ export function SessionSidebarNav() {
       />
       <MakaClientSlotOutlet
         name="sidebar.navigation"
-        owner={{ collapsed: props.collapsed, openSession: onSelectSession }}
+        owner={{ collapsed: props.collapsed, openSession: onSelectSession, activeSessionId: props.selection.section === 'sessions' ? navigationSessionId : undefined }}
       />
       {props.workHubEntry ? (
         <SideNavItem
