@@ -24,6 +24,7 @@ const request = z
   .object({
     method: z.enum([
       'assistant.binding',
+      'assistant.original',
       'assistant.status',
       'assistant.bind',
       'assistant.control',

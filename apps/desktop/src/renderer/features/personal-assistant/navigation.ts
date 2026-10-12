@@ -76,3 +76,16 @@ export function createAssistantNavigation(ports: AssistantNavigationPorts) {
 
   return { open: openAssistant };
 }
+
+
+/** References belong to the displayed chat's Host; a default Host is never a fallback. */
+export function originalHost(sessionId: string, entries: readonly {
+  hostId?: string; enabled: boolean; profile: { id: string };
+}[]): { host: AssistantHost; sessionId: string } {
+  const [hostId, id] = identity(sessionId);
+  if (typeof hostId !== 'string' || !hostId || typeof id !== 'string' || !id)
+    throw Error('无法确定引用所属的 Host，请重新打开此会话。');
+  const owner = entries.find(entry => entry.hostId === hostId && entry.enabled);
+  if (!owner) throw Error('引用所属 Host 未连接。');
+  return { host: { hostId, profileId: owner.profile.id }, sessionId: id };
+}

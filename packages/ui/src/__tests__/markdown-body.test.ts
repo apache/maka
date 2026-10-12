@@ -601,3 +601,16 @@ it('never settles half of a rewritten Unicode code point', () => {
   assert.match(markup, />same ?</);
   assert.doesNotMatch(markup, /😃|NEW|�/u);
 });
+
+
+it('memory citations route internally and never navigate as external URLs', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en', children: createElement(MakaUriContext.Provider, {
+      value: () => {}, children: createElement(MarkdownBody, {
+        text: '[原文](memory-original:r_abc123) [旧原文](memory-original:message-id:0)',
+      }),
+    }),
+  }));
+  assert.equal((markup.match(/data-maka-uri-kind="memory-original"/g) ?? []).length, 2);
+  assert.doesNotMatch(markup, /unsafe-scheme|href="memory-original/);
+});

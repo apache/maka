@@ -159,12 +159,12 @@ export class InitiativeStore {
         for (const key of Object.keys(s)) delete s[key];
         Object.assign(s, replacement);
       } else if (s.active) {
-        s.enabled = false;
         s.checkRequested = false;
         s.active = null;
+        s.nextAt = Date.now() + s.intervalMs;
         s.revision++;
         s.lastError =
-          'Previous heartbeat was interrupted; inspect the conversation before resuming';
+          'Previous heartbeat was interrupted; the next scheduled check will use the existing conversation';
         this.log('interrupted', { reason: s.lastError });
       }
     });
@@ -177,7 +177,7 @@ export class InitiativeStore {
       this.log('heartbeat', { id: s.active.id });
     });
   }
-  finish(id: string, error?: string, retryable = false) {
+  finish(id: string, error?: string) {
     return this.update((s) => {
       if (s?.active?.id !== id) return;
       s.active = null;
@@ -186,9 +186,8 @@ export class InitiativeStore {
       s.nextAt = Date.now() + s.intervalMs; // host cadence; never model-selected
       if (error) {
         s.failures = (s.failures ?? 0) + 1;
-        if (retryable && s.failures <= 3)
-          s.nextAt = Date.now() + Math.min(s.intervalMs, 30000 * 2 ** (s.failures - 1));
-        else s.enabled = false;
+        // Keep the user’s cadence. Failure must neither enable a one-off check
+        // nor permanently disable an explicitly enabled heartbeat.
       } else {
         s.failures = 0;
         s.lastCheckedAt = Date.now();

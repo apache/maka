@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { InitiativeStore } from './store.js';
+import { awaitingUser } from '../execution-outcome.js';
 import { wake } from './prompt.js';
 
 export class InitiativeController {
@@ -90,10 +91,8 @@ export class InitiativeController {
     const s = this.store.get();
     if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
     const agent = await this.asOwner(s, () => this.ctx.agents.resume({ sessionId: s.sessionId }));
-    if (
-      ['running', 'waiting_for_user', 'blocked'].includes((await agent.snapshot())?.agent?.status)
-    )
-      return;
+    const snapshot = await agent.snapshot();
+    if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
     this.ready();
     const current = this.store.claim();
     if (!current?.active) return;
@@ -103,7 +102,6 @@ export class InitiativeController {
   }
   async run(agent: any, state: any) {
     const id = state.active.id;
-    let timer: any;
     try {
       const admitted = await agent.followup(wake(state));
       if (!['turn_started', 'followup'].includes(admitted?.disposition))
@@ -117,16 +115,7 @@ export class InitiativeController {
           await delay(25, undefined, { signal: this.abort.signal });
         await agent.whenIdle(this.abort.signal);
       };
-      await Promise.race([
-        completion(),
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () => reject(Error('Proactive check timed out; inspect effects before resuming')),
-            this.config.runTimeoutMs,
-          );
-          timer.unref?.();
-        }),
-      ]);
+      await completion();
       const status = (await agent.snapshot())?.agent?.status;
       if (['aborted', 'blocked', 'waiting_for_user'].includes(status))
         throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
@@ -136,21 +125,12 @@ export class InitiativeController {
         this.store.fence();
         if (this.store.get()?.active?.id === id) {
           const message = String(e);
-          const transient =
-            !/permission|unauthorized|forbidden|account|timed out|aborted|blocked|waiting_for_user/i.test(
-              message,
-            ) &&
-            /ECONNRESET|ETIMEDOUT|EAI_AGAIN|429|502|503|504|temporarily unavailable|rate limit/i.test(
-              message,
-            );
-          this.store.finish(id, message, transient);
+          this.store.finish(id, message);
           // Shared foreground Session: do not cancel a user's concurrent turn.
         }
       } catch {
         /* A newer owner fences writes and cancellation. */
       }
-    } finally {
-      clearTimeout(timer);
     }
   }
   async enable(input: any, call: any) {

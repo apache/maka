@@ -251,8 +251,9 @@ export function PersonalAssistantSettings({
               <article key={task.id}>
                 <strong>{task.title}</strong>
                 <p>
-                  {task.status} · {task.summary || task.waitingFor || ''}
+                  {task.retryAt ? `等待恢复 · ${time(task.retryAt)}` : task.status} · {task.summary || task.waitingFor || ''}
                 </p>
+                {task.lastError && <p role="status">{task.lastError}</p>}
                 <div className="pa-controls">
                   {onOpenSession && (
                     <button

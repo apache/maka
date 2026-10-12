@@ -328,23 +328,48 @@ test('settle receipts remain idempotent after their timer has elapsed', (t) => {
   assert.equal(f.store.updates().length, 1);
 });
 
-test('run budget pauses with a durable notice and explicit resume grants another budget', (t) => {
+test('legacy run budgets no longer interrupt continuing work', (t) => {
   const f = fixture(t);
-  const m = f.store.create({
-    cwd: f.root,
-    title: 'Bounded',
-    request: 'Continue',
-    sessionId: 'limited',
-    maxRuns: 1,
-  });
-  const active = f.store.claim(m.id)!.matter;
+  const active = f.store.claim(f.m.id)!.matter;
   settle(f.store, active, 'continue');
-  f.store.finish(m.id, active.activation!.id);
+  f.store.finish(f.m.id, active.activation!.id);
+  const db = new DatabaseSync(join(f.root, 'matters.sqlite'));
+  const row: any = db.prepare('SELECT payload FROM matters WHERE id=?').get(f.m.id);
+  const value = JSON.parse(row.payload);
+  value.maxRuns = 1;
+  value.runCount = 1001;
+  db.prepare('UPDATE matters SET payload=? WHERE id=?').run(JSON.stringify(value), f.m.id);
+  db.close();
+  assert.equal(f.store.claim(f.m.id)!.matter.runCount, 1002);
+  assert.equal(f.store.get(f.m.id).matter.status, 'active');
+});
+
+test('transient recovery persists, preserves progress, and yields to cancellation or settlement', (t) => {
+  const f = fixture(t);
+  let m = f.store.claim(f.m.id)!.matter;
+  f.store.checkpoint(m.id, m.activation!.id, m.revision, 'Tool already succeeded', 'saved');
+  const failure = { kind: 'network', message: 'connection reset' };
+  f.store.retryExecution(m.id, m.activation!.id, failure);
+  let recovered = f.reopen().get(m.id).matter;
+  assert.equal(recovered.stateText, 'Tool already succeeded');
+  assert.equal(recovered.sessionId, m.sessionId);
+  assert.equal(recovered.activation, null);
+  assert.equal(recovered.lastFailure?.kind, 'network');
   assert.equal(f.store.claim(m.id), null);
-  assert.equal(f.store.get(m.id).matter.status, 'paused');
-  assert.equal(f.store.updates(m.id).length, 1);
-  f.store.control(m.id, 'resume');
-  assert.equal(f.store.claim(m.id)!.matter.runCount, 2);
+  f.advance(30_000);
+  m = f.store.claim(m.id)!.matter;
+  settle(f.store, m, 'wait');
+  f.store.retryExecution(m.id, m.activation!.id, failure);
+  f.store.finish(m.id, m.activation!.id);
+  assert.equal(f.store.get(m.id).matter.status, 'waiting');
+  assert.equal(f.store.get(m.id).matter.executionFailures, 0);
+  f.advance(60_000);
+  f.store.enqueueDue();
+  m = f.store.claim(m.id)!.matter;
+  f.store.control(m.id, 'cancel');
+  f.store.retryExecution(m.id, m.activation!.id, failure);
+  assert.equal(f.store.get(m.id).matter.status, 'cancelled');
+  assert.equal(f.store.get(m.id).matter.retryAt, null);
 });
 
 test('files hold published bodies; drafts, version history and scheduling commit separately from editing', (t) => {
@@ -659,4 +684,28 @@ test('explicit admission rejection retries durably without consuming input or ex
     /Only an explicitly rejected/,
   );
   assert.equal(f.store.get(f.m.id).matter.admissionFailures, 0);
+});
+
+test('new user requirements wake a backing-off task without overwriting working state or undoing pause', (t) => {
+  const f = fixture(t);
+  let m = f.store.claim(f.m.id)!.matter;
+  f.store.retryExecution(m.id, m.activation!.id, { kind: 'network', message: 'reset' });
+  assert.ok(f.store.get(m.id).matter.retryAt);
+  f.store.ingest(m.id, {
+    key: 'new-user-requirement',
+    source: 'user',
+    text: '验收还需要提供文件名',
+  });
+  assert.equal(f.store.get(m.id).matter.retryAt, null);
+  const next = f.store.claim(m.id)!;
+  assert.ok(next.events.some((e) => e.text.includes('文件名')));
+  assert.equal(next.matter.stateText, m.stateText);
+  f.store.retryExecution(m.id, next.matter.activation!.id, {
+    kind: 'network',
+    message: 'reset again',
+  });
+  f.store.control(m.id, 'pause');
+  f.store.ingest(m.id, { key: 'while-paused', source: 'user', text: '另补充一条要求' });
+  assert.equal(f.store.get(m.id).matter.status, 'paused');
+  assert.equal(f.store.claim(m.id), null);
 });

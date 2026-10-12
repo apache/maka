@@ -56,7 +56,7 @@ test('first open binds one ordinary chat without import, indexing, model calls o
   }
 });
 
-test('UI enable checks immediately, status exposes failure, recovery requires explicit action', async () => {
+test('UI enable checks immediately, status exposes failure without disabling scheduled discovery', async () => {
   const f = await fixture();
   let checks = 0;
   try {
@@ -69,7 +69,7 @@ test('UI enable checks immediately, status exposes failure, recovery requires ex
     await until(async () => (await f.remote('assistant.status')).state.lastError);
     let s = (await f.remote('assistant.status')).state;
     assert.equal(checks, 1);
-    assert.equal(s.enabled, false);
+    assert.equal(s.enabled, true);
     assert.equal(s.intervalMs, 3600000);
     assert.match(s.lastError, /provider unavailable/);
     f.setRunner(async () => {
@@ -83,6 +83,107 @@ test('UI enable checks immediately, status exposes failure, recovery requires ex
     await f.remote('assistant.control', { action: 'pause' });
     assert.equal((await f.remote('assistant.status')).state.enabled, false);
     assert.equal(f.cancels(), 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('original reader uses an existing chat, pages original content, and does not require assistant binding', async () => {
+  const f = await fixture();
+  try {
+    f.sessions.set('project', [{ id: 'large', type: 'user', text: '证据'.repeat(24000) }]);
+    const range = await f.invoke('MemoryRange', {});
+    const history = await f.invoke('MemoryHistory', {
+      to: range.to,
+      mode: 'messages',
+      recordId: 'project',
+    });
+    const ref = history.items[0].ref;
+    const first = await f.remote('assistant.original', { sessionId: 'owner', ref });
+    assert.equal(first.ref, ref);
+    assert.equal(first.status, 'ok');
+    assert.equal(first.text.length, 24000);
+    assert.equal(first.nextOffset, 24000);
+    const next = await f.remote('assistant.original', {
+      sessionId: 'owner',
+      ref,
+      offset: first.nextOffset,
+    });
+    assert.equal(next.offset, 24000);
+    assert.ok(next.text.length);
+    assert.equal((await f.remote('assistant.binding')).state, null);
+    await assert.rejects(f.remote('assistant.original', { sessionId: 'missing', ref }), /Host/);
+    await assert.rejects(
+      f.remote('assistant.original', { sessionId: 'owner', ref: 'unknown' }),
+      /Unknown original/,
+    );
+    assert.equal(f.workers.size, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test('original reader preserves cited evidence and rechecks external permissions including after I/O', async () => {
+  const f = await fixture();
+  let allowed = true,
+    revision = 'v1',
+    body = '旧证据',
+    deleted = false,
+    revokeDuringRead = false;
+  const object = () => ({
+    id: 'message',
+    locator: { id: 'message' },
+    revision,
+    kind: 'text',
+    title: '测试原文',
+  });
+  f.ctx
+    .extend({
+      maka: {
+        rootId: 'profile',
+        packageId: 'test-sources',
+        entryId: 'test-sources',
+        generation: 1,
+      },
+    })
+    .sources.register({
+      id: 'source.test',
+      description: 'synthetic source',
+      queryHelp: 'query',
+      scope: {},
+      enumerate: async () => ({ items: [object()] }),
+      query: async () => ({ items: [object()] }),
+      authorize: async (objects: any[]) => (allowed ? objects.map((o) => o.id) : []),
+      read: async () => {
+        if (revokeDuringRead) allowed = false;
+        return deleted
+          ? { status: 'deleted', object: object() }
+          : { status: 'ok', object: object(), content: body };
+      },
+    });
+  try {
+    const { items } = await f.invoke('MemorySourceQuery', { source: 'source.test', query: {} });
+    const ref = items[0].ref;
+    const read = (extra: any = {}) =>
+      f.remote('assistant.original', { sessionId: 'owner', ref, ...extra });
+    assert.equal((await read()).text, '旧证据');
+    revision = 'v2';
+    body = '新证据';
+    assert.equal((await read()).text, '旧证据');
+    const latest = await read({ latest: true });
+    assert.equal(latest.text, '新证据');
+    assert.notEqual(latest.ref, ref);
+    assert.equal((await read()).revision, 'v1');
+    allowed = false;
+    await assert.rejects(read(), /permission|visibil|accessible|denied|authorized/i);
+    allowed = true;
+    revokeDuringRead = true;
+    await assert.rejects(read({ latest: true }), /permission/i);
+    allowed = true;
+    revokeDuringRead = false;
+    deleted = true;
+    assert.equal((await read({ latest: true })).status, 'deleted');
+    assert.equal(f.workers.size, 1);
   } finally {
     await f.close();
   }

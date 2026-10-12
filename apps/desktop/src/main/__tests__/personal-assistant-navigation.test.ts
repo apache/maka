@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAssistantNavigation } from '../../renderer/features/personal-assistant/navigation.js';
+import { createAssistantNavigation, originalHost } from '../../renderer/features/personal-assistant/navigation.js';
 import { sessionMatchesRail } from '../../renderer/application/contracts/session-catalog/session-rail-visibility.js';
 
 test('native assistant coalesces opening, reuses its conversation and matches the owning Host', async () => {
@@ -90,4 +90,19 @@ test('native assistant conversation stays out of rail without any plugin registr
     false,
   );
   assert.equal(sessionMatchesRail({ id: 'ordinary', labels: [] } as any), true);
+});
+
+
+test('original references follow the displayed Host instead of the default and never fall back', () => {
+  const entries = [
+    { hostId: 'host-a', enabled: true, profile: { id: 'default' } },
+    { hostId: 'host-b', enabled: true, profile: { id: 'remote' } },
+  ];
+  assert.deepEqual(originalHost(JSON.stringify(['host-b', 'same-session']), entries), {
+    host: { hostId: 'host-b', profileId: 'remote' }, sessionId: 'same-session',
+  });
+  assert.throws(() => originalHost('same-session', entries), /Host/);
+  assert.throws(() => originalHost(JSON.stringify(['missing', 'same-session']), entries), /Host/);
+  assert.throws(() => originalHost(JSON.stringify(['host-b', 'same-session']),
+    entries.map(e => ({ ...e, enabled: e.hostId === 'host-a' }))), /Host/);
 });

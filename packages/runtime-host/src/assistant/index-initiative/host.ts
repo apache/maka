@@ -29,7 +29,7 @@ export async function initializeInitiative(
   directory: string,
   config: any = {},
 ) {
-  const limits = { tickMs: config.tickMs ?? 5000, runTimeoutMs: config.runTimeoutMs ?? 600000 };
+  const limits = { tickMs: config.tickMs ?? 5000 };
   for (const [name, value] of Object.entries(limits))
     if (!Number.isSafeInteger(value) || value < 10 || value > 3600000)
       throw Error(`Invalid ${name}`);

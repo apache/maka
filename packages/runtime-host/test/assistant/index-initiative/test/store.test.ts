@@ -53,7 +53,7 @@ test('host cadence, natural completion, pause during a run does not re-enable', 
     f.close();
   }
 });
-test('restart preserves cadence, interrupted admission stops rather than replaying', () => {
+test('restart preserves cadence, interrupted admission retains cadence without replaying the interrupted check', () => {
   const f = fixture();
   let other: InitiativeStore | undefined;
   try {
@@ -67,7 +67,7 @@ test('restart preserves cadence, interrupted admission stops rather than replayi
     other.release();
     assert.ok(f.store.lease());
     f.store.recover();
-    assert.equal(f.store.get().enabled, false);
+    assert.equal(f.store.get().enabled, true);
     assert.match(f.store.get().lastError, /interrupted/);
     assert.equal(f.store.get().checkRequested, false);
     assert.equal(f.store.claim().active, null);
@@ -121,7 +121,7 @@ test('competing host cannot finish old work or change cadence', () => {
   }
 });
 
-test('known transient failures retry with backoff, pause stays paused and one-off checks do not enable cadence', () => {
+test('failures retain cadence without a rejection-count cutoff; one-off checks stay one-off', () => {
   const f = fixture();
   try {
     for (let n = 1; n <= 4; n++) {
@@ -129,10 +129,11 @@ test('known transient failures retry with backoff, pause stays paused and one-of
         s.nextAt = 0;
       });
       const a = f.store.claim().active;
-      f.store.finish(a.id, '503 temporary outage', true);
-      assert.equal(f.store.get().enabled, n < 4);
+      f.store.finish(a.id, '503 temporary outage');
+      assert.equal(f.store.get().enabled, true);
       if (n < 4) assert.ok(f.store.get().nextAt > Date.now());
     }
+    f.store.control('pause');
     f.store.control('check');
     assert.equal(f.store.get().enabled, false);
     const a = f.store.claim().active;

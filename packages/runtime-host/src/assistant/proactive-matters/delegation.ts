@@ -57,6 +57,7 @@ export function registerDelegation(
     retryAt: m.retryAt,
     revision: m.revision,
     lastError: m.lastError,
+    lastFailure: m.lastFailure ?? null,
     // A read is not a delivery receipt. Actual user communication stays in the parent Session.
     updates: store
       .updates(m.id)

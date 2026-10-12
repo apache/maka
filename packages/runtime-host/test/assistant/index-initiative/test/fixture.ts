@@ -105,7 +105,10 @@ export async function fixture(options: any = {}) {
     resume: async ({ sessionId }: any) => ({ id: sessionId, sessionId, root: false }),
     inbox: async () => [],
     transcript: async (id: string) => workers.get(id)?.transcript ?? [],
-    snapshot: async (id: string) => ({ agent: { status: workers.get(id)?.status ?? 'idle' } }),
+    snapshot: async (id: string) => ({
+      agent: { status: workers.get(id)?.status ?? 'idle' },
+      pendingInteractions: workers.get(id)?.pendingInteractions ?? 0,
+    }),
     cancel: async (id: string) => {
       cancels++;
       workers.get(id).status = 'idle';

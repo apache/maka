@@ -71,10 +71,11 @@ export interface Matter {
   waitingFor?: string | null;
   activation: MatterActivation | null;
   runCount: number;
-  maxRuns: number;
   lastError: string | null;
   retryAt?: number | null;
   admissionFailures?: number;
+  executionFailures?: number;
+  lastFailure?: { kind: string; message: string; at: number } | null;
   lastUpdate: string | null;
   createdAt: number;
   updatedAt: number;
@@ -90,7 +91,6 @@ export interface MatterCreateInput {
   title: string;
   request: string;
   sessionId: string;
-  maxRuns?: number;
 }
 export interface MatterSettleInput {
   expectedRevision: number;
@@ -189,7 +189,12 @@ export interface MatterStore {
     operationId: string,
     review?: MatterReview,
   ): Matter;
-  finish(id: string, activationId: string, error?: string): void;
+  finish(id: string, activationId: string, error?: string, failureKind?: string): void;
+  retryExecution(
+    id: string,
+    activationId: string,
+    failure: { kind: string; message: string },
+  ): void;
   deferAdmission(id: string, activationId: string, reason: string): void;
   control(id: string, action: 'pause' | 'resume' | 'cancel' | 'check'): Matter;
   edit(id: string, revision: number, stateText: string): Matter;

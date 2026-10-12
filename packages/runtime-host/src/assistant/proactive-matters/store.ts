@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { recoveryDelay } from '../execution-outcome.js';
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { MatterReviewInvalidated } from './review.js';
@@ -180,6 +181,7 @@ class SqliteMatterStore implements MatterStore {
   }
   private decode(value: string): Matter {
     const stored = JSON.parse(value);
+    delete stored.maxRuns; // Retired internal run budget; existing matters keep their progress.
     if (!stored.documents) return stored as Matter; // Read legacy records until their next commit.
     const { documents, ...metadata } = stored;
     return {
@@ -269,14 +271,11 @@ class SqliteMatterStore implements MatterStore {
       waitingFor: null,
       activation: null,
       runCount: 0,
-      maxRuns: input.maxRuns ?? 100,
       lastError: null,
       lastUpdate: null,
       createdAt: this.now(),
       updatedAt: this.now(),
     };
-    if (!Number.isInteger(m.maxRuns) || m.maxRuns < 1 || m.maxRuns > 1000)
-      throw new Error('Invalid run budget');
     return this.transaction(() => {
       this.db.prepare('INSERT INTO matters VALUES(?,?,?)').run(m.id, m.sessionId, this.encode(m));
       this.insertEvent(m.id, {
@@ -474,8 +473,14 @@ class SqliteMatterStore implements MatterStore {
           'External event subscriptions are not supported; only user input and scheduled time',
         );
       if (terminal(m)) return false;
-      // Events are wake signals. Never rewrite agent-authored state here.
-      return this.insertEvent(id, input);
+      // New human input can resume a retrying task immediately, but cannot undo a user pause.
+      const inserted = this.insertEvent(id, input);
+      if (inserted && !m.activation && m.status === 'active' && m.retryAt) {
+        m.retryAt = null;
+        m.executionFailures = 0;
+        this.write(m, 'retry_interrupted_by_user');
+      }
+      return inserted;
     });
   }
   enqueueDue(): void {
@@ -502,13 +507,6 @@ class SqliteMatterStore implements MatterStore {
       const batch = this.eventBatch(id);
       const { events } = batch;
       if (!events.length) return null;
-      if (m.runCount >= m.maxRuns) {
-        m.status = 'paused';
-        m.lastError = '已达到事项运行次数上限，请检查进展后继续。';
-        this.publish(m, m.lastError, `budget:${m.id}:${m.maxRuns}`);
-        this.write(m, 'run_limit');
-        return null;
-      }
       const activation = {
         id: this.newId(),
         turnId: `pending:${this.newId()}`,
@@ -798,6 +796,8 @@ class SqliteMatterStore implements MatterStore {
         }
         m.stateText = input.stateText;
         m.activation!.settled = true;
+        m.executionFailures = 0;
+        m.lastFailure = null;
         m.wakes = wakes;
         m.waitingFor = input.disposition === 'wait' ? input.waitingFor!.trim() : null;
         m.status =
@@ -860,13 +860,41 @@ class SqliteMatterStore implements MatterStore {
       this.write(m, 'admission_retry', { reason, retryAt: m.retryAt });
     });
   }
-  finish(id: string, activationId: string, error?: string): void {
+  retryExecution(
+    id: string,
+    activationId: string,
+    failure: { kind: string; message: string },
+  ): void {
+    this.transaction(() => {
+      const m = this.read(id);
+      // New input/cancellation or a committed wait/complete always wins over recovery.
+      if (m.activation?.id !== activationId) return;
+      if (m.activation.settled) return;
+      m.executionFailures = (m.executionFailures ?? 0) + 1;
+      m.retryAt = this.now() + recoveryDelay(m.executionFailures);
+      m.lastError = failure.message;
+      m.lastFailure = { ...failure, at: this.now() };
+      m.activation = null;
+      m.status = 'active';
+      this.db
+        .prepare('UPDATE matter_runs SET ended_at=?,outcome=? WHERE id=?')
+        .run(this.now(), 'execution_retry', activationId);
+      this.insertEvent(id, {
+        key: `recovery:${activationId}`,
+        source: 'recovery',
+        text: '上轮执行因临时故障中断。沿用本会话已执行记录，先核对工具结果和最新要求后继续；不要重复已完成的操作。',
+      });
+      this.write(m, 'execution_retry', { ...failure, retryAt: m.retryAt });
+    });
+  }
+  finish(id: string, activationId: string, error?: string, failureKind = 'unknown'): void {
     this.transaction(() => {
       const m = this.read(id);
       if (m.activation?.id !== activationId) return;
       if (!m.activation.settled) {
         m.status = 'paused';
         m.lastError = error || '本轮未提交等待或完成状态，请检查执行记录后继续。';
+        m.lastFailure = { kind: failureKind, message: m.lastError, at: this.now() };
         this.publish(m, m.lastError, `failure:${activationId}`);
       }
       this.db
@@ -888,6 +916,7 @@ class SqliteMatterStore implements MatterStore {
       if (action === 'pause' || action === 'cancel') {
         m.status = action === 'pause' ? 'paused' : 'cancelled';
         m.wakes = [];
+        m.retryAt = null;
         m.waitingFor = null;
         if (m.activation)
           this.db
@@ -896,11 +925,12 @@ class SqliteMatterStore implements MatterStore {
         m.activation = null;
       } else {
         if (m.activation) throw new Error('Matter is already running');
-        if (m.runCount >= m.maxRuns) m.maxRuns += 100;
         m.status = 'active';
         m.lastError = null;
         m.retryAt = null;
         m.admissionFailures = 0;
+        m.executionFailures = 0;
+        m.lastFailure = null;
         m.waitingFor = null;
         this.insertEvent(id, {
           key: this.newId(),

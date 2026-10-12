@@ -1,0 +1,10 @@
+.memory-original-panel { position: fixed; top: 64px; right: 16px; bottom: 20px; width: min(440px, calc(100vw - 32px)); box-sizing: border-box; z-index: 80; overflow: auto; padding: 20px; border: 1px solid var(--border, #d8dde5); border-radius: 12px; background: var(--background, #fff); color: var(--foreground, #242933); box-shadow: 0 8px 32px #0002; }
+.memory-original-panel header { display: flex; align-items: center; justify-content: space-between; }
+.memory-original-panel h3 { overflow-wrap: anywhere; }
+.memory-original-panel dl { display: grid; grid-template-columns: 80px 1fr; gap: 6px 12px; font-size: 12px; }
+.memory-original-panel dd { margin: 0; overflow-wrap: anywhere; }
+.memory-original-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.65; }
+.memory-original-panel button { cursor: pointer; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border, #d8dde5); background: transparent; color: inherit; }
+.memory-original-panel button:disabled { cursor: default; opacity: .5; }
+.memory-original-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.memory-original-notice { font-size: 12px; opacity: .65; }

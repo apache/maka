@@ -23,6 +23,8 @@ import type { Matter, MatterStore } from './matter.js';
 import type { MatterServices, MakaToolContext } from './host-types.js';
 import { buildMatterPrompt } from './prompt.js';
 
+import { awaitingUser, executionFailure } from '../execution-outcome.js';
+
 /** Owns enrolled follow-up work. It restores authority only for sessions explicitly enrolled in its DB. */
 export class MatterController {
   readonly owner = randomUUID();
@@ -116,7 +118,7 @@ export class MatterController {
         this.lastError = String(error);
         continue;
       }
-      if (['running', 'waiting_for_user', 'blocked'].includes(snapshot?.agent?.status)) continue; // do not inject into active human conversation
+      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) continue;
       const current = this.store.get(m.id).matter;
       if (
         !this.active ||
@@ -133,6 +135,7 @@ export class MatterController {
   private async run(m: Matter, agent: any, alreadyStarted = false) {
     const activationId = m.activation!.id;
     let queued = false;
+    let failureKind: string | undefined;
     try {
       if (!alreadyStarted) {
         const result = await agent.followup(
@@ -161,8 +164,26 @@ export class MatterController {
         }
         while (true) {
           await agent.whenIdle(this.stopping.signal);
-          const status = (await agent.snapshot())?.agent?.status;
-          if (!['waiting_for_user', 'blocked'].includes(status)) break;
+          // Cancellation fences the activation even if an adapter still reports
+          // the previous interaction as blocked.
+          if (this.store.get(m.id).matter.activation?.id !== activationId) return;
+          const snapshot = await agent.snapshot();
+          if (!awaitingUser(snapshot)) {
+            if (['blocked', 'aborted'].includes(snapshot?.agent?.status)) {
+              const current = this.store.get(m.id).matter;
+              const failure = await executionFailure(agent, current.activation!.turnId);
+              failureKind = failure?.kind;
+              if (failure?.retryable) {
+                this.store.retryExecution(m.id, activationId, failure);
+                return;
+              }
+              throw Error(
+                failure?.message ??
+                  '任务执行异常结束，当前没有待处理的授权或用户问题。请检查会话错误后继续。',
+              );
+            }
+            break;
+          }
           await delay(100, undefined, { signal: this.stopping.signal });
         }
       };
@@ -187,7 +208,7 @@ export class MatterController {
       }
       if (live.activation?.id === activationId) {
         // Commit the fault before stopping, so no later Matter write can proceed.
-        this.store.finish(m.id, activationId, String(e));
+        this.store.finish(m.id, activationId, String(e), failureKind);
         await agent.cancel().catch(() => {});
       }
     }
@@ -292,7 +313,7 @@ export class MatterController {
     this.active = false;
     clearTimeout(this.timer);
     await this.ticking;
-    // Reject stale tool writes first; then retire this plugin's run observers.
+    // Fence writes before retiring this service’s run observers.
     for (const id of this.runs.keys()) {
       const m = this.store.get(id).matter;
       if (m.activation && !m.activation.settled) this.store.control(id, 'pause');
@@ -300,7 +321,7 @@ export class MatterController {
         await (await this.agent(m.sessionId)).cancel();
       } catch {}
     }
-    this.stopping.abort(new Error('Follow-up plugin stopped'));
+    this.stopping.abort(new Error('Follow-up service stopped'));
     await Promise.allSettled(this.runs.values());
     this.store.releaseLease(this.owner);
     this.ready = false;

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { MemoryOriginalPanel } from './features/personal-assistant/original-reader.js';
 import { WorkHubControlOverlay, WorkHubDock, WorkHubMainNavigation, WorkHubReturnButton } from './features/workhub';
 import { RuntimeHostHandoffOverlay } from './features/runtime-host-management/index.js';
 import {
@@ -332,6 +333,8 @@ function AppShellContent({
     ownerActiveId,
     switchingSession,
   } = useAppShellSessionWorkspace(toastApi);
+  const [originalSelection, setOriginalSelection] = useState<{ sessionId: string; ref: string }>();
+  useEffect(() => setOriginalSelection(undefined), [ownerActiveId]);
   // The shell's own reading of the catalog rides the membership set the list
   // hook already publishes — background row churn belongs to the rail, which
   // subscribes the catalog inside SessionNavigationProvider (#4109).
@@ -1946,27 +1949,12 @@ function AppShellContent({
     bootstrapSelectionLease.release();
   }
 
-  /**
-   * PR-UI-RENDER-2 - single chokepoint for the Markdown internal-URI
-   * router. Receives a typed `MakaUriDest` from the link override in
-   * `<Markdown>` and dispatches to the existing app navigation
-   * surfaces:
-   *
-   *   - `kind: 'settings'` → `openSettingsSection(section)` (existing
-   *     Settings modal jump, persisted via localStorage).
-   *   - `kind: 'compose'` → write text into the composer via
-   *     `composerRef.current.setText(...)` and focus it. We do NOT
-   *     auto-submit the prompt; the user still presses Enter. That
-   *     keeps an injected `maka://compose?text=ransfer my keys...`
-   *     from sending without a human in the loop.
-   *
-   * No other cases exist today by design — the parser only emits
-   * these two discriminants. If a new variant is added in `MakaUriDest`,
-   * TypeScript's exhaustiveness check below trips and a new branch
-   * must be wired here with corresponding fixture and journey coverage.
-   */
+  /** Internal links only navigate; originals are read with the current chat's Host identity. */
   function dispatchMakaUri(dest: MakaUriDest) {
     switch (dest.kind) {
+      case 'memory-original':
+        if (ownerActiveId) setOriginalSelection({ sessionId: ownerActiveId, ref: dest.ref });
+        return;
       case 'settings':
         openSettingsSection(dest.section);
         return;
@@ -2308,6 +2296,11 @@ function AppShellContent({
               which is correct: those surfaces shouldn't be a
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
+          {originalSelection && originalSelection.sessionId === ownerActiveId && <MemoryOriginalPanel
+            key={`${originalSelection.sessionId}:${originalSelection.ref}`}
+            sessionId={originalSelection.sessionId} originalRef={originalSelection.ref}
+            onClose={() => setOriginalSelection(undefined)} />}
+
           <div className="maka-detail-with-artifacts">
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}
               inert={switchingSession || undefined}

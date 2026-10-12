@@ -97,7 +97,7 @@ test('queued wake cannot finish before it actually appears in Session history', 
     await f.close();
   }
 });
-test('packaged extension uses ordinary finish; failures stop heartbeats without cancelling chat', async () => {
+test('native heartbeat uses ordinary finish; failures retain cadence without cancelling chat', async () => {
   const f = await fixture({});
   try {
     f.setRunner(async () => {
@@ -106,14 +106,14 @@ test('packaged extension uses ordinary finish; failures stop heartbeats without 
     await f.invoke('InitiativeEnable', {});
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => (await f.invoke('InitiativeStatus')).lastError);
-    assert.equal((await f.invoke('InitiativeStatus')).enabled, false);
+    assert.equal((await f.invoke('InitiativeStatus')).enabled, true);
     assert.equal(f.cancels(), 0);
   } finally {
     await f.close();
   }
 });
 
-test('aborted runtime completion stops future heartbeats without a model checkpoint', async () => {
+test('aborted runtime completion retains cadence without cancelling a concurrent user turn', async () => {
   const f = await fixture();
   try {
     f.workers.get('owner').endStatus = 'aborted';
@@ -121,7 +121,7 @@ test('aborted runtime completion stops future heartbeats without a model checkpo
     await f.invoke('InitiativeEnable', {});
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => (await f.invoke('InitiativeStatus')).lastError);
-    assert.equal((await f.invoke('InitiativeStatus')).enabled, false);
+    assert.equal((await f.invoke('InitiativeStatus')).enabled, true);
     assert.match((await f.invoke('InitiativeStatus')).lastError, /aborted/);
     assert.equal(f.cancels(), 0);
   } finally {
@@ -165,7 +165,7 @@ test('heartbeat carries UTC time and instructions without copying native convers
   }
 });
 
-test('temporary model failure keeps scheduled discovery enabled; permission failures require user action', async () => {
+test('temporary model failure keeps scheduled discovery enabled; permission failures remain visible without losing the configured cadence', async () => {
   const f = await fixture();
   try {
     f.setRunner(async () => {
@@ -183,7 +183,7 @@ test('temporary model failure keeps scheduled discovery enabled; permission fail
     await f.invoke('InitiativeControl', { action: 'check' });
     await until(async () => (await f.invoke('InitiativeStatus')).lastError);
     s = await f.invoke('InitiativeStatus');
-    assert.equal(s.enabled, false);
+    assert.equal(s.enabled, true);
     assert.equal(f.cancels(), 0);
   } finally {
     await f.close();
@@ -200,6 +200,57 @@ test('assistant status remains a strict JSON value at the real Host RPC boundary
       assert.equal(result.readiness.sessionError, null);
     }
   } finally {
+    await f.close();
+  }
+});
+
+test('failed blocked Session can check again, but actual pending user input defers', async () => {
+  const f = await fixture();
+  try {
+    let checks = 0;
+    f.setRunner(async () => {
+      checks++;
+    });
+    await f.invoke('InitiativeEnable', {});
+    const worker = f.workers.get('owner');
+    worker.status = 'blocked';
+    worker.pendingInteractions = 1;
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(checks, 0);
+    worker.pendingInteractions = 0;
+    await until(() => checks === 1);
+    await until(async () => !(await f.invoke('InitiativeStatus')).active);
+    assert.equal((await f.invoke('InitiativeStatus')).enabled, true);
+  } finally {
+    await f.close();
+  }
+});
+
+test('obsolete timeout config cannot expire an active heartbeat; pause still wins', async () => {
+  const f = await fixture({ runTimeoutMs: 10 });
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    f.setRunner(async () => {
+      await hold;
+    });
+    await f.invoke('InitiativeEnable', {});
+    await f.invoke('InitiativeControl', { action: 'check' });
+    await until(async () => (await f.invoke('InitiativeStatus')).active);
+    await new Promise((r) => setTimeout(r, 60));
+    const active = await f.invoke('InitiativeStatus');
+    assert.ok(active.active);
+    assert.equal(active.lastError, null);
+    await f.invoke('InitiativeControl', { action: 'pause' });
+    release();
+    await until(async () => !(await f.invoke('InitiativeStatus')).active);
+    assert.equal((await f.invoke('InitiativeStatus')).enabled, false);
+    assert.equal(f.cancels(), 0);
+  } finally {
+    release();
     await f.close();
   }
 });

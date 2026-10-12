@@ -34,7 +34,7 @@ export function registerAssistant(
   const invoke = (name: string, input: any = {}) => {
     const state = store.get(),
       target = tool(name);
-    if (!state || !target) throw Error('所需插件尚未就绪：' + name);
+    if (!state || !target) throw Error('所需服务尚未就绪：' + name);
     const call = {
       sessionId: state.sessionId,
       cwd: state.cwd,
@@ -139,6 +139,59 @@ export function registerAssistant(
     if (args.action === 'maintain')
       return invoke('MemoryIndexMaintain', { indexId: args.indexId, background: true });
     return invoke('MemoryIndexControl', { indexId: args.indexId, action: args.action });
+  });
+  // A read-only reference is resolved with the selected chat's identity, never
+  // the default Host's assistant binding. Ordinary chats can cite originals too.
+  ctx.api.register('assistant.original', async (input: unknown) => {
+    const args = z
+      .object({
+        sessionId: z.string().min(1).max(300),
+        ref: z.string().min(1).max(1000),
+        latest: z.boolean().default(false),
+        offset: z.number().int().min(0).default(0),
+      })
+      .strict()
+      .parse(input);
+    const readCall = {
+      sessionId: args.sessionId,
+      cwd: process.cwd(),
+      turnId: 'original-reader',
+      toolCallId: randomUUID(),
+      abortSignal: controller.abort.signal,
+    };
+    const snapshot = await ctx.agents.withInvocation(readCall, () =>
+      ctx.sessionQuery.read(args.sessionId),
+    );
+    if (!snapshot?.session?.cwd)
+      throw Error('无法读取引用所属会话，请确认 Host 在线且仍有访问权限。');
+    const target = ctx.tools
+      .resolve(args.sessionId, [])
+      .tools.find((t: any) => t.name === 'MemoryOriginal');
+    if (!target) throw Error('记忆服务尚未就绪。');
+    const call = { ...readCall, cwd: snapshot.session.cwd };
+    const original = await ctx.agents.withInvocation(call, () =>
+      target.impl(target.parameters.parse({ ref: args.ref, latest: args.latest }), call),
+    );
+    const message = original.message;
+    const body = message?.displayText ?? message?.text ?? message ?? original.content ?? '';
+    const text = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+    const end = Math.min(text.length, args.offset + 24000);
+    return {
+      ref: original.ref ?? args.ref,
+      source: original.source,
+      status: original.status ?? 'ok',
+      title: original.object?.title ?? original.source,
+      revision: original.object?.revision ?? null,
+      createdAt: original.object?.createdAt ?? original.message?.ts ?? null,
+      observedAt: original.observedAt ?? null,
+      isLatestRevision: original.isLatestRevision ?? null,
+      latestRef: original.latestRef ?? original.latestRevisionRefs?.[0] ?? null,
+      notice: original.notice ?? '历史原文仅供核对，引用版本不会被新内容替换。',
+      text: text.slice(args.offset, end),
+      offset: args.offset,
+      nextOffset: end < text.length ? end : null,
+      totalCharacters: text.length,
+    };
   });
   ctx.api.register('assistant.binding', () => ({ state: store.get() }));
   ctx.api.register('assistant.status', summary);
