@@ -35,6 +35,10 @@ import {
 import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { productReleaseArtifactRecords } from './product-release-artifacts.mjs';
 
+const { version: productVersion } = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+);
+
 async function stageRelease(root, version) {
   const input = join(root, 'input');
   const output = join(root, 'output');
@@ -54,7 +58,7 @@ async function stageRelease(root, version) {
 test('Nightly publication verifies the exact draft before one Prerelease/non-Latest mutation', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-nightly-release-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const tag = `v${version}`;
   const sourceCommit = 'a'.repeat(40);
   const directory = await stageRelease(root, version);
@@ -157,7 +161,7 @@ test('Nightly publication verifies the exact draft before one Prerelease/non-Lat
 test('a missing Nightly release is created only as a draft prerelease with Latest disabled', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-nightly-create-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const tag = `v${version}`;
   const sourceCommit = 'a'.repeat(40);
   const directory = await stageRelease(root, version);

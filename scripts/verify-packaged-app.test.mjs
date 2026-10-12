@@ -42,6 +42,10 @@ import {
   stopChild,
 } from './verify-packaged-app.mjs';
 
+const { version: productVersion } = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+);
+
 test('stopChild waits for a process that ignores SIGTERM to exit before returning', {
   skip: process.platform === 'win32',
 }, async (t) => {
@@ -500,7 +504,7 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
     'provider: github\nowner: apache\nrepo: maka\nchannel: dev\nupdaterCacheDirName: "@makadesktop-updater"\n',
   );
   await writeFile(join(resources, 'icon.icns'), RENDERABLE_ICNS);
-  const version = '0.2.0-dev.14.20260902';
+  const version = `${productVersion}-dev.14.20260902`;
   const app = join(dirname(resources), 'Maka.app');
   await mkdir(join(app, 'Contents'), { recursive: true });
   await rename(resources, join(app, 'Contents', 'Resources'));
