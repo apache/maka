@@ -748,8 +748,12 @@ export async function smokePackagedRenderer(
     },
   );
   let stderr = '';
+  let startupStderr = '';
+  let stderrLength = 0;
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => {
+    startupStderr = `${startupStderr}${chunk}`.slice(0, 16_384);
+    stderrLength += chunk.length;
     stderr = `${stderr}${chunk}`.slice(-16_384);
   });
 
@@ -761,7 +765,11 @@ export async function smokePackagedRenderer(
       await exercisePackagedRendererMaximizeRestore(target, child);
     }
   } catch (error) {
-    throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`);
+    const diagnostics =
+      stderrLength > 16_384
+        ? `${startupStderr}\n[packaged-renderer] last stderr output:\n${stderr}`
+        : stderr;
+    throw new Error(`${error.message}${diagnostics.trim() ? `\n${diagnostics.trim()}` : ''}`);
   } finally {
     await stopChild(child);
   }
