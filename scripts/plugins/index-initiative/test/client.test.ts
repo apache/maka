@@ -27,7 +27,7 @@ const React = require('react');
 const { createRoot } = require('react-dom/client');
 const { parseHTML } = require('linkedom');
 
-test('assistant entry reuses native chat, status is read-only, and settings live separately', async () => {
+test('assistant entry reuses native chat without an overlay; controls stay in settings', async () => {
   const { window } = parseHTML('<html><body><div id="app"></div></body></html>');
   const saved = Object.getOwnPropertyDescriptors(globalThis);
   Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
@@ -116,7 +116,6 @@ test('assistant entry reuses native chat, status is read-only, and settings live
           React.Fragment,
           {},
           h(slots.get('sidebar.navigation'), { openSession: navigate, activeSessionId: selected }),
-          h(slots.get('shell.overlay')),
           settings && h(slots.get('settings.page')),
         ),
       );
@@ -140,11 +139,9 @@ test('assistant entry reuses native chat, status is read-only, and settings live
     assert.equal(created, 1);
     assert.equal(selected, session.id);
     assert.ok(container.querySelector('[aria-current="page"]'));
-    assert.match(container.querySelector('aside').textContent, /等待验收/);
-    assert.equal(container.querySelector('aside input'), null);
-    for (const text of ['开启并立即检查', '同步一次', '现在整理', '暂停任务', '核对并恢复']) {
-      assert.ok(!container.querySelector('aside').textContent.includes(text));
-    }
+    assert.equal(definitions.has('shell.overlay'), false);
+    assert.equal(container.querySelector('aside'), null);
+    assert.ok(!calls.includes('assistant.status'), 'opening chat must not start panel polling');
     await click('个人助手');
     await render();
     assert.equal(created, 1);

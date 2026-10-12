@@ -77,7 +77,7 @@ npm run typecheck
 
 测试使用真实 main 的 Context/Fiber、PluginPlatform、包加载器、Agent/Tool/Prompt 服务、Client Runtime、Slots、Remote；新增端到端用例再用受控模型驱动真实 AiSdkBackend 和插件工具，验证结束钩子拦截及 `MatterSettle`。另有 opt-in 真实 Flash 跨应用交付场景 `scripts/live.ts`，使用 main 的真实 AiSdkBackend，业务 API 为本地模拟。密钥只从 `MAKA_SCENARIO_API_KEY` 读取，不写入插件或报告。`npm run prepare:test` 会从当前 Maka checkout 生成本地测试产物。
 
-Maka 提供 `sidebar.navigation` 与 `shell.overlay` 插件槽；「长任务」通过原生导航项插在新任务和 WorkHub 之间，浮卡由 overlay 槽渲染。插件不修改 Maka 内部 DOM。
+持续跟进插件只提供后台任务能力，不注册「任务进展」导航项或悬浮窗。个人助手使用原生聊天与 WorkHub，任务管理在「设置 → 个人助手」中。保留不渲染 UI 的 Client 入口，兼容已有安装的 desktop-ui 注册。
 
 ## 当前边界
 
@@ -86,7 +86,7 @@ Maka 提供 `sidebar.navigation` 与 `shell.overlay` 插件槽；「长任务」
 - 模型自然结束 turn 前，Maka 调用通用 `ctx.turns.beforeFinish` 检查；插件在当前 activation 尚未 `MatterSettle` 时返回简短反馈，让同一个 agent loop 继续。`wait` 必须登记具体等待条件与未来绝对检查时间。运行时间或模型步数等宿主上限仍可能结束当前 turn，届时未 settle 的 activation 会暂停并保留错误信息。
 - 代码保证 Matter 工具的版本、轮次、下一次唤醒、完成后清空调度等约束。当前 main 的插件 Tool 注册接口不能统一拦截所有宿主业务工具，所以成功 settle 后「不再调用其他业务工具」依靠 agent 协议，不能声称具有旧内置版本的全工具强制拦截。暂停/取消会请求宿主停止 session，但已提交外部服务的操作不能撤销。
 - 完成由模型判断；仅支持时间唤醒和用户输入。状态为 agent 维护的记事本，不强制业务 schema。
-- 进展保存在插件面板，也可由模型在原对话汇报；未增加系统通知服务。
+- 进展可在个人助手设置中查看，也可由模型在原对话汇报；未增加系统通知服务。
 - UI 验证通过真实 Client Runtime + DOM 测试，不等同于发布版 Electron 全流程验证；模型测试也不连接真实网盘或日历账户。
 
 已安装仓库依赖时，可以在插件目录运行 `npm run verify` 完成上述全部检查。这个目录不在 npm workspace 列表中，不改变主项目依赖或默认发布产物。

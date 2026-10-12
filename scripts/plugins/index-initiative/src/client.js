@@ -25,17 +25,7 @@ window.__MakaModuleLoader__.load({
     const { SideNavItem } = require('@maka/ui/client-plugin');
     return {
       apply(ctx) {
-        let open = false,
-          navigate,
-          opening,
-          candidate,
-          assistantSessionId;
-        const listeners = new Set(),
-          errors = new Set();
-        const show = (value) => {
-          open = value;
-          for (const fn of listeners) fn(value);
-        };
+        let navigate, opening, candidate, assistantSessionId;
         const runtimeId = (id) => {
           try {
             const key = JSON.parse(id);
@@ -119,23 +109,13 @@ window.__MakaModuleLoader__.load({
           pending: '有未整理信息',
           no_changes_at_last_check: '上次检查无新增',
         };
-        function Panel({ settings = false } = {}) {
-          const [visible, setVisible] = React.useState(open),
-            [data, setData] = React.useState(null),
+        function Settings() {
+          const [data, setData] = React.useState(null),
             [error, setError] = React.useState(''),
             [busy, setBusy] = React.useState(false),
             [selected, setSelected] = React.useState(null),
             interval = React.useRef(null);
           React.useEffect(() => {
-            listeners.add(setVisible);
-            errors.add(setError);
-            return () => {
-              listeners.delete(setVisible);
-              errors.delete(setError);
-            };
-          }, []);
-          React.useEffect(() => {
-            if (!settings && !visible) return;
             let live = true,
               timer,
               readMemory = true,
@@ -160,7 +140,7 @@ window.__MakaModuleLoader__.load({
               live = false;
               clearTimeout(timer);
             };
-          }, [visible, settings]);
+          }, []);
           const act = async (fn) => {
             setBusy(true);
             setError('');
@@ -186,7 +166,6 @@ window.__MakaModuleLoader__.load({
                   : {}),
               }),
             );
-          if (!settings && !visible) return null;
           const state = data?.state,
             memory = data?.memory,
             tasks = data?.tasks,
@@ -235,36 +214,17 @@ window.__MakaModuleLoader__.load({
                   : statuses[t.status] || t.status,
               ),
             );
-          const memoryIssue =
-            sourceSync?.error ||
-            sourceSync?.schedule?.error ||
-            memory?.error ||
-            memory?.indexes?.some(
-              (i) =>
-                i.unavailable ||
-                ['check_failed', 'maintenance_failed'].includes(i.freshness?.status),
-            );
           return h(
-            settings ? 'section' : 'aside',
+            'section',
             {
-              className: settings ? 'pa-panel pa-preferences' : 'pa-panel',
-              'aria-label': settings ? '个人助手设置' : '个人助手状态',
+              className: 'pa-panel pa-preferences',
+              'aria-label': '个人助手设置',
             },
             h(
               'header',
               {},
               h('span', { className: 'pa-spark', 'aria-hidden': true }, '✧'),
-              h('strong', {}, settings ? '个人助手' : '助手动态'),
-              !settings &&
-                h(
-                  'button',
-                  {
-                    className: 'pa-icon',
-                    onClick: () => show(false),
-                    'aria-label': '收起助手状态',
-                  },
-                  '−',
-                ),
+              h('strong', {}, '个人助手'),
             ),
             h(
               'div',
@@ -304,7 +264,6 @@ window.__MakaModuleLoader__.load({
                 h('p', {}, state.lastError),
               ),
             state &&
-              settings &&
               h(
                 'section',
                 { className: 'pa-settings', id: 'pa-settings' },
@@ -371,8 +330,7 @@ window.__MakaModuleLoader__.load({
                 ),
                 h('small', {}, 'Maka 的 Host 运行时检查。暂停主动发现不影响聊天和已交代的任务。'),
               ),
-            settings &&
-              !state &&
+            !state &&
               h(
                 'p',
                 { className: 'pa-inset pa-muted' },
@@ -390,15 +348,14 @@ window.__MakaModuleLoader__.load({
                 { key: p.taskKey, className: 'pa-inset' },
                 h('strong', {}, p.title),
                 h('p', {}, p.status === 'creating' ? '正在创建任务' : p.message),
-                settings &&
-                  h(
-                    'button',
-                    {
-                      disabled: busy || p.status === 'creating',
-                      onClick: () => recover({ kind: 'delegation', taskKey: p.taskKey }),
-                    },
-                    '核对并恢复',
-                  ),
+                h(
+                  'button',
+                  {
+                    disabled: busy || p.status === 'creating',
+                    onClick: () => recover({ kind: 'delegation', taskKey: p.taskKey }),
+                  },
+                  '核对并恢复',
+                ),
               ),
             ),
             ...(tasks?.notifications || [])
@@ -408,8 +365,7 @@ window.__MakaModuleLoader__.load({
                   'div',
                   { key: i, className: 'pa-inset' },
                   h('p', { className: 'pa-error' }, '任务反馈：' + n.error),
-                  settings &&
-                    n.id &&
+                  n.id &&
                     h(
                       'button',
                       {
@@ -435,30 +391,29 @@ window.__MakaModuleLoader__.load({
                   task.retryAt && h('p', {}, `等待 Host 接收，下次重试 ${time(task.retryAt)}`),
                   task.runtimeError &&
                     h('p', { className: 'pa-error' }, '任务会话暂时不可用，请检查 Host。'),
-                  settings &&
+                  h(
+                    'div',
+                    { className: 'pa-actions' },
                     h(
-                      'div',
-                      { className: 'pa-actions' },
+                      'button',
+                      { disabled: busy, onClick: () => act(() => openTask(task.sessionId)) },
+                      '打开任务会话',
+                    ),
+                    !['completed', 'cancelled'].includes(task.status) &&
                       h(
                         'button',
-                        { disabled: busy, onClick: () => act(() => openTask(task.sessionId)) },
-                        '打开任务会话',
+                        {
+                          disabled: busy,
+                          onClick: () =>
+                            recover({
+                              kind: 'task',
+                              id: task.id,
+                              action: task.status === 'paused' ? 'resume' : 'pause',
+                            }),
+                        },
+                        task.status === 'paused' ? '恢复任务' : '暂停任务',
                       ),
-                      !['completed', 'cancelled'].includes(task.status) &&
-                        h(
-                          'button',
-                          {
-                            disabled: busy,
-                            onClick: () =>
-                              recover({
-                                kind: 'task',
-                                id: task.id,
-                                action: task.status === 'paused' ? 'resume' : 'pause',
-                              }),
-                          },
-                          task.status === 'paused' ? '恢复任务' : '暂停任务',
-                        ),
-                    ),
+                  ),
                   h(
                     'div',
                     { className: 'pa-step' },
@@ -516,8 +471,7 @@ window.__MakaModuleLoader__.load({
                       h('summary', {}, `已结束 · ${finished.length}`),
                       ...finished.map(row),
                     ),
-                  settings &&
-                    !!tasks?.legacy?.length &&
+                  !!tasks?.legacy?.length &&
                     h(
                       'details',
                       { className: 'pa-history' },
@@ -544,219 +498,201 @@ window.__MakaModuleLoader__.load({
                       ),
                     ),
                 ),
-            !settings &&
-              h(
-                'footer',
-                {},
+            h(
+              'section',
+              { className: 'pa-memory', id: 'pa-memory' },
+              h('h3', {}, '信息与记忆'),
+              sourceSync?.installed &&
                 h(
-                  'span',
+                  'div',
                   {},
-                  memoryIssue
-                    ? '记忆与来源需要处理'
-                    : memory?.indexes?.length
-                      ? `${memory.indexes.length} 个记忆索引`
-                      : '记忆按需建立',
-                ),
-                h('span', {}, '配置见设置 › 个人助手'),
-              ),
-            settings &&
-              h(
-                'section',
-                { className: 'pa-memory', id: 'pa-memory' },
-                h('h3', {}, '信息与记忆'),
-                sourceSync?.installed &&
+                  h('strong', {}, '飞书消息同步'),
                   h(
-                    'div',
+                    'p',
                     {},
-                    h('strong', {}, '飞书消息同步'),
-                    h(
-                      'p',
-                      {},
-                      sourceSync.schedule?.running
-                        ? '同步中 · 仅完整批次发布'
-                        : sourceSync.schedule?.enabled
-                          ? `定期同步已开启 · 每 ${sourceSync.schedule.intervalMinutes} 分钟`
-                          : '定期同步未开启',
-                    ),
-                    h(
-                      'small',
-                      {},
-                      `最近成功 ${time(sourceSync.schedule?.lastSuccessAt || (sourceSync.status === 'complete' ? sourceSync.finishedAt : null))} · 下次 ${sourceSync.schedule?.enabled ? time(sourceSync.schedule.nextAt) : '未安排'}`,
-                    ),
-                    sourceSync.range &&
-                      h(
-                        'p',
-                        { className: 'pa-muted' },
-                        `最近批次范围 ${time(sourceSync.range.startTime * 1000)} — ${time(sourceSync.range.endTime * 1000)}`,
-                      ),
-                    (sourceSync.error || sourceSync.schedule?.error) &&
-                      h(
-                        'details',
-                        { className: 'pa-error' },
-                        h('summary', {}, '来源同步需要处理'),
-                        h('p', {}, sourceSync.error || sourceSync.schedule?.error),
-                        h(
-                          'small',
-                          {},
-                          '授权或账号问题请在飞书 CLI 重新登录并核对扩展账号设置，然后重试。',
-                        ),
-                      ),
-                    h(
-                      'div',
-                      { className: 'pa-actions' },
-                      h(
-                        'button',
-                        {
-                          disabled: busy,
-                          onClick: () =>
-                            recover({
-                              kind: 'source',
-                              action: sourceSync.schedule?.enabled ? 'pause' : 'enable',
-                            }),
-                        },
-                        sourceSync.schedule?.enabled ? '暂停同步' : '开启定期同步',
-                      ),
-                      h(
-                        'button',
-                        {
-                          disabled: busy || sourceSync.schedule?.running,
-                          onClick: () => recover({ kind: 'source', action: 'check' }),
-                        },
-                        '同步一次',
-                      ),
-                    ),
-                    h(
-                      'small',
-                      {},
-                      '开启后默认每 30 分钟检查最近 24 小时；休眠后补查缺口。不会导入全部历史，也不保证更早消息的修改已同步。',
-                    ),
+                    sourceSync.schedule?.running
+                      ? '同步中 · 仅完整批次发布'
+                      : sourceSync.schedule?.enabled
+                        ? `定期同步已开启 · 每 ${sourceSync.schedule.intervalMinutes} 分钟`
+                        : '定期同步未开启',
                   ),
-                h(
-                  'button',
-                  {
-                    disabled: busy,
-                    onClick: () =>
-                      act(async () => {
-                        const value = await ctx.remote.call('assistant.status', {
-                          includeMemory: true,
-                        });
-                        setData((prior) => ({ ...prior, ...value }));
-                      }),
-                  },
-                  '刷新记忆状态',
-                ),
-                memory && !memory.installed && h('p', {}, '记忆插件未安装，仍然可以聊天。'),
-                memory?.error &&
-                  h('p', { className: 'pa-error' }, '记忆状态读取失败：' + memory.error),
-                memory?.installed &&
                   h(
-                    React.Fragment,
+                    'small',
                     {},
+                    `最近成功 ${time(sourceSync.schedule?.lastSuccessAt || (sourceSync.status === 'complete' ? sourceSync.finishedAt : null))} · 下次 ${sourceSync.schedule?.enabled ? time(sourceSync.schedule.nextAt) : '未安排'}`,
+                  ),
+                  sourceSync.range &&
                     h(
                       'p',
                       { className: 'pa-muted' },
-                      '历史导入可选；打开面板不会自动导入或启动整理；点击「现在整理」会运行模型。',
+                      `最近批次范围 ${time(sourceSync.range.startTime * 1000)} — ${time(sourceSync.range.endTime * 1000)}`,
                     ),
+                  (sourceSync.error || sourceSync.schedule?.error) &&
+                    h(
+                      'details',
+                      { className: 'pa-error' },
+                      h('summary', {}, '来源同步需要处理'),
+                      h('p', {}, sourceSync.error || sourceSync.schedule?.error),
+                      h(
+                        'small',
+                        {},
+                        '授权或账号问题请在飞书 CLI 重新登录并核对扩展账号设置，然后重试。',
+                      ),
+                    ),
+                  h(
+                    'div',
+                    { className: 'pa-actions' },
+                    h(
+                      'button',
+                      {
+                        disabled: busy,
+                        onClick: () =>
+                          recover({
+                            kind: 'source',
+                            action: sourceSync.schedule?.enabled ? 'pause' : 'enable',
+                          }),
+                      },
+                      sourceSync.schedule?.enabled ? '暂停同步' : '开启定期同步',
+                    ),
+                    h(
+                      'button',
+                      {
+                        disabled: busy || sourceSync.schedule?.running,
+                        onClick: () => recover({ kind: 'source', action: 'check' }),
+                      },
+                      '同步一次',
+                    ),
+                  ),
+                  h(
+                    'small',
+                    {},
+                    '开启后默认每 30 分钟检查最近 24 小时；休眠后补查缺口。不会导入全部历史，也不保证更早消息的修改已同步。',
+                  ),
+                ),
+              h(
+                'button',
+                {
+                  disabled: busy,
+                  onClick: () =>
+                    act(async () => {
+                      const value = await ctx.remote.call('assistant.status', {
+                        includeMemory: true,
+                      });
+                      setData((prior) => ({ ...prior, ...value }));
+                    }),
+                },
+                '刷新记忆状态',
+              ),
+              memory && !memory.installed && h('p', {}, '记忆插件未安装，仍然可以聊天。'),
+              memory?.error &&
+                h('p', { className: 'pa-error' }, '记忆状态读取失败：' + memory.error),
+              memory?.installed &&
+                h(
+                  React.Fragment,
+                  {},
+                  h(
+                    'p',
+                    { className: 'pa-muted' },
+                    '历史导入可选；打开面板不会自动导入或启动整理；点击「现在整理」会运行模型。',
+                  ),
+                  h(
+                    'p',
+                    {},
+                    '已注册来源：' +
+                      ((memory.sources || [])
+                        .map((s) =>
+                          s.id === 'maka'
+                            ? 'Maka 对话'
+                            : s.id.startsWith('feishu.')
+                              ? '飞书 · ' +
+                                ({
+                                  messages: '聊天',
+                                  calendar: '日历',
+                                  tasks: '任务',
+                                  documents: '文档',
+                                }[s.id.split('.').at(-1)] || s.id)
+                              : s.description || s.id,
+                        )
+                        .join('、') || '打开助手后查看'),
+                  ),
+                  !memory.indexes?.length &&
                     h(
                       'p',
                       {},
-                      '已注册来源：' +
-                        ((memory.sources || [])
-                          .map((s) =>
-                            s.id === 'maka'
-                              ? 'Maka 对话'
-                              : s.id.startsWith('feishu.')
-                                ? '飞书 · ' +
-                                  ({
-                                    messages: '聊天',
-                                    calendar: '日历',
-                                    tasks: '任务',
-                                    documents: '文档',
-                                  }[s.id.split('.').at(-1)] || s.id)
-                                : s.description || s.id,
-                          )
-                          .join('、') || '打开助手后查看'),
+                      '尚无索引。可以先正常使用；需要时在聊天中说明想记住什么、允许整理哪些来源。',
                     ),
-                    !memory.indexes?.length &&
-                      h(
-                        'p',
-                        {},
-                        '尚无索引。可以先正常使用；需要时在聊天中说明想记住什么、允许整理哪些来源。',
-                      ),
-                    ...(memory.indexes || []).map((i) =>
-                      h(
-                        'div',
-                        { key: i.id, className: 'pa-index' },
-                        h('strong', {}, i.name || '不可访问的索引'),
-                        i.freshness &&
-                          h(
-                            'small',
-                            {},
-                            `来源观察 ${time(i.freshness.lastCheckedAt)} · 下次整理 ${i.freshness.maintenanceEnabled ? time(i.freshness.nextCheckAt) : '已暂停'}`,
-                          ),
-                        i.freshness?.lastMaintenanceError &&
-                          h(
-                            'details',
-                            { className: 'pa-error' },
-                            h('summary', {}, '整理需要处理'),
-                            h('p', {}, i.freshness.lastMaintenanceError),
-                          ),
-                        !i.unavailable &&
-                          h(
-                            'div',
-                            { className: 'pa-actions' },
-                            h(
-                              'button',
-                              {
-                                disabled: busy,
-                                onClick: () =>
-                                  recover({
-                                    kind: 'index',
-                                    indexId: i.id,
-                                    action: i.freshness?.maintenanceEnabled ? 'pause' : 'resume',
-                                  }),
-                              },
-                              i.freshness?.maintenanceEnabled ? '暂停维护' : '恢复维护',
-                            ),
-                            h(
-                              'button',
-                              {
-                                disabled: busy || i.freshness?.status === 'updating',
-                                onClick: () =>
-                                  recover({ kind: 'index', indexId: i.id, action: 'maintain' }),
-                              },
-                              '现在整理',
-                            ),
-                          ),
+                  ...(memory.indexes || []).map((i) =>
+                    h(
+                      'div',
+                      { key: i.id, className: 'pa-index' },
+                      h('strong', {}, i.name || '不可访问的索引'),
+                      i.freshness &&
                         h(
                           'small',
                           {},
-                          i.unavailable
-                            ? '暂时不可读取（权限或来源连接）'
-                            : `${freshness[i.freshness.status] || '状态未知'} · 整理于 ${time(i.freshness.lastOrganizedAt)}`,
+                          `来源观察 ${time(i.freshness.lastCheckedAt)} · 下次整理 ${i.freshness.maintenanceEnabled ? time(i.freshness.nextCheckAt) : '已暂停'}`,
                         ),
+                      i.freshness?.lastMaintenanceError &&
+                        h(
+                          'details',
+                          { className: 'pa-error' },
+                          h('summary', {}, '整理需要处理'),
+                          h('p', {}, i.freshness.lastMaintenanceError),
+                        ),
+                      !i.unavailable &&
+                        h(
+                          'div',
+                          { className: 'pa-actions' },
+                          h(
+                            'button',
+                            {
+                              disabled: busy,
+                              onClick: () =>
+                                recover({
+                                  kind: 'index',
+                                  indexId: i.id,
+                                  action: i.freshness?.maintenanceEnabled ? 'pause' : 'resume',
+                                }),
+                            },
+                            i.freshness?.maintenanceEnabled ? '暂停维护' : '恢复维护',
+                          ),
+                          h(
+                            'button',
+                            {
+                              disabled: busy || i.freshness?.status === 'updating',
+                              onClick: () =>
+                                recover({ kind: 'index', indexId: i.id, action: 'maintain' }),
+                            },
+                            '现在整理',
+                          ),
+                        ),
+                      h(
+                        'small',
+                        {},
+                        i.unavailable
+                          ? '暂时不可读取（权限或来源连接）'
+                          : `${freshness[i.freshness.status] || '状态未知'} · 整理于 ${time(i.freshness.lastOrganizedAt)}`,
                       ),
                     ),
-                    h(
-                      'small',
-                      {},
-                      '飞书为可选来源：在扩展中安装「飞书只读 Source」，完成 CLI 授权并设置范围。已注册不代表授权有效；日历只覆盖配置的时间窗口。',
-                    ),
                   ),
-              ),
+                  h(
+                    'small',
+                    {},
+                    '飞书为可选来源：在扩展中安装「飞书只读 Source」，完成 CLI 授权并设置范围。已注册不代表授权有效；日历只覆盖配置的时间窗口。',
+                  ),
+                ),
+            ),
           );
         }
 
         function Entry(props) {
           const { openSession, activeSessionId } = props;
-          const [issue, setIssue] = React.useState(false),
+          const [issue, setIssue] = React.useState(''),
             [boundId, setBoundId] = React.useState(assistantSessionId);
           const selected = !!boundId && activeSessionId === boundId;
           React.useEffect(() => {
             navigate = openSession;
-            show(selected);
-            return () => show(false);
-          }, [openSession, selected]);
+          }, [openSession]);
           React.useEffect(() => {
             let live = true,
               timer;
@@ -765,7 +701,7 @@ window.__MakaModuleLoader__.load({
                 const { state } = await ctx.remote.call('assistant.binding', {});
                 const host = await window.maka.runtimeHostProfiles?.getDefaultHost?.();
                 if (live) {
-                  setIssue(!!state?.lastError);
+                  setIssue(state?.lastError || '');
                   setBoundId(
                     state
                       ? host?.hostId
@@ -775,7 +711,7 @@ window.__MakaModuleLoader__.load({
                   );
                 }
               } catch {
-                if (live) setIssue(true);
+                if (live) setIssue('无法连接助手，请在设置 › 个人助手中检查。');
               } finally {
                 if (live) timer = setTimeout(poll, 10000);
               }
@@ -807,8 +743,8 @@ window.__MakaModuleLoader__.load({
               ? h(
                   'span',
                   {
-                    title: '助手需要处理，请打开查看',
-                    'aria-label': '助手需要处理',
+                    title: issue,
+                    'aria-label': issue,
                     style: { color: '#b34a54' },
                   },
                   '●',
@@ -820,21 +756,17 @@ window.__MakaModuleLoader__.load({
             size: 'md',
             onClick: () => {
               if (!Object.hasOwn(props, 'activeSessionId')) {
-                setIssue(true);
-                show(true);
-                for (const fn of errors)
-                  fn('请同时更新 Maka 桌面端，以使用独立助手入口和专属会话列表。');
+                setIssue('请同时更新 Maka 桌面端，以使用独立助手入口和专属会话列表。');
                 return;
               }
               navigate = openSession;
               void openChat()
                 .then((id) => {
                   setBoundId(id);
-                  show(true);
+                  setIssue('');
                 })
                 .catch((e) => {
-                  show(true);
-                  for (const fn of errors) fn(e.message);
+                  setIssue(e.message);
                 });
             },
           });
@@ -849,10 +781,6 @@ window.__MakaModuleLoader__.load({
           Entry,
         );
         ctx.slots.register(
-          { name: 'shell.overlay', id: 'personal-assistant-status', order: 40 },
-          Panel,
-        );
-        ctx.slots.register(
           { name: 'settings.navigation', id: 'personal-assistant', order: 40 },
           ({ activePage, selectPage }) =>
             h(SideNavItem, {
@@ -862,15 +790,13 @@ window.__MakaModuleLoader__.load({
               onClick: () => selectPage('personal-assistant'),
             }),
         );
-        ctx.slots.register({ name: 'settings.page', key: 'personal-assistant' }, () =>
-          h(Panel, { settings: true }),
-        );
+        ctx.slots.register({ name: 'settings.page', key: 'personal-assistant' }, Settings);
         ctx.style(
           `.pa-preferences.pa-panel{position:static;width:100%;max-width:760px;max-height:none;overflow:visible;margin:24px auto;border:0;border-radius:0;box-shadow:none;z-index:auto}.pa-preferences header{padding:8px 16px 20px}.pa-preferences header strong{font-size:24px;font-weight:600}.pa-preferences .pa-settings,.pa-preferences .pa-memory{padding:24px 16px}.pa-preferences .pa-actions{flex-wrap:wrap}.pa-preferences .pa-status{font-size:13px}.pa-preferences small{font-size:12px}
-.pa-panel{--pa-line:color-mix(in srgb,var(--foreground,#292929) 10%,transparent);--pa-muted:var(--muted-foreground,#777b83);--pa-hover:color-mix(in srgb,var(--foreground,#292929) 4%,transparent);position:fixed;box-sizing:border-box;right:24px;top:80px;width:min(348px,calc(100vw - 32px));max-height:calc(100dvh - 104px);overflow:auto;background:var(--background,#fff);color:var(--foreground,#292929);border:1px solid var(--pa-line);border-radius:14px;box-shadow:0 10px 35px #18202c12,0 2px 6px #18202c0a;z-index:1000;font-size:13px;line-height:1.5;color-scheme:inherit}
-.pa-panel header{display:flex;align-items:center;gap:8px;padding:12px 12px 8px 16px}.pa-panel header strong{font-size:14px;font-weight:500;flex:1}.pa-spark{font-size:20px}.pa-panel button{font:inherit;cursor:pointer;border:0;border-radius:6px;background:transparent;color:inherit;padding:5px 7px;text-align:left}.pa-panel button:hover{background:var(--pa-hover)}.pa-panel button:disabled{opacity:.5;cursor:default}.pa-panel button:focus-visible,.pa-panel summary:focus-visible{outline:2px solid var(--ring,#648f76);outline-offset:-2px}.pa-panel .pa-icon{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;font-size:18px;color:var(--pa-muted)}
+.pa-panel{--pa-line:color-mix(in srgb,var(--foreground,#292929) 10%,transparent);--pa-muted:var(--muted-foreground,#777b83);--pa-hover:color-mix(in srgb,var(--foreground,#292929) 4%,transparent);box-sizing:border-box;background:var(--background,#fff);color:var(--foreground,#292929);border:1px solid var(--pa-line);border-radius:14px;box-shadow:0 10px 35px #18202c12,0 2px 6px #18202c0a;font-size:13px;line-height:1.5;color-scheme:inherit}
+.pa-panel header{display:flex;align-items:center;gap:8px;padding:12px 12px 8px 16px}.pa-panel header strong{font-size:14px;font-weight:500;flex:1}.pa-spark{font-size:20px}.pa-panel button{font:inherit;cursor:pointer;border:0;border-radius:6px;background:transparent;color:inherit;padding:5px 7px;text-align:left}.pa-panel button:hover{background:var(--pa-hover)}.pa-panel button:disabled{opacity:.5;cursor:default}.pa-panel button:focus-visible,.pa-panel summary:focus-visible{outline:2px solid var(--ring,#648f76);outline-offset:-2px}
 .pa-status{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:0 16px 14px;font-size:11px;color:var(--pa-muted)}.pa-dot{width:6px;height:6px;flex-shrink:0;border-radius:50%;background:var(--pa-muted)}.pa-dot[data-state=enabled]{background:var(--success,#527965)}.pa-dot[data-state=error]{background:var(--destructive,#b34a54)}.pa-next{margin-left:auto;font-variant-numeric:tabular-nums}.pa-panel p{margin:7px 0;overflow-wrap:anywhere;white-space:pre-wrap}.pa-panel small,.pa-muted{color:var(--pa-muted);font-size:11px}.pa-panel .pa-error{color:var(--destructive,#b34a54)}.pa-panel .pa-inset{margin:10px 16px}.pa-panel h3{font-size:13px;font-weight:500;margin:0 0 8px}.pa-settings,.pa-memory{padding:14px 16px;border-top:1px solid var(--pa-line)}.pa-settings label{font-size:12px}.pa-panel input{box-sizing:border-box;width:70px;color:inherit;background:var(--pa-hover);border:1px solid var(--pa-line);border-radius:6px;padding:5px;font:inherit}.pa-actions{display:flex;gap:8px;margin:10px 0}.pa-actions button,.pa-memory>button,.pa-legacy button{border:1px solid var(--pa-line)}
-.pa-tasks,.pa-detail{border-top:1px solid var(--pa-line)}.pa-section-title{display:flex;justify-content:space-between;padding:12px 16px 4px;font-size:11px;color:var(--pa-muted)}.pa-panel .pa-task{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:9px;width:100%;padding:12px 16px;border-radius:0}.pa-task-mark{color:var(--pa-muted);font-size:16px}.pa-task-copy{min-width:0}.pa-task strong{display:block;font-weight:500;overflow-wrap:anywhere}.pa-task-summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;font-size:12px;color:var(--pa-muted);overflow-wrap:anywhere}.pa-task-time{max-width:90px;font-size:11px;color:var(--pa-muted);padding-top:2px;text-align:right;font-variant-numeric:tabular-nums}.pa-task-time>span{display:block;white-space:nowrap}.pa-empty{text-align:center;padding:24px 16px 28px;color:var(--pa-muted);font-size:12px}.pa-empty strong{display:block;color:var(--foreground,#292929);font-weight:500;font-size:13px}.pa-history{border-top:1px solid var(--pa-line);font-size:12px}.pa-panel summary{cursor:pointer}.pa-history>summary{padding:10px 16px;color:var(--pa-muted)}.pa-legacy{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:8px 16px}.pa-legacy>span{min-width:0;overflow-wrap:anywhere}.pa-legacy button{flex-shrink:0;font-size:11px}.pa-detail{padding:10px 16px 18px}.pa-panel .pa-back{padding:4px 0;margin-bottom:10px;color:var(--pa-muted);font-size:12px}.pa-detail h3{font-size:15px}.pa-step{border-left:1px solid var(--pa-line);padding-left:12px;margin:14px 0}.pa-panel footer{border-top:1px solid var(--pa-line);display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;color:var(--pa-muted);font-size:11px}.pa-index{padding:10px 0;display:flex;flex-direction:column;gap:4px}.pa-index strong{font-weight:500}.pa-memory details{margin:10px 0}@media(max-width:480px){.pa-panel:not(.pa-preferences){right:16px;top:64px;max-height:calc(100dvh - 80px)}}@media(pointer:coarse){.pa-panel button,.pa-panel summary{min-height:44px}.pa-panel .pa-icon{width:44px;height:44px}.pa-panel input{font-size:16px}}`,
+.pa-tasks,.pa-detail{border-top:1px solid var(--pa-line)}.pa-section-title{display:flex;justify-content:space-between;padding:12px 16px 4px;font-size:11px;color:var(--pa-muted)}.pa-panel .pa-task{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:start;gap:9px;width:100%;padding:12px 16px;border-radius:0}.pa-task-mark{color:var(--pa-muted);font-size:16px}.pa-task-copy{min-width:0}.pa-task strong{display:block;font-weight:500;overflow-wrap:anywhere}.pa-task-summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;font-size:12px;color:var(--pa-muted);overflow-wrap:anywhere}.pa-task-time{max-width:90px;font-size:11px;color:var(--pa-muted);padding-top:2px;text-align:right;font-variant-numeric:tabular-nums}.pa-task-time>span{display:block;white-space:nowrap}.pa-empty{text-align:center;padding:24px 16px 28px;color:var(--pa-muted);font-size:12px}.pa-empty strong{display:block;color:var(--foreground,#292929);font-weight:500;font-size:13px}.pa-history{border-top:1px solid var(--pa-line);font-size:12px}.pa-panel summary{cursor:pointer}.pa-history>summary{padding:10px 16px;color:var(--pa-muted)}.pa-legacy{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:8px 16px}.pa-legacy>span{min-width:0;overflow-wrap:anywhere}.pa-legacy button{flex-shrink:0;font-size:11px}.pa-detail{padding:10px 16px 18px}.pa-panel .pa-back{padding:4px 0;margin-bottom:10px;color:var(--pa-muted);font-size:12px}.pa-detail h3{font-size:15px}.pa-step{border-left:1px solid var(--pa-line);padding-left:12px;margin:14px 0}.pa-index{padding:10px 0;display:flex;flex-direction:column;gap:4px}.pa-index strong{font-weight:500}.pa-memory details{margin:10px 0}@media(pointer:coarse){.pa-panel button,.pa-panel summary{min-height:44px}.pa-panel input{font-size:16px}}`,
         );
       },
     };

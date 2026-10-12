@@ -184,12 +184,14 @@ test('assistant entry opens one Host-qualified native conversation; never render
     await click('个人助手');
     assert.equal(created, 1);
     assert.deepEqual(opened, [ownerId]);
-    await click('收起助手状态');
+    await render();
+    assert.equal(window.document.querySelector('aside'), null);
     await click('个人助手');
     assert.equal(created, 1);
     assert.deepEqual(opened, [ownerId, ownerId]);
     assert.equal(window.document.querySelectorAll('textarea').length, 0);
-    assert.match(window.document.body.textContent!, /无需先导入|历史导入可选/);
+    assert.equal(window.document.querySelector('.pa-panel'), null);
+    assert.ok(!calls.includes('assistant.status'), 'chat must not poll a floating panel');
     assert.ok(!calls.includes('assistant.control'), 'opening must not enable heartbeats');
     assert.equal(window.document.querySelector('.pa-settings'), null);
     assert.equal(window.document.querySelector('.pa-memory'), null);
@@ -222,8 +224,6 @@ test('assistant entry opens one Host-qualified native conversation; never render
     await render(true);
     await click('刷新记忆状态');
     assert.ok(window.document.querySelector('.pa-memory'));
-    await render();
-    assert.equal(window.document.querySelector('.pa-memory'), null);
     assert.match(window.document.body.textContent!, /导出已通过，等待隔离复测/);
     const done = window.document.querySelector('button[aria-label="查看任务：已签收"]')!;
     assert.ok(done.closest('details'), 'finished tasks stay in collapsed history');
