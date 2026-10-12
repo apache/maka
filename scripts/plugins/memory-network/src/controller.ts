@@ -746,6 +746,9 @@ export class MemoryController {
         });
     });
   }
+  private timeContext() {
+    return `Current UTC: ${new Date().toISOString()}. Reevaluate the user's criterion against current time, including rolling windows, even when the source delta is empty. Read existing entries and revisit older originals as needed; remove or revise expired entries and links as required by the criterion. No full rescan or content rewrite is required when the index remains valid. Source cursor capture time is not the current time.`;
+  }
   private async runGroup(ids: string[]) {
     const resuming = ids.some((id) => {
       const w = this.store.work(id);
@@ -765,7 +768,6 @@ export class MemoryController {
             : await this.capture(index.sources ?? ['maka'], index.sessions, id);
         const visible = await this.indexVisible(id);
         const work = this.store.work(id);
-        if (work?.completed && !this.store.pending(id, cursor.id, visible)) continue;
         pending.push({
           id,
           work: work && !work.completed ? work : this.store.begin(id, cursor.id, visible),
@@ -793,7 +795,7 @@ export class MemoryController {
             (x) => this.store.latestCheckpoint(x.id, x.work.id, agent.sessionId)?.id ?? 0,
           );
           const result = await agent.followup(
-            `Organize these independent indexes in this one Session. Choose the order and reuse reads. Preserve completed members. Each criterion and exact range must be finished separately; save incomplete progress with complete=false and continue. Current UTC: ${new Date().toISOString()}\n${JSON.stringify(remaining.map((x) => ({ indexId: x.id, number: this.store.worker(x.id).groupNumber, criterion: this.store.index(x.id).instructions, range: this.store.describe(x.work.from, x.work.to, x.visible), rangeId: x.work.id, notes: this.store.notes(x.id) })))}`,
+            `Organize these independent indexes in this one Session. Choose the order and reuse reads. Preserve completed members. Each criterion and exact range must be finished separately; save incomplete progress with complete=false and continue. ${this.timeContext()}\n${JSON.stringify(remaining.map((x) => ({ indexId: x.id, number: this.store.worker(x.id).groupNumber, criterion: this.store.index(x.id).instructions, range: this.store.describe(x.work.from, x.work.to, x.visible), rangeId: x.work.id, notes: this.store.notes(x.id) })))}`,
           );
           if (!['turn_started', 'followup'].includes(result?.disposition))
             throw Error('Host rejected group maintenance');
@@ -884,19 +886,6 @@ export class MemoryController {
       } else {
         const cursor = await this.capture(index.sources ?? ['maka'], index.sessions, indexId);
         visible = await this.indexVisible(indexId);
-        if (!this.store.pending(indexId, cursor.id, visible) && this.store.boundary(indexId)) {
-          this.store.saveWorker(indexId, {
-            ...this.store.worker(indexId),
-            lastError: undefined,
-            failures: 0,
-            nextCheckAt: Date.now() + this.interval(indexId),
-          });
-          return {
-            ...this.summary(indexId, visible, false),
-            backgroundFinished: true,
-            noChanges: true,
-          };
-        }
         work = this.store.begin(indexId, cursor.id, visible);
       }
       agent = await this.ctx.agents.resume({
@@ -916,7 +905,7 @@ Range ID: ${work.id}. Update existing entries and links when new evidence change
         await agent.whenIdle(signal);
         signal.throwIfAborted();
         const before = this.store.latestCheckpoint(indexId, work.id, agent.sessionId)?.id ?? 0;
-        const result = await agent.followup(prompt);
+        const result = await agent.followup(`${prompt}\n${this.timeContext()}`);
         if (result?.disposition === 'blocked') throw Error('Host rejected background maintenance');
         await agent.whenIdle(signal);
         signal.throwIfAborted();

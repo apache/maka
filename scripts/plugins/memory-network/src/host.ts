@@ -382,7 +382,7 @@ export default {
       );
       register(
         'MemoryIndexMaintain',
-        'Ask the ordinary background Agent to continue organizing this index from its exact saved range. A grouped member reuses its one group job. Preserves unfinished work. background=true returns admission/capacity immediately; default waits. Readers remain independent.',
+        'Ask the ordinary background Agent to continue organizing this index from its exact saved range. A grouped member reuses its one group job. Preserves unfinished work. Reevaluate time-dependent criteria even without source changes; unchanged content need not be rewritten. background=true returns admission/capacity immediately; default waits. Readers remain independent.',
         z.object({ indexId: id, background: z.boolean().default(false) }),
         async (input: any, call: any) => {
           await visible(input.indexId);
@@ -397,7 +397,7 @@ export default {
       );
       register(
         'MemoryIndexControl',
-        'Configure periodic index maintenance. Default interval is 12 hours. pause stops future scheduled checks (an active round may finish); resume schedules the next check after intervalMs. configure changes the interval without enabling a paused index. MemoryIndexMaintain runs one round now without changing this schedule setting.',
+        'Configure periodic index maintenance. Default interval is 12 hours. Each due round reevaluates the criterion against current UTC, even without source changes, so rolling windows can expire old entries. pause stops future scheduled checks (an active round may finish); resume schedules the next check after intervalMs. configure changes the interval without enabling a paused index. MemoryIndexMaintain runs one round now without changing this schedule setting.',
         z.object({
           indexId: id,
           action: z.enum(['pause', 'resume', 'configure']),

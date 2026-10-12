@@ -303,3 +303,65 @@ test('invalid concurrency bounds are rejected by plugin configuration', async ()
       /maxConcurrentJobs/,
     );
 });
+
+test('due group rechecks rolling windows without source changes and preserves independent continuation', async (t) => {
+  const start = Date.parse('2026-10-01T10:00:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const f = await fixture(false, { tickMs: 10 });
+  t.after(() => f.close());
+  let turns = 0;
+  const sessions = new Set<string>();
+  const ranges = new Map<string, string>();
+  f.setWorkerRunner(async (session, prompt) => {
+    sessions.add(session);
+    turns++;
+    assert.ok(prompt.includes(`Current UTC: ${new Date().toISOString()}`));
+    assert.match(prompt, /even when the source delta is empty/);
+    const list = members(prompt);
+    assert.equal(list.length, turns === 3 ? 1 : 2);
+    for (const [n, member] of list.entries()) {
+      const id = member.indexId;
+      const info = await f.invokeAs(session, 'MemoryIndexRead', { indexId: id });
+      if (turns === 1) ranges.set(id, info.range.rangeId);
+      else {
+        assert.notEqual(info.range.rangeId, ranges.get(id));
+        assert.equal(member.range.from, member.range.to);
+        assert.ok(member.range.sources.every((s: any) => s.newOrChangedMessages === 0));
+      }
+      if (turns !== 3)
+        await f.invokeAs(session, 'MemoryIndexWrite', {
+          indexId: id,
+          key: 'recent',
+          expectedRevision: info.index.revision,
+          text: turns === 1 ? 'Event on 2026-10-01' : '',
+        });
+      await checkpoint(f, session, id, !(turns === 2 && n === 1));
+    }
+  });
+  const range = await f.invoke('MemoryRange', {});
+  const first = await f.invoke('MemoryIndexCreateGroup', {
+    cursor: range.to,
+    background: false,
+    indexes: [
+      { number: 1, name: 'Today', instructions: 'Events in the last day' },
+      { number: 2, name: 'This week', instructions: 'Events in the last week' },
+    ],
+  });
+  assert.equal(turns, 1);
+  assert.ok(first.result.members.every((m: any) => m.contents.total === 1));
+  t.mock.timers.tick(8 * 86400000);
+  await until(async () => {
+    const views = await Promise.all(
+      [...ranges.keys()].map((indexId) => f.invoke('MemoryIndexRead', { indexId })),
+    );
+    return turns === 3 && views.every((v) => !v.maintenance.running && v.range.completed);
+  });
+  assert.equal(sessions.size, 1);
+  for (const indexId of ranges.keys()) {
+    const view = await f.invoke('MemoryIndexRead', { indexId });
+    assert.equal(view.contents.total, 0);
+    assert.equal(view.coverage.cursor, range.to);
+    assert.equal(view.freshness.observedCursor, range.to);
+    assert.ok(view.freshness.lastOrganizedAt > start);
+  }
+});

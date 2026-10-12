@@ -97,24 +97,114 @@ test('all index reads refresh observations without organizing or consuming incre
   const content = await f.invoke('MemoryIndexContent', { indexId: id, key: 'vendor' });
   assert.ok(!content.text.includes('New update'));
 });
-test('no-change due check reuses cursor but updates checked time, never calls a model or rewrites organization time', async (t) => {
+test('no-change maintenance reviews time but need not rewrite valid content; reads remain model-free', async (t) => {
   const { f, first, id, patch, read } = await setup(t);
   let calls = 0;
-  f.setBeforeWorker(async () => {
+  f.setWorkerRunner(async (worker, prompt) => {
     calls++;
+    assert.match(prompt, /Current UTC:/);
+    assert.match(prompt, /even when the source delta is empty/);
+    const info = await f.invokeAs(worker, 'MemoryIndexRead', { indexId: id });
+    assert.equal(info.range.from, first.coverage.cursor);
+    assert.equal(info.range.to, first.coverage.cursor);
+    assert.notEqual(info.range.rangeId, first.range.rangeId);
+    await f.invokeAs(worker, 'MemoryIndexCheckpoint', {
+      indexId: id,
+      rangeId: info.range.rangeId,
+      expectedRevision: info.index.revision,
+      complete: true,
+      notes: 'Still valid at current time; no rewrite needed',
+    });
   });
   await sleep(15);
+  await read();
+  assert.equal(calls, 0);
   patch({ nextCheckAt: 0 });
   await until(async () => {
     const x = await read();
-    return !x.maintenance.running && x.freshness.lastCheckedAt > first.freshness.lastCheckedAt;
+    return !x.maintenance.running && x.freshness.lastOrganizedAt > first.freshness.lastOrganizedAt;
   });
   const after = await read();
   assert.equal(after.freshness.observedCursor, first.coverage.cursor);
-  assert.equal(after.freshness.lastOrganizedAt, first.freshness.lastOrganizedAt);
-  assert.equal(calls, 0);
+  assert.equal(after.coverage.cursor, first.coverage.cursor);
+  assert.equal(calls, 1);
   assert.equal(after.index.revision, first.index.revision);
+  await sleep(35);
+  assert.equal(calls, 1, 'not due again');
+  await f.invoke('MemoryIndexMaintain', { indexId: id });
+  assert.equal(calls, 2, 'manual maintenance also reviews unchanged data');
 });
+
+for (const days of [1, 7])
+  test(`last ${days} day index expires content when only time advances`, async (t) => {
+    const start = Date.parse('2026-10-01T10:00:00Z');
+    t.mock.timers.enable({ apis: ['Date'], now: start });
+    const f = await fixture(false, { tickMs: 10, intervalMs: 43200000 });
+    t.after(() => f.close());
+    f.sessions.clear();
+    f.sessions.set('window', [{ id: 'event', type: 'user', ts: start, text: 'Package delivered' }]);
+    let calls = 0,
+      id = '',
+      ref = '';
+    f.setWorkerRunner(async (worker, prompt) => {
+      calls++;
+      id = /Organize index ([^. ]+)/.exec(prompt)![1];
+      assert.ok(prompt.includes(`Current UTC: ${new Date().toISOString()}`));
+      const info = await f.invokeAs(worker, 'MemoryIndexRead', { indexId: id });
+      const delta = await f.invokeAs(worker, 'MemoryHistory', {
+        from: info.range.from,
+        to: info.range.to,
+        mode: 'messages',
+      });
+      if (calls === 1) ref = delta.items[0].ref;
+      else {
+        assert.equal(delta.items.length, 0);
+        assert.equal(info.range.from, info.range.to);
+        const existing = await f.invokeAs(worker, 'MemoryIndexContent', {
+          indexId: id,
+          key: 'window',
+        });
+        assert.match(existing.text, /Package delivered/);
+      }
+      // Controlled Agent uses the supplied clock, with no edits to source data.
+      const now = Date.parse(/Current UTC: ([^ ]+)/.exec(prompt)![1].slice(0, -1));
+      const written = await f.invokeAs(worker, 'MemoryIndexWrite', {
+        indexId: id,
+        key: 'window',
+        expectedRevision: info.index.revision,
+        text:
+          now - start <= days * 86400000
+            ? `Package delivered [original](memory-original:${ref})`
+            : '',
+      });
+      await f.invokeAs(worker, 'MemoryIndexCheckpoint', {
+        indexId: id,
+        rangeId: info.range.rangeId,
+        expectedRevision: written.revision,
+        complete: true,
+        notes: 'Applied rolling time window',
+      });
+    });
+    const range = await f.invoke('MemoryRange', {});
+    const first = await f.invoke('MemoryIndexCreate', {
+      name: `Last ${days} days`,
+      instructions: `Only events in the last ${days} days`,
+      cursor: range.to,
+    });
+    assert.equal(first.contents.total, 1);
+    t.mock.timers.tick((days + 1) * 86400000);
+    await until(async () => {
+      const info = await f.invoke('MemoryIndexRead', { indexId: id });
+      return calls === 2 && !info.maintenance.running && info.range.completed;
+    });
+    const last = await f.invoke('MemoryIndexRead', { indexId: id });
+    assert.equal(last.contents.total, 0);
+    assert.equal(last.coverage.cursor, first.coverage.cursor);
+    assert.equal(last.freshness.observedCursor, first.coverage.cursor);
+    assert.ok(last.freshness.lastOrganizedAt > first.freshness.lastOrganizedAt);
+    assert.ok(await f.invoke('MemoryOriginal', { ref }), 'original survives index expiration');
+  });
+
 test('timer corrects old task, retains mid-run arrivals, and does not duplicate a running worker', async (t) => {
   const { f, first, id, patch, read } = await setup(t);
   let calls = 0,
