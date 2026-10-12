@@ -41,6 +41,7 @@ import {
   defaultRuntimeHostDiagnosticTarget,
   defaultRuntimeHostOperationHost,
   isDefaultRuntimeHostCurrent,
+  isDefaultRuntimeHostResolvable,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host.js';
 
@@ -114,7 +115,9 @@ async function operationFailureIsCurrent(
 ): Promise<boolean> {
   if (error instanceof StaleDailyReviewHostError) return false;
   const host = defaultRuntimeHostOperationHost(error);
-  return host ? isDefaultRuntimeHostCurrent(services.runtimeHosts, host) : true;
+  return host
+    ? isDefaultRuntimeHostCurrent(services.runtimeHosts, host)
+    : isDefaultRuntimeHostResolvable(services.runtimeHosts);
 }
 
 /**

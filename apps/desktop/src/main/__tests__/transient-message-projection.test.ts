@@ -21,11 +21,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from '@maka/ui';
-import { deriveMessageQueueProjection } from '../../renderer/application/contracts/message-queue-projection.js';
 import {
   mergeTransientMessageProjection,
-  projectQueuedTransientMessages,
   reconcileTransientMessages,
+  withQueuedSteeringTransients,
 } from '../../renderer/application/contracts/transient-message-projection.js';
 
 /** The durable Message that replaces the transient row above. */
@@ -37,7 +36,7 @@ const transient: TransientUserMessageProjection = {
   id: 'message-1',
   ts: 2,
   text: 'send now',
-  transientPlacement: 'current_turn',
+  transientPlacement: 'transcript',
 };
 
 test('keeps a transient message through sparse transcript replacement', () => {
@@ -103,82 +102,61 @@ test('keeps transient messages ordered independently from a sparse durable tail'
   assert.deepEqual(projected.map((message) => message.id), ['message-1']);
 });
 
-test('uses the Host queue snapshot order for already-present transient messages', () => {
-  const localSecond = {
-    ...transient,
-    id: 'message-2',
-    turnId: 'message-2',
-    text: 'second',
+test('queued steering derives a transcript bubble that lives and dies with the snapshot', async () => {
+  const queueEntry = {
+    entryId: 'steer',
+    messageId: 'message-steer',
+    content: { text: 'raw', displayText: 'steer', quotes: [{ text: 'context' }] },
+    placement: 'current_turn' as const,
+    state: 'queued' as const,
   };
-  const remoteFirst = {
-    ...transient,
-    id: 'message-1',
-    turnId: 'message-1',
-    text: 'first',
+  const followupEntry = {
+    entryId: 'next',
+    messageId: 'message-next',
+    content: { text: 'follow up' },
+    placement: 'next_turn' as const,
+    state: 'queued' as const,
   };
-  const pending = new Map([[localSecond.id, localSecond]]);
+  const queue = { ts: 7, entries: [queueEntry, followupEntry] };
+  const retracted: string[] = [];
+  const restored: string[] = [];
+  let failRetract = false;
+  const actions = {
+    locale: 'en' as const,
+    retract: async (entryId: string) => {
+      if (failRetract) throw new Error('retract failed');
+      retracted.push(entryId);
+    },
+    restoreDraft: (draft: { text: string }) => { restored.push(draft.text); },
+  };
+  const localCopy = { ...transient, id: 'message-steer', text: 'local copy' };
 
-  projectQueuedTransientMessages(pending, [remoteFirst, localSecond]);
+  const derived = withQueuedSteeringTransients([transient, localCopy], queue, actions);
 
-  assert.deepEqual(
-    reconcileTransientMessages(pending, []).map((message) => message.id),
-    ['message-1', 'message-2'],
+  assert.deepEqual(derived.map((message) => message.id), ['message-1', 'message-steer'],
+    'the queue-owned bubble replaces its stored local copy, and a queued follow-up stays out of the transcript');
+  const bubble = derived.at(-1);
+  assert.equal(bubble?.text, 'steer');
+  assert.deepEqual(bubble?.quotes, [{ text: 'context' }]);
+  assert.deepEqual(bubble?.deliveryActions?.map((action) => action.label), ['Edit', 'Delete']);
+  failRetract = true;
+  await bubble?.deliveryActions?.[0]?.onClick();
+  assert.deepEqual(restored, [], 'a failed retract restores nothing');
+  failRetract = false;
+  await bubble?.deliveryActions?.[0]?.onClick();
+  assert.deepEqual([retracted, restored], [['steer'], ['steer']], 'edit retracts, then hands the text back');
+  await bubble?.deliveryActions?.[1]?.onClick();
+  assert.deepEqual([retracted, restored], [['steer', 'steer'], ['steer']], 'delete retracts without a draft');
+
+  assert.equal(
+    withQueuedSteeringTransients([transient], { ...queue, entries: [] }, actions).length,
+    1,
+    'an entry gone from the snapshot leaves no bubble behind',
   );
-});
-
-test('derives one queue projection for main and Side Conversation consumers', () => {
-  const projection = deriveMessageQueueProjection({
-    type: 'queue_update',
-    id: 'queue-1',
-    turnId: 'turn-1',
-    ts: 7,
-    steering: ['in flight', 'steer'],
-    followup: ['next'],
-    steeringEntries: [
-      {
-        entryId: 'in-flight',
-        messageId: 'message-in-flight',
-        content: { text: 'in flight' },
-        placement: 'current_turn',
-        state: 'in_flight',
-      },
-      {
-        entryId: 'steer',
-        messageId: 'message-steer',
-        content: { text: 'raw', displayText: 'steer', quotes: [{ text: 'context' }] },
-        placement: 'current_turn',
-        state: 'queued',
-      },
-    ],
-    followupEntries: [
-      {
-        entryId: 'next',
-        messageId: 'message-next',
-        content: { text: 'next' },
-        placement: 'next_turn',
-        state: 'queued',
-      },
-    ],
-  });
-
-  assert.deepEqual(projection.entries.map((entry) => entry.entryId), ['steer', 'next']);
-  assert.deepEqual(projection.transientMessages, [
-    {
-      id: 'message-steer',
-      pendingSteering: true,
-      transientPlacement: 'current_turn',
-      hostTurnId: 'turn-1',
-      ts: 7,
-      text: 'steer',
-      quotes: [{ text: 'context' }],
-    },
-    {
-      id: 'message-next',
-      transientPlacement: 'next_turn',
-      ts: 7,
-      text: 'next',
-    },
-  ]);
+  assert.equal(
+    withQueuedSteeringTransients([transient], undefined, actions).length,
+    1,
+  );
 });
 
 test('keeps a Host-bound current Turn when a later IPC result has no Turn identity', () => {

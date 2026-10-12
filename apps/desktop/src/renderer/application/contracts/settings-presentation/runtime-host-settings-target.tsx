@@ -36,6 +36,8 @@ interface RuntimeHostSettingsTargetValue {
    * key to retire their own async work without remounting the Settings page.
    */
   readonly generationKey: string;
+  /** The Host's profile name, for copy that must say which Host it means. */
+  readonly label?: string;
 }
 
 const RuntimeHostSettingsTargetContext =
@@ -44,6 +46,7 @@ const RuntimeHostSettingsTargetContext =
 export function RuntimeHostSettingsTarget(props: {
   readonly host?: SettingsHostTarget;
   readonly generation?: string;
+  readonly label?: string;
   readonly children: ReactNode;
 }) {
   const value = useMemo<RuntimeHostSettingsTargetValue | null>(() => {
@@ -52,8 +55,9 @@ export function RuntimeHostSettingsTarget(props: {
       host: props.host,
       generationKey:
         `${props.host.profileId}:${props.host.hostId}@${props.generation ?? "unversioned"}`,
+      ...(props.label === undefined ? {} : { label: props.label }),
     };
-  }, [props.generation, props.host]);
+  }, [props.generation, props.host, props.label]);
   return (
     <RuntimeHostSettingsTargetContext.Provider value={value}>
       {props.children}
@@ -69,6 +73,14 @@ export function useRuntimeHostSettingsTarget(): SettingsHostTarget {
 
 export function useOptionalRuntimeHostSettingsTarget(): SettingsHostTarget | undefined {
   return useContext(RuntimeHostSettingsTargetContext)?.host;
+}
+
+export function useOptionalRuntimeHostSettingsLabel(): string | undefined {
+  return useContext(RuntimeHostSettingsTargetContext)?.label;
+}
+
+export function useOptionalRuntimeHostSettingsGenerationKey(): string | undefined {
+  return useContext(RuntimeHostSettingsTargetContext)?.generationKey;
 }
 
 export function useRuntimeHostSettingsGenerationKey(): string {

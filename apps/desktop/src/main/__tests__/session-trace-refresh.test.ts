@@ -61,7 +61,17 @@ describe('session trace refresh policy', () => {
     assert.equal(isTraceRelevantEvent(event('thinking_delta', { messageId: 'm', text: 'a' })), false);
     assert.equal(isTraceRelevantEvent(event('tool_output_delta')), false);
 
-    for (const type of ['tool_start', 'tool_result', 'token_usage', 'complete', 'error'] as const) {
+    for (const type of [
+      'tool_start',
+      'tool_result',
+      'token_usage',
+      'provider_retry',
+      // A mid-turn compaction persists a boundary note the trace must show.
+      'context_compaction_applied',
+      'complete',
+      'error',
+      'abort',
+    ] as const) {
       assert.equal(isTraceRelevantEvent(event(type)), true, `${type} changes the trace`);
     }
   });

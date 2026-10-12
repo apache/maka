@@ -34,3 +34,24 @@ test('replay uses the same reference form and escapes path markup as untrusted d
   assert.equal(formatted.includes('"entries"'), false);
   assert.equal(formatted.includes('"status"'), false);
 });
+
+test('replay preserves Session snapshot provenance without treating it as instructions', () => {
+  const formatted = formatTextWithInlineRefs('continue from this context', {
+    quotes: [
+      {
+        text: 'Assistant: The runtime boundary is unchanged.',
+        label: 'Session: Runtime architecture <research>',
+        sourceSessionId: 'session-source-1',
+        sourceSessionName: 'Runtime architecture <research>',
+        sourceCapturedAt: 1_735_000_000_000,
+        sourceTruncated: true,
+      },
+    ],
+  });
+  assert.match(formatted, /<quoted_excerpt label="Session: Runtime architecture/);
+  assert.match(formatted, /source_session="session-source-1"/);
+  assert.match(formatted, /captured_at="1735000000000"/);
+  assert.match(formatted, /truncated="true"/);
+  assert.match(formatted, /Assistant: The runtime boundary is unchanged\./);
+  assert.equal(formatted.includes('<research>'), false);
+});

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { isSensitivePlaceholder, SENSITIVE_PLACEHOLDER } from './settings/network-settings.js';
+
 /** Renderer-safe WebSearch contracts shared by UI and agent-tool paths. */
 
 /** Closed enum of search execution sources. */
@@ -75,7 +77,7 @@ export const WEB_SEARCH_CREDENTIAL_SOURCES = ['none', 'saved', 'env'] as const;
 export type WebSearchCredentialSource = (typeof WEB_SEARCH_CREDENTIAL_SOURCES)[number];
 
 /** A round-tripped sentinel preserves the stored API key. */
-export const MASKED_TOKEN_SENTINEL = '••••••';
+export const MASKED_TOKEN_SENTINEL = SENSITIVE_PLACEHOLDER;
 
 /** Returns `null` when the raw value isn't a usable query. */
 export function normalizeWebSearchQuery(raw: unknown): string | null {
@@ -171,7 +173,6 @@ export function mergeWebSearchSettings(
   const apiKeyChanged =
     tavilyPatch &&
     typeof tavilyPatch.apiKey === 'string' &&
-    tavilyPatch.apiKey !== MASKED_TOKEN_SENTINEL &&
     nextApiKey !== current.providers.tavily.apiKey;
   const nextCredentialVersion = apiKeyChanged
     ? currentCredentialVersion + 1
@@ -246,7 +247,7 @@ export function normalizeWebSearchSettings(settings: WebSearchSettings): WebSear
 
 /** Preserve the stored token when the renderer returns its mask. */
 export function reconcileMaskedToken(persisted: string, candidate: string): string {
-  if (candidate === MASKED_TOKEN_SENTINEL) return persisted;
+  if (isSensitivePlaceholder(candidate)) return persisted;
   return candidate;
 }
 

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { foldTimeline } from '../timeline-fold.js';
+import { foldTimeline, reconcileFoldedEntries } from '../timeline-fold.js';
 import type { TurnTimelineItem } from '../materialize.js';
 import { finalAssistantReplyText, type TurnViewModel } from '../materialize.js';
 
@@ -45,7 +45,7 @@ test('display and copy share reply identity across process, steering and interru
     const projection = foldTimeline(timeline);
     assert.equal(projection.finalReply, expected, 'preserves the source message identity');
     if (expected) assert.ok(projection.entries.includes(expected));
-    const turn = { timeline, assistant: { text: 'obsolete aggregate' } } as TurnViewModel;
+    const turn = { timeline } as TurnViewModel;
     assert.equal(finalAssistantReplyText(turn), expected?.kind === 'text' ? expected.text : '');
   }
 });
@@ -90,4 +90,30 @@ test('keeps a reply visible when only reasoning follows it', () => {
   assert.deepEqual(foldTimeline([commentary, tools, thinking]).entries, [
     { kind: 'processing', id: 'start', children: [commentary, tools, thinking] },
   ]);
+});
+
+test('reconciled entries keep identity only where the fold actually moved', () => {
+  const steering: TurnTimelineItem = { kind: 'user', messageId: 'steer', message: { id: 'steer', role: 'user', text: 'More', ts: 2 } };
+  const first = foldTimeline([commentary, tools, answer]).entries;
+
+  // A refold of the same items hands every object back.
+  assert.strictEqual(reconcileFoldedEntries(first, foldTimeline([commentary, tools, answer]).entries), first);
+
+  // A steering instruction splits the fold: the fold before it kept its
+  // children and identity, the new fold and the user row are new objects, and
+  // the reply survives because it is the same item.
+  const split = reconcileFoldedEntries(first, foldTimeline([commentary, tools, steering, thinking, tools, answer]).entries);
+  assert.strictEqual(split[0], first[0]);
+  assert.strictEqual(split[1], steering);
+  assert.strictEqual(split[3], answer);
+
+  // A fold whose children grew is a new object; the untouched reply is not.
+  const grown = reconcileFoldedEntries(first, foldTimeline([commentary, thinking, tools, answer]).entries);
+  assert.notStrictEqual(grown[0], first[0]);
+  assert.strictEqual(grown[1], first[1]);
+
+  // Entries that leave the fold must leave the output too — reconciling by
+  // content alone would hand the stale reply back with the shorter array.
+  const shrunk = reconcileFoldedEntries(first, foldTimeline([commentary, tools]).entries);
+  assert.deepEqual(shrunk, [{ kind: 'processing', id: 'start', children: [commentary, tools] }]);
 });

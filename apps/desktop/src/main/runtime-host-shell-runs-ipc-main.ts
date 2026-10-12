@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '../shared/runtime-host-identity.js';
+import { DESKTOP_TERMINAL_LAUNCH_PREFIX } from '@maka/core/shell-run';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
 import type { SessionDomainChange } from '@maka/runtime-host/protocol';
@@ -35,7 +35,6 @@ export type RuntimeHostShellRunsClient = Pick<
   DesktopRuntimeHostClient,
   | 'acquireRuntimeResourceController'
   | 'controlRuntimeResource'
-  | 'getRuntimeResource'
   | 'listRuntimeResources'
   | 'releaseRuntimeResourceController'
   | 'startRuntimeResource'
@@ -101,13 +100,19 @@ export function registerRuntimeHostShellRunsIpc(
   );
   ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
     const normalizedSessionId = requiredId(sessionId, 'Session');
+    const launchId = `${DESKTOP_TERMINAL_LAUNCH_PREFIX}${newId()}`;
     const started = await deps.client.startRuntimeResource({
       sessionId: normalizedSessionId,
-      launchId: `${DESKTOP_TERMINAL_LAUNCH_PREFIX}${newId()}`,
+      launchId,
     });
-    return requiredRuntimeResource(
-      await deps.client.getRuntimeResource(normalizedSessionId, started.resource.ref),
-    );
+    const update: ShellRunUpdate = {
+      sessionId: normalizedSessionId,
+      ownership: { kind: 'local' },
+      sourceTurnId: launchId,
+      sourceToolCallId: launchId,
+      result: started.resource,
+    };
+    return update;
   });
   ipcMain.handle('shell-runs:attach', (event, value: unknown) =>
     controllers.attach(
@@ -419,11 +424,6 @@ function parseResourceIdentity(identity: string): [sessionId: string, ref: strin
   const separator = identity.indexOf('\0');
   if (separator < 0) throw new Error('Invalid Runtime Resource controller identity');
   return [identity.slice(0, separator), identity.slice(separator + 1)];
-}
-
-function requiredRuntimeResource(resource: ShellRunUpdate | null): ShellRunUpdate {
-  if (!resource) throw new Error('Terminal started without a Runtime Resource projection');
-  return resource;
 }
 
 function requiredId(value: unknown, name: string, maxLength = 512): string {

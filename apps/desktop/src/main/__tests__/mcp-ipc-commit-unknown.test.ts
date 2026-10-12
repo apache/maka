@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import fs, { mkdtemp, readFile, rm } from 'node:fs/promises';
+import fs, { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,7 +33,7 @@ import {
 } from '@maka/storage/mcp-config-store';
 import { registerMcpIpcMain, type McpIpcMainDeps } from '../mcp-ipc-main.js';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
-import { mcpWriteFailureMessage } from '../../renderer/mcp-page-model.js';
+import { mcpConfigFailureMessage, unwrapMcpIpcResult } from '../../renderer/features/module-hub/testing.js';
 
 test('MCP remove reconciles a live manager after the real store publishes then fails directory sync', {
   skip: process.platform === 'win32',
@@ -57,7 +57,7 @@ test('MCP remove reconciles a live manager after the real store publishes then f
   const fault = failDirectorySync(t, root);
   const tracked = trackTransform(t, store);
   const publicationError = new Error('capability publication unavailable');
-  const ipc = mutationHarness(store, {
+  const ipc = mutationHarness(t, store, {
     manager,
     publishCapabilities: async () => { throw publicationError; },
   });
@@ -66,7 +66,7 @@ test('MCP remove reconciles a live manager after the real store publishes then f
     assert.ok(error instanceof AtomicFileWriteCommitUnknownError);
     assert.equal(error.published, true);
     assert.equal(error.cause, fault.error);
-    assert.equal(mcpWriteFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeDurabilityUnknown);
+    assert.equal(mcpConfigFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeDurabilityUnknown);
     return true;
   });
   assert.deepEqual(await diskConfig(root), { version: MCP_CONFIG_VERSION, mcpServers: {} });
@@ -80,7 +80,7 @@ test('MCP remove reconciles a live manager after the real store publishes then f
   assert.deepEqual(ipc.publicationErrors, [publicationError]);
 });
 
-test('MCP upsert reconciles the reread authority including an intervening writer without replaying its mutation', {
+test('MCP update reconciles the reread authority including an intervening writer without replaying its mutation', {
   skip: process.platform === 'win32',
 }, async (t) => {
   const { root, store } = await fixtureStore(t);
@@ -90,9 +90,10 @@ test('MCP upsert reconciles the reread authority including an intervening writer
   const tracked = trackTransform(t, store, async () => {
     await otherStore.upsert('remote', { url: 'https://latest.example.com/mcp', enabled: false });
   });
-  const ipc = mutationHarness(store);
+  const ipc = mutationHarness(t, store);
+  const basis = (await ipc.invoke('mcp:getConfig')).mcpServers.remote;
   await assert.rejects(
-    ipc.invoke('mcp:upsert', 'remote', { url: 'https://proposed.example.com/mcp', enabled: false }),
+    ipc.invoke('mcp:update', 'remote', { url: 'https://proposed.example.com/mcp', enabled: false }, basis),
     (error) => error === tracked.error(),
   );
   const authoritative = await diskConfig(root);
@@ -112,7 +113,7 @@ for (const phase of ['read', 'sync', 'emit'] as const) {
     failDirectorySync(t, root);
     const tracked = trackTransform(t, store);
     const reconciliationError = new Error(`injected ${phase} failure`);
-    const ipc = mutationHarness(store);
+    const ipc = mutationHarness(t, store);
     if (phase === 'read') {
       t.mock.method(store, 'get', async () => { throw reconciliationError; });
     } else if (phase === 'sync') {
@@ -120,12 +121,12 @@ for (const phase of ['read', 'sync', 'emit'] as const) {
     } else {
       t.mock.method(ipc.deps, 'emitChanged', () => { throw reconciliationError; });
     }
-    await assert.rejects(ipc.invoke('mcp:upsert', 'fixture', { command: 'node', enabled: false }), (error) => {
+    await assert.rejects(ipc.invoke('mcp:add', 'fixture', { command: 'node', enabled: false }), (error) => {
       assert.ok(error instanceof AggregateError);
       assert.match(error.message, /out of sync/u);
       assert.equal(error.cause, tracked.error());
       assert.deepEqual(error.errors, [tracked.error(), reconciliationError]);
-      assert.equal(mcpWriteFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeOutOfSync);
+      assert.equal(mcpConfigFailureMessage(error, getMcpCopy('en')), getMcpCopy('en').errors.writeOutOfSync);
       return true;
     });
     assert.ok((await diskConfig(root)).mcpServers.fixture);
@@ -139,44 +140,13 @@ test('MCP pre-publication failure does not reconcile or retry the failed mutatio
   const error = new Error('injected transform failure');
   const transform = t.mock.method(store, 'transform', async () => { throw error; });
   const get = t.mock.method(store, 'get');
-  const ipc = mutationHarness(store);
-  await assert.rejects(ipc.invoke('mcp:upsert', 'fixture', { command: 'node' }), (caught) => caught === error);
+  const ipc = mutationHarness(t, store);
+  await assert.rejects(ipc.invoke('mcp:add', 'fixture', { command: 'node' }), (caught) => caught === error);
   assert.equal(transform.mock.callCount(), 1);
   assert.equal(get.mock.callCount(), 0);
   assert.deepEqual(await diskConfig(root), { version: MCP_CONFIG_VERSION, mcpServers: {} });
   assert.deepEqual(ipc.synced, []);
   assert.deepEqual(ipc.emitted, []);
-});
-
-test('MCP cancelled install does not start a new connection during post-rename reconciliation', {
-  skip: process.platform === 'win32',
-  timeout: 5_000,
-}, async (t) => {
-  const { root, store } = await fixtureStore(t);
-  let published!: () => void;
-  const publication = new Promise<void>((resolve) => { published = resolve; });
-  let finishSync!: () => void;
-  const syncGate = new Promise<void>((resolve) => { finishSync = resolve; });
-  const fault = failDirectorySync(t, root, async () => {
-    published();
-    await syncGate;
-  });
-  const ipc = mutationHarness(store);
-  const installing = ipc.invoke('mcp:install', 'fixture', { command: 'node' }).catch((error) => error);
-  await publication;
-  const cancelling = ipc.invoke('mcp:cancelInstall', 'fixture');
-  finishSync();
-  const installationError = await installing;
-  const cancelled = await cancelling;
-  assert.ok(installationError instanceof AggregateError);
-  assert.ok(installationError.cause instanceof AtomicFileWriteCommitUnknownError);
-  assert.equal(installationError.cause.cause, fault.error);
-  assert.match(installationError.message, /out of sync/u);
-  assert.match(installationError.errors[1].message, /cancelled/u);
-  const empty = { version: MCP_CONFIG_VERSION, mcpServers: {} };
-  assert.deepEqual(cancelled, empty);
-  assert.deepEqual(await diskConfig(root), empty);
-  assert.deepEqual(ipc.synced, [empty], 'only the cancellation rollback may sync the manager');
 });
 
 async function fixtureStore(t: TestContext): Promise<{ root: string; store: McpConfigStore }> {
@@ -233,7 +203,7 @@ async function diskConfig(root: string): Promise<McpConfigFile> {
   return JSON.parse(await readFile(join(root, 'mcp.json'), 'utf8'));
 }
 
-function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDeps> = {}) {
+function mutationHarness(t: TestContext, store: McpConfigStore, overrides: Partial<McpIpcMainDeps> = {}) {
   const handlers = new Map<string, (...args: any[]) => Promise<any>>();
   const synced: McpConfigFile[] = [];
   const emitted: McpServerStatus[][] = [];
@@ -243,7 +213,6 @@ function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDep
     ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
     store,
     manager: {
-      cancelConnect: () => false,
       forgetServerCredentials: async (serverId) => { retired.push(serverId); },
       sync: async (next) => { synced.push(structuredClone(next)); },
       statuses: () => [],
@@ -262,6 +231,8 @@ function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDep
     emitChanged: (statuses) => { emitted.push(statuses); },
     ...overrides,
   };
+  // These cases are about this process's own writes, not following others'.
+  t.mock.method(store, 'subscribeChanges', () => () => {});
   registerMcpIpcMain(deps);
   return {
     deps, synced, emitted, retired, publicationErrors,
@@ -272,3 +243,44 @@ function mutationHarness(store: McpConfigStore, overrides: Partial<McpIpcMainDep
     },
   };
 }
+
+test('MCP IPC transports corrupt-file details for reads and every mutation without exposing parser secrets', async (t) => {
+  const { root, store } = await fixtureStore(t);
+  const path = join(root, 'mcp.json');
+  const source = 'sk-live-SECRET';
+  assert.throws(() => JSON.parse(source), (error) => {
+    assert.ok(error instanceof SyntaxError && error.message.includes(source));
+    return true;
+  });
+  await writeFile(path, source);
+  const ipc = mutationHarness(t, store);
+  const calls: [string, ...unknown[]][] = [
+    ['mcp:getConfig'],
+    ['mcp:importConfig', '{"new":{"command":"unused"}}'],
+    ['mcp:add', 'new', { command: 'unused' }],
+    ['mcp:update', 'old', { command: 'unused' }, { command: 'old' }],
+    ['mcp:setEnabled', 'old', true],
+    ['mcp:remove', 'old'],
+  ];
+  for (const [channel, ...args] of calls) {
+    // Electron serializes the fulfilled value, not custom Error fields.
+    const result: unknown = structuredClone(await ipc.invoke(channel, ...args));
+    assert.deepEqual(result, { kind: 'invalid-mcp-config-file', path });
+    assert.equal(JSON.stringify(result).includes(source), false);
+    for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+      const copy = getMcpCopy(locale);
+      assert.throws(() => unwrapMcpIpcResult(result), (error) => {
+        const wrapped = new Error('Runtime Host action failed', { cause: error });
+        assert.equal(mcpConfigFailureMessage(wrapped, copy), copy.errors.invalidConfigFile(path));
+        return true;
+      });
+    }
+    assert.equal(await readFile(path, 'utf8'), source);
+  }
+  assert.deepEqual(await ipc.invoke('mcp:importConfig', source), {
+    status: 'invalid', reason: 'invalid-json',
+  }, 'pasted invalid JSON remains an import validation result');
+  assert.deepEqual(ipc.synced, []);
+  assert.deepEqual(ipc.retired, []);
+  assert.deepEqual(ipc.emitted, []);
+});

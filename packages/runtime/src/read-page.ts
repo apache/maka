@@ -20,7 +20,9 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-export const READ_PAGE_MAX_CHARS = 7_500;
+// Read page size and tool-result prune threshold. 7,500 UTF-8 bytes is about 2K tokens
+// for both English and Chinese; counting characters would let Chinese reach ~3.3K.
+export const READ_PAGE_MAX_BYTES = 7_500;
 export const READ_DESCRIPTION =
   'Read a text file, view a PNG/JPEG/GIF/WebP image, or read a Maka resource returned by a tool. Only path is required. Images are returned as images, without text pagination. Text reads return one bounded page by default; offset and limit select a line range within the response-size cap. If next is non-null, pass its complete object to Read to continue, including partial lines; otherwise the requested range is complete.';
 export const readParameters = z.object({
@@ -105,7 +107,7 @@ function digestText(content: string): string {
 export function readPage(
   content: string,
   input: ReadInput,
-  maxChars = READ_PAGE_MAX_CHARS,
+  maxBytes = READ_PAGE_MAX_BYTES,
   continuation?: z.infer<typeof readContinuationSchema>,
 ): ReadPage {
   const resolved = continuation ? { path: input.path, ...continuation } : resolveReadInput(input);
@@ -119,8 +121,8 @@ export function readPage(
       'Invalid Read continuation position. Copy the complete next object from the preceding result.',
     );
   }
-  // 总行数仍需扫描全文，但只为本页可能返回的字符保留行索引，避免短行日志
-  // 为一个小响应分配与整个文件行数成正比的临时数组。
+  // Count all lines, but retain offsets only for this response window. A UTF-8
+  // byte budget also bounds its UTF-16 length, including multibyte content.
   let totalLines = 1;
   let offset = resolved.position === undefined ? (input.offset ?? 0) : 0;
   let start = resolved.position ?? (offset === 0 ? 0 : content.length);
@@ -139,7 +141,7 @@ export function readPage(
   }
   const lastLine = Math.min(totalLines, offset + (input.limit ?? totalLines));
   const starts = [lineStart];
-  const indexEnd = Math.min(end, start + maxChars);
+  const indexEnd = Math.min(end, start + maxBytes);
   for (
     let at = content.indexOf('\n', start);
     at >= 0 && at < indexEnd;
@@ -189,15 +191,16 @@ export function readPage(
       next,
     };
   };
-  if (end - start <= maxChars) {
+  const fits = (page: ReadPage): boolean => Buffer.byteLength(JSON.stringify(page)) <= maxBytes;
+  if (end - start <= maxBytes) {
     const page = makePage(end);
-    if (JSON.stringify(page).length <= maxChars) return page;
+    if (fits(page)) return page;
   }
   let low = start;
-  let high = Math.min(end, start + maxChars);
+  let high = Math.min(end, start + maxBytes);
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (JSON.stringify(makePage(middle)).length <= maxChars) low = middle;
+    if (fits(makePage(middle))) low = middle;
     else high = middle - 1;
   }
   // Never split a UTF-16 surrogate pair between responses.
@@ -265,7 +268,7 @@ export function readableToolResult(serialized: string): string {
 export function readToolResultPage(
   serialized: string,
   input: ReadInput,
-  maxChars = READ_PAGE_MAX_CHARS,
+  maxBytes = READ_PAGE_MAX_BYTES,
 ): ReadPage {
   let metadata: Record<string, unknown> | undefined;
   try {
@@ -287,7 +290,7 @@ export function readToolResultPage(
   const page = readPage(
     readableToolResult(serialized),
     input,
-    maxChars - (metadata ? JSON.stringify(metadata).length + 16 : 0),
+    maxBytes - (metadata ? Buffer.byteLength(JSON.stringify(metadata)) + 16 : 0),
   );
   return metadata ? { ...page, metadata } : page;
 }

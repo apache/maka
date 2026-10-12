@@ -66,6 +66,7 @@ describe('SQLite SessionStore', () => {
         makeInput({
           cwd: root,
           executorId: 'codex',
+          executorConfig: { model: 'account-model-v2' },
           llmConnectionSlug: 'executor:codex',
           model: 'codex',
         }),
@@ -80,6 +81,8 @@ describe('SQLite SessionStore', () => {
       assert.equal(reloaded.backend, 'plugin-executor');
       assert.equal(reloaded.executorId, 'codex');
       assert.equal((await store.list())[0]?.executorId, 'codex');
+      assert.deepEqual(reloaded.executorConfig, { model: 'account-model-v2' });
+      assert.deepEqual((await store.list())[0]?.executorConfig, { model: 'account-model-v2' });
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
@@ -871,6 +874,7 @@ describe('SQLite SessionStore', () => {
       DROP INDEX session_metadata_by_external_origin;
       ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
       ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+      ALTER TABLE session_metadata DROP COLUMN archived_at;
       UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
     `);
     legacy.close();

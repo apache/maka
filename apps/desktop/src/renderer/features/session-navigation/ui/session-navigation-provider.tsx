@@ -18,13 +18,14 @@
  */
 
 import {
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
+  useSyncExternalStore,
   type ComponentType,
   type ReactNode,
 } from 'react';
-import type { ProjectRecord } from '@maka/core/project';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
   SessionRailProvider,
@@ -32,18 +33,38 @@ import {
   type NavSelection,
   type ProjectRowActions,
   type SessionRailChrome,
+  type SessionMoveTarget,
   type SessionRailData,
   type SessionRowActions,
 } from '@maka/ui';
 import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
+import { SessionHistoryNavigation } from './session-history-navigation.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
+import { useSessionSelection } from '../controller/use-session-selection.js';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from '../model/session-list-layout.js';
-import type { SessionRailProjection } from '../model/session-rail.js';
+import { deriveSessionRail } from '../model/session-rail.js';
+import { sessionMatchesRail } from '../model/session-nav-filter.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
+import {
+  projectGroupId,
+  ungroupedGroupId,
+} from '../model/session-navigation-groups.js';
+import { sessionMoveTargets } from '../model/session-navigation-move-targets.js';
+import type {
+  SessionNavigationPorts,
+  SessionNavigationProjectScope,
+  SessionNavigationSession,
+} from '../ports.js';
+import { selectSessions, type SessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
+import { selectStaleSessionIds } from '../../../application/contracts/session-catalog/stale-sessions.js';
+import { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
+import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
+import type { SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
+import { useWorkHubEnabled, useWorkHubEnablement } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
+import { useOnboardingSessionSendOutcomes } from '../../../application/contracts/onboarding/onboarding-authority.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -52,20 +73,31 @@ export interface SessionNavigationChromeInput {
   scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;
   workHubActive: boolean;
-  workHubEntry?: { active: boolean; label: string; onSelect(): void };
+  /** Shown, and selectable, only while the client WorkHub switch is on. */
+  onOpenWorkHub?(): void;
   projectActions?: ProjectRowActions;
   onSelect(selection: NavSelection): void;
   onOpenSettings(): void;
   onNew(): void;
   onExitWorkHub(): void;
   onSelectSession(sessionId: string): void;
+  /**
+   * Create a project from the rail's ＋. Absent when no host can make one, and
+   * the heading then carries no ＋ at all.
+   */
+  onNewProject?: () => void;
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
-  rail: SessionRailProjection<SessionNavigationSession>;
-  projects: readonly ProjectRecord[];
-  streamingSessionIds: ReadonlySet<string>;
-  staleSessionIds: ReadonlySet<string>;
+  /** Settings and modal overlays suspend conversation history input. */
+  historyBlocked?: boolean;
+  /** The rail subscribes the catalog itself: its rows are the churn it displays. */
+  catalog: SessionCatalogController;
+  activeSessionId: string | undefined;
+  hiddenSessionIds: ReadonlySet<string>;
+  projectScopes: readonly SessionNavigationProjectScope[];
+  /** The activity projection subscribes here, without publishing through AppShell. */
+  streamingSessions: SnapshotReader<ReadonlySet<string>>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
   /**
@@ -89,10 +121,39 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  * first, the few dozen fibers of permanent chrome on the second.
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
+  const streamingSessionIds = useSyncExternalStore(
+    props.streamingSessions.subscribe,
+    props.streamingSessions.getSnapshot,
+    props.streamingSessions.getSnapshot,
+  );
+  const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  // Send outcomes come from the onboarding authority, not through AppShell.
+  const sessionSendOutcomes = useOnboardingSessionSendOutcomes();
+  const staleSessionIds = useExternalStoreSelector(
+    props.catalog,
+    selectStaleSessionIds,
+    sessionSendOutcomes,
+    sessionIdSetsEqual,
+  );
+  const rail = useMemo(
+    () =>
+      deriveSessionRail(sessions, props.activeSessionId, (session) =>
+        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session),
+      ),
+    [sessions, props.activeSessionId, props.hiddenSessionIds],
+  );
   const controller = useSessionNavigationController({
-    rail: props.rail,
-    projects: props.projects,
+    rail,
+    projectScopes: props.projectScopes,
     ports: props.ports,
+  });
+  const openRowId = props.workHubActive ? undefined : rail.activeRowId;
+  const workHubEnabled = useWorkHubEnabled();
+  const workHubEnablement = useWorkHubEnablement();
+  const selection = useSessionSelection({
+    sessions: rail.sessions,
+    commands: controller.commands,
+    activeId: openRowId,
   });
 
   useLayoutEffect(() => {
@@ -107,17 +168,43 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onArchive: (sessionId) => {
         void controller.commands.archiveSession(sessionId);
       },
-      onUnarchive: (sessionId) => {
-        void controller.commands.unarchiveSession(sessionId);
-      },
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
+      },
+      onMoveToProject: (sessionId, projectId) => {
+        void controller.commands.moveSessionToProject(sessionId, projectId);
       },
       // No `onDelete`: the rail cannot delete. `deleteSession` is still a
       // command, reached from Settings › 已归档任务, where the task has already
       // been archived once.
     }),
     [controller.commands],
+  );
+
+  // The rail draws a row for every Host's Projects, so a task may only be moved
+  // among its own Host's — and only into a project that can receive one. Both
+  // answers come from the same scopes, so the rows that carry the drop marker and
+  // the destinations a task is offered cannot disagree.
+  const moveDropGroupKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const scope of props.projectScopes) {
+      if (scope.project.available && scope.project.archivedAt === undefined) {
+        keys.add(projectGroupId(scope.key));
+      }
+    }
+    for (const session of rail.sessions) {
+      if (!session.projectId) keys.add(ungroupedGroupId(session.runtimeHostId));
+    }
+    return keys;
+  }, [props.projectScopes, rail.sessions]);
+
+  const moveTargets = useCallback(
+    (sessionId: string): readonly SessionMoveTarget[] => {
+      const session = rail.sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) return [];
+      return sessionMoveTargets(session, props.projectScopes);
+    },
+    [props.projectScopes, rail.sessions],
   );
 
   // Project row mutations are commands too, and they arrive from a different
@@ -158,35 +245,54 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     const SessionBadge = props.SessionBadge;
     return SessionBadge ? (session) => <SessionBadge sessionId={session.id} /> : undefined;
   }, [props.SessionBadge]);
+  const relinkableProjectIds = useMemo(
+    () =>
+      new Set(
+        props.projectScopes
+          .filter((scope) => scope.capabilities.chooseClientDirectory)
+          .map((scope) => scope.key),
+      ),
+    [props.projectScopes],
+  );
 
   const data = useMemo<SessionRailData>(
     () => ({
-      sessions: props.rail.sessions,
-      activeId: props.workHubActive ? undefined : props.rail.activeRowId,
-      streamingSessionIds: props.streamingSessionIds,
-      staleSessionIds: props.staleSessionIds,
+      sessions: rail.sessions,
+      activeId: openRowId,
+      streamingSessionIds,
+      staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
       sessionProjectName: controller.selectors.sessionProjectName,
+      sessionLocation: controller.selectors.sessionLocation,
       sessionMeta: controller.selectors.sessionMeta,
       sessionBadge,
       onSelectSession: props.onSelectSession,
       rowActions,
       projectActions,
+      relinkableProjectIds,
+      moveDropGroupKeys,
+      moveTargets,
+      onNewProject: props.onNewProject,
     }),
     [
       controller.layout.viewMode,
       controller.selectors.groups,
+      controller.selectors.sessionLocation,
       controller.selectors.sessionMeta,
       controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,
       props.onSelectSession,
+      props.onNewProject,
+      moveDropGroupKeys,
+      moveTargets,
+      openRowId,
       projectActions,
-      props.rail,
-      props.staleSessionIds,
-      props.streamingSessionIds,
-      props.workHubActive,
+      relinkableProjectIds,
+      rail,
+      staleSessionIds,
+      streamingSessionIds,
       rowActions,
       sessionBadge,
     ],
@@ -219,15 +325,25 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
-    workHubEntry: props.workHubEntry,
+    workHubEntry: workHubEnabled && props.onOpenWorkHub ? {
+      active: props.workHubActive,
+      label: 'WorkHub',
+      onSelect: () => { if (workHubEnablement.isEnabled()) props.onOpenWorkHub?.(); },
+    } : undefined,
   };
 
   return (
     <SessionRailProvider
       data={data}
       chrome={chrome}
-      selection={controller.selection}
+      selection={selection}
     >
+      <SessionHistoryNavigation
+        catalog={props.catalog}
+        visible={!props.historyBlocked && props.selection.section === 'sessions' && !props.workHubActive}
+        blocked={props.historyBlocked ?? false}
+        openSession={props.onSelectSession}
+      />
       {props.children}
     </SessionRailProvider>
   );

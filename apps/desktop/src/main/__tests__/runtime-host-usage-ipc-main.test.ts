@@ -146,6 +146,19 @@ test('continuation forwards query and revision and preserves typed stale or capa
     assert.deepEqual(await h.get('usage:activity')!(event, input), result);
   }
 });
+test('activity IPC rejects a complete-screen request before Host dispatch', async () => {
+  let calls = 0;
+  const h = handlers(async () => {
+    calls++;
+    return { kind: 'revision_changed' };
+  });
+  await assert.rejects(
+    h.get('usage:activity')!(event, { kind: 'screen', query }),
+    /invalid Usage projection/,
+  );
+  assert.equal(calls, 0);
+});
+
 test('independent summary response cannot masquerade as a complete screen', async () => {
   const h = handlers(async () => ({
     kind: 'activity',

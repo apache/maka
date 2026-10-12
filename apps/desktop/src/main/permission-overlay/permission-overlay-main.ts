@@ -43,9 +43,11 @@ import { join } from 'node:path';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { desktopAssetPath } from '../desktop-assets.js';
 import { resolveOverlayAssetDir } from '../overlay-assets.js';
+import { auxiliaryWindowRegistry } from '../auxiliary-window-registry.js';
 import { openSystemPermissionPane, requestPermissionAccess } from '../permissions-actions.js';
 import { resolveAppBundle } from './app-bundle.js';
 import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
+import type { WindowRevealMode } from '../window-reveal.js';
 import {
   createPermissionOverlayController,
   startScreenRecordingOnboarding,
@@ -68,6 +70,7 @@ const CARD = { width: 530, height: 109 };
 type Electron = typeof import('electron');
 
 export interface PermissionOverlayMainDeps {
+  revealMode: WindowRevealMode;
   /**
    * Resolved UI locale, so the card speaks the same language as the app.
    * Async because it comes from the settings store; the controller needs
@@ -84,7 +87,7 @@ export function createPermissionOverlayMain(
   let locale: UiLocale = 'en';
   let iconDataUrl: string | null = null;
   const electron = requireElectron('electron') as Electron;
-  const { BrowserWindow, app, nativeImage, screen, systemPreferences } = electron;
+  const { app, nativeImage, screen, systemPreferences } = electron;
 
   function isGranted(id: DragGrantPermissionId): boolean {
     if (process.platform !== 'darwin') return false;
@@ -150,9 +153,8 @@ export function createPermissionOverlayMain(
     },
     log: (message) => console.warn(message),
     createWindow: (bounds) => {
-      const win = new BrowserWindow({
+      const win = auxiliaryWindowRegistry.create('permission-overlay', {
         ...bounds,
-        show: false,
         frame: false,
         transparent: true,
         backgroundColor: '#00000000',
@@ -192,9 +194,9 @@ export function createPermissionOverlayMain(
 
       const like: PermissionOverlayWindowLike = {
         setBounds: (next) => { if (!win.isDestroyed()) win.setBounds(next); },
-        showInactive: () => { if (!win.isDestroyed()) win.showInactive(); },
+        showInactive: () => auxiliaryWindowRegistry.show('permission-overlay', win, deps.revealMode),
         isDestroyed: () => win.isDestroyed(),
-        destroy: () => { if (!win.isDestroyed()) win.destroy(); },
+        destroy: () => auxiliaryWindowRegistry.destroy(win),
         send: (channel, payload) => { if (!win.isDestroyed()) win.webContents.send(channel, payload); },
         onReady: (cb) => { win.webContents.once('did-finish-load', cb); },
         onGone: (cb) => {

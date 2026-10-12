@@ -20,22 +20,19 @@
 import { useMemo, useRef } from "react";
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { SessionSummary } from '@maka/core/session';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from "@maka/ui";
 import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
-import type { SessionStartMode } from './application/contracts/session-start-mode.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
-} from './default-runtime-host-operation.js';
-import {
-  buildCommandList,
-  buildSessionCommands,
-} from "./command-palette-commands.js";
-import type { Command } from './features/overlays/index.js';
-import { renderConversationMarkdown } from "./conversation-markdown.js";
+} from './platform/desktop/default-runtime-host-operation.js';
+import { buildCommandList } from "./command-palette-commands.js";
+import type { CopyManualDiagnosticReport } from './features/diagnostics/index.js';
+import type { Command, OverlayPaletteActions } from './features/overlays/index.js';
+import type { SessionCatalogController } from './application/contracts/session-catalog/session-catalog-state.js';
 import {
   commandPaletteActionErrorMessage,
   commandPaletteConnectionTestFailureMessage,
@@ -71,24 +68,27 @@ export interface AppShellCommandListOptions {
   clientPathsAccessible: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
-  messages: StoredMessage[];
+  /** Copy and Save's Markdown export of the published conversation. */
+  renderPublishedConversation(sessionName: string, locale: UiLocale): string;
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
   settingsProfileId: string | undefined;
-  sessions: readonly SessionSummary[];
+  sessionCatalog: SessionCatalogController;
   themePref: ThemePreference;
-  visibleSessions: SessionSummary[];
+  /** Sessions the rail hides (mounted side-chat forks) — the palette skips them too. */
+  hiddenSessionIds: ReadonlySet<string>;
   captureComposerImportOwner: () => ComposerImportOwner;
+  copyManualDiagnosticReport: CopyManualDiagnosticReport;
+  /** The overlays owner's Desktop operations for the rows below. */
+  paletteActions: OverlayPaletteActions;
   createSession: () => void;
   openSideConversation: () => void;
-  startModeSession: (mode: SessionStartMode) => Promise<boolean>;
   openHelp: () => void;
   openScheduledTaskCreate: () => void;
   openProjectFolder: () => Promise<void>;
   openSessionInChat: (sessionId: string) => void;
   openSettings: () => void;
   openSettingsSection: (section: SettingsSection) => void;
-  openSkillsFolder: () => Promise<void>;
   openWorkspaceFolder: () => Promise<void>;
   refreshConnections: () => Promise<void>;
   copyTodayDailyReview: () => Promise<void>;
@@ -139,26 +139,21 @@ export function buildAppShellCommandList(
     defaultSlug: options.defaultConnection,
     onNewChat: () => optionsRef.current.createSession(),
     onOpenSideChat: () => optionsRef.current.openSideConversation(),
-    onStartDeepResearch: async () => {
-      const { startModeSession } = optionsRef.current;
-      await startModeSession("deep_research");
-    },
     onStartScheduledTask: () => optionsRef.current.openScheduledTaskCreate(),
     onOpenSettings: () => optionsRef.current.openSettings(),
     onOpenSettingsSection: (section) =>
       optionsRef.current.openSettingsSection(section),
-    // PR-UX-POLISH-1 commit 4 (WAWQAQ `e0dbad11` + kenji `2844f64f`):
-    // use the openHelp callback returned by useKeyboardHelp directly,
-    // instead of dispatching a synthetic KeyboardEvent. Same effect,
-    // clearer intent, and avoids the foot-gun where a typed `?` in a
-    // text input would be swallowed by the global keydown listener.
+    // `openHelp` is the overlays owner's command (`overlays.commands.openHelp`),
+    // handed in by the shell, rather than a synthetic KeyboardEvent: same
+    // effect, clearer intent, and a typed `?` in a text input is never
+    // swallowed by the global keydown listener.
     onOpenShortcuts: () => optionsRef.current.openHelp(),
     onSetTheme: (next) => optionsRef.current.setThemePref(next),
     onTestConnection: async (slug) => {
-      const { connections, refreshConnections, toastApi } = optionsRef.current;
+      const { connections, paletteActions, refreshConnections, toastApi } = optionsRef.current;
       try {
         const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
-          window.maka.connections.test(slug, undefined, host),
+          paletteActions.testConnection(slug, host),
         );
         const conn = connections.find((c) => c.slug === slug);
         const name = conn?.name ?? slug;
@@ -193,10 +188,10 @@ export function buildAppShellCommandList(
       }
     },
     onSetDefaultConnection: async (slug) => {
-      const { connections, refreshConnections, toastApi } = optionsRef.current;
+      const { connections, paletteActions, refreshConnections, toastApi } = optionsRef.current;
       try {
         await runOnDefaultRuntimeHost((host) =>
-          window.maka.connections.setDefault(slug, host),
+          paletteActions.setDefaultConnection(slug, host),
         );
         await refreshConnections();
         const conn = connections.find((c) => c.slug === slug);
@@ -214,27 +209,18 @@ export function buildAppShellCommandList(
         );
       }
     },
-    onOpenWorkspace: async () => {
-      await optionsRef.current.openWorkspaceFolder();
-    },
+    onOpenWorkspace: () => optionsRef.current.openWorkspaceFolder(),
     ...(options.clientPathsAccessible
       ? {
           onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
-          onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
         }
       : {}),
-    onSelectModule: (selection) => {
-      optionsRef.current.setNavSelection(selection);
-    },
+    onSelectModule: (selection) => optionsRef.current.setNavSelection(selection),
     onExportActiveConversation: async () => {
-      const { activeId, messages, sessions, toastApi } = optionsRef.current;
+      const { activeId, renderPublishedConversation, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
-      const session = sessions.find((s) => s.id === activeId);
-      const markdown = renderConversationMarkdown(
-        session?.name ?? copy.newConversation,
-        messages,
-        locale,
-      );
+      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
+      const markdown = renderPublishedConversation(session?.name ?? copy.newConversation, locale);
       try {
         await navigator.clipboard.writeText(markdown);
         toastApi.success(
@@ -246,15 +232,11 @@ export function buildAppShellCommandList(
       }
     },
     onSaveActiveConversationToFile: async () => {
-      const { activeId, messages, sessions, toastApi } = optionsRef.current;
+      const { activeId, paletteActions, renderPublishedConversation, sessionCatalog, toastApi } = optionsRef.current;
       if (!activeId) return;
-      const session = sessions.find((s) => s.id === activeId);
+      const session = sessionCatalog.getState().sessions.find((s) => s.id === activeId);
       const sessionName = session?.name ?? copy.newConversation;
-      const markdown = renderConversationMarkdown(
-        sessionName,
-        messages,
-        locale,
-      );
+      const markdown = renderPublishedConversation(sessionName, locale);
       const now = new Date();
       const yyyy = now.getFullYear();
       const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -267,7 +249,7 @@ export function buildAppShellCommandList(
         .slice(0, 80);
       const defaultName = `maka-${sanitizedSession}-${yyyy}-${mm}-${dd}.md`;
       try {
-        const result = await window.maka.sessions.saveConversationToFile({
+        const result = await paletteActions.saveConversationToFile({
           markdown,
           defaultName,
         });
@@ -295,10 +277,10 @@ export function buildAppShellCommandList(
       }
     },
     onOpenLocalMemoryFile: async () => {
-      const { toastApi } = optionsRef.current;
+      const { paletteActions, toastApi } = optionsRef.current;
       try {
         const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
-          window.maka.memory.openFile(host),
+          paletteActions.openLocalMemoryFile(host),
         );
         if (!result.ok) {
           toastApi.error(
@@ -333,6 +315,7 @@ export function buildAppShellCommandList(
     onCopyDiagnostics: async () => {
       const {
         captureComposerImportOwner,
+        copyManualDiagnosticReport,
         newTaskProfileId,
         settingsOpen,
         settingsProfileId,
@@ -346,10 +329,7 @@ export function buildAppShellCommandList(
         settingsProfileId,
       );
       try {
-        await window.maka.diagnostics.copyReport({
-          surface: "manual",
-          ...(target ? { target } : {}),
-        });
+        await copyManualDiagnosticReport(target);
         toastApi.success(copy.diagnosticsCopiedTitle, copy.diagnosticsCopiedDescription);
       } catch (err) {
         toastApi.error(
@@ -365,15 +345,15 @@ export function buildAppShellCommandList(
       }
     },
     onTestNetworkProxy: async () => {
-      const { toastApi } = optionsRef.current;
+      const { paletteActions, toastApi } = optionsRef.current;
       try {
         // PR-CMD-PALETTE-NETWORK-PROXY-TEST-0: surface the
         // proxy test result via toast so a user debugging a
         // connection issue does not need to open Settings →
-        // 网络. `testNetworkProxy(undefined)` uses the
-        // current persisted proxy config.
+        // 网络. `testNetworkProxy` uses the current persisted
+        // proxy config.
         const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
-          window.maka.settings.testNetworkProxy(undefined, host),
+          paletteActions.testNetworkProxy(host),
         );
         const message = settingsTestResultMessage(result, locale);
         if (result.ok) {
@@ -398,20 +378,6 @@ export function buildAppShellCommandList(
   });
 }
 
-export function buildAppShellSessionCommands(
-  optionsRef: RefBox<AppShellCommandListOptions>,
-): ReturnType<typeof buildSessionCommands> {
-  const options = optionsRef.current;
-  return buildSessionCommands({
-    locale: options.uiLocale,
-    sessions: options.visibleSessions,
-    activeSessionId: options.activeId,
-    onSelectSession: (sessionId) => {
-      optionsRef.current.openSessionInChat(sessionId);
-    },
-  });
-}
-
 /**
  * #1045: the palette's command list keeps a stable identity while it is open.
  * app-shell rebuilds commandOptions on every render (streaming ticks
@@ -420,26 +386,33 @@ export function buildAppShellSessionCommands(
  * frozen list still acts on current data. Session rows are derived separately,
  * memoized on the visible session catalog + active session only: background
  * session creates/renames stay live while the palette is open, without
- * reintroducing per-tick rebuilds (visibleSessions is itself memoized in
- * app-shell, so rows rebuild only on real catalog changes).
+ * reintroducing per-tick rebuilds. The catalog subscription lives here — the
+ * consumption point — so shell renders are not driven by palette-only reads.
  */
 export function useAppShellCommands(
   paletteOpen: boolean,
   commandOptions: AppShellCommandListOptions,
-): Command[] {
+): {
+  commands: Command[];
+  sessionCatalog: SessionCatalogController;
+  hiddenSessionIds: ReadonlySet<string>;
+  activeSessionId: string | undefined;
+  onSelectSession: (id: string) => void;
+} {
   const optionsRef = useRef(commandOptions);
   optionsRef.current = commandOptions;
-  const { activeId, uiLocale, visibleSessions } = commandOptions;
-  const baseCommands = useMemo(
+  const { uiLocale } = commandOptions;
+  const commands = useMemo(
     () => buildAppShellCommandList(optionsRef),
     [paletteOpen, uiLocale],
   );
-  const sessionCommands = useMemo(
-    () => buildAppShellSessionCommands(optionsRef),
-    [paletteOpen, visibleSessions, activeId, uiLocale],
-  );
-  return useMemo(
-    () => [...baseCommands, ...sessionCommands],
-    [baseCommands, sessionCommands],
-  );
+  // Session rows subscribe the catalog inside the palette — the consumption
+  // point — so shell renders are not driven by palette-only reads.
+  return {
+    commands,
+    sessionCatalog: commandOptions.sessionCatalog,
+    hiddenSessionIds: commandOptions.hiddenSessionIds,
+    activeSessionId: commandOptions.activeId,
+    onSelectSession: commandOptions.openSessionInChat,
+  };
 }

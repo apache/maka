@@ -30,19 +30,67 @@ export interface SqliteSessionCatalogPageQuery {
   readonly parameters: readonly (string | number)[];
 }
 
+export interface SqliteSessionPredicate {
+  readonly sql: string;
+  readonly parameters: readonly string[];
+}
+
+/**
+ * A Session row the catalog lists: ordinary, not a copy still being prepared,
+ * and not a transcript-less shell. `alias` names the `session_metadata` row;
+ * the caller joins `session_catalog_projection` for it.
+ */
+export function sqliteCatalogVisibleSessionPredicate(alias = 'metadata'): SqliteSessionPredicate {
+  const role = sqliteOrdinarySessionRolePredicate(alias);
+  return {
+    sql: `(
+      COALESCE(json_extract(${alias}.payload_json, '$.conversationCopy.state'), '') <> 'preparing'
+      AND ${role.sql}
+      AND COALESCE(json_extract(${alias}.payload_json, '$.transcriptLedgerVersion'), 1) <> 0
+    )`,
+    parameters: [...role.parameters],
+  };
+}
+
+/**
+ * A row of Settings › Archived tasks, as the rail derives it from the catalog:
+ * an archived catalog-visible Session that is not a linked subtask of another
+ * catalog-visible Session. A subtask whose parent is gone is a row of its own.
+ * Revision families still collapse to one row; callers group by family.
+ * Requires `metadata` joined with its `session_catalog_projection`.
+ */
+export function sqliteArchivedTaskRowPredicate(): SqliteSessionPredicate {
+  const row = sqliteCatalogVisibleSessionPredicate('metadata');
+  const parent = sqliteCatalogVisibleSessionPredicate('parent');
+  return {
+    sql: `(
+      metadata.is_archived = 1
+      AND ${row.sql}
+      AND (
+        metadata.subagent_parent_session_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM session_metadata parent
+          JOIN session_catalog_projection parent_projection
+            ON parent_projection.session_id = parent.session_id
+          WHERE parent.session_id = metadata.subagent_parent_session_id
+            AND ${parent.sql}
+        )
+      )
+    )`,
+    parameters: [...row.parameters, ...parent.parameters],
+  };
+}
+
 export function buildSqliteSessionCatalogPageQuery(
   filter: SessionListFilter,
   cursor: SqliteSessionCatalogCursor | undefined,
 ): SqliteSessionCatalogPageQuery {
   const where: string[] = [];
   const parameters: Array<string | number> = [];
-  const role = sqliteOrdinarySessionRolePredicate();
-  where.push(
-    "COALESCE(json_extract(metadata.payload_json, '$.conversationCopy.state'), '') <> 'preparing'",
-  );
-  where.push(role.sql);
-  parameters.push(...role.parameters);
-  where.push("COALESCE(json_extract(metadata.payload_json, '$.transcriptLedgerVersion'), 1) <> 0");
+  const visible = sqliteCatalogVisibleSessionPredicate();
+  where.push(visible.sql);
+  parameters.push(...visible.parameters);
   if (filter.subagentParentSessionId !== undefined) {
     where.push('projection.subagent_parent_session_id = ?');
     parameters.push(filter.subagentParentSessionId);
@@ -67,6 +115,7 @@ export function buildSqliteSessionCatalogPageQuery(
         metadata.payload_json,
         metadata.metadata_version,
         metadata.committed_at,
+        metadata.archived_at,
         projection.activity_at,
         projection.last_message_preview
       FROM session_catalog_projection projection

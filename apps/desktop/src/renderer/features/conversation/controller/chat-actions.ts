@@ -1,0 +1,547 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { CollaborationMode } from '@maka/core/collaboration';
+import type { QuoteRef } from '@maka/core/events';
+import type { InteractionFormResponse } from '@maka/core/interaction';
+import type { OrchestrationMode } from '@maka/core/orchestration';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { TurnOrchestration } from '@maka/core/runtime-inputs';
+import type { UiLocale } from '@maka/core/ui-locale';
+import type { UserQuestionResponse } from '@maka/core/user-question';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
+import type { TransientUserMessageProjection } from '@maka/ui';
+import { toSubmittedAttachments, type PendingAttachment } from '@maka/ui/composer-attachments';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
+import { preflightAttachmentItems } from '../../../application/contracts/attachment-preflight.js';
+import type { DesktopSessionSummary } from '../../../../shared/desktop-session-projection.js';
+import {
+  isSessionWorkspaceUnavailableError,
+  showSessionWorkspaceUnavailableToast,
+} from '../../../application/contracts/session-workspace-errors.js';
+import * as skillFeedback from '../model/skill-invocation-feedback.js';
+import { canSubmitExecutor, newTaskConfiguration, type ExecutorSubmission } from '../model/executor-submission.js';
+import type { NewChatExecutionTarget } from './use-shell-chat-model.js';
+import type { ConversationNewTaskTarget } from '../ports.js';
+import type { ComposerSubmissionServices, ConversationMessageCommand } from '../submission-services.js';
+import type { ComposerSurfaceOwner } from '../model/composer-submission-contract.js';
+
+export interface WorkspaceFileReferencePosition {
+  value: string;
+  start: number;
+}
+import {
+  isNoRealConnectionError,
+  noRealConnectionReasonFromError,
+  noRealConnectionSetupDescription,
+} from '../../../application/contracts/model-connection-errors.js';
+
+
+type RefBox<T> = { current: T };
+
+type PendingNewChatModel = NewChatExecutionTarget | null;
+
+type PendingNewChatThinkingLevel = ThinkingLevel | null | undefined;
+
+type ToastApi = {
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ): void;
+  info(title: string, description?: string): void;
+};
+
+type DirectoryReferences = NonNullable<TransientUserMessageProjection['directoryReferences']>;
+type MessageContextOptions = {
+  directoryReferences?: DirectoryReferences;
+  quotes?: readonly QuoteRef[];
+  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+};
+type SendOptions = MessageContextOptions & {
+  waitForHostAdmission?: boolean;
+  targetSessionId?: string;
+  turnOrchestration?: TurnOrchestration;
+  displayText?: string;
+  onSessionResolved?: (sessionId: string, newTaskDraftKey?: string) => void;
+};
+
+function copiedArray<K extends string, T>(
+  key: K,
+  values: readonly T[] | undefined,
+): Partial<Record<K, T[]>> {
+  return values?.length ? { [key]: [...values] } as Record<K, T[]> : {};
+}
+
+export interface ChatActions {
+  send(
+    text: string,
+    pending?: readonly PendingAttachment[],
+    options?: SendOptions,
+  ): Promise<boolean>;
+  /**
+   * Resolves with whether the Message was sent. An unproven outcome counts as
+   * sent — Runtime Host may well have it — so the caller does not offer the
+   * same text twice; only a refusal is `false`.
+   */
+  enqueueMessage(
+    sessionId: string,
+    text: string,
+    placement: 'current_turn' | 'next_turn',
+    pending?: readonly PendingAttachment[],
+    options?: MessageContextOptions,
+  ): Promise<boolean>;
+  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
+  respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
+  respondToUserForm(response: InteractionFormResponse): Promise<void>;
+}
+
+export function createChatActions<Owner extends ComposerSurfaceOwner>(deps: {
+  services: ComposerSubmissionServices;
+  uiLocale: UiLocale;
+  getRunningTurnId?: (sessionId: string) => string | undefined;
+  activeIdRef: Readonly<RefBox<string | undefined>>;
+  captureComposerImportOwner: () => Owner;
+  captureSelection: () => () => boolean;
+  checkTaskSubmissionReadiness: () => Promise<boolean>;
+  isNewChatSendSurfaceActive: (owner: Owner) => boolean;
+  /** The shell's one answer to "is this owner still the surface the user is
+   *  looking at". Both halves matter — the section AND the session id — which
+   *  is why the send path asks it instead of comparing the id itself. */
+  isShellSurfaceOwnerActive: (owner: Owner) => boolean;
+  refreshSessions: () => Promise<unknown>;
+  activateSessionForFirstSend: (session: DesktopSessionSummary) => Promise<void>;
+  retireSession: (sessionId: string) => void;
+  clearMessageLoadError(sessionId: string): void;
+  addTransientMessage: (
+    sessionId: string,
+    message: TransientUserMessageProjection,
+  ) => void;
+  updateTransientMessage: (
+    sessionId: string,
+    message: TransientUserMessageProjection,
+  ) => void;
+  removeTransientMessage: (sessionId: string, messageId: string) => void;
+  onFollowLatest: (sessionId: string) => boolean;
+  /** #646: arm the "正在处理…" indicator locally at send() — the model-wait
+   * window opens before any SessionEvent arrives (turn_started is not one). */
+  settleInteraction(sessionId: string, requestId: string): void;
+  onInteractionChanged?: (sessionId: string) => void;
+  /** A boundary decision settled: the session's execution boundary may have moved. */
+  onExecutionBoundaryChanged?: (sessionId: string) => void;
+  respondToUserForm: (sessionId: string, response: InteractionFormResponse) => Promise<void>;
+  showModelSetupToast: (
+    description: string,
+    reason?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ) => void;
+  toastApi: ToastApi;
+  newChatModel: PendingNewChatModel;
+  executorSelection?: { executorId: string; configuration: import('@maka/core/executor-catalog').ExecutorConfiguration };
+  executorEntry?: ExecutorSubmission['executorEntry'];
+  /** Undefined applies the Host's model default; null explicitly keeps the provider default. */
+  pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
+  /**
+   * The user's explicit choice for this draft, or undefined when they made
+   * none. Undefined omits the field on create so the Host applies its own
+   * `chatDefaults`; a value is a real per-Session override and is sent once.
+   */
+  newChatPermissionChoice: ChatDefaultPermissionMode | undefined;
+  /**
+   * Drops the draft's permission choice once it has reached a created Session.
+   * The choice is keyed by Host/project target rather than by draft, so
+   * without this the next task on the same target would silently re-send it.
+   */
+  clearNewChatPermissionChoice: () => void;
+  newChatCollaborationMode: CollaborationMode;
+  newChatOrchestrationMode: OrchestrationMode;
+  newTaskTarget: ConversationNewTaskTarget | undefined;
+}): ChatActions {
+  const {
+    services,
+    uiLocale,
+    activeIdRef,
+    captureComposerImportOwner,
+    captureSelection,
+    checkTaskSubmissionReadiness,
+    isNewChatSendSurfaceActive,
+    isShellSurfaceOwnerActive,
+    refreshSessions,
+    activateSessionForFirstSend,
+    retireSession,
+    clearMessageLoadError,
+    removeTransientMessage,
+    onFollowLatest,
+    settleInteraction,
+    onInteractionChanged,
+    onExecutionBoundaryChanged,
+    respondToUserForm: submitUserForm,
+    showModelSetupToast,
+    toastApi,
+    newChatPermissionChoice,
+    clearNewChatPermissionChoice,
+    newTaskTarget,
+  } = deps;
+  const copy = getShellCopy(uiLocale).chatActions;
+
+  /** Only an unreconciled submission keeps its row because Host admission may have succeeded. */
+  type SubmittedMessage =
+    | { kind: 'projected'; skillInvocation: SkillInvocationResult; turnId?: string }
+    | { kind: 'unreconciled' }
+    | { kind: 'refused' };
+
+  /**
+   * The one place a submitted Message's outcome becomes UI. Every submission —
+   * first send, send into an existing Session, Follow Up — projects its row the
+   * same way, so the rules for retiring and updating it cannot drift apart.
+   */
+  async function submitAndProject(input: {
+    sessionId: string;
+    messageId: string;
+    placement: 'current_turn' | 'next_turn';
+    command: Omit<ConversationMessageCommand, 'messageId'>;
+    displayText?: string;
+    quotes?: readonly QuoteRef[];
+    waitForHostAdmission?: boolean;
+    /** Whether this Session's surface is on screen to receive Skill feedback. */
+    isSurfaceVisible?: () => boolean;
+  }): Promise<SubmittedMessage> {
+    const { sessionId, messageId, placement } = input;
+    const directoryReferences = input.command.directoryReferences;
+    const result = await services.submitMessage(sessionId, placement, {
+      ...input.command,
+      messageId,
+    }, { waitForHostAdmission: input.waitForHostAdmission });
+    const surfaceVisible = input.isSurfaceVisible?.() ?? true;
+    if (!result.ok) {
+      if (result.reason === 'outcome_unknown') {
+        // The Message may well have been admitted, so its row stays for
+        // canonical transcript to settle.
+        return { kind: 'unreconciled' };
+      }
+      removeTransientMessage(sessionId, messageId);
+      if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
+      return { kind: 'refused' };
+    }
+    if (result.disposition === 'locally_saved') {
+      return { kind: 'projected', skillInvocation: result.skillInvocation };
+    }
+    if (surfaceVisible) skillFeedback.showSubmissionFeedback(uiLocale, toastApi, result, sessionId);
+    // The row is updated whether or not the surface is on screen: attachments,
+    // inline references and the Host Turn grouping are what the user finds when
+    // they come back to it.
+    publishTransientUserMessage(sessionId, {
+      id: messageId,
+      text: input.displayText ?? skillFeedback.skillInvocationDisplayText(input.command.text, result.skillInvocation),
+      attachments: [...result.attachments],
+      transientPlacement: result.disposition !== 'turn_started' && placement === 'next_turn' ? 'follow_up' : 'transcript',
+      ...(result.turnId ? { hostTurnId: result.turnId } : {}),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', input.quotes ?? []),
+      inlineReferences: [...(result.inlineReferences ?? [])],
+    }, true);
+    return {
+      kind: 'projected',
+      skillInvocation: result.skillInvocation,
+      ...(result.turnId ? { turnId: result.turnId } : {})
+    };
+  }
+
+  async function send(
+    text: string,
+    pending?: readonly PendingAttachment[],
+    options: SendOptions = {},
+  ): Promise<boolean> {
+    const { directoryReferences, quotes } = options;
+    const initialSessionId = options.targetSessionId ?? activeIdRef.current;
+    if (!canSubmitExecutor(deps, pending?.length ?? 0)) return false;
+    const sendOwner = captureComposerImportOwner();
+    const selectionIsCurrent = captureSelection();
+    if (!initialSessionId && !newTaskTarget) return false;
+    if (
+      !(await checkTaskSubmissionReadiness()) || !selectionIsCurrent() ||
+      (initialSessionId && !isShellSurfaceOwnerActive(sendOwner)) ||
+      (!initialSessionId && !isNewChatSendSurfaceActive(sendOwner))
+    ) {
+      return false;
+    }
+    let optimisticSessionId: string | undefined;
+    const messageId = crypto.randomUUID();
+    // #1433: the composer creates the session BEFORE it sends, so a first
+    // send that never lands has to take the session with it. Set the moment
+    // creation succeeds, cleared the moment the send does — while it holds a
+    // value, the session exists but has nothing in it. `sessions:send` both
+    // returns `{ ok: false }` (a blocked Skill) and throws (Skill discovery,
+    // project-context resolution), so tracking it in one place is what keeps
+    // the two exits from drifting apart; the deleted `quick-chat.ts` cleaned
+    // up on throw and nothing replaced that half.
+    let unsentSessionId: string | undefined;
+    const discardUnsentSession = async () => {
+      if (!unsentSessionId) return;
+      const sessionId = unsentSessionId;
+      unsentSessionId = undefined;
+      try {
+        await services.removeUnsentSession(sessionId);
+        retireSession(sessionId);
+        await refreshSessions();
+      } catch {
+        // Best-effort: a failed cleanup must not replace the real error.
+      }
+    };
+    try {
+      async function submitIntoSession(sessionId: string, messageId: string) {
+        const attachments = toSubmittedAttachments(pending ?? []);
+        const sendCommand = {
+          text,
+          localDisplayPlacement: 'current_turn' as const,
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('attachmentItems', attachments.attachmentItems),
+          ...copiedArray('retainedAttachments', attachments.retainedAttachments),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+        };
+        return submitAndProject({
+          sessionId,
+          messageId,
+          placement: options.turnOrchestration !== undefined ? 'current_turn' : 'next_turn',
+          command: {
+            ...sendCommand,
+            ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+          },
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('quotes', quotes),
+          waitForHostAdmission: options.waitForHostAdmission,
+          isSurfaceVisible: () => activeIdRef.current === sessionId,
+        });
+      }
+      if (!initialSessionId) {
+        if (!newTaskTarget) return false;
+        if (pending?.length) preflightAttachmentItems(pending);
+        const session = await services.createNewTask(newTaskTarget, {
+          name: DEFAULT_SESSION_NAME,
+          ...newTaskConfiguration(deps),
+        });
+        unsentSessionId = session.id;
+        // Creation can also yield while a same-target New Task is reopened.
+        // Retire this unsent Session without activating the abandoned surface.
+        if (!selectionIsCurrent() || !isNewChatSendSurfaceActive(sendOwner)) {
+          await discardUnsentSession();
+          return false;
+        }
+        optimisticSessionId = session.id;
+        // Stage the first row before activation. `setActiveId` projects this
+        // session-owned transient in the same state transition that replaces
+        // the new-chat surface, so the empty-session Maka hero cannot paint
+        // between observation settling and the submitted content appearing.
+        publishTransientUserMessage(session.id, {
+          id: messageId, text: options.displayText ?? text, transientPlacement: 'transcript',
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+        });
+        // Main owns observation-before-dispatch. This only selects the local
+        // surface; saving a draft never waits for the Host's event stream.
+        await activateSessionForFirstSend(session);
+        if (activeIdRef.current !== session.id) {
+          removeTransientMessage(session.id, messageId);
+          await discardUnsentSession();
+          return false;
+        }
+        const submitted = await submitIntoSession(session.id, messageId);
+        if (submitted.kind === 'refused') {
+          await discardUnsentSession();
+          return false;
+        }
+        unsentSessionId = undefined;
+        // A refused first send deletes the Session, so its draft choice must
+        // survive for retry. Clear only while this Session still owns the UI.
+        if (newChatPermissionChoice && activeIdRef.current === session.id)
+          clearNewChatPermissionChoice();
+        // The callback fires only when this send's first message projected;
+        // an unreconciled first message stays unreported.
+        if (submitted.kind === 'projected')
+          options.onSessionResolved?.(session.id, sendOwner.newTaskDraftKey);
+        void refreshSessions().catch(() => undefined);
+        return true;
+      }
+      if (!options.targetSessionId && !onFollowLatest(initialSessionId)) return false;
+      optimisticSessionId = initialSessionId;
+      publishTransientUserMessage(initialSessionId, {
+        id: messageId, text: options.displayText ?? text, transientPlacement: 'transcript',
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
+      });
+      const submitted = await submitIntoSession(initialSessionId, messageId);
+      // An existing-Session send never reports a resolved Session.
+      return submitted.kind !== 'refused';
+    } catch (error) {
+      // Capture ownership before cleanup clears the optimistic Session. A
+      // barrier timeout belongs to the surface that was waiting for it, while
+      // navigation away still suppresses feedback.
+      const feedbackSessionId = optimisticSessionId ?? initialSessionId;
+      const diagnosticTarget = feedbackSessionId
+        ? { sessionId: feedbackSessionId }
+        : newTaskTarget
+          ? { profileId: newTaskTarget.profileId }
+          : undefined;
+      const sendStillOwnsCurrentSurface =
+        (feedbackSessionId !== undefined &&
+          isShellSurfaceOwnerActive({
+            ...sendOwner,
+            sessionId: feedbackSessionId,
+          })) ||
+        (!initialSessionId && isNewChatSendSurfaceActive(sendOwner));
+      await discardUnsentSession();
+      if (optimisticSessionId) {
+        removeTransientMessage(optimisticSessionId, messageId);
+      }
+      // Which surface is allowed to hear about this failure. The id alone is
+      // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),
+      // so a user who left for 扩展 → 技能 mid-flight still "is" session A by
+      // that comparison — and the readiness branch below ends in
+      // `openSettingsSection('models')` (app-shell.tsx), which NAVIGATES. That
+      // is the same gap #1433 fixed one file over in the quick-entry path, and
+      // it was reachable here because this line re-derived the rule from an id
+      // instead of asking the shell. One owner for the question, one answer.
+      //
+      // The owner MOVES on an optimistic create: the send began on the new-chat
+      // surface and the app is now on the session it just made, so the id is
+      // taken from the flight and only the section comes from the capture.
+      if (!sendStillOwnsCurrentSurface) return false;
+      if (isNoRealConnectionError(error)) {
+        const reason = noRealConnectionReasonFromError(error);
+        showModelSetupToast(
+          noRealConnectionSetupDescription(reason, uiLocale),
+          reason,
+          diagnosticTarget,
+        );
+      } else if (isSessionWorkspaceUnavailableError(error)) {
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, diagnosticTarget);
+      } else {
+        toastApi.error(
+          copy.sendFailedTitle,
+          localizedShellErrorMessage(error, copy.sendFailedFallback, uiLocale),
+          undefined,
+          diagnosticTarget,
+        );
+      }
+      return false;
+    }
+  }
+
+  async function enqueueMessage(
+    sessionId: string,
+    text: string,
+    placement: 'current_turn' | 'next_turn',
+    pending?: readonly PendingAttachment[],
+    options: MessageContextOptions = {},
+  ): Promise<boolean> {
+    const messageId = crypto.randomUUID();
+    const steeringTurnId = placement === 'current_turn' ? deps.getRunningTurnId?.(sessionId) : undefined;
+    const directoryReferences = options.directoryReferences;
+    const quotes = options.quotes ?? [];
+    const { attachmentItems, retainedAttachments = [] } = toSubmittedAttachments(pending ?? []);
+    publishTransientUserMessage(sessionId, {
+      id: messageId, text, attachments: retainedAttachments,
+      ...(steeringTurnId ? { hostTurnId: steeringTurnId } : {}),
+      transientPlacement: placement === 'next_turn' ? 'follow_up' : 'transcript',
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
+      inlineReferences: [],
+    });
+    try {
+      const submitted = await submitAndProject({
+        sessionId,
+        messageId,
+        placement,
+        command: {
+          text,
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+        },
+        ...copiedArray('quotes', quotes),
+        isSurfaceVisible: () => activeIdRef.current === sessionId,
+      });
+      // A refused Message opened nothing and left no row. Reporting it as sent
+      // would clear the composer draft the user has to retry from.
+      return submitted.kind !== 'refused';
+    } catch (error) {
+      removeTransientMessage(sessionId, messageId);
+      throw error;
+    }
+  }
+
+  async function respondToInteraction<Response extends { requestId: string }>(
+    response: Response,
+    submit: (sessionId: string, response: Response) => Promise<void>,
+    onApplied?: (sessionId: string) => void,
+  ) {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    try {
+      await submit(sessionId, response);
+      onInteractionChanged?.(sessionId);
+      onApplied?.(sessionId);
+      settleInteraction(sessionId, response.requestId);
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      if (isSessionWorkspaceUnavailableError(error)) {
+        showSessionWorkspaceUnavailableToast(toastApi, getShellCopy(uiLocale).errors, { sessionId });
+      } else {
+        toastApi.error(
+          copy.responseFailedTitle,
+          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
+      }
+    }
+  }
+
+  function publishTransientUserMessage(
+    sessionId: string,
+    message: Omit<TransientUserMessageProjection, 'ts'>,
+    updateOnly = false,
+  ): void {
+    (updateOnly ? deps.updateTransientMessage : deps.addTransientMessage)(sessionId, { ...message, ts: Date.now() });
+    if (activeIdRef.current !== sessionId) return;
+    clearMessageLoadError(sessionId);
+  }
+
+  return {
+    send,
+    enqueueMessage,
+    respondToSandboxBoundary: (response) =>
+      respondToInteraction(
+        response,
+        services.respondToSandboxBoundary,
+        onExecutionBoundaryChanged,
+      ),
+    respondToUserQuestion: (response) =>
+      respondToInteraction(response, services.respondToUserQuestion),
+    respondToUserForm: (response) => respondToInteraction(response, submitUserForm),
+  };
+}

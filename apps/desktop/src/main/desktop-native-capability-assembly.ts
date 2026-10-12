@@ -40,11 +40,13 @@ import {
   parseComputerUseRealModelPolicy,
 } from './computer-use-real-model-policy.js';
 import type { DesktopLocaleAuthority } from './desktop-locale-authority.js';
+import type { WindowRevealMode } from './window-reveal.js';
 
 const COMPUTER_USE_WAKE_HOLD = 'computer-use';
 
 export interface DesktopNativeCapabilityAssemblyDeps {
   readonly isComputerUseRealModelE2e: boolean;
+  readonly revealMode: WindowRevealMode;
   readonly locale: Pick<DesktopLocaleAuthority, 'current' | 'subscribe'>;
   readonly keepSystemAwake?: { hold(reason: string): void; release(reason: string): void };
   readonly mainWindow?: {
@@ -59,7 +61,7 @@ export function assembleDesktopNativeCapabilities(
   deps: DesktopNativeCapabilityAssemblyDeps,
 ) {
   const browserTools = buildBrowserTools();
-  const computerUseOverlay = createCursorOverlayController();
+  const computerUseOverlay = createCursorOverlayController({ revealMode: deps.revealMode });
   const computerUsePip = createComputerUsePipController(
     deps.mainWindow
       ? {
@@ -68,8 +70,9 @@ export function assembleDesktopNativeCapabilities(
           resolveParentWindow: () => deps.mainWindow?.browserWindow(),
           cursorPoint: () => screen.getCursorScreenPoint(),
           workAreaFor: (rect) => screen.getDisplayMatching(rect).workArea,
+          revealMode: deps.revealMode,
         }
-      : {},
+      : { revealMode: deps.revealMode },
   );
 
   const computerUseStatusItem = createComputerUseStatusItem({

@@ -25,6 +25,7 @@ import {
   type SessionDomainChangedFrame,
   type SessionContinuitySnapshot,
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
+  type SubscriptionClosedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenResult,
   type SessionTranscriptBootstrap,
@@ -55,6 +56,27 @@ export class RuntimeHostSubscriptionError extends Error {
   }
 }
 
+export class SessionRemovedSubscriptionError extends Error {
+  readonly name = 'SessionRemovedSubscriptionError';
+}
+
+export function subscriptionClosedError(reason: SubscriptionClosedFrame['reason']): Error {
+  if (reason === 'session_removed') {
+    return new SessionRemovedSubscriptionError(
+      'Runtime Host Session was removed while it was observed',
+    );
+  }
+  if (reason === 'access_revoked') {
+    return new SessionRemovedSubscriptionError(
+      'Access to the shared Runtime Host Session was revoked',
+    );
+  }
+  return new RuntimeHostSubscriptionError(
+    'slow_consumer',
+    'Runtime Host Session subscription closed for a slow consumer',
+  );
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -67,6 +89,17 @@ export interface RuntimeHostSessionSubscription extends AsyncIterable<Subscripti
   readonly snapshot: SessionContinuitySnapshot;
   readonly activeAssistantStreams: readonly SessionAssistantStreamIdentity[];
   readonly transcriptBootstrap: SessionTranscriptBootstrap | null;
+  /** Newest durable sequence the Host announced; updated before the frame is handed out. */
+  readonly transcriptWatermark: number | null;
+  /**
+   * The subscription's own death certificate: the reason on a received
+   * `subscription.closed` frame, or the failure that terminated it. A
+   * transcript read racing the death only sees the dead-state mask; classify
+   * by this instead. The closed reason is recorded before any terminal error
+   * can exist, so it always wins here. Optional introspection — fakes that
+   * never produce a certificate need not declare it.
+   */
+  readonly deathCause?: Error | undefined;
   loadTranscript<T>(decodeMessage: (value: unknown) => T): Promise<T[]>;
   decodeTranscriptPage<T>(
     page: SessionTranscriptPage,
@@ -110,6 +143,16 @@ export class ClientSessionSubscription
     input: SessionTranscriptPageInput,
   ) => Promise<SessionTranscriptPage>;
   readonly #expectedSessionId: string;
+  get transcriptWatermark(): number | null {
+    return this.#latestTranscriptThroughSequence;
+  }
+  get deathCause(): Error | undefined {
+    // #closedReason is recorded at accept()-time, before #terminalError can
+    // exist — it is always the authoritative death statement.
+    return this.#closedReason === undefined
+      ? this.#terminalError
+      : subscriptionClosedError(this.#closedReason);
+  }
   readonly #queue: QueuedFrame[] = [];
   readonly #ptyListeners = new Set<(frame: SessionRuntimeResourcePtyDataFrame) => void>();
   readonly #sessionDomainListeners = new Set<(frame: SessionDomainChangedFrame) => void>();
@@ -123,6 +166,7 @@ export class ClientSessionSubscription
       }
     | undefined;
   #terminalError: Error | undefined;
+  #closedReason: SubscriptionClosedFrame['reason'] | undefined;
   #done = false;
   #doneAfterQueue = false;
   #closing = false;
@@ -358,7 +402,8 @@ export class ClientSessionSubscription
   }
 
   #assertTranscriptReadable(): void {
-    if (this.#closing || this.#done || this.#terminalError) {
+    if (this.#terminalError) throw this.#terminalError;
+    if (this.#closing || this.#done) {
       throw new RuntimeHostSubscriptionError(
         'connection_closed',
         'Session subscription closed during transcript loading',
@@ -486,8 +531,14 @@ export class ClientSessionSubscription
       }
     }
 
+    if (frame.kind === 'subscription.closed') {
+      // Record the reason before the offer: a full client queue makes #offer
+      // throw 'slow_consumer', which would otherwise discard the real reason
+      // the Host gave for closing this subscription.
+      this.#closedReason = frame.reason;
+      this.#doneAfterQueue = true;
+    }
     this.#offer(frame);
-    if (frame.kind === 'subscription.closed') this.#doneAfterQueue = true;
   }
 
   finish(): void {

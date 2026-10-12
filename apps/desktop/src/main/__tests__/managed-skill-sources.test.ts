@@ -165,7 +165,7 @@ description: Build decks.
       const outside = join(root, 'outside-cache-target');
       const cacheRoot = join(root, 'cache-link');
       await mkdir(outside);
-      await symlink(outside, cacheRoot);
+      await symlink(outside, cacheRoot, process.platform === 'win32' ? 'junction' : 'dir');
 
       assert.deepEqual(await importManagedSkillSource({ root: cacheRoot, sourceFile }), {
         ok: false,

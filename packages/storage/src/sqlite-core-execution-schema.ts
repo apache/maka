@@ -190,6 +190,7 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
       WHERE json_extract(record_json, '$.execution.kind') = 'safe_boundary_continuation';
 
     DROP INDEX IF EXISTS core_agent_runs_identity;
+    DROP INDEX IF EXISTS core_interaction_requests_by_turn;
 
     DROP TABLE IF EXISTS core_message_receipts;
     DROP TABLE IF EXISTS core_message_host_epochs;

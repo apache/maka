@@ -138,22 +138,6 @@ export function autocompleteSuggestionLines(lines: readonly string[]): readonly 
   return lines.slice(start, end);
 }
 
-export function assertBottomPickerPlacement(
-  terminal: FakeTerminal,
-  title: string,
-  statusText: string,
-): void {
-  const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-  const titleIndex = lines.findIndex((line) => line.includes(title));
-  const statusLineIndex = lines.findIndex((line) => line.includes(statusText));
-  const [topEditorBorderIndex, bottomEditorBorderIndex] = inputSurfaceRows(lines);
-
-  assert.ok(titleIndex > 0);
-  assert.ok(titleIndex < topEditorBorderIndex);
-  assert.equal(bottomEditorBorderIndex, terminal.rows - 2);
-  assert.equal(statusLineIndex, terminal.rows - 1);
-}
-
 export function latestPlainLineContaining(output: string, text: string): string {
   const line = plainTerminalOutput(output)
     .split(/\r?\n/)

@@ -21,8 +21,12 @@ import { RetryError } from 'ai';
 import { MODEL_FAILURE_MESSAGE_MAX_BYTES } from '@maka/core/model-failure';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { isAuthenticationErrorText } from '@maka/core/redaction';
-import type { ProviderRetryReason } from '@maka/core/events';
 import type { ModelFailure, ModelFailureKind } from './model-protocol.js';
+import { providerRetryDecision, responseHeadersFromError } from './provider-retry-policy.js';
+import {
+  OPENAI_RESPONSES_TRANSPORT_CODES,
+  PROVIDER_BILLING_PROVIDER_CODES,
+} from './provider-error-signals.js';
 
 /**
  * Structured provider error identifiers that mean the INPUT exceeded the
@@ -53,6 +57,18 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
   'ENETUNREACH',
 ]);
 
+// A successful status acknowledges the headers, not a complete response body.
+// Unlike pre-response failures, require an explicit interruption code here:
+// neither SDK retryability nor arbitrary TLS/undici errors prove a transient cut.
+const RESPONSE_TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ECONNABORTED',
+  'UND_ERR_SOCKET',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
 /**
  * xAI emits this code for transient model capacity failures, including when
  * the same payload is relayed through an OpenAI-compatible gateway. Do not
@@ -60,21 +76,6 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
  * represents quota exhaustion and needs different user guidance.
  */
 const PROVIDER_CAPACITY_CODES: ReadonlySet<string> = new Set(['resource-exhausted']);
-
-/**
- * Structured provider error identifiers that mean an ACCOUNT-level usage or
- * billing condition — exhausted credits or a closed plan/quota window —
- * rather than an invalid credential. Providers disagree on which HTTP status
- * travels with them (402, 401/403, even 429); the structured code is the
- * stable evidence, so it outranks every numeric fallback below.
- */
-const PROVIDER_BILLING_PROVIDER_CODES: ReadonlySet<string> = new Set([
-  'insufficient_quota', // OpenAI & OpenAI-compatible: error.code
-  'insufficient_balance', // DeepSeek: error.code
-  'quota_exceeded', // OpenAI-compatible variants: error.code
-  'freeusagelimiterror', // OpenCode Zen free tier exhausted (HTTP 429): error.type
-  'upgrade_required', // Command Code: the plan has no Provider API access (HTTP 403): error.code
-]);
 
 /**
  * Free-text usage/billing wording that overrides a credential-shaped HTTP
@@ -113,7 +114,7 @@ interface ProviderErrorEvidence {
   code: string;
   /** Structured provider identifiers (code/type), lowercased. */
   structuredCodes: string[];
-  /** Structured pre-response transport evidence from SDK metadata or cause codes. */
+  /** Structured transport evidence, including interruptions after successful headers. */
   transportFailure: boolean;
 }
 
@@ -142,34 +143,6 @@ interface ProviderFailureSummary {
 
 const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
 
-const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;
-
-/** Codes the incremental Responses transport raises before any HTTP response. */
-const OPENAI_RESPONSES_TRANSPORT_CODES: ReadonlySet<string> = new Set([
-  'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
-  'OPENAI_RESPONSES_CONTINUATION_UNAVAILABLE',
-]);
-
-/** Retryability follows the kind alone; never re-derive it from a status or header. */
-const MODEL_FAILURE_RETRY: Record<ModelFailureKind, ProviderRetryReason | null> = {
-  abort: null,
-  auth: null,
-  context_overflow: null,
-  network: 'network',
-  provider_billing: null,
-  provider_capacity: 'provider_capacity',
-  provider_unavailable: 'provider_unavailable',
-  rate_limit: 'rate_limit',
-  request_rejected: null,
-  stream_truncated: 'stream_truncated',
-  timeout: 'timeout',
-  unknown: null,
-};
-
-export function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason | null {
-  return MODEL_FAILURE_RETRY[kind];
-}
-
 function providerErrorTarget(error: unknown): unknown {
   return RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
     ? error.lastError
@@ -177,10 +150,12 @@ function providerErrorTarget(error: unknown): unknown {
 }
 
 function isTransportFailure(target: unknown, statusCode: string): boolean {
-  if (statusCode) return false;
+  const successfulResponse = /^2\d\d$/.test(statusCode);
+  if (statusCode && !successfulResponse) return false;
   const record = objectRecord(target);
   if (!record) return false;
   if (
+    !successfulResponse &&
     target instanceof Error &&
     target.name === 'AI_APICallError' &&
     safeField(record, 'isRetryable') === true
@@ -194,48 +169,35 @@ function isTransportFailure(target: unknown, statusCode: string): boolean {
     seen.add(current);
     const currentRecord = objectRecord(current);
     if (!currentRecord) return false;
+    if (successfulResponse) {
+      const nestedStatus =
+        safeField(currentRecord, 'statusCode') ?? safeField(currentRecord, 'status');
+      // Do not reinterpret a cancellation or a nested HTTP rejection as a
+      // recoverable body interruption merely because it has a socket cause.
+      if (
+        safeField(currentRecord, 'name') === 'AbortError' ||
+        ((typeof nestedStatus === 'number' || typeof nestedStatus === 'string') &&
+          nestedStatus !== '' &&
+          !/^2\d\d$/.test(String(nestedStatus)))
+      ) {
+        return false;
+      }
+    }
     const code = safeField(currentRecord, 'code');
     if (
       typeof code === 'string' &&
-      (TRANSPORT_FAILURE_CODES.has(code) ||
-        code.startsWith('ERR_SSL_') ||
-        code.startsWith('ERR_TLS_') ||
-        code.startsWith('UND_ERR_'))
+      (successfulResponse
+        ? RESPONSE_TRANSPORT_FAILURE_CODES.has(code)
+        : TRANSPORT_FAILURE_CODES.has(code) ||
+          code.startsWith('ERR_SSL_') ||
+          code.startsWith('ERR_TLS_') ||
+          code.startsWith('UND_ERR_'))
     ) {
       return true;
     }
     current = safeField(currentRecord, 'cause');
   }
   return false;
-}
-
-function responseHeadersFromError(error: unknown): Record<string, string> | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const value = (error as { responseHeaders?: unknown }).responseHeaders;
-  if (typeof value !== 'object' || value === null) return undefined;
-  const headers: Record<string, string> = {};
-  for (const [key, header] of Object.entries(value)) {
-    if (typeof header === 'string') headers[key.toLowerCase()] = header;
-  }
-  return headers;
-}
-
-function parseRetryAfterMs(headers: Record<string, string>): number | undefined {
-  const rawMilliseconds = headers['retry-after-ms'];
-  const rawRetryAfter = headers['retry-after'];
-  if (rawMilliseconds === undefined && rawRetryAfter === undefined) return undefined;
-
-  let delayMs: number;
-  if (rawMilliseconds !== undefined) {
-    delayMs = Number(rawMilliseconds);
-  } else {
-    const seconds = Number(rawRetryAfter);
-    delayMs = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(rawRetryAfter!) - Date.now();
-  }
-  if (!Number.isFinite(delayMs) || delayMs <= 0 || delayMs > MAX_SAFE_TIMER_DELAY_MS) {
-    return undefined;
-  }
-  return Math.ceil(delayMs);
 }
 
 function retryMetadataFromFacts(
@@ -246,9 +208,11 @@ function retryMetadataFromFacts(
   // The Codex transport already spent its complete 2/10/30-second budget.
   // Do not let the outer model loop restart that same transport budget.
   if (isTrustedCodexEdgeRejection(facts)) return { retryable: false };
-  if (MODEL_FAILURE_RETRY[errorClass] === null) return { retryable: false };
-  const retryAfterMs = parseRetryAfterMs(facts.responseHeaders ?? {});
-  return { retryable: true, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
+  const decision = providerRetryDecision(errorClass, facts.responseHeaders ?? {});
+  return {
+    retryable: decision.reason !== null,
+    ...(decision.retryAfterMs === undefined ? {} : { retryAfterMs: decision.retryAfterMs }),
+  };
 }
 
 /** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
@@ -589,6 +553,7 @@ const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
   /greater than the context length/i, // LM Studio
   /context window exceeds limit/i, // MiniMax
   /exceeded model token limit/i, // Kimi For Coding
+  /exceeded [\w.-]+ model token limit:\s*[\d,]+/i, // Kimi model-qualified limit
   /too large for model with \d+ maximum context length/i, // Mistral
   /prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i, // DS4 server
   /model_context_window_exceeded/i, // z.ai non-standard finish_reason surfaced as error text
@@ -771,10 +736,15 @@ function isTrustedCodexEdgeRejection(facts: ProviderErrorFacts): boolean {
   const seen = new Set<unknown>();
   for (let depth = 0; depth < 5 && current !== undefined && !seen.has(current); depth += 1) {
     seen.add(current);
-    if (current instanceof Error && current.name === 'OpenAiCodexEdgeRejectionError') return true;
+    if (
+      current instanceof Error &&
+      safeField(current as unknown as Record<string, unknown>, 'name') ===
+        'OpenAiCodexEdgeRejectionError'
+    )
+      return true;
     current =
       typeof current === 'object' && current !== null
-        ? (current as { cause?: unknown }).cause
+        ? safeField(current as Record<string, unknown>, 'cause')
         : undefined;
   }
   return false;

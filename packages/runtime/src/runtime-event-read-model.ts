@@ -251,8 +251,8 @@ export interface ArchivedToolResultReadModelStatus {
 export interface RuntimeEventTerminalFact {
   runId: string;
   turnId: string;
-  runStatus: 'completed' | 'failed' | 'cancelled';
-  turnStatus: 'completed' | 'failed' | 'aborted';
+  runStatus: 'completed' | 'failed' | 'cancelled' | 'handed_off';
+  turnStatus: 'completed' | 'failed' | 'aborted' | 'handed_off';
   terminalEvent: RuntimeEvent;
   failureClass?: string;
   abortSource?: string;
@@ -853,6 +853,23 @@ export function classifyRuntimeEventTerminalFact(
   }
 
   const terminalEvent = terminalSignals[0]!;
+  // A handoff pause seals the run without ending the turn: the successor run
+  // owns the turn's terminal state. The pause carries no terminal status by
+  // design — completed/failed/aborted would each be a lie about a run that was
+  // none of them — so it classifies as its own status. The event is immutable
+  // once written, so ledgers written before this classification carry exactly
+  // this shape.
+  if (terminalEvent.actions?.handoffPause) {
+    const fact: RuntimeEventTerminalFact = {
+      runId: invocation.runId,
+      turnId: invocation.turnId,
+      runStatus: 'handed_off',
+      turnStatus: 'handed_off',
+      terminalEvent,
+      diagnostics,
+    };
+    return { fact, diagnostics };
+  }
   if (!isTerminalRuntimeEventStatus(terminalEvent.status)) {
     diagnostics.push(
       readModelDiagnostic(

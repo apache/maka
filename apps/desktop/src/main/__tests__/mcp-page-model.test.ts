@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isMcpStdioConfig, type McpServerStatus } from '@maka/core/mcp';
-import { MCP_CATALOG } from '../../renderer/mcp-catalog.js';
 import { AtomicFileWriteCommitUnknownError } from '@maka/storage/mcp-config-store';
 import { getMcpCopy } from '../../renderer/locales/mcp-copy.js';
 import {
@@ -28,9 +27,9 @@ import {
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
-  presentMcpNegotiatedProtocol,
-  mcpWriteFailureMessage,
-} from '../../renderer/mcp-page-model.js';
+  mcpConfigFailureMessage,
+  unwrapMcpIpcResult,
+} from '../../renderer/features/module-hub/testing.js';
 
 const copy = getMcpCopy('en');
 
@@ -43,14 +42,14 @@ test('MCP write errors retain actionable localized meaning across Electron seria
       [durabilityError.message, localized.errors.writeDurabilityUnknown],
       [outOfSync, localized.errors.writeOutOfSync],
     ]) {
-      assert.equal(mcpWriteFailureMessage(message, localized), expected);
+      assert.equal(mcpConfigFailureMessage(message, localized), expected);
       assert.equal(
-        mcpWriteFailureMessage(new Error(`Error invoking remote method 'mcp:remove': Error: ${message}`), localized),
+        mcpConfigFailureMessage(new Error(`Error invoking remote method 'mcp:remove': Error: ${message}`), localized),
         expected,
       );
     }
-    assert.equal(mcpWriteFailureMessage(new Error('unrelated private details'), localized), undefined);
-    assert.equal(mcpWriteFailureMessage(undefined, localized), undefined);
+    assert.equal(mcpConfigFailureMessage(new Error('unrelated private details'), localized), undefined);
+    assert.equal(mcpConfigFailureMessage(undefined, localized), undefined);
   }
 });
 
@@ -162,18 +161,6 @@ test('kind changes preserve an explicit protocol choice and derive only unselect
   assert.equal(mcpDraftProtocolPreference(pinned), '2026-07-28');
 });
 
-test('the MCP catalog opts every bundled remote entry into auto negotiation', () => {
-  const remoteEntries = MCP_CATALOG.filter((entry) => !isMcpStdioConfig(entry.config));
-
-  assert.deepEqual(
-    remoteEntries.map((entry) => entry.id),
-    ['notion', 'vercel', 'supabase'],
-  );
-  for (const entry of remoteEntries) {
-    assert.equal(!isMcpStdioConfig(entry.config) && entry.config.protocol, 'auto');
-  }
-});
-
 test('an edit that does not touch OAuth preserves the block through save', () => {
   const stored = {
     enabled: true,
@@ -215,23 +202,38 @@ test('a stdio config round-trips through the command-line field', () => {
   assert.deepEqual(saved, { ...stored, protocol: 'legacy' });
 });
 
-test('status copy presents only a live connected negotiated protocol', () => {
-  const status: McpServerStatus = {
-    serverId: 'remote',
-    state: 'connected',
-    transport: 'streamable-http',
-    negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
-    toolCount: 0,
-    tools: [],
-    updatedAt: 1,
+test('an untouched environment reads back unchanged, whatever its values hold', () => {
+  const env = {
+    PRIVATE_KEY: '-----BEGIN KEY-----\nSECOND=third\r\n-----END KEY-----',
+    WITH_EQUALS: 'a=b',
+    QUOTED: '"kept"',
+    PLAIN: 'secret',
   };
+  const saved = mcpConfigFromDraft(mcpDraftFromConfig('local', { command: 'node', env }), copy);
+  assert.ok(isMcpStdioConfig(saved));
+  assert.deepEqual(saved.env, env);
+});
 
-  assert.equal(
-    presentMcpNegotiatedProtocol(status, copy),
-    'Modern · 2026-07-28',
-  );
-  assert.equal(
-    presentMcpNegotiatedProtocol({ ...status, state: 'disconnected' }, copy),
-    undefined,
-  );
+
+test('corrupt MCP localization uses typed data, not English error text or custom IPC Error fields', () => {
+  const path = '/profile/mcp.json';
+  const result = structuredClone({ kind: 'invalid-mcp-config-file', path: '/profile/\u0001mcp.json' });
+  for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
+    const localized = getMcpCopy(locale);
+    assert.throws(() => unwrapMcpIpcResult(result), (error) => {
+      assert.equal(mcpConfigFailureMessage(error, localized), localized.errors.invalidConfigFile(path));
+      assert.equal(
+        mcpConfigFailureMessage(new Error('unrelated wrapper text', { cause: error }), localized),
+        localized.errors.invalidConfigFile(path),
+      );
+      return true;
+    });
+    const oldMessage = `MCP config at ${path} contains invalid JSON. The file was not modified. Close the app, back up and repair this file before retrying.`;
+    assert.equal(mcpConfigFailureMessage(new Error(oldMessage), localized), undefined);
+  }
+  const invalidImport = { status: 'invalid', reason: 'invalid-json' } as const;
+  assert.equal(unwrapMcpIpcResult(invalidImport), invalidImport);
+  const cyclic = new Error('cyclic cause');
+  cyclic.cause = cyclic;
+  assert.equal(mcpConfigFailureMessage(cyclic, copy), undefined);
 });

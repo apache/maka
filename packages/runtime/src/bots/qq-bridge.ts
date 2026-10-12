@@ -393,8 +393,7 @@ export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
       event = qqC2CMessageToEvent(d as QQC2CMessagePayload, receivedAt);
     }
     if (!event) return;
-    this.lastEventAt = event.receivedAt;
-    this.emitIncomingMessage(event);
+    if (!this.emitIncomingMessage(event)) return;
     this.emitStatusChange();
   }
 

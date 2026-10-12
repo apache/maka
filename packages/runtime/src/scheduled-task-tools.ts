@@ -23,6 +23,7 @@
  * Agent-facing access to the Runtime Host-owned ScheduledTask catalog.
  */
 
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import {
   SCHEDULED_TASK_CRON_MAX_CHARS,
@@ -96,42 +97,105 @@ const schema = z.object({
   maxFires: z.number().int().min(1).max(10_000).optional(),
 });
 
-export function buildScheduledTaskTool(deps: { authority: ScheduledTaskToolAuthority }): MakaTool {
+/**
+ * Renders an epoch in the Host's local time zone with an explicit offset, so a
+ * model can turn "today at 10:00" into `runAt` without a shell round trip.
+ */
+export function formatScheduledTaskLocalTime(epochMs: number, timeZone?: string): string {
+  const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'longOffset',
+    })
+      .formatToParts(epochMs)
+      .map((part) => [part.type, part.value]),
+  );
+  const offset = parts.timeZoneName === 'GMT' ? '+00:00' : parts.timeZoneName?.replace('GMT', '');
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset} (${zone})`;
+}
+
+export function buildScheduledTaskTool(deps: {
+  authority: ScheduledTaskToolAuthority;
+  now?: () => number;
+  timeZone?: string;
+}): MakaTool {
+  const now = deps.now ?? Date.now;
+  const clockLine = () => {
+    const at = now();
+    return `now=${at} (${formatScheduledTaskLocalTime(at, deps.timeZone)})`;
+  };
+  const fireLine = (epochMs: number | null) =>
+    epochMs === null ? '—' : `${epochMs} (${formatScheduledTaskLocalTime(epochMs, deps.timeZone)})`;
   return {
     name: SCHEDULED_TASK_TOOL_NAME,
     displayName: 'ScheduledTask',
     description:
       'Create and manage global scheduled tasks (定时任务). ' +
       'Use for every recurring or one-shot task. All tasks appear in the desktop Scheduled tasks page. ' +
-      'The default session_resume effect continues this conversation; use agent_run for independent work.',
+      'The default session_resume effect continues this conversation; use agent_run for independent work. ' +
+      'Times are epoch milliseconds. Only the list and create results report the current Host time and time zone; ' +
+      'call mode=list first when you need it to compute runAt or startAt.',
     parameters: schema,
     impl: async (raw, ctx) => {
       const input = schema.parse(raw);
       const sessionId = ctx.sessionId;
       if (input.mode === 'list') {
         const tasks = await deps.authority.list();
-        if (tasks.length === 0) return 'No scheduled tasks.';
-        return tasks
-          .map(
+        if (tasks.length === 0) return `No scheduled tasks.\n${clockLine()}`;
+        return [
+          `Scheduled task catalog (${tasks.length}):`,
+          ...tasks.map(
             (task) =>
-              `- ${task.id} | ${task.title} | ${task.status} | next=${task.nextFireAt ?? '—'} | effect=${task.effect.kind}`,
-          )
-          .join('\n');
+              `- ${task.id} | ${task.title} | ${task.status} | next=${fireLine(task.nextFireAt)} | effect=${task.effect.kind}`,
+          ),
+          clockLine(),
+        ].join('\n');
       }
       if (input.mode === 'create') {
         if (!input.title || !input.intentBody || !input.schedule) {
-          return 'create requires title, intentBody, and schedule';
+          return `create requires title, intentBody, and schedule\n${clockLine()}`;
+        }
+        const effect = input.effect ?? 'session_resume';
+        const resolvedCwd = ctx.cwd?.trim() ? resolve(ctx.cwd) : '';
+        if (effect !== 'notify_local' && !resolvedCwd) {
+          return `create ${effect} requires a project working directory\n${clockLine()}`;
         }
         const result = await deps.authority.create({
           title: input.title,
           intentBody: input.intentBody,
           schedule: input.schedule,
-          effect: input.effect ?? 'session_resume',
+          effect,
           sessionId,
           ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
         });
-        if ('error' in result) return result.error;
-        return `Scheduled task created: ${result.title} (${result.id})\nnextFireAt=${result.nextFireAt}\neffect=${result.effect.kind}`;
+        if ('error' in result) return `${result.error}\n${clockLine()}`;
+        let catalog: readonly ScheduledTask[];
+        try {
+          catalog = await deps.authority.list();
+        } catch {
+          return `Scheduled task may have been created, but catalog verification was unavailable for ${result.id}; query mode=list before retrying to avoid duplicates\n${clockLine()}`;
+        }
+        const persisted = catalog.find((task) => task.id === result.id);
+        if (!persisted) {
+          return `Scheduled task may have been created, but catalog verification could not find ${result.id}; query mode=list before retrying to avoid duplicates\n${clockLine()}`;
+        }
+        const taskCwd =
+          persisted.effect.kind === 'agent_run' ? persisted.effect.execution.cwd : resolvedCwd;
+        return [
+          `Scheduled task created and verified in Maka catalog: ${persisted.title} (${persisted.id})`,
+          `nextFireAt=${fireLine(persisted.nextFireAt)}`,
+          `effect=${persisted.effect.kind}`,
+          `cwd=${taskCwd}`,
+          clockLine(),
+        ].join('\n');
       }
       if (!input.id) return `${input.mode} requires id`;
       if (input.mode === 'pause') {

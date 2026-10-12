@@ -66,6 +66,20 @@ export function derivePetActivityState(
   return 'idle';
 }
 
+/** The pack state for the displayed Session: Conversation's activity reading plus its catalog row. */
+export function petActivityForSession(input: {
+  readonly activity: { readonly turnRunning: boolean; readonly awaitingInteraction: boolean };
+  readonly hasActiveSession: boolean;
+  readonly sessionStatus: SessionStatus | undefined;
+}): PetActivityState {
+  return derivePetActivityState({
+    hasActiveSession: input.hasActiveSession,
+    hasActiveInteraction: input.activity.awaitingInteraction,
+    turnActive: input.activity.turnRunning,
+    sessionStatus: input.sessionStatus,
+  });
+}
+
 export function syncPetPlaybackState(input: {
   readonly currentState: PetActivityState;
   readonly activityState: PetActivityState;

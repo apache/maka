@@ -204,6 +204,23 @@
   font: var(--maka-text-supporting);
 }
 
+.maka-agent-graph-output {
+  display: grid;
+  gap: var(--space-0-5);
+}
+
+.maka-agent-graph-output-meta {
+  color: var(--muted-foreground);
+}
+
+.maka-agent-graph-operator-copy .maka-agent-graph-output-preview {
+  color: var(--foreground);
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: pre-wrap;
+}
+
 .maka-agent-graph-wait {
   color: var(--warning-text);
 }

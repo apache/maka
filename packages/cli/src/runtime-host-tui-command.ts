@@ -73,7 +73,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       input.locale,
       input.hostProfileId,
     );
-    if (!configured) throw error;
+    if (!configured) return 0;
     context = await createRuntimeHostTuiContext(contextInput);
   }
   let ownerAction: (() => Promise<number>) | undefined;

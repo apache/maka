@@ -23,7 +23,27 @@ import {
   aggregateMessageContents,
   decodeToolStepProgress,
   encodeToolStepProgress,
+  decodeMessageContent,
+  foldAssistantDelta,
+  isQuoteRef,
 } from '../events.js';
+
+test('folds assistant deltas idempotently by source offset', () => {
+  assert.deepStrictEqual(foldAssistantDelta(0, { startOffset: 0, text: 'Hello' }), {
+    tail: 'Hello',
+    endOffset: 5,
+  });
+  assert.deepStrictEqual(foldAssistantDelta(5, { startOffset: 0, text: 'Hello world' }), {
+    tail: ' world',
+    endOffset: 11,
+  });
+  assert.deepStrictEqual(foldAssistantDelta(11, { startOffset: 0, text: 'Hello' }), {
+    tail: '',
+    endOffset: 11,
+  });
+  assert.deepStrictEqual(foldAssistantDelta(3, { text: 'abc' }), { tail: 'abc', endOffset: 6 });
+  assert.strictEqual(foldAssistantDelta(3, { startOffset: 4, text: 'gap' }), undefined);
+});
 
 test('aggregates inline references against the combined display text', () => {
   assert.deepStrictEqual(
@@ -55,6 +75,24 @@ test('preserves an explicit empty inline-reference marker while aggregating', ()
     text: 'plain',
     inlineReferences: [],
   });
+});
+
+test('round-trips Session snapshot provenance and rejects partial provenance', () => {
+  const quote = {
+    text: 'bounded excerpt',
+    label: 'Session: Research',
+    sourceSessionId: 'session-source',
+    sourceSessionName: 'Research',
+    sourceCapturedAt: 1_735_000_000_000,
+    sourceTruncated: true,
+  } as const;
+  assert.equal(isQuoteRef(quote), true);
+  assert.deepEqual(decodeMessageContent({ text: 'continue', quotes: [quote] }).quotes, [quote]);
+  assert.equal(isQuoteRef({ ...quote, sourceTruncated: undefined }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: Number.NaN }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: Number.MAX_VALUE }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: 8.64e15 + 1 }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: 8.64e15 }), true);
 });
 
 test('round-trips bounded tool step progress through the shared wire codec', () => {

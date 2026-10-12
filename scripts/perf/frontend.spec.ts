@@ -411,7 +411,9 @@ test('streaming input, background output and stop', {
       await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend received');
       const stop = await measure('stop', async () => {
         await activate(page.getByRole('button', { name: /^(停止|Stop)$/ }));
-        await expect(page.getByRole('log')).toContainText('已中断');
+        await expect(page.locator('.maka-turn-statusbar[data-turn-status="aborted"]')).toHaveCount(
+          1,
+        );
         await expect(page.getByRole('button', { name: /^(停止|Stop)$/ })).toHaveCount(0);
       });
       row('stop', 'dom-settled-ms', [stop.ms]);

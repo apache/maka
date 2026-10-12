@@ -32,7 +32,10 @@ import {
   createRuntimeHostBotSessionAdapter,
   type RuntimeHostBotSessionAdapterDeps,
 } from '../runtime-host-bot-session-adapter.js';
-import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+import {
+  AsyncFrameQueue,
+  runtimeHostSessionFixture,
+} from './runtime-host-session-test-fixture.js';
 
 type BotClient = RuntimeHostBotSessionAdapterDeps['client'];
 
@@ -170,8 +173,6 @@ test('subscribes before Turn start and settles a fast Host reply without losing 
   let closeCount = 0;
   const handle = runtimeHostSessionFixture({
     snapshot: continuitySnapshot(null),
-    activeAssistantStreams: [],
-    transcript: Promise.resolve([]),
     events,
     async close() {
       closeCount += 1;
@@ -230,8 +231,6 @@ test('accepts an empty reset delta as the authoritative Bot reply', async () => 
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -272,8 +271,6 @@ test('reply snapshot observers cannot interrupt the authoritative Host Turn', as
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -315,8 +312,6 @@ test('returns blocked Skill feedback without waiting for a Turn that was not cre
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           closeCount += 1;
@@ -369,8 +364,6 @@ async function runProjectedTurn(rootTurn: TurnSnapshot) {
     client: botClient({
       openSession: async () => runtimeHostSessionFixture({
         snapshot: continuitySnapshot(null),
-        activeAssistantStreams: [],
-        transcript: Promise.resolve([]),
         events,
         async close() {
           events.end();
@@ -505,36 +498,4 @@ function deltaFrame(
       ...(reset ? { reset: true } : {}),
     },
   };
-}
-
-class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
-  readonly #frames: SubscriptionFrame[] = [];
-  readonly #waiters: Array<(result: IteratorResult<SubscriptionFrame>) => void> = [];
-  nextCount = 0;
-  #ended = false;
-
-  push(frame: SubscriptionFrame): void {
-    const waiter = this.#waiters.shift();
-    if (waiter) waiter({ value: frame, done: false });
-    else this.#frames.push(frame);
-  }
-
-  end(): void {
-    this.#ended = true;
-    for (const waiter of this.#waiters.splice(0)) {
-      waiter({ value: undefined, done: true });
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SubscriptionFrame> {
-    return {
-      next: () => {
-        this.nextCount += 1;
-        const frame = this.#frames.shift();
-        if (frame) return Promise.resolve({ value: frame, done: false });
-        if (this.#ended) return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve) => this.#waiters.push(resolve));
-      },
-    };
-  }
 }

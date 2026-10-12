@@ -26,7 +26,7 @@ import type {
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
-  ShellRunSnapshotResult,
+  ShellRunStateResult,
   ToolOutputStream,
   ToolResultContent,
 } from '@maka/core/events';
@@ -392,7 +392,7 @@ export function applyShellRunUpdateToTranscript(
 /** Adds a local-only card for a `!<command>` resource without creating a model turn. */
 export function appendUserCommandToTranscript(
   state: MakaPiTranscriptState,
-  input: { commandId: string; command: string; result: ShellRunSnapshotResult },
+  input: { commandId: string; command: string; result: ShellRunStateResult },
 ): void {
   state.entries.push({
     kind: 'tool',
@@ -1354,16 +1354,6 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
       return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
-    case 'context_provider_dropping': {
-      const data = message.data as
-        | { inputTokens?: unknown; priorInputTokens?: unknown }
-        | undefined;
-      const used = typeof data?.inputTokens === 'number' ? data.inputTokens : undefined;
-      const prior = typeof data?.priorInputTokens === 'number' ? data.priorInputTokens : undefined;
-      if (used === undefined || prior === undefined)
-        return "After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten. If this persists, check that the model's actual context capacity and the connection settings agree.";
-      return `After content was appended, the provider-reported input token count did not grow; context may have been truncated or rewritten (${used} tokens versus ${prior} before). If this persists, check that the model's actual context capacity and the connection settings agree.`;
-    }
     case 'context_overflow_after_compaction':
       return 'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.';
     case 'context_reported_window_exceeded': {
@@ -1931,7 +1921,7 @@ function formatElapsedDuration(elapsedMs: number): string {
  * Pending-queue bar shown above the editor while messages are queued. Each
  * steering message reads `Steering: <text>` (injected into the running turn at
  * the next step boundary); each followup reads `Queued: <text>` (opens the next
- * turn). A trailing hint reminds the user that alt+↑ takes them back to edit.
+ * turn). A trailing hint reminds the user that Shift+← takes them back to edit.
  * Renders nothing when both queues are empty.
  */
 interface TuiPendingQueueCopy {

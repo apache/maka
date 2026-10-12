@@ -20,7 +20,7 @@
 import { realpath, stat } from 'node:fs/promises';
 import { join, resolve, relative, sep } from 'node:path';
 
-export type OpenPathKey = 'workspace' | 'skills' | 'memory' | 'project';
+export type OpenPathKey = 'workspace' | 'memory' | 'project';
 
 export type OpenPathResult =
   | { ok: true; opened: OpenPathKey }
@@ -41,7 +41,6 @@ export interface ResolveOpenPathInput {
 
 const OPEN_PATHS: Record<Exclude<OpenPathKey, 'project'>, (workspaceRoot: string) => string> = {
   workspace: (workspaceRoot) => workspaceRoot,
-  skills: (workspaceRoot) => join(workspaceRoot, 'skills'),
   memory: (workspaceRoot) => join(workspaceRoot, 'memory'),
 };
 
@@ -80,7 +79,7 @@ export async function resolveOpenPath(input: ResolveOpenPathInput): Promise<
 }
 
 function isOpenPathKey(value: string): value is OpenPathKey {
-  return value === 'workspace' || value === 'skills' || value === 'memory' || value === 'project';
+  return value === 'workspace' || value === 'memory' || value === 'project';
 }
 
 function isInsideOrSamePath(root: string, target: string): boolean {

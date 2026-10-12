@@ -23,6 +23,7 @@ import type {
   ProjectCatalogChangedFrame,
   ScheduledTaskChangedFrame,
   ScheduledTaskChangedReason,
+  SessionAttention,
   SessionCatalogChangedFrame,
 } from '../protocol/index.js';
 
@@ -102,8 +103,8 @@ export class HostChangeFeed {
     });
   }
 
-  publishSessionCatalog(sessionId: string): void {
-    this.#publishSessionCatalog(sessionId);
+  publishSessionCatalog(sessionId: string, attention?: SessionAttention): void {
+    this.#publishSessionCatalog(sessionId, undefined, attention);
   }
 
   /** Publish the final scoped invalidation, then stop that resource-scoped feed. */
@@ -111,30 +112,21 @@ export class HostChangeFeed {
     this.#publishSessionCatalog(sessionId, principalId);
   }
 
-  #publishSessionCatalog(sessionId: string, closeScopeFor?: string): void {
+  #publishSessionCatalog(
+    sessionId: string,
+    closeScopeFor?: string,
+    attention?: SessionAttention,
+  ): void {
     this.#sessionCatalogRevision += 1;
-    const frame: SessionCatalogChangedFrame = {
-      kind: 'session.catalog.changed',
-      revision: this.#sessionCatalogRevision,
-      sessionId,
-    };
-    for (const [connectionId, subscription] of this.#subscriptions) {
-      if (!isSubscribed(subscription.mask, frame)) continue;
-      void subscription.sink.send(frame).catch(() => {
-        if (this.#subscriptions.get(connectionId) === subscription) {
-          this.#subscriptions.delete(connectionId);
-        }
-      });
-      if (
-        closeScopeFor !== undefined &&
-        subscription.mask.sessionCatalog !== true &&
-        subscription.mask.sessionCatalog?.sessionId === sessionId &&
-        subscription.mask.sessionCatalog.principalId === closeScopeFor &&
-        this.#subscriptions.get(connectionId) === subscription
-      ) {
-        this.#subscriptions.delete(connectionId);
-      }
-    }
+    this.#publish(
+      {
+        kind: 'session.catalog.changed',
+        revision: this.#sessionCatalogRevision,
+        sessionId,
+        ...(attention ? { attention } : {}),
+      },
+      closeScopeFor,
+    );
   }
 
   publishScheduledTask(revision: number, reason: ScheduledTaskChangedReason, taskId: string): void {
@@ -146,7 +138,7 @@ export class HostChangeFeed {
     });
   }
 
-  #publish(frame: HostChangeFrame): void {
+  #publish(frame: HostChangeFrame, closeScopeFor?: string): void {
     for (const [connectionId, subscription] of this.#subscriptions) {
       if (!isSubscribed(subscription.mask, frame)) continue;
       void subscription.sink.send(frame).catch(() => {
@@ -154,6 +146,16 @@ export class HostChangeFeed {
           this.#subscriptions.delete(connectionId);
         }
       });
+      if (
+        closeScopeFor !== undefined &&
+        frame.kind === 'session.catalog.changed' &&
+        subscription.mask.sessionCatalog !== true &&
+        subscription.mask.sessionCatalog?.sessionId === frame.sessionId &&
+        subscription.mask.sessionCatalog.principalId === closeScopeFor &&
+        this.#subscriptions.get(connectionId) === subscription
+      ) {
+        this.#subscriptions.delete(connectionId);
+      }
     }
   }
 }

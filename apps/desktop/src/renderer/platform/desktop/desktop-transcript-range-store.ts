@@ -40,6 +40,8 @@ export interface DesktopTranscriptRangeController {
   /** One budget of earlier history, or everything down to `throughSequence` in one answer. */
   loadEarlier(throughSequence?: number): Promise<void>;
   reload(): Promise<void>;
+  /** Whether the range holds the cached transcript, over which a failed reload is not reported. */
+  holdsCachedTranscript(): boolean;
   observationChanged(phase: 'pending' | 'ready'): void;
   close(): Promise<void>;
 }
@@ -246,6 +248,7 @@ export function createDesktopTranscriptRangeController(
     },
     loadEarlier,
     reload,
+    holdsCachedTranscript: cached,
     observationChanged: recovery.observationChanged,
     async close() {
       if (closed) return;
@@ -474,7 +477,9 @@ export class DesktopTranscriptRangeStore {
       hostEpoch: this.#hostEpoch,
       durableThrough: this.#value.through,
       oldestSequence: this.#value.order[0] ?? null,
-      hasOlder: this.#value.hasOlder,
+      // A cached snapshot cannot serve earlier reads; the live answer replaces
+      // it rather than continuing it.
+      hasOlder: this.#value.hasOlder && !this.#generation.startsWith('cached:'),
       beginsAtTurnBoundary: this.#value.beginsAtTurnBoundary,
       ready: this.#ready,
     };

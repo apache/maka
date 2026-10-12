@@ -29,7 +29,6 @@ import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
-  defaultEnabledModelIdsWhenOmitted,
   PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
@@ -135,15 +134,24 @@ export function registerRuntimeHostConnectionsIpc(
       return { names: result.names } satisfies SavedRequestHeaders;
     },
   );
-  deps.ipcMain.handle('connections:setDefault', async (_event, identity: unknown) => {
+  deps.ipcMain.handle('connections:setDefault', async (_event, identity: unknown, modelId?: unknown) => {
     const catalog = await snapshot();
+    const connection = identity === null ? null : requireConnectionIdentity(catalog, identity);
+    if (modelId !== undefined && (typeof modelId !== 'string' || !modelId.trim() || !connection)) {
+      throw new Error('Invalid default model selection');
+    }
     const target = identity === null
       ? null
-      : defaultTargetForConnection(requireConnectionIdentity(catalog, identity));
-    requireCommitted(
-      await deps.client.setDefaultConnectionTarget(catalog.revision, target),
-      'set default Connection',
+      : typeof modelId === 'string'
+        ? { connectionId: connection!.connectionId, modelId }
+        : defaultTargetForConnection(connection!);
+    const enableModel = typeof modelId === 'string' && !connection!.enabledModelIds.includes(modelId);
+    const result = await deps.client.setDefaultConnectionTarget(
+      catalog.revision, target, enableModel ? true : undefined,
     );
+    if (result.kind === 'revision_conflict') throw new Error('DEFAULT_CONNECTION_CHANGED');
+    if (result.kind === 'invalid_default_target') throw new Error('DEFAULT_MODEL_UNAVAILABLE');
+    requireCommitted(result, 'set default Connection');
     deps.emitConnectionListChanged();
   });
   deps.ipcMain.handle('connections:setDefaultBySlug', async (_event, slug: unknown) => {
@@ -208,10 +216,12 @@ export function registerRuntimeHostConnectionsIpc(
       name: input.name,
       providerType: input.providerType,
       ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
+      ...(input.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: input.defaultApiProtocol }),
       enabled: true,
       enabledModelIds: connectionEnabledModelIds({
         defaultModel: input.defaultModel,
-        enabledModelIds: defaultEnabledModelIdsWhenOmitted(input.providerType),
       }),
       ...(modelOverrides === undefined ? {} : { modelOverrides }),
       ...(input.requestBodyOverlay === undefined
@@ -333,9 +343,12 @@ export function registerRuntimeHostConnectionsIpc(
       throw new Error('Unable to delete Connection: connection_stale');
     }
   });
-  deps.ipcMain.handle('connections:fetchModels', async (_event, identity: unknown) => {
+  deps.ipcMain.handle('connections:fetchModels', async (_event, identity: unknown, options?: { preserveSelection?: unknown }) => {
     const current = requireConnectionIdentity(await snapshot(), identity);
-    const result = await deps.client.fetchConnectionModels(current.connectionId);
+    if (options?.preserveSelection !== undefined && typeof options.preserveSelection !== 'boolean') {
+      throw new Error('Invalid model discovery selection policy');
+    }
+    const result = await deps.client.fetchConnectionModels(current.connectionId, options?.preserveSelection);
     if (result.kind !== 'committed') {
       throw new Error(`Unable to fetch Connection models: ${result.kind}`);
     }
@@ -407,6 +420,9 @@ export function projectHostConnections(
       name: connection.name,
       providerType: connection.providerType,
       ...(connection.baseUrl === undefined ? {} : { baseUrl: connection.baseUrl }),
+      ...(connection.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: connection.defaultApiProtocol }),
       enabled: connection.enabled,
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],

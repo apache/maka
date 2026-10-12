@@ -42,6 +42,7 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'defaultSupportsVision',
       'compactionThreshold',
       'thinkingLevels',
+      'defaultThinkingLevel',
       'contextWindow',
       'inputLimit',
       'defaultContextWindow',
@@ -57,6 +58,7 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
     id: item.id,
     ...pick(item, ['displayName', 'description', 'contextWindow', 'inputLimit', 'knowledgeCutoff']),
   });
+  const thinkingLevels = decodeThinkingLevels(item.thinkingLevels);
   return {
     ...shared,
     ...Object.fromEntries(
@@ -87,8 +89,26 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
           ),
         }
       : {}),
-    thinkingLevels: decodeThinkingLevels(item.thinkingLevels),
+    thinkingLevels,
+    ...(item.defaultThinkingLevel === undefined
+      ? {}
+      : {
+          defaultThinkingLevel: decodeDefaultThinkingLevel(
+            item.defaultThinkingLevel,
+            thinkingLevels,
+          ),
+        }),
   };
+}
+
+function decodeDefaultThinkingLevel(
+  value: unknown,
+  available: readonly ThinkingLevel[],
+): ThinkingLevel {
+  if (!isThinkingLevel(value) || !available.includes(value)) {
+    throw domainError('entry default thinking level is invalid');
+  }
+  return value;
 }
 
 function decodeThinkingLevels(value: unknown): readonly ThinkingLevel[] {

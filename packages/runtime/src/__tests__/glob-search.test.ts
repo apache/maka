@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { executeFilesystemOperation } from '../filesystem-worker/operations.js';
+import { createBoundaryFilesystemExecutor } from '../filesystem-executor.js';
 import { globFiles } from '../glob-search.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
 
@@ -174,5 +175,134 @@ test('Glob retains native pattern membership, including hidden entries and expli
       expected.sort(),
       pattern,
     );
+  }
+});
+
+test('Glob reports truncation when the pattern matched more files than the limit', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-glob-truncated-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const name of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) await writeFile(join(root, name), '');
+
+  const result = await globFiles({ cwd: root, pattern: '*.txt', limit: 3 });
+
+  assert.equal(result.files.length, 3);
+  assert.equal(result.truncated, true);
+});
+
+test('Glob reports a complete result when the limit is met exactly', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-glob-exact-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const name of ['a.txt', 'b.txt', 'c.txt']) await writeFile(join(root, name), '');
+
+  const result = await globFiles({ cwd: root, pattern: '*.txt', limit: 3 });
+
+  assert.equal(result.files.length, 3);
+  assert.equal(result.truncated, false);
+});
+
+test('a local Glob stops when cancelled during an overflow probe', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-abort-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (let index = 0; index < 200; index++) {
+    await writeFile(join(root, `match-${String(index).padStart(3, '0')}.txt`), '');
+  }
+  const later = join(root, 'later');
+  await mkdir(later);
+  await writeFile(join(later, 'hidden.txt'), '');
+
+  const originalReaddir = nodeFs.readdir;
+  let entered!: () => void;
+  const laterEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let releaseReaddir: (() => void) | undefined;
+  t.mock.method(nodeFs, 'readdir', ((
+    path: string,
+    options: { withFileTypes: true },
+    callback: (error: NodeJS.ErrnoException | null, entries: nodeFs.Dirent[]) => void,
+  ) => {
+    if (String(path) === later) {
+      releaseReaddir = () => originalReaddir(path, options, callback);
+      entered();
+      return;
+    }
+    originalReaddir(path, options, callback);
+  }) as typeof nodeFs.readdir);
+  syncBuiltinESMExports();
+
+  const abort = new AbortController();
+  const filesystem = createBoundaryFilesystemExecutor({ workspace: new LocalWorkspaceExecutor() });
+  const search = filesystem.execute({
+    operation: { kind: 'glob', path: '.', pattern: '**/*.txt', limit: 200 },
+    cwd: root,
+    executionBoundary: { kind: 'bypass', revision: 0 },
+    abortSignal: abort.signal,
+  });
+  try {
+    await laterEntered;
+    // The directory remains blocked after the 200 root matches. Cancellation
+    // must settle the search without waiting for its readdir callback.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    abort.abort(new Error('Glob stopped'));
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await assert.rejects(
+        Promise.race([
+          search,
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('Glob did not stop')), 1000);
+          }),
+        ]),
+        /Glob stopped/,
+      );
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  } finally {
+    releaseReaddir?.();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test('Glob marks a capped result incomplete when overflow probing hits a filesystem error', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-glob-capped-error-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, 'a.txt'), 'a');
+  await writeFile(join(root, 'b.txt'), 'b');
+  const late = join(root, 'zlate');
+  await mkdir(late);
+  await writeFile(join(late, 'hidden.txt'), 'hidden');
+  // Make the directory vanish exactly when the walk descends into it. The cap
+  // fills from the root entries first, so this is only observable past the cap.
+  const originalReaddir = nodeFs.readdir;
+  let errorInjected = false;
+  t.mock.method(nodeFs, 'readdir', ((
+    path: string,
+    options: { withFileTypes: true },
+    callback: (error: NodeJS.ErrnoException | null, entries: nodeFs.Dirent[]) => void,
+  ) => {
+    originalReaddir(path, options, (error, entries) => {
+      if (String(path) === late && !errorInjected) {
+        errorInjected = true;
+        const denied: NodeJS.ErrnoException = Object.assign(new Error('permission denied'), {
+          code: 'EACCES',
+        });
+        callback(denied, entries);
+        return;
+      }
+      callback(error, entries);
+    });
+  }) as typeof nodeFs.readdir);
+  syncBuiltinESMExports();
+  try {
+    const result = await globFiles({ cwd: root, pattern: '**/*.txt', limit: 2 });
+
+    assert.equal(errorInjected, true, 'the overflow probe must encounter the error');
+    assert.deepEqual([...result.files].sort(), ['a.txt', 'b.txt']);
+    assert.equal(result.truncated, true);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
   }
 });
