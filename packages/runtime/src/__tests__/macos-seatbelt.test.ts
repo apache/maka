@@ -370,6 +370,57 @@ describe('buildSeatbeltPolicy', () => {
     }).policy;
     assert.match(policy, /\(require-not \(literal "\/outside\/locked\.txt"\)\)/);
   });
+
+  it('keeps executable and runtime-readable roots subject to canonicalized exact and parent denies', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'maka-seatbelt-runtime-deny-'));
+    const toolchain = join(scratch, 'toolchain');
+    const alias = join(scratch, 'alias');
+    mkdirSync(toolchain);
+    symlinkSync(toolchain, alias);
+    const profile: PermissionProfile = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [
+          { kind: 'special', access: 'write', special: ':workspace_roots' },
+          { kind: 'path', access: 'deny', path: alias, match: 'exact' },
+          { kind: 'path', access: 'deny', path: scratch, match: 'subtree' },
+        ],
+      },
+      network: { kind: 'restricted' },
+    };
+    try {
+      const result = buildSeatbeltPolicy({
+        profile,
+        pathContext: {
+          workspaceRoots: ['/repo'],
+          executableRoots: [toolchain],
+          runtimeReadableRoots: [toolchain],
+        },
+      });
+      assert.ok(result.definitionArgs.includes(`-DEXECUTABLE_ROOT_0=${realpathSync(toolchain)}`));
+      const runtimeSection = result.policy.slice(
+        result.policy.indexOf('(allow file-read* file-test-existence\n'),
+        result.policy.indexOf('(allow file-read* file-test-existence file-map-executable'),
+      );
+      assert.ok(runtimeSection);
+      assert.ok(runtimeSection.includes(`(require-not (literal "${realpathSync(toolchain)}"))`));
+      assert.ok(
+        runtimeSection.includes(`(require-not (regex #"^${realpathSync(scratch)}(/.*)?$"))`),
+      );
+      const executableSection = result.policy.slice(
+        result.policy.indexOf('(allow file-read* file-test-existence file-map-executable'),
+      );
+      assert.match(executableSection, /\(subpath \(param "EXECUTABLE_ROOT_0"\)\)/);
+      assert.ok(executableSection.includes(`(require-not (literal "${realpathSync(toolchain)}"))`));
+      assert.ok(
+        executableSection.includes(`(require-not (regex #"^${realpathSync(scratch)}(/.*)?$"))`),
+      );
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('createSeatbeltExecArgs', () => {
