@@ -39,7 +39,7 @@ includes the canonical work-in-progress disclaimer below directly from the relea
 
 ## Requirements
 
-- Node.js 22.19.0 or newer;
+- Node.js 22.19.0 or newer on the 22 line, or 24.0.0 or newer (Node 23 is not supported);
 - a terminal with interactive input for the TUI;
 - a configured model connection for agent turns; first-run setup currently supports API-key
   providers.
@@ -85,7 +85,13 @@ token counts, cost, byte counts, and a fixed allowlist of error classes; arbitra
 are exported as `Other`. Prompts, message contents, tool arguments/results, credentials, and
 session paths are never exported. An authorization header on a non-HTTPS endpoint emits one
 warning per configured endpoint when the exporter is created. Each exported span is an independent
-usage event rather than a parent/child trace. Export failures are best-effort and do not fail a
+usage event rather than a parent/child trace. Canonical physical model attempts export only
+when first committed to the Usage projection; repeating catch-up does not export them again.
+Missing usage and unpriced cost remain absent values, with their basis attached, rather than
+becoming zero. Historical rows already projected before enabling OTLP are not backfilled.
+The exporter sends at most 32 spans per request and retains at most 1,024 pending spans plus
+one in-flight batch. When full it drops new exports; the local Usage ledger remains authoritative.
+Shutdown allows one second for the entire drain, then cancels outstanding network work. Export failures are best-effort and do not fail a
 turn or change the local Usage ledger. Repeated collector failures emit only one error until
 an export succeeds; a later outage can emit a new error.
 

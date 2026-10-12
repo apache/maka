@@ -41,7 +41,6 @@ import {
   GOAL_ARM_REQUEST_KEYS,
   type GoalArmOutcome,
 } from '../shared/goal-arm.js';
-import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
   handleReconciledControl,
   handleReconnectableRead,
@@ -70,7 +69,6 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   | 'querySessionTodo'
   | 'queryAgentGraph'
   | 'queryAgentGraphOperator'
-  | 'queryDeepResearch'
   | 'queryGoal'
   | 'startPlanTurn'
     | 'stopAgentGraph'
@@ -122,11 +120,6 @@ export function registerRuntimeHostSessionDomainsIpc(
 
   handleReconnectableRead(ipcMain, 'todo:read', (_event, sessionId: unknown) =>
     deps.client.querySessionTodo(requiredId(sessionId, 'Session')),
-  );
-  handleReconnectableRead(ipcMain, 'deepResearch:get', async (_event, sessionId: unknown) =>
-    projectHostedDeepResearch(
-      await deps.client.queryDeepResearch(requiredId(sessionId, 'Session')),
-    ),
   );
 
   handleReconnectableRead(ipcMain, 'goal:get', async (_event, sessionId: unknown) => {
@@ -374,12 +367,6 @@ export function registerRuntimeHostSessionDomainsIpc(
           at: now(),
         });
         break;
-      case 'deep_research':
-        deps.sendToRenderer?.('deepResearch:changed', {
-          sessionId: change.sessionId,
-          ts: now(),
-        });
-        break;
       case 'plan':
         deps.sendToRenderer?.('plan-mode:changed', { sessionId: change.sessionId });
         break;
@@ -402,7 +389,6 @@ export function registerRuntimeHostSessionDomainsIpc(
     },
     sessionSubscriptionRecovered(sessionId) {
       sessionDomainChanged({ sessionId, domain: 'todo' });
-      sessionDomainChanged({ sessionId, domain: 'deep_research' });
       sessionDomainChanged({ sessionId, domain: 'plan' });
       sessionDomainChanged({ sessionId, domain: 'usage' });
       deps.sendToRenderer?.('graphs:resync', { rootSessionId: sessionId });

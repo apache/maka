@@ -30,6 +30,7 @@ import {
   SessionBundleServicesProvider,
   SessionBundleTasks,
 } from '../../renderer/features/session-bundle/index.js';
+import { createSessionCatalogController } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import { ImportTasksSettingsPage } from '../../renderer/settings/import-tasks-settings-page.js';
 import { RuntimeHostSettingsTarget } from '../../renderer/settings/runtime-host-settings-target.js';
 
@@ -911,7 +912,7 @@ async function renderPage(options: {
     // own is a composition production never has.
     const page = createElement(SessionBundleTasks, {
       isLocalTarget: options.offersBundleSource === true,
-      sessions: [],
+      catalog: createSessionCatalogController(),
       renderSection: ({ children }: { children: ReactNode }) =>
         createElement('div', null, children),
       children: bare,

@@ -21,7 +21,41 @@
 
 ## Unreleased
 
-## 0.2.0 - Unreleased
+## 0.2.1 - Unreleased
+
+### Added
+
+- WorkHub can inspect existing conversations, receive delegated task results automatically, and route remote channel conversations through the shared coordinator (#5886, #5595, #6051). Jev-assisted routing is opt-in (#5562).
+- Host storage usage and per-task sizes, archived-task cleanup by age and project, and opt-in archived-task retention (#5832, #5896, #5902, #5961).
+- Agent Graph output previews, session visit navigation with horizontal swipes, clickable terminal links, and a selectable Git comparison branch that persists per Session (#4751, #5688, #5033, #5120).
+- Resume interrupted or manually stopped turns from the Desktop composer, and opt-in next-prompt suggestions (#5206, #5904, #5629).
+- Connect the user's signed-in Chrome through opencli-mcp, and check local preview prerequisites before starting a preview (#5638, #5254).
+- Antigravity ACP plugin execution and restored sessions after restart; ACP operations for Goal, Plan, Artifact and Memory (#5224, #5670, #5734, #5685).
+- Filter usage by model call kind, replay DeepSeek hosted web-search responses, and include selected text in Computer Use snapshot observations (#5709, #5824, #5050).
+
+### Fixed
+
+- Enforce configured sender lists consistently across messaging platforms and preserve stored credentials when settings round-trip masked values (#6074).
+- Keep the composer context gauge from showing stale pre-compaction usage. The gauge returns to its localized Usage label until the provider measures a request after the compaction boundary (#5548).
+- Preserve interrupted tool settlement, session recovery and provider context handling across retries and restarts (#5610, #5621, #5587).
+- Report browser toolbar action failures and distinguish empty Git comparisons from review errors (#5955, #5967).
+
+### Changed
+
+- Custom connections now use one provider type with a default API protocol and per-model overrides. Legacy connections migrate while retaining identifiers, credentials and model overrides (#5684).
+- TUI queue and retract shortcuts use Tab and Shift+Left in place of Alt chords (#5910).
+- Reduced idle and streaming renderer work, paused transcript reads while the shell is covered, and bounded Host framing and storage queries (#5608, #6014, #5356, #5514).
+- Reclaim unused context-offload SQLite pages during Host maintenance; new runtime databases support incremental vacuum (#5855, #6044).
+- Removed the provider-dropping context note because differing upstream token counts could trigger it without evidence of dropped history. Historical sessions containing it still open (#5672).
+
+### Upgrade notes
+
+- Update Desktop, CLI and remote Runtime Hosts together. The Runtime Host compatibility epoch is 217 (176 in the 0.2.0 source release); mismatched peers cannot connect.
+- Back up configuration and workspace data before upgrading if rollback is needed. Custom connection catalogs migrate to schema v3, and new session records include fields older builds cannot decode; 0.2.0 cannot safely reuse data written by 0.2.1.
+- Review every messaging platform's sender list before enabling its channel. A nonempty list now admits only its listed platform user IDs, including WorkHub routing; an empty list retains unrestricted sender access (#6074).
+- Archived-task retention remains opt-in. Enabling it allows permanent deletion of eligible archived tasks; leave it disabled to retain them.
+
+## 0.2.0 - 2026-10-08
 
 ### Added
 

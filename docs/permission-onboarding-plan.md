@@ -47,7 +47,7 @@ Six steps, and the file picker is where most people give up.
 
 maka today does the honest-but-minimal thing: `permissions-actions.ts`
 deep-links into the right pane and stops there
-(`apps/desktop/src/main/permissions-actions.ts:52`). Everything after the
+(`apps/desktop/src/main/permissions-actions.ts:61-90`). Everything after the
 deep link is on the user.
 
 Apple's design intent is that the user *explicitly* adds the app — that

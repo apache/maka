@@ -508,3 +508,53 @@ test('bounds Retry-After waits by the batch timeout and the shutdown grace perio
     t.mock.timers.reset();
   }
 });
+
+test('bounds stalled collector backlog and each request while dropping newest exports', async () => {
+  let releaseFirst!: () => void;
+  const first = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const batches: string[][] = [];
+  const exporter = createOtlpTelemetryExporter({
+    env: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example.test' },
+    fetch: async (_url, init) => {
+      const spans = JSON.parse(String(init?.body)).resourceSpans[0].scopeSpans[0].spans;
+      batches.push(
+        spans.map(
+          (span: { attributes: Array<{ key: string; value: { stringValue: string } }> }) =>
+            span.attributes.find((a) => a.key === 'maka.tool.name')!.value.stringValue,
+        ),
+      );
+      if (batches.length === 1) await first;
+      return new Response(null, { status: 200 });
+    },
+  });
+  assert.ok(exporter);
+  const queued: Promise<void>[] = [];
+  try {
+    for (let i = 0; i < 4_096; i++) {
+      queued.push(
+        exporter.exportToolInvocation({
+          id: `tool-${i}`,
+          toolName: `tool-${i}`,
+          durationMs: 1,
+          status: 'success',
+          bytesIn: 0,
+          bytesOut: 0,
+          date: '2026-01-01',
+          ts: 1,
+          startedAt: 0,
+        }),
+      );
+    }
+    const flush = exporter.flush();
+    releaseFirst();
+    await Promise.all([...queued, flush]);
+    assert.ok(batches.every((batch) => batch.length <= 32));
+    assert.equal(batches.flat().length, 32 + 1_024);
+    assert.equal(batches.flat().at(-1), 'tool-1055');
+  } finally {
+    releaseFirst();
+    await exporter.close();
+  }
+});

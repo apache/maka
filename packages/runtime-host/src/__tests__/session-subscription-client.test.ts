@@ -38,6 +38,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   connectRuntimeHost,
   RuntimeHostSubscriptionError,
+  SessionRemovedSubscriptionError,
   type RuntimeHostConnection,
 } from '../client/index.js';
 import { clientSubscription } from './fixtures/client-session-subscription.js';
@@ -405,6 +406,56 @@ test('ends every active subscription with connection_closed on EOF', async () =>
         hasSubscriptionReason('connection_closed'),
       );
     },
+  );
+});
+
+test('records the close reason before a full queue can reject the frame', () => {
+  const subscription = clientSubscription(
+    openResult('host-1', 'subscription-1'),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected read');
+    },
+  );
+  // Fill the client queue so the closed frame itself overflows it.
+  for (let sequence = 1; sequence <= 32; sequence += 1) {
+    subscription.accept(deltaFrame('host-1', 'subscription-1', sequence));
+  }
+  assert.throws(
+    () =>
+      subscription.accept({
+        kind: 'subscription.closed',
+        hostEpoch: 'host-1',
+        subscriptionId: 'subscription-1',
+        sequence: 33,
+        reason: 'session_removed',
+      }),
+    hasSubscriptionReason('slow_consumer'),
+  );
+  assert.ok(subscription.deathCause instanceof SessionRemovedSubscriptionError);
+});
+
+test('a transcript read surfaces the terminal error, not the dead-state mask', () => {
+  const subscription = clientSubscription(
+    openResult('host-1', 'subscription-1'),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected read');
+    },
+  );
+  const failure = new RuntimeHostSubscriptionError('sequence_gap', 'test gap');
+  subscription.fail(failure);
+  assert.equal(subscription.deathCause, failure);
+  assert.throws(
+    () =>
+      subscription.loadTranscriptPage({
+        direction: 'older',
+        throughSequence: null,
+        cursor: null,
+        anchorSequence: null,
+        maxBytes: 1024,
+      }),
+    (error: unknown) => error === failure,
   );
 });
 

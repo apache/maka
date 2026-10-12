@@ -342,7 +342,6 @@ test('acks a steering event whose canonical append preceded proof publication fa
     await chmod(proofDirectory, 0o700);
     await rm(proofDirectory, { recursive: true });
     const recovered = createWorkspaceRuntimeStore(root);
-    await recovered.repairImmutableSteeringMessageProofsForRecovery(session.id);
     assert.deepEqual(await recovered.readImmutableRuntimeEvents(session.id, runId), [runtimeEvent]);
     assert.deepEqual(
       await recovered.readImmutableSteeringMessageProof(session.id, sessionEvent.messageId),

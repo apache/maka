@@ -83,7 +83,6 @@ export function createStreamingDisplayRedactionState(
 
 export interface StreamingDisplayRedactionResult {
   readonly text: string;
-  readonly redacted: boolean;
   readonly state: StreamingDisplayRedactionState;
 }
 
@@ -116,7 +115,6 @@ export function appendStreamingDisplayRedaction(
     if (terminatorIndex < 0) {
       return {
         text: settledText,
-        redacted: delta.length > 0,
         state: stateFor(settledText, '', continuationTerminator, {
           maxRecoveryChars,
           recovery,
@@ -151,7 +149,6 @@ export function appendStreamingDisplayRedaction(
     const nextSettledText = settledText + stableSuffix.settledPrefixText;
     return {
       text: settledText + stableSuffix.text,
-      redacted: true,
       state: stateFor(nextSettledText, stableSuffix.compactedSuffix, undefined, {
         maxRecoveryChars,
         recovery,
@@ -170,7 +167,6 @@ export function appendStreamingDisplayRedaction(
     };
     return {
       text: settledText + redactSecrets(reversibleSuffix.compactedInput),
-      redacted: true,
       state: stateFor(settledText, reversibleSuffix.compactedInput, undefined, {
         maxRecoveryChars,
         recovery,
@@ -186,15 +182,10 @@ export function appendStreamingDisplayRedaction(
 
   const completedRaw = settlementLineBreak < 0 ? '' : pending.slice(0, settlementLineBreak + 1);
   const pendingRaw = settlementLineBreak < 0 ? pending : pending.slice(settlementLineBreak + 1);
-  const redactedCompleted = completedRaw ? redactSecrets(completedRaw) : '';
-  const redactedPending = redactSecrets(pendingRaw);
-  const nextSettledText = settledText + redactedCompleted;
+  const nextSettledText = settledText + (completedRaw ? redactSecrets(completedRaw) : '');
 
   return {
-    text: nextSettledText + redactedPending,
-    redacted:
-      redactedCompleted !== completedRaw
-      || redactedPending !== pendingRaw,
+    text: nextSettledText + redactSecrets(pendingRaw),
     state: stateFor(nextSettledText, pendingRaw, undefined, {
       maxRecoveryChars,
       recovery,
@@ -231,38 +222,6 @@ export function copyStreamingDisplayRedactionState(
   );
 }
 
-/**
- * Apply the existing per-delta tail cap to an already-safe append. The mutable
- * suffix begins at the first character whose whole-prefix redaction changed;
- * capping that suffix preserves cross-delta masking before discarding bytes.
- */
-export function truncateStreamingDisplayAppend(
-  previousText: string,
-  appended: StreamingDisplayRedactionResult,
-  maxDeltaChars: number,
-  marker: string,
-): StreamingDisplayRedactionResult {
-  let mutableStart = 0;
-  const commonLength = Math.min(previousText.length, appended.text.length);
-  while (
-    mutableStart < commonLength
-    && previousText.charCodeAt(mutableStart) === appended.text.charCodeAt(mutableStart)
-  ) {
-    mutableStart += 1;
-  }
-  const keep = Math.max(0, maxDeltaChars - marker.length);
-  const mutableText = appended.text.slice(mutableStart);
-  const text = previousText.slice(0, mutableStart)
-    + marker
-    + mutableText.slice(Math.max(0, mutableText.length - keep));
-  const appendedPrivateState = PRIVATE_STATE.get(appended.state);
-  return {
-    text,
-    redacted: appended.redacted,
-    state: stateAfterTruncation(text, appendedPrivateState),
-  };
-}
-
 /** Apply the established thinking tail cap without losing an active secret. */
 export function truncateStreamingDisplayTail(
   appended: StreamingDisplayRedactionResult,
@@ -274,7 +233,6 @@ export function truncateStreamingDisplayTail(
   const appendedPrivateState = PRIVATE_STATE.get(appended.state);
   return {
     text,
-    redacted: appended.redacted,
     state: stateAfterTruncation(text, appendedPrivateState),
   };
 }

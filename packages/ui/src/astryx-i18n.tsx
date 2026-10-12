@@ -129,6 +129,8 @@ function chineseOverrides(locale: 'zh-CN' | 'zh-TW', astryx: typeof ASTRYX_COPY_
       '@astryx.selector.placeholder': form.selectPlaceholder,
       '@astryx.selector.clearLabel': form.clear,
       '@astryx.numberInput.clearLabel': form.clear,
+      // Fallback accessible name of every unlabeled <Spinner> (0.6.2).
+      '@astryx.spinner.loading': shared.primitives.loading,
 
       // App shell — the skip link is always the first focusable control, so an
       // untranslated fallback pollutes every Chinese Computer Use observation.
@@ -189,6 +191,8 @@ function chineseOverrides(locale: 'zh-CN' | 'zh-TW', astryx: typeof ASTRYX_COPY_
       '@astryx.moreMenu.label': astryx.menus.more,
       '@astryx.selector.searchOptions': astryx.search.options,
       '@astryx.selector.searchPlaceholder': astryx.search.placeholder,
+      '@astryx.selector.emptySearchResults': astryx.search.emptySearch,
+      '@astryx.selector.resultCount': astryx.search.resultCount,
       '@astryx.multiSelector.searchOptions': astryx.search.options,
       '@astryx.multiSelector.searchPlaceholder': astryx.search.placeholder,
       '@astryx.multiSelector.selectPlaceholder': form.selectPlaceholder,

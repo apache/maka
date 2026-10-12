@@ -79,6 +79,12 @@ const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> =
   // Retired with the second execution-inspection contract; no shipped surface
   // called execution.inspect.resolve.
   ['execution.inspect.resolve', { kind: 'release' }],
+  // Retired with the Command Code GO provider, whose private transport the
+  // usage read required.
+  ['connection.usage.read', { kind: 'release' }],
+  // Retired in favor of editing and resending the original user message.
+  ['turn.regenerate', { kind: 'release' }],
+  ['deep-research.query', { kind: 'release' }],
   // Direct WorkHub actions and record writes were retired. Their grants do not
   // authorize actFromTurn, which requires the active coordination Turn.
   ['workhub.coordination.act', { kind: 'release' }],

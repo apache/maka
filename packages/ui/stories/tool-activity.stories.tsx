@@ -26,6 +26,7 @@ import {
   denseMixedResultItems,
   editWriteDiffItems,
   errorsAndPermissionDeniedItems,
+  fileDiffAndWebSearchItems,
   shellCommandSurfaceItems,
 } from './tool-activity.fixtures.js';
 
@@ -205,6 +206,23 @@ export const EditWriteDiffRows: Story = {
 export const EditWriteDiffDetails: Story = {
   args: { items: editWriteDiffItems },
   render: (args) => <ToolDetailBoard items={args.items} width={860} />,
+};
+
+// Real path: a web search settles in a turn and the user opens its row. The
+// result's query and titles title what is under them, and still read at the
+// row's own size.
+export const ExpandedWebSearchRow: Story = {
+  args: { items: [fileDiffAndWebSearchItems[1]!] },
+  render: (args) => <ToolRowBoard items={args.items} width={860} />,
+  play: async ({ canvasElement }) => {
+    const row = canvasElement.querySelector<HTMLElement>('.astryx-chat-tool-calls [role="button"]')!;
+    const rowSize = getComputedStyle(row.children[1]!).fontSize;
+    await userEvent.click(row);
+    await waitFor(() => expect(canvasElement.querySelector('.maka-chat-tool-detail .maka-web-result-list a')).not.toBeNull());
+    const detailText = [...canvasElement.querySelectorAll<HTMLElement>('.maka-chat-tool-detail *')]
+      .filter((element) => [...element.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent!.trim()));
+    await expect(new Set(detailText.map((element) => getComputedStyle(element).fontSize))).toEqual(new Set([rowSize]));
+  },
 };
 
 // Real path: a contiguous run of tool calls in one turn — the grouped surface the

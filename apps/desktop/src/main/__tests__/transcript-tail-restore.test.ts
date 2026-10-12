@@ -20,17 +20,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
-import {
-  SESSION_CONTINUITY_SCHEMA_VERSION,
-  type SessionTranscriptPage,
-} from '@maka/runtime-host/protocol';
+import type { SessionTranscriptPage } from '@maka/runtime-host/protocol';
 import { DESKTOP_TRANSCRIPT_TAIL_MAX_BYTES } from '../../preload/transcript-contract.js';
 import {
   createTranscriptRestoreLifecycle,
   restoreSessionTranscriptRange,
 } from '../../renderer/features/conversation/testing.js';
 import { DesktopTranscriptReplica } from '../desktop-transcript-replica.js';
-import { runtimeHostSessionFixture } from './runtime-host-session-test-fixture.js';
+import {
+  continuitySnapshot,
+  runtimeHostSessionFixture,
+} from './runtime-host-session-test-fixture.js';
 
 test('a history page reaches an oversized earlier Turn without disturbing the tail', async () => {
   const fixture = await oversizedHistoryFixture();
@@ -56,10 +56,12 @@ test('a history page reaches an oversized earlier Turn without disturbing the ta
 test('tail catch-up evicts only the oldest Turns and always keeps the newest complete', async () => {
   const fixture = await oversizedHistoryFixture();
   try {
-    await fixture.replica.advance(4);
+    fixture.setWatermark(4);
+    await fixture.replica.advance();
     assert.deepEqual(sequences(fixture.replica), [2, 3, 4]);
 
-    await fixture.replica.advance(6);
+    fixture.setWatermark(6);
+    await fixture.replica.advance();
 
     assert.deepEqual(
       sequences(fixture.replica),
@@ -234,7 +236,8 @@ test('a second Turn reached by advancing evicts the oversized first Turn', async
   try {
     assert.deepEqual(sequences(fixture.replica), [0, 1]);
 
-    await fixture.replica.advance(3);
+    fixture.setWatermark(3);
+    await fixture.replica.advance();
 
     assert.deepEqual(sequences(fixture.replica), [2, 3]);
     const answer = fixture.replica.messages().at(-1);
@@ -320,21 +323,11 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     records: options.live ? records.slice(0, 2) : records.slice(2, 4),
     hasMore: !options.live,
   });
+  let watermark: number | null = through;
   const handle = runtimeHostSessionFixture({
-    snapshot: {
-      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
-      session: {
-        sessionId: 'session-1', metadataRevision: 1, status: 'running', createdAt: 1, isArchived: false,
-      },
-      projectionRevision: 1,
-      rootTurn: null,
-      goal: null,
-      queue: { hostEpoch: 'host-1', queueRevision: 0, steering: [], followup: [] },
-      interactions: { pending: [] },
-    },
-    transcript: Promise.resolve([]),
-    events: { async *[Symbol.asyncIterator]() {} },
+    snapshot: continuitySnapshot({ rootTurn: null }),
     transcriptBootstrap: { durable: bootstrapPage },
+    transcriptWatermark: () => watermark,
     decodeTranscriptPage: async (candidate) => {
       const decoded = decodedPages.get(candidate);
       assert.ok(decoded, 'the replica must decode the page returned by its Host request');
@@ -352,7 +345,12 @@ async function oversizedHistoryFixture(options: { live?: boolean } = {}) {
     },
     async close() {},
   });
-  return { replica: await DesktopTranscriptReplica.prepare(handle) };
+  return {
+    replica: await DesktopTranscriptReplica.prepare(handle),
+    setWatermark: (value: number | null) => {
+      watermark = value;
+    },
+  };
 }
 
 function message(

@@ -29,44 +29,6 @@ const LOCK_POLL_MS = 25;
 const LOCK_TIMEOUT_MS = 10_000;
 const lockGates = new Map<string, Promise<void>>();
 
-export async function withLegacyFileUpdateLockLease<T>(
-  targetPath: string,
-  operation: (inheritedFd: number) => Promise<T>,
-  timeoutMs: number = LOCK_TIMEOUT_MS,
-): Promise<T> {
-  const lockPath = `${targetPath}.lock`;
-  const leasePath = `${targetPath}.lease`;
-  const supervisionPath = `${targetPath}.supervised`;
-  const deadline = Date.now() + timeoutMs;
-  return runWithLockGate(leasePath, deadline, async () => {
-    const lease = await openStableNativeLockFile(leasePath);
-    let leased = false;
-    let supervised = false;
-    let completed = false;
-    try {
-      while (!(leased = tryAcquireNativeFileLock(lease))) {
-        await waitForLockTurn(lockPath, deadline);
-      }
-      // The inherited advisory lease follows the legacy child process. A surviving
-      // supervision marker therefore proves that its directory lock is ownerless
-      // once a later process can acquire this lease.
-      await recoverSupervisedLegacyLock(lockPath, supervisionPath);
-      await createSupervisionMarker(supervisionPath);
-      supervised = true;
-      const result = await operation(lease.fd);
-      completed = true;
-      return result;
-    } finally {
-      try {
-        if (supervised && completed) await unlink(supervisionPath).catch(ignoreMissing);
-      } finally {
-        if (leased) releaseNativeFileLock(lease);
-        await lease.close();
-      }
-    }
-  });
-}
-
 /**
  * The callback may pass the lease fd as an extra child stdio descriptor. The
  * advisory lock then survives a parent crash until that exact child exits.
@@ -100,15 +62,6 @@ export async function withProcessLifetimeFileUpdateLock<T>(
       }
     }
   });
-}
-
-async function createSupervisionMarker(path: string): Promise<void> {
-  const marker = await open(
-    path,
-    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
-    0o600,
-  );
-  await marker.close();
 }
 
 async function recoverSupervisedLegacyLock(

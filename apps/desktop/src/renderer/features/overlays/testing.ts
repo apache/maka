@@ -23,23 +23,38 @@ export { OverlaysServicesProvider } from './services-context.js';
 export { OverlaysRoot } from './ui/overlays-root.js';
 export { OverlaysConsumer } from './ui/overlays-context.js';
 export {
-  CLOSED_SETTINGS_SURFACE,
-  closeSettingsSurface,
-  openSettingsSurface,
+  CLOSED_SETTINGS_MODAL,
+  closeSettingsModal,
+  openSettingsModal,
   settingsIntentSection,
   withSettingsProfileId,
-  type SettingsSurface,
-} from './model/settings-surface.js';
+  type SettingsModalState,
+} from './model/settings-modal-state.js';
 export type { OverlaysShellProjection } from './model/overlays-projection.js';
 export type { OverlaysServices } from './ports.js';
+export {
+  createAgentGraphPanelModel,
+  reduceAgentGraphPanelModel,
+  shouldShowAgentGraphPanel,
+} from './model/agent-graph-panel-model.js';
 
 export function createFakeOverlaysServices(
   overrides: Partial<OverlaysServices> = {},
 ): OverlaysServices {
   return {
-    search: { thread: async () => [], cancelThread: async () => undefined },
+    search: {
+      recall: async () => ({ passages: [], gaps: '', searchedEverySession: true }),
+      cancelRecall: async () => undefined,
+    },
     settingsSection: { persist: () => undefined },
     focus: { blurActiveElement: () => undefined },
+    palette: {
+      testConnection: async () => ({ ok: true }),
+      setDefaultConnection: async () => undefined,
+      testNetworkProxy: async () => ({ ok: true, message: '' }),
+      openLocalMemoryFile: async () => ({ ok: true }),
+      saveConversationToFile: async () => ({ ok: false, reason: 'canceled' }),
+    },
     ...overrides,
   };
 }

@@ -63,6 +63,7 @@ export interface CreatePlanStoreOptions {
 }
 
 export interface SqlitePlanStore extends PlanStore {
+  listPlanRecoverySessionIds(): Promise<string[]>;
   ready(): Promise<void>;
   purgeSessionState(sessionId: string): Promise<void>;
   close(): void;
@@ -99,6 +100,36 @@ class SqlitePlanStoreImpl implements SqlitePlanStore {
 
   async readState(sessionId: string): Promise<PlanSessionState> {
     return (await this.readLedger(sessionId)).state;
+  }
+
+  async listPlanRecoverySessionIds(): Promise<string[]> {
+    const rows = this.#lease.database
+      .prepare(`
+        WITH lifecycle AS (
+          SELECT
+            session_id,
+            json_extract(record_json, '$.type') AS event_type,
+            ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY sequence DESC) AS position
+          FROM workflow_plan_events
+          WHERE json_extract(record_json, '$.type') IN (
+            'plan_approved',
+            'plan_execution_completed',
+            'plan_execution_cancelled',
+            'plan_execution_interrupted',
+            'plan_execution_resumed'
+          )
+        )
+        SELECT session_id
+        FROM lifecycle
+        WHERE position = 1
+          AND event_type IN ('plan_approved', 'plan_execution_resumed')
+        ORDER BY session_id
+      `)
+      .all() as Array<{ session_id?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.session_id !== 'string') throw new Error('Invalid SQLite Plan row');
+      return row.session_id;
+    });
   }
 
   async readOperationReceipt(

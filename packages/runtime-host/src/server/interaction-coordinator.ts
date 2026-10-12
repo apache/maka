@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type {
   ClientCapabilityGrantTarget,
   ClientCapabilitySessionGrant,
@@ -43,6 +44,7 @@ import type {
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
 } from '@maka/core/sandbox-boundary';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
@@ -68,7 +70,9 @@ import {
 } from '@maka/storage/interaction-store';
 import {
   INTERACTION_MAX_PENDING_PER_SESSION,
+  SESSION_ATTENTION_BODY_MAX_BYTES,
   type InteractionAnswerInput,
+  type SessionAttention,
   type SessionInteractionProjection,
 } from '../protocol/index.js';
 import {
@@ -108,6 +112,7 @@ export interface HostInteractionCoordinatorOptions {
   readonly refreshCanonicalContinuity: (
     sessionId: string,
     admission: SessionAdmissionLease,
+    attention?: SessionAttention,
   ) => Promise<void>;
   readonly onPoison: (error: RuntimeInteractionFailStopError) => void;
   /** Resolve the root Session while the settled Session still holds admission. */
@@ -749,7 +754,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       );
     }
     entry.phase = 'live';
-    await this.#refreshCanonicalContinuity(entry.request.sessionId, admission);
+    await this.#refreshCanonicalContinuity(entry.request.sessionId, admission, {
+      kind: 'waiting',
+      eventId: entry.request.requestId,
+      ...waitingAttentionBody(entry.request),
+    });
     this.#throwIfPoisoned();
     return;
   }
@@ -854,7 +863,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       phase: 'live',
     };
     this.#live.set(boundaryRequest.requestId, entry);
-    await this.#refreshCanonicalContinuity(run.sessionId, admission);
+    await this.#refreshCanonicalContinuity(run.sessionId, admission, {
+      kind: 'waiting',
+      eventId: boundaryRequest.requestId,
+      body: truncateUtf8(boundaryRequest.justification, SESSION_ATTENTION_BODY_MAX_BYTES, '…'),
+    });
     this.#throwIfPoisoned();
   }
 
@@ -912,6 +925,63 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         throw this.#poison(error);
       }),
     );
+  }
+
+  /** Only forwards an actual answer collected by a Host-owned WorkHub question tool. */
+  answerDelegatedQuestion(
+    input: InteractionAnswerInput,
+    lease: SessionAdmissionLease,
+  ): ReturnType<InteractionOperationHandlerMap['interaction.answer']> {
+    return this.#sessionAdmission.runAdmitted(input.sessionId, lease, async () => {
+      this.#throwIfPoisoned();
+      const record = await this.#readInteraction(input.interactionId);
+      if (
+        !record ||
+        record.request.sessionId !== input.sessionId ||
+        record.request.request.kind !== 'question' ||
+        input.answer.kind !== 'question'
+      )
+        return interactionNotFound();
+      return this.#answerStoredInteraction(record, input.answer, lease);
+    });
+  }
+
+  /** Close a copied WorkHub question once its original question has settled.
+   * The exact Turn and tool call bind this closure to the relay, not to another
+   * pending WorkHub interaction.
+   */
+  closeRelayedQuestion(turnId: string, toolUseId: string): Promise<boolean> {
+    return this.#sessionAdmission.run(WORKHUB_COORDINATION_SESSION_ID, async (admission) => {
+      this.#throwIfPoisoned();
+      const requests = (
+        await this.#readPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
+      ).filter(
+        (request) =>
+          request.turnId === turnId &&
+          request.request.kind === 'question' &&
+          request.request.toolUseId === toolUseId,
+      );
+      if (requests.length === 0) return false;
+      if (requests.length !== 1) {
+        throw this.#poison(
+          new RuntimeInteractionInvariantError('Ambiguous WorkHub question relay'),
+        );
+      }
+      const request = requests[0]!;
+      const entry = this.#requireLiveStored(request);
+      if (entry.kind !== 'question') {
+        throw this.#poison(new RuntimeInteractionInvariantError('WorkHub relay is not a question'));
+      }
+      const outcome = await this.#commitOutcome(request, {
+        kind: 'closure',
+        reason: 'producer_cancelled',
+        committedAt: this.#now(),
+      });
+      await this.#refreshCanonicalContinuity(WORKHUB_COORDINATION_SESSION_ID, admission);
+      this.#throwIfPoisoned();
+      await this.#applyAndDelete(entry, outcome);
+      return true;
+    });
   }
 
   async #answerStoredInteraction(
@@ -1881,6 +1951,25 @@ function isExpectedRuntimeError(error: unknown): boolean {
     error instanceof RuntimeInteractionAdmissionRejectedError ||
     error instanceof RuntimeInteractionFailStopError
   );
+}
+
+function waitingAttentionBody(request: StoredInteractionRequest): { readonly body?: string } {
+  let body: string | undefined;
+  switch (request.request.kind) {
+    case 'question':
+      body = request.request.questions[0]?.question;
+      break;
+    case 'form':
+      body = request.request.message;
+      break;
+    case 'sandbox_boundary':
+      body = request.request.justification;
+      break;
+    case 'permission':
+    case 'client_capability':
+      break;
+  }
+  return body ? { body: truncateUtf8(body, SESSION_ATTENTION_BODY_MAX_BYTES, '…') } : {};
 }
 
 function rejected<T>(error: unknown): Promise<T> {

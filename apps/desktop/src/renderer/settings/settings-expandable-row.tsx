@@ -129,8 +129,10 @@ export function SettingsExpandableRow(props: {
             <Button
               ref={triggerRef}
               data-maka-assistant-target={props.assistantTarget ? `${props.assistantTarget}.edit` : undefined}
-              variant="ghost"
-              size="sm"
+              /* Secondary at the default size: the neighbouring row ends are
+                 outlined 32px selects, and a borderless small ghost button
+                 read as bold plain text rather than something to press. */
+              variant="secondary"
               isDisabled={props.isDisabled}
               onClick={props.onEdit}
               label={props.actionLabel ?? ''}

@@ -25,6 +25,7 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import {
   buildInvocationOpenedEvent,
   isSessionInlineInvocation,
+  TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX,
 } from '@maka/core/runtime-invocation';
 import type {
   RuntimeInvocationOutcome,
@@ -257,7 +258,7 @@ export function isTranscriptLedgerInvocation(
 
 function transcriptRunId(sessionId: string, turnId: string): string {
   const digest = createHash('sha256').update(sessionId).update('\0').update(turnId).digest('hex');
-  return `transcript-${digest.slice(0, 48)}`;
+  return `${TRANSCRIPT_LEDGER_INVOCATION_ID_PREFIX}${digest.slice(0, 48)}`;
 }
 
 /**

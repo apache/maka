@@ -134,18 +134,6 @@ function normalizeTelegramPrivateChatId(value: string): number | undefined {
 }
 
 /**
- * PR-BOT-USER-ALLOWLIST-0: runtime allowlist gate. `undefined` or empty
- * means no restriction; any other set is enforced as exact match against
- * the platform-native user id. The settings normalize layer already
- * trims, dedups, and caps the persisted array, so this function only
- * has to do membership.
- */
-function isAllowedUser(allowedUserIds: ReadonlyArray<string> | undefined, userId: string): boolean {
-  if (!allowedUserIds || allowedUserIds.length === 0) return true;
-  return allowedUserIds.includes(userId);
-}
-
-/**
  * PR-BOT-NON-TEXT-MESSAGE-ACK-0 (external bot research): map a Telegram
  * `message` object to a stable {@link BotAttachmentKind} so the handler
  * can choose between an ingest path (text-bearing) and an ack-only
@@ -246,7 +234,6 @@ export const __TEST__ = {
   buildTelegramSendBody,
   normalizeTelegramReplyToMessageId,
   normalizeTelegramPrivateChatId,
-  isAllowedUser,
   classifyTelegramSendResponse,
   createTelegramReplyStream,
   telegramDraftId,
@@ -452,27 +439,23 @@ export class TelegramBotBridge extends BaseBotAdapter implements SendCapable {
   private handleTelegramMessage(message: any): void {
     if (!message?.from) return;
     const userId = String(message.from.id);
-    // PR-BOT-USER-ALLOWLIST-0: drop unauthorized senders silently when an
-    // allowlist is configured. No bounce reply — that would let scanners
-    // enumerate the policy by toggling IDs. Status fields are NOT updated
-    // for dropped messages so the bridge's `lastEventAt` continues to
-    // reflect authentic activity from authorized users only.
-    if (!isAllowedUser(this.settings.allowedUserIds, userId)) return;
-    this.lastEventAt = Date.now();
+    const attachmentKind = telegramAttachmentKind(message);
+    if (
+      !this.emitIncomingMessage({
+        platform: 'telegram',
+        userId,
+        userName: message.from.username ?? message.from.first_name ?? userId,
+        chatId: String(message.chat?.id ?? ''),
+        isGroup: message.chat?.type === 'group' || message.chat?.type === 'supergroup',
+        text: message.text ?? message.caption ?? '',
+        sourceMessageId: String(message.message_id ?? ''),
+        receivedAt: Date.now(),
+        ...(attachmentKind ? { attachmentKind } : {}),
+      })
+    )
+      return;
     this.readiness = 'operational';
     this.reason = undefined;
-    const attachmentKind = telegramAttachmentKind(message);
-    this.emitIncomingMessage({
-      platform: 'telegram',
-      userId,
-      userName: message.from.username ?? message.from.first_name ?? userId,
-      chatId: String(message.chat?.id ?? ''),
-      isGroup: message.chat?.type === 'group' || message.chat?.type === 'supergroup',
-      text: message.text ?? message.caption ?? '',
-      sourceMessageId: String(message.message_id ?? ''),
-      receivedAt: this.lastEventAt,
-      ...(attachmentKind ? { attachmentKind } : {}),
-    });
     this.emitStatusChange();
   }
 

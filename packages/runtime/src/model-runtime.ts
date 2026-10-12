@@ -20,6 +20,7 @@
 import {
   PROVIDER_REGISTRY,
   effectiveBaseUrl,
+  type ModelApiProtocol,
   type ModelInfo,
   type ProviderResponsesContract,
   type ProviderRuntimeAdapter,
@@ -32,9 +33,15 @@ import {
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
+  declaredModelApiProtocol,
+  modelOverride,
+  type ModelOverrides,
+} from '@maka/core/model-thinking';
+import {
   anthropicV1BaseUrl,
   googleV1BetaBaseUrl,
   openAiResponsesBaseUrl,
+  openAiChatBaseUrl,
 } from './provider-urls.js';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 
@@ -43,8 +50,7 @@ export type ModelRuntimeWire =
   | 'openai-chat'
   | 'openai-responses'
   | 'google-generate'
-  | 'cohere-v2'
-  | 'commandcode-cli';
+  | 'cohere-v2';
 
 export type ReasoningReplayContract =
   | { kind: 'none' }
@@ -80,14 +86,6 @@ type ModelRuntimeCall =
       wire: 'cohere-v2';
       adapter: Extract<ProviderRuntimeAdapter, { kind: 'cohere' }>;
       reasoningReplay: { kind: 'none' };
-    }
-  | {
-      wire: 'commandcode-cli';
-      adapter: Extract<ProviderRuntimeAdapter, { kind: 'commandcode-cli' }>;
-      // The gateway rebuilds the upstream request from the replayed blocks and
-      // DeepSeek thinking mode rejects a tool loop whose history lacks its
-      // reasoning, so assistant reasoning is replayed as a `reasoning` block.
-      reasoningReplay: { kind: 'openai-chat-plaintext'; requestField: 'reasoning' };
     };
 
 export type ResolvedModelRuntime = ModelRuntimeCall & {
@@ -103,9 +101,11 @@ export type ResolvedModelRuntime = ModelRuntimeCall & {
 };
 
 export interface ModelRuntimeConnection {
+  readonly modelOverrides?: ModelOverrides;
   readonly slug?: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
+  readonly defaultApiProtocol?: ModelApiProtocol;
   readonly models?: readonly ModelInfo[];
 }
 
@@ -126,7 +126,7 @@ export function resolveModelRuntime(
       `Unknown provider type "${connection.providerType}"; cannot resolve model runtime.`,
     );
   }
-  const apiProtocol = connection.models?.find((model) => model.id === modelId)?.apiProtocol;
+  const apiProtocol = declaredModelApiProtocol(connection, modelId);
   const baseAdapter = override?.adapter ?? defaults.runtimeAdapter;
   const calls = adapterCalls(baseAdapter);
   const preferred = openAiAdapterApiProtocol(modelId, connection.providerType);
@@ -153,10 +153,12 @@ export function resolveModelRuntime(
       : adapter.kind === 'google' && adapter.normalizeBaseUrl !== false
         ? googleV1BetaBaseUrl(resolvedBaseUrl)
         : adapter.kind === 'openai-compatible' && adapter.normalizeBaseUrl
-          ? anthropicV1BaseUrl(resolvedBaseUrl)
+          ? anthropicV1BaseUrl(openAiChatBaseUrl(resolvedBaseUrl))
           : wire === 'openai-responses' && resolvedBaseUrl
             ? openAiResponsesBaseUrl(resolvedBaseUrl)
-            : resolvedBaseUrl;
+            : wire === 'openai-chat' && resolvedBaseUrl
+              ? openAiChatBaseUrl(resolvedBaseUrl)
+              : resolvedBaseUrl;
   const parallelToolCalls = resolveParallelToolCalls(connection, modelId, baseAdapter);
   return {
     ...call,
@@ -166,7 +168,7 @@ export function resolveModelRuntime(
     replay.contract.adapter === 'open-responses' &&
     replay.contract.reasoningReplay === 'plaintext-summary'
       ? {
-          responsesProviderOptionsKey: runtimeProviderName(adapter, connection),
+          responsesProviderOptionsKey: connection.providerType,
           responsesReplayProfile: connection.slug ?? connection.providerType,
         }
       : {}),
@@ -174,6 +176,12 @@ export function resolveModelRuntime(
       {
         wire,
         applyPatchProtocol: adapter.applyPatchProtocol,
+        enabled: modelOverride(connection, modelId)?.applyPatch,
+        customTools:
+          wire === 'openai-responses' &&
+          (connection.providerType === 'openai' || connection.providerType === 'openai-codex') &&
+          replay.kind === 'responses' &&
+          replay.contract.adapter === 'openai',
       },
       modelId,
     ),
@@ -198,16 +206,6 @@ function resolveParallelToolCalls(
   return adapter.kind === 'openai' || adapter.kind === 'openai-codex' ? true : undefined;
 }
 
-/** Provider identity used to name SDK instances and key their provider options. */
-export function runtimeProviderName(
-  adapter: ProviderRuntimeAdapter,
-  connection: { readonly providerType: ProviderType; readonly slug?: string },
-): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? (connection.slug ?? connection.providerType)
-    : connection.providerType;
-}
-
 /** Native OpenAI lanes keep mutable continuation state inside ModelAdapter. */
 export function modelUsesNativeOpenAiResponses(
   connection: ModelRuntimeConnection,
@@ -229,14 +227,6 @@ function adapterCalls(adapter: ProviderRuntimeAdapter): ModelRuntimeCall[] {
       return [{ adapter, wire: 'google-generate', reasoningReplay: { kind: 'none' } }];
     case 'cohere':
       return [{ adapter, wire: 'cohere-v2', reasoningReplay: { kind: 'none' } }];
-    case 'commandcode-cli':
-      return [
-        {
-          adapter,
-          wire: 'commandcode-cli',
-          reasoningReplay: { kind: 'openai-chat-plaintext', requestField: 'reasoning' },
-        },
-      ];
     case 'openai-codex':
       return [
         {

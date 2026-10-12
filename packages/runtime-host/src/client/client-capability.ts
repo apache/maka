@@ -27,6 +27,13 @@ import type {
   ClientCapabilityServiceOffer,
 } from '../protocol/index.js';
 
+export interface ClientCapabilityRegistrationOptions {
+  readonly sessionId?: string;
+  readonly timeoutMs?: number;
+  readonly requireIdleSession?: boolean;
+  readonly sessionConfigurationId?: string;
+}
+
 /** A Client-owned open-world capability provider registered on one Host connection. */
 export interface ClientCapabilityProvider {
   offers(): readonly ClientCapabilityOffer[];
@@ -53,4 +60,6 @@ export interface ClientCapabilityProvider {
   ): Promise<Record<string, unknown>>;
   /** Release provider-owned resources after its final registration is retired. */
   close?(): void | Promise<void>;
+  /** The Host authoritatively retired this provider while its registration was current. */
+  currentRegistrationRetired?(): void | Promise<void>;
 }

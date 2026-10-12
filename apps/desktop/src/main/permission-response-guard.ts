@@ -19,13 +19,13 @@
 
 import type {
   BranchFromTurnInput,
-  RegenerateTurnInput,
   ReviseBeforeTurnInput,
   TurnOrchestration,
 } from '@maka/core/runtime-inputs';
 import {
   isDirectoryReference,
   DIRECTORY_REFERENCE_MAX_COUNT,
+  QUOTE_COMMENT_MAX_LENGTH,
   type DirectoryReference,
   type QuoteRef,
 } from '@maka/core/events';
@@ -45,6 +45,8 @@ const MAX_SESSION_SEND_TEXT_LENGTH = 128_000;
 const MAX_QUOTE_COUNT = 16;
 const MAX_QUOTE_TEXT_LENGTH = 32_000;
 const MAX_QUOTE_LABEL_LENGTH = 200;
+const MAX_QUOTE_SOURCE_SESSION_ID_LENGTH = 512;
+const MAX_QUOTE_SOURCE_SESSION_NAME_LENGTH = 200;
 const MAX_INLINE_REFERENCE_COUNT = 32;
 const MAX_INLINE_REFERENCE_VALUE_LENGTH = 4_096;
 
@@ -131,18 +133,6 @@ export function normalizeUserQuestionResponse(input: unknown): UserQuestionRespo
     throw new Error('Invalid user question response answers');
   }
   return { requestId, answers: [...value.answers] as Array<string | null> };
-}
-
-export function normalizeRegenerateTurnInput(input: unknown): RegenerateTurnInput {
-  const value = requireObject(input, 'Invalid regenerate turn input');
-  return {
-    sourceTurnId: normalizeRequiredString(
-      value.sourceTurnId,
-      'Invalid regenerate turn sourceTurnId',
-      MAX_TURN_ID_LENGTH,
-    ),
-    ...normalizeOptionalTurnId(value.turnId),
-  };
 }
 
 export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInput {
@@ -361,6 +351,14 @@ function normalizeOptionalQuotes(input: unknown): { quotes?: QuoteRef[] } {
       value.label === undefined
         ? undefined
         : normalizeOptionalString(value.label, 'Invalid send quote label', MAX_QUOTE_LABEL_LENGTH);
+    const comment =
+      value.comment === undefined
+        ? undefined
+        : normalizeOptionalString(
+            value.comment,
+            'Invalid send quote comment',
+            QUOTE_COMMENT_MAX_LENGTH,
+          );
     const sourceTurnId =
       value.sourceTurnId === undefined
         ? undefined
@@ -369,10 +367,50 @@ function normalizeOptionalQuotes(input: unknown): { quotes?: QuoteRef[] } {
             'Invalid send quote sourceTurnId',
             MAX_TURN_ID_LENGTH,
           );
+    const sourceSessionId =
+      value.sourceSessionId === undefined
+        ? undefined
+        : normalizeRequiredString(
+            value.sourceSessionId,
+            'Invalid send quote sourceSessionId',
+            MAX_QUOTE_SOURCE_SESSION_ID_LENGTH,
+          );
+    const sourceSessionName =
+      value.sourceSessionName === undefined
+        ? undefined
+        : normalizeRequiredString(
+            value.sourceSessionName,
+            'Invalid send quote sourceSessionName',
+            MAX_QUOTE_SOURCE_SESSION_NAME_LENGTH,
+          );
+    const sourceCapturedAt = value.sourceCapturedAt;
+    const sourceTruncated = value.sourceTruncated;
+    const hasSourceMetadata =
+      sourceSessionId !== undefined ||
+      sourceSessionName !== undefined ||
+      sourceCapturedAt !== undefined ||
+      sourceTruncated !== undefined;
+    if (
+      hasSourceMetadata &&
+      (sourceSessionId === undefined ||
+        sourceSessionName === undefined ||
+        typeof sourceCapturedAt !== 'number' ||
+        !Number.isFinite(sourceCapturedAt) ||
+        sourceCapturedAt < 0 ||
+        sourceCapturedAt > 8.64e15 ||
+        typeof sourceTruncated !== 'boolean')
+    ) {
+      throw new Error('Invalid send quote Session provenance');
+    }
     return {
       text: normalizeRequiredString(value.text, 'Invalid send quote text', MAX_QUOTE_TEXT_LENGTH),
       ...(label ? { label } : {}),
+      ...(comment ? { comment } : {}),
       ...(sourceTurnId ? { sourceTurnId } : {}),
+      ...(sourceSessionId ? { sourceSessionId } : {}),
+      ...(sourceSessionName ? { sourceSessionName } : {}),
+      ...(hasSourceMetadata ? { sourceCapturedAt: sourceCapturedAt as number } : {}),
+      ...(hasSourceMetadata ? { sourceTruncated: sourceTruncated as boolean } : {}),
     };
   });
   return quotes.length > 0 ? { quotes } : {};

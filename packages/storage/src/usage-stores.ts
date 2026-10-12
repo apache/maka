@@ -41,6 +41,8 @@ import {
   ModelCallLedgerPublicationError,
   type ModelCallLedger,
   type ModelCallLedgerReader,
+  type RunSettlementCoverage,
+  type UsageUnknownModelCallRecord,
 } from './model-call-ledger.js';
 import {
   PricingCommitUnknownError,
@@ -131,12 +133,24 @@ export interface ModelCallIndexReader {
     offset: number,
     limit: number,
   ): Promise<ModelCallLedgerResult<ModelCallUsageLogs>>;
+  /**
+   * What the settlement window itself left unsettled (#5890) — what hosted
+   * execution settlement checks instead of the ledger-wide coverage, which
+   * must also count rows no run owns.
+   */
+  modelCallRunSettlementCoverage(from: number, to: number): Promise<RunSettlementCoverage>;
 }
 
 export interface ModelCallIndexWriter extends ModelCallIndexReader {
   catchUpModelCallProjection(
     input?: CatchUpModelCallProjectionInput,
   ): Promise<CatchUpModelCallProjectionResult>;
+  /**
+   * Records one usage-unknown row for a model call outside any AgentRun
+   * (#5691) — auxiliary Host calls the event stream cannot project. The owning
+   * Session, when known, is published after the write.
+   */
+  recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void>;
 }
 
 export interface PricingAuthorityReader {
@@ -285,10 +299,17 @@ export async function openInteractiveUsageStoresForRead(
     openRepos(root, false),
   );
   let closed = false;
+  let barrier: Promise<void> = Promise.resolve();
   let closePromise: Promise<void> | undefined;
   const run = <T>(operation: () => T | Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(new InteractiveUsageStoresClosedError());
-    return runWithStorageRootLease(lease, 'interactive', 'read', async () => operation());
+    const admitted = runWithStorageRootLease(lease, 'interactive', 'read', async () => operation());
+    const settled = admitted.then(
+      () => undefined,
+      () => undefined,
+    );
+    barrier = Promise.all([barrier, settled]).then(() => undefined);
+    return admitted;
   };
   const stores: InteractiveUsageStoresReader = {
     readUsageScreen: (input) => run(() => repos.screen.read(input)),
@@ -301,8 +322,11 @@ export async function openInteractiveUsageStoresForRead(
     close: () => {
       if (closePromise) return closePromise;
       closed = true;
-      repos.screen.close();
-      closePromise = closeRepos(repos.telemetry, repos.modelCalls, repos.pricing);
+      const accepted = barrier;
+      closePromise = accepted.then(async () => {
+        repos.screen.close();
+        await closeRepos(repos.telemetry, repos.modelCalls, repos.pricing);
+      });
       return closePromise;
     },
   };
@@ -433,13 +457,28 @@ function createWriterFacade(
     input?: CatchUpModelCallProjectionInput,
   ): Promise<CatchUpModelCallProjectionResult> =>
     admit(async () => {
-      const result = await run(() => modelCalls.catchUpProjection(input));
+      const result = await run(() =>
+        modelCalls.catchUpProjection(
+          input,
+          exporter
+            ? (attempt) => {
+                void exporter.exportModelCallAttempt(attempt);
+              }
+            : undefined,
+        ),
+      );
       for (const sessionId of result.changedSessionIds) publishSessionUsageChange(sessionId);
       return result;
     });
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
-    return run(operation);
+    const admitted = Promise.resolve().then(() => run(operation));
+    const settled = admitted.then(
+      () => undefined,
+      () => undefined,
+    );
+    barrier = Promise.all([barrier, settled]).then(() => undefined);
+    return admitted;
   };
 
   const beginDrain = (): Promise<void> => {
@@ -524,7 +563,13 @@ function createWriterFacade(
         read(() => modelCalls.buckets(query, groupBy, now)),
       modelCallLogs: (query, now, offset, limit) =>
         read(() => modelCalls.logs(query, now, offset, limit)),
+      modelCallRunSettlementCoverage: (from, to) =>
+        read(() => modelCalls.runSettlementCoverage(from, to)),
       catchUpModelCallProjection: admitModelCallProjectionCatchUp,
+      recordUsageUnknownAttempt: (record) =>
+        admitSessionUsageMutation(record.sessionId, () =>
+          modelCalls.recordUsageUnknownAttempt(record),
+        ),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),
@@ -576,6 +621,8 @@ function modelCallReader(
       run(() => ledger.buckets(query, groupBy, now)),
     modelCallLogs: (query: UsageQuery, now: number, offset: number, limit: number) =>
       run(() => ledger.logs(query, now, offset, limit)),
+    modelCallRunSettlementCoverage: (from: number, to: number) =>
+      run(() => ledger.runSettlementCoverage(from, to)),
   });
 }
 

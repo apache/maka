@@ -20,11 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  OPENCODE_FREE_DEFAULT_MODEL,
-  defaultEnabledModelIdsWhenOmitted,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import type { ProviderType } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 
@@ -42,23 +38,15 @@ interface BootstrapSeed {
   readonly providerType: ProviderType;
   readonly enabledModelIds: readonly string[];
   readonly baseUrl?: string;
-  readonly secret?: string;
+  readonly secret: string;
 }
-
-/**
- * What the seeded OpenCode Free connection starts with — the provider's own
- * declaration of the models a fresh connection to it enables, so the seed and
- * a hand-added connection cannot drift apart.
- */
-const OPENCODE_FREE_SEED_MODEL_IDS: readonly string[] =
-  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
 interface BootstrapJournal {
   readonly version: 1;
   readonly state: 'initializing';
 }
 
-/** Establishes a usable first target before Runtime Host accepts clients. */
+/** Imports a user's environment credential on first start, before accepting clients. */
 export async function ensureBootstrapRuntimePolicy(input: {
   readonly workspaceRoot: string;
   readonly stores: RuntimePolicyStoresWriter;
@@ -70,52 +58,30 @@ export async function ensureBootstrapRuntimePolicy(input: {
   const journalPath = join(input.workspaceRoot, JOURNAL_FILE);
   const resuming = await readJournal(journalPath);
   const initialCatalog = await input.stores.connectionCatalog.getSnapshot();
-  if (initialCatalog.connections.length > 0) {
-    // One atomic catalog mutation: enabled ids, static inventory, and a
-    // retarget of a system default the migration removes all land in the same
-    // document write, so no restart can observe a half-migrated row.
-    try {
-      await input.stores.connectionCatalog.migrateSystemSeed({
-        slug: 'opencode-free',
-        providerType: 'opencode-free',
-        legacyEnabledModelIds: LEGACY_OPENCODE_FREE_SEEDS,
-        enabledModelIds: OPENCODE_FREE_SEED_MODEL_IDS,
-        defaultModelId: OPENCODE_FREE_DEFAULT_MODEL,
-        retiredModelIds: retiredOpencodeFreeModelIds(),
-      });
-    } catch (error) {
-      input.onDeferredError?.(error);
-    }
+  if (!resuming && initialCatalog.connections.length > 0) return;
+  const seed = bootstrapSeed(input.environment ?? process.env);
+  if (!seed || initialCatalog.connections.some((connection) => connection.slug !== seed.slug)) {
+    await rm(journalPath, { force: true });
+    return;
   }
-  if (!resuming) {
-    if (initialCatalog.connections.length > 0) return;
-    await writeJournal(journalPath);
-  }
-
-  const seeds = bootstrapSeeds(input.environment ?? process.env);
-  const { connection: free } = await ensureConnection(input.stores, seeds[0]!);
-  await setDefaultIfMissing(input.stores, free);
-  await rm(journalPath, { force: true });
-
+  if (!resuming) await writeJournal(journalPath);
+  let connection: ConnectionCatalogEntry;
   try {
-    let preferred = free;
-    for (const seed of seeds.slice(1)) {
-      const ensured = await ensureConnection(input.stores, seed);
-      const connection = ensured.connection;
-      if (seed.secret) {
-        try {
-          await ensureCredential(input.stores, connection, seed.secret);
-        } catch (error) {
-          if (ensured.created) await removeFailedBootstrapConnection(input.stores, connection);
-          throw error;
-        }
-      }
-      preferred = connection;
+    const ensured = await ensureConnection(input.stores, seed);
+    connection = ensured.connection;
+    try {
+      await ensureCredential(input.stores, connection, seed.secret);
+    } catch (error) {
+      if (ensured.created) await removeFailedBootstrapConnection(input.stores, ensured.connection);
+      throw error;
     }
-    await replaceBootstrapDefault(input.stores, free, preferred);
   } catch (error) {
     input.onDeferredError?.(error);
+    await rm(journalPath, { force: true });
+    return;
   }
+  await setDefaultIfMissing(input.stores, connection);
+  await rm(journalPath, { force: true });
 }
 
 async function initializeHostedPolicy(
@@ -182,45 +148,37 @@ async function initializeHostedPolicy(
   if (result.kind !== 'committed') throw new Error('Hosted proxy initialization failed');
 }
 
-function bootstrapSeeds(environment: BootstrapEnvironment): readonly BootstrapSeed[] {
-  const seeds: BootstrapSeed[] = [
-    {
-      slug: 'opencode-free',
-      name: 'OpenCode Free',
-      providerType: 'opencode-free',
-      enabledModelIds: OPENCODE_FREE_SEED_MODEL_IDS,
-    },
-  ];
+function bootstrapSeed(environment: BootstrapEnvironment): BootstrapSeed | undefined {
   const deepseek = environment.DEEPSEEK_API_KEY?.trim();
   const anthropic = environment.ANTHROPIC_API_KEY?.trim();
   const openai = environment.OPENAI_API_KEY?.trim();
   if (deepseek) {
-    seeds.push({
+    return {
       slug: 'env-deepseek',
       name: 'DeepSeek (env)',
       providerType: 'deepseek',
       enabledModelIds: ['deepseek-v4-flash'],
       baseUrl: environment.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com',
       secret: deepseek,
-    });
+    };
   } else if (anthropic) {
-    seeds.push({
+    return {
       slug: 'env-anthropic',
       name: 'Anthropic (env)',
       providerType: 'anthropic',
       enabledModelIds: ['claude-sonnet-4-5-20250929'],
       secret: anthropic,
-    });
+    };
   } else if (openai) {
-    seeds.push({
+    return {
       slug: 'env-openai',
       name: 'OpenAI (env)',
       providerType: 'openai',
       enabledModelIds: ['gpt-4o-mini'],
       secret: openai,
-    });
+    };
   }
-  return seeds;
+  return undefined;
 }
 
 async function ensureConnection(
@@ -254,26 +212,6 @@ async function ensureConnection(
     }
   }
   throw new Error(`Bootstrap Connection could not be created: ${seed.slug}`);
-}
-
-/**
- * Every opencode-free inventory a past release seeded, verbatim. A row still
- * equal to one of these is provably system-owned and may follow the current
- * seed; any other value is a user selection and is never touched. Every
- * release that changes the derived seed must append the previous value here,
- * or rows it planted read as user selections forever. (This exact-match
- * enumeration is deliberately lossy; the versioned seed policy discussed in
- * #3354 is the durable replacement.)
- */
-const LEGACY_OPENCODE_FREE_SEEDS: readonly (readonly string[])[] = [
-  ['big-pickle'],
-  ['nemotron-3-ultra-free'],
-  ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
-];
-
-function retiredOpencodeFreeModelIds(): readonly string[] {
-  const current = new Set(OPENCODE_FREE_SEED_MODEL_IDS);
-  return [...new Set(LEGACY_OPENCODE_FREE_SEEDS.flat())].filter((id) => !current.has(id));
 }
 
 async function removeFailedBootstrapConnection(
@@ -319,36 +257,11 @@ async function setDefaultIfMissing(
     expectedCatalogRevision: catalog.revision,
     target: {
       connectionId: connection.connectionId,
-      modelId: OPENCODE_FREE_DEFAULT_MODEL,
+      modelId: connection.enabledModelIds[0]!,
     },
   });
   if (committed.kind !== 'committed') {
     throw new Error(`Bootstrap default target could not be stored: ${committed.kind}`);
-  }
-}
-
-async function replaceBootstrapDefault(
-  stores: RuntimePolicyStoresWriter,
-  free: ConnectionCatalogEntry,
-  preferred: ConnectionCatalogEntry,
-): Promise<void> {
-  if (preferred.connectionId === free.connectionId || !preferred.enabled) return;
-  const catalog = await stores.connectionCatalog.getSnapshot();
-  const current = catalog.defaultTarget;
-  if (
-    current !== null &&
-    (current.connectionId !== free.connectionId || current.modelId !== OPENCODE_FREE_DEFAULT_MODEL)
-  ) {
-    return;
-  }
-  const modelId = preferred.enabledModelIds[0];
-  if (!modelId) return;
-  const committed = await stores.connectionCatalog.setDefaultTarget({
-    expectedCatalogRevision: catalog.revision,
-    target: { connectionId: preferred.connectionId, modelId },
-  });
-  if (committed.kind !== 'committed') {
-    throw new Error(`Bootstrap preferred target could not be stored: ${committed.kind}`);
   }
 }
 

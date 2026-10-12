@@ -24,7 +24,7 @@ import {
   mergeShellRunNotification,
   mergeShellRunUpdates,
   ShellRunHydration,
-} from '../../renderer/shell-run-update-state.js';
+} from '../../renderer/application/contracts/shell-run-update-state.js';
 
 test('ShellRun update state rejects a stale hydration result after a newer notification', () => {
   const current = mergeShellRunUpdates({}, [update(3)]);

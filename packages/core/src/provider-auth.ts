@@ -93,6 +93,8 @@ export function deriveProviderAuthContract(input: {
     actionAvailability: actions({
       test_credentials: reachableWithoutSecret || hasSecret,
       fetch_models: canFetchModels && (reachableWithoutSecret || hasSecret),
+      // Reading account usage needs the same reachability as a connection test:
+      // a credential the provider accepts over HTTP.
     }),
   };
 }

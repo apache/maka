@@ -71,9 +71,6 @@ export type ProviderContractWire =
 export const SUBSCRIPTION_WIRE_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
   'openai-codex',
   'github-copilot',
-  // Not a subscription, but the same shape of exception: a provider-specific
-  // wire (the CLI's `/alpha/generate`) no generated executor can drive.
-  'commandcode-go',
 ]);
 
 /**

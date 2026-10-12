@@ -51,7 +51,9 @@ export class SessionTerminalRenderQueue {
       if (!this.#writing) this.sink.resync();
       return;
     }
-    this.#pending.push({ data, reset: false });
+    const tail = this.#pending.at(-1);
+    if (tail && !tail.reset) tail.data += data;
+    else this.#pending.push({ data, reset: false });
     this.#bytes += data.length * 2;
     this.#pump();
   }

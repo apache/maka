@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { ExecutorConfiguration } from '@maka/core/executor-catalog';
+
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -69,6 +71,7 @@ export interface SessionConfigurationMetadataUpdate {
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly executorId?: string;
+    executorConfig?: ExecutorConfiguration;
     readonly llmConnectionId?: string;
     readonly llmConnectionSlug: string;
     readonly connectionLocked: boolean;
@@ -145,6 +148,42 @@ export type ProbeSessionRemovalResult =
   | { readonly kind: 'present'; readonly record: SessionHeaderSnapshot }
   | { readonly kind: 'removed' }
   | { readonly kind: 'absent' };
+
+/**
+ * A task row archive retention may delete: what Settings › Archived tasks lists
+ * — an archived root, or an archived subtask whose parent is gone — that no
+ * member of its revision family pins.
+ */
+export interface ArchiveRetentionCandidate extends SessionHeaderSnapshot {
+  /** Absent for a Session archived before the Host recorded the time. */
+  readonly archivedAt?: number;
+}
+
+/** A candidate row whose metadata no longer decodes: counted as failed and passed over. */
+export interface ArchiveRetentionUndecodableRow {
+  readonly undecodable: true;
+  readonly sessionId: string;
+  readonly archivedAt?: number;
+}
+
+export type ArchiveRetentionCandidateRow =
+  | ArchiveRetentionCandidate
+  | ArchiveRetentionUndecodableRow;
+
+/** Candidate families and the earliest clock start among them under one `enabledAt`. */
+export interface ArchiveRetentionCandidateCount {
+  readonly families: number;
+  readonly firstStart?: number;
+}
+
+/** Candidates come oldest archive first; an unknown time sorts before every known one. */
+export interface ArchiveRetentionCandidateQuery {
+  /** Only rows archived before this instant, plus every row whose time is unknown. */
+  readonly archivedBefore?: number;
+  /** Resume strictly after this row of the same order. */
+  readonly after?: { readonly archivedAt?: number; readonly sessionId: string };
+  readonly limit: number;
+}
 
 export interface SessionCatalogRecord extends SessionHeaderSnapshot {
   readonly activityAt: number;
@@ -413,7 +452,12 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   subscribeTranscriptChanges(listener: (sessionId: string) => void): () => void;
   /** Wait until the durable authority is ready for cross-domain transactions. */
   ready(): Promise<void>;
-  /** Atomically create a Session from already-converted Maka raw messages. */
+  /**
+   * Atomically create a Session from already-converted Maka raw messages.
+   * Implementations must finish canonical validation and deterministic catalog
+   * projection before invoking `onCommitStarted`; failures before that callback
+   * have not started durable commit and must not leave a staged Session.
+   */
   createImportedSession(
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
@@ -479,10 +523,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: WorkHubMessageAssignmentRequest,
   ): Promise<WorkHubMessageAssignmentResult>;
   readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
-  /** Newest active assignment first, across every requested target. */
+  /** Newest assignment first. includeStopped retains stopped links for lineage-aware controls; superseded links remain excluded. */
   readActiveWorkHubAssignmentsByTarget(
     targetSessionIds: readonly string[],
     maxAssignmentsPerTarget?: number,
+    includeStopped?: boolean,
   ): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readWorkHubReplacement(
     delegationId: string,
@@ -495,9 +540,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   ): Promise<WorkHubDelegationSupersededMessage | undefined>;
   readWorkHubStopRequest(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
   readWorkHubStopResolution(
     delegationId: string,
+    actionId?: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
   /**
    * Durably binds one action identity to one exact WorkHub operation before its
@@ -539,4 +586,10 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   reconcileOrphanedAgentGraphRetirements(): Promise<string[]>;
   listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]>;
   completeSessionRetirementCleanup(sessionId: string): Promise<void>;
+  listArchiveRetentionCandidates(
+    query: ArchiveRetentionCandidateQuery,
+  ): Promise<ArchiveRetentionCandidateRow[]>;
+  countArchiveRetentionCandidates(enabledAt: number): Promise<ArchiveRetentionCandidateCount>;
+  /** The newest time any Session metadata write or archive recorded; undefined with no Sessions. */
+  readLatestSessionMetadataTime(): Promise<number | undefined>;
 }

@@ -76,6 +76,13 @@ test('WorkHub model configuration accepts thinking levels without widening its a
     { ...input, thinkingLevel: 'extreme' },
     { ...input, expectedRevision: -1 },
     { ...input, modelTarget: { kind: 'default' } },
+    { expectedRevision: 3, thinkingLevel: null },
+    { ...input, executorTarget: { executorId: 'codex.app-server' } },
+    {
+      expectedRevision: 4,
+      thinkingLevel: 'xhigh',
+      executorTarget: { executorId: 'codex.app-server', model: 'gpt-6-astra' },
+    },
   ])
     assert.throws(
       () => decodeWorkHubCoordinationConfigureModelInput(invalid),
@@ -123,14 +130,31 @@ test('WorkHub new Sessions accept a plugin executor as their creation default', 
     proposal: { disposition: 'create_new', title: 'External audit' },
     delegationText: 'Inspect the login retries',
     create: { workspace: { kind: 'project', projectId: 'maka' } },
-    newWorkDefaults: { executorId: 'codex.app-server', permissionMode: 'ask' },
+    newWorkDefaults: {
+      executorId: 'codex.app-server',
+      executorModel: 'gpt-6-astra',
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+    },
   };
   assert.deepEqual(decodeWorkHubCoordinationActFromTurnInput(input), input);
+  assert.doesNotThrow(() =>
+    decodeWorkHubCoordinationActFromTurnInput({
+      ...input,
+      newWorkDefaults: {
+        executorId: 'codex.app-server',
+        executorModel: '界'.repeat(170),
+      },
+    }),
+  );
   for (const newWorkDefaults of [
     {
       executorId: 'codex',
       model: { llmConnectionId: 'conn', llmConnectionSlug: 'test', model: 'model' },
     },
+    { executorModel: 'gpt-6-astra' },
+    { executorId: 'codex.app-server', executorModel: '' },
+    { executorId: 'codex.app-server', executorModel: '界'.repeat(171) },
     { executorId: 'invalid executor' },
   ]) {
     assert.throws(

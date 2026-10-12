@@ -32,11 +32,11 @@ export interface SqliteSessionRolePredicate {
  * metadata is corrupt or missing. This keeps damaged authority state out of
  * ordinary catalogs and write paths until the Host can be repaired.
  */
-export function sqliteOrdinarySessionRolePredicate(): SqliteSessionRolePredicate {
+export function sqliteOrdinarySessionRolePredicate(alias = 'metadata'): SqliteSessionRolePredicate {
   return {
     sql: `(
-      metadata.session_id <> ?
-      AND json_type(metadata.payload_json, '$.role') IS NULL
+      ${alias}.session_id <> ?
+      AND json_type(${alias}.payload_json, '$.role') IS NULL
     )`,
     parameters: [WORKHUB_COORDINATION_SESSION_ID],
   };

@@ -1,0 +1,66 @@
+diff --git a/node_modules/@ai-sdk/provider-utils/dist/index.js b/node_modules/@ai-sdk/provider-utils/dist/index.js
+index af46d0c..a94af7a 100644
+--- a/node_modules/@ai-sdk/provider-utils/dist/index.js
++++ b/node_modules/@ai-sdk/provider-utils/dist/index.js
+@@ -4337,7 +4337,6 @@ var StreamingToolCallTracker = class {
+    */
+   processDelta(toolCallDelta) {
+     const wireName = toolCallDelta.function?.name;
+-    const hasBlankName = typeof wireName === "string" && wireName.trim().length === 0;
+     const wireId = this.getNonBlankString(toolCallDelta.id);
+     const name3 = this.getNonBlankString(wireName);
+     const { index } = toolCallDelta;
+@@ -4348,13 +4347,13 @@ var StreamingToolCallTracker = class {
+       hasExplicitCallStart: name3 != null && startsWithStructuredValue(toolCallDelta.function?.arguments)
+     });
+     if (resolution.kind === "ambiguous") {
+-      return;
++      throw new InvalidResponseDataError({
++        data: toolCallDelta,
++        message: "Ambiguous streamed tool call delta."
++      });
+     }
+     let toolCall;
+     if (resolution.kind === "new") {
+-      if (hasBlankName) {
+-        return;
+-      }
+       toolCall = this.processNewToolCall(toolCallDelta, {
+         wireId,
+         index,
+diff --git a/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts b/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts
+index 1d0bf42..cffe441 100644
+--- a/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts
++++ b/node_modules/@ai-sdk/provider-utils/src/streaming-tool-call-tracker.ts
+@@ -124,8 +124,6 @@ export class StreamingToolCallTracker<
+    */
+   processDelta(toolCallDelta: DELTA): void {
+     const wireName = toolCallDelta.function?.name;
+-    const hasBlankName =
+-      typeof wireName === 'string' && wireName.trim().length === 0;
+     const wireId = this.getNonBlankString(toolCallDelta.id);
+     const name = this.getNonBlankString(wireName);
+     const { index } = toolCallDelta;
+@@ -140,18 +138,14 @@ export class StreamingToolCallTracker<
+     });
+ 
+     if (resolution.kind === 'ambiguous') {
+-      return;
++      throw new InvalidResponseDataError({
++        data: toolCallDelta,
++        message: 'Ambiguous streamed tool call delta.',
++      });
+     }
+ 
+     let toolCall: TrackedToolCall;
+     if (resolution.kind === 'new') {
+-      // Blank names cannot start a usable call, but some providers repeat a
+-      // blank name on continuations. Correlate those continuations first, then
+-      // ignore only the unmatched blank-name delta.
+-      if (hasBlankName) {
+-        return;
+-      }
+-
+       toolCall = this.processNewToolCall(toolCallDelta, {
+         wireId,
+         index,

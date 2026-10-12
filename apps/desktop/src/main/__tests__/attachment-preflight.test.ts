@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { preflightAttachmentItems } from '../../renderer/attachment-preflight.js';
+import { preflightAttachmentItems } from '../../renderer/application/contracts/attachment-preflight.js';
 
 describe('attachment preflight (before session create)', () => {
   test('rejects more than 8 items before any session is created', () => {

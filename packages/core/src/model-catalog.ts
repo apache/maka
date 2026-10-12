@@ -24,7 +24,11 @@ import type {
   ProviderDefaults,
   ProviderType,
 } from './llm-connections.js';
-import { applyModelOverride, resolveModelLimits } from './model-thinking.js';
+import {
+  applyModelOverride,
+  defaultThinkingLevelForConnection,
+  resolveModelLimits,
+} from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_REGISTRY,
@@ -81,6 +85,8 @@ export interface ModelCatalogEntry {
    * thinking projection honoured.
    */
   thinkingLevels: readonly ThinkingLevel[];
+  /** Host-owned preference used when a new Session starts on this model. */
+  defaultThinkingLevel?: ThinkingLevel;
   contextWindow?: number;
   inputLimit?: number;
   defaultContextWindow?: number;
@@ -198,32 +204,16 @@ export function buildConnectionModelCatalogEntries(
   // Mirrors `isRealConnection` in connection-readiness.ts.
   if (!defaults) return [];
   const supportsModelDiscovery = providerSupportsModelDiscovery(connection.providerType);
-  // Quarantined ids never surface as offerable entries — from any source,
-  // including inventories stored or selections made before the quarantine —
-  // mirroring the `authorizeConnectionModel` veto.
-  const broken = new Set(defaults.brokenModelIds ?? []);
   const fallbackModels = providerFallbackModelIds(defaults);
-  // A quarantined id persisted as this connection's `defaultModel` must not
-  // re-enter the catalog either. `models` and `enabledModelIds` are filtered
-  // below, but a broken default reaches `makeMissingDefaultEntry` unfiltered and
-  // would be re-added as a selectable `provider_default` row — picker-visible
-  // and default-capable while `authorizeConnectionModel` vetoes the same id. A
-  // reachable persisted state: the id was picker-visible before the quarantine.
-  // Dropping it leaves the connection with no valid default (readiness reports
-  // `missing_model`), which is what a model that can no longer send warrants.
-  const defaultModel = broken.has((connection.defaultModel ?? '').trim())
-    ? undefined
-    : connection.defaultModel;
+  const defaultModel = connection.defaultModel;
   const fallbackModelIds = new Set(fallbackModels);
-  const projectedModelsById = new Map(
-    (connection.models ?? []).filter(({ id }) => !broken.has(id)).map((model) => [model.id, model]),
-  );
+  const projectedModelsById = new Map((connection.models ?? []).map((model) => [model.id, model]));
   // Fallback providers have no live inventory, but a projected connection can
   // still carry enabled model-facts entries that are absent from the static
   // list. Keep both sets in the catalog so those user-declared models retain
   // their metadata.
   const models = supportsModelDiscovery
-    ? connection.models?.filter(({ id }) => !broken.has(id))
+    ? connection.models
     : [
         ...fallbackModels.map(
           (id) =>
@@ -232,9 +222,7 @@ export function buildConnectionModelCatalogEntries(
               ...displayNameForKnownModel(connection.providerType, id),
             },
         ),
-        ...(connection.models ?? []).filter(
-          (model) => !broken.has(model.id) && !fallbackModelIds.has(model.id),
-        ),
+        ...(connection.models ?? []).filter((model) => !fallbackModelIds.has(model.id)),
       ];
   return buildModelCatalogEntries({
     providerType: connection.providerType,
@@ -253,7 +241,7 @@ export function buildConnectionModelCatalogEntries(
     savedModelIds: [
       ...(connection.enabledModelIds ?? []),
       ...Object.keys(connection.modelOverrides ?? {}),
-    ].filter((id) => !broken.has(id)),
+    ],
   });
 }
 
@@ -394,6 +382,10 @@ function makeEntry(
       capabilities,
       ...(modalities !== undefined ? { modalities } : {}),
     });
+  const defaultThinkingLevel = defaultThinkingLevelForConnection(
+    thinkingContext,
+    normalizedModel.id,
+  );
   return {
     id: normalizedModel.id,
     ...displayNameForModel(input.providerType, normalizedModel),
@@ -408,6 +400,7 @@ function makeEntry(
       ? {}
       : { compactionThreshold: input.modelOverrides[normalizedModel.id]!.compactionThreshold }),
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
+    ...(defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel }),
     ...limits,
     ...(defaults.contextWindow === undefined
       ? {}

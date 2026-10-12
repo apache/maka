@@ -58,6 +58,77 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('standalone metadata lifecycle remains compatible without workflow tables', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-standalone-metadata-lifecycle-'));
+    const path = join(root, 'metadata.sqlite');
+    const store = createSqliteSessionMetadataStore(path);
+    try {
+      for (const id of ['archived', 'removed', 'retired', 'archived-with-retirement']) {
+        await store.create(
+          fullHeader({
+            id,
+            parentSessionId: undefined,
+            branchOfTurnId: undefined,
+            revisionRootSessionId: undefined,
+            revisionParentSessionId: undefined,
+            revisionOfTurnId: undefined,
+            revisionIndex: undefined,
+            revisionState: undefined,
+          }),
+        );
+      }
+      const inspection = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.deepEqual(
+          inspection.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'workflow_%'").all(),
+          [],
+        );
+      } finally {
+        inspection.close();
+      }
+      await store.setArchivedVersioned([{ sessionId: 'archived', expectedVersion: 1 }], true);
+      assert.equal((await store.read('archived')).header.isArchived, true);
+      assert.equal(await store.remove('removed'), true);
+      assert.deepEqual(
+        await store.removeVersioned(
+          [{ sessionId: 'retired', expectedVersion: 1 }],
+          [{ sessionId: 'archived-with-retirement', expectedVersion: 1 }],
+        ),
+        ['retired'],
+      );
+      assert.equal((await store.read('archived-with-retirement')).header.isArchived, true);
+    } finally {
+      store.close();
+    }
+    try {
+      const inspection = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.deepEqual(
+          inspection.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'workflow_%'").all(),
+          [],
+        );
+        assert.deepEqual(
+          inspection
+            .prepare('SELECT session_id FROM session_metadata ORDER BY session_id')
+            .all()
+            .map((row) => row.session_id),
+          ['archived', 'archived-with-retirement'],
+        );
+        assert.deepEqual(
+          inspection
+            .prepare('SELECT session_id FROM session_metadata_tombstones ORDER BY session_id')
+            .all()
+            .map((row) => row.session_id),
+          ['removed', 'retired'],
+        );
+      } finally {
+        inspection.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('migrates version 38 and resumes the body-free Coordination index idempotently', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-coordination-index-migration-'));
     const path = join(root, 'state.sqlite');
@@ -1917,6 +1988,155 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(unchanged[0]?.committedAt, restored?.committedAt);
     } finally {
       store.close();
+    }
+  });
+
+  test('records when a Session entered the archive, and only the lifecycle writer moves it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-archived-at-'));
+    const path = join(root, 'state.sqlite');
+    let clock = 100;
+    const store = createSqliteSessionMetadataStore(path, { now: () => clock });
+    const readArchivedAtColumn = () => {
+      const inspect = new DatabaseSync(path, { readOnly: true });
+      try {
+        return (
+          inspect
+            .prepare('SELECT archived_at AS archivedAt FROM session_metadata WHERE session_id = ?')
+            .get('session-1') as { archivedAt: number | null }
+        ).archivedAt;
+      } finally {
+        inspect.close();
+      }
+    };
+    try {
+      const header = fullHeader();
+      await store.create(header);
+      assert.equal((await store.readCatalogRecord(header.id)).archivedAt, undefined);
+
+      clock = 200;
+      await store.setArchivedVersioned([{ sessionId: header.id, expectedVersion: 1 }], true);
+      assert.equal((await store.readCatalogRecord(header.id)).archivedAt, 200);
+
+      // committed_at moves on every metadata write; the archive time must not.
+      clock = 300;
+      const renamed = await store.update(header.id, { name: 'Renamed', isFlagged: true });
+      assert.equal(renamed.committedAt, 300);
+      assert.equal((await store.readCatalogRecord(header.id)).archivedAt, 200);
+      assert.equal((await store.list(undefined, 'ordinary'))[0]?.archivedAt, 200);
+      const page = await store.listCatalogPage({}, undefined, 8);
+      assert.equal(page.records[0]?.archivedAt, 200);
+
+      // Archiving an archived Session is a no-op, so it keeps its first time.
+      clock = 400;
+      await store.setArchivedVersioned([{ sessionId: header.id, expectedVersion: 3 }], true);
+      assert.equal((await store.readCatalogRecord(header.id)).archivedAt, 200);
+
+      clock = 500;
+      await store.setArchivedVersioned([{ sessionId: header.id, expectedVersion: 3 }], false);
+      assert.equal((await store.readCatalogRecord(header.id)).archivedAt, undefined);
+      assert.equal(readArchivedAtColumn(), null);
+
+      clock = 600;
+      await store.setArchivedVersioned([{ sessionId: header.id, expectedVersion: 4 }], true);
+      assert.equal((await store.readCatalogRecord(header.id)).archivedAt, 600);
+      assert.equal(readArchivedAtColumn(), 600);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('stamps every Session archived in one lifecycle write with one time', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-session-archived-at-batch-'));
+    const path = join(directory, 'state.sqlite');
+    let clock = 1_000;
+    // Every read of the clock moves it, so Sessions stamped from separate
+    // reads could not share a time.
+    const store = createSqliteSessionMetadataStore(path, { now: () => clock++ });
+    try {
+      for (const id of ['root', 'revision', 'deleted', 'orphaned-child']) {
+        await store.create(fullHeader({ id }));
+      }
+      await store.setArchivedVersioned(
+        [
+          { sessionId: 'root', expectedVersion: 1 },
+          { sessionId: 'revision', expectedVersion: 1 },
+        ],
+        true,
+      );
+      const root = (await store.readCatalogRecord('root')).archivedAt;
+      assert.equal(typeof root, 'number');
+      assert.equal((await store.readCatalogRecord('revision')).archivedAt, root);
+
+      // A delete that moves a child to the archive stamps it at the retirement.
+      await store.removeVersioned(
+        [{ sessionId: 'deleted', expectedVersion: 1 }],
+        [{ sessionId: 'orphaned-child', expectedVersion: 1 }],
+      );
+      const child = await store.readCatalogRecord('orphaned-child');
+      assert.equal(child.header.isArchived, true);
+      const inspect = new DatabaseSync(path, { readOnly: true });
+      try {
+        const tombstone = inspect
+          .prepare(
+            'SELECT deleted_at AS deletedAt FROM session_metadata_tombstones WHERE session_id = ?',
+          )
+          .get('deleted') as { deletedAt: number };
+        assert.equal(child.archivedAt, tombstone.deletedAt);
+      } finally {
+        inspect.close();
+      }
+    } finally {
+      store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('leaves the archive time of a Session archived before version 41 unknown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-archived-at-migration-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path, { now: () => 10 });
+      await setup.create(fullHeader({ id: 'legacy-archived' }));
+      await setup.create(fullHeader({ id: 'legacy-active' }));
+      await setup.setArchivedVersioned(
+        [{ sessionId: 'legacy-archived', expectedVersion: 1 }],
+        true,
+      );
+      setup.close();
+
+      const version40 = new DatabaseSync(path);
+      try {
+        version40.exec(`
+          ALTER TABLE session_metadata DROP COLUMN archived_at;
+          UPDATE session_metadata_schema SET version = 40 WHERE scope = 'session_metadata';
+        `);
+      } finally {
+        version40.close();
+      }
+
+      const migrated = createSqliteSessionMetadataStore(path, { now: () => 20 });
+      try {
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        const archived = await migrated.readCatalogRecord('legacy-archived');
+        assert.equal(archived.header.isArchived, true);
+        assert.equal(archived.archivedAt, undefined);
+        // The migration is additive: it neither rewrites the row nor invents
+        // a time from committed_at.
+        assert.equal(archived.metadataVersion, 2);
+        assert.equal(archived.committedAt, 10);
+        assert.equal((await migrated.readCatalogRecord('legacy-active')).archivedAt, undefined);
+
+        await migrated.setArchivedVersioned(
+          [{ sessionId: 'legacy-active', expectedVersion: 1 }],
+          true,
+        );
+        assert.equal((await migrated.readCatalogRecord('legacy-active')).archivedAt, 20);
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

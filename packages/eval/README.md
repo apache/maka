@@ -48,7 +48,7 @@ Maka subjects ask the Runtime Host client to run one owned execution in a dedica
 
 The bundled `harbor-maka-subject.js` asks Host to persist privacy mode and the environment's `HTTPS_PROXY` configuration before execution services start. Host stores proxy passwords in its credential vault. Connection discovery and execution use that same State Root, including after a Host restart; Eval does not write or rename policy files.
 
-For an explicit provider, add `providerType` and `apiKeyEnvironment` to the Maka subject config. The latter must name a credential in the subject's `credentials` list. For example, `"providerType": "moonshot-global", "apiKeyEnvironment": "MOONSHOT_API_KEY"` uses the existing `connectionSlug`, `baseUrl`, and `model` fields to onboard and verify the connection through Host. Keep `shimPath` pointed at the bundled shim; a provider-specific bootstrap script is unnecessary. Existing configurations without these two fields continue to use Host's environment-seeded connections.
+For an explicit provider, add `providerType` and `apiKeyEnvironment` to the Maka subject config. The latter must name a credential in the subject's `credentials` list. For example, `"providerType": "moonshot-global", "apiKeyEnvironment": "MOONSHOT_API_KEY"` uses the existing `connectionSlug`, `baseUrl`, and `model` fields to onboard and verify the connection through Host. Keep `shimPath` pointed at the bundled shim; a provider-specific bootstrap script is unnecessary. A `"providerType": "custom"` subject also needs `defaultApiProtocol` (`openai-chat`, `openai-responses` or `anthropic-messages`). Existing configurations without these two fields continue to use Host's environment-seeded connections.
 
 The result kernel contains only score, normalized usage, attributable cost, duration, status, and artifacts. Specs carry every semantic setting; environment variables are reserved for credentials and machine-local paths.
 
@@ -258,8 +258,8 @@ variable: the live cell needs a kernel that can load the checked-in `table inet`
 text — including that `127.0.0.11` is rejected before `fib daddr type local accept` — is
 locked by `lifecycle-boundaries.test.ts` and the Harbor contract tests. This URL policy is a blocklist for known
 benchmark and public-solution contamination surfaces, not a complete defense against a deliberately
-invented lookup channel. It classifies HTTP(S) requests and `CONNECT` hosts against the blocklist, and
-kills tunnels that fall back to raw TCP. Collected Maka runtime files
+invented lookup channel. It checks ordinary HTTP(S) URLs and CONNECT authorities before forwarding,
+then records and terminates any transport that falls back to unclassified raw TCP. Collected Maka runtime files
 and egress audit logs are represented in attempt artifacts with byte counts and SHA-256 digests.
 
 What the verifier scores is the environment the task was left in, so a subject that exits on its own
@@ -282,9 +282,9 @@ silently not for others.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `machine path <name> is unavailable` at CLI start | A declared machine-path env var points at a directory that doesn't exist or isn't writable/searchable ([`install-preflight.ts:273,279`](src/install-preflight.ts)). | Point the env var at a real, accessible directory before running `maka eval run`. |
+| `machine path <name> is unavailable` at CLI start | A declared machine-path env var is unset or empty ([`install-preflight.ts:297,303`](src/install-preflight.ts)). A path that is set but unusable fails with a different message, such as `... is not a directory` or `... is not writable and searchable` ([`install-preflight.ts:285,289`](src/install-preflight.ts)). | Set the env var before running `maka eval run`. |
 | `<framework> Python environment <env> is unavailable or does not provide <distribution>@<version>` | The pinned Harbor/Pier Python distribution isn't installed at the expected version in the interpreter the env var points to ([`install-preflight.ts:155-157`](src/install-preflight.ts)). | Install/upgrade the framework's Python distribution to the pinned version, or point the env var at an interpreter that already has it. |
-| `Docker CLI or daemon is unavailable: ...` | `docker version` failed — the Docker CLI isn't on PATH or the daemon isn't running ([`install-preflight.ts:172`](src/install-preflight.ts)). Only checked for Docker-based environments. | Start the Docker daemon / install the Docker CLI before running a Docker-environment spec. |
+| `Docker CLI or daemon is unavailable: ...` | `docker version` failed — the Docker CLI isn't on PATH or the daemon isn't running ([`install-preflight.ts:173`](src/install-preflight.ts)). Only checked for Docker-based environments. | Start the Docker daemon / install the Docker CLI before running a Docker-environment spec. |
 | HTTP 451 with header `X-Maka-Eval-Egress-Rule: <ruleId>` from inside a subject | The egress proxy blocked a request matching a benchmark/public-solution contamination rule (see [Egress audit and security model](#egress-audit-and-security-model)). | This is intentional — the subject reached a blocked URL. If the block is a false positive against a legitimate dependency, it needs a rule change, not a bypass. |
 | HTTP 503 with header `X-Maka-Eval-Egress-Rule: policy_error` | The egress proxy couldn't classify the request at all. | Check the request against the proxy's supported request shapes; this is a proxy-side gap, not a benchmark contamination hit. |
 | Result status `infra_failed`, reason `egress audit log missing` | The subject's egress audit log wasn't produced for a Harbor cell — this always wins over a subject timeout or a missing verifier reward. | Check that the egress-proxy Compose overlay came up for the cell; this indicates infrastructure, not subject, failure. |

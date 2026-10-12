@@ -25,6 +25,9 @@ import type {
 } from '@maka/core/daily-review';
 
 import type { CreateScheduledTaskInput, ScheduledTaskEffect, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
+import type { SkillLocationDefinition, SkillLocationRef } from '@maka/core/skill-locations';
+
+export type { SkillLocationRef } from '@maka/core/skill-locations';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';
@@ -60,6 +63,15 @@ export interface SkillEntry {
   needsReview?: boolean;
   discoveryDiagnosticReason?: 'blocked_path' | 'read_failed';
   manageable?: boolean;
+}
+
+export interface SkillLocation {
+  ref: SkillLocationRef;
+  scope: SkillLocationDefinition['scope'];
+  source: SkillLocationDefinition['source'];
+  path: string;
+  status: 'available' | 'missing' | 'blocked_path' | 'read_failed';
+  skillCount: number;
 }
 
 export type SkillGovernanceStatus = 'not_managed' | 'source_missing' | 'up_to_date' | 'update_available' | 'local_modified' | 'metadata_error';
@@ -109,7 +121,7 @@ export interface ManagedSkillUpdatePreview {
 }
 
 /**
- * Marketplace taxonomy buckets surfaced by the 市场 tab category filter.
+ * Marketplace taxonomy buckets that group the Skills page's 发现 list.
  * Mirrors MANAGED_SKILL_CATEGORIES in apps/desktop's managed-skill-sources;
  * the main-process reader always resolves an entry to one of these, so the
  * renderer can treat `category` as required (unknown → 效率工具 upstream).
@@ -135,7 +147,7 @@ export interface ManagedSkillSourceEntry {
  * One entry in the built-in (内置) skill catalog shipped with the app. Mirrors
  * listBundledSkillCatalog in apps/desktop's skills module. `installed` reflects
  * whether the current workspace already has skills/<id>; nothing here is
- * auto-installed — the 内置 tab offers a per-entry install action.
+ * auto-installed — 发现 offers a per-entry install action.
  */
 export interface BundledSkillCatalogEntry {
   id: string;

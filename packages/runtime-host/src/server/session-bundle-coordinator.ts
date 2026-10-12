@@ -51,6 +51,11 @@ export interface HostSessionBundleCoordinatorOptions {
     operation: (fencedSessionIds: readonly string[]) => Promise<T>,
   ) => Promise<T>;
   /**
+   * Repairs persisted invocations that outlived their Host before export.
+   * Called while the subtree fence is held, so it cannot race a live Turn.
+   */
+  readonly recoverInterruptedSessions: (sessionIds: readonly string[]) => Promise<void>;
+  /**
    * Republish the catalog so imported Sessions appear without a reload.
    *
    * The ROOT only, not every Session. One frame per id is a queue as long as
@@ -131,7 +136,10 @@ export class HostSessionBundleCoordinator {
     ) => Promise<OperationOutcome<'session-bundle.export'>>,
   ): Promise<OperationOutcome<'session-bundle.export'>> {
     try {
-      return await this.#options.fenceSubtree(sessionId, operation);
+      return await this.#options.fenceSubtree(sessionId, async (fencedSessionIds) => {
+        await this.#options.recoverInterruptedSessions(fencedSessionIds);
+        return operation(fencedSessionIds);
+      });
     } catch (error) {
       // Two types, because the Session manager translates on the way out: the
       // kernel raises `SessionQuiescentMutationBusyError` and the manager

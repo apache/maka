@@ -54,6 +54,7 @@ import {
 
 export interface WorkHubCoordinationConfigureModelInput {
   readonly expectedRevision: number;
+  /** The coordinator stays native because its WorkHub tools are provided by Maka. */
   readonly modelTarget: Extract<SessionModelTarget, { readonly kind: 'explicit' }>;
   readonly thinkingLevel: ThinkingLevel | null;
 }
@@ -61,11 +62,12 @@ export interface WorkHubCoordinationConfigureModelInput {
 export function decodeWorkHubCoordinationConfigureModelInput(
   value: unknown,
 ): WorkHubCoordinationConfigureModelInput {
-  const input = requireExactRecord(value, 'WorkHub model configuration', [
-    'expectedRevision',
-    'modelTarget',
-    'thinkingLevel',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub model configuration',
+    ['expectedRevision', 'modelTarget', 'thinkingLevel'],
+    [],
+  );
   const decoded = decodeSessionConfigurationUpdateInput({
     sessionId: WORKHUB_COORDINATION_SESSION_ID,
     expectedRevision: input.expectedRevision,
@@ -76,7 +78,10 @@ export function decodeWorkHubCoordinationConfigureModelInput(
   });
   return {
     expectedRevision: decoded.expectedRevision,
-    modelTarget: decoded.patch.modelTarget!,
+    modelTarget: decoded.patch.modelTarget as Extract<
+      SessionModelTarget,
+      { readonly kind: 'explicit' }
+    >,
     thinkingLevel: decoded.patch.thinkingLevel ?? null,
   };
 }
@@ -85,12 +90,15 @@ export const WORKHUB_COORDINATION_TEXT_MAX_BYTES = 48 * 1024;
 const COORDINATION_TITLE_MAX_BYTES = 512;
 const CANDIDATE_SET_ID_MAX_BYTES = 96;
 export const WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS = 32;
+export const WORKHUB_COORDINATION_DEFAULT_MODEL_REQUIRED_MESSAGE =
+  'WorkHub Coordination Session requires an available default model';
 
 const RESOLVE_ERRORS = [
   'host_not_ready',
   'host_draining',
   'operation_unavailable',
   'operation_conflict',
+  'model_required',
   'persistence_failed',
   'commit_outcome_unknown',
   'internal_failure',
@@ -235,6 +243,7 @@ export interface WorkHubCoordinationSelectAndDelegateInput {
   readonly candidateSetId: string;
   readonly candidateRefs: readonly string[];
   readonly delegationText: string;
+  readonly create?: WorkHubCoordinationCreateContext;
 }
 
 export type WorkHubCoordinationSelectAndDelegateResult =
@@ -424,13 +433,12 @@ export function decodeWorkHubCoordinationCandidatesResult(
 export function decodeWorkHubCoordinationSelectAndDelegateInput(
   value: unknown,
 ): WorkHubCoordinationSelectAndDelegateInput {
-  const input = requireExactRecord(value, 'WorkHub selection input', [
-    'turnId',
-    'actionId',
-    'candidateSetId',
-    'candidateRefs',
-    'delegationText',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'WorkHub selection input',
+    ['turnId', 'actionId', 'candidateSetId', 'candidateRefs', 'delegationText'],
+    ['create'],
+  );
   if (
     !Array.isArray(input.candidateRefs) ||
     input.candidateRefs.length < 1 ||
@@ -444,6 +452,9 @@ export function decodeWorkHubCoordinationSelectAndDelegateInput(
   if (new Set(candidateRefs).size !== candidateRefs.length)
     throw invalidProtocolFrame('Duplicate WorkHub selection candidates');
   return {
+    ...(input.create !== undefined
+      ? { create: decodeWorkHubCoordinationCreateContext(input.create) }
+      : {}),
     turnId: requireEntityId(input.turnId, 'WorkHub Coordination Turn id'),
     actionId: requireEntityId(input.actionId, 'WorkHub action id'),
     candidateSetId: requireUtf8String(input.candidateSetId, 'WorkHub candidate set', 256),

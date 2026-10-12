@@ -365,6 +365,9 @@ export async function saveConnection(
       name: connection.name,
       providerType: connection.providerType,
       ...(connection.baseUrl ? { baseUrl: connection.baseUrl } : {}),
+      ...(connection.defaultApiProtocol === undefined
+        ? {}
+        : { defaultApiProtocol: connection.defaultApiProtocol }),
       enabled: connection.enabled,
       enabledModelIds: [...(connection.enabledModelIds ?? [])],
       ...(importedProfiles === undefined ? {} : { modelOverrides: importedProfiles }),

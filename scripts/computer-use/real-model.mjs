@@ -21,20 +21,16 @@ import { _electron as electron, chromium } from '@playwright/test';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluateCuE2eScenarioState, getCuE2eScenario } from './e2e-scenarios.mjs';
+import { prepareProviderProfile } from './provider-profile.mjs';
 import { validateRealReport } from './provider-matrix.mjs';
 import { sanitizeCuActionRecord, sanitizeCuReport, sanitizeCuTrace } from './report-sanitize.mjs';
 import { createSqliteAgentRunStore } from '../../packages/storage/dist/agent-run-store.js';
-import {
-  resolveStorageRoot,
-  tryAcquireInteractiveRootOwner,
-} from '../../packages/storage/dist/root-authority.js';
-import { openInteractiveRuntimePolicyStoresForWrite } from '../../packages/storage/dist/runtime-policy-stores.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../..');
@@ -103,81 +99,6 @@ async function reservePort() {
   await new Promise((resolve) => server.close(resolve));
   if (!port) throw new Error('failed to reserve loopback port');
   return port;
-}
-
-async function copyProfileFile(name, workspace) {
-  await cp(join(sourceWorkspace, name), join(workspace, name), {
-    errorOnExist: true,
-  });
-}
-
-async function copyProfileFileIfPresent(name, workspace) {
-  try {
-    await copyProfileFile(name, workspace);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') return;
-    throw error;
-  }
-}
-
-async function prepareProviderProfile(workspace) {
-  if (!providerOverride) {
-    await copyProfileFile('connection-catalog.json', workspace);
-    await Promise.all([
-      copyProfileFileIfPresent('credential-vault.json', workspace),
-      copyProfileFileIfPresent('credentials.json', workspace),
-      copyProfileFile('settings.json', workspace),
-    ]);
-    return;
-  }
-  if (providerOverride !== 'openai') {
-    throw new Error(`unsupported MAKA_CU_PROVIDER ${providerOverride}`);
-  }
-  await copyProfileFile('settings.json', workspace);
-  const modelId = process.env.MAKA_CU_OPENAI_MODEL ?? 'gpt-5.4';
-  const capability = await resolveStorageRoot({ path: workspace, kind: 'interactive' });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
-  if (!owner) throw new Error('Unable to acquire the Computer Use catalog root');
-  try {
-    const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const created = await stores.connectionCatalog.create({
-      expectedCatalogRevision: 0,
-      connection: {
-        slug: 'cu-real-openai',
-        name: 'Computer Use real-model OpenAI',
-        providerType: 'openai',
-        baseUrl: process.env.MAKA_CU_OPENAI_BASE_URL ?? 'http://127.0.0.1:8538/v1',
-        enabled: true,
-        enabledModelIds: [modelId],
-      },
-    });
-    if (created.kind !== 'committed') {
-      throw new Error(`Computer Use catalog create failed: ${created.kind}`);
-    }
-    const connection = created.snapshot.connections.find((item) => item.slug === 'cu-real-openai');
-    if (!connection) throw new Error('Computer Use catalog create omitted cu-real-openai');
-    const vault = await stores.credentialVault.set({
-      locator: {
-        scope: 'connection',
-        connectionId: connection.connectionId,
-        kind: 'api_key',
-      },
-      expected: null,
-      secret: process.env.MAKA_CU_OPENAI_API_KEY ?? 'local-bridge',
-    });
-    if (vault.kind !== 'committed') {
-      throw new Error(`Computer Use vault set failed: ${vault.kind}`);
-    }
-    const defaulted = await stores.connectionCatalog.setDefaultTarget({
-      expectedCatalogRevision: created.snapshot.revision,
-      target: { connectionId: connection.connectionId, modelId },
-    });
-    if (defaulted.kind !== 'committed') {
-      throw new Error(`Computer Use default target failed: ${defaulted.kind}`);
-    }
-  } finally {
-    await owner.close();
-  }
 }
 
 async function waitForLine(child, marker, timeout) {
@@ -472,7 +393,11 @@ async function run() {
   try {
     await mkdir(workspace, { recursive: true });
     await mkdir(dirname(reportPath), { recursive: true });
-    await prepareProviderProfile(workspace);
+    await prepareProviderProfile({
+      workspace,
+      sourceWorkspace,
+      provider: providerOverride,
+    });
 
     fixture = spawn(
       electronBinary,

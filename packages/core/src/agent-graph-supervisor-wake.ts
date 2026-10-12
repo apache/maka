@@ -25,6 +25,7 @@ export type AgentGraphSupervisorWakeStatus =
   | 'waiting_permission'
   | 'delivered'
   | 'superseded'
+  | 'exhausted'
   | 'retryable_failed';
 
 export interface AgentGraphSupervisorWakeRecord {
@@ -66,6 +67,7 @@ export interface BeginAgentGraphSupervisorWakeAttemptRequest {
   wakeId: string;
   attemptId: string;
   turnId: string;
+  maxAttempts?: number;
 }
 
 export interface CompleteAgentGraphSupervisorWakeAttemptRequest {
@@ -96,6 +98,11 @@ export interface AgentGraphSupervisorWakeStore {
   }>;
   completeAgentGraphSupervisorWakeAttempt(
     request: CompleteAgentGraphSupervisorWakeAttemptRequest,
+  ): Promise<AgentGraphSupervisorWakeRecord>;
+  exhaustAgentGraphSupervisorWake(
+    graphId: string,
+    wakeId: string,
+    reason: string,
   ): Promise<AgentGraphSupervisorWakeRecord>;
   supersedeAgentGraphSupervisorWakes(
     request: SupersedeAgentGraphSupervisorWakesRequest,

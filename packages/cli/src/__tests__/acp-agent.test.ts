@@ -29,7 +29,11 @@ describe('Maka ACP agent', () => {
       async (agent) => {
         assert.deepEqual(await agent.request(methods.agent.initialize, { protocolVersion: 1 }), {
           protocolVersion: 1,
-          agentCapabilities: { sessionCapabilities: { list: {}, close: {} } },
+          agentCapabilities: {
+            loadSession: true,
+            sessionCapabilities: { list: {}, resume: {}, close: {} },
+            _meta: { '_maka/goalPlan': { version: 1 } },
+          },
           authMethods: [],
           agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
         });
@@ -68,6 +72,223 @@ describe('Maka ACP agent', () => {
     );
     assert.deepEqual(creates, [{ cwd: '/workspace', mcpServers: [], _meta: { ignored: true } }]);
     assert.deepEqual(lists, [{ cwd: '/workspace' }]);
+  });
+
+  test('routes the concrete Turn resume extension through the SDK', async () => {
+    await client({ name: 'test-client' }).connectWith(
+      createMakaAcpAgent({ version: '0.2.0', sessionRegistry: fakeSessionRegistry() }),
+      async (agent) => {
+        assert.deepEqual(
+          await agent.request('_maka/turn/resume', {
+            sessionId: 'session-1',
+          }),
+          {
+            kind: 'parked',
+            plan: {
+              sessionId: 'session-1',
+              disposition: 'parked',
+              reason: 'resume_candidate_missing',
+            },
+          },
+        );
+        await assert.rejects(
+          agent.request('_maka/turn/resume', { sessionId: '' }),
+          (error: unknown) => error instanceof RequestError && error.code === -32602,
+        );
+      },
+    );
+  });
+
+  test('decodes all Goal/Plan extension inputs with Host specifications', async () => {
+    const controls: unknown[] = [];
+    const starts: unknown[] = [];
+    const registry = {
+      ...fakeSessionRegistry(),
+      goalQuery: async (input: unknown) => ({
+        sessionId: (input as { sessionId: string }).sessionId,
+        goal: null,
+      }),
+      goalArm: async (input: unknown) => {
+        controls.push(input);
+        return { sessionId: 'session-1', goal: {} } as never;
+      },
+      goalControl: async (input: unknown) => {
+        controls.push(input);
+        return { sessionId: 'session-1', goal: {} } as never;
+      },
+      planQuery: async (input: unknown) => {
+        controls.push(input);
+        return {
+          kind: 'page' as const,
+          sessionId: 'session-1',
+          storeVersion: 0,
+          latestProposalId: null,
+          activeExecutionId: null,
+          items: [],
+          nextCursor: null,
+        };
+      },
+      planControl: async (input: unknown) => {
+        controls.push(input);
+        return {
+          sessionId: 'session-1',
+          storeVersion: 1,
+          eventType: 'plan_abandoned' as const,
+          proposalId: null,
+          executionId: null,
+        };
+      },
+      planTurnStart: async (input: unknown) => {
+        starts.push(input);
+        return { plan: {}, turn: {} } as never;
+      },
+    };
+    await client({ name: 'test-client' }).connectWith(
+      createMakaAcpAgent({ version: '0.2.0', sessionRegistry: registry }),
+      async (agent) => {
+        await agent.request(methods.agent.initialize, { protocolVersion: 1 });
+        assert.deepEqual(await agent.request('_maka/goal/query', { sessionId: 'session-1' }), {
+          sessionId: 'session-1',
+          goal: null,
+        });
+        await agent.request('_maka/goal/arm', {
+          sessionId: 'session-1',
+          condition: 'Finish',
+          maxIterations: null,
+          tokenBudget: null,
+        });
+        await agent.request('_maka/goal/control', {
+          sessionId: 'session-1',
+          goalId: 'goal-1',
+          expectedRevision: 1,
+          action: 'pause',
+        });
+        await agent.request('_maka/plan/query', { kind: 'list_start', sessionId: 'session-1' });
+        for (const input of [
+          {
+            kind: 'request_revision',
+            sessionId: 'session-1',
+            proposalId: 'proposal-1',
+            operationId: 'op-1',
+          },
+          {
+            kind: 'abandon_proposal',
+            sessionId: 'session-1',
+            proposalId: 'proposal-1',
+            operationId: 'op-2',
+          },
+          {
+            kind: 'approve_proposal',
+            sessionId: 'session-1',
+            proposalId: 'proposal-1',
+            expectedRevision: 1,
+            expectedStoreVersion: 1,
+            operationId: 'op-3',
+          },
+          {
+            kind: 'resume_execution',
+            sessionId: 'session-1',
+            executionId: 'exec-1',
+            operationId: 'op-4',
+          },
+          {
+            kind: 'cancel_execution',
+            sessionId: 'session-1',
+            executionId: 'exec-1',
+            operationId: 'op-5',
+          },
+        ])
+          await agent.request('_maka/plan/control', input);
+        await agent.request('_maka/plan/turn/start', {
+          kind: 'approve_proposal',
+          sessionId: 'session-1',
+          proposalId: 'proposal-1',
+          expectedRevision: 1,
+          expectedStoreVersion: 1,
+          turnId: 'turn-1',
+        });
+        await agent.request('_maka/plan/turn/start', {
+          kind: 'resume_execution',
+          sessionId: 'session-1',
+          executionId: 'execution-1',
+          turnId: 'turn-2',
+        });
+        assert.equal(controls.length, 8);
+        assert.equal(starts.length, 2);
+        await assert.rejects(
+          agent.request('_maka/plan/turn/start', {
+            kind: 'approve_proposal',
+            sessionId: 'session-1',
+          }),
+          (error: unknown) => error instanceof RequestError && error.code === -32602,
+        );
+        await assert.rejects(
+          agent.request('_maka/goal/arm', { sessionId: 'session-1', condition: 'Finish' }),
+          (error: unknown) => error instanceof RequestError && error.code === -32602,
+        );
+      },
+    );
+  });
+
+  test('routes bounded copy-source queries and rejects invalid input through the SDK', async () => {
+    await client({ name: 'test-client' }).connectWith(
+      createMakaAcpAgent({ version: '0.2.0', sessionRegistry: fakeSessionRegistry() }),
+      async (agent) => {
+        const query = {
+          sessionId: 'session-1',
+          throughSequence: null,
+          position: 0,
+          maxContributions: 1,
+        };
+        assert.deepEqual(await agent.request('_maka/session/copy-source/query', query), {
+          sessionId: 'session-1',
+          expectedSourceRevision: 1,
+          throughSequence: 8,
+          contributions: [],
+          nextPosition: null,
+        });
+        for (const invalid of [
+          { ...query, sessionId: '' },
+          { ...query, maxContributions: 129 },
+          { ...query, position: -1 },
+        ]) {
+          await assert.rejects(
+            agent.request('_maka/session/copy-source/query', invalid),
+            (error: unknown) => error instanceof RequestError && error.code === -32602,
+          );
+        }
+      },
+    );
+  });
+
+  test('routes branch, revision, and abandon extensions through the SDK', async () => {
+    await client({ name: 'test-client' }).connectWith(
+      createMakaAcpAgent({ version: '0.2.0', sessionRegistry: fakeSessionRegistry() }),
+      async (agent) => {
+        const copy = {
+          sourceSessionId: 'session-1',
+          targetSessionId: 'session-2',
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: 1,
+        };
+        assert.deepEqual(await agent.request('_maka/session/branch/create', copy), {
+          kind: 'source_revision_conflict',
+          expectedRevision: 1,
+          actualRevision: 2,
+        });
+        assert.deepEqual(await agent.request('_maka/session/revision/create', copy), {
+          kind: 'source_revision_conflict',
+          expectedRevision: 1,
+          actualRevision: 2,
+        });
+        assert.deepEqual(
+          await agent.request('_maka/session/revision/abandon', {
+            targetSessionId: 'session-1',
+          }),
+          { kind: 'retained', sessionId: 'session-1' },
+        );
+      },
+    );
   });
 
   test('routes official SDK set-config requests through the Session registry', async () => {
@@ -201,6 +422,52 @@ function fakeSessionRegistry(
       observations.creates?.push(params);
       return { sessionId: 'session-1' };
     },
+    load: async () => ({}),
+    resume: async () => ({}),
+    resumeTurn: async () => ({
+      kind: 'parked' as const,
+      plan: {
+        sessionId: 'session-1',
+        disposition: 'parked' as const,
+        reason: 'resume_candidate_missing' as const,
+      },
+    }),
+    goalQuery: async () => {
+      throw new Error('unused Goal query');
+    },
+    goalArm: async () => {
+      throw new Error('unused Goal arm');
+    },
+    goalControl: async () => {
+      throw new Error('unused Goal control');
+    },
+    planQuery: async () => {
+      throw new Error('unused Plan query');
+    },
+    planControl: async () => {
+      throw new Error('unused Plan control');
+    },
+    planTurnStart: async () => {
+      throw new Error('unused Plan Turn start');
+    },
+    queryCopySource: async () => ({
+      sessionId: 'session-1',
+      expectedSourceRevision: 1,
+      throughSequence: 8,
+      contributions: [],
+      nextPosition: null,
+    }),
+    branch: async () => ({
+      kind: 'source_revision_conflict' as const,
+      expectedRevision: 1,
+      actualRevision: 2,
+    }),
+    createRevision: async () => ({
+      kind: 'source_revision_conflict' as const,
+      expectedRevision: 1,
+      actualRevision: 2,
+    }),
+    abandonRevision: async () => ({ kind: 'retained' as const, sessionId: 'session-1' }),
     list: async (params: unknown) => {
       observations.lists?.push(params);
       return {
@@ -248,6 +515,21 @@ function fakeSessionRegistry(
     close: async (params: unknown) => {
       observations.closes?.push(params);
       return {};
+    },
+    artifactQuery: async () => {
+      throw new Error('Unexpected Artifact query');
+    },
+    artifactIngest: async () => {
+      throw new Error('Unexpected Artifact ingest');
+    },
+    artifactDelete: async () => {
+      throw new Error('Unexpected Artifact delete');
+    },
+    memoryQuery: async () => {
+      throw new Error('Unexpected Memory query');
+    },
+    memoryMutate: async () => {
+      throw new Error('Unexpected Memory mutation');
     },
   };
 }

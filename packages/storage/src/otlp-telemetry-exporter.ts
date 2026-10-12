@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type {
@@ -24,7 +25,9 @@ import type {
   PersistedToolInvocationRecord,
 } from './telemetry-file-schema.js';
 
+// Bound optional network work independently of the authoritative local ledger.
 const BATCH_SIZE = 32;
+const MAX_PENDING_SPANS = 1_024;
 const FLUSH_DELAY_MS = 1_000;
 const DEFAULT_SERVICE_NAME = 'maka';
 const MAX_HEADER_COUNT = 32;
@@ -86,6 +89,7 @@ type OtlpSpan = {
 };
 
 export interface OtlpTelemetryExporter {
+  exportModelCallAttempt(record: ModelCallAttempt): Promise<void>;
   exportLlmCall(record: PersistedLlmCallRecord): Promise<void>;
   exportToolInvocation(record: PersistedToolInvocationRecord): Promise<void>;
   flush(): Promise<void>;
@@ -144,6 +148,42 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
     this.#timeoutMs = timeoutMs;
   }
 
+  async exportModelCallAttempt(record: ModelCallAttempt): Promise<void> {
+    const errorClass = boundedErrorClass(record.errorClass);
+    await this.enqueue({
+      name: 'maka.llm.call',
+      startedAt: record.startedAt,
+      durationMs: record.latencyMs,
+      status:
+        record.status === 'completed'
+          ? 'success'
+          : record.status === 'failed'
+            ? 'error'
+            : 'aborted',
+      attributes: [
+        stringAttribute('maka.telemetry.kind', 'llm'),
+        stringAttribute('maka.provider.id', record.providerId),
+        stringAttribute('maka.model.id', record.modelId),
+        stringAttribute('maka.call.kind', record.callKind),
+        stringAttribute('maka.usage.basis', record.usageBasis),
+        stringAttribute('maka.cost.basis', record.costBasis),
+        ...(record.inputTokens === undefined
+          ? []
+          : [numberAttribute('maka.usage.input_tokens', record.inputTokens)]),
+        ...(record.outputTokens === undefined
+          ? []
+          : [numberAttribute('maka.usage.output_tokens', record.outputTokens)]),
+        ...(record.inputTokens === undefined || record.outputTokens === undefined
+          ? []
+          : [numberAttribute('maka.usage.total_tokens', record.inputTokens + record.outputTokens)]),
+        ...(record.costBasis === 'priced' && record.costUsd !== undefined
+          ? [numberAttribute('maka.usage.cost_usd', record.costUsd)]
+          : []),
+        ...(errorClass ? [stringAttribute('maka.error.class', errorClass)] : []),
+      ],
+    });
+  }
+
   async exportLlmCall(record: PersistedLlmCallRecord): Promise<void> {
     const errorClass = boundedErrorClass(record.errorClass);
     await this.enqueue({
@@ -184,18 +224,27 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
     });
   }
 
-  async flush(): Promise<void> {
-    if (this.#flushPromise) await this.#flushPromise;
+  flush(): Promise<void> {
+    if (this.#flushPromise) return this.#flushPromise;
+    if (this.#pending.length === 0) return Promise.resolve();
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
+    // Every caller, including close(), joins the complete drain. Sharing only
+    // a send lets a waiter return while another waiter starts the next batch.
+    this.#flushPromise = this.drain().finally(() => {
+      this.#flushPromise = undefined;
+      if (this.#pending.length > 0) return this.flush();
+    });
+    return this.#flushPromise;
+  }
+
+  private async drain(): Promise<void> {
     while (this.#pending.length > 0) {
-      const spans = this.#pending.splice(0);
-      if (this.#timer) {
-        clearTimeout(this.#timer);
-        this.#timer = undefined;
+      if (this.#shutdown.signal.aborted) {
+        this.#pending.length = 0;
+        return;
       }
-      this.#flushPromise = this.send(spans).finally(() => {
-        this.#flushPromise = undefined;
-      });
-      await this.#flushPromise;
+      await this.send(this.#pending.splice(0, BATCH_SIZE));
     }
   }
 
@@ -216,13 +265,14 @@ class OtlpTelemetryExporterImpl implements OtlpTelemetryExporter {
     status: PersistedLlmCallRecord['status'];
     attributes: OtlpAttribute[];
   }): Promise<void> {
-    if (this.#closed) return;
+    // Drop new optional exports when full; local accounting is never dropped.
+    if (this.#closed || this.#pending.length >= MAX_PENDING_SPANS) return;
     this.#pending.push(toSpan(input));
     if (this.#pending.length >= BATCH_SIZE) {
       await this.flush();
       return;
     }
-    if (!this.#timer) {
+    if (!this.#timer && !this.#flushPromise) {
       this.#timer = setTimeout(() => {
         this.#timer = undefined;
         void this.flush();

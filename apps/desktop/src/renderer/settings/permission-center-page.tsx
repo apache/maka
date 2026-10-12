@@ -254,11 +254,10 @@ export function PermissionCenterPage() {
         action={(
           <div className="settingsFormRowControlCluster">
             <Text type="supporting" size="sm" color="secondary">
-              {copy.lastRead}<RelativeTime ts={checkedAtMs} />
+              {copy.lastRead}<RelativeTime ts={checkedAtMs} className="settingsInlineTime" />
             </Text>
             <Button
               variant="secondary"
-              size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
               label={copy.detectAgain}
             />
@@ -306,11 +305,12 @@ export function PermissionCenterPage() {
             used to carry a single 展开详情 button that unfolded four
             MetadataLists on EVERY row at once — a wall you had to scroll past
             to reach the one capability you came to diagnose. `type="single"`
-            makes reading one row the default act; `hasDividers` +
-            `density="compact"` is the same edge-to-edge hairline row this
-            settings surface uses everywhere else, except now it is the
-            component's, not ours. `density` must be stated: hasDividers
-            silently defaults items to `balanced`. */}
+            makes reading one row the default act. `hasDividers` +
+            `density="compact"` makes this a record list (DESIGN.md §4, The
+            Group Rule): one capability per row, each a record to scan and
+            open, so dividers bound them where setting rows carry none.
+            `density` must be stated: hasDividers silently defaults items to
+            `balanced`. */}
         {/* `role="group"` is load-bearing, not decoration. CollapsibleGroup's
             wrapper is a bare div with no role of its own, and an aria-label on
             a role-less element names nothing — ARIA prohibits naming `generic`.

@@ -50,7 +50,6 @@ export function RuntimeHostAddComputerMenu(props: {
       menuWidth={320}
       button={{
         variant: 'primary',
-        size: 'sm',
         label: props.copy.addComputer,
         isDisabled: props.isDisabled,
       }}
