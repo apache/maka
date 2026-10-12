@@ -12,7 +12,7 @@
 
 需要包含通用 `sidebar.navigation.openSession`、`activeSessionId`、`sessionLabels` 及 Settings 插槽接口的 Maka 客户端。旧客户端会显示升级提示。Host 需在线；会话删除或 Host 不可达时明确报错，不另建一个空会话掩盖问题。
 
-InitiativeEnable 仍可在普通聊天中显式绑定和启用心跳。用户消息、心跳调查和助手回复使用该 Session 原本的历史与上下文管理。
+InitiativeEnable 仍可在普通聊天中显式绑定和启用心跳。用户消息、心跳调查和助手回复使用该 Session 原本的历史与上下文管理。心跳携带当前 UTC 时间和探索指示，不额外摘录或拼接最近交流。
 
 - InitiativeEnable：保存探索指示及用户要求的检查周期，默认 30 分钟。首次检查在一个周期后；需要立即检查可由用户调用 InitiativeControl check。
 - InitiativeStatus：读取主机调度状态。

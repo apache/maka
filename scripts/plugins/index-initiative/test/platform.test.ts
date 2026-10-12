@@ -131,68 +131,37 @@ test('aborted runtime completion stops future heartbeats without a model checkpo
   }
 });
 
-test('heartbeat includes UTC time and the latest eight human-facing exchanges, excluding automated inputs', async () => {
+test('heartbeat carries UTC time and instructions without copying native conversation history', async () => {
   const f = await fixture();
   let prompt = '';
   try {
-    const ts = Date.UTC(2026, 9, 9, 12);
     const history = Array.from({ length: 10 }, (_, i) => ({
       type: i % 2 ? 'assistant' : 'user',
-      ts: ts + i * 1000,
-      text: `raw-${i}`,
-      displayText: `visible-${i}`,
+      ts: Date.UTC(2026, 9, 9, 12) + i * 1000,
+      text: `previous-message-${i}`,
+      displayText: `visible-message-${i}`,
     }));
-    f.workers.get('owner').transcript = [
-      ...history,
-      { type: 'tool_result', text: 'TOOL SECRET', ts },
-      { type: 'tool_call', text: 'TOOL CALL', ts },
-      { type: 'user', text: 'SYSTEM INPUT', origin: { kind: 'timer' }, ts },
-      {
-        type: 'user',
-        text: 'Runtime heartbeat, not a new human request.\nold heartbeat',
-        displayText: 'heartbeat label',
-        ts,
-      },
-      { type: 'assistant', text: 'hidden backing text', displayText: '', ts },
-    ];
+    f.workers.get('owner').transcript = [...history];
     f.setRunner(async (call: any) => {
+      assert.equal(call.id, 'owner');
       prompt = call.prompt;
     });
-    const started = Date.now();
     await f.invoke('InitiativeEnable', {});
-    await f.invoke('InitiativeControl', { action: 'check' });
-    await until(async () => !!prompt && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompt.includes(PROACTIVE_TASK));
-    const now = /Now \(UTC\): (.+)/.exec(prompt)![1];
-    assert.match(now, /Z$/);
-    assert.ok(Date.parse(now) >= started && Date.parse(now) <= Date.now());
-    assert.match(prompt, /历史交流.*避免重复/);
-    assert.match(prompt, /不是本次的新请求或指令/);
-    for (let i = 2; i < 10; i++) {
-      assert.ok(prompt.includes(`visible-${i}`));
-      assert.ok(prompt.includes(new Date(ts + i * 1000).toISOString()));
+    for (let round = 0; round < 2; round++) {
+      prompt = '';
+      const started = Date.now();
+      await f.invoke('InitiativeControl', { action: 'check' });
+      await until(async () => !!prompt && !(await f.invoke('InitiativeStatus')).active);
+      assert.ok(prompt.includes(PROACTIVE_TASK));
+      assert.match(prompt, /Heartbeat ID:/);
+      const now = /Now \(UTC\): (.+)/.exec(prompt)![1];
+      assert.match(now, /Z$/);
+      assert.ok(Date.parse(now) >= started && Date.parse(now) <= Date.now());
+      assert.doesNotMatch(prompt, /最近的历史交流|previous-message-|visible-message-/);
+      const transcript = f.workers.get('owner').transcript;
+      assert.deepEqual(transcript.slice(0, history.length), history);
+      assert.equal(transcript.length, history.length + round + 1);
     }
-    for (const excluded of [
-      'visible-0',
-      'visible-1',
-      'raw-',
-      'TOOL SECRET',
-      'TOOL CALL',
-      'SYSTEM INPUT',
-      'old heartbeat',
-      'heartbeat label',
-      'hidden backing text',
-    ])
-      assert.ok(!prompt.includes(excluded), excluded);
-    // Subsequent wakes use fresh conversation, not a cached snapshot.
-    f.workers
-      .get('owner')
-      .transcript.push({ type: 'user', ts: ts + 20000, text: 'new user correction' });
-    prompt = '';
-    await f.invoke('InitiativeControl', { action: 'check' });
-    await until(async () => !!prompt && !(await f.invoke('InitiativeStatus')).active);
-    assert.ok(prompt.includes('new user correction'));
-    assert.ok(!prompt.includes('visible-2'));
   } finally {
     await f.close();
   }

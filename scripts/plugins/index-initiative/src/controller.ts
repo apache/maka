@@ -105,7 +105,7 @@ export class InitiativeController {
     const id = state.active.id;
     let timer: any;
     try {
-      const admitted = await agent.followup(wake(state, await agent.transcript()));
+      const admitted = await agent.followup(wake(state));
       if (!['turn_started', 'followup'].includes(admitted?.disposition))
         throw Error('Host rejected proactive wake');
       const completion = async () => {
