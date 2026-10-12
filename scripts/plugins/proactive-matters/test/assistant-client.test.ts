@@ -145,19 +145,32 @@ test('assistant entry opens one Host-qualified native conversation; never render
     });
     assert.equal(runtime.inspect().failure, null);
     root = createRoot(window.document.getElementById('root')!);
-    await React.act(async () =>
-      root.render(
-        React.createElement(
-          MakaClientRootOutlet,
-          { root: slots },
-          React.createElement(MakaClientSlotOutlet, {
-            name: 'sidebar.navigation',
-            owner: { collapsed: false, openSession: (id: string) => opened.push(id) },
-          }),
-          React.createElement(MakaClientSlotOutlet, { name: 'shell.overlay', owner: {} }),
+    const render = async (settings = false) =>
+      React.act(async () =>
+        root.render(
+          React.createElement(
+            MakaClientRootOutlet,
+            { root: slots },
+            React.createElement(MakaClientSlotOutlet, {
+              name: 'sidebar.navigation',
+              owner: {
+                collapsed: false,
+                activeSessionId: opened.at(-1),
+                openSession: (id: string) => opened.push(id),
+              },
+            }),
+            !settings &&
+              React.createElement(MakaClientSlotOutlet, { name: 'shell.overlay', owner: {} }),
+            settings &&
+              React.createElement(MakaClientSlotOutlet, {
+                name: 'settings.page',
+                owner: { page: 'personal-assistant', close: () => {} },
+                options: { entryKey: 'personal-assistant' },
+              }),
+          ),
         ),
-      ),
-    );
+      );
+    await render();
     const click = async (label: string) => {
       const button = [...window.document.querySelectorAll('button')].find(
         (b) => b.textContent === label || b.getAttribute('aria-label') === label,
@@ -181,13 +194,13 @@ test('assistant entry opens one Host-qualified native conversation; never render
     assert.equal(window.document.querySelector('.pa-settings'), null);
     assert.equal(window.document.querySelector('.pa-memory'), null);
     assert.equal(window.document.body.textContent!.includes('回到助手聊天'), false);
-    await click('助手设置');
+    await render(true);
     assert.ok(window.document.querySelector('.pa-settings'));
     await click('开启并立即检查');
     assert.equal(state.enabled, true);
     await click('暂停主动发现');
     assert.equal(state.enabled, false);
-    await click('助手设置');
+    await render();
     assert.equal(window.document.querySelector('.pa-settings'), null);
     items = [
       {
@@ -206,10 +219,10 @@ test('assistant entry opens one Host-qualified native conversation; never render
         wakes: [{ at: Date.now() + 60000 }],
       },
     ];
-    await click('记忆与来源');
+    await render(true);
     await click('刷新记忆状态');
     assert.ok(window.document.querySelector('.pa-memory'));
-    await click('记忆与来源');
+    await render();
     assert.equal(window.document.querySelector('.pa-memory'), null);
     assert.match(window.document.body.textContent!, /导出已通过，等待隔离复测/);
     const done = window.document.querySelector('button[aria-label="查看任务：已签收"]')!;
@@ -241,7 +254,7 @@ test('assistant entry opens one Host-qualified native conversation; never render
         },
       },
     ];
-    await click('记忆与来源');
+    await render(true);
     await click('刷新记忆状态');
     assert.match(window.document.body.textContent!, /来源同步需要处理/);
     assert.match(window.document.body.textContent!, /更早消息的修改/);

@@ -394,13 +394,13 @@ test('busy parent defers feedback; an accepted but missing reply survives restar
   }
 });
 
-test('waiting for user approval remains active beyond execution timeout and is visible to the owner', async () => {
+test('waiting for user approval remains active and is visible to the owner', async () => {
   const { d } = driver();
   const snapshot = d.runtime.snapshot;
   let waiting = false;
   d.runtime.snapshot = async (id: string) =>
     id !== 'session-1' && waiting ? { agent: { status: 'waiting_for_user' } } : snapshot(id);
-  const f = await fixture({ driver: d, timeout: 200 });
+  const f = await fixture({ driver: d });
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   let failure: unknown;
@@ -548,6 +548,100 @@ test('quiet interim progress is not an error or replayed for changed waiting det
     assert.equal(runs, 3);
     assert.equal(parentRuns, 2);
   } finally {
+    await f.close();
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('legacy runTimeoutMs cannot cancel a live review or evidence repair before completion', async () => {
+  const { d } = driver();
+  let releaseReview!: () => void, releaseRepair!: () => void;
+  const reviewing = new Promise<void>((resolve) => {
+    releaseReview = resolve;
+  });
+  const repairing = new Promise<void>((resolve) => {
+    releaseRepair = resolve;
+  });
+  let reviews = 0,
+    repairStarted = false,
+    failure: unknown;
+  const f = await fixture({
+    driver: d,
+    // Existing installations can retain this setting. It no longer imposes a deadline.
+    config: { runTimeoutMs: 200 },
+    review: async () => {
+      reviews++;
+      if (reviews === 1) await reviewing;
+      return {
+        text: JSON.stringify({
+          approved: reviews > 1,
+          feedback:
+            reviews > 1 ? 'Evidence accepted' : 'Read supporting evidence before completing',
+        }),
+        modelId: 'fixture-review',
+      };
+    },
+  });
+  d.onFollowup = async (id, _prompt, turn) => {
+    try {
+      const m = (await f.remote('matters.list')).matters.find((item: any) => item.sessionId === id);
+      const v = await f.invoke('MatterRead', { activationId: m.activation.id }, turn, id);
+      await f.invoke(
+        'MatterWriteFile',
+        { path: v.files.draft, content: 'Report written; checking supporting evidence.' },
+        turn,
+        id,
+      );
+      const submission = {
+        expectedRevision: v.revision,
+        stateFile: v.files.draft,
+        disposition: 'complete',
+        reason: 'Work finished',
+        summary: 'Report ready',
+      };
+      const rejected = await f.invoke('MatterSettle', submission, turn, id);
+      assert.equal(rejected.accepted, false);
+      repairStarted = true;
+      await repairing;
+      await f.invoke('MatterReadFile', { path: v.files.draft }, turn, id);
+      await f.invoke('MatterSettle', submission, turn, id);
+    } catch (error) {
+      failure = error;
+    } finally {
+      d.end(id);
+    }
+  };
+  try {
+    const m = await f.invoke('MatterDelegate', {
+      taskKey: 'no-activation-deadline',
+      title: 'Long review and evidence repair',
+      request: 'Write and verify a report',
+    });
+    const assertActive = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      if (failure) throw failure;
+      const current = (await f.remote('matters.list')).matters.find(
+        (item: any) => item.id === m.id,
+      );
+      assert.equal(current.status, 'active');
+      assert.ok(current.activation);
+      assert.ok(!d.calls.some((call: any) => call.op === 'cancel'));
+    };
+    await until(() => reviews === 1 || failure);
+    await assertActive();
+    releaseReview();
+    await until(() => repairStarted || failure);
+    await assertActive();
+    releaseRepair();
+    await until(
+      async () => failure || (await f.invoke('MatterTasks', { id: m.id })).status === 'completed',
+    );
+    if (failure) throw failure;
+    assert.equal(reviews, 2);
+    assert.ok(!d.calls.some((call: any) => call.op === 'cancel'));
+  } finally {
+    releaseReview();
+    releaseRepair();
     await f.close();
     await rm(f.root, { recursive: true, force: true });
   }

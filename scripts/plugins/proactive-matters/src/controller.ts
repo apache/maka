@@ -36,7 +36,7 @@ export class MatterController {
   constructor(
     readonly ctx: PluginContext,
     readonly store: MatterStore,
-    readonly options: { tickMs?: number; runTimeoutMs?: number } = {},
+    readonly options: { tickMs?: number } = {},
   ) {}
 
   start() {
@@ -131,7 +131,6 @@ export class MatterController {
   }
   private async run(m: Matter, agent: any, alreadyStarted = false) {
     const activationId = m.activation!.id;
-    const watchdogAbort = new AbortController();
     let queued = false;
     try {
       if (!alreadyStarted) {
@@ -153,18 +152,6 @@ export class MatterController {
         else throw new Error('Unexpected wake admission result');
       }
       // A queued wake binds via MatterRead(activationId). Never re-submit an uncertain wake.
-      const watchdog = async () => {
-        const budget = this.options.runTimeoutMs ?? 600_000;
-        let deadline = Date.now() + budget;
-        while (true) {
-          await delay(Math.min(1000, budget), undefined, { signal: watchdogAbort.signal });
-          const status = (await agent.snapshot())?.agent?.status;
-          // Human approval/input is not model execution time. Keep the request alive.
-          if (['waiting_for_user', 'blocked'].includes(status)) deadline = Date.now() + budget;
-          else if (Date.now() >= deadline)
-            throw Error('Activation timed out; inspect effects before resuming');
-        }
-      };
       const completion = async () => {
         if (queued) {
           while (this.store.get(m.id).matter.activation?.turnId.startsWith('pending:')) {
@@ -178,7 +165,9 @@ export class MatterController {
           await delay(100, undefined, { signal: this.stopping.signal });
         }
       };
-      await Promise.race([completion(), watchdog()]);
+      // A live activation has no wall-clock deadline. Runtime failures and explicit
+      // user/plugin cancellation still end it through the ordinary completion path.
+      await completion();
       if (this.store.get(m.id).matter.activation?.turnId.startsWith('pending:'))
         throw new Error(
           'Queued wake ended without claiming its activation; inspect conversation before resuming',
@@ -200,8 +189,6 @@ export class MatterController {
         this.store.finish(m.id, activationId, String(e));
         await agent.cancel().catch(() => {});
       }
-    } finally {
-      watchdogAbort.abort();
     }
   }
   async enroll(input: { title: string; request: string }, call: MakaToolContext) {

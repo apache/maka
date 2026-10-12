@@ -164,7 +164,7 @@ export async function fixture(options: any = {}) {
     patch[0].entry.config = {
       dataDirectory: join(root, 'data'),
       tickMs: 20,
-      runTimeoutMs: options.timeout ?? 5000,
+      ...options.config,
     };
     await writeFile(join(pkg, 'maka.composition.json'), JSON.stringify(patch));
     const receipt = await platform.installPackage(pkg);

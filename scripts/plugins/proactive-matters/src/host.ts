@@ -58,12 +58,6 @@ export default {
         (config.tickMs ?? 5000) > 60000
       )
         throw new Error('tickMs must be 10–60000');
-      if (
-        !Number.isSafeInteger(config.runTimeoutMs ?? 600000) ||
-        (config.runTimeoutMs ?? 600000) < 100 ||
-        (config.runTimeoutMs ?? 600000) > 600000
-      )
-        throw new Error('runTimeoutMs must be 100–600000');
       if (ctx.maka?.rootId !== 'profile')
         throw new Error('Install the follow-up Host entry in profile scope');
       let location = await ctx.storage.get('data-directory');
@@ -84,7 +78,6 @@ export default {
       const store = createMatterStore(location.value);
       const controller = new MatterController(ctx, store, {
         tickMs: config.tickMs ?? 5000,
-        runTimeoutMs: config.runTimeoutMs ?? 600_000,
       });
       ctx.effect(() => () => store.close(), 'matter-store');
       const activate = () => {

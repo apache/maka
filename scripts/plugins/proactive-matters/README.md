@@ -82,7 +82,7 @@ Maka 提供 `sidebar.navigation` 与 `shell.overlay` 插件槽；「长任务」
 ## 当前边界
 
 - Host 进程必须活着；插件不是操作系统级常驻服务。睡眠期间错过的检查会在 Host 恢复后处理。
-- 最多同时执行两件事项，每轮默认 10 分钟，事项默认 100 轮；立即继续没有单独的五轮上限，仍受事项总轮次和每轮执行时长限制。
+- 最多同时执行两件事项，整轮执行没有时间上限；执行、完成审查及被打回后的补证不会因耗时而取消。旧配置 `runTimeoutMs` 不再生效；仅保留已停用字段的声明以兼容已有安装，避免升级时因未知配置项被拒绝。事项默认 100 轮，立即继续没有单独的五轮上限，仍受事项总轮次限制；用户暂停/取消及插件关闭仍会停止执行。
 - 模型自然结束 turn 前，Maka 调用通用 `ctx.turns.beforeFinish` 检查；插件在当前 activation 尚未 `MatterSettle` 时返回简短反馈，让同一个 agent loop 继续。`wait` 必须登记具体等待条件与未来绝对检查时间。运行时间或模型步数等宿主上限仍可能结束当前 turn，届时未 settle 的 activation 会暂停并保留错误信息。
 - 代码保证 Matter 工具的版本、轮次、下一次唤醒、完成后清空调度等约束。当前 main 的插件 Tool 注册接口不能统一拦截所有宿主业务工具，所以成功 settle 后「不再调用其他业务工具」依靠 agent 协议，不能声称具有旧内置版本的全工具强制拦截。暂停/取消会请求宿主停止 session，但已提交外部服务的操作不能撤销。
 - 完成由模型判断；仅支持时间唤醒和用户输入。状态为 agent 维护的记事本，不强制业务 schema。
@@ -114,7 +114,7 @@ Review storage and limits:
 
 - Review schema version 2 uses explicit columns. Incompatible older journals are preserved verbatim in `matter_reviews_legacy_v1`, with no legacy approval reuse. Existing compatible journals remain usable; newer schema versions are refused.
 - Model review input is capped at 96,000 UTF-8 bytes. Execution history retains its most recent 48,000 bytes when necessary, explicitly marked as incomplete. Objectives, amendments, current state, draft and inbox are not silently truncated; an oversized combined input returns an error rather than approval. Full execution evidence is retained with verdicts. Invalidation uses matter/activation/revision/draft guards, identified user-message content changes, and the Host’s explicit invalidation signal; streaming tool-call bookkeeping alone does not invalidate a review.
-- Review output has an 8,192-token budget and a 60-second timeout. Timeout aborts the request and returns a retryable tool error; it does not settle or directly pause the matter. Existing activation-wide runtime budgets still apply.
+- Review output has an 8,192-token budget and a 60-second timeout. Timeout aborts the request and returns a retryable tool error; it does not settle or directly pause the matter. There is no activation-wide wall-clock deadline; request-level review timeouts do not cancel the ongoing task.
 - `scripts/live.ts` now uses an independent real model call via `PluginLlmService`'s generate contract, with execution transcript and a separate review ledger in `report.json`. Both models currently use `MAKA_SCENARIO_MODEL` (default `deepseek-flash`); set `MAKA_SCENARIO_API_KEY` in the process environment. A successful run must contain an actual approving review. No API credential is committed.
 
 
@@ -138,6 +138,6 @@ A durable notification ledger forwards meaningful worker updates, completion, pe
 
 - Delegation creation persists a unique identity before asking Host to create a Session. An interrupted creation remains visible in `MatterOverview.pending` / `MatterTasks.pending`. `MatterDelegationRecover` matches that exact identity and parent through Host session queries, then enrolls the same worker. No unique match means an explicit unresolved result, not another worker. Pre-upgrade unresolved `creating:` records without a matching Host identity cannot be automatically recovered.
 - Feedback records distinguish pending, accepted, awaiting_reply, uncertain and delivered. Delivered means visible assistant text in the corresponding conversation segment/turn, not that the human read it. Commentary, tool results and unrelated later replies are excluded. Explicit `MatterFeedbackRetry` rechecks history before retrying feedback; it never restarts work. Superseded pending updates and cancelled tasks are not replayed. Existing admitted upgrade records remain baselined.
-- A busy parent delays delivery. Task permissions/input remain in the worker's native UI and are surfaced in the assistant panel; the execution watchdog does not time out waiting for the user. The Host exposes pending interaction through its generic Agent snapshot, not a Matter-specific API.
+- A busy parent delays delivery. Task permissions/input remain in the worker's native UI and are surfaced in the assistant panel; there is no activation deadline while executing or waiting for the user. The Host exposes pending interaction through its generic Agent snapshot, not a Matter-specific API.
 - Explicitly rejected, unbound wake admissions persist a backoff and keep the original inputs, without consuming execution budget. Unknown outcomes and interrupted executing tasks remain paused for inspection/resume. Recovery never blindly repeats external effects.
 - Background Sessions inherit the parent model, connection, thinking level and permission mode. Runtime-owned permission controls remain authoritative.
