@@ -34,7 +34,7 @@ import type { DesktopSessionSummary } from '../../../../shared/desktop-session-p
  * ever selected, which left one branch reachable — this one.
  */
 export function sessionMatchesRail(session: SessionSummary, entryLabels?: ReadonlySet<string>): boolean {
-  return !session.isArchived && !isSideConversationSession(session.labels)
+  return !session.labels?.includes('personal-assistant') && !session.isArchived && !isSideConversationSession(session.labels)
     && !session.labels?.some(label => entryLabels?.has(label));
 }
 

@@ -66,6 +66,7 @@ export function SessionSidebarNav() {
           </kbd>
         )}
       />
+      {props.personalAssistantNavigation}
       <MakaClientSlotOutlet
         name="sidebar.navigation"
         owner={{ collapsed: props.collapsed, openSession: onSelectSession, activeSessionId: props.selection.section === 'sessions' ? navigationSessionId : undefined }}

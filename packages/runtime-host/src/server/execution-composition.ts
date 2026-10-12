@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PersonalAssistantService, ASSISTANT_LEGACY_PACKAGES } from '../assistant/service.js';
 import { copyWorkHubAttachmentsToTarget } from './workhub-message-attachments.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { attachmentKindFromMimeType, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
@@ -354,6 +355,7 @@ export async function createExecutionRuntimeHostComposition(
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   let pluginPlatform: HostPluginPlatform | undefined;
+  let assistant: PersonalAssistantService | undefined;
   let manager: SessionManager | undefined;
   let invalidatePluginExecutorBackends: () => void = () => undefined;
   let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
@@ -375,7 +377,7 @@ export async function createExecutionRuntimeHostComposition(
     const pluginShell = new PluginShellService(pluginRoot, pluginAgents, pluginShellEnv);
     const pluginWeb = new PluginWebService(pluginRoot, pluginAgents);
     const pluginSessionQuery = new PluginSessionQueryService(pluginRoot, pluginAgents);
-    new PluginSourceService(pluginRoot, pluginAgents);
+    const pluginSources = new PluginSourceService(pluginRoot, pluginAgents);
     const pluginGoals = new PluginGoalService(pluginRoot, pluginAgents);
     const pluginSkills = new PluginSkillService(pluginRoot);
     const pluginCommands = new PluginCommandService(pluginRoot);
@@ -393,6 +395,7 @@ export async function createExecutionRuntimeHostComposition(
     const pluginSystemPrompt = new PluginSystemPromptService(pluginRoot);
     const pluginTurnFinish = new PluginTurnFinishService(pluginRoot);
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
+      replacedPackages: ASSISTANT_LEGACY_PACKAGES,
       composition: new MakaCompositionLoader({ root: pluginRoot }),
       tools: pluginTools,
       systemPrompt: pluginSystemPrompt,
@@ -401,6 +404,16 @@ export async function createExecutionRuntimeHostComposition(
       clientBridge: pluginClientBridge,
     });
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
+    const personalAssistant = (assistant = new PersonalAssistantService(
+      join(context.owner.controlDirectory, 'personal-assistant'),
+      {
+        agents: pluginAgents,
+        llm: pluginLlm,
+        sessionQuery: pluginSessionQuery,
+        sources: pluginSources,
+        resolveTools: (sessionId, core) => pluginTools.resolve(sessionId, core),
+      },
+    ));
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
@@ -1056,8 +1069,10 @@ export async function createExecutionRuntimeHostComposition(
     });
     const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => ({
       context: backendContext,
-      beforeTurnFinish: (turn: Parameters<typeof pluginTurnFinish.evaluate>[0]) =>
-        pluginTurnFinish.evaluate(turn),
+      beforeTurnFinish: async (turn: Parameters<typeof pluginTurnFinish.evaluate>[0]) => {
+        const decision = await personalAssistant.beforeFinish(turn);
+        return decision.allow ? pluginTurnFinish.evaluate(turn) : decision;
+      },
       runtimePolicy: runtimePolicyStores,
       oauthCredentials,
       createRunComposer: createInteractiveRunComposerFactory({
@@ -1073,8 +1088,10 @@ export async function createExecutionRuntimeHostComposition(
         goalTools: requireGoal(goal).tools,
         builtinTools,
         hostTools,
-        resolveRootTools: (sessionId) =>
-          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+        resolveRootTools: async (sessionId) => [
+          ...personalAssistant.tools,
+          ...(await requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId)),
+        ],
         resolvePluginTools: (sessionId, coreTools) =>
           pluginTools.resolveContributions(sessionId, coreTools),
         resolvePluginSystemPrompt: async (sessionId, promptContext, baseText) => {
@@ -1086,10 +1103,17 @@ export async function createExecutionRuntimeHostComposition(
             },
             baseText,
           );
+          const native = await personalAssistant.prompt(
+            { sessionId, turnId: promptContext.turnId, cwd: promptContext.cwd },
+            assembly.text,
+          );
           return {
-            text: assembly.text,
-            contexts: assembly.contexts,
-            sourceRevisions: assembly.sourceRevision ? [assembly.sourceRevision] : [],
+            text: native.text,
+            contexts: [...assembly.contexts, ...native.contexts],
+            sourceRevisions: [
+              ...(assembly.sourceRevision ? [assembly.sourceRevision] : []),
+              native.sourceRevision,
+            ],
           };
         },
         parentAgentTools: childAgentTools.parentTools,
@@ -1234,7 +1258,9 @@ export async function createExecutionRuntimeHostComposition(
         requireClientCapabilities(clientCapabilities).snapshotForSession(sessionId);
       try {
         const [graphTools, planState] = await Promise.all([
-          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+          requireGraphCoordinator(graphCoordinator)
+            .toolsForSession(sessionId)
+            .then((tools) => [...personalAssistant.tools, ...tools]),
           planStore.readState(sessionId),
         ]);
         const { runtimePolicy, surface } = await resolveInteractiveToolSurface({
@@ -2717,6 +2743,35 @@ export async function createExecutionRuntimeHostComposition(
         ],
       }),
       createRuntimeHostDomainModule({
+        id: 'personal-assistant',
+        handlers: [
+          {
+            'personal-assistant.call': async (input) => {
+              try {
+                return {
+                  ok: true,
+                  result: { value: await personalAssistant.call(input.method, input.input) },
+                };
+              } catch (error) {
+                return {
+                  ok: false,
+                  error: {
+                    code: 'invalid_request',
+                    message: error instanceof Error ? error.message : String(error),
+                  },
+                };
+              }
+            },
+          },
+        ],
+        recovery: {
+          state: () => personalAssistant.recover(pluginData, pluginPlatform!.inspect('profile')),
+          schedulers: () => personalAssistant.start(),
+        },
+        drain: [() => personalAssistant.beginDrain()],
+        close: [() => personalAssistant.close()],
+      }),
+      createRuntimeHostDomainModule({
         id: 'memory',
         handlers: [requireMemory(memory).handlers],
         recovery: {
@@ -3104,6 +3159,7 @@ export async function createExecutionRuntimeHostComposition(
       errors.push(closeError);
     }
     try {
+      await assistant?.close();
       await pluginPlatform?.close();
     } catch (closeError) {
       errors.push(closeError);

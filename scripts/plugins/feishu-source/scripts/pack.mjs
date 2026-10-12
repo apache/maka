@@ -20,7 +20,7 @@
 import { mkdir, copyFile, rm } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exportExtensionBundle } from '../../memory-network/.artifacts/main-api.mjs';
+import { exportExtensionBundle } from '../../../../packages/runtime-host/dist/server/extension-bundle.js';
 const stage = resolve('release/package');
 await rm(stage, { recursive: true, force: true });
 await mkdir(stage + '/dist', { recursive: true });

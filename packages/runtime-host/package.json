@@ -27,7 +27,8 @@
     "benchmark:session-copy": "node scripts/session-copy-cost-benchmark.mjs",
     "benchmark:transcript": "node scripts/transcript-data-plane-benchmark.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:dist": "node --test \"dist/**/*.test.js\""
+    "test:dist": "node --test \"dist/**/*.test.js\" && npm run test:assistant",
+    "test:assistant": "node scripts/test-assistant.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",

@@ -130,6 +130,7 @@ export interface SessionRailChrome {
   onSelect(selection: NavSelection): void;
   onNew(): void;
   onOpenSettings(): void;
+  personalAssistantNavigation?: ReactNode;
   workHubEntry?: {
     active: boolean;
     label: string;

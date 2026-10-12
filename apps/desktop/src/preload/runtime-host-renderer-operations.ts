@@ -31,6 +31,7 @@ export const RENDERER_RUNTIME_HOST_QUERY_OPERATIONS = [
 
 export const RENDERER_RUNTIME_HOST_COMMAND_OPERATIONS = [
   'daily-review.mutate',
+  'personal-assistant.call',
   'scheduled-task.mutate',
   'web-search.execute',
 ] as const satisfies readonly (keyof OperationSpecMap)[];

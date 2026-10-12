@@ -1210,8 +1210,8 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
       OperationOutput<typeof operation>
     >;
   },
-  command(operation, input) {
-    return invokeActiveRuntimeHost('runtime-host:command', operation, input) as Promise<
+  command(operation, input, host) {
+    return (host ? invokeSelectedRuntimeHost(host, 'runtime-host:command', operation, input) : invokeActiveRuntimeHost('runtime-host:command', operation, input)) as Promise<
       OperationOutput<typeof operation>
     >;
   },

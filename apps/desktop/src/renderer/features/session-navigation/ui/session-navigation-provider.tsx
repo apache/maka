@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { PersonalAssistantEntry } from '../../personal-assistant/index.js';
 import { useMakaClientNavigationSessionLabels } from '@maka/ui/client-plugin';
 
 import {
@@ -330,6 +331,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
+    personalAssistantNavigation: <PersonalAssistantEntry activeSessionId={props.workHubActive || props.surfaceObscured ? undefined : props.activeSessionId} openSession={props.onSelectSession} />,
     workHubEntry: props.workHubEntry,
   };
 

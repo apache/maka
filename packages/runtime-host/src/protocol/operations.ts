@@ -35,6 +35,7 @@ import { HOSTED_EXECUTION_OPERATION_SPECS } from './hosted-execution.js';
 import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
+import { PERSONAL_ASSISTANT_OPERATION_SPECS } from './personal-assistant.js';
 import { MEMORY_OPERATION_SPECS } from './memory.js';
 import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { EXTERNAL_AGENT_SETUP_OPERATION_SPECS } from './external-agent-setup.js';
@@ -222,6 +223,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SKILL_CATALOG_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
+  PERSONAL_ASSISTANT_OPERATION_SPECS,
   OAUTH_OPERATION_SPECS,
   EXTERNAL_AGENT_SETUP_OPERATION_SPECS,
   CLIENT_CAPABILITY_OPERATION_SPECS,
@@ -299,6 +301,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'plan.turn.start',
   'plugin.client.query',
   'plugin.client.remote.call',
+  'personal-assistant.call',
   'plugin.client.remote.stream.close',
   'plugin.client.remote.stream.next',
   'plugin.client.remote.stream.open',
