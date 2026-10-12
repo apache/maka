@@ -715,6 +715,27 @@ describe('assertRenderableAppIcon', () => {
 });
 
 describe('assertPackagedDependencyClosure', () => {
+  test('requires a relative runtime import to exist inside the shipped archive', async () => {
+    const distFiles = {
+      'main/workhub-remote-bridge.js':
+        "import { readWorkHubTopicAssociation } from '../shared/workhub-topic-association.js';\n",
+    };
+    await assert.rejects(
+      assertPackagedDependencyClosure(await makeResources({ distFiles }), options),
+      /workhub-remote-bridge\.js.*missing file.*shared\/workhub-topic-association\.js/u,
+    );
+    await assertPackagedDependencyClosure(
+      await makeResources({
+        distFiles: {
+          ...distFiles,
+          'shared/workhub-topic-association.js':
+            'export function readWorkHubTopicAssociation() {}\n',
+        },
+      }),
+      options,
+    );
+  });
+
   test('accepts an artifact whose asar, bundle record, and shipped notices match', async () => {
     const resources = await makeResources();
     await assertPackagedDependencyClosure(resources, options);

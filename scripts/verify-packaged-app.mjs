@@ -23,7 +23,7 @@ import { createReadStream, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
-import { join, resolve, sep } from 'node:path';
+import { join, posix, resolve, sep } from 'node:path';
 import {
   ASSET_LICENSED_RENDERER_PACKAGES,
   collectProductionClosure,
@@ -807,23 +807,20 @@ function asarFilesUnder(header, prefix) {
 // Line-bounded on purpose: a lazy cross-line match reads the word `from`
 // inside a comment as an import and reports the prose that follows it. A
 // multi-line `import {` list is covered by its closing line.
-const BARE_IMPORT_PATTERNS = [
+const IMPORT_PATTERNS = [
   /^[ \t]*(?:import|export)[ \t]+(?:[^'"\n]*?[ \t]+from[ \t]+)?['"]([^'"\n]+)['"]/gm,
   /^[ \t]*\}[ \t]+from[ \t]+['"]([^'"\n]+)['"]/gm,
   /\b(?:import|require)\([ \t]*['"]([^'"\n]+)['"][ \t]*\)/g,
 ];
 
-/** Package names the given module text imports by name, ignoring builtins. */
-export function bareImportedPackages(source) {
-  const names = new Set();
-  for (const pattern of BARE_IMPORT_PATTERNS) {
+function importedSpecifiers(source) {
+  const specifiers = new Set();
+  for (const pattern of IMPORT_PATTERNS) {
     for (const [, specifier] of source.matchAll(pattern)) {
-      if (/^[./]|^node:/.test(specifier)) continue;
-      const segments = specifier.split('/');
-      names.add(specifier.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0]);
+      specifiers.add(specifier);
     }
   }
-  return names;
+  return specifiers;
 }
 
 // Provided by the Electron runtime rather than the archive's node_modules, so
@@ -988,9 +985,20 @@ export async function assertPackagedDependencyClosure(
   const unresolvable = new Map();
   for (const path of asarFilesUnder(asar().getRawHeader(asarPath).header, 'dist')) {
     if (!/\.(?:js|cjs|mjs)$/.test(path)) continue;
-    for (const name of bareImportedPackages(
-      asar().extractFile(asarPath, asarLookupPath(path)).toString('utf8'),
-    )) {
+    const source = asar().extractFile(asarPath, asarLookupPath(path)).toString('utf8');
+    for (const specifier of importedSpecifiers(source)) {
+      if (specifier.startsWith('.')) {
+        const target = posix.normalize(posix.join(posix.dirname(path), specifier));
+        try {
+          asar().statFile(asarPath, asarLookupPath(target));
+        } catch {
+          throw new Error(`app.asar ships ${path} importing missing file ${target}`);
+        }
+        continue;
+      }
+      if (/^\/|^node:/.test(specifier)) continue;
+      const segments = specifier.split('/');
+      const name = specifier.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0];
       // Being in the closure is not enough — the code has to resolve at
       // runtime, and only the archive can answer that. A package that is
       // allowed but absent is exactly the ERR_MODULE_NOT_FOUND this check
