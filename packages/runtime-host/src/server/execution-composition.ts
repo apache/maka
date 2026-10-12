@@ -2905,6 +2905,7 @@ export async function createExecutionRuntimeHostComposition(
     const storageMaintenance = new HostStorageMaintenance({
       artifacts: openedArtifactStore,
       contextOffload: openedContextOffloadStore,
+      runtimePageReclamation: storage.runtimePageReclamation,
       retention: archiveRetention,
       onError: (name, error) =>
         console.error(`[runtime-host] ${name} will retry: ${generalizedErrorMessage(error)}`),
