@@ -23,7 +23,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CorpusStore } from '../src/corpus.js';
-import { NetworkStore } from '../src/store.js';
+import { LegacyNetworkStore as NetworkStore } from './legacy-store.js';
 const msg = (id: string, text: string) => ({ id, type: 'user', text });
 const sync = (s: CorpusStore, messages: any[]) => {
   s.ingest('s', messages);

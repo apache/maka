@@ -1,3 +1,5 @@
+> Historical experiment log. Describes multiple superseded implementations; not the current plugin contract or validation result. Refer to the plugin README and executable tests for current behavior.
+
 # Heartbeat assistant revision — 2026-10-08
 
 Current implementation uses the initiating ordinary conversation Session. Removed the notebook, InitiativeRead / InitiativeHistory / InitiativeCheckpoint and the finish hook. Host cadence schedules checks; pause does not cancel user work. Legacy state is archived and paused on migration.

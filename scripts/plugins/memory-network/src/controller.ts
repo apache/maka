@@ -610,9 +610,6 @@ export class MemoryController {
       fn,
     );
   }
-  workerIndex(sessionId: string) {
-    return this.store.list().find((i) => this.store.worker(i.id)?.sessionId === sessionId);
-  }
   assertOwner() {
     // A replacement plugin may activate before its predecessor releases the lease.
     // Retry ownership at the next tool call instead of failing for one heartbeat interval.

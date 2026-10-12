@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { NetworkStore, sourceOf, type Index } from './store.js';
+import { NetworkStore, sourceOf } from './store.js';
 
 type RecordHead = {
   key: string;

@@ -19,17 +19,17 @@
 
 # Maka 持续跟进插件
 
-独立 Host + Client 插件，位于 `scripts/plugins/proactive-matters/`。Maka runtime 只提供通用的 turn 结束前插件检查接口；事项状态与退出规则仍由插件实现，不依赖旧分支内置的 MatterService、Goal 或 Automation。
+独立 Host 插件（保留旧安装所需的空 Client 入口），位于 `scripts/plugins/proactive-matters/`。Maka runtime 只提供通用的 turn 结束前插件检查接口；事项状态与退出规则仍由插件实现，不依赖旧分支内置的 MatterService、Goal 或 Automation。
 
 从「个人助手」原生聊天通过 MatterDelegate 委托独立工作会话；插件保持这个 session，登记绝对时间唤醒，让普通 agent loop 每轮基于当前情况决定行动。普通对话不会自动加入持续跟进。状态与计划是先前判断的参考，不是必须照着执行的流程。
 
 ## Scope and acceptance criterion
 
-This is an opt-in, bounded experiment for time-triggered follow-up while the Host is alive, not a general durable task platform. Acceptance means: persist a delegation and its recovery binding together; schedule an absolute-time check; resume the original session; reassess and settle the next check or completion; stop dispatching after completion and pause uncertain interrupted work.
+Time-triggered follow-up requires a running Host. The plugin must: persist a delegation and its recovery binding together; schedule an absolute-time check; resume the original session; reassess and settle the next check or completion; stop dispatching after completion and pause uncertain interrupted work.
 
-The plugin SQLite store owns only the enrollment, observation/settlement revisions, next wake, and recovery metadata needed for this contract. A transaction prevents a task, its execution directory, acknowledged inputs, and next schedule from disagreeing. The append-only journal records state changes and activation handoffs required by the notebook design; it is not a replacement for Maka's session transcript or execution trace. Execution, permissions and conversation history remain owned by Maka. Future shared task/run/trace APIs from #544 should replace overlapping plugin bookkeeping when available; this experiment does not establish a second platform-wide task model.
+The plugin SQLite store owns only the enrollment, observation/settlement revisions, next wake, and recovery metadata needed for this contract. A transaction prevents a task, its execution directory, acknowledged inputs, and next schedule from disagreeing. The append-only journal records state changes and activation handoffs required by the notebook design; it is not a replacement for Maka's session transcript or execution trace. Execution, permissions and conversation history remain owned by Maka.
 
-The Client bridge exposes `matters.list`, `matters.watch`, and `matters.authorize-session`. The last operation marks a newly created dialog session as eligible for `MatterStart`; the tool rejects all other sessions. User changes after enrollment go through session-bound agent tools, classified by their effects: `MatterReadFile` is read-only; the other Matter tools write durable state (including `MatterRead`, which observes inputs and can bind a queued turn). Ordinary Plan mode excludes those writers using Maka's existing tool-selection policy.
+The Client bridge exposes `matters.list`, `matters.watch`, and `matters.authorize-session`. The last operation explicitly authorizes a Session for `MatterStart`; delegation also establishes authorization for its worker. The tool rejects unauthorized sessions. User changes after enrollment go through session-bound agent tools, classified by their effects: `MatterReadFile` is read-only; the other Matter tools write durable state (including `MatterRead`, which observes inputs and can bind a queued turn). Ordinary Plan mode excludes those writers using Maka's existing tool-selection policy.
 
 ## 安装与使用
 
@@ -41,7 +41,7 @@ maka runtime-host plugin install /absolute/path/proactive-matters.maka-extension
 
 安装会通过 `maka.composition.json` 注册 `profile` Host 和 `desktop-ui` Client。无需手工编辑 Maka 的配置或 IPC。
 
-侧边栏「长任务」打开右上角轻量浮卡。在底部输入框交代一件需要持续跟进的事，插件创建独立 Maka 对话，授权这个 session 后发送首条消息；模型随后调用 `MatterStart`。列表展示名称与下次检查时间；点击任务查看当前进展、已经做了什么、接下来的安排及最近的对话，并可继续输入补充。普通聊天即使提到持续跟进也不会登记。每个长任务对话支持一个事项，结束后新事项请从列表新建。
+在「个人助手」聊天中交代任务，模型通过 `MatterDelegate` 创建独立工作会话。补充要求和暂停、恢复、取消通过 `MatterTaskMessage` / `MatterTaskControl` 传达；进展回到发起聊天，也可在「设置 → 个人助手」查看和处理异常。没有独立任务浮窗或第二个输入框。
 
 后续用户修改要求在对话中由 `MatterMessage` 记录。普通聊天消息不会被插件自动当成状态事件；必须经过该工具登记。时间唤醒不会清空上下文，也不会附带整份业务状态，只传唤醒原因、时间和文件入口。
 
@@ -50,11 +50,12 @@ maka runtime-host plugin install /absolute/path/proactive-matters.maka-extension
 - `src/host.ts`：`host.apply(ctx, config)`，注册工具、简短协议、动态时钟、turn 结束检查与 Client RPC/Stream。
 - `src/controller.ts`：调度、当前 session 续跑、暂停与重启恢复。工具启动时绑定当前 session，不创建第二套模型执行器。
 - `src/store.ts` / `src/files.ts`：独立 SQLite 与不可变状态版本。状态、事件确认、轮次总结、唤醒和进展在事务内一起提交。
-- `src/client.js`：原生 Client Slots + generation-fenced Remote，使用宿主 React 和现有桌面会话创建、发送、快照接口，不增加专用 IPC。
+- `src/delegation.ts` / `src/delivery.ts`：独立任务委派、归属校验与进展反馈。
+- `src/client.js`：仅兼容已有 desktop-ui 注册，不渲染 UI。
 
 工作文件：`request.md`（原始及后续要求）、`state.md`（最新判断和小计划）、`inbox.json`（待处理输入）、`changes.jsonl`（带时间的追加历史）、`draft.md`（本轮草稿）。历史操作与每轮 summary/reason/next 都追加保存。
 
-运行时服务使用 `ctx.agents.resume/followup/whenIdle/cancel`。后台适配器通过公开的 `withInvocation` 方法建立插件自己的 Host 调用上下文，但只允许自身数据库中由 `MatterStart` 登记的 session/cwd；窗口只登记会话资格，不能传入目录让它执行。模型权限仍由原 session 和 Maka runtime 决定，插件不改权限模式。
+运行时服务使用 `ctx.agents.resume/followup/whenIdle/cancel`。后台适配器通过公开的 `withInvocation` 方法建立插件自己的 Host 调用上下文，但只允许自身数据库中由 `MatterStart` 登记的 session/cwd；会话资格登记不接受执行目录。模型权限仍由原 session 和 Maka runtime 决定，插件不改权限模式。
 
 首次激活把独立数据目录写入 `ctx.storage`。默认位于 `~/.maka/plugin-data/dev.maka.proactive-matters/<uuid>`；也可在第一次激活的 Host entry config 设置绝对 `dataDirectory`。之后以已保存位置为准，避免热配置悄悄切换存储。
 
@@ -102,7 +103,7 @@ node scripts/extra-api.mjs live
 node --import tsx scripts/live.ts
 ```
 
-本次结果及覆盖边界见 `TEST-REPORT.md`。
+默认验证不调用真实模型。上述 live 场景需显式提供模型凭据，只用于额外验证，不能把受控测试结果当作真实模型判断质量。
 
 ### Settlement review
 

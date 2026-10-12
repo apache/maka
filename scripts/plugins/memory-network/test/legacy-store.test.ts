@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NetworkStore } from '../src/store.js';
+import { LegacyNetworkStore as NetworkStore } from './legacy-store.js';
 function setup(t: any) {
   const root = mkdtempSync(join(tmpdir(), 'maka-memory-'));
   const store = new NetworkStore(root);

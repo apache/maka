@@ -27,7 +27,6 @@ for (const file of [
   'maka.extension.json',
   'maka.composition.json',
   'README.md',
-  'TEST-REPORT.md',
   'PROVENANCE.md',
   'dist/host.mjs',
 ])

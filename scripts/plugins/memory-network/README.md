@@ -99,7 +99,7 @@ npm install
 npm run verify
 ```
 
-Bundle: `release/memory-network.maka-extension`. No extra key is needed in normal operation. The opt-in `scripts/live.ts` uses the real Maka AiSdkBackend with controlled source histories and Agent lifecycle bindings. See [TEST-REPORT.md](./TEST-REPORT.md) for validation scope.
+Bundle: `release/memory-network.maka-extension`. No extra key is needed in normal operation. The opt-in `scripts/live.ts` uses the real Maka AiSdkBackend with controlled source histories and Agent lifecycle bindings. Controlled tests cover source observation and recovery, independent index coverage, grouped workers, incremental maintenance, permissions and package installation. They do not establish real-model extraction or indexing quality.
 
 ### Reading existing indexes
 
@@ -156,3 +156,5 @@ External enumeration stages metadata and its next page cursor on disk. Interrupt
 
 
 The persisted source scan format is `(source,scope,payload)`, with per-page staging separate from the published snapshot. Groups persist `groupIndexIds`, `groupNumber` and their shared worker Session. These are the local implementation's formats; no alternate-layout migration or index reconstruction is performed.
+
+The retired batch/commit writer exists only in `test/legacy-store.ts` for old-database fixtures. Runtime indexing uses corpus cursors and checkpoints; existing database migration and reference preservation remain in the production store.
