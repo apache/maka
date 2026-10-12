@@ -81,11 +81,6 @@ test('remounting the same request restores wizard progress after a session switc
     assert.ok(beta);
     await act(() => beta.click());
 
-    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Next');
-    assert.ok(nextButton);
-    await act(() => nextButton.click());
-
     assert.match(container.textContent ?? '', /2 \/ 2/);
     assert.match(container.textContent ?? '', /Second question\?/);
 
@@ -155,20 +150,16 @@ test('switching between pending requests without unmounting restores each wizard
     ));
   };
 
-  const clickNext = async () => {
+  const clickBeta = async () => {
     const beta = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
       .find((option) => option.textContent?.includes('Beta'));
     assert.ok(beta);
     await act(() => beta.click());
-    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Next');
-    assert.ok(nextButton);
-    await act(() => nextButton.click());
   };
 
   try {
     await render(requestA);
-    await clickNext();
+    await clickBeta();
     assert.match(container.textContent ?? '', /2 \/ 2/);
 
     await render(requestB);
@@ -218,20 +209,11 @@ test('successful submit clears remembered progress after unmount', async () => {
       .find((option) => option.textContent?.includes('Beta'));
     assert.ok(beta);
     await act(() => beta.click());
-    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Next');
-    assert.ok(nextButton);
-    await act(() => nextButton.click());
 
     const yes = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
       .find((option) => option.textContent?.includes('Yes'));
     assert.ok(yes);
     await act(() => yes.click());
-
-    const submitButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Submit answers');
-    assert.ok(submitButton);
-    await act(async () => submitButton.click());
 
     assert.equal(readUserQuestionWizardState(request.requestId), undefined);
     await act(() => root.unmount());
@@ -276,20 +258,11 @@ test('late rejection after unmount keeps remembered progress', async () => {
       .find((option) => option.textContent?.includes('Beta'));
     assert.ok(beta);
     await act(() => beta.click());
-    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Next');
-    assert.ok(nextButton);
-    await act(() => nextButton.click());
 
     const yes = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
       .find((option) => option.textContent?.includes('Yes'));
     assert.ok(yes);
     await act(() => yes.click());
-
-    const submitButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Submit answers');
-    assert.ok(submitButton);
-    await act(() => submitButton.click());
     await act(() => root.unmount());
     assert.equal(readUserQuestionWizardState(request.requestId)?.questionIndex, 1);
 
@@ -385,10 +358,6 @@ test('failed responses keep wizard progress for retry', async () => {
       .find((option) => option.textContent?.includes('Beta'));
     assert.ok(beta);
     await act(() => beta.click());
-    const nextButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Next');
-    assert.ok(nextButton);
-    await act(() => nextButton.click());
     assert.match(container.textContent ?? '', /2 \/ 2/);
 
     const yes = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
@@ -396,20 +365,11 @@ test('failed responses keep wizard progress for retry', async () => {
     assert.ok(yes);
     await act(() => yes.click());
 
-    const submitButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Submit answers');
-    assert.ok(submitButton);
-    await act(async () => {
-      try {
-        await submitButton.click();
-      } catch {
-        // UserQuestionPrompt handles the rejection internally.
-      }
-    });
-
     assert.match(container.textContent ?? '', /2 \/ 2/);
     assert.ok(readUserQuestionWizardState(request.requestId));
     shouldFail = false;
+    await act(() => yes.click());
+    assert.equal(readUserQuestionWizardState(request.requestId), undefined);
   } finally {
     clearUserQuestionWizardState(request.requestId);
     await act(() => root.unmount());
