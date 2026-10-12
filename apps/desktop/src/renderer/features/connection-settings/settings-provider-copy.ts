@@ -34,6 +34,7 @@ type WidenCopy<T> = T extends string
     ? (...args: Args) => string
     : { [K in keyof T]: WidenCopy<T[K]> };
 
+
 // Capability-section strings for the connection detail page — the add-provider
 // form deliberately carries no declaration controls (capabilities are edited
 // after the connection exists).
@@ -68,10 +69,16 @@ const zhCapabilitiesCopy = {
   compactionThresholdHelp: '达到此 token 数时压缩上下文。留空则不主动压缩。',
   maxOutputTokens: '输出上限',
   maxOutputTokensHelp: '单次回复的输出 token 上限，含思考。留空自动设置。',
+  maxOutputTokensUnsupported: 'ChatGPT 订阅（Codex）不接受输出上限，Maka 不会发送此设置。',
   fastMode: 'Fast 模式',
   fastModeHelp: '选择更快的服务档位，可能产生额外费用。',
   fastAuto: '自动',
   fastEnabled: 'Fast',
+  apiProtocol: '请求协议',
+  apiProtocolHelp: '此模型使用的接口格式。同一地址同时提供多种协议时，可为单个模型单独选择。',
+  apiProtocolDefaultOption: (protocol: string) => `跟随连接 · ${protocol}`,
+  connectionApiProtocol: '默认请求协议',
+  connectionApiProtocolHelp: '模型未单独选择协议时使用。创建后不可更改，可在每个模型上单独覆盖。',
 };
 
 const zhTwCapabilitiesCopy = {
@@ -105,10 +112,16 @@ const zhTwCapabilitiesCopy = {
   compactionThresholdHelp: '達到此 token 數時壓縮上下文。留空則不主動壓縮。',
   maxOutputTokens: '輸出上限',
   maxOutputTokensHelp: '單次回覆的輸出 token 上限，含思考。留空自動設定。',
+  maxOutputTokensUnsupported: 'ChatGPT 訂閱（Codex）不接受輸出上限，Maka 不會送出此設定。',
   fastMode: 'Fast 模式',
   fastModeHelp: '選擇更快的服務檔位，可能產生額外費用。',
   fastAuto: '自動',
   fastEnabled: 'Fast',
+  apiProtocol: '請求協定',
+  apiProtocolHelp: '此模型使用的介面格式。同一位址同時提供多種協定時，可為單一模型單獨選擇。',
+  apiProtocolDefaultOption: (protocol: string) => `跟隨連線 · ${protocol}`,
+  connectionApiProtocol: '預設請求協定',
+  connectionApiProtocolHelp: '模型未單獨選擇協定時使用。建立後不可變更，可在每個模型上單獨覆寫。',
 };
 const enCapabilitiesCopy = {
   capabilities: 'Capabilities',
@@ -142,10 +155,16 @@ const enCapabilitiesCopy = {
   compactionThresholdHelp: 'Compact at this token count. Leave empty to disable proactive compaction.',
   maxOutputTokens: 'Maximum output',
   maxOutputTokensHelp: 'Output token budget per reply, including thinking. Leave empty for automatic limits.',
+  maxOutputTokensUnsupported: 'The ChatGPT subscription (Codex) does not accept an output limit, so Maka does not send this setting.',
   fastMode: 'Fast mode',
   fastModeHelp: 'Use the faster service tier. Additional charges may apply.',
   fastAuto: 'Auto',
   fastEnabled: 'Fast',
+  apiProtocol: 'Request protocol',
+  apiProtocolHelp: 'The API format this model uses. When one address serves several protocols, choose one per model.',
+  apiProtocolDefaultOption: (protocol: string) => `Connection default: ${protocol}`,
+  connectionApiProtocol: 'Default request protocol',
+  connectionApiProtocolHelp: 'Used by models without their own protocol. It cannot be changed after the connection is added; each model can override it.',
 };
 
 const zhCopy = {
@@ -253,6 +272,7 @@ const zhCopy = {
     },
   },
   shared: {
+    requestUrlLabel: '请求地址：',
     connectionStale: '连接状态已更新，请刷新列表后再删除。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
@@ -273,6 +293,16 @@ const zhCopy = {
     connectedLoading: '连接已添加，正在载入详情…', connectedLoadFailed: '连接已添加，但暂时无法刷新连接列表。',
     connectionIdentityChanged: '新连接的身份与登录结果不一致，请返回连接列表后重试。',
     emptyHelp: '从下方的常用服务商开始，或浏览全部服务商。', recommended: '推荐服务商', browseAll: '查看全部服务商',
+    chooseDefaultModel: '选择默认模型', defaultModelField: '默认模型',
+    chooseDefaultModelHelp: '选择这个连接用于新任务的默认模型。',
+    enableDefaultModelHelp: '这个连接尚未启用模型。选择后，将启用该模型并用于新任务。',
+    enableAndSetDefault: '启用并设为默认',
+    defaultModelsEmpty: '暂无可用的对话模型。请先获取或手动添加模型。',
+    fetchDefaultModels: '获取模型', addDefaultModel: '手动添加模型',
+    defaultModelRequired: '请先选择一个模型。',
+    defaultModelUnavailable: '这个模型已不可用，请刷新模型列表后重新选择。',
+    defaultConnectionChanged: '连接配置已更新，请重新选择默认模型。',
+    defaultConnectionDisabled: '请先启用这个连接，再设置默认模型。',
     default: '默认', setDefault: '设为默认', setDefaultTitle: '让新任务默认使用这个连接', setDefaultPending: '设置中…', setDefaultFailed: '设为默认失败', addHelp: '选择账号登录、模型计划、API、聚合服务或本地运行时。',
     searchPlaceholder: '搜索服务商', searchAria: '搜索模型服务商', noMatch: '未找到匹配的服务商', clearSearch: '清除搜索',
     createSubtitle: '完成必要配置后，连接会出现在模型页上方。', connection: '模型连接',
@@ -455,6 +485,7 @@ const zhTwCopy = {
     },
   },
   shared: {
+    requestUrlLabel: '請求地址：',
     connectionStale: '連線狀態已更新，請重新整理清單後再刪除。',
     actionFallback: '模型連線服務暫時不可用，請稍後重試。', rateLimit: '目前帳號或模型服務觸發速率限制，請稍後重試。',
     timeout: '請求超時，請檢查網路或代理後重試。', unavailable: '模型服務暫時不可用，請稍後重試。',
@@ -473,6 +504,16 @@ const zhTwCopy = {
     connectedLoading: '帳號已連線，正在載入新的模型連線…', connectedLoadFailed: '帳號已連線，但暫時無法載入新的模型連線。',
     connectionIdentityChanged: '新連線的身分與登入結果不一致，請返回連線列表後重試。',
     emptyHelp: '從下方的常用服務商開始，或瀏覽全部服務商。', recommended: '推薦服務商', browseAll: '查看全部服務商',
+    chooseDefaultModel: '選擇預設模型', defaultModelField: '預設模型',
+    chooseDefaultModelHelp: '選擇這個連線用於新任務的預設模型。',
+    enableDefaultModelHelp: '這個連線尚未啟用模型。選擇後，將啟用該模型並用於新任務。',
+    enableAndSetDefault: '啟用並設為預設',
+    defaultModelsEmpty: '暫無可用的對話模型。請先取得或手動新增模型。',
+    fetchDefaultModels: '取得模型', addDefaultModel: '手動新增模型',
+    defaultModelRequired: '請先選擇一個模型。',
+    defaultModelUnavailable: '這個模型已不可用，請重新整理模型清單後重新選擇。',
+    defaultConnectionChanged: '連線設定已更新，請重新選擇預設模型。',
+    defaultConnectionDisabled: '請先啟用這個連線，再設定預設模型。',
     default: '預設', setDefault: '設為預設', setDefaultTitle: '讓新任務預設使用這個連線', setDefaultPending: '設定中…', setDefaultFailed: '設為預設失敗', addHelp: '選擇帳號登入、模型計劃、API、聚合服務或本地執行時。',
     searchPlaceholder: '搜尋服務商', searchAria: '搜尋模型服務商', noMatch: '沒有符合的服務商', clearSearch: '清除搜尋',
     createSubtitle: '完成必要設定後，連線會出現在模型頁上方。', connection: '模型連線',
@@ -656,6 +697,7 @@ const enCopy: ProviderSettingsCopy = {
     },
   },
   shared: {
+    requestUrlLabel: 'Request URL:',
     connectionStale: 'The connection changed while deleting. Refresh the list and try again.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
@@ -674,6 +716,16 @@ const enCopy: ProviderSettingsCopy = {
     connectedLoading: 'Connection added. Loading its details…', connectedLoadFailed: 'Connection added, but the connection list could not be refreshed yet.',
     connectionIdentityChanged: 'The new connection identity did not match the sign-in result. Return to the connection list and try again.',
     emptyHelp: 'Start with a common provider below, or browse them all.', recommended: 'Recommended providers', browseAll: 'Browse all providers',
+    chooseDefaultModel: 'Choose a default model', defaultModelField: 'Default model',
+    chooseDefaultModelHelp: 'Choose the model this connection will use for new tasks.',
+    enableDefaultModelHelp: 'This connection has no enabled models. Your chosen model will be enabled and used for new tasks.',
+    enableAndSetDefault: 'Enable and set as default',
+    defaultModelsEmpty: 'No chat models are available. Fetch models or add one manually first.',
+    fetchDefaultModels: 'Fetch models', addDefaultModel: 'Add model manually',
+    defaultModelRequired: 'Choose a model first.',
+    defaultModelUnavailable: 'This model is no longer available. Refresh the model list and choose again.',
+    defaultConnectionChanged: 'The connection settings changed. Choose the default model again.',
+    defaultConnectionDisabled: 'Enable this connection before setting a default model.',
     default: 'Default', setDefault: 'Set as default', setDefaultTitle: 'New chats will use this connection', setDefaultPending: 'Setting…', setDefaultFailed: 'Could not set as default', addHelp: 'Choose account sign-in, a model plan, API, aggregator, or local runtime.',
     searchPlaceholder: 'Search providers', searchAria: 'Search model providers', noMatch: 'No matching providers', clearSearch: 'Clear search',
     createSubtitle: 'After required setup, the connection appears above on the Models page.', connection: 'Model connection',

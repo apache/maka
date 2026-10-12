@@ -37,6 +37,7 @@ import {
   type TaskEntryControllerSelectors,
 } from '../controller/use-task-entry-controller.js';
 import { taskEntryDraftKey } from '../model/task-entry-selection.js';
+import { SessionWorkspaceRecoveryContext } from '../../../application/contracts/session-workspace-recovery-authority.js';
 import type { TaskEntryError } from '../ports.js';
 import type { TaskEntryHostModel } from './task-entry-host.js';
 
@@ -96,6 +97,8 @@ const EMPTY_CONTROLLER: TaskEntryController = {
       _target: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[0],
       _draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
     ): ReturnType<TaskEntryControllerCommands['prepareWorkBoardDraft']> => undefined,
+    async openProjectFolder() {},
+    async openWorkspaceFolder() {},
   },
   selectors: {
     draftKey: taskEntryDraftKey(undefined),
@@ -142,8 +145,9 @@ function createTaskEntryOwner(): TaskEntryOwner & {
         current.commands.chooseProjectForProfile(profileId),
       openSessionWorkspaceRecovery: (sessionId: string) =>
         current.commands.openSessionWorkspaceRecovery(sessionId),
-      closeSessionWorkspaceRecovery: () =>
-        current.commands.closeSessionWorkspaceRecovery(),
+      closeSessionWorkspaceRecovery: (
+        expected?: Parameters<TaskEntryControllerCommands['closeSessionWorkspaceRecovery']>[0],
+      ) => current.commands.closeSessionWorkspaceRecovery(expected),
       relocateSessionWorkspace: (
         input: Parameters<TaskEntryControllerCommands['relocateSessionWorkspace']>[0],
       ) =>
@@ -160,6 +164,9 @@ function createTaskEntryOwner(): TaskEntryOwner & {
         draft: Parameters<TaskEntryControllerCommands['prepareWorkBoardDraft']>[1],
       ) =>
         current.commands.prepareWorkBoardDraft(target, draft),
+      openProjectFolder: (sessionId?: string) =>
+        current.commands.openProjectFolder(sessionId),
+      openWorkspaceFolder: () => current.commands.openWorkspaceFolder(),
     },
     publish(controller: TaskEntryController): void {
       if (current === controller) return;
@@ -313,8 +320,13 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   const owner = ownership.owner as ReturnType<typeof createTaskEntryOwner>;
   const toastApi = useToast();
   const reportError = useCallback(
-    ({ title, description, profileId }: TaskEntryError) => {
-      toastApi.error(title, description, undefined, { profileId });
+    ({ title, description, profileId, sessionId }: TaskEntryError) => {
+      toastApi.error(
+        title,
+        description,
+        undefined,
+        sessionId ? { sessionId } : profileId !== undefined ? { profileId } : undefined,
+      );
     },
     [toastApi],
   );
@@ -327,7 +339,9 @@ export function TaskEntryRoot({ children }: TaskEntryRootProps) {
   const frame = useMemo(() => children(taskEntry), [children, taskEntry]);
   return (
     <TaskEntryOwnerContext.Provider value={owner}>
-      {frame}
+      <SessionWorkspaceRecoveryContext.Provider value={owner.commands.openSessionWorkspaceRecovery}>
+        {frame}
+      </SessionWorkspaceRecoveryContext.Provider>
     </TaskEntryOwnerContext.Provider>
   );
 }
@@ -361,6 +375,16 @@ export function TaskEntryWorkspacePickerConsumer({
   useEffect(() => {
     setRecoveryMenuOpen(recoveryRequested);
   }, [recovery, recoveryRequested]);
+  useLayoutEffect(() => {
+    if (!recovery) return;
+    if (!activeSession || recovery.sessionId !== activeSession.id) {
+      owner.commands.closeSessionWorkspaceRecovery(recovery);
+      return;
+    }
+    // The dropdown may close to open New project; only leaving the Session/Host
+    // (or replacing this recovery request) invalidates that handoff.
+    return () => owner.commands.closeSessionWorkspaceRecovery(recovery);
+  }, [activeSession?.id, activeSession?.profileId, activeSession?.runtimeHostId, owner, recovery]);
   const workspacePicker = useMemo<WorkspacePickerModel>(
     () => {
       const defaultPicker: WorkspacePickerModel = {
@@ -373,7 +397,7 @@ export function TaskEntryWorkspacePickerConsumer({
       if (!activeSession || !recoveryRequested) return defaultPicker;
 
       const activeGroup = controllerPicker.groups.find(
-        (group) => group.hostId === activeSession.runtimeHostId,
+        (group) => group.id === activeSession.profileId && group.hostId === activeSession.runtimeHostId,
       );
       const activeProject = activeGroup?.projects.find(
         (project) =>
@@ -399,6 +423,7 @@ export function TaskEntryWorkspacePickerConsumer({
                 sessionId: activeSession.id,
                 profileId: activeSession.profileId,
                 projectId,
+                request: recovery,
               }),
               onAdd:
                 activeSession.profileKind === 'local' && activeGroup.hostId
@@ -407,6 +432,7 @@ export function TaskEntryWorkspacePickerConsumer({
                       profileId: activeSession.profileId,
                       host: { profileId: activeGroup.id, hostId: activeGroup.hostId! },
                       name,
+                      request: recovery,
                     })
                   : undefined,
               onRelink: undefined,
@@ -424,6 +450,7 @@ export function TaskEntryWorkspacePickerConsumer({
       manageProjects,
       owner,
       recoveryMenuOpen,
+      recovery,
       recoveryRequested,
     ],
   );

@@ -612,7 +612,7 @@ function validateInstalledRuntimeFiles(packageRoot) {
     // Incubator policy: the installed package carries the incubating
     // disclaimer next to LICENSE/NOTICE, like every other Maka release.
     'DISCLAIMER-WIP',
-    'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime/dist/workers/filesystem-worker.mjs',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/index.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
@@ -628,7 +628,7 @@ function validateInstalledRuntimeFiles(packageRoot) {
   );
   assertOutput(
     readFileSync(join(packageRoot, 'node_modules/@ai-sdk/provider-utils/dist/index.js'), 'utf8'),
-    'function absentIfBlank',
+    'Ambiguous streamed tool call delta.',
   );
 }
 

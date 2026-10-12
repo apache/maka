@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { AgentRunEvent, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -46,6 +47,96 @@ import { testInvocationOpening } from './invocation-fixture.js';
  * between settling the row and committing the run's terminal fact.
  */
 describe('sandbox boundary restart recovery on durable stores', () => {
+  it('seals a dispatched AskUserQuestion across a cold restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-question-restart-'));
+    try {
+      const session = await withStores(root, async ({ sessions, runs, runtimeEvents }) => {
+        const header = await sessions.create(sessionInput(root));
+        await seedInterruptedTurn(sessions, runs, runtimeEvents, header.id);
+        const args = { questions: [{ question: 'Continue?', options: ['Yes', 'No'] }] };
+        const canonicalArgsHash = canonicalToolArgsHash('AskUserQuestion', args);
+        await runtimeEvents.commitToolPrepared({
+          operationId: 'question-operation',
+          journalEventId: 'question-operation_prepared',
+          runtimeEvent: {
+            id: 'question-call',
+            sessionId: header.id,
+            invocationId: 'run-1',
+            runId: 'run-1',
+            turnId: 'turn-1',
+            ts: 12,
+            partial: false,
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'question-call-id',
+              name: 'AskUserQuestion',
+              args,
+            },
+          },
+          dispatchRuntimeEvent: {
+            id: 'question-dispatch',
+            sessionId: header.id,
+            invocationId: 'run-1',
+            runId: 'run-1',
+            turnId: 'turn-1',
+            ts: 13,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            actions: {
+              toolDispatch: {
+                protocol: 't1_after_preflight_v1',
+                operationId: 'question-operation',
+                providerToolCallId: 'question-call-id',
+                toolName: 'AskUserQuestion',
+                canonicalArgsHash,
+                recoveryMode: 'never_auto_retry',
+              },
+            },
+            refs: { operationId: 'question-operation', toolCallId: 'question-call-id' },
+          },
+          providerToolCallId: 'question-call-id',
+          toolName: 'AskUserQuestion',
+          canonicalArgsHash,
+          recoveryMode: 'never_auto_retry',
+          committedAt: 13,
+        });
+        return header;
+      });
+
+      await withStores(root, async (stores) => {
+        await manager(stores).recoverInterruptedSessionsStrict({
+          sessionStore: stores.sessions,
+          agentRunStore: stores.runs,
+        });
+      });
+
+      await withStores(root, async ({ runtimeEvents }) => {
+        const [invocation] = await runtimeEvents.listSessionInvocations(session.id);
+        assert.equal(invocation?.terminalEvent?.status, 'failed');
+        assert.equal(invocation && runtimeInvocationFailureClass(invocation), 'outcome_unknown');
+        assert.equal(
+          (await runtimeEvents.readToolOperation('question-operation'))?.currentState,
+          'abandoned',
+        );
+        assert.deepEqual(
+          (await runtimeEvents.readToolJournal('question-operation')).map(({ state }) => state),
+          ['prepared', 'abandoned'],
+        );
+        assert.equal(
+          (await runtimeEvents.readImmutableRuntimeEvents(session.id, 'run-1')).some(
+            (event) => event.content?.kind === 'function_response',
+          ),
+          false,
+        );
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('attributes a closure whose RuntimeEvent never reached the ledger', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-boundary-restart-'));
     try {
@@ -183,7 +274,7 @@ describe('sandbox boundary restart recovery on durable stores', () => {
 interface DurableStores {
   sessions: SessionAuthorityStore;
   runs: DurableAgentRunStore;
-  runtimeEvents: DurableRuntimeEventStore;
+  runtimeEvents: ReturnType<typeof createWorkspaceRuntimeStore>;
 }
 
 async function withStores<T>(

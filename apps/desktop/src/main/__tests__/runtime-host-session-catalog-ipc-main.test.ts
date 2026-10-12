@@ -45,6 +45,17 @@ test('preserves the Session revision in Owner Desktop Host summaries', () => {
   assert.equal(toDesktopHostSessionSummary(projection({ revision: 7 })).revision, 7);
 });
 
+test('preserves Host background activity separately from the Session own running turns', () => {
+  assert.equal(Object.hasOwn(toDesktopHostSessionSummary(projection()), 'backgroundActivity'), false);
+  for (const backgroundActivity of ['idle', 'running', 'waiting_for_user', 'blocked'] as const) {
+    const summary = toDesktopHostSessionSummary(projection({
+      backgroundActivity, liveRunState: { schemaVersion: 1, runningTurnIds: [] },
+    }));
+    assert.equal(summary.backgroundActivity, backgroundActivity);
+    assert.deepEqual(summary.runningTurnIds, []);
+  }
+});
+
 test('session creation forwards the caller name for a mode that carries none', async () => {
   const creates: SessionCreateInput[] = [];
   const ipc = ipcHarness();

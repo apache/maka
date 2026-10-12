@@ -32,7 +32,7 @@ for (const name of ['memory-network', 'index-initiative', 'proactive-matters']) 
   run(['scripts/main-api.mjs'], cwd);
   if (name === 'proactive-matters') {
     run(['scripts/prepare-test-metadata.mjs'], cwd);
-    run(['scripts/extra-api.mjs', 'live'], cwd);
+    run(['scripts/runtime-test-api.mjs'], cwd);
   }
   run(
     [

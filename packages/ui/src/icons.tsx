@@ -28,7 +28,27 @@
  * UI icons.
  */
 
+import { createLucideIcon, type LucideIconNode } from 'lucide-react';
+
 export type { LucideIcon, LucideProps } from 'lucide-react';
+
+const ARCHIVE_TRAY_NODES: LucideIconNode[] = [
+  ['path', { d: 'M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7', key: 'tray' }],
+  ['path', { d: 'M2 12h20', key: 'tray-edge' }],
+];
+
+/** A matched pair: the same tray with the arrow entering or leaving it. */
+export const Archive = createLucideIcon('archive', [
+  ...ARCHIVE_TRAY_NODES,
+  ['path', { d: 'M12 3v14', key: 'arrow-stem' }],
+  ['path', { d: 'm7 12 5 5 5-5', key: 'arrow-head' }],
+]);
+
+export const Unarchive = createLucideIcon('unarchive', [
+  ...ARCHIVE_TRAY_NODES,
+  ['path', { d: 'M12 17V3', key: 'arrow-stem' }],
+  ['path', { d: 'm7 8 5-5 5 5', key: 'arrow-head' }],
+]);
 
 /**
  * The five-rung icon scale. Pick by the role the glyph plays, not by eye.
@@ -41,11 +61,11 @@ export type { LucideIcon, LucideProps } from 'lucide-react';
  * for the CSS-clamped sites.
  */
 export const ICON_SIZE = {
-  meta: 13,    // inline with text: dense metadata, markers, badge glyphs
+  meta: 12,    // inline with supporting text: metadata, markers, badge glyphs; == Astryx Icon xsm
   control: 14, // row icons, IconButton sm, toolbars, list startContent
   chrome: 16,  // nav/affordance chrome; == Astryx Icon sm / Button sm icon slot
   empty: 20,   // EmptyState glyphs (DESIGN.md §10 tier 2/3)
-  plate: 28,   // glyph inside an icon plate or hero mark
+  plate: 24,   // glyph inside an icon plate or hero mark; == Astryx Icon lg
 } as const;
 
 export {
@@ -54,8 +74,6 @@ export {
   AlertCircle,
   AlertOctagon,
   AlertTriangle,
-  Archive,
-  ArchiveRestore,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
@@ -117,6 +135,7 @@ export {
   MessageCircleQuestion,
   MessagesSquare,
   MessageSquare,
+  MessageSquareQuote,
   Mic,
   Maximize2,
   PictureInPicture2,
@@ -149,6 +168,7 @@ export {
   Search,
   Share2,
   Settings,
+  Shield,
   ShieldAlert,
   ShieldCheck,
   Sparkles,

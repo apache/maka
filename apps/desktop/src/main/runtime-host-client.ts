@@ -101,11 +101,6 @@ import {
   PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
-  type QueueEntriesReorderInput,
-  type QueueEntryPromoteInput,
-  type QueueEntryRetractInput,
-  type QueueEntryUpdateInput,
-  type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -138,6 +133,8 @@ import {
   type ExecutionBoundarySummary,
   type SessionLifecycleState,
   type SessionMetadataPatch,
+  type SessionRemovePreviewInput,
+  type SessionRemovePreviewResult,
   type SessionUpdateResult,
   type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
@@ -166,11 +163,22 @@ const RUNTIME_HOST_RETIREMENT_TIMEOUT_MS = 15_000;
 
 export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
+type QueueMutationOperation =
+  | "queue.entry.promote"
+  | "queue.entry.retract"
+  | "queue.entry.update"
+  | "queue.entries.reorder";
+
+type QueueMutationInput<K extends QueueMutationOperation> = Omit<
+  OperationInput<K>,
+  "originHostEpoch"
+>;
+
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
  * the caller decided against, so nothing was destroyed and nothing is wrong.
  */
-export type SessionRemoveDisposition = "removed" | "restored";
+export type SessionRemoveDisposition = "removed" | "restored" | "too_recent";
 
 /**
  * How a remove settled together with what it archived. `archivedSubtaskCount`
@@ -498,10 +506,12 @@ export class DesktopRuntimeHostClient {
   setDefaultConnectionTarget(
     expectedCatalogRevision: number,
     target: OperationInput<"connection.catalog.set-default-target">["target"],
+    enableModel?: boolean,
   ): Promise<OperationOutput<"connection.catalog.set-default-target">> {
     return this.request("connection.catalog.set-default-target", {
       expectedCatalogRevision,
       target,
+      ...(enableModel === undefined ? {} : { enableModel }),
     });
   }
 
@@ -532,8 +542,9 @@ export class DesktopRuntimeHostClient {
 
   fetchConnectionModels(
     connectionId: string,
+    preserveSelection?: boolean,
   ): Promise<OperationOutput<"connection.models.fetch">> {
-    return this.request("connection.models.fetch", { connectionId });
+    return this.request("connection.models.fetch", { connectionId, ...(preserveSelection === undefined ? {} : { preserveSelection }) });
   }
 
   testConnection(
@@ -1169,7 +1180,7 @@ export class DesktopRuntimeHostClient {
    */
   async removeSession(
     sessionId: string,
-    options: { requireArchived?: boolean } = {},
+    options: { requireArchived?: boolean; requireArchivedForMs?: number } = {},
   ): Promise<SessionRemoveOutcome> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
@@ -1179,23 +1190,29 @@ export class DesktopRuntimeHostClient {
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
+        ...(options.requireArchivedForMs === undefined
+          ? {}
+          : { requireArchivedForMs: options.requireArchivedForMs }),
       });
       if (result.kind === "removed") {
         return { disposition: "removed", archivedSubtaskCount: result.archivedSubtaskCount ?? 0 };
+      }
+      // The Host's clock says it was archived too recently: kept, not failed.
+      if (result.kind === "too_recent") {
+        return { disposition: "too_recent", archivedSubtaskCount: 0 };
       }
     }
     throw revisionConflict("remove", sessionId);
   }
 
   /**
-   * How many linked subtasks a delete of this parent would move to the archive,
-   * per the Host's own removal plan. The delete confirm warns off this so the
-   * renderer never re-derives the plan from a catalog projection that omits the
-   * operator marker and copy state.
+   * What deleting these Sessions, one `removeSession` each, would remove and
+   * archive, per the Host's own removal plans. A delete confirm states this so
+   * the renderer never re-derives a plan from a catalog projection that omits
+   * the operator marker and copy state. One bounded page; callers page.
    */
-  async previewSessionRemoval(sessionId: string): Promise<number> {
-    const result = await this.request("session.remove.preview", { sessionId });
-    return result.archivableSubtaskCount;
+  previewSessionRemoval(input: SessionRemovePreviewInput): Promise<SessionRemovePreviewResult> {
+    return this.request("session.remove.preview", input);
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
@@ -1325,39 +1342,37 @@ export class DesktopRuntimeHostClient {
   }
 
   retractQueueEntry(
-    input: Omit<QueueEntryRetractInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.retract", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.retract">,
+  ): Promise<OperationOutput<"queue.entry.retract">> {
+    return this.#mutateQueue("queue.entry.retract", input);
   }
 
   promoteQueueEntry(
-    input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.promote", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.promote">,
+  ): Promise<OperationOutput<"queue.entry.promote">> {
+    return this.#mutateQueue("queue.entry.promote", input);
   }
 
   updateQueueEntry(
-    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entry.update", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
+    input: QueueMutationInput<"queue.entry.update">,
+  ): Promise<OperationOutput<"queue.entry.update">> {
+    return this.#mutateQueue("queue.entry.update", input);
   }
 
   reorderQueueEntries(
-    input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
-  ): Promise<QueueMutationResult> {
-    return this.request("queue.entries.reorder", {
+    input: QueueMutationInput<"queue.entries.reorder">,
+  ): Promise<OperationOutput<"queue.entries.reorder">> {
+    return this.#mutateQueue("queue.entries.reorder", input);
+  }
+
+  #mutateQueue<K extends QueueMutationOperation>(
+    operation: K,
+    input: QueueMutationInput<K>,
+  ): Promise<OperationOutput<K>> {
+    return this.request(operation, {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
-    });
+    } as OperationInput<K>);
   }
 
   interruptTurn(
@@ -1840,6 +1855,10 @@ export class DesktopRuntimeHostClient {
       "session_not_found",
       `Runtime Host Session not found: ${sessionId}`,
     );
+  }
+
+  generatePromptSuggestion(sessionId: string) {
+    return this.request('session.prompt-suggestion.generate', { sessionId }, 7000);
   }
 
   request<K extends DirectRequestOperationKey>(

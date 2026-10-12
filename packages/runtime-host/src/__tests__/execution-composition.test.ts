@@ -18,12 +18,22 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
-import type { WorkHubRoutingDecision } from '@maka/core/workhub-routing';
+import {
+  TOOL_BOUNDARY_PROTOCOL_V1,
+  decodeRuntimeEvent,
+  type RuntimeEvent,
+} from '@maka/core/runtime-event';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { WorkHubAdmittedAction } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import {
+  buildInvocationOpenedEvent,
+  runtimeInvocationOutcome,
+} from '@maka/core/runtime-invocation';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
@@ -56,11 +66,13 @@ import {
 } from '@maka/runtime/test-only/fake-backend';
 import { LOCAL_READ_AGENT_DEFINITION } from '@maka/runtime/agent-catalog';
 import { SessionManager, type BackendFactory } from '@maka/runtime/session-manager';
+import { testInvocationOpening } from '@maka/runtime/test-only/invocation-fixture';
 import { workHubDirectStopAbortSource } from '@maka/runtime/session-manager';
 import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createSessionStore } from '@maka/storage/session-store';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
@@ -76,6 +88,7 @@ import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   HostResidencyRegistry,
   type HostResidencyKind,
@@ -85,7 +98,7 @@ import {
   runtimeHostFilesystemWorkerRuntime,
   stopOwnedWorkHubRoot,
   stopReplacedWorkHubRoot,
-  type ExecutionRuntimeHostComposition,
+  type ExecutionRuntimeHostCompositionDependencies,
 } from '../server/execution-composition.js';
 import { RuntimeHostKernel, type RuntimeHostCompositionContext } from '../server/host-kernel.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
@@ -95,6 +108,7 @@ import {
   type ClientCapabilityHostFrame,
 } from '../protocol/index.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import { HostWorkHubResultCoordinator } from '../server/workhub-result-coordinator.js';
 import { readLedgerMessages } from './fixtures/ledger-transcript.js';
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.js';
@@ -102,10 +116,6 @@ import { workHubDesktopCapabilityOffers } from './fixtures/workhub-capabilities.
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
-const workHubRoutingDecisions = new WeakMap<
-  ExecutionRuntimeHostComposition,
-  Map<string, WorkHubRoutingDecision>
->();
 const HANDOFF_TEST_COMPOSITION = createRunCompositionSnapshot({
   composerId: 'test.handoff',
   composerRevision: '1',
@@ -225,6 +235,252 @@ test('Plugin Agent snapshot exposes pending interaction without losing ownership
   });
 });
 
+test('production Host recovery starts with a dispatched tool whose outcome is unknown', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const run = {
+      sessionId: session.id,
+      invocationId: 'unknown-tool-run',
+      runId: 'unknown-tool-run',
+      turnId: 'unknown-tool-turn',
+    };
+    await stores.runtimeEventStore.appendRuntimeEvent(
+      session.id,
+      run.runId,
+      buildInvocationOpenedEvent({
+        id: 'unknown-tool-open',
+        run,
+        openedAt: 10,
+        opening: testInvocationOpening(),
+      }),
+    );
+    await stores.agentRunStore.appendEvent(session.id, run.runId, {
+      type: 'turn_started',
+      id: 'unknown-tool-started',
+      sessionId: session.id,
+      runId: run.runId,
+      turnId: run.turnId,
+      ts: 11,
+    });
+    const args = { path: '/workspace/README.md' };
+    const canonicalArgsHash = canonicalToolArgsHash('Read', args);
+    await stores.runtimeEventStore.commitToolPrepared({
+      operationId: 'unknown-tool-operation',
+      journalEventId: 'unknown-tool-operation_prepared',
+      runtimeEvent: {
+        id: 'unknown-tool-call',
+        ...run,
+        ts: 12,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'unknown-tool-call-id', name: 'Read', args },
+      },
+      dispatchRuntimeEvent: {
+        id: 'unknown-tool-dispatch',
+        ...run,
+        ts: 13,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        actions: {
+          toolDispatch: {
+            protocol: TOOL_BOUNDARY_PROTOCOL_V1,
+            operationId: 'unknown-tool-operation',
+            providerToolCallId: 'unknown-tool-call-id',
+            toolName: 'Read',
+            canonicalArgsHash,
+            recoveryMode: 'replay_safe',
+          },
+        },
+        refs: { operationId: 'unknown-tool-operation', toolCallId: 'unknown-tool-call-id' },
+      },
+      providerToolCallId: 'unknown-tool-call-id',
+      toolName: 'Read',
+      canonicalArgsHash,
+      recoveryMode: 'replay_safe',
+      committedAt: 13,
+    });
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const [invocation] = await stores.runtimeEventStore.listSessionInvocations(session.id);
+      assert.equal(invocation?.terminalEvent?.status, 'failed');
+      assert.equal(invocation && runtimeInvocationFailureClass(invocation), 'outcome_unknown');
+      assert.deepEqual(await stores.runtimeEventStore.listUnsettledToolOperations(session.id), []);
+      assert.equal(
+        (await stores.runtimeEventStore.readImmutableRuntimeEvents(session.id, run.runId)).some(
+          (event) => event.content?.kind === 'function_response',
+        ),
+        false,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('Host bundle recovery repairs terminal tool projections without decoding opaque Session history', {
+  timeout: 20_000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition } = await createCapturedExecutionComposition(owner);
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      const session = await stores.sessionStore.create({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const invocationId = 'bundle-recovery-invocation';
+      const runId = 'bundle-recovery-run';
+      const turnId = 'bundle-recovery-turn';
+      const operationId = 'bundle-recovery-operation';
+      const providerToolCallId = 'bundle-recovery-call';
+      const args = { path: '/workspace/README.md' };
+      const canonicalArgsHash = canonicalToolArgsHash('Read', args);
+      const timestamp = Date.now();
+      await stores.runtimeEventStore.commitToolPrepared({
+        operationId,
+        journalEventId: `${operationId}_prepared`,
+        runtimeEvent: {
+          id: 'bundle-recovery-call-event',
+          invocationId,
+          runId,
+          sessionId: session.id,
+          turnId,
+          ts: timestamp,
+          partial: false,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'function_call', id: providerToolCallId, name: 'Read', args },
+        },
+        dispatchRuntimeEvent: {
+          id: 'bundle-recovery-dispatch-event',
+          invocationId,
+          runId,
+          sessionId: session.id,
+          turnId,
+          ts: timestamp + 1,
+          partial: false,
+          role: 'system',
+          author: 'system',
+          actions: {
+            toolDispatch: {
+              protocol: TOOL_BOUNDARY_PROTOCOL_V1,
+              operationId,
+              providerToolCallId,
+              toolName: 'Read',
+              canonicalArgsHash,
+              recoveryMode: 'replay_safe',
+            },
+          },
+          refs: { operationId, toolCallId: providerToolCallId },
+        },
+        providerToolCallId,
+        toolName: 'Read',
+        canonicalArgsHash,
+        recoveryMode: 'replay_safe',
+        committedAt: timestamp + 1,
+      });
+
+      // Simulate an interrupted run whose terminal RuntimeEvent survived but
+      // whose disposable tool projection did not reach its terminal state.
+      const rawStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+      try {
+        await rawStore.importRuntimeEventsBatch({
+          sessionId: session.id,
+          runId,
+          events: [
+            {
+              id: 'bundle-recovery-terminal-event',
+              invocationId,
+              runId,
+              sessionId: session.id,
+              turnId,
+              ts: timestamp + 2,
+              partial: false,
+              role: 'system',
+              author: 'system',
+              status: 'failed',
+              actions: { endInvocation: true },
+            },
+          ],
+        });
+        await rawStore.importRuntimeEventsBatch({
+          sessionId: session.id,
+          runId: 'bundle-recovery-legacy-run',
+          events: [
+            {
+              id: 'bundle-recovery-opaque-legacy-event',
+              invocationId: 'bundle-recovery-legacy-invocation',
+              runId: 'bundle-recovery-legacy-run',
+              sessionId: session.id,
+              turnId: 'bundle-recovery-legacy-turn',
+              ts: timestamp + 3,
+              partial: false,
+              role: 'system',
+              author: 'system',
+              status: 'failed',
+              actions: { endInvocation: true },
+              content: { kind: 'text', text: 'preserve this legacy event' },
+            },
+          ],
+        });
+      } finally {
+        rawStore.close();
+      }
+
+      const raw = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        const row = raw
+          .prepare('SELECT payload_json FROM runtime_events WHERE event_id = ?')
+          .get('bundle-recovery-opaque-legacy-event') as { payload_json: string };
+        const opaquePayload = `${row.payload_json.slice(0, -1)},"legacyBytePreserved":true}`;
+        assert.throws(
+          () => decodeRuntimeEvent(JSON.parse(opaquePayload) as unknown),
+          /Invalid RuntimeEvent schema/,
+        );
+        raw
+          .prepare('UPDATE runtime_events SET payload_json = ? WHERE event_id = ?')
+          .run(opaquePayload, 'bundle-recovery-opaque-legacy-event');
+      } finally {
+        raw.close();
+      }
+
+      const outcome = await composition.handlers['session-bundle.export'](
+        {
+          sessionId: session.id,
+          destination: join(root, 'bundle-recovery.maka-session'),
+        },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'bundle-recovery-test',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.ok(outcome.ok, JSON.stringify(outcome));
+      assert.deepEqual(
+        await stores.runtimeEventStore.listUnsettledToolOperations([session.id]),
+        [],
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('idle schedules and armed or paused Goals allow production handoff and recover in the successor', {
   timeout: 20_000,
 }, async () => {
@@ -331,6 +587,61 @@ test('idle schedules and armed or paused Goals allow production handoff and reco
     } finally {
       await successorOwner.close();
     }
+  });
+});
+
+test('production handoff fences WorkHub result polling and waits for a poll resumed by cancellation', {
+  timeout: 20_000,
+}, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const finishPoll = deferred<void>();
+  let polls = 0;
+  t.mock.method(HostWorkHubResultCoordinator.prototype, 'reconcile', async () => {
+    polls += 1;
+    await finishPoll.promise;
+  });
+  await withCompositionRoot(async ({ owner }) => {
+    const residencies = new HostResidencyRegistry();
+    const { composition } = await createCapturedExecutionComposition(owner, { residencies });
+    try {
+      const cancelled = await composition.prepareHandoff!('old-host', new AbortController().signal);
+      assert.ok(cancelled);
+      assert.equal(await cancelled.seal(), true);
+      // Move past the startup poll while the handoff owns the scheduler.
+      t.mock.timers.tick(1000);
+      assert.equal(polls, 0);
+      const proof = await cancelled.residencies();
+      assert.ok(proof);
+      assert.equal(residencies.hasDrainResidenciesExcept(proof), false);
+
+      cancelled.cancel();
+      t.mock.timers.tick(100);
+      assert.equal(polls, 1);
+      assert.ok(residencies.drainCount > 0);
+      let prepared = false;
+      const preparing = composition.prepareHandoff!('old-host', new AbortController().signal).then(
+        (result) => {
+          prepared = true;
+          return result;
+        },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(prepared, false, 'handoff must wait for the poll and its residency to settle');
+      finishPoll.resolve();
+      const next = await preparing;
+      assert.ok(next);
+      assert.equal(await next.seal(), true);
+      const nextProof = await next.residencies();
+      assert.ok(nextProof);
+      assert.equal(residencies.hasDrainResidenciesExcept(nextProof), false);
+      await next.detach();
+      t.mock.timers.tick(60_000);
+      assert.equal(polls, 1, 'a detached predecessor must not restart result polling');
+    } finally {
+      finishPoll.resolve();
+      await composition.close();
+    }
+    assert.equal(residencies.activeCount, 0);
   });
 });
 
@@ -1076,6 +1387,84 @@ test('production composition commits automatic titles through Host-owned Session
   });
 });
 
+test('injected title generation preserves the Session retirement boundary', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const releaseTitle = deferred<void>();
+    const residencies = new HostResidencyRegistry();
+    let titleCalls = 0;
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      residencies,
+      generateSessionTitle: async ({ sourceText }) => {
+        assert.equal(sourceText, 'Archive after naming');
+        titleCalls += 1;
+        await releaseTitle.promise;
+        // Desktop E2E uses the same local fallback, not a provider request.
+        return undefined;
+      },
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'archive-title-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => residencies.acquire('archive-title-turn'),
+    };
+    try {
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'archive-title-turn',
+          content: { text: 'Archive after naming' },
+        },
+        context,
+      );
+      assert.equal(started.ok, true);
+      await waitFor(async () => titleCalls === 1);
+      // A durable terminal snapshot can precede release of the live root.
+      // Isolate the naming guard only after the Turn's residency is released.
+      await waitFor(
+        async () => !residencies.snapshot().some(({ label }) => label === 'archive-title-turn'),
+      );
+      const busy = await composition.handlers['session.lifecycle.set'](
+        {
+          sessionId: session.id,
+          state: 'archived',
+        },
+        context,
+      );
+      assert.equal(busy.ok, false);
+      if (busy.ok) assert.fail('An active naming effect must block archive');
+      assert.equal(busy.error.code, 'session_busy');
+      assert.match(busy.error.message, /live derived effect/);
+
+      releaseTitle.resolve();
+      await waitFor(
+        async () => !residencies.snapshot().some(({ label }) => label === 'session-effect'),
+      );
+      const named = (await manager.listSessions()).find(({ id }) => id === session.id);
+      assert.equal(named?.name, 'Archive after naming');
+      const archived = await composition.handlers['session.lifecycle.set'](
+        {
+          sessionId: session.id,
+          state: 'archived',
+        },
+        context,
+      );
+      assert.equal(archived.ok, true, JSON.stringify(archived));
+      assert.equal(titleCalls, 1);
+    } finally {
+      releaseTitle.resolve();
+      await composition.close();
+    }
+  });
+});
+
 test('a committed Client Capability replacement stays acknowledged when recovery drains the Host', async (t) => {
   await withCompositionRoot(async ({ owner }) => {
     let drainRequests = 0;
@@ -1208,12 +1597,417 @@ test('Session capability publication follows durable archive and removal state, 
   });
 });
 
+test('production composition enables an explicit resume after user Stop by default', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    execFileSync('git', ['init', '--quiet'], { cwd: root });
+    await resolveWorkspaceIdentity({ path: root });
+    const backendEntered = deferred<void>();
+    const stopRequested = deferred<void>();
+    const backendFactory: BackendFactory = (context) =>
+      new (class extends FakeBackend {
+        override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+          backendEntered.resolve();
+          await stopRequested.promise;
+          yield {
+            type: 'abort',
+            id: `stop-${input.turnId}`,
+            turnId: input.turnId,
+            ts: Date.now(),
+            reason: 'user_stop',
+          };
+          yield {
+            type: 'complete',
+            id: `complete-${input.turnId}`,
+            turnId: input.turnId,
+            ts: Date.now(),
+            stopReason: 'user_stop',
+          };
+        }
+
+        override async stop(): Promise<void> {
+          stopRequested.resolve();
+          await super.stop();
+        }
+      })(context);
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      primaryBackendFactory: backendFactory,
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'default-interactive-resume-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    const desktop = composition.clientCapabilities!.attachConnection(
+      clientCapabilityConnectionIdentity(context.connectionId),
+      { send: async () => {} },
+    );
+    try {
+      const registered = await composition.handlers['client.capability.replace'](
+        { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+        context,
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: session.id,
+          turnId: 'turn-default-interactive-resume',
+          content: { text: 'stop before any assistant output' },
+        },
+        context,
+      );
+      assert.equal(started.ok, true);
+      if (!started.ok || started.result.kind !== 'started') return;
+      const startedTurn = started.result.turn;
+      await backendEntered.promise;
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const sourceEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
+        session.id,
+        startedTurn.runId,
+      );
+      const sourceIdentity = sourceEvents[0];
+      assert.ok(sourceIdentity, 'the running invocation should have a durable RuntimeEvent');
+      const toolCallId = 'resume-tool-search-call';
+      const eventTs = Math.max(Date.now(), ...sourceEvents.map((event) => event.ts)) + 1;
+      const eventIdentity = {
+        invocationId: sourceIdentity.invocationId,
+        runId: startedTurn.runId,
+        sessionId: session.id,
+        turnId: startedTurn.turnId,
+        partial: false,
+      };
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, startedTurn.runId, {
+        id: 'resume-tool-search-call-event',
+        ...eventIdentity,
+        ts: eventTs,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: toolCallId,
+          name: 'tool_search',
+          args: { query: 'docs' },
+        },
+        refs: { toolCallId },
+      });
+      await stores.runtimeEventStore.appendRuntimeEvent(session.id, startedTurn.runId, {
+        id: 'resume-tool-search-result-event',
+        ...eventIdentity,
+        ts: eventTs + 1,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: toolCallId,
+          name: 'tool_search',
+          result: { kind: 'json', value: { activated: ['fixture_deferred_tool'] } },
+          isError: false,
+        },
+        refs: { toolCallId },
+      });
+      const stopped = await composition.handlers['turn.stop'](
+        {
+          sessionId: session.id,
+          turnId: startedTurn.turnId,
+          runId: startedTurn.runId,
+        },
+        context,
+      );
+      assert.equal(stopped.ok, true);
+      await waitFor(async () =>
+        (await manager.listTurns(session.id)).some(
+          (turn) => turn.turnId === startedTurn.turnId && turn.status === 'aborted',
+        ),
+      );
+
+      const plan = await composition.handlers['turn.resume.query'](
+        { sessionId: session.id },
+        context,
+      );
+      assert.equal(plan.ok, true);
+      if (plan.ok) {
+        assert.equal(plan.result.disposition, 'ready', JSON.stringify(plan.result));
+      }
+    } finally {
+      await desktop.close();
+      await composition.close();
+    }
+  });
+});
+
+test('production composition preserves an explicit interactive resume kill switch', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      safeBoundaryResume: false,
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'disabled-interactive-resume-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const session = await manager.createSession({
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const plan = await composition.handlers['turn.resume.query'](
+        { sessionId: session.id },
+        context,
+      );
+      assert.equal(plan.ok, true);
+      assert.deepEqual(plan.ok && plan.result, {
+        sessionId: session.id,
+        disposition: 'parked',
+        reason: 'resume_feature_disabled',
+      });
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production WorkHub inspects an independent Session through its provider tool surface without starting target work', async (t) => {
+  const sourceText = 'Tests passed.\nPublishing is still pending. 😀';
+  let targetSessionId = '';
+  let inspecting = false;
+  const inspectionRequests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  const providerErrors: unknown[] = [];
+  const server = createServer((request, response) => {
+    void (async () => {
+      let body = '';
+      for await (const chunk of request) body += chunk.toString();
+      const input = JSON.parse(body);
+      if (inspecting) inspectionRequests.push(input);
+      const inspect = inspecting && inspectionRequests.length === 1;
+      const associate = inspecting && inspectionRequests.length === 2;
+      const call = inspect || associate;
+      if (inspect) assert.match(body, /WorkHubInspect/);
+      if (associate) assert.match(body, /mcp__desktop_workhub__tasks/);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      const chunk = (delta: unknown, finish: string | null) =>
+        `data: ${JSON.stringify({
+          id: `inspection-${inspectionRequests.length}`,
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fake-model',
+          choices: [{ index: 0, delta, finish_reason: finish }],
+        })}\n\n`;
+      response.write(
+        chunk(
+          call
+            ? {
+                role: 'assistant',
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: inspect ? 'inspect-existing' : 'associate-existing',
+                    type: 'function',
+                    function: {
+                      name: inspect ? 'WorkHubInspect' : 'mcp__desktop_workhub__tasks',
+                      arguments: JSON.stringify(
+                        inspect
+                          ? {
+                              sessionId: targetSessionId,
+                              view: 'latest_reply',
+                            }
+                          : {
+                              request: {
+                                operation: 'associate',
+                                targetSessionId,
+                              },
+                            },
+                      ),
+                    },
+                  },
+                ],
+              }
+            : {
+                role: 'assistant',
+                content: inspecting ? 'Read the existing source reply.' : sourceText,
+              },
+          null,
+        ),
+      );
+      response.write(chunk({}, call ? 'tool_calls' : 'stop'));
+      response.end('data: [DONE]\n\n');
+    })().catch((error) => {
+      providerErrors.push(error);
+      response.destroy(error as Error);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(
+      owner,
+      ['fake-model'],
+      `http://127.0.0.1:${address.port}/v1`,
+    );
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const context: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'inspection-client',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    const desktop = composition.clientCapabilities!.attachConnection(
+      clientCapabilityConnectionIdentity(context.connectionId),
+      {
+        send: async (frame) => {
+          if (frame.kind === 'client.capability.call') {
+            assert.deepEqual(frame.arguments, {
+              request: { operation: 'associate', targetSessionId },
+            });
+            queueMicrotask(() =>
+              desktop.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              }),
+            );
+          } else if (frame.kind === 'client.capability.admitted') {
+            queueMicrotask(() =>
+              desktop.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [],
+                  structuredContent: {
+                    operation: 'associate',
+                    targetSessionId,
+                    targetSessionKey: 'independent-release',
+                  },
+                },
+              }),
+            );
+          }
+        },
+      },
+    );
+    try {
+      await composition.recover();
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const target = await stores.sessionStore.create({
+        cwd: root,
+        name: 'Independent release',
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+      });
+      targetSessionId = target.id;
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: target.id,
+          turnId: 'independent-turn',
+          content: { text: 'Report release progress' },
+        },
+        context,
+      );
+      assert.ok(started.ok, JSON.stringify(started));
+      if (!started.ok || started.result.kind !== 'started') return;
+      const targetRunId = started.result.turn.runId;
+      const completed = async (sessionId: string, turnId: string) => {
+        const turn = await composition.handlers['turn.query']({ sessionId, turnId }, context);
+        return turn.ok && turn.result.status === 'completed';
+      };
+      await waitFor(() => completed(target.id, 'independent-turn'), 10000);
+      const sourceMessages = await readLedgerMessages(stores.runtimeEventStore, target.id);
+      const source = sourceMessages.find(
+        (message) => message.type === 'assistant' && message.text === sourceText,
+      );
+      assert.ok(source);
+      // The terminal fact precedes the target's unread/last-message projection.
+      // Let its own bookkeeping settle before measuring inspection side effects.
+      await waitFor(async () => {
+        const header = await stores.sessionStore.readHeaderSnapshot(target.id);
+        return header.hasUnread && (header.lastMessageAt ?? 0) >= source.ts;
+      });
+      const registered = await composition.handlers['client.capability.replace'](
+        {
+          registrationId: randomUUID(),
+          offers: workHubDesktopCapabilityOffers(),
+        },
+        context,
+      );
+      assert.ok(registered.ok, JSON.stringify(registered));
+      const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
+      assert.ok(resolved.ok, JSON.stringify(resolved));
+      const before = {
+        header: await stores.sessionStore.readHeaderRecordSnapshot(target.id),
+        events: await stores.runtimeEventStore.readImmutableRuntimeEvents(target.id, targetRunId),
+        sessions: (await stores.sessionStore.listHeaders()).map(({ id }) => id).sort(),
+      };
+      inspecting = true;
+      const answer = await composition.handlers['workhub.coordination.answer'](
+        {
+          turnId: 'inspection-turn',
+          text: 'Read the latest reply from the existing release Session.',
+        },
+        context,
+      );
+      assert.ok(answer.ok, JSON.stringify(answer));
+      await waitFor(() => completed(WORKHUB_COORDINATION_SESSION_ID, 'inspection-turn'), 10000);
+      assert.deepEqual(providerErrors, []);
+      assert.equal(inspectionRequests.length, 3);
+      const resultMessage = inspectionRequests[1]!.messages.find(({ role }) => role === 'tool');
+      assert.ok(resultMessage);
+      assert.ok(resultMessage.content.startsWith('{'), resultMessage.content);
+      const output = { result: JSON.parse(resultMessage.content) };
+      assert.equal(output.result.status, 'ok');
+      assert.equal(output.result.sessionId, target.id);
+      assert.equal(output.result.transcript.messages[0].messageId, source.id);
+      assert.equal(output.result.transcript.messages[0].text, sourceText);
+      assert.equal(output.result.executionEvidence.turnId, 'independent-turn');
+      assert.equal(output.result.executionEvidence.runId, targetRunId);
+      assert.equal(output.result.executionEvidence.status, 'completed');
+      assert.equal(output.result.executionEvidence.artifactsVerified, false);
+      assert.deepEqual(
+        await readLedgerMessages(stores.runtimeEventStore, target.id),
+        sourceMessages,
+      );
+      assert.deepEqual(
+        await stores.sessionStore.readHeaderRecordSnapshot(target.id),
+        before.header,
+      );
+      assert.deepEqual(
+        await stores.runtimeEventStore.readImmutableRuntimeEvents(target.id, targetRunId),
+        before.events,
+      );
+      assert.deepEqual(
+        (await stores.sessionStore.listHeaders()).map(({ id }) => id).sort(),
+        before.sessions,
+      );
+    } finally {
+      await desktop.close();
+      await composition.close();
+    }
+  });
+});
+
 test('default production WorkHub selects and delegates through its durable Host interaction', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
-    const { composition, manager } = await createCapturedExecutionComposition(owner, {
-      defaultWorkHubRouting: true,
-    });
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
     const context: ConnectionContext = {
       hostEpoch: 'execution-composition-test',
       connectionId: 'selection-client',
@@ -1353,6 +2147,64 @@ test('default production WorkHub selects and delegates through its durable Host 
         return turn.ok && turn.result.status === 'completed';
       });
       assert.equal((await query()).ok, true);
+      const newTaskInput = {
+        ...input,
+        actionId: 'selected-new-task',
+        create: { workspace: { kind: 'host_path' as const, path: root } },
+      };
+      const newTask = composition.handlers['workhub.coordination.selectAndDelegate'](
+        newTaskInput,
+        context,
+      );
+      await waitFor(
+        async () =>
+          (
+            await stores.interactionStore.listPending({
+              sessionId: WORKHUB_COORDINATION_SESSION_ID,
+            })
+          ).length === 1,
+      );
+      const newTaskOffer = (
+        await stores.interactionStore.listPending({ sessionId: WORKHUB_COORDINATION_SESSION_ID })
+      )[0]!;
+      assert.equal(newTaskOffer.request.kind, 'form');
+      if (
+        newTaskOffer.request.kind !== 'form' ||
+        newTaskOffer.request.fields[0]?.kind !== 'single_select'
+      )
+        return;
+      assert.ok(
+        newTaskOffer.request.fields[0].options.some((option) => option.value === 'create_new'),
+      );
+      const newTaskAnswer = await composition.handlers['interaction.answer'](
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          interactionId: newTaskOffer.requestId,
+          answer: { kind: 'form', action: 'accept', values: { target: 'create_new' } },
+        },
+        context,
+      );
+      assert.ok(newTaskAnswer.ok, JSON.stringify(newTaskAnswer));
+      const newTaskResult = await newTask;
+      assert.ok(
+        newTaskResult.ok && newTaskResult.result.kind === 'delegated',
+        JSON.stringify(newTaskResult),
+      );
+      if (!newTaskResult.ok || newTaskResult.result.kind !== 'delegated') return;
+      assert.equal(newTaskResult.result.result.disposition, 'create_new');
+      const createdAssignment = await stores.sessionStore.readWorkHubAssignment(
+        newTaskInput.actionId,
+      );
+      assert.ok(createdAssignment);
+      assert.notEqual(createdAssignment.targetSessionId, beta.id);
+      assert.equal(
+        (await stores.sessionStore.readHeader(createdAssignment.targetSessionId)).model,
+        'fake-model',
+      );
+      assert.deepEqual(
+        await composition.handlers['workhub.coordination.selectAndDelegate'](newTaskInput, context),
+        newTaskResult,
+      );
       for (const cancel of [true, false]) {
         const fresh = await composition.handlers['workhub.coordination.candidates']({}, context);
         assert.ok(fresh.ok);
@@ -1426,6 +2278,210 @@ test('default production WorkHub selects and delegates through its durable Host 
   });
 });
 
+for (const restart of [false, true]) {
+  test(`WorkHub result returns after ${restart ? 'Host restart' : 'Desktop reconnect'} without another user message`, async () => {
+    await withCompositionRoot(async ({ root, owner }) => {
+      const connectionId = await configureFakeDefaultTarget(owner);
+      const received: BackendSendInput[] = [];
+      let { composition, manager } = await createCapturedExecutionComposition(owner, {
+        onWorkHubResult: (input) => received.push(input),
+      });
+      const context: ConnectionContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'workhub-feedback-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      let desktop:
+        | ReturnType<NonNullable<typeof composition.clientCapabilities>['attachConnection']>
+        | undefined;
+      let restartedOwner: InteractiveRootOwner | undefined;
+      const reopen = async () => {
+        await desktop?.close();
+        desktop = undefined;
+        await composition.close();
+        await owner.close();
+        restartedOwner = await tryAcquireInteractiveRootOwner(
+          await resolveStorageRoot({ path: root, kind: 'interactive' }),
+        );
+        assert.ok(restartedOwner);
+        owner = restartedOwner;
+        ({ composition, manager } = await createCapturedExecutionComposition(owner, {
+          onWorkHubResult: (input) => received.push(input),
+        }));
+      };
+      try {
+        await composition.handlers['workhub.coordination.resolve']({}, context);
+        const result = await actWorkHub(
+          composition,
+          {
+            actionId: 'feedback-assignment',
+            userText: 'Create a task to produce a report',
+            proposal: { disposition: 'create_new', title: 'Report' },
+            create: { workspace: { kind: 'host_path', path: root } },
+            newWorkDefaults: {
+              model: {
+                llmConnectionId: connectionId,
+                llmConnectionSlug: 'fake',
+                model: 'fake-model',
+              },
+            },
+          },
+          context,
+        );
+        assert.ok(result.ok, JSON.stringify(result));
+        if (!result.ok || result.result.disposition !== 'create_new') return;
+        const target = result.result.targetSessionId;
+        await waitFor(async () =>
+          (await manager.listTurns(target)).some((t) => t.status === 'completed'),
+        );
+        if (restart) await reopen();
+        desktop = composition.clientCapabilities!.attachConnection(
+          clientCapabilityConnectionIdentity(context.connectionId),
+          { send: async () => {} },
+        );
+        const registered = await composition.handlers['client.capability.replace'](
+          { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+          context,
+        );
+        assert.ok(registered.ok, JSON.stringify(registered));
+        await waitFor(async () => received.length === 1, 12000);
+        assert.ok(received[0]!.text.includes('feedback-assignment'));
+        const transcript = await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID);
+        const notification = transcript.find(
+          (m) => m.type === 'user' && m.origin?.kind === 'workhub_result',
+        );
+        assert.ok(notification?.type === 'user');
+        assert.equal(notification.origin?.kind, 'workhub_result');
+        assert.equal(notification.displayText, 'Report');
+        const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+        {
+          const delivery = await stores.agentRunStore.readRootTurnAdmission(
+            WORKHUB_COORDINATION_SESSION_ID,
+            notification.turnId,
+          );
+          assert.equal(delivery?.execution.kind, 'workhub_coordination');
+          assert.ok(
+            delivery?.execution.kind === 'workhub_coordination' && delivery.execution.feedback,
+          );
+          assert.equal(
+            delivery?.execution.kind === 'workhub_coordination' &&
+              delivery.execution.routingDecision,
+            undefined,
+          );
+        }
+        await waitFor(async () =>
+          (await manager.listTurns(WORKHUB_COORDINATION_SESSION_ID)).some(
+            (t) => t.turnId === notification.turnId && t.status === 'completed',
+          ),
+        );
+        if (restart) {
+          await reopen();
+          desktop = composition.clientCapabilities!.attachConnection(
+            clientCapabilityConnectionIdentity(context.connectionId),
+            { send: async () => {} },
+          );
+          const registration = await composition.handlers['client.capability.replace'](
+            { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+            context,
+          );
+          assert.ok(registration.ok);
+          // Two reconciliation polls must observe the existing durable receipt.
+          await new Promise((resolve) => setTimeout(resolve, 5500));
+          const notifications = (await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID)).filter(
+            (m) => m.type === 'user' && m.origin?.kind === 'workhub_result',
+          );
+          assert.equal(notifications.length, 1);
+        }
+        assert.equal(received.length, 1);
+      } finally {
+        await desktop?.close();
+        await composition.close();
+        await restartedOwner?.close();
+      }
+    });
+  });
+}
+
+test('WorkHub receives a pending question and then the result after the target resumes', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const received: BackendSendInput[] = [];
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      onWorkHubResult: (input) => received.push(input),
+    });
+    const context: ConnectionContext = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'workhub-question-client',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    };
+    let desktop:
+      | ReturnType<NonNullable<typeof composition.clientCapabilities>['attachConnection']>
+      | undefined;
+    try {
+      await composition.handlers['workhub.coordination.resolve']({}, context);
+      const created = await actWorkHub(
+        composition,
+        {
+          actionId: 'question-assignment',
+          userText: FAKE_ASK_USER_QUESTION_PROMPT,
+          proposal: { disposition: 'create_new', title: 'Release questions' },
+          create: { workspace: { kind: 'host_path', path: root } },
+          newWorkDefaults: {
+            model: {
+              llmConnectionId: connectionId,
+              llmConnectionSlug: 'fake',
+              model: 'fake-model',
+            },
+          },
+        },
+        context,
+      );
+      assert.ok(created.ok, JSON.stringify(created));
+      if (!created.ok || created.result.disposition !== 'create_new') return;
+      const target = created.result.targetSessionId;
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      await waitFor(
+        async () => (await stores.interactionStore.listPending({ sessionId: target })).length === 1,
+      );
+      desktop = composition.clientCapabilities!.attachConnection(
+        clientCapabilityConnectionIdentity(context.connectionId),
+        { send: async () => {} },
+      );
+      const registered = await composition.handlers['client.capability.replace'](
+        { registrationId: randomUUID(), offers: workHubDesktopCapabilityOffers() },
+        context,
+      );
+      assert.ok(registered.ok);
+      await waitFor(async () => received.length === 1, 12000);
+      assert.match(received[0]!.text, /"status":"waiting_for_user"/u);
+      const pending = (await stores.interactionStore.listPending({ sessionId: target }))[0]!;
+      assert.ok(received[0]!.text.includes(pending.requestId));
+      const answered = await composition.handlers['interaction.answer'](
+        {
+          sessionId: target,
+          interactionId: pending.requestId,
+          answer: { kind: 'question', answers: ['邀请制', '本周', '是'] },
+        },
+        context,
+      );
+      assert.ok(answered.ok, JSON.stringify(answered));
+      await waitFor(async () => received.length === 2, 12000);
+      assert.match(received[1]!.text, /"status":"completed"/u);
+      assert.equal(
+        (await manager.getMessages(WORKHUB_COORDINATION_SESSION_ID)).filter(
+          (m) => m.type === 'user' && m.origin?.kind === 'workhub_result',
+        ).length,
+        2,
+      );
+    } finally {
+      await desktop?.close();
+      await composition.close();
+    }
+  });
+});
+
 test('WorkHub creates new work through the production assignment composition', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner, ['fake-model', 'fake-model-b']);
@@ -1463,7 +2519,8 @@ test('WorkHub creates new work through the production assignment composition', a
       const session = (await manager.listSessions()).find(({ id }) => id === targetSessionId);
       assert.equal(session?.name, 'Login stability');
       assert.equal(session?.llmConnectionId, connectionId);
-      assert.equal(session?.model, 'fake-model-b');
+      assert.equal(session?.model, 'fake-model');
+      assert.equal(session?.permissionMode, 'bypass');
 
       const current = await composition.handlers['workhub.coordination.candidates']({}, context);
       assert.equal(current.ok, true);
@@ -1488,6 +2545,149 @@ test('WorkHub creates new work through the production assignment composition', a
       assert.equal(stopped.ok, true, JSON.stringify(stopped));
       if (stopped.ok) assert.equal(stopped.result.disposition, 'stop_work');
     } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('WorkHub steering preserves question policy through a physical successor but not a later user Turn', {
+  timeout: 20_000,
+}, async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const entered = deferred<void>();
+    const boundary = deferred<void>();
+    const policies: Array<string | undefined> = [];
+    let liveQuestions: (() => string | undefined) | undefined;
+    const { composition, manager } = await createCapturedExecutionComposition(owner, {
+      safeBoundaryResume: true,
+      primaryBackendFactory: (context) =>
+        new (class extends FakeBackend {
+          async prepareRunComposition(input: { runId: string; turnId: string }): Promise<void> {
+            await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+          }
+
+          override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+            assert.ok(input.runId);
+            await this.prepareRunComposition({ runId: input.runId, turnId: input.turnId });
+            policies.push(context.executionPolicy?.questions);
+            if (policies.length === 1) {
+              liveQuestions = () => context.executionPolicy?.questions;
+              entered.resolve();
+              await boundary.promise;
+              assert.equal(
+                await input.handoffBoundary!(new AbortController().signal, null),
+                'pause',
+              );
+              return;
+            }
+            yield* super.send(input);
+          }
+        })(context),
+    });
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'steering-handoff-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const target = await manager.createSession({
+        cwd: root,
+        llmConnectionId: connectionId,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'bypass',
+        name: 'Steered work',
+      });
+      const started = await composition.handlers['turn.start'](
+        {
+          sessionId: target.id,
+          turnId: 'ordinary-steered-turn',
+          content: { text: 'start ordinary work' },
+        },
+        context,
+      );
+      assert.ok(started.ok && started.result.kind === 'started');
+      if (!started.ok || started.result.kind !== 'started') return;
+      await entered.promise;
+      await composition.handlers['workhub.coordination.resolve']({}, context);
+      const candidates = await composition.handlers['workhub.coordination.candidates']({}, context);
+      assert.ok(candidates.ok);
+      if (!candidates.ok) return;
+      const candidate = candidates.result.candidates.find(
+        ({ sessionId }) => sessionId === target.id,
+      );
+      assert.ok(candidate);
+      const steered = await actWorkHub(
+        composition,
+        {
+          actionId: 'steering-handoff-action',
+          userText: 'continue this work from WorkHub',
+          candidateSetId: candidates.result.candidateSetId,
+          proposal: { disposition: 'delegate_existing', candidateRef: candidate.candidateRef },
+        },
+        context,
+      );
+      assert.ok(
+        steered.ok && steered.result.disposition === 'delegate_existing' && steered.result.steered,
+      );
+      assert.equal(liveQuestions?.(), 'return');
+      const rootRunId = started.result.turn.runId;
+      const request = manager.requestRunHandoff(
+        target.id,
+        rootRunId,
+        {
+          protocol: 'runtime_handoff_pause_v1',
+          handoffId: 'steering-handoff',
+          hostEpoch: context.hostEpoch,
+          rootRunId,
+          successorRunId: 'steering-successor',
+          successorInvocationId: 'steering-successor',
+          claimId: 'steering-handoff-claim',
+        },
+        new AbortController().signal,
+      );
+      assert.ok(request);
+      boundary.resolve();
+      assert.equal(await request.ready, true);
+      assert.equal(request.commit(), true);
+      assert.equal(await request.sealed, true);
+      await waitFor(async () => {
+        const result = await composition.handlers['turn.query'](
+          { sessionId: target.id, turnId: 'ordinary-steered-turn' },
+          context,
+        );
+        return result.ok && result.result.status === 'completed';
+      });
+      assert.deepEqual(policies, [undefined, 'return']);
+      // The terminal fact can precede release of the Host admission lease.
+      await waitFor(async () => {
+        const later = await composition.handlers['turn.start'](
+          {
+            sessionId: target.id,
+            turnId: 'later-ordinary-turn',
+            content: { text: 'new ordinary work' },
+          },
+          context,
+        );
+        if (!later.ok) assert.equal(later.error.code, 'session_busy', JSON.stringify(later));
+        return later.ok;
+      });
+      await waitFor(async () => {
+        const result = await composition.handlers['turn.query'](
+          { sessionId: target.id, turnId: 'later-ordinary-turn' },
+          context,
+        );
+        return result.ok && result.result.status === 'completed';
+      });
+      assert.deepEqual(policies, [undefined, 'return', undefined]);
+      assert.equal(
+        (await manager.listSessions()).find(({ id }) => id === target.id)?.permissionMode,
+        'bypass',
+      );
+    } finally {
+      boundary.resolve();
       await composition.close();
     }
   });
@@ -1530,6 +2730,9 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
     let restartedOwner: InteractiveRootOwner | undefined;
     let continuation: { turnId: string; runId: string } | undefined;
     let targetSessionId: string | undefined;
+    // Stop retires the delegation from automatic result delivery, including
+    // after a resumed execution is interrupted. Assert control receipts and
+    // target Turn state below rather than waiting for a retired notification.
     const handoffAndReopen = async () => {
       const requested = deferred<void>();
       const request = manager.requestRunHandoff.bind(manager);
@@ -1606,13 +2809,36 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       assert.equal(original.ok, true);
       if (!original.ok) return;
       await handoffAndReopen();
-      await composition.handlers['turn.stop'](
-        { sessionId: target.id, turnId: original.result.turnId, runId: original.result.runId },
+      assert.equal(
+        (await manager.listSessions()).find((session) => session.id === target.id)?.permissionMode,
+        'ask',
+      );
+      const firstStop = await actWorkHub(
+        composition,
+        {
+          actionId: 'workhub-first-stop',
+          userText: 'Stop Payments',
+          proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
+        },
         context,
       );
+      assert.equal(firstStop.ok, true, JSON.stringify(firstStop));
+      const afterStopCandidates = await composition.handlers['workhub.coordination.candidates'](
+        {},
+        context,
+      );
+      assert.equal(afterStopCandidates.ok, true);
+      if (afterStopCandidates.ok)
+        assert.equal(
+          afterStopCandidates.result.candidates.find(({ sessionId }) => sessionId === target.id)
+            ?.latestDelegationActionId,
+          'workhub-resume-stop-delegation',
+        );
 
       pauseNext = true;
       boundary = deferred<void>();
+      // Stopping either physical run can enqueue a result notification in the
+      // coordination Session. Resume only after that notification has settled.
       const resumed = await actWorkHub(
         composition,
         {
@@ -1641,6 +2867,34 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       if (!resumedTurn.ok) return;
       continuation = { turnId: resumedTurn.result.turnId, runId: resumedTurn.result.runId };
       assert.equal(resumedTurn.result.status, 'running');
+      const policyStores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const resumedInvocation = (
+        await policyStores.runtimeEventStore.listSessionInvocations(target.id)
+      ).find((run) => run.runId === resumedTurn.result.runId)!;
+      assert.equal(resumedInvocation.opening.configuration.permissionMode, 'bypass');
+      assert.equal(
+        (await manager.listSessions()).find((session) => session.id === target.id)?.permissionMode,
+        'ask',
+      );
+      assert.deepEqual(
+        await actWorkHub(
+          composition,
+          {
+            actionId: 'workhub-first-stop',
+            userText: 'Stop Payments',
+            proposal: { operation: 'stop', expects: { targetSessionId: target.id } },
+          },
+          context,
+        ),
+        firstStop,
+        'replaying the old stop must not stop the resumed execution',
+      );
+      const stillRunning = await composition.handlers['turn.query'](
+        { sessionId: target.id, turnId: resumedTurn.result.turnId },
+        context,
+      );
+      assert.ok(stillRunning.ok && stillRunning.result.status === 'running');
+
       await handoffAndReopen();
 
       // Lose the response, interrupt the continuation, then discard all
@@ -1678,11 +2932,8 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
       };
       const replayed = await actWorkHub(composition, retry, context);
       assert.deepEqual(replayed, resumed);
-      const fresh = await actWorkHub(
-        composition,
-        { ...retry, actionId: 'workhub-resume-again' },
-        context,
-      );
+      const freshAction = { ...retry, actionId: 'workhub-resume-again' };
+      const fresh = await actWorkHub(composition, freshAction, context);
       assert.equal(fresh.ok, true, JSON.stringify(fresh));
       if (!fresh.ok || fresh.result.disposition !== 'resume_work' || !fresh.result.targetTurnId)
         return;
@@ -1763,12 +3014,10 @@ test('WorkHub Resume and Stop follow logical lineage across repeated physical ha
   });
 });
 
-test('WorkHub does not record resume while safe-boundary resume is disabled', async () => {
+test('WorkHub does not record resume when only interactive resume is enabled by default', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
-    const { composition, manager } = await createCapturedExecutionComposition(owner, {
-      safeBoundaryResume: false,
-    });
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
     const context = {
       hostEpoch: 'execution-composition-test',
       connectionId: 'workhub-disabled-resume-client',
@@ -1849,7 +3098,7 @@ test('WorkHub does not record resume while safe-boundary resume is disabled', as
   });
 });
 
-test('WorkHub correction replaces its link without stopping a shared manual Turn', async () => {
+test('WorkHub stop then delegate preserves unrelated shared manual work', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
     const { composition, manager } = await createCapturedExecutionComposition(owner);
@@ -1867,7 +3116,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         llmConnectionId: connectionId,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'bypass',
       });
       sourceId = source.id;
       const destination = await manager.createSession({
@@ -1875,7 +3124,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
         llmConnectionId: connectionId,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
-        permissionMode: 'ask',
+        permissionMode: 'bypass',
       });
       const started = await composition.handlers['turn.start'](
         {
@@ -1991,38 +3240,28 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
       assert.ok(correctionDestination);
       if (!correctionDestination) return;
 
-      const correctionInput = {
-        actionId: 'workhub-correction-action',
-        userText: `No, move this to ${correctionDestination.sessionName} instead`,
-        candidateSetId: correctionCandidates.result.candidateSetId,
-        proposal: {
-          operation: 'correct',
-          replacesActionId: assignment.actionId,
-          target: {
+      const delegatedToDestination = await actWorkHub(
+        composition,
+        {
+          actionId: 'workhub-delegate-destination',
+          userText: `Move this to ${correctionDestination.sessionName}`,
+          proposal: {
             disposition: 'delegate_existing',
             candidateRef: correctionDestination.candidateRef,
           },
         },
-      } as const;
-      const stale = await actWorkHub(
-        composition,
-        { ...correctionInput, candidateSetId: `sha256:${'0'.repeat(64)}` },
         context,
       );
-      assert.equal(stale.ok, false);
-      if (!stale.ok) assert.equal(stale.error.code, 'candidate_set_stale');
-      const correction = await actWorkHub(composition, correctionInput, context);
-      assert.equal(correction.ok, true, JSON.stringify(correction));
-      if (!correction.ok) return;
-      assert.equal(correction.result.disposition, 'replace');
-      if (correction.result.disposition === 'replace') {
-        assert.equal(correction.result.targetSessionId, destination.id);
-      }
-
-      const supersession = await stores.sessionStore.readWorkHubSupersession(
-        assignment.delegationId,
+      assert.ok(delegatedToDestination.ok, JSON.stringify(delegatedToDestination));
+      if (
+        delegatedToDestination.ok &&
+        delegatedToDestination.result.disposition === 'delegate_existing'
+      )
+        assert.equal(delegatedToDestination.result.targetSessionId, destination.id);
+      assert.equal(
+        await stores.sessionStore.readWorkHubSupersession(assignment.delegationId),
+        undefined,
       );
-      assert.equal(supersession?.replacementDelegationId.startsWith('whd_'), true);
 
       const active = await composition.handlers['turn.query'](
         { sessionId: source.id, turnId: 'manual-active-turn' },
@@ -2079,6 +3318,109 @@ test('a legacy fake-backend session is refused with the product reason, not a re
       const message = failure instanceof Error ? failure.message : JSON.stringify(failure);
       assert.doesNotMatch(message, /No backend factory registered/);
       assert.equal(parseNoRealConnectionError(message).reason, 'fake_backend');
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
+test('production executor admission discovers the Session provider, including profile shadows', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const sessions = [];
+    for (const executorId of ['private', 'shared']) {
+      sessions.push(
+        await stores.sessionStore.create({
+          cwd: root,
+          executorId,
+          llmConnectionSlug: `executor:${executorId}`,
+          model: 'before',
+          permissionMode: 'ask',
+        }),
+      );
+    }
+    const { composition } = await createCapturedExecutionComposition(owner);
+    try {
+      const source = join(root, 'executor-fixture');
+      await mkdir(source);
+      await writeFile(
+        join(source, 'maka.extension.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          id: 'executor-fixture',
+          runtime: { entry: 'index.mjs' },
+          configuration: {
+            properties: { executorId: { type: 'string' }, model: { type: 'string' } },
+            required: ['executorId', 'model'],
+          },
+          composition: { patch: 'maka.composition.json', structuralDependencies: [] },
+        }),
+      );
+      await writeFile(
+        join(source, 'index.mjs'),
+        `export default {
+        packageId: 'executor-fixture',
+        contributions: [{ id: 'executor', kind: 'executor' }],
+        host: { apply(ctx, config) {
+          ctx.executors.register({
+            id: config.executorId,
+            discover: async () => ({
+              id: config.executorId, displayName: config.executorId, readiness: 'ready',
+              models: [{ id: config.model, name: config.model }],
+              supportsAttachments: false, supportsModelChange: true,
+            }),
+            inspectConversation: async () => { throw new Error('Admission must discover, not inspect'); },
+            execute: async () => ({ status: 'completed', text: '' }),
+          });
+        } },
+      };`,
+      );
+      await writeFile(
+        join(source, 'maka.composition.json'),
+        JSON.stringify([
+          {
+            type: 'insert',
+            rootId: 'profile',
+            entry: {
+              id: 'profile-shared',
+              packageId: 'executor-fixture',
+              config: { executorId: 'shared', model: 'profile-model' },
+            },
+          },
+          ...sessions.map((session) => ({
+            type: 'insert',
+            rootId: `session:${session.id}`,
+            entry: {
+              id: `session-${session.executorId}`,
+              packageId: 'executor-fixture',
+              config: { executorId: session.executorId, model: 'session-model' },
+            },
+          })),
+        ]),
+      );
+      const installed = await composition.plugins.installPackage(source);
+      assert.equal(installed.convergence, 'converged', JSON.stringify(installed));
+      const context: ConnectionContext = {
+        hostEpoch: 'execution-composition-test',
+        connectionId: 'executor-admission-client',
+        principal: 'local_os_user',
+        acquireResidency: () => ({ release() {} }),
+      };
+      for (const session of sessions) {
+        const current = await stores.sessionStore.readHeaderRecordSnapshot(session.id);
+        const outcome = await composition.handlers['session.configuration.update'](
+          {
+            sessionId: session.id,
+            expectedRevision: current.revision,
+            patch: { executorTarget: { executorId: session.executorId!, model: 'session-model' } },
+          },
+          context,
+        );
+        assert.equal(outcome.ok, true, JSON.stringify(outcome));
+        const updated = await stores.sessionStore.readHeaderSnapshot(session.id);
+        assert.equal(updated.model, 'session-model');
+        assert.deepEqual(updated.executorConfig, { model: 'session-model' });
+      }
     } finally {
       await composition.close();
     }
@@ -2995,6 +4337,7 @@ function compositionContext(owner: InteractiveRootOwner) {
 async function configureFakeDefaultTarget(
   owner: InteractiveRootOwner,
   modelIds: readonly string[] = ['fake-model'],
+  baseUrl?: string,
 ): Promise<string> {
   const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
   const created = await policy.connectionCatalog.create({
@@ -3003,6 +4346,7 @@ async function configureFakeDefaultTarget(
       slug: 'fake',
       name: 'Fake',
       providerType: 'ollama',
+      ...(baseUrl ? { baseUrl } : {}),
       enabled: true,
       enabledModelIds: [...modelIds],
     },
@@ -3103,8 +4447,9 @@ async function createCapturedExecutionComposition(
       'retainUntilProcessExit' | 'requestDrain'
     >;
     readonly safeBoundaryResume?: boolean;
-    readonly defaultWorkHubRouting?: boolean;
+    readonly onWorkHubResult?: (input: BackendSendInput) => void;
     readonly primaryBackendFactory?: BackendFactory;
+    readonly generateSessionTitle?: ExecutionRuntimeHostCompositionDependencies['generateSessionTitle'];
     readonly residencies?: HostResidencyRegistry;
   } = {},
 ): Promise<{
@@ -3116,7 +4461,6 @@ async function createCapturedExecutionComposition(
   const primaryBackendFactory =
     options.primaryBackendFactory ?? ((context) => new FakeBackend(context));
   const residencies = options.residencies;
-  const routingDecisions = new Map<string, WorkHubRoutingDecision>();
   let manager: SessionManager | undefined;
   SessionManager.prototype.recoverInterruptedSessionsStrict = async function (stores) {
     manager = this;
@@ -3124,7 +4468,9 @@ async function createCapturedExecutionComposition(
   };
   try {
     if (options.safeBoundaryResume === true) process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '1';
-    if (options.safeBoundaryResume === false) delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
+    else if (options.safeBoundaryResume === false)
+      process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME = '0';
+    else delete process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME;
     // The production composition no longer registers a test backend of its
     // own; the deterministic one arrives through the same `primaryBackendFactory`
     // seam the Desktop E2E run uses.
@@ -3141,29 +4487,24 @@ async function createCapturedExecutionComposition(
       },
       {},
       {
+        generateSessionTitle: options.generateSessionTitle,
         primaryBackendFactory: (context) =>
           context.sessionId === WORKHUB_COORDINATION_SESSION_ID
             ? new (class extends FakeBackend {
                 override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-                  yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+                  if (input.text.startsWith('Host notification:')) {
+                    options.onWorkHubResult?.(input);
+                    yield* super.send({ ...input, text: 'The delegated result was received.' });
+                  } else {
+                    yield* super.send({ ...input, text: FAKE_HOLD_OPEN_PROMPT });
+                  }
                 }
               })(context)
             : primaryBackendFactory(context),
-        workHubRoutingModel: options.defaultWorkHubRouting
-          ? undefined
-          : {
-              decide: async ({ turnId }) => {
-                const decision = routingDecisions.get(turnId);
-                if (!decision)
-                  throw new Error(`Missing fake WorkHub routing decision for ${turnId}`);
-                return decision;
-              },
-            },
       },
     );
     await composition.recover();
     if (!manager) throw new Error('Production execution composition did not construct Runtime');
-    workHubRoutingDecisions.set(composition, routingDecisions);
     return { composition, manager };
   } finally {
     if (originalSafeBoundaryResume === undefined) {
@@ -3370,9 +4711,6 @@ async function actWorkHub(
     assert.ok(registered.ok, JSON.stringify(registered));
     const { userText, attachments, ...action } = input;
     const turnId = randomUUID();
-    const decisions = workHubRoutingDecisions.get(composition);
-    assert.ok(decisions, 'Production composition is missing its fake WorkHub routing model');
-    decisions.set(turnId, routingDecisionForAction(action));
     const started = await composition.handlers['workhub.coordination.answer'](
       { turnId, text: userText, ...(attachments ? { attachments } : {}) },
       context,
@@ -3397,22 +4735,4 @@ async function actWorkHub(
   } finally {
     await desktop.close();
   }
-}
-
-function routingDecisionForAction(
-  action: Omit<WorkHubAdmittedAction, 'userText' | 'attachments'>,
-): WorkHubRoutingDecision {
-  if ('operation' in action.proposal) {
-    return { kind: 'linked', operation: action.proposal.operation };
-  }
-  if (action.proposal.disposition === 'create_new') {
-    return { kind: 'routing', disposition: 'create_new' };
-  }
-  assert.ok(action.candidateSetId, 'Delegation requires a candidate set');
-  return {
-    kind: 'routing',
-    disposition: 'delegate_existing',
-    candidateSetId: action.candidateSetId,
-    candidateRef: action.proposal.candidateRef,
-  };
 }

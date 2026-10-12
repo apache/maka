@@ -49,11 +49,12 @@ import {
   respondOpenAIStream,
   startJsonServer,
 } from './conformance-harness.js';
+import { runOpenAIResponsesWire } from './provider-contract-overrides.js';
 
 after(closeAllJsonServers);
 
 describe('models.dev provider conformance', () => {
-  for (const providerType of ['openai-compatible', 'openai'] as const) {
+  for (const providerType of ['custom', 'openai'] as const) {
     test(`${providerType}: Chat delivers tool images after all parallel results, including replay`, async () => {
       const bodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
       const server = await startJsonServer(async (request, response) => {
@@ -64,6 +65,7 @@ describe('models.dev provider conformance', () => {
         connection: {
           slug: 'images',
           providerType,
+          ...(providerType === 'custom' ? { defaultApiProtocol: 'openai-chat' as const } : {}),
           defaultModel: 'image-model',
           models: [{ id: 'image-model', apiProtocol: 'openai-chat' }],
           baseUrl: `${server.url}/v1`,
@@ -174,7 +176,7 @@ describe('models.dev provider conformance', () => {
   for (const [providerType, modelId, apiProtocol, usesCapacityDefault] of [
     ['openai', 'gpt-4.1', 'openai-chat', false],
     ['openai', 'gpt-5', 'openai-responses', false],
-    ['openai-compatible', 'budget-model', 'openai-chat', false],
+    ['custom', 'budget-model', 'openai-chat', false],
     ['mistral', 'budget-model', 'openai-chat', false],
     ['google', 'gemini-2.5-flash', undefined, false],
     ['anthropic', 'budget-model', 'anthropic-messages', true],
@@ -205,6 +207,7 @@ describe('models.dev provider conformance', () => {
             slug: 'budget',
             name: 'Budget',
             providerType,
+            ...(providerType === 'custom' ? { defaultApiProtocol: 'openai-chat' as const } : {}),
             baseUrl: `${server.url}/v1`,
             enabled: true,
             enabledModelIds: [modelId],
@@ -653,12 +656,12 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requestBody?.thinking, { type: 'adaptive', display: 'summarized' });
   });
 
-  test('custom Anthropic relays request summarized thinking for known Claude models', async () => {
-    let requestBody: Record<string, unknown> | undefined;
+  test('custom Messages models request summarized thinking only for a declared level', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/v1/messages');
-      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
       respondJson(response, 200, {
         id: 'msg_anthropic_relay',
         type: 'message',
@@ -673,26 +676,39 @@ describe('models.dev provider conformance', () => {
     const connection: LlmConnection = {
       slug: 'anthropic-relay',
       name: 'Anthropic Relay',
-      providerType: 'anthropic-compatible',
+      providerType: 'custom',
+      defaultApiProtocol: 'anthropic-messages',
       baseUrl: server.url,
       defaultModel: 'claude-opus-4-8',
       enabled: true,
       createdAt: 1,
       updatedAt: 1,
     };
+    const declared: LlmConnection = {
+      ...connection,
+      modelOverrides: { 'claude-opus-4-8': { thinkingLevels: ['low', 'high'] } },
+    };
 
-    await generateText({
-      model: getAIModel({
-        connection,
-        apiKey: 'relay-key',
-        modelId: connection.defaultModel,
-      }),
-      prompt: 'Hello.',
-      providerOptions: buildProviderOptions(connection, connection.defaultModel),
-    });
+    for (const [target, level] of [
+      [connection, undefined],
+      [declared, 'high'],
+    ] as const) {
+      await generateText({
+        model: getAIModel({
+          connection: target,
+          apiKey: 'relay-key',
+          modelId: target.defaultModel,
+        }),
+        prompt: 'Hello.',
+        providerOptions: buildProviderOptions(target, target.defaultModel, level),
+      });
+    }
 
-    assert.deepEqual(requestBody?.thinking, { type: 'adaptive', display: 'summarized' });
-    assert.equal(requestBody?.cache_control, undefined);
+    assert.equal(requestBodies.length, 2);
+    assert.equal(requestBodies[0]?.thinking, undefined);
+    assert.deepEqual(requestBodies[1]?.thinking, { type: 'adaptive', display: 'summarized' });
+    assert.deepEqual(requestBodies[1]?.output_config, { effort: 'high' });
+    for (const body of requestBodies) assert.equal(body.cache_control, undefined);
   });
 
   test('Anthropic request bodies follow the SDK adaptive-thinking capability', async () => {
@@ -721,8 +737,12 @@ describe('models.dev provider conformance', () => {
       },
       {
         modelId: 'anthropic/claude-opus-4.5',
-        providerType: 'anthropic-compatible' as const,
-        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+        providerType: 'custom' as const,
+        defaultApiProtocol: 'anthropic-messages' as const,
+        thinkingLevel: 'high' as const,
+        declaredThinkingLevels: ['high'] as const,
+        expectedThinking: { type: 'adaptive', display: 'summarized' },
+        expectedOutputConfig: { effort: 'high' },
       },
     ];
 
@@ -745,6 +765,14 @@ describe('models.dev provider conformance', () => {
         slug: `${testCase.providerType}-${testCase.modelId}`,
         name: testCase.modelId,
         providerType: testCase.providerType,
+        ...(testCase.defaultApiProtocol && testCase.declaredThinkingLevels
+          ? {
+              defaultApiProtocol: testCase.defaultApiProtocol,
+              modelOverrides: {
+                [testCase.modelId]: { thinkingLevels: [...testCase.declaredThinkingLevels] },
+              },
+            }
+          : {}),
         baseUrl: server.url,
         defaultModel: testCase.modelId,
         enabled: true,
@@ -852,9 +880,10 @@ describe('models.dev provider conformance', () => {
       });
     });
     const connection: LlmConnection = {
-      slug: 'anthropic-compatible-search-replay',
-      name: 'Anthropic-compatible Search Replay',
-      providerType: 'anthropic-compatible',
+      slug: 'custom-messages-search-replay',
+      name: 'Custom Messages Search Replay',
+      providerType: 'custom',
+      defaultApiProtocol: 'anthropic-messages',
       baseUrl: server.url,
       defaultModel: 'deepseek-v4-flash',
       enabled: true,
@@ -1687,8 +1716,21 @@ describe('models.dev provider conformance', () => {
     assert.equal(probedPath, '/v1/responses');
   });
 
+  test('custom Responses models preserve exact ids, tool results, and encrypted reasoning', async () => {
+    await runOpenAIResponsesWire({
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-responses',
+      slug: 'responses-relay',
+      name: 'Responses Relay',
+      basePath: '/relay/v1',
+      modelId: 'relay-responses-model',
+      apiKey: 'responses-relay-key',
+      statelessReasoning: true,
+    });
+  });
+
   for (const [label, providerType] of [
-    ['a plain OpenAI-compatible relay', 'openai-compatible'],
+    ['a custom Chat Completions connection', 'custom'],
     ['local Ollama', 'ollama'],
   ] as const) {
     test(`${label} requests usage in streamed chat completions by default`, async () => {
@@ -1717,6 +1759,7 @@ describe('models.dev provider conformance', () => {
         slug: providerType,
         name: label,
         providerType,
+        ...(providerType === 'custom' ? { defaultApiProtocol: 'openai-chat' as const } : {}),
         baseUrl: `${server.url}/v1`,
         defaultModel: 'relay-model',
         enabled: true,
@@ -1817,7 +1860,8 @@ describe('models.dev provider conformance', () => {
     const connection: LlmConnection = {
       slug: 'strict-relay',
       name: 'Strict relay',
-      providerType: 'openai-compatible',
+      providerType: 'custom',
+      defaultApiProtocol: 'openai-chat',
       baseUrl: `${server.url}/v1`,
       defaultModel: 'relay-model',
       enabled: true,

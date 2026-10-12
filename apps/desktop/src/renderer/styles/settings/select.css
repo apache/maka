@@ -30,9 +30,23 @@
    that prop sizes the OUTER field, and a fixed field around a 260px trigger
    re-staggers the column by the difference (the 默认权限模式 width={320}
    regression did exactly that). The field wraps the trigger, so sizing the
-   trigger here sizes the whole control. */
+   trigger here sizes the whole control.
+
+   Every Selector in a row's end slot joins the column, not just the two
+   that were named: 界面语言 and the Bash shell select sized to their labels
+   (~107px and ~136px) beside fixed-width neighbours, so the controls on 通用 shared
+   a right edge but no left one.
+
+   The column is a FLOOR, not a fixed width. A fixed 180px truncated longer
+   labels ("Automatic (recommended)" in English) and squeezed a Selector's
+   validation message (the Subagent editor's connection/model errors) into
+   the same 180px. `width: auto` lets a long label or message grow the
+   control up to the end slot's own cap (--settings-row-end-cap); every label
+   that fits keeps the shared 180px column. */
+.settingsRows .settingsRowEnd .astryx-selector,
 .settingsRows .settingsModelPickerTrigger,
 .settingsRows .permissionModeSelector {
-  width: var(--settings-control-width);
+  width: auto;
+  min-width: var(--settings-control-width);
   max-width: 100%;
 }

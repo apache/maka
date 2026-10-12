@@ -17,10 +17,31 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { assistantCall } from './index.js';
 import { originalHost } from './navigation.js';
 import './original-reader.css';
+
+export interface MemoryOriginalHandle {
+  open(originalRef: string): void;
+}
+
+/** The reader owns its state; opening a citation does not rerender the application shell. */
+export function MemoryOriginalHost({ sessionId, ref }: {
+  sessionId?: string; ref: Ref<MemoryOriginalHandle>;
+}) {
+  const [selection, setSelection] = useState<{ sessionId: string; ref: string }>();
+  useImperativeHandle(ref, () => ({
+    open(originalRef) {
+      if (sessionId) setSelection({ sessionId, ref: originalRef });
+    },
+  }), [sessionId]);
+  useEffect(() => setSelection(undefined), [sessionId]);
+  if (!selection || selection.sessionId !== sessionId) return null;
+  return <MemoryOriginalPanel key={`${selection.sessionId}:${selection.ref}`}
+    sessionId={selection.sessionId} originalRef={selection.ref}
+    onClose={() => setSelection(undefined)} />;
+}
 
 export async function readOriginal(sessionId: string, input: { ref: string; offset?: number; latest?: boolean }) {
   const { entries } = await window.maka.runtimeHostProfiles.getSnapshot();

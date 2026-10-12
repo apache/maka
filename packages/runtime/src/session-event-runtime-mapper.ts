@@ -488,6 +488,15 @@ function mapBackendSessionEvent(
         refs: { toolCallId: event.toolUseId },
       };
 
+    case 'context_compaction_applied':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: { kind: 'system_note', note: event.type },
+      };
+
     // ── Steering: a user message injected mid-turn at a step boundary ─────
     // Persisted as a first-class user event so the ledger, transcript, and
     // future-turn context all carry the interjection in place.
@@ -679,6 +688,9 @@ function completeRuntimeEvent(
   if (status === 'failed') {
     stateDelta.failureClass =
       memory.failureClass ?? failureClassFromCompleteStopReason(stopReason) ?? 'runtime_error';
+  }
+  if (event.providerStopReason !== undefined) {
+    stateDelta.providerStopReason = event.providerStopReason;
   }
   if (event.contextCompactionOutcome !== undefined) {
     stateDelta.contextCompactionOutcome = event.contextCompactionOutcome;

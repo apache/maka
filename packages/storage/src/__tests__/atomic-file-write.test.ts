@@ -52,6 +52,49 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 }
 
 describe('writeAtomicFile', () => {
+  test('checks publication preconditions after closing the prepared temp and cleans up on rejection', async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, 'settings.json');
+      const temporaryPath = join(dir, '.settings.json.guarded.tmp');
+      await writeFile(path, 'old');
+      let closed = false;
+      const fault = new Error('source changed');
+      await assert.rejects(
+        writeAtomicFile(
+          path,
+          'new',
+          {
+            fileMode: 0o600,
+            beforePublish: async () => {
+              assert.equal(closed, true);
+              assert.equal(await readFile(temporaryPath, 'utf8'), 'new');
+              assert.equal(await readFile(path, 'utf8'), 'old');
+              throw fault;
+            },
+          },
+          {
+            randomUUID: () => 'guarded',
+            open: async (...args) => {
+              const handle = await open(...args);
+              return {
+                writeFile: handle.writeFile.bind(handle),
+                chmod: handle.chmod.bind(handle),
+                sync: handle.sync.bind(handle),
+                close: async () => {
+                  await handle.close();
+                  closed = true;
+                },
+              };
+            },
+          },
+        ),
+        fault,
+      );
+      assert.equal(await readFile(path, 'utf8'), 'old');
+      assert.deepEqual(await readdir(dir), ['settings.json']);
+    });
+  });
+
   test('writes the exact bytes and leaves no temp file behind', async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');

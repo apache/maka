@@ -162,12 +162,18 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {
     assertSafeCodexSessionId(sessionId);
-    const catalogEntry = await this.findCatalogEntry(sessionId);
-    if (!catalogEntry) throw new ExternalSessionNotFoundError();
+    const found = await this.findCatalogEntry(sessionId);
+    if (!found) throw new ExternalSessionNotFoundError();
+    const { entry: catalogEntry, fromStateDatabase } = found;
 
-    const rolloutPath = await this.resolveRolloutPath(catalogEntry.rolloutPath, sessionId);
-    if (!rolloutPath) throw new ExternalSessionNotFoundError();
-    return convertCodexRollout(rolloutPath, sessionId, catalogEntry.name, catalogEntry.cwd, {
+    const rollouts = lazyRolloutIndex(this.codexHome);
+    // Codex's state row selects the thread's current rollout. Without one,
+    // Codex takes the newest file named for the thread, and so does this.
+    const current = fromStateDatabase
+      ? catalogEntry.rolloutPath
+      : ((await this.newestThreadRollout(sessionId, rollouts)) ?? catalogEntry.rolloutPath);
+    const segments = await this.rolloutLineage(current, sessionId, rollouts);
+    return convertCodexRollout(segments, sessionId, catalogEntry.name, catalogEntry.cwd, {
       maxRolloutBytes: this.maxRolloutBytes,
       maxRecordBytes: this.maxRecordBytes,
       maxConvertedBytes: this.maxConvertedBytes,
@@ -175,18 +181,92 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
     });
   }
 
-  private async findCatalogEntry(sessionId: string): Promise<CodexCatalogEntry | undefined> {
+  /**
+   * The rollout ranges that make up a thread's history, oldest first.
+   *
+   * Codex never rewrites a rollout. `thread/revert` starts a new file for the
+   * same thread, `rollout-<ts>-<threadId>_<rolloutId>.jsonl`, whose
+   * `session_meta.history_base` names the rollout it continues and the byte
+   * offset where the kept history ends, then moves the state row to it. What
+   * follows that offset was reverted (typically an interrupted turn whose
+   * message was then edited and sent again) and is no longer part of the
+   * thread. Codex rebuilds history by following those pointers, and so does
+   * this; the older files are never read past the offset their successor keeps.
+   */
+  private async rolloutLineage(
+    currentPath: string,
+    sessionId: string,
+    rollouts: () => Promise<Map<string, IndexedRollout>>,
+  ): Promise<RolloutSegment[]> {
+    const segments: RolloutSegment[] = [];
+    let path = await this.resolveRolloutPath(currentPath, sessionId);
+    if (!path) throw new ExternalSessionNotFoundError();
+    // Every later rollout of a thread is one a revert started, so a history
+    // base in the opening rollout can only be a fork's, into its parent. The
+    // converter still checks that the file names the thread.
+    if (isOpeningRolloutFilename(basename(path), sessionId)) return [{ path }];
+    let endByteOffset: number | undefined;
+    for (;;) {
+      if (segments.some((segment) => segment.path === path)) {
+        throw new Error(`Codex rollout history loops back on itself: expected ${sessionId}`);
+      }
+      // A file name is not proof of what a rollout holds, and the file the
+      // state row names is no exception: each range must name the thread.
+      const meta = await readRolloutHeadMeta(path, sessionId);
+      if (meta?.id !== sessionId) {
+        throw new Error(`Codex rollout Session id mismatch: expected ${sessionId}`);
+      }
+      segments.push(endByteOffset === undefined ? { path } : { path, endByteOffset });
+      const base = meta.historyBase;
+      if (!base) break;
+      // No candidate cap here: the catalog cap guards a listing that would
+      // otherwise grow without bound, whereas this lookup keeps one file per
+      // rollout, and a store too large to list must not also become a store
+      // whose reverted threads cannot be imported.
+      const located = (await rollouts()).get(base.rolloutId);
+      // Missing history fails the import rather than quietly shortening it.
+      if (!located) throw new Error(`Codex rollout history base is missing: expected ${sessionId}`);
+      // A fork's history starts in its parent's rollout, which belongs to the
+      // parent thread; this thread's own history ends here.
+      if (located.threadId !== sessionId) break;
+      path = await this.resolveRolloutPath(located.path, sessionId);
+      if (!path) throw new Error(`Codex rollout history base is missing: expected ${sessionId}`);
+      endByteOffset = base.endByteOffset;
+    }
+    return segments.reverse();
+  }
+
+  private async newestThreadRollout(
+    sessionId: string,
+    rollouts: () => Promise<Map<string, IndexedRollout>>,
+  ): Promise<string | undefined> {
+    // The timestamps in the names make a code-unit sort chronological.
+    const named = [...(await rollouts()).values()]
+      .filter((rollout) => rollout.threadId === sessionId)
+      .map((rollout) => rollout.path)
+      .sort((left, right) => (basename(left) < basename(right) ? 1 : -1));
+    for (const candidate of named) {
+      const path = await this.resolveRolloutPath(candidate, sessionId);
+      if (path && (await readRolloutHeadMeta(path, sessionId))?.id === sessionId) return path;
+    }
+    return undefined;
+  }
+
+  private async findCatalogEntry(
+    sessionId: string,
+  ): Promise<{ entry: CodexCatalogEntry; fromStateDatabase: boolean } | undefined> {
     for (const dbPath of await codexStateDbsNewestFirst(this.codexHome)) {
       const rows = await readCodexThreadRows(dbPath, { includeArchived: true }, sessionId);
       if (rows === undefined) continue;
       for (const row of rows) {
         const entry = await this.entryFromRow(row);
-        if (entry?.id === sessionId) return entry;
+        if (entry?.id === sessionId) return { entry, fromStateDatabase: true };
       }
       break;
     }
 
-    return this.findRolloutEntry(sessionId);
+    const entry = await this.findRolloutEntry(sessionId);
+    return entry ? { entry, fromStateDatabase: false } : undefined;
   }
 
   private async entryFromRow(row: CodexThreadRow): Promise<CodexCatalogEntry | undefined> {
@@ -305,7 +385,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
       [join(this.codexHome, 'archived_sessions'), true],
     ] as const) {
       for await (const candidate of iterateRolloutFiles(root, archived)) {
-        if (!rolloutFilenameMatchesId(basename(candidate.path), sessionId)) continue;
+        if (!isOpeningRolloutFilename(basename(candidate.path), sessionId)) continue;
         const head = await readUtf8Prefix(candidate.path, CODEX_ROLLOUT_HEAD_BYTES).catch(
           () => undefined,
         );
@@ -355,16 +435,49 @@ interface ParsedRolloutRecord {
   value: JsonRecord;
 }
 
+interface RolloutReadCursor {
+  line: number;
+  bytes: number;
+}
+
+interface RolloutSegment {
+  path: string;
+  /** Where the thread's history leaves this rollout; the whole file when absent. */
+  endByteOffset?: number;
+}
+
+interface IndexedRollout {
+  threadId: string;
+  path: string;
+}
+
+interface RolloutHeadMeta {
+  id: string | undefined;
+  historyBase: { rolloutId: string; endByteOffset: number } | undefined;
+}
+
 async function convertCodexRollout(
-  path: string,
+  segments: readonly RolloutSegment[],
   expectedSessionId: string,
   fallbackName: string,
   fallbackCwd: string,
   limits: CodexRolloutLimits,
 ): Promise<ExternalMakaSession> {
   const converter = new CodexRolloutConverter(expectedSessionId, fallbackName, fallbackCwd, limits);
-  for await (const record of readCodexRolloutRecords(path, expectedSessionId, limits)) {
-    converter.accept(record);
+  // Line numbers and the byte budget run across the whole lineage: generated
+  // message ids are keyed by line, so restarting per file would collide.
+  const cursor: RolloutReadCursor = { line: 0, bytes: 0 };
+  for (const { path, endByteOffset } of segments) {
+    converter.beginRollout();
+    for await (const record of readCodexRolloutRecords(
+      path,
+      expectedSessionId,
+      limits,
+      cursor,
+      endByteOffset,
+    )) {
+      converter.accept(record);
+    }
   }
   return converter.finish();
 }
@@ -379,6 +492,7 @@ class CodexRolloutConverter {
   private firstUserText: string | undefined;
   private metaCwd = '';
   private hasSessionMeta = false;
+  private awaitingRolloutMeta = false;
   private convertedBytes = 0;
 
   constructor(
@@ -388,21 +502,40 @@ class CodexRolloutConverter {
     private readonly limits: CodexRolloutLimits,
   ) {}
 
+  /**
+   * Marks the start of the next rollout file of the thread, whose own
+   * `session_meta` must name the thread too: an earlier rollout is located by
+   * file name, and a name is not proof of ownership.
+   */
+  beginRollout(): void {
+    this.awaitingRolloutMeta = true;
+  }
+
   accept(record: ParsedRolloutRecord): void {
     const envelope = record.value;
-    if (envelope.type === 'session_meta' && !this.hasSessionMeta) {
-      this.hasSessionMeta = true;
+    if (envelope.type === 'session_meta' && this.awaitingRolloutMeta) {
+      this.awaitingRolloutMeta = false;
       const metaPayload = asRecord(envelope.payload);
       const actualSessionId =
         stringField(metaPayload, 'session_id') ?? stringField(metaPayload, 'id');
       if (actualSessionId !== this.expectedSessionId) {
         throw new Error(`Codex rollout Session id mismatch: expected ${this.expectedSessionId}`);
       }
+      if (this.hasSessionMeta) return;
+      this.hasSessionMeta = true;
       this.metaCwd = safeCodexCwd(metaPayload?.cwd);
       this.activeModel = stringField(metaPayload, 'model_provider') ?? this.activeModel;
       const timestamp = normalizeEpochMs(envelope.timestamp);
       if (timestamp !== undefined) this.lastTimestamp = Math.max(this.lastTimestamp, timestamp);
       return;
+    }
+
+    // `hasSessionMeta` is lineage-wide, so the opening file's metadata would
+    // otherwise vouch for every later file. Each rollout proves its own.
+    if (this.awaitingRolloutMeta) {
+      throw new Error(
+        `Codex rollout records precede its Session metadata: expected ${this.expectedSessionId}`,
+      );
     }
 
     const payload = asRecord(envelope.payload);
@@ -702,24 +835,30 @@ async function* readCodexRolloutRecords(
   path: string,
   sessionId: string,
   limits: CodexRolloutLimits,
+  cursor: RolloutReadCursor = { line: 0, bytes: 0 },
+  endByteOffset?: number,
 ): AsyncGenerator<ParsedRolloutRecord> {
   const handle = await open(path, 'r');
   try {
     const metadata = await handle.stat();
     if (!metadata.isFile()) throw new Error('Codex rollout is not a regular file');
-    if (metadata.size > limits.maxRolloutBytes) {
+    if (endByteOffset !== undefined && endByteOffset > metadata.size) {
+      throw new Error(`Codex rollout history base ends past its rollout: expected ${sessionId}`);
+    }
+    const snapshotBytes = endByteOffset ?? metadata.size;
+    if (cursor.bytes + snapshotBytes > limits.maxRolloutBytes) {
       throw new ExternalSessionLimitError(
         'transcript_bytes',
         limits.maxRolloutBytes,
         `Codex rollout exceeds ${limits.maxRolloutBytes} bytes`,
       );
     }
+    cursor.bytes += snapshotBytes;
 
-    const snapshotBytes = metadata.size;
     const pending: Buffer[] = [];
     let pendingBytes = 0;
     let observedBytes = 0;
-    let line = 0;
+    let line = cursor.line;
     if (snapshotBytes > 0) {
       for await (const value of handle.createReadStream({
         autoClose: false,
@@ -765,14 +904,18 @@ async function* readCodexRolloutRecords(
 
     if (pendingBytes > 0) {
       line += 1;
+      // Only the rollout still being written can end mid-record; a history
+      // base's offset lands on a record boundary, so a partial record there
+      // is corrupt.
       const record = parseCodexRolloutLine(
         pending.length === 1 ? pending[0]! : Buffer.concat(pending, pendingBytes),
         sessionId,
         line,
-        true,
+        endByteOffset === undefined,
       );
       if (record) yield record;
     }
+    cursor.line = line;
   } finally {
     await handle.close();
   }
@@ -1063,6 +1206,9 @@ async function nextRolloutCatalogBatch(
       if (head === undefined) continue;
       const entry = catalogEntryFromRolloutHead(head, candidate);
       if (!entry || !matchesQuery(entry, query)) continue;
+      // A reverted thread's later rollouts repeat its `session_meta`; list the
+      // thread once, from its opening rollout.
+      if (!isOpeningRolloutFilename(basename(candidate.path), entry.id)) continue;
       const rolloutPath = await resolvePath(candidate, entry.id);
       if (!rolloutPath) continue;
       const { rolloutPath: _rolloutPath, ...summary } = { ...entry, rolloutPath };
@@ -1284,8 +1430,108 @@ function stateGeneration(path: string): number {
   return Number(path.match(/\d+/)?.[0] ?? 0);
 }
 
+/**
+ * Codex names a thread's opening rollout `rollout-<ts>-<id>.jsonl` and each
+ * rollout a revert starts for it `rollout-<ts>-<id>_<rolloutId>.jsonl`; every
+ * one records the thread's own id in `session_meta`. Only `_` separates the
+ * two ids, since the timestamp and the thread id are `-`-joined.
+ */
 function rolloutFilenameMatchesId(filename: string, sessionId: string): boolean {
+  if (!filename.startsWith('rollout-') || !filename.endsWith('.jsonl')) return false;
+  const stem = filename.slice(0, -'.jsonl'.length);
+  if (stem.endsWith(`-${sessionId}`)) return true;
+  const marker = `-${sessionId}_`;
+  const childStart = stem.lastIndexOf(marker) + marker.length;
+  return childStart >= marker.length && childStart < stem.length && !stem.includes('_', childStart);
+}
+
+function isOpeningRolloutFilename(filename: string, sessionId: string): boolean {
   return filename.endsWith(`-${sessionId}.jsonl`);
+}
+
+/**
+ * The thread and rollout ids in a rollout file name, split as Codex splits
+ * them: at the first `_` after the timestamp. An opening rollout's id is its
+ * thread's.
+ */
+function rolloutFileIds(filename: string): { threadId: string; rolloutId: string } | undefined {
+  const ids = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/.exec(filename)?.[1];
+  if (ids === undefined) return undefined;
+  const split = ids.indexOf('_');
+  const threadId = split === -1 ? ids : ids.slice(0, split);
+  const rolloutId = split === -1 ? ids : ids.slice(split + 1);
+  if (!isSafeCodexSessionId(threadId) || !isSafeCodexSessionId(rolloutId)) return undefined;
+  return { threadId, rolloutId };
+}
+
+/**
+ * Every rollout file by rollout id, built from names alone on first use. The
+ * `sessions` copy wins over an `archived_sessions` one, as in Codex, so a
+ * rollout seen in both mid-archive is read once.
+ */
+function lazyRolloutIndex(codexHome: string): () => Promise<Map<string, IndexedRollout>> {
+  let index: Promise<Map<string, IndexedRollout>> | undefined;
+  return () => (index ??= indexRollouts(codexHome));
+}
+
+async function indexRollouts(codexHome: string): Promise<Map<string, IndexedRollout>> {
+  const index = new Map<string, IndexedRollout>();
+  for (const [root, archived] of [
+    [join(codexHome, 'sessions'), false],
+    [join(codexHome, 'archived_sessions'), true],
+  ] as const) {
+    for await (const candidate of iterateRolloutFiles(root, archived)) {
+      const ids = rolloutFileIds(basename(candidate.path));
+      if (!ids || index.has(ids.rolloutId)) continue;
+      index.set(ids.rolloutId, { threadId: ids.threadId, path: candidate.path });
+    }
+  }
+  return index;
+}
+
+/**
+ * The first `session_meta` in a rollout's head: the thread it names and the
+ * history it continues. Reading only the head is enough because Codex writes
+ * that record first, and a rollout that buries it behind other records is
+ * refused while converting rather than trusted here.
+ */
+async function readRolloutHeadMeta(
+  path: string,
+  sessionId: string,
+): Promise<RolloutHeadMeta | undefined> {
+  const head = await readUtf8Prefix(path, CODEX_ROLLOUT_HEAD_BYTES).catch(() => undefined);
+  if (head === undefined) return undefined;
+  for (const line of head.split('\n')) {
+    let record: unknown;
+    try {
+      record = JSON.parse(line) as unknown;
+    } catch {
+      continue;
+    }
+    if (!isRecord(record) || record.type !== 'session_meta') continue;
+    const payload = asRecord(record.payload);
+    return {
+      id: stringField(payload, 'session_id') ?? stringField(payload, 'id'),
+      historyBase: codexHistoryBase(payload?.history_base, sessionId),
+    };
+  }
+  return undefined;
+}
+
+function codexHistoryBase(value: unknown, sessionId: string): RolloutHeadMeta['historyBase'] {
+  if (value === undefined || value === null) return undefined;
+  const base = asRecord(value);
+  const rolloutId = stringField(base, 'thread_id');
+  const endByteOffset = base?.end_byte_offset;
+  if (
+    !isSafeCodexSessionId(rolloutId) ||
+    typeof endByteOffset !== 'number' ||
+    !Number.isSafeInteger(endByteOffset) ||
+    endByteOffset <= 0
+  ) {
+    throw new Error(`Invalid Codex rollout history base: expected ${sessionId}`);
+  }
+  return { rolloutId, endByteOffset };
 }
 
 function generatedCodexId(sessionId: string, kind: string, line: number): string {

@@ -480,7 +480,24 @@ async function buildHostAiSdkBackend(
               ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
               : {}),
           });
-          return { text: resolved.text, sourceRevisions: resolved.sourceRevisions };
+          return {
+            ...resolved,
+            contexts: [
+              ...(resolved.contexts ?? []),
+              {
+                name: 'runtime.environment',
+                text: [
+                  'Runtime Host environment for this turn:',
+                  JSON.stringify({
+                    cwd: context.cwd,
+                    platform: process.platform,
+                    sampledAt: new Date(context.turnStartedAt ?? Date.now()).toISOString(),
+                    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  }),
+                ].join('\n'),
+              },
+            ],
+          };
         },
         ...(input.beforeTurnFinish ? { beforeTurnFinish: input.beforeTurnFinish } : {}),
         lookupPricing: pricing,

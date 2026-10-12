@@ -30,6 +30,122 @@ import {
 } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite Agent Graph supervisor wakes', () => {
+  test('upgrades a populated wake table without losing its attempt foreign key', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-wake-migration-'));
+    const path = join(directory, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      await setup.claimAgentGraphSupervisorWake({
+        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: 'session-1',
+      });
+      await setup.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        turnId: 'turn-1',
+      });
+      setup.close();
+      const beforeUpgrade = new DatabaseSync(path);
+      beforeUpgrade.exec(
+        "UPDATE session_metadata_schema SET version = 39 WHERE scope = 'session_metadata'",
+      );
+      beforeUpgrade.close();
+      const upgraded = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(upgraded.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        assert.equal(
+          (await upgraded.readAgentGraphSupervisorWake('graph-1', 'wake-1'))?.status,
+          'running',
+        );
+        assert.equal(
+          (await upgraded.listAgentGraphSupervisorWakeAttempts('graph-1', 'wake-1')).length,
+          1,
+        );
+        await upgraded.completeAgentGraphSupervisorWakeAttempt({
+          graphId: 'graph-1',
+          wakeId: 'wake-1',
+          attemptId: 'attempt-1',
+          status: 'retryable_failed',
+          failureReason: 'provider failed',
+        });
+        await upgraded.exhaustAgentGraphSupervisorWake('graph-1', 'wake-1', 'provider failed');
+      } finally {
+        upgraded.close();
+      }
+      const inspect = new DatabaseSync(path);
+      try {
+        assert.deepEqual(inspect.prepare('PRAGMA foreign_key_check').all(), []);
+      } finally {
+        inspect.close();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('enforces a durable attempt limit and keeps exhausted wakes out of recovery', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.claimAgentGraphSupervisorWake({
+        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        snapshotVersion: 'snapshot-1',
+        rootSessionId: 'session-1',
+      });
+      const first = await store.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        turnId: 'turn-1',
+        maxAttempts: 1,
+      });
+      assert.equal(first.acquired, true);
+      await store.completeAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+        status: 'retryable_failed',
+        failureReason: 'provider limit',
+      });
+      const blocked = await store.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-2',
+        turnId: 'turn-2',
+        maxAttempts: 1,
+      });
+      assert.equal(blocked.acquired, false);
+      assert.equal(blocked.wake.attemptCount, 1);
+      const exhausted = await store.exhaustAgentGraphSupervisorWake(
+        'graph-1',
+        'wake-1',
+        'provider limit',
+      );
+      assert.equal(exhausted.status, 'exhausted');
+      assert.deepEqual(await store.listRetryableAgentGraphSupervisorWakes(), []);
+      assert.equal(await store.recoverAgentGraphSupervisorWakes(), 0);
+      assert.equal(
+        (
+          await store.claimAgentGraphSupervisorWake({
+            schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+            graphId: 'graph-1',
+            wakeId: 'wake-1',
+            snapshotVersion: 'snapshot-1',
+            rootSessionId: 'session-1',
+          })
+        ).wake.status,
+        'exhausted',
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test('tracks retry attempts separately and marks delivery only after completion', async () => {
     let now = 10;
     const store = createSqliteSessionMetadataStore(':memory:', { now: () => now++ });

@@ -37,6 +37,7 @@ const MESSAGE_VALUES = {
   state: 'ready',
   count: 2,
   detail: 'HTTP 401',
+  path: '/profile/mcp.json',
   hasDetail: true,
   bytes: 40_000,
   serverId: 'filesystem',

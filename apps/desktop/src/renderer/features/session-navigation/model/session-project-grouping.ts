@@ -44,10 +44,47 @@ export function deriveWorktreeSessionIds(
   return ids;
 }
 
+export function deriveSessionLocation(
+  session: SessionSummary,
+  project: ProjectRecord | undefined,
+): string | undefined {
+  if (!session.projectId || !session.cwd) return undefined;
+  if (!project || project.locations.length <= 1) return undefined;
+  const match = project.locations.find((location) => samePath(location.path, session.cwd!));
+  return match?.path;
+}
+
+/**
+ * Whether two paths name the same location.
+ *
+ * Separators are unified first: a Host may hand back either, and `/Users/a/b`
+ * and `\Users\a\b` are one directory on Windows, so mixed forms must match —
+ * the worktree mark and the location line both depend on it. Windows paths
+ * (drive-absolute and explicit backslash UNC) then fold case, matching the
+ * OS's case-insensitive semantics; POSIX paths stay exact, including `//`.
+ */
 function samePath(left: string, right: string): boolean {
-  return normalizePath(left) === normalizePath(right);
+  const a = normalizePath(left);
+  const b = normalizePath(right);
+  // A leading `//` alone is also a valid POSIX path. An original `\\` prefix
+  // identifies UNC even when the other side uses forward slashes.
+  const windowsPath = isWindowsPath(left, a) || isWindowsPath(right, b);
+  return windowsPath ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function normalizePath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+  const unified = path.replace(/\\/g, '/');
+  if (unified === '') return '';
+  const trimmed = unified.replace(/\/+$/, '');
+  if (trimmed.length === 0) {
+    // The path was all separators: a POSIX root, or the UNC root `\\`.
+    return unified.startsWith('//') ? '//' : '/';
+  }
+  // A drive root keeps its separator, or `C:\` would normalize to `C:` and
+  // stop being recognised as a Windows path — losing case folding.
+  return /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}/` : trimmed;
+}
+
+function isWindowsPath(original: string, normalized: string): boolean {
+  return /^[A-Za-z]:\//.test(normalized) || original.startsWith('\\\\');
 }

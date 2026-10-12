@@ -490,9 +490,14 @@ class LiveEgressFilterTest(unittest.TestCase):
             return cls._recv_until_close(sock)
 
     @classmethod
-    def connect_via_proxy(cls, host: str, port: int, payload: bytes = b"CLIENT\n") -> tuple[bytes, bytes]:
+    def connect_via_proxy(
+        cls, host: str, port: int, payload: bytes = b"CLIENT\n", host_header: str | None = None
+    ) -> tuple[bytes, bytes]:
         with socket.create_connection(("127.0.0.1", cls.proxy_port), 5) as sock:
-            sock.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+            authority = host_header or f"{host}:{port}"
+            sock.sendall(
+                f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode()
+            )
             header = b""
             sock.settimeout(CLOSE_TIMEOUT_S)
             while b"\r\n\r\n" not in header:
@@ -639,6 +644,13 @@ class LiveEgressFilterTest(unittest.TestCase):
 
     def test_connect_to_a_blocklisted_host_is_451(self) -> None:
         header, _ = self.connect_via_proxy("tbench.ai", 443, b"")
+        self.assertIn(b"451", header.split(b"\r\n", 1)[0])
+        self.assertIn(b"tbench_domain", header)
+
+    def test_connect_target_is_blocked_even_with_a_different_host_header(self) -> None:
+        header, _ = self.connect_via_proxy(
+            "tbench.ai", 443, b"", host_header="example.com:443"
+        )
         self.assertIn(b"451", header.split(b"\r\n", 1)[0])
         self.assertIn(b"tbench_domain", header)
 

@@ -60,6 +60,8 @@ export class BrowserViewController {
   private backgroundViewport = false;
   private readonly view: WebContentsView;
   private destroyed = false;
+  private loadError: BrowserState['loadError'] = null;
+  private navigationUrl: string | null = null;
   /** True while the view holds real on-screen bounds (last setViewport painted it). */
   private shownWithBounds = false;
   private automation: CdpBridge | null = null;
@@ -113,12 +115,34 @@ export class BrowserViewController {
 
   private wireEvents(): void {
     const wc = this.wc;
+    wc.on('did-start-navigation', (details) => {
+      if (!details.isMainFrame || details.isSameDocument) return;
+      this.navigationUrl = details.url;
+      this.emitState();
+    });
+    wc.on('did-redirect-navigation', (details) => {
+      if (details.isMainFrame) this.navigationUrl = details.url;
+    });
     wc.on('did-start-loading', () => this.emitState());
     wc.on('did-stop-loading', () => this.emitState());
-    wc.on('did-navigate', () => this.recordNavigation());
+    wc.on('did-navigate', () => {
+      // Stop, downloads and 204 responses never commit a new document. Keep
+      // the previous failed address actionable until navigation really commits.
+      this.loadError = null;
+      this.recordNavigation();
+    });
     wc.on('did-navigate-in-page', () => this.recordNavigation());
     wc.on('page-title-updated', () => this.emitState());
-    wc.on('did-fail-load', () => this.emitState());
+    wc.on('did-fail-provisional-load', (_event, code, _description, url, isMainFrame) => {
+      // A body transfer can fail after a usable document commits. Only a
+      // provisional failure should replace the page with the retry UI.
+      // Stop and superseding navigations report ERR_ABORTED (-3). A failed
+      // iframe or a delayed failure from another URL must not replace the page.
+      if (!isMainFrame || code === -3 || url !== this.navigationUrl || !parseNavigable(url)) return;
+      this.loadError = { url, code };
+      this.setViewport(null);
+      this.emitState();
+    });
 
     // Single-view browser: keep http(s) "open in new window" links in-place and
     // hand any other scheme to the system browser. Never spawn a child window.
@@ -161,11 +185,12 @@ export class BrowserViewController {
 
   private async loadInternal(url: string): Promise<void> {
     // loadURL rejects on aborted/failed loads (e.g. a superseding navigation);
-    // the did-fail-load handler already surfaces errors, so swallow here.
+    // Provisional failures publish retry UI; a failed body can remain usable.
+    // Do not also reject IPC and produce a duplicate notification.
     try {
       await this.wc.loadURL(url);
     } catch {
-      /* surfaced via did-fail-load */
+      /* surfaced via did-fail-provisional-load when no document committed */
     }
   }
 
@@ -180,6 +205,7 @@ export class BrowserViewController {
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
       loading: wc.isLoading(),
+      loadError: this.loadError,
     });
   }
 
@@ -213,6 +239,12 @@ export class BrowserViewController {
   }
 
   reload(): void {
+    // A first navigation may fail before a document commits. Retry the failed
+    // destination rather than reloading about:blank or the previous page.
+    if (this.loadError) {
+      void this.loadInternal(this.loadError.url);
+      return;
+    }
     this.wc.reload();
   }
 
@@ -223,7 +255,7 @@ export class BrowserViewController {
   /** Position + show the view over `rect`, or hide it when the rect is empty/null. */
   setViewport(rect: BrowserViewRect | null): void {
     if (this.destroyed) return;
-    const bounds = viewportBounds(rect);
+    const bounds = this.loadError ? null : viewportBounds(rect);
     if (!bounds) {
       this.shownWithBounds = false;
       this.view.setVisible(false);

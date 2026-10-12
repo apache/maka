@@ -107,6 +107,8 @@ export interface ConfirmInput {
   confirmLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
+  /** Keep the confirmation modal open while the accepted operation runs. */
+  onConfirm?(): Promise<void>;
 }
 
 export interface ToastApi {
@@ -127,16 +129,20 @@ export interface ToastApi {
 interface PendingConfirm extends ConfirmInput {
   id: string;
   resolve(result: boolean): void;
+  reject(cause: unknown): void;
+  running?: boolean;
 }
 
 interface ActiveConfirm {
   request: PendingConfirm;
-  phase: 'mounting' | 'open' | 'closing';
+  phase: 'mounting' | 'open' | 'pending' | 'closing';
   result?: boolean;
+  failure?: { cause: unknown };
 }
 
 const DEFAULT_DURATION = 4000;
 const ToastContext = createContext<ToastApi | null>(null);
+const ConfirmOpenContext = createContext(false);
 
 export function ToastProvider(props: { children: ReactNode; errorAction?: ToastErrorAction }) {
   return (
@@ -248,8 +254,8 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
   }, []);
 
   const confirm = useCallback((input: ConfirmInput): Promise<boolean> => {
-    return new Promise((resolve) => {
-      const request: PendingConfirm = { id: `c${++idSeed.current}`, ...input, resolve };
+    return new Promise((resolve, reject) => {
+      const request: PendingConfirm = { id: `c${++idSeed.current}`, ...input, resolve, reject };
       if (activeConfirmRef.current) {
         confirmQueueRef.current.push(request);
         return;
@@ -262,7 +268,25 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
   const requestConfirmResult = useCallback(
     (result: boolean) => {
       const current = activeConfirmRef.current;
-      if (!current) return;
+      if (!current || current.running) return;
+      const onConfirm = current.onConfirm;
+      if (result && onConfirm) {
+        current.running = true;
+        setConfirmState((state) => state?.request === current
+          ? { ...state, phase: 'pending' } : state);
+        void (async () => {
+          let failure: ActiveConfirm['failure'];
+          try {
+            await onConfirm();
+          } catch (cause) {
+            failure = { cause };
+          }
+          if (activeConfirmRef.current !== current) return;
+          setConfirmState((state) => state?.request === current
+            ? { ...state, phase: 'closing', result: true, failure } : state);
+        })();
+        return;
+      }
       setConfirmState((state) => {
         if (
           !state ||
@@ -295,7 +319,8 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       const current = activeConfirmRef.current;
       if (!current || current !== confirmState.request) return;
       activeConfirmRef.current = null;
-      current.resolve(confirmState.result ?? false);
+      if (confirmState.failure) current.reject(confirmState.failure.cause);
+      else current.resolve(confirmState.result ?? false);
       const next = confirmQueueRef.current.shift() ?? null;
       activeConfirmRef.current = next;
       setConfirmState(
@@ -341,12 +366,13 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
 
   return (
     <ToastContext.Provider value={api}>
-      {props.children}
+      <ConfirmOpenContext.Provider value={confirmState != null}>{props.children}</ConfirmOpenContext.Provider>
       {confirmState && (
         <ConfirmDialog
           key={confirmState.request.id}
           request={confirmState.request}
-          isOpen={confirmState.phase === 'open'}
+          isOpen={confirmState.phase === 'open' || confirmState.phase === 'pending'}
+          pending={confirmState.phase === 'pending'}
           onResolve={requestConfirmResult}
         />
       )}
@@ -385,6 +411,11 @@ export function useToast(): ToastApi {
   return ctx;
 }
 
+/** True while a `confirm` dialog is on screen, so other dialogs can step aside. */
+export function useConfirmOpen(): boolean {
+  return useContext(ConfirmOpenContext);
+}
+
 const VARIANT_ICON: Record<ToastVariant, ReactNode> = {
   info: <Info size={ICON_SIZE.chrome} aria-hidden="true" />,
   success: <CheckCircle2 size={ICON_SIZE.chrome} aria-hidden="true" />,
@@ -410,6 +441,7 @@ function ToastBody({ input }: { input: ToastInput }) {
 function ConfirmDialog(props: {
   request: PendingConfirm;
   isOpen: boolean;
+  pending: boolean;
   onResolve(result: boolean): void;
 }) {
   const copy = getSharedUiCopy(useUiLocale()).toast;
@@ -432,6 +464,8 @@ function ConfirmDialog(props: {
       description={description ?? ''}
       cancelLabel={cancelLabel}
       actionLabel={confirmLabel}
+      isActionLoading={props.pending}
+      aria-busy={props.pending}
       actionVariant={destructive ? 'destructive' : 'primary'}
       onAction={() => props.onResolve(true)}
     />

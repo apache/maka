@@ -44,10 +44,12 @@ test('applies each client settings snapshot once across local writes and file wa
     observeLocale: () => undefined,
     emitExternalChanged: () => {
       rendererEvents += 1;
+      return true;
     },
   });
 
   assert.equal(await effects.refresh(false), true);
+  assert.equal(await effects.refresh(true), false); // Startup establishes the renderer baseline.
   assert.equal(await effects.refresh(true), false);
 
   current = {
@@ -65,6 +67,37 @@ test('applies each client settings snapshot once across local writes and file wa
   assert.deepEqual(appIcons, []);
 });
 
+test('silent refreshes retain an un-emitted renderer change without repeating effects', async () => {
+  let current = createDefaultSettings();
+  const keepAwake: boolean[] = [];
+  const emittedLocales: string[] = [];
+  const effects = createClientSettingsEffects({
+    settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
+    applyKeepSystemAwake: async (enabled) => { keepAwake.push(enabled); },
+    applyBotSettings: async () => undefined,
+    applyAppIcon: async () => undefined,
+    systemPrefersDark: () => false,
+    observeLocale: () => undefined,
+    emitExternalChanged: () => { emittedLocales.push(current.personalization.uiLocale); return true; },
+  });
+  await effects.refresh(false);
+  current = {
+    ...current,
+    system: { keepSystemAwake: true },
+    personalization: { ...current.personalization, uiLocale: 'zh-CN' },
+  };
+  assert.equal(await effects.refresh(false), true);
+  assert.equal(await effects.refresh(false), false);
+  assert.deepEqual(emittedLocales, []);
+  // A later write supersedes the silently applied snapshot before emission.
+  current = { ...current, personalization: { ...current.personalization, uiLocale: 'zh-TW' } };
+  assert.equal(await effects.refresh(true), true);
+  assert.equal(await effects.refresh(true), false);
+  assert.deepEqual(emittedLocales, ['zh-TW']);
+  assert.deepEqual(keepAwake, [false, true]);
+});
+
 test('applies a chosen app icon once, and again only when the choice changes', async () => {
   let current = createDefaultSettings();
   const appIcons: string[] = [];
@@ -78,7 +111,7 @@ test('applies a chosen app icon once, and again only when the choice changes', a
     },
     systemPrefersDark: () => false,
     observeLocale: () => undefined,
-    emitExternalChanged: () => undefined,
+    emitExternalChanged: () => true,
   });
 
   await effects.refresh(false);
@@ -115,7 +148,7 @@ test('an OS appearance flip re-applies the icon without any setting changing', a
     },
     systemPrefersDark: () => systemDark,
     observeLocale: () => undefined,
-    emitExternalChanged: () => undefined,
+    emitExternalChanged: () => true,
   });
 
   await effects.refresh(false);
@@ -152,7 +185,7 @@ test('with one icon for both appearances a theme flip changes nothing', async ()
     },
     systemPrefersDark: () => systemDark,
     observeLocale: () => undefined,
-    emitExternalChanged: () => undefined,
+    emitExternalChanged: () => true,
   });
 
   await effects.refresh(false);
@@ -178,7 +211,7 @@ test('an explicit dark preference ignores what the OS reports', async () => {
     },
     systemPrefersDark: () => false,
     observeLocale: () => undefined,
-    emitExternalChanged: () => undefined,
+    emitExternalChanged: () => true,
   });
   await effects.refresh(false);
   assert.deepEqual(applied, ['ink']);
@@ -195,10 +228,36 @@ test('applies WorkHub enable state from the supplied snapshot without another st
     applyAppIcon: async () => undefined,
     systemPrefersDark: () => false,
     observeLocale: () => undefined,
-    emitExternalChanged: () => undefined,
+    emitExternalChanged: () => true,
   });
   const settings = createDefaultSettings();
   await effects.apply({ ...settings, workHub: { enabled: true } }, true);
   await effects.apply({ ...settings, workHub: { enabled: false } }, true);
   assert.deepEqual(applied, [true, false]);
+});
+
+
+test('an unavailable renderer does not consume a changed settings fingerprint', async () => {
+  let current = createDefaultSettings();
+  let available = false;
+  let emitted = 0;
+  const effects = createClientSettingsEffects({
+    settingsStore: { get: async () => current },
+    applyWorkHub: async () => undefined,
+    applyKeepSystemAwake: async () => undefined,
+    applyBotSettings: async () => undefined,
+    applyAppIcon: async () => undefined,
+    systemPrefersDark: () => false,
+    observeLocale: () => undefined,
+    emitExternalChanged: () => { if (!available) return false; emitted += 1; return true; },
+  });
+  await effects.refresh(false);
+  current = { ...current, system: { keepSystemAwake: true } };
+  assert.equal(await effects.refresh(true), true); // Effects changed without an event.
+  assert.equal(await effects.refresh(true), false);
+  assert.equal(emitted, 0);
+  available = true;
+  assert.equal(await effects.refresh(true), true); // Only the pending event changes.
+  assert.equal(await effects.refresh(true), false);
+  assert.equal(emitted, 1);
 });

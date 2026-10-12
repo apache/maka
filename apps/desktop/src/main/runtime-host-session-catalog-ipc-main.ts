@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { isExecutorConfiguration } from '@maka/core/executor-catalog';
 import { randomUUID } from 'node:crypto';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
@@ -28,6 +29,7 @@ import { RuntimeHostOperationError, projectSessionCatalogSummary } from '@maka/r
 import type {
   SessionCatalogProjection,
   SessionCreateInput,
+  SessionRemovePreviewInput,
   WorkspaceTarget,
   SessionModelTarget,
 } from '@maka/runtime-host/protocol';
@@ -73,6 +75,7 @@ export interface DesktopHostSessionSummary extends SessionCatalogSummary {
 
 export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
+  queryExecutors?: (input: import('@maka/runtime-host/protocol').PluginExecutorQueryInput) => Promise<import('@maka/runtime-host/protocol').PluginExecutorQueryResult>;
   /** Observer state supplements the Host catalog without falling back to the durable header. */
   runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
@@ -114,6 +117,14 @@ export function registerRuntimeHostSessionCatalogIpc(
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
+  handleReconnectableRead(ipcMain, 'sessions:executorCatalog', async (_event, cwd: string, refresh?: boolean) => {
+    if (typeof cwd !== 'string' || !cwd) throw new Error('Executor discovery requires a workspace');
+    if (refresh !== undefined && typeof refresh !== 'boolean') throw new Error('Invalid executor refresh flag');
+    return (await deps.queryExecutors?.({ kind: 'catalog', cwd, ...(refresh ? { refresh: true } : {}) }))?.items ?? [];
+  });
+  handleReconnectableRead(ipcMain, 'sessions:executorState', async (_event, sessionId: string) =>
+    (await deps.queryExecutors?.({ kind: 'conversation', sessionId }))?.items ?? [],
+  );
   handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: unknown) =>
     listSessions(normalizeSessionListFilter(filter)),
   );
@@ -148,7 +159,11 @@ export function registerRuntimeHostSessionCatalogIpc(
   ipcMain.handle('sessions:archive', async (_event, sessionId: string, options?: unknown) => {
     requestsRevisionFamily(options);
     const ids = await actionIds(sessionId, { revisionFamily: true });
-    await deps.client.setSessionLifecycle(sessionId, 'archived');
+    try {
+      await deps.client.setSessionLifecycle(sessionId, 'archived');
+    } catch (error) {
+      throw asArchiveRefusal(error);
+    }
     await finishSessionRetirement(deps, ids, 'archived');
   });
   ipcMain.handle('sessions:unarchive', async (_event, sessionId: string, options?: unknown) => {
@@ -232,6 +247,10 @@ export function registerRuntimeHostSessionCatalogIpc(
       );
     },
   );
+  ipcMain.handle('sessions:setExecutorModelConfiguration', async (_event, sessionId: string, config: unknown) => {
+    if (!isExecutorConfiguration(config)) throw new Error('Invalid executor configuration');
+    return updateConfiguration(deps, sessionId, { executorConfig: config }, 'updated');
+  });
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${String(level)}`);
@@ -245,14 +264,17 @@ export function registerRuntimeHostSessionCatalogIpc(
     // downstream of the deletion runs for it.
     const outcome = await deps.client.removeSession(sessionId, {
       requireArchived: requiresArchivedSession(options),
+      // Shape-checked by the protocol codec, which refuses anything but a
+      // positive integer rather than dropping the guard.
+      ...archiveAgeGuard(options),
     });
     if (outcome.disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
     return outcome;
   });
-  ipcMain.handle('sessions:removePreview', async (_event, sessionId: string) => {
-    // Read-only: how many subtasks the delete would archive, for the confirm.
-    return deps.client.previewSessionRemoval(sessionId);
-  });
+  ipcMain.handle('sessions:removePreview', async (_event, input: unknown) =>
+    // Read-only, for the confirm. The protocol codec validates the whole input.
+    deps.client.previewSessionRemoval(input as SessionRemovePreviewInput),
+  );
   ipcMain.handle(
     'sessions:moveToProject',
     async (_event, sessionId: string, projectId: unknown) => {
@@ -318,6 +340,11 @@ async function moveSessionToProject(
  * destructive answer. It repeats the shape check its sibling does instead of
  * relying on the caller running that one first.
  */
+function archiveAgeGuard(options: unknown): { requireArchivedForMs?: number } {
+  const value = (options as { requireArchivedForMs?: unknown } | undefined)?.requireArchivedForMs;
+  return value === undefined ? {} : { requireArchivedForMs: value as number };
+}
+
 function requiresArchivedSession(options: unknown): boolean {
   if (options === undefined) return false;
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
@@ -359,6 +386,26 @@ async function updateConfiguration(
   }
   deps.emitSessionsChanged(reason, sessionId, extra);
   return { ok: true, session: toDesktopHostSessionSummary(session) };
+}
+
+/**
+ * Electron IPC strips the error class off a `RuntimeHostOperationError`, so a
+ * refusal the rail can explain has to travel as a stable token in the message
+ * text. These are the archive guard's `session_busy` refusals a user can act
+ * on; any other failure keeps the Host's own message.
+ */
+const ARCHIVE_REFUSAL_TOKENS: ReadonlyArray<readonly [needle: string, reason: string]> = [
+  ['has an active WorkHub delegation', 'workhub_delegation'],
+  ['has an undelivered WorkHub result', 'workhub_result'],
+  ['has a live linked child Session', 'linked_child'],
+];
+
+function asArchiveRefusal(error: unknown): unknown {
+  if (!(error instanceof RuntimeHostOperationError) || error.code !== 'session_busy') return error;
+  for (const [needle, reason] of ARCHIVE_REFUSAL_TOKENS) {
+    if (error.message.includes(needle)) return new Error(`session_archive_refused: ${reason}`);
+  }
+  return error;
 }
 
 const EXPECTED_UPDATE_FAILURES = [
@@ -421,6 +468,7 @@ export function resolveDesktopSessionCreateInput(input: CreateSessionRequestInpu
     ...(executorId
       ? {
           executorId,
+          ...(input?.executorConfig ? { executorConfig: input.executorConfig } : {}),
           ...(normalizeOptionalString(input?.model, 'executor model')
             ? { executorModel: normalizeOptionalString(input?.model, 'executor model') }
             : {}),

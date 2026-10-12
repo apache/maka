@@ -64,6 +64,13 @@ export function runtimeHostStartupError(
       return new Error(
         'Runtime Host could not secure its Local IPC endpoint. Try again; if the problem persists, report diagnostic code LOCAL_IPC_SECURITY_FAILED.',
       );
+    case 'launch_election_lost':
+      // Losing candidates exit 2, which the election loop suppresses, so this
+      // reason never surfaces through a startup failure report today; the case
+      // keeps the mapping total if the diagnostic reason is ever surfaced.
+      return new Error(
+        'Another Maka process won the launch election for this workspace and is opening it. Retry once that instance has finished starting. Diagnostic code: LAUNCH_ELECTION_LOST.',
+      );
     case 'composition_mismatch':
       return new RuntimeHostStartupError(
         reason,

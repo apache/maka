@@ -140,7 +140,6 @@ export interface ConversationArtifactCopyInput {
    * match the current source under the Artifact writer lock. Never overwrites.
    */
   readonly existingTarget?: 'reject' | 'reuse_verified';
-  readonly excludeArtifactIds?: readonly string[];
   /**
    * Source-Session artifact ids to copy in addition to the turn-scoped
    * selection, regardless of their `turnId`. Used to carry user-uploaded
@@ -329,7 +328,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw new Error('Artifact conversation copy requires distinct Sessions');
     }
     const turnIds = new Set(input.turnIds);
-    const excludedArtifactIds = new Set(input.excludeArtifactIds ?? []);
     const includedArtifactIds = new Set(input.includeArtifactIds ?? []);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
     const linkedArtifacts = input.linkedArtifacts ?? [];
@@ -350,10 +348,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       await this.load();
       const selected = this.records
         .filter(
-          (record) =>
-            record.sessionId === input.sourceSessionId &&
-            turnIds.has(record.turnId) &&
-            !excludedArtifactIds.has(record.id),
+          (record) => record.sessionId === input.sourceSessionId && turnIds.has(record.turnId),
         )
         .map((record) => ({ ...record }));
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
@@ -374,7 +369,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         if (
           record.sessionId === input.sourceSessionId &&
           includedArtifactIds.has(record.id) &&
-          !excludedArtifactIds.has(record.id) &&
           !selectedIds.has(record.id)
         ) {
           selected.push({ ...record });

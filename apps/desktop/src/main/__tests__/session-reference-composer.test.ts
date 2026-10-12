@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { stubConversationServices, useComposerQuotes } from '../../renderer/features/conversation/testing.js';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -26,7 +27,6 @@ import type { SessionSnapshot } from '@maka/core/session-reference';
 import {
   ConversationServicesProvider,
   type ConversationServices,
-  useComposerQuotes,
   useSessionReferenceComposer,
 } from '../../renderer/features/conversation/index.js';
 
@@ -44,12 +44,25 @@ let root: Root | undefined;
 
 const sessionLocalServices: Pick<
   ConversationServices,
-  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges'
+  'listMessages' | 'cancelMessage' | 'reconcileMessage' | 'subscribeChanges' | 'runtimeHosts'
 > = {
   listMessages: async () => [],
   cancelMessage: async () => undefined,
   reconcileMessage: async () => undefined,
   subscribeChanges: () => () => undefined,
+  runtimeHosts: { subscribeChanges: () => () => undefined },
+};
+
+const readExecutionBoundary = async () => {
+  throw new Error('Execution boundary is not used in session reference tests');
+};
+
+const queueStubs = {
+  promoteQueueEntry: async () => undefined,
+  retractQueueEntry: async () => undefined,
+  reorderQueueEntries: async () => undefined,
+  compact: async () => { throw new Error('Context compaction is not used in reference tests'); },
+  listTurnLandmarks: async () => ({ landmarks: [] }),
 };
 
 afterEach(async () => {
@@ -99,9 +112,13 @@ test('Session reference picker keeps same-Host sessions and send waits for the s
     releaseSnapshot = resolve;
   });
   const services: ConversationServices = {
+    observation: stubConversationServices().observation,
+    resume: stubConversationServices().resume,
     ...sessionLocalServices,
     sessions: {
       readSnapshot: async () => snapshot,
+      readExecutionBoundary,
+      ...queueStubs,
     },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
@@ -239,8 +256,11 @@ test('send resolves the selected Session snapshot at the send boundary', async (
   };
   let reads = 0;
   const services: ConversationServices = {
+    observation: stubConversationServices().observation,
+    resume: stubConversationServices().resume,
     ...sessionLocalServices,
     sessions: {
+      ...queueStubs,
       readSnapshot: async () => new Promise<SessionSnapshot>((resolve) => {
         reads += 1;
         queueMicrotask(() => resolve({
@@ -252,6 +272,7 @@ test('send resolves the selected Session snapshot at the send boundary', async (
           truncated: false,
         }));
       }),
+      readExecutionBoundary,
     },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },
@@ -343,11 +364,15 @@ test('ignores a snapshot that resolves after the Composer owner changes', async 
   });
   let release!: (snapshot: SessionSnapshot) => void;
   const services: ConversationServices = {
+    observation: stubConversationServices().observation,
+    resume: stubConversationServices().resume,
     ...sessionLocalServices,
     sessions: {
+      ...queueStubs,
       readSnapshot: async () => new Promise<SessionSnapshot>((resolve) => {
         release = resolve;
       }),
+      readExecutionBoundary,
     },
     skills: { listInvocable: async () => [] },
     workspace: { searchFiles: async () => ({ ok: false, reason: 'no_project' }) },

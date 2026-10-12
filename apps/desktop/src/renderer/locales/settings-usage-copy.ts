@@ -23,7 +23,8 @@ export type UsageSettingsCopy = {
   staleTitle: string; staleBody: string; loadFailed: string; capacityBody: string; retainedBody: string;
   saveFailed: string; toolbarAria: string; rangeAria: string; ranges: readonly [string, string, string, string];
   refreshingAria: string; refreshAria: string; summaryAria: string; totalRequests: string; totalCost: string; costHelp: string;
-  totalTokens: string; tokenDetail(input: number, output: number): string; cacheTokens: string; cacheDetail(miss: number, read: number, creation: number): string;
+  totalTokens: string; tokenDetail(input: string, output: string): string; cacheTokens: string; cacheDetail(miss: string, read: string, creation: string): string;
+  tokenTooltip: { total: string; input: string; output: string; cached: string; new: string; hit: string; created: string };
   viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
   statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
   paginationAria: string; previousPage: string; nextPage: string; goToPage(page: number): string; pageProgress(loadedPage: number, targetPage: number): string;
@@ -45,6 +46,7 @@ const SETTINGS_USAGE_COPY = {
     refreshingAria: '正在刷新使用统计', refreshAria: '刷新使用统计', summaryAria: '使用统计汇总指标', totalRequests: '模型调用', totalCost: '总费用', costHelp: '以模型供应商最终结算为准',
     totalTokens: '总 Token', tokenDetail: (input, output) => `输入 ${input} / 输出 ${output}`, cacheTokens: '缓存 Token',
     cacheDetail: (miss, read, creation) => `新 ${miss} / 命中 ${read} / 创建 ${creation}`, viewAria: '使用统计视图', tabs: ['活动记录', '供应商统计', '模型统计', '工具统计', '定价配置'],
+    tokenTooltip: { total: '总计', input: '输入', output: '输出', cached: '缓存', new: '新', hit: '命中', created: '创建' },
     filtersAria: '活动记录筛选', filterPlaceholder: '按模型或工具筛选…', filterAria: '按模型或工具筛选活动记录', statusAria: '活动状态筛选',
     statuses: ['全部状态', '成功', '错误', '已中止'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, clearFilters: '清除筛选',
     paginationAria: '活动记录分页', previousPage: '上一页', nextPage: '下一页', goToPage: (page) => `转到第 ${page} 页`, pageProgress: (loadedPage, targetPage) => `正在加载第 ${loadedPage} / ${targetPage} 页`,
@@ -65,6 +67,7 @@ const SETTINGS_USAGE_COPY = {
   },
   'zh-TW': {
     staleTitle: "統計已更新", staleBody: "目前顯示先前的完整結果。請重新整理後繼續瀏覽。", loadFailed: "無法載入使用統計", capacityBody: "統計結果超出顯示容量，請求未傳回任何部分資料。", retainedBody: "目前仍顯示上次成功載入的結果，新查詢尚未生效。",
+    tokenTooltip: { total: '總計', input: '輸入', output: '輸出', cached: '快取', new: '新', hit: '命中', created: '建立' },
     saveFailed: '儲存使用統計設定失敗', toolbarAria: '使用統計範圍與重新整理', rangeAria: '使用統計時間範圍', ranges: ['24h', '7天', '30天', '全部'],
     refreshingAria: '正在重新整理使用統計', refreshAria: '重新整理使用統計', summaryAria: '使用統計彙總指標', totalRequests: '總請求', totalCost: '總費用', costHelp: '以模型供應商最終結算為準',
     totalTokens: '總 Token', tokenDetail: (input, output) => `輸入 ${input} / 輸出 ${output}`, cacheTokens: '快取 Token',
@@ -93,6 +96,7 @@ const SETTINGS_USAGE_COPY = {
     refreshingAria: 'Refreshing usage', refreshAria: 'Refresh usage', summaryAria: 'Usage summary metrics', totalRequests: 'Model calls', totalCost: 'Total cost', costHelp: 'Final billing is determined by the model provider',
     totalTokens: 'Total tokens', tokenDetail: (input, output) => `Input ${input} / output ${output}`, cacheTokens: 'Cache tokens',
     cacheDetail: (miss, read, creation) => `New ${miss} / hit ${read} / created ${creation}`, viewAria: 'Usage view', tabs: ['Activity log', 'Providers', 'Models', 'Tools', 'Pricing'],
+    tokenTooltip: { total: 'Total', input: 'Input', output: 'Output', cached: 'Cached', new: 'New', hit: 'Hit', created: 'Created' },
     filtersAria: 'Activity filters', filterPlaceholder: 'Filter by model or tool…', filterAria: 'Filter activity by model or tool', statusAria: 'Filter by activity status',
     statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
     paginationAria: 'Activity pages', previousPage: 'Go to previous page', nextPage: 'Go to next page', goToPage: (page) => `Go to page ${page}`, pageProgress: (loadedPage, targetPage) => `Loading page ${loadedPage} of ${targetPage}`,

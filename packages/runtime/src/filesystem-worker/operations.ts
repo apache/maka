@@ -37,6 +37,7 @@ import {
 
 import { computeEditedSource } from '../edit-replace.js';
 import { readPage } from '../read-page.js';
+import { formatJsonText } from '../format-json.js';
 import { createEditUnifiedDiff, createUnifiedDiff } from '../unified-diff.js';
 import {
   compareAndDeleteEntry,
@@ -46,7 +47,7 @@ import {
   StableWriteFailure,
   writeThroughHandle,
 } from '../file-stable-write.js';
-import { isSupportedImagePath, readWorkspaceImage } from '../image-file.js';
+import { readWorkspaceFile } from '../image-file.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   operationAccess,
@@ -123,24 +124,24 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
-      if (isSupportedImagePath(path)) {
-        try {
-          const image = await readWorkspaceImage(path);
-          return {
-            kind: 'read_image',
-            base64: Buffer.from(image.bytes).toString('base64'),
-            mimeType: image.mimeType,
-          };
-        } catch (error) {
-          throw operationError(
-            'filesystem_error',
-            error instanceof Error ? error.message : 'Image could not be read.',
-          );
-        }
+      const file = await readWorkspaceFile(path).catch((error: unknown) => {
+        throw operationError(
+          'filesystem_error',
+          error instanceof Error ? error.message : 'File could not be read.',
+        );
+      });
+      if ('bytes' in file) {
+        return {
+          kind: 'read_image',
+          base64: Buffer.from(file.bytes).toString('base64'),
+          mimeType: file.mimeType,
+        };
       }
-      const content = await fs.readFile(path, 'utf8');
       try {
-        return { kind: 'read', ...readPage(content, operation, undefined, operation.continuation) };
+        return {
+          kind: 'read',
+          ...readPage(file.content, operation, undefined, operation.continuation),
+        };
       } catch (error) {
         throw operationError(
           'invalid_request',
@@ -316,9 +317,9 @@ export async function executeFilesystemOperation(
       try {
         const original = await handle.readFile('utf8');
         const bytesBefore = Buffer.byteLength(original, 'utf8');
-        let parsed: unknown;
+        let formatted: string;
         try {
-          parsed = JSON.parse(original);
+          formatted = formatJsonText(original, operation.sortKeys ?? false);
         } catch (error) {
           // Invalid JSON: return the structured failure without writing.
           return {
@@ -332,11 +333,6 @@ export async function executeFilesystemOperation(
             changed: false,
           };
         }
-        const formatted = JSON.stringify(
-          operation.sortKeys ? sortKeysDeep(parsed) : parsed,
-          null,
-          2,
-        );
         if (formatted !== original) {
           await writeThroughHandle(handle, formatted);
         }
@@ -451,18 +447,6 @@ function operationError(
   message: string,
 ): FilesystemOperationError {
   return new FilesystemOperationError(code, message);
-}
-
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, sortKeysDeep((value as Record<string, unknown>)[key])]),
-    );
-  }
-  return value;
 }
 
 function normalizeOperationError(error: unknown): FilesystemOperationError {

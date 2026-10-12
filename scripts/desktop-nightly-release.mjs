@@ -18,6 +18,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -44,11 +45,14 @@ function validateIdentity(version, sourceCommit, repository) {
 }
 
 function notes(version, sourceCommit) {
+  const disclaimer = readFileSync(new URL('../DISCLAIMER-WIP', import.meta.url), 'utf8');
   return `Developer Snapshot ${version}
 
 This Desktop Nightly was built from ${sourceCommit} for development and testing. It is not an Apache Release and has not been approved by an ASF release vote.
 
-The packaged applications carry the repository DISCLAIMER-WIP and Apache License 2.0 materials. They may be unstable and are not intended as a stable release for general users.`;
+The packaged applications carry the repository DISCLAIMER-WIP and Apache License 2.0 materials. They may be unstable and are not intended as a stable release for general users.
+
+${disclaimer.trimEnd()}`;
 }
 
 function snapshotFromView(value) {

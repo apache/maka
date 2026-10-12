@@ -19,9 +19,12 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import {
   catalogJobs,
+  installStorybookRenderProbe,
   isExpectedConsoleError,
+  jobLabel,
   rescuedRenderSummary,
   storyUrl,
 } from './storybook-visual-smoke.mjs';
@@ -87,6 +90,27 @@ test('long system notes cover both locales at standard and narrow widths', () =>
       `colorScheme:light;palette:default;locale:${job.locale}`,
     );
   }
+});
+
+test('prompt rail clearance covers narrow, breakpoint and desktop viewports', () => {
+  const storyId =
+    'product-shell-official-appshell--prompt-rail-clears-user-messages-in-a-narrow-window';
+  const jobs = catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES });
+
+  assert.deepEqual(
+    jobs,
+    [720, 824, 825, 1280].map((width) => ({
+      storyId,
+      colorScheme: 'light',
+      forcedColors: 'none',
+      palette: 'default',
+      viewport: { width, height: 900 },
+    })),
+  );
+  assert.deepEqual(
+    jobs.map(jobLabel),
+    [720, 824, 825, 1280].map((width) => `${storyId} (light/default/${width}px)`),
+  );
 });
 
 test('forced-colors stories render under the forced palette', () => {
@@ -223,4 +247,34 @@ test('a rescued render is recorded with its story id and reason', () => {
 
 test('a run with no rescued renders records nothing', () => {
   assert.equal(rescuedRenderSummary([]).includes('- `'), false);
+});
+
+test('a play assertion exception fails the render even if Storybook emits a finished event', () => {
+  const listeners = new Map();
+  const window = {
+    addEventListener() {},
+    __STORYBOOK_PREVIEW__: {
+      channel: {
+        on: (event, handler) => listeners.set(event, handler),
+      },
+    },
+  };
+  runInNewContext(`(${installStorybookRenderProbe.toString()})({storyId: 'example'})`, { window });
+  listeners.get('playFunctionThrewException')({ storyId: 'example', message: 'glyphs moved' });
+  listeners.get('storyFinished')({ storyId: 'example' });
+  assert.equal(window.__makaStorybookSmoke.finished, true);
+  assert.match(window.__makaStorybookSmoke.failures[0], /glyphs moved/);
+});
+
+test('WorkHub suggestion geometry runs at both widths in both themes', () => {
+  const jobs = catalogJobs(storyIndex('product-workhub--next-prompt-suggestion'));
+  assert.deepEqual(
+    jobs.map(({ colorScheme, viewport }) => [colorScheme, viewport.width]),
+    [
+      ['light', 1280],
+      ['light', 720],
+      ['dark', 1280],
+      ['dark', 720],
+    ],
+  );
 });

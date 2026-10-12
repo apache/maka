@@ -25,6 +25,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useSyncExternalStore,
   type ComponentType,
   type ReactNode,
 } from 'react';
@@ -40,7 +41,9 @@ import {
   type SessionRowActions,
 } from '@maka/ui';
 import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
+import { SessionHistoryNavigation } from './session-history-navigation.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
+import { useSessionSelection } from '../controller/use-session-selection.js';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
@@ -52,6 +55,7 @@ import {
   projectGroupId,
   ungroupedGroupId,
 } from '../model/session-navigation-groups.js';
+import { sessionMoveTargets } from '../model/session-navigation-move-targets.js';
 import type {
   SessionNavigationPorts,
   SessionNavigationProjectScope,
@@ -61,7 +65,9 @@ import { selectSessions, type SessionCatalogController } from '../../../applicat
 import { selectStaleSessionIds } from '../../../application/contracts/session-catalog/stale-sessions.js';
 import { sessionIdSetsEqual } from '../../../application/contracts/session-catalog/session-id-set.js';
 import { useExternalStoreSelector } from '../../../application/contracts/session-catalog/use-external-store-selector.js';
-import type { SessionSendProjection } from '@maka/core/session-send-projection';
+import type { SnapshotReader } from '../../../application/contracts/snapshot-reader.js';
+import { useWorkHubEnabled, useWorkHubEnablement } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
+import { useOnboardingSessionSendOutcomes } from '../../../application/contracts/onboarding/onboarding-authority.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
@@ -70,7 +76,8 @@ export interface SessionNavigationChromeInput {
   scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;
   workHubActive: boolean;
-  workHubEntry?: { active: boolean; label: string; onSelect(): void };
+  /** Shown, and selectable, only while the client WorkHub switch is on. */
+  onOpenWorkHub?(): void;
   projectActions?: ProjectRowActions;
   onSelect(selection: NavSelection): void;
   onOpenSettings(): void;
@@ -85,15 +92,17 @@ export interface SessionNavigationChromeInput {
 }
 
 export interface SessionNavigationProviderProps extends SessionNavigationChromeInput {
+  /** Settings and modal overlays suspend conversation history input. */
+  historyBlocked?: boolean;
   /** The rail subscribes the catalog itself: its rows are the churn it displays. */
   catalog: SessionCatalogController;
   activeSessionId: string | undefined;
-  /** Suppress plugin conversation overlays while settings or a modal owns the surface. */
+  /** Suppress conversation selection while settings or a modal owns the surface. */
   surfaceObscured?: boolean;
   hiddenSessionIds: ReadonlySet<string>;
   projectScopes: readonly SessionNavigationProjectScope[];
-  streamingSessionIds: ReadonlySet<string>;
-  sessionSendOutcomes?: Readonly<Record<string, SessionSendProjection>>;
+  /** The activity projection subscribes here, without publishing through AppShell. */
+  streamingSessions: SnapshotReader<ReadonlySet<string>>;
   SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
   /**
@@ -117,12 +126,19 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
  * first, the few dozen fibers of permanent chrome on the second.
  */
 export function SessionNavigationProvider(props: SessionNavigationProviderProps) {
+  const streamingSessionIds = useSyncExternalStore(
+    props.streamingSessions.subscribe,
+    props.streamingSessions.getSnapshot,
+    props.streamingSessions.getSnapshot,
+  );
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
   const entryLabels = useMakaClientNavigationSessionLabels();
+  // Send outcomes come from the onboarding authority, not through AppShell.
+  const sessionSendOutcomes = useOnboardingSessionSendOutcomes();
   const staleSessionIds = useExternalStoreSelector(
     props.catalog,
     selectStaleSessionIds,
-    props.sessionSendOutcomes,
+    sessionSendOutcomes,
     sessionIdSetsEqual,
   );
   const rail = useMemo(
@@ -137,6 +153,14 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     projectScopes: props.projectScopes,
     ports: props.ports,
   });
+  const openRowId = props.workHubActive ? undefined : rail.activeRowId;
+  const workHubEnabled = useWorkHubEnabled();
+  const workHubEnablement = useWorkHubEnablement();
+  const selection = useSessionSelection({
+    sessions: rail.sessions,
+    commands: controller.commands,
+    activeId: openRowId,
+  });
 
   useLayoutEffect(() => {
     props.commandsRef.current = controller.commands;
@@ -149,9 +173,6 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       },
       onArchive: (sessionId) => {
         void controller.commands.archiveSession(sessionId);
-      },
-      onUnarchive: (sessionId) => {
-        void controller.commands.unarchiveSession(sessionId);
       },
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
@@ -187,27 +208,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     (sessionId: string): readonly SessionMoveTarget[] => {
       const session = rail.sessions.find((candidate) => candidate.id === sessionId);
       if (!session) return [];
-      const targets: SessionMoveTarget[] = props.projectScopes
-        .filter(
-          (scope) =>
-            scope.hostId === session.runtimeHostId &&
-            scope.project.available &&
-            scope.project.archivedAt === undefined,
-        )
-        .map((scope) => ({
-          groupKey: projectGroupId(scope.key),
-          projectId: scope.project.id,
-          name: scope.project.name,
-        }));
-      if (session.projectId) {
-        // The one row that means "leave every project". Its name is the rail's
-        // to say, so none is given here.
-        targets.push({
-          groupKey: ungroupedGroupId(session.runtimeHostId),
-          projectId: null,
-        });
-      }
-      return targets;
+      return sessionMoveTargets(session, props.projectScopes);
     },
     [props.projectScopes, rail.sessions],
   );
@@ -263,14 +264,15 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   const data = useMemo<SessionRailData>(
     () => ({
       sessions: rail.sessions,
-      activeId: props.workHubActive ? undefined : rail.activeRowId,
+      activeId: openRowId,
       navigationSessionId: props.workHubActive || props.surfaceObscured ? undefined : props.activeSessionId,
-      streamingSessionIds: props.streamingSessionIds,
+      streamingSessionIds,
       staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
       sessionProjectName: controller.selectors.sessionProjectName,
+      sessionLocation: controller.selectors.sessionLocation,
       sessionMeta: controller.selectors.sessionMeta,
       sessionBadge,
       onSelectSession: props.onSelectSession,
@@ -284,6 +286,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     [
       controller.layout.viewMode,
       controller.selectors.groups,
+      controller.selectors.sessionLocation,
       controller.selectors.sessionMeta,
       controller.selectors.sessionProjectName,
       controller.selectors.worktreeSessionIds,
@@ -291,14 +294,15 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNewProject,
       moveDropGroupKeys,
       moveTargets,
+      openRowId,
       projectActions,
       relinkableProjectIds,
       rail,
       staleSessionIds,
-      props.streamingSessionIds,
       props.workHubActive,
       props.activeSessionId,
       props.surfaceObscured,
+      streamingSessionIds,
       rowActions,
       sessionBadge,
     ],
@@ -332,15 +336,25 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     },
     onOpenSettings: props.onOpenSettings,
     personalAssistantNavigation: <PersonalAssistantEntry activeSessionId={props.workHubActive || props.surfaceObscured ? undefined : props.activeSessionId} openSession={props.onSelectSession} />,
-    workHubEntry: props.workHubEntry,
+    workHubEntry: workHubEnabled && props.onOpenWorkHub ? {
+      active: props.workHubActive,
+      label: 'WorkHub',
+      onSelect: () => { if (workHubEnablement.isEnabled()) props.onOpenWorkHub?.(); },
+    } : undefined,
   };
 
   return (
     <SessionRailProvider
       data={data}
       chrome={chrome}
-      selection={controller.selection}
+      selection={selection}
     >
+      <SessionHistoryNavigation
+        catalog={props.catalog}
+        visible={!props.historyBlocked && props.selection.section === 'sessions' && !props.workHubActive}
+        blocked={props.historyBlocked ?? false}
+        openSession={props.onSelectSession}
+      />
       {props.children}
     </SessionRailProvider>
   );

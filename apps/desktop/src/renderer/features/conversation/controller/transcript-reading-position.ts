@@ -104,7 +104,7 @@ export type TranscriptRestoreLifecycle = ReturnType<typeof createTranscriptResto
 
 export function prepareTranscriptForSend(options: {
   sessionId: string;
-  currentSessionId: { current: string | undefined };
+  currentSessionId: { readonly current: string | undefined };
   cancel(sessionId: string, clearAnchor: boolean): void;
   followLatest(sessionId: string): void;
 }): boolean {

@@ -63,11 +63,15 @@
   border: 0;
   border-radius: var(--radius-modal);
   background: var(--agents-content-area-bg);
-  /* The pane, not the centered 920px column, is the page scroll owner. This
+  /* The pane, not the centered column, is the page scroll owner. This
      lets wheel input from either wide gutter scroll and keeps the native
      scrollbar against the pane's outer edge. */
   overflow-x: hidden;
   overflow-y: auto;
+  /* Reserve the scrollbar's track on every page. Without it the centered
+     column moved ~5px whenever a page grew long enough to scroll, so the
+     title jumped sideways when switching between short and long pages. */
+  scrollbar-gutter: stable;
 }
 
 .settingsPageHeader {
@@ -94,13 +98,15 @@
 }
 
 .settingsPageHeader h2 {
-  font: var(--maka-text-display-3);
-  /* PR-SETTINGS-PAGE-HEADER-POLISH-0 (round 12/15): tighten the h2
-     with negative tracking + slightly softer weight.
+  /* Heading 1 (20/600), not Display 3 (22/400): at regular weight the page
+     title read lighter than the 16/600 section headings under it. Display
+     roles are for rare large statements (DESIGN.md §7); a page title is a
+     heading.
      PR-SETTINGS-MOTION-TYPO-TOKENS-0 (round 15/15): `text-wrap:
      balance` so 1-2 word titles don't orphan on long pages and
      2-word titles like 「记忆与回顾」don't break across an awkward
      line. */
+  font: var(--maka-text-heading-1);
   margin: 0;
   color: var(--foreground);
   letter-spacing: var(--tracking-normal);
@@ -147,9 +153,11 @@
   /* Sections carry titles now (see settings-section.tsx), so the between-group
      gap has to out-measure the title-to-body gap inside a section or the two
      rhythms read as one flat stack. The open row idiom (no card chrome) needs
-     the larger step: 32px outside / 8px inside — the Astryx settings-dialog
-     template's own section rhythm. */
-  gap: var(--space-8);
+     the larger step: 40px between groups, while inside one the header
+     divider sits 8px under the heading and the rows hang just below it (see
+     .settingsSection). Rows carry no hairlines, so the header divider plus
+     this gap is what separates one group from the next. */
+  gap: var(--space-10);
   background: transparent;
 }
 
@@ -171,7 +179,7 @@
    sub-pages, each wrapping in their own SettingsPage):
    the inner one just passes through. */
 .settingsPageStack .settingsPageStack {
-  gap: var(--space-8);
+  gap: var(--space-10);
 }
 
 /* ---- The section unit (settings-section.tsx) ---------------------------
@@ -183,7 +191,21 @@
   /* Same explicit column as the page above, for the same reason: a wide row
      (a long mono path, a scrollable pre) must not widen the section. */
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2);
+  gap: 0;
+}
+
+/* The header divider belongs to the header: it sits close under the heading
+   and the rows hang just below it. With one 12px gap on both sides, the
+   first row's own 8px block padding put it 21px under the line — further
+   than rows sit from each other (~17px) — so the group read as a peer of its
+   heading rather than its content. */
+.settingsSection > .astryx-divider {
+  margin-block: var(--space-2) var(--space-1);
+}
+
+/* A bare body has no row padding of its own to carry that offset. */
+.settingsSection > .astryx-divider + .settingsSectionBody {
+  margin-block-start: var(--space-2);
 }
 
 .settingsSectionBodyHidden {

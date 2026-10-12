@@ -25,7 +25,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
-import { renderConversationMarkdown } from '../../renderer/conversation-markdown.js';
+import { renderConversationMarkdown } from '../../renderer/features/conversation/testing.js';
 
 describe('renderConversationMarkdown', () => {
   it('uses displayText for user turns when the model text is a skill envelope', () => {

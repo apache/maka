@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: read
+  contents: read # Checkout only; every write-capable action declares its own scope.
 
 jobs:
   # One job, not three. A runner slot is scarcer than a minute on shared
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: false # Do not leave the checkout token in git config.
 
       - id: comparison
         name: Resolve checked-out comparison
@@ -97,6 +97,7 @@ jobs:
           node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
           scripts/ci-workflow-policy.test.mjs scripts/verify-windows-harness.test.mjs
           scripts/run-workspace-tests-parallel.test.mjs
+          scripts/install-electron-with-retry.test.mjs
 
       # Pure Node like the planner test, and the labelling workflow imports this
       # module directly, so a tier or exclusion change is caught here rather
@@ -135,7 +136,7 @@ jobs:
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
       - name: Test Storybook audit contracts
-        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs scripts/storybook-visual-diff.test.mjs
       - name: Test Computer Use script contracts
         run: node --test scripts/computer-use/lab-root.test.mjs
 
@@ -437,6 +438,11 @@ jobs:
         if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a -s "-screen 0 1920x1080x24" npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/workhub-browser-presentation-smoke.mjs
 
+      - name: Browser load failure and retry smoke
+        if: steps.plan.outputs.e2e == 'true'
+        # Like the browser smoke above, this uses only a loopback fixture.
+        run: xvfb-run -a npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/browser-load-failure-smoke.mjs
+
       - name: Alignment audit
         if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a node scripts/audit-alignment.mjs
@@ -480,7 +486,7 @@ jobs:
 
       - name: Install Kache for CLI packaging
         if: steps.plan.outputs.cli_package == 'true'
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: kache@0.16.0
 
@@ -496,7 +502,7 @@ jobs:
 
       - name: Install cargo-deny for CLI packaging
         if: steps.plan.outputs.cli_package == 'true'
-        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
         with:
           tool: cargo-deny@0.20.2
 

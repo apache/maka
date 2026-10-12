@@ -112,7 +112,7 @@ class SqliteMatterStore implements MatterStore {
         .prepare('SELECT version FROM matter_schema_versions WHERE name=?')
         .get('matter_reviews');
       if (version && Number(version.version) > 2)
-        throw new Error('Review database was created by a newer plugin version');
+        throw new Error('Review database was created by a newer assistant version');
       const columns = db.prepare('PRAGMA table_info(matter_reviews)').all();
       const names = columns.map((column) => column.name);
       if (

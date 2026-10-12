@@ -70,6 +70,19 @@ const ctx = {
 // Tests
 // ============================================================================
 
+test('cancelled executor completion preserves its provider stop reason in the durable ledger', () => {
+  const event = mapSessionEventToRuntimeEvent(
+    ev({ type: 'complete', stopReason: 'user_stop', providerStopReason: 'max_tokens' }),
+    ctx,
+  );
+  assert.equal(event.status, 'aborted');
+  assert.deepEqual(event.actions?.stateDelta, {
+    stopReason: 'user_stop',
+    providerStopReason: 'max_tokens',
+    abortSource: 'user_stop',
+  });
+});
+
 describe('SessionEvent Runtime mapper', () => {
   test('maps the original steering content digest into the durable Runtime event', () => {
     const digest = `sha256:${'a'.repeat(64)}` as const;
@@ -410,6 +423,9 @@ type ProjectionSamples = {
 };
 
 const PROJECTION_SAMPLES: ProjectionSamples = {
+  context_compaction_applied: {
+    subject: { type: 'context_compaction_applied', id: 'e', turnId: 'turn-1', ts: 1 },
+  },
   text_delta: {
     subject: { type: 'text_delta', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'h' },
   },

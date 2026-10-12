@@ -73,6 +73,8 @@ await build({
   },
   outfile: '.artifacts/main-api.mjs',
   bundle: true,
+  // Native bindings must load from their package, not from the ESM test bundle.
+  external: ['fs-native-extensions'],
   platform: 'node',
   format: 'esm',
   target: 'node22',

@@ -21,7 +21,7 @@ import { useEffect, useMemo } from 'react';
 import type { ContextCompactionOutcome } from '@maka/core/events';
 import { ToastProvider, useToast, useUiLocale } from '@maka/ui';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { createContextCompactionPresentation } from '../src/renderer/app-shell-context-compaction.js';
+import { createContextCompactionPresentation } from '../src/renderer/features/conversation/testing.js';
 
 type CompactionPhase = 'running' | ContextCompactionOutcome['kind'];
 

@@ -28,6 +28,7 @@ import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@
 import { deriveTurnRecords, decodeCanonicalMessage } from '@maka/core/session';
 import type { CanonicalPermissionOutcomeRecord } from '../interaction-authority.js';
 import {
+  classifyRuntimeEventTerminalFact,
   createRuntimeEventStoredMessageProjector,
   isHardRuntimeEventReadModelDiagnostic,
   isUnclaimedRuntimeEventDiagnostic,
@@ -2102,6 +2103,38 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
+  // The exact shape AgentRun.reachHandoffBoundary commits: endInvocation plus
+  // the pause, and deliberately no terminal status. Ledgers written before the
+  // classifier learned this shape carry this event, immutable.
+  test('handoff-pause terminal RuntimeEvent classifies as handed off', () => {
+    const pauseEvent = ev({
+      id: 'evt-handoff-pause',
+      author: 'host',
+      modelVisibility: 'hidden',
+      actions: {
+        endInvocation: true,
+        handoffPause: {
+          claimId: 'claim-1',
+          handoffId: 'handoff-1',
+          hostEpoch: 'epoch-1',
+          protocol: 'runtime_handoff_pause_v1',
+          remainingSteps: null,
+          rootRunId: runId,
+          successorInvocationId: 'successor-inv-1',
+          successorRunId: 'successor-run-1',
+        },
+      },
+    });
+    const result = classifyRuntimeEventTerminalFact({ sessionId, runId, turnId }, [
+      ev({ id: 'evt-open' }),
+      pauseEvent,
+    ]);
+    assert.equal(result.fact?.runStatus, 'handed_off');
+    assert.equal(result.fact?.turnStatus, 'handed_off');
+    assert.equal(result.fact?.terminalEvent.id, 'evt-handoff-pause');
+    assert.deepEqual(result.diagnostics, []);
+  });
+
   test('projects tool_call stepId from refs so the UI timeline keeps step pairing', () => {
     const stepCall = (id: string, stepId?: string) =>
       ev({
@@ -2664,10 +2697,6 @@ class ReadOnlyStore implements SessionStore {
   }
 
   async create(_input: CreateSessionInput): Promise<SessionHeader> {
-    throw new Error('not implemented');
-  }
-
-  async setExecutionBoundaryKind(): Promise<never> {
     throw new Error('not implemented');
   }
 

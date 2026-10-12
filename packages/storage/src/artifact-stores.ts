@@ -156,9 +156,6 @@ function createWriterFacade(
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,
         turnIds: Object.freeze([...input.turnIds]),
-        ...(input.excludeArtifactIds
-          ? { excludeArtifactIds: Object.freeze([...input.excludeArtifactIds]) }
-          : {}),
         ...(input.includeArtifactIds
           ? { includeArtifactIds: Object.freeze([...input.includeArtifactIds]) }
           : {}),

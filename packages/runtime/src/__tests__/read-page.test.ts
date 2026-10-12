@@ -23,7 +23,7 @@ import {
   readPage,
   readToolResultPage,
   resolveReadInput,
-  READ_PAGE_MAX_CHARS,
+  READ_PAGE_MAX_BYTES,
   type ReadInput,
 } from '../read-page.js';
 
@@ -46,7 +46,7 @@ test('default and explicit large ranges stay bounded and continue to the request
     const returned: string[] = [];
     while (input) {
       const page = readPage(lines.join('\n'), input);
-      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
       assert.ok(page.returnedLines > 0);
       returned.push(...page.content.split('\n'));
       assert.notDeepEqual(page.next, input);
@@ -63,7 +63,7 @@ test('a long Unicode line continues without loss and refuses changed content', (
   let input: ReadInput | null = { path: 'long.txt', offset: 1, limit: 1 };
   while (input) {
     const page = readPage(content, input);
-    assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
     assert.ok(page.content.length > 0);
     assert.ok(!/[\uD800-\uDBFF]$/.test(page.content));
     pieces.push(page.content);
@@ -143,7 +143,7 @@ test('archive Read pages a long shell failure without losing output or execution
   let pages = 0;
   while (input) {
     const page = readToolResultPage(serialized, input);
-    assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
     assert.equal(page.metadata?.status, 'failed');
     assert.equal(page.metadata?.exitCode, 7);
     assert.equal(page.metadata?.failureMessage, undefined);
@@ -168,7 +168,7 @@ test('archive Read preserves fields beside structured text across pages', () => 
     let recovered = '';
     while (input) {
       const page = readToolResultPage(serialized, input);
-      assert.ok(JSON.stringify(page).length <= READ_PAGE_MAX_CHARS);
+      assert.ok(Buffer.byteLength(JSON.stringify(page)) <= READ_PAGE_MAX_BYTES);
       recovered += page.content;
       input = page.next;
     }

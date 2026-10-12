@@ -18,6 +18,7 @@
  */
 
 import type { SessionBlockedReason, SessionStatus } from '@maka/core/session';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
@@ -73,6 +74,11 @@ export function presentSessionStatus(
     label: getConversationCopy(locale).sessions.status[status],
     ...(semantic ? { variant: dotForStatus(semantic) } : {}),
   };
+}
+
+/** The stored name stays: the Host titles only a Session still carrying it. */
+export function presentSessionName(name: string, locale: UiLocale): string {
+  return name === DEFAULT_SESSION_NAME ? getConversationCopy(locale).sessions.untitled : name;
 }
 
 /**

@@ -217,7 +217,7 @@ test('reassembles per-item relay profiles into the connection profile table', as
   const profile = { thinkingLevels: ['low'], vision: false, contextWindow: 65_536 } as const;
   const [entry] = resolveConnectionModelCatalog({
     slug: 'relay',
-    providerType: 'openai-compatible',
+    providerType: 'custom',
     defaultModel: '',
     models: [],
     modelSource: 'fetched',

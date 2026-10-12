@@ -227,9 +227,9 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
           cursor.sinceEpochSeconds,
           Math.floor(event.receivedAt / 1000),
         );
+        if (!this.emitIncomingMessage(event)) continue;
         this.readiness = 'operational';
         this.reason = undefined;
-        this.emitIncomingMessage(event);
         this.emitStatusChange();
       }
       return true;
@@ -274,10 +274,9 @@ export class WechatBridge extends BaseBotAdapter implements SendCapable {
         for (const message of messages) {
           const event = mapWechatIlinkMessage(message);
           if (!event) continue;
+          if (!this.emitIncomingMessage(event)) continue;
           this.readiness = 'operational';
           this.reason = undefined;
-          this.lastEventAt = Date.now();
-          this.emitIncomingMessage(event);
           this.emitStatusChange();
         }
         if (this.running && messages.length === 0) await sleep(800);

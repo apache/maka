@@ -25,10 +25,10 @@ import {
   createTestAiSdkBackend,
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
-} from '../.artifacts/live-api.mjs';
+} from '../.artifacts/runtime-test-api.mjs';
 import { fixture, until } from './platform-helper.js';
 
-test('plugin finish hook and four review rejections keep the same Maka turn running until approval', async (t) => {
+test('native finish hook and four review rejections keep the same Maka turn running until approval', async (t) => {
   let reviewCalls = 0;
   const f = await fixture({
     review: async () => {

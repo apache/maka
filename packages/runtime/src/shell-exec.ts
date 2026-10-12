@@ -27,7 +27,8 @@
 // the process cannot be spawned at all. Each caller maps those facts to its own
 // contract.
 
-import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { spawnOwnedProcess } from './owned-child-process.js';
 import { buildShellSpawnPlan, defaultShellPlan, type ShellPlan } from './shell-detect.js';
 import { BashTailBuffer } from './bash-tail-buffer.js';
 import { DEFAULT_PROCESS_TERMINATION_GRACE_MS } from './process-tree-terminator.js';
@@ -36,12 +37,7 @@ import {
   manageChildProcessLifecycle,
   type ChildProcessLifecycleResult,
 } from './child-process-lifecycle.js';
-import {
-  buildSpawnStdio,
-  closeChildFdSources,
-  writeChildFdInputs,
-  type ChildFdInput,
-} from './child-fd-input.js';
+import { closeChildFdSources, writeChildFdInputs, type ChildFdInput } from './child-fd-input.js';
 
 // Per-stream cap on the output RETAINED for the result (~1MB). This only bounds
 // what is kept to return. The tool layer preserves this result for durable
@@ -65,7 +61,11 @@ export const LIVE_OUTPUT_SUPPRESSED_MARKER =
 
 export interface BoundedShellOptions {
   cwd: string;
-  /** Hard wall-clock cap; the child is SIGTERM'd and `timedOut` is set. */
+  /**
+   * Hard wall-clock cap on the command, counted from its admission so the
+   * owning supervisor's startup does not consume it; the child is SIGTERM'd
+   * and `timedOut` is set.
+   */
   timeoutMs: number;
   /** Per-stream retained-tail cap in characters. Defaults to BASH_MAX_RETAINED_CHARS. */
   maxRetainedChars?: number;
@@ -165,19 +165,18 @@ function runSpawnedProcessWithBoundedTail(
     });
   }
   return new Promise<BoundedShellResult>((resolvePromise, reject) => {
-    let child: ReturnType<typeof spawn>;
+    let child: ChildProcess;
+    let admitted: Promise<unknown>;
     try {
-      child = spawn(program, [...args], {
+      ({ child, ready: admitted } = spawnOwnedProcess({
+        program,
+        args,
         cwd: options.cwd,
         env: options.env,
         shell: useShellOption,
-        stdio: buildSpawnStdio(options.fdInputs, stdin === undefined ? 'ignore' : 'pipe'),
-        // POSIX: make the shell its own process-group leader (setsid). Termination
-        // signals the group and removes descendants visible outside it at each
-        // process-table snapshot.
-        // Windows has no process groups; taskkill /T owns the equivalent cleanup.
-        detached: process.platform !== 'win32',
-      });
+        stdin: stdin === undefined ? 'ignore' : 'pipe',
+        fdInputs: options.fdInputs,
+      }));
     } finally {
       closeChildFdSources(options.fdInputs);
     }
@@ -210,7 +209,17 @@ function runSpawnedProcessWithBoundedTail(
     );
     void lifecycle.completion.then(resolveOnce, rejectOnce);
 
-    const timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
+    // The budget is the command's, as with a direct spawn: start it once the
+    // supervisor has admitted the command. A supervisor that never admits it
+    // fails through its own startup timeout.
+    let timer: NodeJS.Timeout | undefined;
+    void admitted.then(
+      () => {
+        if (settled || termination) return;
+        timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
+      },
+      () => {},
+    );
     const abort = () => beginTermination({ aborted: true });
     if (options.abortSignal) {
       if (options.abortSignal.aborted) abort();

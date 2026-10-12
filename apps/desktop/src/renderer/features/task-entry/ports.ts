@@ -31,7 +31,10 @@ export interface TaskEntryHostRef {
 export interface TaskEntryError {
   readonly title: string;
   readonly description?: string;
-  readonly profileId: string;
+  /** The Host profile the failed operation ran on, when one was resolved. */
+  readonly profileId?: string;
+  /** The task whose folder failed to open; reported instead of a profile. */
+  readonly sessionId?: string;
 }
 
 export interface TaskEntryTarget extends TaskEntryHostRef {
@@ -97,7 +100,8 @@ export interface TaskEntryCatalog {
 
 export type TaskEntryProjectMutationResult =
   | { readonly ok: true; readonly project: ProjectRecord }
-  | { readonly ok: false; readonly reason: 'cancelled' };
+  | { readonly ok: false; readonly reason: 'cancelled' }
+  | { readonly ok: false; readonly reason: 'archived'; readonly projectId: string };
 
 export type TaskEntrySessionWorkspaceResult =
   | { readonly ok: true }
@@ -111,6 +115,7 @@ export interface TaskEntryCatalogService {
   getCatalog(): Promise<TaskEntryCatalog>;
   subscribeChanges(handler: () => void): TaskEntryUnsubscribe;
   addProject(host: TaskEntryHostRef, name?: string): Promise<TaskEntryProjectMutationResult>;
+  restoreProject(host: TaskEntryHostRef, projectId: string): Promise<TaskEntryProjectMutationResult>;
   relinkProject(
     host: TaskEntryHostRef,
     projectId: string,
@@ -126,7 +131,6 @@ export interface TaskEntryCatalogService {
     name: string,
   ): Promise<void>;
   archiveProject(host: TaskEntryHostRef, projectId: string): Promise<void>;
-  restoreProject(host: TaskEntryHostRef, projectId: string): Promise<void>;
 }
 
 export interface TaskEntrySessionService {
@@ -136,7 +140,41 @@ export interface TaskEntrySessionService {
   ): Promise<TaskEntrySessionWorkspaceResult>;
 }
 
+/** A folder Task Entry / Workspace reveals in the system file manager. */
+export type TaskEntryFolder = 'project' | 'workspace';
+
+/** Where a folder failure is reported: the task it belonged to, or the Host profile it ran on. */
+export type TaskEntryFolderDiagnosticTarget =
+  | { readonly sessionId: string }
+  | { readonly profileId: string };
+
+export type TaskEntryFolderOpenResult =
+  | { readonly kind: 'opened' }
+  /** Desktop refused the folder; `reason` is its open-path failure code. */
+  | {
+      readonly kind: 'refused';
+      readonly reason: string;
+      readonly diagnosticTarget: TaskEntryFolderDiagnosticTarget;
+    }
+  /** The request itself failed; no target when the default Host was never resolved. */
+  | {
+      readonly kind: 'failed';
+      readonly error: unknown;
+      readonly diagnosticTarget?: TaskEntryFolderDiagnosticTarget;
+    };
+
+export interface TaskEntryFolderService {
+  /**
+   * Reveals the project folder of the task `sessionId`, or the default
+   * Runtime Host's project folder when no task is given.
+   */
+  openProjectFolder(sessionId?: string): Promise<TaskEntryFolderOpenResult>;
+  /** Reveals the default Runtime Host's workspace folder. */
+  openWorkspaceFolder(): Promise<TaskEntryFolderOpenResult>;
+}
+
 export interface TaskEntryServices {
   readonly catalog: TaskEntryCatalogService;
   readonly sessions: TaskEntrySessionService;
+  readonly folders: TaskEntryFolderService;
 }

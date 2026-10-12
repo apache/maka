@@ -25,8 +25,8 @@ import { parseHTML } from 'linkedom';
 import {
   SessionSettingsServicesProvider,
   type SessionSettingsServices,
-  useSessionSettingIntent,
 } from '../../renderer/features/session-settings/index.js';
+import { useSessionSettingsController } from '../../renderer/features/session-settings/testing.js';
 import { reconcileRuntimeHostSessionCatalog } from '../../preload/runtime-host-session-catalog.js';
 import {
   createSessionCatalogController,
@@ -34,7 +34,7 @@ import {
 } from '../../renderer/application/contracts/session-catalog/session-catalog-state.js';
 import type { DesktopSessionSummary } from '../../shared/desktop-session-projection.js';
 
-type Controller = ReturnType<typeof useSessionSettingIntent<{ sessionId?: string }>>;
+type Controller = ReturnType<typeof useSessionSettingsController<{ sessionId?: string }>>;
 
 const originalGlobals = {
   document: globalThis.document,
@@ -55,7 +55,6 @@ afterEach(async () => {
 
 test('rejects non-chat permission modes before confirmation or persistence', async () => {
   let permissionWrites = 0;
-  let draftWrites = 0;
   let confirmations = 0;
   const { controller } = await mountController({
     services: createServices({
@@ -64,9 +63,6 @@ test('rejects non-chat permission modes before confirmation or persistence', asy
         return {} as DesktopSessionSummary;
       },
     }),
-    setNewTaskPermissionMode: () => {
-      draftWrites += 1;
-    },
     confirmBypass: async () => {
       confirmations += 1;
       return true;
@@ -80,7 +76,7 @@ test('rejects non-chat permission modes before confirmation or persistence', asy
 
   assert.equal(accepted, false);
   assert.equal(permissionWrites, 0);
-  assert.equal(draftWrites, 0);
+  assert.equal(controller().newTask.permissionChoice, undefined);
   assert.equal(confirmations, 0);
 });
 
@@ -418,7 +414,6 @@ async function mountController(overrides: {
   services?: SessionSettingsServices;
   owner?: { sessionId?: string };
   sessions?: readonly DesktopSessionSummary[];
-  setNewTaskPermissionMode?(mode: 'ask' | 'bypass'): void;
   confirmBypass?(): Promise<boolean>;
   saveComposerDefaults?(model: {
     llmConnectionId: string;
@@ -452,7 +447,6 @@ async function mountController(overrides: {
         },
         owner: overrides.owner ?? {},
         catalog,
-        setNewTaskPermissionMode: overrides.setNewTaskPermissionMode ?? (() => {}),
         confirmBypass: overrides.confirmBypass ?? (async () => true),
         saveComposerDefaults: overrides.saveComposerDefaults ?? (() => {}),
       }),
@@ -471,7 +465,6 @@ function Harness(props: {
   capture(controller: Controller): void;
   owner: { sessionId?: string };
   catalog: SessionCatalogController;
-  setNewTaskPermissionMode(mode: 'ask' | 'bypass'): void;
   confirmBypass(): Promise<boolean>;
   saveComposerDefaults(model: {
     llmConnectionId: string;
@@ -479,18 +472,18 @@ function Harness(props: {
     model: string;
   }): void;
 }) {
-  const controller = useSessionSettingIntent({
+  const controller = useSessionSettingsController({
     catalog: props.catalog,
     isActiveSession: () => true,
+    newTaskChoiceKey: 'new-task:test',
     newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: props.saveComposerDefaults,
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
     showSessionError: () => {},
-    planMode: { write: async () => true },
+    planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => props.owner,
     isOwnerActive: () => true,
-    setNewTaskPermissionMode: props.setNewTaskPermissionMode,
     confirmBypass: props.confirmBypass,
   });
   props.capture(controller);
@@ -501,18 +494,18 @@ function CausalRetirementHarness(props: {
   capture(controller: Controller): void;
   catalog: SessionCatalogController;
 }) {
-  const controller = useSessionSettingIntent({
+  const controller = useSessionSettingsController({
     catalog: props.catalog,
     isActiveSession: () => true,
+    newTaskChoiceKey: 'new-task:test',
     newSessionPermissionMode: 'ask',
     refreshCatalog: async () => {},
     saveComposerDefaults: () => {},
     writeFailureCopy: () => ({ title: 'failed', description: 'failed' }),
     showSessionError: () => {},
-    planMode: { write: async () => true },
+    planMode: { reportExecutionActive: () => {}, confirmDiscard: async () => true },
     captureOwner: () => ({ sessionId: 'session-a' }),
     isOwnerActive: () => true,
-    setNewTaskPermissionMode: () => {},
     confirmBypass: async () => true,
   });
   props.capture(controller);
@@ -545,6 +538,7 @@ function createServices(
   overrides: Partial<SessionSettingsServices> = {},
 ): SessionSettingsServices {
   return {
+    getPlanState: async (sessionId) => ({ schemaVersion: 1, sessionId, storeVersion: 0, proposals: [], executions: [] }),
     setModelConfiguration: async () => ({} as DesktopSessionSummary),
     setPermissionMode: async () => ({} as DesktopSessionSummary),
     setOrchestrationMode: async () => ({} as DesktopSessionSummary),

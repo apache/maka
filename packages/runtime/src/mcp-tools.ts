@@ -231,12 +231,22 @@ function mcpToolDescription(descriptor: McpToolDescriptor): string {
 
 export function mcpProxyToolName(serverId: string, toolName: string): string {
   const raw = `mcp__${sanitizeNamePart(serverId)}__${sanitizeNamePart(toolName)}`;
-  if (raw.length <= MAX_PROVIDER_TOOL_NAME) return raw;
+  // Preserve existing simple names; hash identities whose spelling or separators are ambiguous.
+  if (
+    raw.length <= MAX_PROVIDER_TOOL_NAME &&
+    sanitizeNamePart(serverId) === serverId &&
+    sanitizeNamePart(toolName) === toolName &&
+    !serverId.includes('__') &&
+    !toolName.includes('__')
+  )
+    return raw;
   const hash = createHash('sha256')
     .update(`${serverId}\0${toolName}`)
     .digest('hex')
     .slice(0, HASH_CHARS);
-  return `${raw.slice(0, MAX_PROVIDER_TOOL_NAME - HASH_CHARS - 2)}__${hash}`;
+  // A truncated name must not become another identity's unmodified name.
+  const hashed = `mcp_h__${sanitizeNamePart(serverId)}__${sanitizeNamePart(toolName)}`;
+  return `${hashed.slice(0, MAX_PROVIDER_TOOL_NAME - HASH_CHARS - 2)}__${hash}`;
 }
 
 function sanitizeNamePart(value: string): string {

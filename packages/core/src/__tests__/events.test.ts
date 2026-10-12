@@ -24,8 +24,26 @@ import {
   decodeToolStepProgress,
   encodeToolStepProgress,
   decodeMessageContent,
+  foldAssistantDelta,
   isQuoteRef,
 } from '../events.js';
+
+test('folds assistant deltas idempotently by source offset', () => {
+  assert.deepStrictEqual(foldAssistantDelta(0, { startOffset: 0, text: 'Hello' }), {
+    tail: 'Hello',
+    endOffset: 5,
+  });
+  assert.deepStrictEqual(foldAssistantDelta(5, { startOffset: 0, text: 'Hello world' }), {
+    tail: ' world',
+    endOffset: 11,
+  });
+  assert.deepStrictEqual(foldAssistantDelta(11, { startOffset: 0, text: 'Hello' }), {
+    tail: '',
+    endOffset: 11,
+  });
+  assert.deepStrictEqual(foldAssistantDelta(3, { text: 'abc' }), { tail: 'abc', endOffset: 6 });
+  assert.strictEqual(foldAssistantDelta(3, { startOffset: 4, text: 'gap' }), undefined);
+});
 
 test('aggregates inline references against the combined display text', () => {
   assert.deepStrictEqual(
