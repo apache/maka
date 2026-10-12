@@ -44,7 +44,7 @@ import {
 } from '../model/session-health-notice.js';
 type ComposerDefaults = { model: NewChatModelCandidate | null };
 import { getDesktopConversationCopy } from '../../../application/contracts/conversation-copy.js';
-import { useNewTaskChoice } from './use-new-task-choice.js';
+import { useNewTaskChoice } from '../../../application/contracts/use-new-task-choice.js';
 
 export type { NewChatModel } from '../model/shell-chat-model-selection.js';
 export type NewChatExecutionTarget = NewChatModel | { executorId: string; model: string };
@@ -86,6 +86,7 @@ export function useShellChatModel(options: {
   newTaskKey: string;
   executorTarget?: import('../ports.js').ConversationNewTaskTarget;
   executorCwd?: string;
+  executorSessionPending?: boolean;
   activationCandidate?: NewChatModelCandidate;
   activeSession: SessionSummary | undefined;
   sessionHealthSession: SessionSummary | undefined;
@@ -124,7 +125,7 @@ export function useShellChatModel(options: {
   onExecutorTargetChange: (target: MakaClientExecutorTarget) => Promise<void>;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
-  const executor = useExecutorSelection({ key: options.newTaskKey, target: options.executorTarget, cwd: options.executorCwd, session: options.activeSession });
+  const executor = useExecutorSelection({ key: options.newTaskKey, target: options.executorTarget, cwd: options.executorCwd, session: options.activeSession, sessionPending: options.executorSessionPending });
   const {
     uiLocale,
     connections,

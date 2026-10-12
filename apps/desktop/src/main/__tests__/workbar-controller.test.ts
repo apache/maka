@@ -18,6 +18,7 @@
  */
 
 import { WorkHubWorkspaceServicesProvider, type WorkHubWorkspaceServices } from '../../renderer/application/contracts/workhub-workspace/use-workhub-workspace.js';
+import { WorkHubEnablementProvider } from '../../renderer/application/contracts/workhub-workspace/workhub-enablement.js';
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
@@ -25,7 +26,7 @@ import { act, createElement, StrictMode, useLayoutEffect } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardActiveItem, WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { LocaleProvider, type ToastApi } from '@maka/ui';
+import { LocaleProvider, ToastProvider, type ToastApi } from '@maka/ui';
 import {
   cleanupFakeDom,
   fakeMediaQueryMatches,
@@ -117,6 +118,8 @@ function ControllerProbe(props: ControllerProbeInput) {
 
 const connectedServices = new WeakSet<WorkbarServices>();
 
+const WORKHUB_OFF = { isEnabled: () => false, subscribe: () => () => {} };
+
 function renderController(
   root: ReturnType<typeof installReactRenderer>['root'],
   services: WorkbarServices,
@@ -142,7 +145,7 @@ function renderController(
       children: createElement(
         WorkbarServicesProvider,
         { services },
-        createElement(ControllerProbe, input),
+        createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(ControllerProbe, input)),
       ),
     },
   );
@@ -248,7 +251,7 @@ function workBoardInput(
       ownerRef.current += 1;
       return ownerRef.current;
     },
-    composerRef: { current: { setDraft: () => undefined, focus: () => undefined } },
+    composerDraft: { seedDraft: () => undefined, focus: () => undefined },
     ...overrides,
   };
 }
@@ -312,12 +315,16 @@ function renderWorkBoardComposition(
     createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(
-        TaskEntryServicesProvider,
-        { services: taskEntryServices },
+        ToastProvider,
+        null,
         createElement(
-          WorkbarServicesProvider,
-          { services: workbarServices },
-          createElement(WorkBoardCompositionProbe, { ownerRef }),
+          TaskEntryServicesProvider,
+          { services: taskEntryServices },
+          createElement(
+            WorkbarServicesProvider,
+            { services: workbarServices },
+            createElement(WorkHubEnablementProvider, { value: WORKHUB_OFF }, createElement(WorkBoardCompositionProbe, { ownerRef })),
+          ),
         ),
       ),
     }),
@@ -765,8 +772,9 @@ describe('useWorkbarController', () => {
     const render = (active: boolean) => root.render(createElement(LocaleProvider, {
       locale: 'en',
       children: createElement(WorkbarServicesProvider, { services },
-        createElement(WorkHubWorkspaceServicesProvider, { value: coordination },
-          createElement(ControllerProbe, { ...ordinary, workHub: { enabled: true, active } }))),
+        createElement(WorkHubEnablementProvider, { value: { isEnabled: () => true, subscribe: () => () => {} } },
+          createElement(WorkHubWorkspaceServicesProvider, { value: coordination },
+            createElement(ControllerProbe, { ...ordinary, workHub: { active } })))),
     }));
     await act(async () => render(true));
     assert.equal(controller().host.activeId, coordinationId);

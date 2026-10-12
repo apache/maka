@@ -6,7 +6,7 @@ source_language: en
 implementation_status: current
 document_status: current
 translation_status: synced
-last_verified: 2026-09-04
+last_verified: 2026-10-10
 owners:
   - maka-backend
 ---
@@ -169,12 +169,13 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - readiness probe 的抛弃式 profile 生命周期必须隔离且 fail closed； _(已实现:probe profile 位于专属 `maka.readiness.` 命名空间,与生产 `maka.sandbox.` 命名空间结构性不相交,其保留的 `requestId` 被 launch validation 拒绝,任何生产启动都无法解析到 probe 删除并重建的那个 profile;整个 delete→create→probe→settle→drop 生命周期由一个 DACL 加固的按用户命名互斥量跨进程串行——与 ACL ledger 复用同一原语——使并发 probe 不会互删对方的 active 注册;当 probe 无法证明其 Job 清空时按该周期 fail closed(报告不可用),固定的 readiness identity 并不被持久隔离——清理依赖 kill-on-close Job 的整树终止,且因该 probe 不授任何 filesystem root,一个假设存活的子进程也继承不到任何 ACE 权限;消费侧对负可用性结果只按有界 TTL 缓存,以限制一次瞬时失败毒化 module 缓存的时长:由**下一次 composition 构建**重探,而非运行中的宿主原地恢复——filesystem worker 在 composition 构建时一次性发布,故一个已判负的宿主只在新 composition 或 Runtime Host 重启时恢复,正结果则按进程生命周期缓存。未证清空 identity 的持久隔离,以及运行中宿主的主动 readiness 恢复,均为后续门禁——见 §6.5。)_
 - launcher signature/version/digest 必须与 package metadata 一致； _(后续门禁：每次启动的 request digest 目前已在 broker 内重算并强制；对照打包 metadata 校验 launcher 二进制的 signature 与 version 随 Phase 3 签名一并暂缓 —— 见 §6.5。)_
 - setup 缺失、identity drift、ACL state 损坏、网络策略无效、文件系统不支持、helper 不匹配、probe 失败都返回
-  stable typed unavailable reason； _(后续门禁:readiness probe 目前把每种失败收敛为单一 fail-closed 布尔,统一以
-  `backend_not_available` 呈现;结构化 typed reason 尚未实现,暂缓 —— 见 §6.5。)_
+  stable typed unavailable reason； _(后续门禁:readiness probe 目前把每种 probe 失败收敛为单一 fail-closed 布尔,统一以
+  `backend_not_available` 呈现;更细的 probe 层 typed reason 暂缓 —— transform 层已区分
+  `unsupported_platform`、`backend_not_available`、`invalid_request`。见 §6.5。)_
 - restricted managed profile 在 `auto`/`require` 下绝不 fallback host execution；
 - diagnostics 只暴露 backend、setup version 与 failure stage，不暴露 path、SID、credential、env 或 firewall detail。 _(后续门禁:probe 以 `stdio: 'ignore'` 运行且只保留退出结果,setup version 与 failure stage 尚未传播,与结构化 unavailable reason 一并暂缓 —— 见 §6.5。)_
 
-### 6.5 预览实现状态（2026-08-24）
+### 6.5 预览实现状态（2026-08-25）
 
 首个预览切片 [#2961](https://github.com/apache/maka/pull/2961) 已于 2026-08-17 合并，强制上述保证的一个子集。本节把文档与已交付代码对齐，使 RFC 不 overclaim：§6.3/§6.4 中尚未强制的保证在此显式标为后续门禁。标注 `(#3722)` 的条目（Runtime Host 父进程 wait handle、64 次 soak、恶意 child 矩阵）与标注 `(#3174)` 的条目（readiness probe 与 private desktop 放置）落在对应后续 PR，而非已合并的 #2961 切片；其余未标注条目由 #2961 当前强制。
 
@@ -206,8 +207,9 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - readiness 阶段的完整策略覆盖（§6.4):readiness probe 已建立生产 AppContainer identity/token、kill-on-close Job 与 private desktop 并在其上启动受限子进程,但尚未在 readiness 阶段编译并演练按 profile 的精确 filesystem 根与 offline network 策略 —— 这些目前按每次启动强制,而非在 readiness 阶段复证;
 - 随 Phase 3 签名一并落地的 launcher signature/version 校验（§6.4）。
 - 结构化 unavailable reason 与 diagnostics（§6.4）:readiness probe 以单一 fail-closed 布尔(呈现为
-  `backend_not_available`)收敛所有失败;stable typed unavailable reason 与 setup-version/failure-stage
-  诊断已设计但尚未实现或传播。
+  `backend_not_available`)收敛所有 probe 失败;更细的 probe 层 typed reason 与 setup-version/failure-stage
+  诊断已设计但尚未实现或传播。（transform 层已区分 `unsupported_platform`、`backend_not_available`、
+  `invalid_request`。）
 - readiness 的跨进程并发真机竞态覆盖（§6.4）:readiness profile 生命周期已由命名互斥量串行,并有针对
   互斥量名、命名空间与 validation 原语的单元测试;在真实 Windows 宿主上 spawn 多个并发 probe 的多进程
   竞态测试暂缓——对一个抛弃式诊断探针不成比例且在 CI 中天然 flaky。被强制的契约是串行化原语本身,而非

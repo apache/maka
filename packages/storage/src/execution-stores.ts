@@ -17,11 +17,16 @@
  * under the License.
  */
 
+import {
+  openInteractiveEventWaitAuthorityForWrite,
+  type InteractiveEventWaitAuthorityWriter,
+} from './event-wait-authority.js';
 import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type {
   RuntimeContinuationAuthorityStore,
   RuntimeInvocationRecoveryInventoryEntry,
+  RuntimeSessionEventSnapshot,
 } from '@maka/core/runtime-event-store';
 import type { ImmutableRuntimePrefixProofV1 } from '@maka/core/runtime-boundary';
 import type { RuntimeTranscriptQueries } from './runtime-transcript-query.js';
@@ -141,6 +146,10 @@ export type {
 export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
 export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
 export type {
+  ArchiveRetentionCandidate,
+  ArchiveRetentionCandidateCount,
+  ArchiveRetentionCandidateQuery,
+  ArchiveRetentionCandidateRow,
   CreateStableSessionRequest,
   ProbeSessionRemovalResult,
   ExternalSessionImportLookupResult,
@@ -210,6 +219,7 @@ interface ExecutionStoresWriterBase<K extends StorageRootKind> {
 
 export interface InteractiveExecutionStoresWriter extends ExecutionStoresWriterBase<'interactive'> {
   readonly graphControlStore: ExecutionGraphStore;
+  readonly eventWaitStore: InteractiveEventWaitAuthorityWriter;
   readonly goalStore: InteractiveGoalAuthorityWriter;
   readonly interactionStore: InteractiveInteractionStoreWriterFacade;
 }
@@ -258,6 +268,7 @@ export interface ExecutionAgentRunReader {
 }
 
 export interface ExecutionRuntimeEventReader {
+  readSessionRuntimeSnapshot?(sessionId: string): Promise<RuntimeSessionEventSnapshot>;
   /**
    * A Session's run inventory, read from its canonical events. This is the
    * definition of the inventory, not a cache of it, so nothing writes or
@@ -420,6 +431,7 @@ async function createExecutionStoresForWrite(
     purge: (sessionId: string) => persistence.purgeConversationOperationalState(sessionId),
   };
   let interactionStore: InteractiveInteractionStoreWriterFacade | undefined;
+  let eventWaitStore: InteractiveEventWaitAuthorityWriter | undefined;
   let goalStore: InteractiveGoalAuthorityWriter | undefined;
   const releaseChildBindings: Array<() => void> = [];
   const retainUntilGroupClose = (release: () => void) => releaseChildBindings.push(release);
@@ -442,6 +454,21 @@ async function createExecutionStoresForWrite(
       provider === localExecutionPersistenceProvider ? createSqliteInteractionStore : provider,
       retainUntilGroupClose,
     );
+    if (
+      !persistence.eventWaitStore ||
+      ['read', 'listSession', 'listPending', 'commit', 'close'].some(
+        (name) => typeof Reflect.get(persistence.eventWaitStore, name) !== 'function',
+      )
+    ) {
+      throw new TypeError('Execution persistence requires an eventWaitStore');
+    }
+    eventWaitStore = await openInteractiveEventWaitAuthorityForWrite(lease, {
+      read: (input) => run(async () => persistence.eventWaitStore.read(input)),
+      listSession: (input) => run(async () => persistence.eventWaitStore.listSession(input)),
+      listPending: (input) => run(async () => persistence.eventWaitStore.listPending(input)),
+      commit: (input) => run(async () => persistence.eventWaitStore.commit(input)),
+      close: () => {},
+    });
     goalStore = await openInteractiveGoalAuthorityForWrite(
       lease,
       () => ({
@@ -459,6 +486,11 @@ async function createExecutionStoresForWrite(
     const failures: unknown[] = [error];
     try {
       if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
+    } catch (closeError) {
+      failures.push(closeError);
+    }
+    try {
+      await eventWaitStore?.close();
     } catch (closeError) {
       failures.push(closeError);
     }
@@ -493,6 +525,11 @@ async function createExecutionStoresForWrite(
       }
       subscriptions.clear();
       await Promise.allSettled([...active]);
+      try {
+        await eventWaitStore!.close();
+      } catch (error) {
+        errors.push(error);
+      }
       try {
         await goalStore!.close();
       } catch (error) {
@@ -540,6 +577,7 @@ async function createExecutionStoresForWrite(
     interactionStore,
     graphControlStore,
     goalStore,
+    eventWaitStore,
     kind,
     [executionStoresWriterBrand]: kind,
     purgeConversationOperationalState: (sessionId) =>
@@ -696,6 +734,11 @@ async function createExecutionStoresForWrite(
         run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
+      listArchiveRetentionCandidates: (query) =>
+        run(() => sessionStore.listArchiveRetentionCandidates(query)),
+      countArchiveRetentionCandidates: (enabledAt) =>
+        run(() => sessionStore.countArchiveRetentionCandidates(enabledAt)),
+      readLatestSessionMetadataTime: () => run(() => sessionStore.readLatestSessionMetadataTime()),
       close,
     },
     agentRunStore: {
@@ -756,6 +799,12 @@ async function createExecutionStoresForWrite(
         ),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      ...(runtimeEventStore.readSessionRuntimeSnapshot
+        ? {
+            readSessionRuntimeSnapshot: (sessionId: string) =>
+              run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
+          }
+        : {}),
       scanRuntimeEvents: (sessionId, runId, budget, visit) =>
         run(() => runtimeEventStore.scanRuntimeEvents(sessionId, runId, budget, visit)),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
@@ -921,6 +970,12 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
     runtimeEventStore: {
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      ...(runtimeEventStore.readSessionRuntimeSnapshot
+        ? {
+            readSessionRuntimeSnapshot: (sessionId: string) =>
+              run(() => runtimeEventStore.readSessionRuntimeSnapshot!(sessionId)),
+          }
+        : {}),
       readRuntimeEventsBounded: (sessionId, runId, budget) =>
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>

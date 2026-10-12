@@ -82,6 +82,26 @@ describe('computeEditedSource — exact match', () => {
 });
 
 describe('computeEditedSource — fuzzy cascade', () => {
+  test('line-trimmed: keeps offsets after unequal non-matching lines and at EOF', () => {
+    const prefix = 'short\r\n\r\nlonger prefix with emoji 😀\r\n';
+    for (const suffix of ['', '\n', '\nfollowing line']) {
+      assert.deepEqual(
+        computeEditedSource(
+          `${prefix}  first();\r\n\tsecond();${suffix}`,
+          'first();\nsecond();',
+          'replacement();',
+          'offsets.ts',
+        ),
+        {
+          content: `${prefix}replacement();${suffix}`,
+          matchedVia: 'line-trimmed',
+          startLine: 4,
+          endLine: 5,
+        },
+      );
+    }
+  });
+
   test('line-trimmed: tolerates indentation drift on a multi-line block', () => {
     const content = 'function f() {\n    return 1;\n}\n'; // 4-space body
     const oldString = 'function f() {\n  return 1;\n}'; // model used 2-space body
@@ -133,6 +153,21 @@ describe('computeEditedSource — fuzzy cascade', () => {
 });
 
 describe('computeEditedSource — anti-corruption guards', () => {
+  test('rejects repeated fuzzy candidates within a bounded CPU budget', () => {
+    // This fits both fuzzy-input caps. Recomputing each matching line's
+    // prefix performs over a billion additions per edit before rejecting it.
+    const content = '  repeated();\n'.repeat(49_000);
+    const started = process.cpuUsage();
+    for (let attempt = 0; attempt < 4; attempt++) {
+      assert.throws(
+        () => computeEditedSource(content, 'repeated();  ', 'next();', 'repeated.ts'),
+        /line-trimmed span that occurs more than once/,
+      );
+    }
+    const { user, system } = process.cpuUsage(started);
+    assert.ok(user + system < 1_000_000, `repeated fuzzy edits used ${user + system}µs CPU`);
+  });
+
   test('rejects multiple distinct fuzzy candidates instead of guessing', () => {
     const content = 'function a() {\n  x;\n}\nfunction a() {\n   x;\n}\n';
     const oldString = 'function a() {\n    x;\n}'; // matches both blocks by trimmed lines

@@ -136,7 +136,7 @@ jobs:
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
       - name: Test Storybook audit contracts
-        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs scripts/storybook-visual-diff.test.mjs
       - name: Test Computer Use script contracts
         run: node --test scripts/computer-use/lab-root.test.mjs
 

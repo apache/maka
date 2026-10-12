@@ -20,7 +20,11 @@
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { decodeClientFrame, decodeHostFrame } from '../protocol/index.js';
+import {
+  decodeClientFrame,
+  decodeHostFrame,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+} from '../protocol/index.js';
 
 const EXPECTED = {
   connectionId: '00000000-0000-4000-8000-000000000001',
@@ -28,6 +32,22 @@ const EXPECTED = {
 };
 
 describe('Runtime Host connection effects protocol', () => {
+  test('admits discovery without selecting a model only on the new compatibility epoch', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 199);
+    const frame = request('connection.models.fetch', {
+      connectionId: EXPECTED.connectionId,
+      preserveSelection: true,
+    });
+    assert.deepEqual(decodeClientFrame(frame), frame);
+    assert.throws(() =>
+      decodeClientFrame(
+        request('connection.models.fetch', {
+          connectionId: EXPECTED.connectionId,
+          preserveSelection: 'true',
+        }),
+      ),
+    );
+  });
   test('bounds transient onboarding secrets, models, and save selections', () => {
     const verify = request('connection.onboarding.verify', {
       target: { kind: 'create', providerType: 'openrouter' },

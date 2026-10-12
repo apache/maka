@@ -84,6 +84,12 @@
   min-height: calc(1lh + 2 * var(--maka-editor-padding-block));
 }
 
+/* The expanded sidebar already exposes WorkHub. Keep this fallback only
+   when that navigation is collapsed, using the shell's sidebar authority. */
+.appFrame[data-sidebar-state='expanded'] .maka-return-workhub {
+  display: none;
+}
+
 /* Reaching the transcript tail fades the scroll-to-bottom control while the
    composer below it stays still. Both otherwise share the dock's filtered
    compositing surface, so Chromium may re-raster the thin context-gauge paths
@@ -299,9 +305,6 @@
 .maka-composer-left-controls {
   display: flex;
   align-items: center;
-  /* Text controls shrink; icon actions and the send slot retain their size. */
-  flex: 1 1 0;
-  min-width: 0;
   /* PR-REFERENCE-PIXEL-8 (WAWQAQ msg `f79de85f` round 8): reference implementation's
      bundle uses gap values centered on 4-8px (extracted from
      `globals-UfMzAdiO.css` — 4px is the most common gap, 12px never
@@ -445,7 +448,7 @@
 }
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
 }

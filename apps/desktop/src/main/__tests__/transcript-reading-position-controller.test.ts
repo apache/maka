@@ -246,7 +246,7 @@ test('captured reading anchors belong to the current Session and preparing a sen
   await fixture.render();
   const anchors = fixture.props.sessionUi.transcriptReadingAnchorBySessionRef;
 
-  fixture.commands.current!.captureAnchor('turn-1');
+  fixture.commands.current!.captureAnchor('session-1', 'turn-1');
   assert.deepEqual(anchors.current['session-1'], { turnId: 'turn-1' });
 
   assert.equal(fixture.commands.current!.prepareSend('session-2'), false);
@@ -256,7 +256,7 @@ test('captured reading anchors belong to the current Session and preparing a sen
   assert.equal(anchors.current['session-1'], undefined);
 
   fixture.currentSessionId.current = 'session-2';
-  fixture.commands.current!.captureAnchor('turn-2');
+  fixture.commands.current!.captureAnchor('session-1', 'turn-2');
   assert.equal(anchors.current['session-1'], undefined, 'a superseded Session cannot capture an anchor');
 });
 

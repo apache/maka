@@ -1921,7 +1921,7 @@ function formatElapsedDuration(elapsedMs: number): string {
  * Pending-queue bar shown above the editor while messages are queued. Each
  * steering message reads `Steering: <text>` (injected into the running turn at
  * the next step boundary); each followup reads `Queued: <text>` (opens the next
- * turn). A trailing hint reminds the user that alt+↑ takes them back to edit.
+ * turn). A trailing hint reminds the user that Shift+← takes them back to edit.
  * Renders nothing when both queues are empty.
  */
 interface TuiPendingQueueCopy {

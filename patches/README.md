@@ -130,7 +130,7 @@ Before upgrading Zod, re-verify allocation handoff, reentrant parsing, and cycle
 identity against the new memoizer and container implementations.
 The Runtime `zod-recursive-contract.test.ts` suite covers both shipped entry points.
 
-## `@modelcontextprotocol/client@2.1.0`
+## `@modelcontextprotocol/client@2.2.0`
 
 Pending transport sends retain settled request arguments and results through
 error observers, even after response, abort, timeout, or connection close.
@@ -175,6 +175,15 @@ deltas. See #1967 / #1976 and
 Delete when the ambiguity and blank-name tests pass against an unpatched package.
 
 ## `@astryxdesign/core@0.6.3`
+
+`ToastViewport` keeps its portal host inside the active native modal and opens
+its popover after that modal. Opening the empty viewport only once leaves it
+below later dialog backdrops; reopening alone still leaves it inert outside
+the modal. Moving a stable portal host preserves toast timers and React event
+handling when the dialog closes. The public LayerProvider API cannot change
+the viewport's host. The MCP detail Storybook play checks hit testing, focus
+and dismissal after testing a connection. Remove this hunk when upstream
+provides equivalent modal-aware toast placement.
 
 The shared code tokenizer caches only valid language definitions. Caching `null`
 for arbitrary unsupported fence labels grows a process-lifetime map; a short

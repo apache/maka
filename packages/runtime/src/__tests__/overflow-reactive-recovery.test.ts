@@ -1903,6 +1903,55 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.llmCalls.at(-1)?.errorClass, 'context_overflow');
   });
 
+  test('a terminal retry after the compaction still settles usage with its completed anchor (#5547)', async () => {
+    // Step 1 completes; step 2 overflows; the recovery compaction lands; the retry
+    // overflows terminally. Settlement persists the completed steps' usage
+    // row — after the compaction notes — and its anchor still describes the
+    // PRE-compaction request. The fact is kept whole: `completedAt` is what lets a
+    // reader order the anchor against the apply-time boundary instead of
+    // trusting ledger position.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'overflow'],
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    const usage = fixture.events.find((event) => event.type === 'token_usage') as
+      | {
+          type: 'token_usage';
+          lastRequestAnchor?: { inputTokens?: number; completedAt?: number };
+        }
+      | undefined;
+    assert.ok(usage);
+    assert.equal(typeof usage.lastRequestAnchor?.inputTokens, 'number');
+    assert.equal(typeof usage.lastRequestAnchor?.completedAt, 'number');
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_compaction_applied',
+      ),
+      true,
+    );
+  });
+
+  test('a post-compaction retry that completes keeps its request anchor', async () => {
+    // The healthy counterpart: the retry completed after the compaction, so the
+    // settlement usage row anchors the NEXT turn's baseline on real post-compaction
+    // input.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+    });
+    await runTurn(fixture);
+
+    const usage = fixture.events.find((event) => event.type === 'token_usage') as
+      | { type: 'token_usage'; lastRequestAnchor?: { inputTokens?: number } }
+      | undefined;
+    assert.ok(usage);
+    assert.equal(typeof usage.lastRequestAnchor?.inputTokens, 'number');
+  });
+
   test('a proactive fold spends the step, so the same step does not fold again', async () => {
     // The declared window is crossed before the second request, so that
     // request is already the folded one when the provider rejects it. Reactive
@@ -2190,7 +2239,8 @@ describe('reactive overflow recovery in the streaming backend', () => {
 
       const note = fixture.messages.find(
         (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
-          (message as { type?: string }).type === 'system_note',
+          (message as { type?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_window_suggestion',
       );
       assert.equal(note?.kind, 'context_window_suggestion');
       assert.deepEqual(note?.data, {
@@ -2271,6 +2321,15 @@ describe('reactive overflow recovery in the streaming backend', () => {
     await runTurn(fixture);
     assert.equal(complete(fixture)?.stopReason, 'end_turn');
     // The fold itself is noted (context_compacted); the window suggestion is not.
+    // The compaction landed mid-turn, so its apply-time boundary row exists too.
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_compaction_applied',
+      ),
+      true,
+    );
     assert.equal(
       fixture.messages.some(
         (message) =>

@@ -245,11 +245,13 @@ test('the upgrade baseline keeps the Git absence rule while relaxing newer resou
     requireCanonicalIcon: false,
     requireAppIconCatalog: false,
     requireDirectPeerArtifact: false,
+    requireMjsFilesystemWorker: false,
   });
 
   // A pinned baseline may predate any of these; none of them may be demanded
   // of bytes that were correct when they shipped.
   for (const path of [
+    join('resources', 'workers', 'filesystem-worker.mjs'),
     join('resources', 'assets', 'icon.png'),
     join('resources', 'licenses', 'maka', 'DISCLAIMER-WIP'),
     join('resources', 'runtime-host-peer', 'maka_runtime_host_peer.node'),

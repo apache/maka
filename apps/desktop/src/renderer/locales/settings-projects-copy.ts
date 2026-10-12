@@ -282,6 +282,7 @@ export type SettingsProjectsCopy = {
   };
   section: string;
   sectionHelp: string;
+  projectsTitle: string;
   addProject: string;
   defaultBadge: string;
   setDefault: string;
@@ -640,6 +641,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     // that only mentions the default would leave the user guessing what
     // happens before they set one.
     sectionHelp: '新任务默认打开此项目；未设置时沿用上次使用的项目。任何任务都能在输入框旁临时切换。',
+    projectsTitle: '项目',
     addProject: '新建项目',
     defaultBadge: '默认',
     setDefault: '设为默认',
@@ -978,6 +980,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     // that only mentions the default would leave the user guessing what
     // happens before they set one.
     sectionHelp: '新任務預設開啟此專案；未設定時沿用上次使用的專案。任何任務都能在輸入框旁臨時切換。',
+    projectsTitle: '專案',
     addProject: '新增專案',
     defaultBadge: '預設',
     setDefault: '設為預設',
@@ -1334,6 +1337,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     section: 'Workspace',
     sectionHelp:
       'New tasks open in the default project; without one, they reuse the project you last used. You can switch any task to a different project next to the input box.',
+    projectsTitle: 'Projects',
     addProject: 'New project',
     defaultBadge: 'Default',
     setDefault: 'Set as default',

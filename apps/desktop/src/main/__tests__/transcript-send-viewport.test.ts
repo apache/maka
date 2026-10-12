@@ -213,7 +213,7 @@ function viewportFixture(options: { returnButton?: boolean } = {}) {
       turnIds: props.messages.map((message) => message.turnId!),
       measureStartMargin: () => 0,
       restoreTarget: anchor, viewportNavigation: sessionUi.transcriptViewportNavigation,
-      onReadingAnchorChange: (turnId) => commands.current?.captureAnchor(turnId), behavior: 'auto',
+      onReadingAnchorChange: (turnId) => commands.current?.captureAnchor(props.sessionId!, turnId), behavior: 'auto',
     });
     return createElement(Fragment, null,
       createElement(TranscriptReadingPositionController, props),

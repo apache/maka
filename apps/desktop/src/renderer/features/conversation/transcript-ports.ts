@@ -34,6 +34,7 @@ export interface ConversationTranscriptController {
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
   loadEarlier(throughSequence?: number): Promise<void>;
   reload(): Promise<void>;
+  holdsCachedTranscript(): boolean;
   observationChanged(phase: 'pending' | 'ready'): void;
   close(): Promise<void>;
 }

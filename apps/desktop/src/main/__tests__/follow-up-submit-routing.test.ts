@@ -21,7 +21,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   mergeWorkspaceReferences,
-} from '../../renderer/follow-up-submit-routing.js';
+} from '../../renderer/features/conversation/testing.js';
 
 describe('follow-up submit routing', () => {
   it('restores workspace references after queued text returns to the draft', () => {

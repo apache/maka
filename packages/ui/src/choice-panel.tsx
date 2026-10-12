@@ -34,6 +34,8 @@ export function ChoicePanel(props: {
   value: string;
   disabled?: boolean;
   onChange(value: string): void;
+  /** Pointer activation can commit a choice; arrow/digit keys only select. */
+  onActivate?(value: string): void;
   onConfirm(): void;
   onEscape(): void;
   children?: ReactNode;
@@ -77,8 +79,9 @@ export function ChoicePanel(props: {
         isSelected={selected} isDisabled={props.disabled}
         onClick={props.disabled ? undefined : (event) => {
           event.stopPropagation();
-          props.onChange(option.value);
           root.current?.focus({ preventScroll: true });
+          if (props.onActivate) props.onActivate(option.value);
+          else props.onChange(option.value);
         }}
         startContent={index < 9 ? <Badge variant={selected ? 'info' : 'neutral'} label={<span>{index + 1}</span>} aria-hidden="true" /> : undefined}
         style={option.accentColor ? { '--_item-label-color': option.accentColor } as CSSProperties : undefined} />;

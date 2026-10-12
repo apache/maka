@@ -169,7 +169,11 @@ export class HostConnectionEffectCoordinator {
         fetchedAt: this.#now(),
       };
       const completion = await this.#complete(() =>
-        this.#stores.operations.completeModelFetch(prepared.ticket, result),
+        this.#stores.operations.completeModelFetch(
+          prepared.ticket,
+          result,
+          input.preserveSelection,
+        ),
       );
       return completion.kind === 'committed'
         ? {

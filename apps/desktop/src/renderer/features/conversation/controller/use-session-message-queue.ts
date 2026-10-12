@@ -53,9 +53,9 @@ export function useSessionMessageQueue(options: {
   transientMessages: TransientUserMessageProjection[];
   restoreDraft: (sessionId: string, draft: RestoredDraftContent) => void;
   /**
-   * Staged-context restorer slot: the shell owns the attachments/quotes stores
-   * and fills this once, so a retract can hand the entry's context back even
-   * after the owning Session navigated away.
+   * Staged-context restorer slot: the Composer submission owner fills it with
+   * the staging owner's keyed restore, so a retract can hand the entry's
+   * context back even after the owning Session navigated away.
    */
   draftContextRestorer: RefObject<
     ((sessionId: string, draft: RestoredDraftContent) => void) | undefined

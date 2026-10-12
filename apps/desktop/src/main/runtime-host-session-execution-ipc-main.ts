@@ -756,6 +756,12 @@ export function registerRuntimeHostSessionExecutionIpc(
     deps.emitSessionsChanged("status-change", sessionId, { turnId });
     return result;
   });
+  // Read-only preview behind the composer's Resume offer (#5903): the plan is
+  // the authority — the renderer never decides resumability from local turn
+  // state, and clicking still re-validates everything inside startTurnResume.
+  ipcMain.handle("sessions:queryResumeLatest", async (_event, sessionId: string) => {
+    return deps.client.queryTurnResume({ sessionId });
+  });
   ipcMain.handle("sessions:resumeLatest", async (_event, sessionId: string) => {
     const plan = await deps.client.queryTurnResume({ sessionId });
     if (plan.disposition === "parked") {

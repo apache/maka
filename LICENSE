@@ -385,10 +385,10 @@ SOFTWARE.
 
 Model Context Protocol client dependency patch
 
-Source: https://www.npmjs.com/package/@modelcontextprotocol/client/v/2.1.0
+Source: https://www.npmjs.com/package/@modelcontextprotocol/client/v/2.2.0
 Repository: https://github.com/modelcontextprotocol/typescript-sdk
-Version: 2.1.0
-Dependency patch: patches/@modelcontextprotocol+client+2.1.0.patch
+Version: 2.2.0
+Dependency patch: patches/@modelcontextprotocol+client+2.2.0.patch
 Copyright (c) 2024-2025 Model Context Protocol a Series of LF Projects, LLC.
 Declared package license: MIT
 

@@ -212,43 +212,33 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(bounded.candidates.length, 32);
   });
 
-  test('rejects stale candidates before assignment', async () => {
-    const effects = fakeEffects([session('payments')]);
+  test('delegation survives target activity and unrelated candidate changes', async () => {
+    const effects = fakeEffects([session('payments'), session('other')]);
     const gate = new WorkHubCoordinationActionGate(effects);
     const snapshot = await gate.candidates();
-    effects.sessions[0] = session('payments', { lastMessageAt: 9 });
-    await assert.rejects(
-      gate.act(
-        {
-          actionId: 'stale',
-          userText: 'Continue payments',
-          candidateSetId: snapshot.candidateSetId,
-          proposal: {
-            disposition: 'delegate_existing',
-            candidateRef: snapshot.candidates[0]!.candidateRef,
-          },
-        },
-        CONTEXT,
+    const target = snapshot.candidates.find((candidate) => candidate.sessionId === 'payments')!;
+    effects.sessions[0] = session('payments', { name: 'Renamed payments', lastMessageAt: 9 });
+    effects.sessions.push(
+      ...Array.from({ length: 35 }, (_, index) =>
+        session(`new-${index}`, { lastMessageAt: 100 + index }),
       ),
-      (error) => error instanceof WorkHubActionGateFailure && error.code === 'candidate_set_stale',
     );
-    assert.equal(effects.assignments.length, 0);
-
-    const refreshed = await gate.candidates();
-    const retried = await gate.act(
+    assert.equal(
+      (await gate.candidates()).candidates.some((candidate) => candidate.sessionId === 'payments'),
+      false,
+    );
+    effects.sessions[1] = session('other', { name: 'Renamed unrelated', lastMessageAt: 10 });
+    const result = await gate.act(
       {
-        actionId: 'stale',
+        actionId: 'stable',
         userText: 'Continue payments',
-        candidateSetId: refreshed.candidateSetId,
-        proposal: {
-          disposition: 'delegate_existing',
-          candidateRef: refreshed.candidates[0]!.candidateRef,
-        },
+        candidateSetId: snapshot.candidateSetId,
+        proposal: { disposition: 'delegate_existing', candidateRef: target.candidateRef },
       },
       CONTEXT,
     );
-    assert.equal(retried.disposition, 'delegate_existing');
-
+    assert.equal(result.disposition, 'delegate_existing');
+    assert.equal(effects.assignments[0]?.targetSessionId, 'payments');
     const current = await gate.candidates();
     await assert.rejects(
       gate.act(
@@ -263,6 +253,31 @@ describe('WorkHub Coordination Action Gate', () => {
       (error) =>
         error instanceof WorkHubActionGateFailure && error.code === 'candidate_unavailable',
     );
+    assert.equal(effects.assignments.length, 1);
+  });
+
+  test('a title commit on another Session does not invalidate a delegation', async () => {
+    const effects = fakeEffects([session('payments'), session('design')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const offered = await gate.candidates();
+    const target = offered.candidates.find((candidate) => candidate.sessionId === 'payments')!;
+
+    // An unrelated Session's automatic title landing between reading candidates
+    // and delegating is the race the WorkHub flake loses (#4785).
+    effects.sessions[1] = session('design', { name: 'Design review', lastMessageAt: 99 });
+
+    const result = await gate.act(
+      {
+        actionId: 'unrelated-title',
+        userText: 'Continue payments',
+        candidateSetId: offered.candidateSetId,
+        proposal: { disposition: 'delegate_existing', candidateRef: target.candidateRef },
+      },
+      CONTEXT,
+    );
+
+    assert.equal(result.disposition, 'delegate_existing');
+    assert.equal(result.targetSessionId, 'payments');
     assert.equal(effects.assignments.length, 1);
   });
 
@@ -1929,7 +1944,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       this.assignments.push(input);
       const existing = durable.get(input.actionId);
       if (existing) {
-        assert.deepEqual(existing.input, input);
+        const { validateFreshTarget: _previousValidation, ...previous } = existing.input;
+        const { validateFreshTarget: _currentValidation, ...current } = input;
+        assert.deepEqual(previous, current);
         return existing.result;
       }
       const result = { turnId: `turn-${input.actionId}` };

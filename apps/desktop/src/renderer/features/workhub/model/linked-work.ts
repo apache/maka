@@ -19,6 +19,7 @@
 
 
 import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
+import { readWorkHubTopicAssociation, workHubAssociationTarget } from '../../../application/contracts/workhub-topic-association.js';
 import { workspaceNameFromCwd } from './workspace-name.js';
 
 import type { StoredMessage } from '@maka/core/session';
@@ -31,7 +32,7 @@ export interface WorkHubLinkedWork {
   readonly workspaceName?: string;
 }
 
-/** Links come from successful tool results in the same durable conversation. */
+/** Links come from durable task receipts and Host-owned result origins. */
 export function workHubLinkedWork(
   messages: readonly StoredMessage[],
   sessions: readonly { id: string; name: string; cwd?: string }[],
@@ -40,6 +41,10 @@ export function workHubLinkedWork(
 ): WorkHubLinkedWork[] {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const workspaceName = (id: string) => workspaceNameFromCwd(sessionById.get(id)?.cwd);
+  const associationCalls = new Map(messages.flatMap((message) => {
+    const target = workHubAssociationTarget(message);
+    return target !== undefined ? [[message.id, { target, turnId: message.turnId }] as const] : [];
+  }));
   const taskCalls = new Set(messages.flatMap((message) =>
     message.type === 'tool_call' && message.toolName === 'mcp__desktop_workhub__tasks' ? [message.id] : [],
   ));
@@ -54,7 +59,43 @@ export function workHubLinkedWork(
     return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
   };
   const results = new Map(messages.flatMap((message) => message.type === 'tool_result' ? [[message.toolUseId, message] as const] : []));
+  // Association is mutable per turn. Fold only validated decisions in transcript
+  // order; clearing a topic must not retract actual execution/result links.
+  const topics = new Map<string, WorkHubLinkedWork>();
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue;
+    const call = associationCalls.get(message.toolUseId);
+    const topic = call?.turnId === message.turnId ? readWorkHubTopicAssociation(message, call.target) : undefined;
+    if (!topic) continue;
+    if (topic.targetSessionId === null) topics.delete(message.turnId);
+    else topics.set(message.turnId, {
+      id: message.id, coordinationTurnId: message.turnId,
+      targetSessionId: topic.targetSessionKey,
+      targetSessionName: sessionById.get(topic.targetSessionKey)?.name ?? topic.targetSessionName,
+      workspaceName: workspaceName(topic.targetSessionKey),
+    });
+  }
   return messages.flatMap((message): WorkHubLinkedWork[] => {
+    const topic = message.type === 'tool_result' ? topics.get(message.turnId) : undefined;
+    if (topic?.id === message.id) return [topic];
+    // A result notification starts its own coordination turn. It remains
+    // linked even when that turn only summarizes the result without tools,
+    // or the original delegation is outside the loaded history window.
+    if (message.type === 'user' && message.origin?.kind === 'workhub_result') {
+      if (!coordinationSessionKey) return [];
+      let target: string;
+      try {
+        target = desktopSessionKey({
+          hostId: parseDesktopSessionKey(coordinationSessionKey).hostId,
+          sessionId: message.origin.targetSessionId,
+        });
+      } catch { return []; }
+      return [{
+        id: message.id, coordinationTurnId: message.turnId, targetSessionId: target,
+        targetSessionName: sessionById.get(target)?.name ?? fallbackName,
+        workspaceName: workspaceName(target),
+      }];
+    }
     if (message.type === 'tool_call' && taskCalls.has(message.id)) {
       const args = message.args;
       const request = args && typeof args === 'object' && 'request' in args ? args.request : undefined;

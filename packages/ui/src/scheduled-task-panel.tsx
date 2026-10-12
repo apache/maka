@@ -382,6 +382,7 @@ export function ScheduledTaskPanel(props: {
                 isIconOnly: true,
                 variant: 'ghost',
               }}
+              alignment="end"
               className="maka-scheduled-task-page-menu"
             >
               <DropdownMenuItem

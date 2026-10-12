@@ -55,7 +55,6 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
   const executionQueries: string[][] = [];
   let executionResolutions: Awaited<ReturnType<WorkHubServices['queryMessageExecutions']>>['resolutions'] = [];
-  let newWorkDefaults: Awaited<ReturnType<WorkHubServices['getNewWorkDefaults']>> = {};
   let onSteer: ((input: Parameters<WorkHubServices['enqueueMessage']>) => void) | undefined;
   const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
   let stopRetractions: string[] = [];
@@ -97,10 +96,6 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     listSessions: async () => [],
     modelChoices: async () => [],
     setDefaultModel: async () => {},
-    getNewWorkDefaults: async () => newWorkDefaults,
-    setNewWorkDefaults: async (_id: string, defaults: typeof newWorkDefaults) => {
-      newWorkDefaults = defaults;
-    },
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
@@ -214,70 +209,37 @@ test('WorkHub offers pre-session models and saves the selected default', async (
   assert.equal(h.controller.error, undefined);
 });
 
-test('WorkHub model selection configures only newly created work', async () => {
+test('WorkHub picker configures the persistent coordinating model', async () => {
   type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;
-  const initial = {
-    id: JSON.stringify(['host-1', 'workhub-coordination']),
-    revision: 1, model: 'A', llmConnectionId: 'connection', llmConnectionSlug: 'provider',
-    runningTurnIds: [],
-  } as unknown as Session;
+  let saved = { id: JSON.stringify(['host-1', 'workhub-coordination']), revision: 1,
+    model: 'A', llmConnectionId: 'connection', llmConnectionSlug: 'provider', runningTurnIds: [] } as unknown as Session;
   let failSave = false;
-  const requests: Array<Awaited<ReturnType<WorkHubServices['getNewWorkDefaults']>>> = [];
+  const requests: Array<Parameters<WorkHubServices['configureModel']>[1]> = [];
   const h = await mountController(false, {
-    getSession: async () => initial,
-    getNewWorkDefaults: async () => ({}),
-    setNewWorkDefaults: async (_id, defaults) => {
+    getSession: async () => saved,
+    configureModel: async (_id, input) => {
       if (failSave) throw new Error('configuration failed');
-      requests.push(defaults);
+      requests.push(input);
+      saved = { ...saved, revision: saved.revision + 1, model: input.modelTarget.model,
+        thinkingLevel: input.thinkingLevel ?? undefined };
+      return { kind: 'committed', session: {} as never };
     },
   });
   await act(async () => {
-    await h.controller.changeExecutor({
-      executorId: 'codex.app-server',
-      model: 'gpt-6-astra',
-      thinkingLevel: 'high',
-    });
+    await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'C' }, 'high');
   });
-  assert.deepEqual(requests[0], {
-    executorId: 'codex.app-server',
-    executorModel: 'gpt-6-astra',
-    thinkingLevel: 'high',
-  });
-  assert.equal(h.controller.session?.model, 'A', 'the coordination Session keeps its own model');
-  assert.equal(h.controller.session?.revision, 1);
-
+  assert.equal(requests[0]?.expectedRevision, 1);
+  assert.equal(h.controller.session?.model, 'C');
+  assert.equal(h.controller.session?.revision, 2);
   await act(async () => { await h.controller.changeThinkingLevel('max'); });
   assert.equal(requests.at(-1)?.thinkingLevel, 'max');
-  assert.equal(requests.at(-1)?.executorModel, 'gpt-6-astra');
-
-  await act(async () => {
-    await h.controller.changeModel({
-      llmConnectionId: 'connection',
-      llmConnectionSlug: 'provider',
-      model: 'C',
-    });
-  });
-  assert.deepEqual(requests.at(-1), {
-    model: { llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'C' },
-  });
-  assert.equal(h.controller.session?.model, 'A');
-
   failSave = true;
   await act(async () => {
-    await h.controller.changeModel({
-      llmConnectionId: 'connection',
-      llmConnectionSlug: 'provider',
-      model: 'D',
-    });
+    await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'D' });
   });
-  assert.equal(h.controller.newWorkDefaults.model?.model, 'C', 'failed writes retain the saved default');
+  assert.equal(h.controller.session?.model, 'C');
   assert.equal(h.controller.error, 'configuration failed');
   assert.equal(h.controller.configuringModel, false);
-
-  const count = requests.length;
-  await act(async () => { h.admit('busy-turn'); });
-  await act(async () => { await h.controller.changeThinkingLevel('high'); });
-  assert.equal(requests.length, count, 'running coordination turns freeze new-work defaults');
 });
 
 test('WorkHub stops presenting execution on observation loss while retaining the Stop target', async () => {

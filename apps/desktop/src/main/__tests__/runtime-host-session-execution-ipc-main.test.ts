@@ -2207,6 +2207,51 @@ test('Session snapshot IPC rejects invalid budgets and unavailable sources befor
   await assert.rejects(ipc.invoke('sessions:readSnapshot', 'session-1'), /archived/);
 });
 
+test("sessions:queryResumeLatest previews the plan without starting a resume", async () => {
+  const queries: unknown[] = [];
+  const readyPlan = {
+    sessionId: "session-1",
+    disposition: "ready" as const,
+    sourceRunId: "run-1",
+    sourceTurnId: "turn-1",
+    sourceRuntimeEventHighWater: 42,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async (input) => {
+          queries.push(input);
+          return readyPlan;
+        },
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), readyPlan);
+  assert.deepEqual(queries, [{ sessionId: "session-1" }]);
+});
+
+test("sessions:queryResumeLatest passes a parked plan through untouched", async () => {
+  const parkedPlan = {
+    sessionId: "session-1",
+    disposition: "parked" as const,
+    reason: "session_busy" as const,
+  };
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryTurnResume: async () => parkedPlan,
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(await ipc.invoke("sessions:queryResumeLatest", "session-1"), parkedPlan);
+});
+
 type ExecutionClient = RuntimeHostSessionExecutionIpcDeps["client"];
 
 function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {

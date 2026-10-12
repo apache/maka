@@ -71,8 +71,26 @@ verify('the send policy treats staged context as sendable content across all gat
       noModelConnection: false,
       streaming: true,
     }),
-    { hasSendableContent: true, sendDisabled: false, stopShown: false },
+    { hasSendableContent: true, sendDisabled: false, stopShown: false, resumeShown: false },
   );
+});
+
+verify('the send policy offers Resume only while an offered resume meets an empty draft', () => {
+  const base = {
+    hasStagedContext: false,
+    executorModelPending: false,
+    sendPending: false,
+    importActionBusy: false,
+    noModelConnection: false,
+    streaming: false,
+    resumeOffered: true,
+  };
+  assert.equal(deriveComposerSendPolicy({ ...base, text: '' }).resumeShown, true);
+  assert.equal(deriveComposerSendPolicy({ ...base, text: 'draft' }).resumeShown, false);
+  assert.equal(deriveComposerSendPolicy({ ...base, text: '', streaming: true }).resumeShown, false);
+  assert.equal(deriveComposerSendPolicy({ ...base, text: '', sendBlocked: true }).resumeShown, false);
+  assert.equal(deriveComposerSendPolicy({ ...base, text: '', disabled: true }).resumeShown, false);
+  assert.equal(deriveComposerSendPolicy({ ...base, text: '', resumeOffered: false }).resumeShown, false);
 });
 
 verify('an idle composer offers Send alone', () => {
@@ -96,6 +114,40 @@ verify('a host-owned send gate disables Send without an inline notice', () => {
 
 verify('a turn in flight turns the same single control into Stop', () => {
   assertOnlySendSlot(true, 'Stop');
+});
+
+verify('a Host-confirmed resume offer replaces Send while the draft is empty', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer resumeAction={{ pending: false, onResume: noop }} onSend={noop} onStop={noop} />
+    </LocaleProvider>,
+  );
+  const document = parseMarkup(`<html><body>${markup}</body></html>`).document;
+  assert.ok(document.querySelector('button[aria-label="Resume"]'), 'the send slot renders Resume');
+  assert.equal(document.querySelector('button[aria-label="Send"]'), null);
+});
+
+verify('a pending resume keeps the Resume control mounted and disabled', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer resumeAction={{ pending: true, onResume: noop }} onSend={noop} onStop={noop} />
+    </LocaleProvider>,
+  );
+  const document = parseMarkup(`<html><body>${markup}</body></html>`).document;
+  const button = document.querySelector('button[aria-label="Resuming…"]');
+  assert.ok(button, 'the send slot keeps Resume');
+  assert.equal(button.getAttribute('aria-disabled'), 'true');
+});
+
+verify('Stop still outranks an offered resume while a turn streams', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer streaming resumeAction={{ pending: false, onResume: noop }} onSend={noop} onStop={noop} />
+    </LocaleProvider>,
+  );
+  const document = parseMarkup(`<html><body>${markup}</body></html>`).document;
+  assert.ok(document.querySelector('button[aria-label="Stop"]'), 'the send slot renders Stop');
+  assert.equal(document.querySelector('button[aria-label="Resume"]'), null);
 });
 
 verify('a running composer adds no queue mode switch beside Stop', () => {

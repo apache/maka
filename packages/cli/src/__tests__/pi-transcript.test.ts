@@ -164,17 +164,18 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(stripAnsi(lines[0] ?? ''), /50 chars truncated/);
   });
 
-  test('renders the pending-queue edit shortcut for the current platform', () => {
+  test('renders the pending-queue edit shortcut identically on every platform', () => {
     const state = createMakaPiTranscriptState();
     state.steering = ['Keep going'];
     const renderFor = (platform: NodeJS.Platform) =>
       renderMakaPiPendingQueue(state, 80, platform, 'en').map(stripAnsi);
 
-    assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
-    assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');
+    // No Alt chord in the hint, so macOS and other platforms render alike.
+    assert.equal(renderFor('darwin').at(-1), 'Shift+← take queued messages back to re-edit');
+    assert.equal(renderFor('linux').at(-1), 'Shift+← take queued messages back to re-edit');
     assert.equal(
       renderMakaPiPendingQueue(state, 80, 'linux', 'zh-CN').map(stripAnsi).at(-1),
-      'Alt+↑ 取回队列以重新编辑',
+      'Shift+← 取回队列以重新编辑',
     );
   });
 

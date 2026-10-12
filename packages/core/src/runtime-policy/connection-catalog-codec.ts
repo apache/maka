@@ -131,16 +131,26 @@ export function normalizeRemoveCatalogConnectionInput(
 export function normalizeSetDefaultConnectionTargetInput(
   value: unknown,
 ): SetDefaultConnectionTargetInput {
-  const input = exactRecord(value, 'set default target input', [
-    'expectedCatalogRevision',
-    'target',
-  ]);
+  const input = exactRecord(
+    value,
+    'set default target input',
+    ['expectedCatalogRevision', 'target', 'enableModel'],
+    ['expectedCatalogRevision', 'target'],
+  );
+  const enableModel =
+    input.enableModel === undefined
+      ? undefined
+      : booleanValue(input.enableModel, 'enable default model');
+  if (enableModel && input.target === null) {
+    throw domainError('Enabling a model requires a default target');
+  }
   return {
     expectedCatalogRevision: revisionValue(
       input.expectedCatalogRevision,
       'set default target expected catalog revision',
     ),
     target: input.target === null ? null : decodeConnectionTarget(input.target),
+    ...(enableModel === undefined ? {} : { enableModel }),
   };
 }
 

@@ -1203,6 +1203,7 @@ export class RuntimePolicyCoordinator {
   async completeModelFetch(
     ticket: ModelFetchTicket,
     result: ConnectionModelDiscoveryResult,
+    preserveSelection = false,
   ): Promise<ConnectionEffectCompletionResult> {
     const claimed = this.claimTicket(ticket, 'model_fetch');
     return this.completeClaimedTicket(claimed, () =>
@@ -1217,6 +1218,7 @@ export class RuntimePolicyCoordinator {
           catalog,
           connectionBasis(checked.connection),
           result,
+          preserveSelection,
         );
         return deepFreeze({
           kind: 'committed' as const,

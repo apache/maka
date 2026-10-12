@@ -21,11 +21,45 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   createDefaultBotChatSettings,
+  BOT_PROVIDERS,
   mergeBotChatSettings,
+  normalizeBotChatSettings,
   parseAllowedUserIdsFromText,
 } from '../bot-chat-settings.js';
+import { SENSITIVE_PLACEHOLDER } from '../settings/network-settings.js';
 
 describe('bot chat settings owner', () => {
+  test('preserves masked credentials and supports replacement, omission and explicit clearing', () => {
+    for (const provider of BOT_PROVIDERS) {
+      const configured = mergeBotChatSettings(createDefaultBotChatSettings(), {
+        channels: { [provider]: { token: 'stored-token', appSecret: 'stored-secret' } },
+      });
+      for (const mask of [SENSITIVE_PLACEHOLDER, '••••••']) {
+        const saved = mergeBotChatSettings(configured, {
+          channels: { [provider]: { enabled: true, token: mask, appSecret: mask } },
+        });
+        assert.equal(saved.channels[provider].token, 'stored-token', provider);
+        assert.equal(saved.channels[provider].appSecret, 'stored-secret', provider);
+        assert.equal(saved.channels[provider].enabled, true, provider);
+      }
+      const omitted = mergeBotChatSettings(configured, {
+        channels: { [provider]: { token: undefined, appSecret: undefined } },
+      });
+      assert.equal(omitted.channels[provider].token, 'stored-token', provider);
+      assert.equal(omitted.channels[provider].appSecret, 'stored-secret', provider);
+      const replaced = mergeBotChatSettings(configured, {
+        channels: { [provider]: { token: 'new-token', appSecret: 'new-secret' } },
+      });
+      assert.equal(replaced.channels[provider].token, 'new-token', provider);
+      assert.equal(replaced.channels[provider].appSecret, 'new-secret', provider);
+      const cleared = mergeBotChatSettings(configured, {
+        channels: { [provider]: { token: '', appSecret: '' } },
+      });
+      assert.equal(cleared.channels[provider].token, '', provider);
+      assert.ok(!cleared.channels[provider].appSecret, provider);
+    }
+  });
+
   test('normalizes an explicitly patched allowlist without touching it on unrelated patches', () => {
     const defaults = createDefaultBotChatSettings();
     const withAllowlist = mergeBotChatSettings(defaults, {
@@ -58,4 +92,16 @@ describe('bot chat settings owner', () => {
     assert.deepEqual(parsed.slice(0, 3), ['123', '456', 'user-0']);
     assert.equal(parsed.at(-1), 'user-47');
   });
+});
+
+test('remote message handling defaults safely and survives channel edits and reload', () => {
+  const defaults = createDefaultBotChatSettings();
+  assert.equal(defaults.messageHandling, 'task');
+  const configured = mergeBotChatSettings(defaults, { messageHandling: 'workhub' });
+  const edited = mergeBotChatSettings(configured, { channels: { qq: { enabled: true } } });
+  assert.equal(normalizeBotChatSettings(defaults, edited).messageHandling, 'workhub');
+  assert.equal(
+    normalizeBotChatSettings(defaults, { channels: edited.channels }).messageHandling,
+    'task',
+  );
 });

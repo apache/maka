@@ -21,6 +21,7 @@ import {
   isWorkHubCoordinationSessionTarget,
   sessionRevisionFamilyId,
   type SessionHeader,
+  type WorkHubDelegationAssignedMessage,
 } from '@maka/core/session';
 import type {
   SubagentWorkspaceBinding,
@@ -67,12 +68,16 @@ import type { MemoryExtractionSessionLane } from './memory-extraction-session-la
 
 const FAMILY_STABILIZATION_ATTEMPTS = 4;
 
+/** The store rejects a WorkHub target batch above its own bound; page below it. */
+const WORKHUB_ASSIGNMENT_TARGET_PAGE = 256;
+
 type RetirementStores = Pick<
   ExecutionSessionWriter,
   | 'listHeaders'
   | 'probeSessionRemoval'
   | 'readCatalogRecord'
   | 'readHeaderRecordSnapshot'
+  | 'readActiveWorkHubAssignmentsByTarget'
   | 'reconcileOrphanedAgentGraphRetirements'
   | 'listPendingSessionRetirementCleanupIds'
   | 'completeSessionRetirementCleanup'
@@ -115,6 +120,21 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly root: RetirementRoot;
   readonly messages: RetirementMessages;
   readonly interactions: RetirementInteractions;
+  /**
+   * WorkHub relationship reads shared with the coordination coordinator. The
+   * archive guard needs the delegation's execution state, not just its ledger
+   * row, and both must agree on what "still live" means.
+   */
+  readonly workHub: {
+    readDelegationRetirement(
+      assignment: WorkHubDelegationAssignedMessage,
+      admission: SessionAdmissionLease,
+    ): Promise<'retired' | 'not_retired' | 'recovering'>;
+    hasUndeliveredResult(
+      assignment: WorkHubDelegationAssignedMessage,
+      admission: SessionAdmissionLease,
+    ): Promise<boolean>;
+  };
   readonly goals: RetirementGoals;
   readonly scheduledTasks: {
     beginSessionRetirement(
@@ -182,6 +202,37 @@ class SessionRetirementBusyError extends Error {
   readonly name = 'SessionRetirementBusyError';
 }
 
+/** What an archive-retention sweep's guard sees of a removal plan, read under its admission. */
+export interface RetentionRemovalPlan {
+  /** Every Session the removal deletes, as admitted. */
+  readonly remove: readonly SessionHeaderSnapshot[];
+  /** Still-active subtasks the removal would move to the archive. */
+  readonly archiveSessionIds: readonly string[];
+  /** Worktrees cleanup would retire, counted exactly as the removal preview counts them. */
+  readonly worktreeCount: number;
+}
+
+/** Why a sweep's guard kept a task: not (or no longer) eligible, or left for manual review. */
+export type RetentionHoldReason = 'ineligible' | 'needs_review';
+
+export type RetentionRemovalOutcome =
+  | { readonly kind: 'removed'; readonly bytes?: number }
+  | { readonly kind: 'held'; readonly reason: RetentionHoldReason }
+  | { readonly kind: 'busy' }
+  /** The task changed or went away after the sweep read it. */
+  | { readonly kind: 'skipped' }
+  | { readonly kind: 'failed' };
+
+class RetentionHold extends Error {
+  readonly name = 'RetentionHold';
+
+  constructor(readonly reason: RetentionHoldReason) {
+    super(`Archive retention kept the task: ${reason}`);
+  }
+}
+
+type RemovalAdmissionGuard = (plan: StableRemovalPlan) => Promise<void>;
+
 /** Host-owned archive, unarchive, remove, and revision-family commit authority. */
 export class HostSessionRetirementCoordinator {
   readonly handlers: SessionRetirementOperationHandlerMap = {
@@ -195,6 +246,7 @@ export class HostSessionRetirementCoordinator {
   readonly #root: RetirementRoot;
   readonly #messages: RetirementMessages;
   readonly #interactions: RetirementInteractions;
+  readonly #workHub: HostSessionRetirementCoordinatorOptions['workHub'];
   readonly #goals: RetirementGoals;
   readonly #scheduledTasks: HostSessionRetirementCoordinatorOptions['scheduledTasks'];
   readonly #resources: RetirementResources;
@@ -225,6 +277,7 @@ export class HostSessionRetirementCoordinator {
     this.#root = options.root;
     this.#messages = options.messages;
     this.#interactions = options.interactions;
+    this.#workHub = options.workHub;
     this.#goals = options.goals;
     this.#scheduledTasks = options.scheduledTasks;
     this.#resources = options.resources;
@@ -289,6 +342,7 @@ export class HostSessionRetirementCoordinator {
         let handles: RetirementHandles | undefined;
         let committed = false;
         try {
+          await this.#assertNoLiveRelationships(family);
           handles = await this.#prepareRetirement(family, 'archive');
           await this.#finalizeWorkspacePatches(family.sessionIds);
           await this.#disposeBackends(family.sessionIds);
@@ -316,7 +370,61 @@ export class HostSessionRetirementCoordinator {
     }
   }
 
-  async #remove(input: SessionRemoveInput): Promise<OperationOutcome<'session.remove'>> {
+  /**
+   * Archive retention's removal: `session.remove` for the task the sweep read,
+   * with `guard` run inside the removal admission — after the plan is stable,
+   * before any retirement work — so a task whose policy, archive or pin state,
+   * age or plan changed since the sweep read it is kept rather than deleted.
+   * The size is measured once the guard admits the plan, as the batch preview
+   * measures it.
+   */
+  async removeForRetention(
+    target: { readonly sessionId: string; readonly expectedRevision: number },
+    guard: (plan: RetentionRemovalPlan) => Promise<RetentionHoldReason | undefined>,
+  ): Promise<RetentionRemovalOutcome> {
+    let admitted = false;
+    let bytes: number | undefined;
+    let outcome: OperationOutcome<'session.remove'>;
+    try {
+      outcome = await this.#removeUnder(target, async (plan) => {
+        const remove = plan.remove.sessionIds.map((id) => requireFamilyRecord(plan.remove, id));
+        const reason = await guard({
+          remove,
+          archiveSessionIds: plan.archive.sessionIds,
+          worktreeCount: this.#reclaimedWorktreeCount(remove.map(({ header }) => header)),
+        });
+        if (reason) throw new RetentionHold(reason);
+        admitted = true;
+        bytes = await this.#measureRemoved(plan.remove.sessionIds);
+      });
+    } catch (error) {
+      if (error instanceof RetentionHold) return { kind: 'held', reason: error.reason };
+      return { kind: 'failed' };
+    }
+    if (outcome.ok) {
+      // Removed without this guard admitting it — already gone — is not this sweep's deletion.
+      if (outcome.result.kind !== 'removed' || !admitted) return { kind: 'skipped' };
+      return { kind: 'removed', ...(bytes === undefined ? {} : { bytes }) };
+    }
+    switch (outcome.error.code) {
+      case 'session_busy':
+        return { kind: 'busy' };
+      case 'not_found':
+      case 'operation_conflict':
+        return { kind: 'skipped' };
+      default:
+        return { kind: 'failed' };
+    }
+  }
+
+  #remove(input: SessionRemoveInput): Promise<OperationOutcome<'session.remove'>> {
+    return this.#removeUnder(input);
+  }
+
+  async #removeUnder(
+    input: SessionRemoveInput,
+    guard?: RemovalAdmissionGuard,
+  ): Promise<OperationOutcome<'session.remove'>> {
     let probe;
     try {
       probe = await this.#stores.probeSessionRemoval(input.sessionId);
@@ -353,6 +461,7 @@ export class HostSessionRetirementCoordinator {
             return removeOutcome({ kind: 'too_recent', sessionId: input.sessionId });
           }
         }
+        await guard?.(plan);
 
         let removeHandles: RetirementHandles | undefined;
         let archiveHandles: RetirementHandles | undefined;
@@ -402,6 +511,7 @@ export class HostSessionRetirementCoordinator {
         }
       });
     } catch (error) {
+      if (error instanceof RetentionHold) throw error;
       return this.#removeFailure(error, input);
     }
   }
@@ -460,15 +570,21 @@ export class HostSessionRetirementCoordinator {
             .filter((header) => header.subagentParent?.graph !== undefined)
             .map(sessionRevisionFamilyId),
         ).size,
-        // What cleanup retires: one binding per removed Session, and only
-        // through a worktree executor. A subagent Session carrying a binding
-        // cannot be a revision, so no two removed Sessions share one.
-        worktreeCount: this.#worktrees
-          ? removedHeaders.filter((header) => header.subagentWorkspace !== undefined).length
-          : 0,
+        worktreeCount: this.#reclaimedWorktreeCount(removedHeaders),
         ...(bytes === undefined ? {} : { bytes }),
       },
     };
+  }
+
+  /**
+   * What cleanup retires: one binding per removed Session, and only through a
+   * worktree executor. A subagent Session carrying a binding cannot be a
+   * revision, so no two removed Sessions share one.
+   */
+  #reclaimedWorktreeCount(removed: readonly SessionHeader[]): number {
+    return this.#worktrees
+      ? removed.filter((header) => header.subagentWorkspace !== undefined).length
+      : 0;
   }
 
   /**
@@ -717,6 +833,71 @@ export class HostSessionRetirementCoordinator {
         expectedVersion: record.revision,
       })),
       true,
+    );
+  }
+
+  /**
+   * A manual archive must not hide a Session that a WorkHub delegation or a
+   * linked child still points at: WorkHub candidate and result views exclude
+   * archived Sessions, so either relationship would lose its visible target.
+   * "Live" means the relationship is still in flight — the delegation's
+   * execution has not retired (or its result has not been delivered), or the
+   * child still carries active work. A finished delegation and a finished
+   * subtask hold nothing visible hostage, so they no longer block the archive.
+   * This guards the manual archive path only — a removal retires or archives
+   * the whole relationship set under its own confirm.
+   */
+  async #assertNoLiveRelationships(family: StableFamily): Promise<void> {
+    const familyIds = new Set(family.sessionIds);
+    for (
+      let offset = 0;
+      offset < family.sessionIds.length;
+      offset += WORKHUB_ASSIGNMENT_TARGET_PAGE
+    ) {
+      const page = family.sessionIds.slice(offset, offset + WORKHUB_ASSIGNMENT_TARGET_PAGE);
+      // The ledger keeps every live delegation of a target, newest first, so a
+      // finished newest delegation must not hide an older one that is still in
+      // flight or still owes WorkHub its result.
+      const assignments = await this.#stores.readActiveWorkHubAssignmentsByTarget(page);
+      for (const assignment of assignments) {
+        // The Coordination ledger keeps a delegation row until it is superseded
+        // or stopped, so the row alone says nothing about the work: read the
+        // delegation's execution state the same way WorkHub actions do.
+        const retirement = await this.#workHub.readDelegationRetirement(
+          assignment,
+          family.admission,
+        );
+        if (retirement !== 'retired') {
+          throw new SessionRetirementBusyError(
+            `Session ${assignment.targetSessionId} has an active WorkHub delegation`,
+          );
+        }
+        if (await this.#workHub.hasUndeliveredResult(assignment, family.admission)) {
+          throw new SessionRetirementBusyError(
+            `Session ${assignment.targetSessionId} has an undelivered WorkHub result`,
+          );
+        }
+      }
+    }
+    for (const header of await this.#stores.listHeaders()) {
+      const parent = header.subagentParent;
+      if (parent === undefined || parent.graph !== undefined) continue;
+      if (!familyIds.has(parent.parentSessionId)) continue;
+      if (header.conversationCopy?.state === 'preparing' || header.isArchived) continue;
+      if (await this.#hasLiveChildWork(header.id)) {
+        throw new SessionRetirementBusyError(
+          `Session ${parent.parentSessionId} has a live linked child Session`,
+        );
+      }
+    }
+  }
+
+  /** The in-flight signals that make a linked child worth keeping visible. */
+  async #hasLiveChildWork(sessionId: string): Promise<boolean> {
+    return (
+      this.#root.readRootState(sessionId).kind !== 'idle' ||
+      this.#messages.hasLiveSessionState(sessionId) ||
+      (await this.#interactions.hasPendingSession(sessionId))
     );
   }
 

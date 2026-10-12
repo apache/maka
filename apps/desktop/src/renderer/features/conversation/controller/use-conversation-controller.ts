@@ -18,11 +18,14 @@
  */
 
 import { useLayoutEffect, useRef, useState } from 'react';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { useToast, useUiLocale, dequeueInteractionByRequestId } from '@maka/ui';
 import { useSessionCatalogController } from '../../../application/contracts/session-catalog/session-catalog-state.js';
 import { recordSessionEventStreamChange } from '../../../application/contracts/session-catalog/session-event-health.js';
 import { createTranscriptCommands } from '../model/transcript-commands.js';
+import { createContextCompactionCommands } from '../model/context-compaction.js';
 import { createConversationWorkspace } from '../model/conversation-workspace.js';
+import { renderConversationMarkdown } from '../model/conversation-markdown.js';
 import { useConversationServices } from '../services.js';
 
 /** Constructed only by ConversationProvider; mutable publication never leaves it. */
@@ -54,12 +57,23 @@ export function useConversationController() {
         });
       },
       ...createTranscriptCommands(workspace, feedback),
+      ...createContextCompactionCommands({
+        compact: (sessionId) => services.sessions.compact(sessionId),
+        isCurrentSession: (sessionId) => workspace.activeIdRef.current === sessionId,
+        feedback,
+      }),
       clearOwnedSessionState(sessionId: string) {
         events.current?.discardDisplayEvents(sessionId);
         workspace.commands.clearOwnedSessionState(sessionId);
       },
       settleAssistantStreaming: async (sessionId: string, messageId?: string) => events.current?.settleAssistantStreaming(sessionId, messageId),
       prepareSend: (sessionId: string) => readingCommands.current?.prepareSend(sessionId) ?? true,
+      /**
+       * Copy and Save's export of the published range, rendered as Markdown at
+       * invocation. Callers get the export, not the published messages.
+       */
+      renderPublishedConversation: (sessionName: string, locale: UiLocale) =>
+        renderConversationMarkdown(sessionName, workspace.commands.readMessages(), locale),
     };
   });
   return { workspace, commands, readingCommands, events, interactionHydration };

@@ -26,6 +26,7 @@ on:
     paths:
       - .github/workflows/dependency-audit.yml
       - scripts/audit-shipped-dependencies.mjs
+      - scripts/check-allow-scripts.mjs
       - scripts/third-party-closure.mjs
       - package.json
       - package-lock.json
@@ -36,6 +37,7 @@ on:
     paths:
       - .github/workflows/dependency-audit.yml
       - scripts/audit-shipped-dependencies.mjs
+      - scripts/check-allow-scripts.mjs
       - scripts/third-party-closure.mjs
       - package.json
       - package-lock.json
@@ -51,6 +53,7 @@ concurrency:
 
 jobs:
   audit:
+    if: github.event_name != 'schedule' || github.repository == 'apache/maka'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -74,6 +77,12 @@ jobs:
         # A valid moderate+ advisory still fails. Registry availability must
         # not lock every pull request out of the repository.
         run: node scripts/audit-shipped-dependencies.mjs --allow-unavailable
+
+      - name: Check the allowScripts map against the lockfile
+        # npm's install-script approval gate keys on exact name@version; a
+        # routine bump or a new optional script-carrying dependency silently
+        # stales the map. Failing here keeps the drift from landing.
+        run: node scripts/check-allow-scripts.mjs
 
       - name: Verify registry signatures
         # The full tree, not `--omit=dev`. Two reasons it has to be both:

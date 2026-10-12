@@ -155,7 +155,7 @@ const largeConnection = makeConnection({
 const alibabaTokenPlanConnections = [
   makeConnection({
     slug: 'alibaba-token-plan-cn',
-    name: 'Alibaba Token Plan（团队版）',
+    name: 'Alibaba Token Plan 中国站',
     providerType: 'alibaba-token-plan-cn',
     defaultModel: 'qwen3.8-max',
     lastTestStatus: 'verified',
@@ -656,7 +656,7 @@ function ProviderStoryFrame(props: {
           <Layout
             height="auto"
             padding={0}
-            contentWidth={920}
+            contentWidth="calc(var(--maka-reading-measure) + 2 * var(--space-6))"
             header={(
               <LayoutHeader padding={6}>
                 <div className="settingsPageHeader">

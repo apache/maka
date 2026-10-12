@@ -132,14 +132,17 @@ describe('LocalWorkspaceExecutor exec', () => {
     const executor = new LocalWorkspaceExecutor();
     const controller = new AbortController();
 
-    const resultPromise = executor.exec({
+    const result = await executor.exec({
       command: 'printf "before-abort"; sleep 5; printf "after-abort"',
       cwd,
       timeoutMs: 5_000,
       abortSignal: controller.signal,
+      // Abort once the output exists rather than after a fixed delay that
+      // must also cover process startup on a loaded runner.
+      emitOutput: (stream, chunk) => {
+        if (stream === 'stdout' && chunk.includes('before-abort')) controller.abort();
+      },
     });
-    setTimeout(() => controller.abort(), 100);
-    const result = await resultPromise;
 
     assert.strictEqual(result.exitCode, 130);
     assert.strictEqual(result.aborted, true);

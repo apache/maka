@@ -44,9 +44,9 @@ import { encodeDesktopTranscriptSnapshot } from '../desktop-transcript-ipc.js';
  */
 function useTestWorkspace() {
   const target = useAppShellSessionWorkspace({ error: () => {} });
-  const { workspace } = useConversationOwner();
+  const { workspace, commands } = useConversationOwner();
   const view = useSyncExternalStore(workspace.publication.subscribe, workspace.publication.getSnapshot);
-  return { ...target, ...workspace, messages: view.messages, publishedTranscriptRange: view.range, messageLoadPending: view.loading,
+  return { ...target, ...workspace, captureSelection: commands.captureSelection, messages: view.messages, publishedTranscriptRange: view.range, messageLoadPending: view.loading,
     get requestedSessionId() { return target.sessionCatalogController.getState().activeSessionId; } };
 }
 type Workspace = ReturnType<typeof useTestWorkspace>;

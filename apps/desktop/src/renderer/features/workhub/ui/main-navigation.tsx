@@ -20,19 +20,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSettingsNavigation } from '../../../application/contracts/settings-presentation/settings-navigation.js';
 import { useWorkHubServices } from '../services.js';
+import { useWorkHubEnablement } from '../../../application/contracts/workhub-workspace/workhub-enablement.js';
 export function WorkHubMainNavigation(props: { workbarReady: boolean; onOpenUsage(): void; onToggleWorkbar(): void; onOpenWorkHub(): void; onOpenSession(sessionId: string): void }) {
   const [pendingAction, setPendingAction] = useState<'usage' | 'toggle'>();
   const { presentation } = useWorkHubServices();
   const settingsNavigation = useSettingsNavigation();
+  const enablement = useWorkHubEnablement();
   const current = useRef(props); current.current = props;
   useEffect(() => presentation.onOpenMain((navigation) => {
     if (navigation.kind === 'workhub') {
-      current.current.onOpenWorkHub();
+      if (enablement.isEnabled()) current.current.onOpenWorkHub();
       setPendingAction(navigation.panelAction);
     }
     else if (navigation.kind === 'settings') { setPendingAction(undefined); settingsNavigation.openSettingsSection(navigation.section); }
     else { setPendingAction(undefined); current.current.onOpenSession(navigation.sessionKey); }
-  }), [presentation, settingsNavigation]);
+  }), [enablement, presentation, settingsNavigation]);
   useEffect(() => {
     if (pendingAction && props.workbarReady) {
       if (pendingAction === 'usage') current.current.onOpenUsage();

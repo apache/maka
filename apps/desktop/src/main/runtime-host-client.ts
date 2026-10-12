@@ -506,10 +506,12 @@ export class DesktopRuntimeHostClient {
   setDefaultConnectionTarget(
     expectedCatalogRevision: number,
     target: OperationInput<"connection.catalog.set-default-target">["target"],
+    enableModel?: boolean,
   ): Promise<OperationOutput<"connection.catalog.set-default-target">> {
     return this.request("connection.catalog.set-default-target", {
       expectedCatalogRevision,
       target,
+      ...(enableModel === undefined ? {} : { enableModel }),
     });
   }
 
@@ -540,8 +542,9 @@ export class DesktopRuntimeHostClient {
 
   fetchConnectionModels(
     connectionId: string,
+    preserveSelection?: boolean,
   ): Promise<OperationOutput<"connection.models.fetch">> {
-    return this.request("connection.models.fetch", { connectionId });
+    return this.request("connection.models.fetch", { connectionId, ...(preserveSelection === undefined ? {} : { preserveSelection }) });
   }
 
   testConnection(
