@@ -389,7 +389,8 @@ test('a covered aim point from a real observation stays elevated', async () => {
     { obscuringRects: [{ x: 210, y: 100, width: 20, height: 20 }] },
     { action: 'click_element', element_id: '5' },
   );
-  assert.equal((events[0]?.input as { keepElevated?: boolean }).keepElevated, true);
+  assert.ok(events[0], 'covered aim must produce a move event');
+  assert.equal((events[0].input as { keepElevated?: boolean }).keepElevated, true);
 });
 
 test('an uncovered aim point from a real observation still sinks', async () => {
@@ -397,7 +398,8 @@ test('an uncovered aim point from a real observation still sinks', async () => {
     { obscuringRects: [{ x: 0, y: 0, width: 10, height: 10 }] },
     { action: 'click_element', element_id: '5' },
   );
-  assert.equal((events[0]?.input as { keepElevated?: boolean }).keepElevated, false);
+  assert.ok(events[0], 'uncovered aim must produce a move event');
+  assert.equal((events[0].input as { keepElevated?: boolean }).keepElevated, false);
 });
 
 test('an element whose observed frame is outside its window is not aimed at', async () => {
