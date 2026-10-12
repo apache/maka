@@ -33,8 +33,31 @@ export const EVENT_WAIT_LIMITS = Object.freeze({
   evidenceRefs: 8,
   evidenceRefBytes: 1024,
   reasonBytes: 1024,
-  recordBytes: 32768,
+  cursorBytes: 2048,
+  observationAttempts: 1_000_000,
+  // Every combination of bounded fields, including observation and a cancelled
+  // priorResolution, fits below 42 KiB even with JSON escaping. Leave room for
+  // the full lifecycle so an accepted result can always retain its facts on cancel.
+  recordBytes: 48 * 1024,
 });
+
+/** Checkpoint only, never a second execution or delivery authority. */
+export interface EventWaitObservation {
+  readonly schemaVersion: 1;
+  readonly attempts: number;
+  readonly lastAttemptAt: number;
+  readonly lastObservedAt: number | null;
+  /** Earliest read, including notification-triggered reads. */
+  readonly nextObserveAt: number;
+  /** Reconciliation fallback even when no notification arrives. */
+  readonly nextPollAt: number;
+  readonly consecutiveErrors: number;
+  readonly outcome: 'checking' | 'pending' | 'unknown' | EventWaitResolution['outcome'];
+  readonly cursor: string | null;
+  readonly eventKey: string | null;
+  /** Bounded diagnostic code, not raw exceptions, logs, or credentials. */
+  readonly reason: string | null;
+}
 
 export type EventWaitJsonValue =
   | null
@@ -66,6 +89,7 @@ export interface EventWaitBase {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly deadlineAt: number;
+  readonly observation?: EventWaitObservation;
 }
 
 export interface EventWaitResolution {
@@ -279,7 +303,7 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
       'status',
       ...lifecycleKeys,
     ],
-    root.status === 'cancelled' ? ['priorResolution'] : [],
+    root.status === 'cancelled' ? ['priorResolution', 'observation'] : ['observation'],
   );
   if (r.schemaVersion !== EVENT_WAIT_SCHEMA_VERSION) invalid('schemaVersion');
   const lease = shape(r.goalControlLease, ['goalId', 'generation']);
@@ -336,6 +360,66 @@ export function decodeEventWaitRecord(value: unknown): EventWaitRecord {
     if (result < base.createdAt || result > upper) invalid('lifecycle time');
     return result;
   };
+  if (Object.hasOwn(r, 'observation')) {
+    const x = shape(r.observation, [
+      'schemaVersion',
+      'attempts',
+      'lastAttemptAt',
+      'lastObservedAt',
+      'nextObserveAt',
+      'nextPollAt',
+      'consecutiveErrors',
+      'outcome',
+      'cursor',
+      'eventKey',
+      'reason',
+    ]);
+    const attempts = integer(x.attempts, 'observation attempts', 1);
+    const consecutiveErrors = integer(x.consecutiveErrors, 'consecutive errors');
+    const lastAttemptAt = time(x.lastAttemptAt);
+    const nextObserveAt = integer(x.nextObserveAt, 'next observation');
+    const nextPollAt = integer(x.nextPollAt, 'next poll');
+    const lastObservedAt = x.lastObservedAt === null ? null : time(x.lastObservedAt);
+    if (
+      x.schemaVersion !== 1 ||
+      attempts > EVENT_WAIT_LIMITS.observationAttempts ||
+      consecutiveErrors > attempts ||
+      nextObserveAt < lastAttemptAt ||
+      nextPollAt < nextObserveAt ||
+      (x.outcome !== 'checking' && (lastObservedAt === null || lastObservedAt < lastAttemptAt)) ||
+      typeof x.outcome !== 'string' ||
+      ![
+        'checking',
+        'pending',
+        'unknown',
+        'satisfied',
+        'invalidated',
+        'source_unavailable',
+      ].includes(x.outcome)
+    )
+      invalid('observation');
+    Object.assign(base, {
+      observation: {
+        schemaVersion: 1,
+        attempts,
+        lastAttemptAt,
+        lastObservedAt,
+        nextObserveAt,
+        nextPollAt,
+        consecutiveErrors,
+        outcome: x.outcome,
+        cursor: x.cursor === null ? null : text(x.cursor, 'cursor', EVENT_WAIT_LIMITS.cursorBytes),
+        eventKey:
+          x.eventKey === null
+            ? null
+            : text(x.eventKey, 'event key', EVENT_WAIT_LIMITS.receiptKeyBytes),
+        reason:
+          x.reason === null
+            ? null
+            : text(x.reason, 'observation reason', EVENT_WAIT_LIMITS.reasonBytes),
+      },
+    });
+  }
   const resolution = (v: unknown, resolvedAt: number): EventWaitResolution => {
     const x = shape(v, ['outcome', 'receiptKey', 'observedAt', 'evidenceRefs']);
     if (
@@ -413,7 +497,49 @@ export function assertEventWaitTransition(previous: EventWaitRecord, next: Event
     if (!same(a[field], b[field])) invalid(`immutable ${field}`);
   }
   if (b.updatedAt < a.updatedAt) invalid('time regression');
+  if (a.observation) {
+    if (
+      !b.observation ||
+      b.observation.attempts < a.observation.attempts ||
+      b.observation.attempts > a.observation.attempts + 1 ||
+      b.observation.lastAttemptAt < a.observation.lastAttemptAt ||
+      (a.observation.lastObservedAt !== null &&
+        (b.observation.lastObservedAt === null ||
+          b.observation.lastObservedAt < a.observation.lastObservedAt))
+    )
+      invalid('observation regression');
+    if (
+      b.observation.attempts === a.observation.attempts &&
+      b.observation.lastAttemptAt !== a.observation.lastAttemptAt
+    )
+      invalid('attempt time without reservation');
+    if (
+      b.observation.attempts > a.observation.attempts &&
+      (b.status !== 'waiting' ||
+        b.observation.outcome !== 'checking' ||
+        b.observation.lastObservedAt !== a.observation.lastObservedAt ||
+        b.observation.cursor !== a.observation.cursor ||
+        b.observation.eventKey !== a.observation.eventKey ||
+        b.observation.consecutiveErrors !== a.observation.consecutiveErrors)
+    )
+      invalid('attempt reservation');
+  } else if (b.observation && b.observation.attempts !== 1) invalid('initial observation budget');
   if (a.status === 'waiting') {
+    if (b.status === 'waiting' && b.observation && !same(a.observation, b.observation)) {
+      if (
+        b.observation.attempts > (a.observation?.attempts ?? 0) &&
+        b.observation.outcome === 'checking'
+      )
+        return;
+      if (
+        a.observation?.outcome === 'checking' &&
+        (b.observation.outcome === 'pending' || b.observation.outcome === 'unknown')
+      )
+        return;
+      invalid('observation update without reservation');
+    }
+    if (b.status === 'resolved' && b.resolvedAt >= b.deadlineAt)
+      invalid('resolution after deadline');
     if (
       b.status === 'resolved' ||
       b.status === 'expired' ||
@@ -423,6 +549,7 @@ export function assertEventWaitTransition(previous: EventWaitRecord, next: Event
   } else if (
     a.status === 'resolved' &&
     b.status === 'cancelled' &&
+    same(a.observation, b.observation) &&
     same(b.priorResolution, { resolvedAt: a.resolvedAt, resolution: a.resolution })
   )
     return;
