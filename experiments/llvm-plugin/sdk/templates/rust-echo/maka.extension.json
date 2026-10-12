@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "rust-echo",
+  "displayName": "Rust Echo",
+  "description": "Maka experimental Rust SDK tool.",
+  "runtime": {
+    "entry": "dist/plugin.wasm",
+    "format": "wasm",
+    "abi": "maka:plugin/runtime@1"
+  }
+}

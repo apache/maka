@@ -74,15 +74,18 @@ const categoryXLicensePattern = /(?:^|[^A-Za-z])(?:A?GPL|LGPL)-?\d/i;
 
 const textSourceExtensions = new Set([
   '.astro',
+  '.c',
   '.cjs',
   '.css',
   '.csv',
   '.diff',
   '.html',
+  '.h',
   '.js',
   '.json',
   '.jsonc',
   '.jsonl',
+  '.ll',
   '.lock',
   '.md',
   '.mjs',
@@ -106,6 +109,7 @@ const textSourceExtensions = new Set([
   '.xml',
   '.yaml',
   '.yml',
+  '.zig',
 ]);
 const textSourceBasenames = new Set([
   '.git-blame-ignore-revs',

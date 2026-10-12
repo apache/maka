@@ -90,6 +90,7 @@ export const licenseLines = [
 const commentStyles = {
   block: { open: '/*', line: ' *', close: ' */', prefixPattern: /^#![^\n]*\n/ },
   slash: { linePrefix: '//' },
+  llvm: { linePrefix: ';' },
   hash: { linePrefix: '#', prefixPattern: /^#![^\n]*\n/ },
   // A doctype must open an HTML file, and YAML front matter must open a
   // Markdown file, so the header follows either one.
@@ -110,9 +111,12 @@ const commentStyles = {
  */
 const coveredExtensions = new Map([
   ['.astro', 'astro'],
+  ['.c', 'block'],
   ['.cjs', 'block'],
   ['.css', 'block'],
+  ['.h', 'block'],
   ['.html', 'html'],
+  ['.ll', 'llvm'],
   ['.js', 'block'],
   ['.jsonc', 'slash'],
   ['.md', 'html'],
@@ -128,6 +132,7 @@ const coveredExtensions = new Map([
   ['.toml', 'hash'],
   ['.ts', 'block'],
   ['.tsx', 'block'],
+  ['.zig', 'slash'],
   ['.yaml', 'hash'],
   ['.yml', 'hash'],
 ]);
@@ -227,6 +232,7 @@ export const exclusionRules = [
       'docs/astryx-surface-file-inventory.md',
       'docs/astryx-surface-file-inventory.paths',
       'docs/windows-test-inventory.md',
+      'experiments/llvm-plugin/arrow-data-analysis/Cargo.lock',
       'native/gitoxide-helper/Cargo.lock',
       'native/runtime-host-peer/Cargo.lock',
       'native/runtime-host-windows-task-launcher/Cargo.lock',

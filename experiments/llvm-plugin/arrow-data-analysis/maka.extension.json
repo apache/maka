@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "arrow-data-analysis",
+  "displayName": "Arrow Data Analysis",
+  "description": "Experimental Rust Arrow Compute analysis tool for Maka.",
+  "runtime": {
+    "entry": "dist/plugin.wasm",
+    "format": "wasm",
+    "abi": "maka:plugin/runtime@1"
+  },
+  "composition": {
+    "patch": "maka.composition.yml"
+  }
+}

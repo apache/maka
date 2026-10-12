@@ -58,6 +58,16 @@ export interface ExtensionPackageManifest {
 
 export interface ExtensionPackageRuntime {
   readonly entry: string;
+  /** Omitted means the existing trusted JavaScript loader. */
+  readonly format?: 'javascript' | 'wasm';
+  /** Versioned language-neutral ABI used by non-JavaScript runtimes. */
+  readonly abi?: 'maka:plugin/runtime@1';
+  readonly llvm?: ExtensionPackageLlvmMetadata;
+}
+
+export interface ExtensionPackageLlvmMetadata {
+  readonly major: number;
+  readonly irDigest?: string;
 }
 
 /** Prebuilt trusted Renderer bundle registered through the Client module loader. */
@@ -154,9 +164,45 @@ function decodeComposition(value: unknown): ExtensionPackageComposition | undefi
 function decodeRuntime(value: unknown): ExtensionPackageRuntime | undefined {
   if (value === undefined) return undefined;
   const runtime = record(value, 'runtime');
-  exactOptional(runtime, ['entry'], []);
+  exactOptional(runtime, ['entry'], ['format', 'abi', 'llvm']);
   if (runtime.entry === undefined) return undefined;
-  return Object.freeze({ entry: packagePath(runtime.entry, 'runtime.entry') });
+  const entry = packagePath(runtime.entry, 'runtime.entry');
+  const format = runtime.format;
+  if (format !== undefined && format !== 'javascript' && format !== 'wasm') {
+    throw invalid('Extension manifest runtime.format is invalid');
+  }
+  const abi = runtime.abi;
+  if (abi !== undefined && abi !== 'maka:plugin/runtime@1') {
+    throw invalid('Extension manifest runtime.abi is invalid');
+  }
+  if (format !== 'wasm' && (abi !== undefined || runtime.llvm !== undefined)) {
+    throw invalid('Extension manifest runtime ABI metadata requires format "wasm"');
+  }
+  let llvm: ExtensionPackageLlvmMetadata | undefined;
+  if (runtime.llvm !== undefined) {
+    const metadata = record(runtime.llvm, 'runtime.llvm');
+    exactOptional(metadata, ['major'], ['irDigest']);
+    const major = typeof metadata.major === 'number' ? metadata.major : NaN;
+    if (!Number.isSafeInteger(major) || major < 1 || major > 99) {
+      throw invalid('Extension manifest runtime.llvm.major is invalid');
+    }
+    if (
+      metadata.irDigest !== undefined &&
+      (typeof metadata.irDigest !== 'string' || !/^sha256-[a-f0-9]{64}$/u.test(metadata.irDigest))
+    ) {
+      throw invalid('Extension manifest runtime.llvm.irDigest is invalid');
+    }
+    llvm = Object.freeze({
+      major,
+      ...(metadata.irDigest === undefined ? {} : { irDigest: metadata.irDigest }),
+    });
+  }
+  return Object.freeze({
+    entry,
+    ...(format === undefined ? {} : { format }),
+    ...(abi === undefined ? {} : { abi }),
+    ...(llvm === undefined ? {} : { llvm }),
+  });
 }
 
 function decodeClient(value: unknown): ExtensionPackageClient | undefined {

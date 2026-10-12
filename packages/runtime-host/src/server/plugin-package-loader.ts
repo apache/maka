@@ -31,6 +31,11 @@ import {
   PluginPackageStore,
   PluginPackageStoreError,
 } from './plugin-package-store.js';
+import {
+  WASM_PLUGIN_ABI,
+  WasmPluginRuntime,
+  createWasmPluginPackage,
+} from './wasm-plugin-runtime.js';
 
 const GENERATION_DIRECTORY = 'plugin-generations-v1';
 const GENERATION_PATH = Symbol('maka.pluginGenerationPath');
@@ -69,6 +74,7 @@ export class PluginPackageLoaderError extends Error {
 export class TrustedPluginPackageLoader {
   readonly #generations: string;
   readonly #owned = new Set<string>();
+  readonly #wasmRuntimes = new Map<string, WasmPluginRuntime>();
 
   constructor(
     controlDirectory: string,
@@ -89,6 +95,7 @@ export class TrustedPluginPackageLoader {
 
   async loadInstalled(installed: InstalledPluginPackage): Promise<MakaPluginPackage> {
     const generation = join(this.#generations, `${installed.extensionId}-${randomUUID()}`);
+    let wasmRuntime: WasmPluginRuntime | undefined;
     try {
       await mkdir(this.#generations, { recursive: true, mode: 0o700 });
       await cp(installed.root, generation, {
@@ -98,7 +105,14 @@ export class TrustedPluginPackageLoader {
         preserveTimestamps: false,
       });
       let pkg: MakaPluginPackage;
-      if (installed.entry) {
+      if (installed.entry && installed.manifest.runtime?.format === 'wasm') {
+        if ((installed.manifest.runtime.abi ?? WASM_PLUGIN_ABI) !== WASM_PLUGIN_ABI) {
+          throw invalid(`Unsupported Wasm Plugin ABI for ${installed.extensionId}`);
+        }
+        const entry = join(generation, relative(installed.root, installed.entry));
+        wasmRuntime = await WasmPluginRuntime.load(entry, installed.extensionId);
+        pkg = createWasmPluginPackage(wasmRuntime);
+      } else if (installed.entry) {
         const entry = join(generation, relative(installed.root, installed.entry));
         const imported = (await import(pathToFileURL(entry).href)) as Record<string, unknown>;
         const candidate = imported.default ?? imported.plugin;
@@ -134,8 +148,10 @@ export class TrustedPluginPackageLoader {
       }
       const owned = freezeGeneration(pkg, generation, clientBundle);
       this.#owned.add(generation);
+      if (wasmRuntime) this.#wasmRuntimes.set(generation, wasmRuntime);
       return owned;
     } catch (error) {
+      await wasmRuntime?.close().catch(() => undefined);
       await rm(generation, { recursive: true, force: true }).catch(() => undefined);
       throw translate(error);
     }
@@ -157,6 +173,9 @@ export class TrustedPluginPackageLoader {
       GENERATION_PATH
     ];
     if (!generation || !this.#owned.delete(generation)) return;
+    const wasmRuntime = this.#wasmRuntimes.get(generation);
+    this.#wasmRuntimes.delete(generation);
+    await wasmRuntime?.close();
     await rm(generation, { recursive: true, force: true });
   }
 
@@ -202,6 +221,8 @@ export class TrustedPluginPackageLoader {
   }
 
   async close(): Promise<void> {
+    await Promise.all([...this.#wasmRuntimes.values()].map((runtime) => runtime.close()));
+    this.#wasmRuntimes.clear();
     this.#owned.clear();
     await rm(this.#generations, { recursive: true, force: true });
   }

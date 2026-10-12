@@ -52,6 +52,7 @@ export {
   type ExtensionPackageDependency,
   type ExtensionPackageComposition,
   type ExtensionPackageClient,
+  type ExtensionPackageLlvmMetadata,
   type ExtensionPackageManifest,
   type ExtensionPackageRuntime,
 } from './extension-package-manifest.js';
@@ -65,3 +66,10 @@ export {
   type HostPluginPlatformFailure,
 } from './plugin-platform.js';
 export { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';
+export {
+  WASM_PLUGIN_ABI,
+  WasmPluginRuntime,
+  createWasmPluginPackage,
+  type WasmPluginManifest,
+  type WasmPluginToolManifest,
+} from './wasm-plugin-runtime.js';

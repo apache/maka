@@ -205,6 +205,25 @@ test('a real package publishes an executable Tool and removes it on uninstall', 
   }
 });
 
+test('Plugin packages do not impose a file-count cap', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-files-'));
+  try {
+    const source = await writeFixturePackage(root, 'many-files-package', 'many-files');
+    await mkdir(join(source, 'payload'), { recursive: true });
+    await Promise.all(
+      Array.from({ length: 300 }, (_, index) =>
+        writeFile(join(source, 'payload', `${index}.txt`), `payload-${index}`),
+      ),
+    );
+    const platform = createPlatform(join(root, 'control'));
+    await platform.recover();
+    assert.equal((await platform.installPackage(source)).convergence, 'converged');
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a real package reaches every scoped ctx service through one Agent Tool invocation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-plugin-context-services-e2e-'));
   const pluginRoot = new Context();

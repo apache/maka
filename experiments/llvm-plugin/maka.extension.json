@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "llvm-echo",
+  "displayName": "LLVM Echo",
+  "description": "Minimal non-JavaScript Maka tool plugin.",
+  "runtime": {
+    "entry": "dist/plugin.wasm",
+    "format": "wasm",
+    "abi": "maka:plugin/runtime@1",
+    "llvm": { "major": 18 }
+  }
+}

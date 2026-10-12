@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "zig-echo",
+  "displayName": "Zig Echo",
+  "description": "Maka experimental Zig ABI tool.",
+  "runtime": {
+    "entry": "dist/plugin.wasm",
+    "format": "wasm",
+    "abi": "maka:plugin/runtime@1"
+  }
+}

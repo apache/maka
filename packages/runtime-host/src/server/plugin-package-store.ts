@@ -35,7 +35,6 @@ import {
 import { PLUGIN_CLIENT_BUNDLE_MAX_BYTES } from '../protocol/plugin-platform.js';
 
 const STORE_DIRECTORY = 'plugin-packages-v2';
-const MAX_FILES = 256;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_PACKAGE_BYTES = 16 * 1024 * 1024;
 
@@ -505,7 +504,7 @@ async function readPackage(rootValue: string): Promise<readonly PackageFile[]> {
   }
   const paths: string[] = [];
   await collect(root, '', paths);
-  if (paths.length === 0 || paths.length > MAX_FILES) {
+  if (paths.length === 0) {
     throw invalid('Plugin package file count is invalid');
   }
   let total = 0;
@@ -539,7 +538,6 @@ async function collect(root: string, directory: string, paths: string[]): Promis
     if (entry.isDirectory()) await collect(root, path, paths);
     else if (entry.isFile()) paths.push(path);
     else throw invalid(`Plugin package contains an unsupported entry: ${path}`);
-    if (paths.length > MAX_FILES) throw invalid('Plugin package contains too many files');
   }
 }
 

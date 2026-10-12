@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "c-echo",
+  "displayName": "C Echo",
+  "description": "Maka experimental C ABI tool.",
+  "runtime": {
+    "entry": "dist/plugin.wasm",
+    "format": "wasm",
+    "abi": "maka:plugin/runtime@1"
+  }
+}
