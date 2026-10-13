@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -144,6 +144,29 @@ describe('maka session-export-markdown', () => {
     const workspaceRoot = await makeWorkspace();
     const destination = join(workspaceRoot, 'absent.md');
 
+    // An initialized-but-empty workspace fails closed before the session
+    // lookup: the export refuses to create the database it would read.
+    const emptyExit = await runMakaSessionExportMarkdownCli([
+      '--workspace-root',
+      workspaceRoot,
+      '--session',
+      'does-not-exist',
+      '--out',
+      destination,
+    ]);
+    assert.equal(emptyExit, 1);
+
+    // With a current database in place the missing session surfaces itself.
+    const store = createSessionStore(workspaceRoot);
+    await store.create({
+      cwd: workspaceRoot,
+      llmConnectionSlug: 'test-connection',
+      model: 'test-model',
+      permissionMode: 'ask',
+      name: 'Other',
+    });
+    await store.close?.();
+
     const exit = await runMakaSessionExportMarkdownCli([
       '--workspace-root',
       workspaceRoot,
@@ -161,6 +184,11 @@ describe('maka session-export-markdown', () => {
       ),
       'absent',
     );
+  });
+
+  test('prints usage to stdout and exits 0 for --help', async () => {
+    const exit = await runMakaSessionExportMarkdownCli(['--help']);
+    assert.equal(exit, 0);
   });
 
   test('rejects missing arguments with exit code 1', async () => {

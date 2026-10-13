@@ -132,7 +132,8 @@ export type ExportSessionTranscriptMarkdownToFileResult =
       reason:
         | { kind: 'workspace_not_found'; workspaceRoot: string }
         | { kind: 'session_not_found' }
-        | { kind: 'schema_unsupported' };
+        | { kind: 'schema_unsupported' }
+        | { kind: 'destination_exists' };
     };
 
 /**
@@ -163,8 +164,9 @@ export async function exportSessionTranscriptMarkdownToFile(
     }
     throw error;
   }
-
-  const handle = openSync(input.outPath, 'w');
+  // Declared at function scope so the finally can close it no matter where the
+  // export stops.
+  let handle: number | undefined;
   try {
     let sessionName: string;
     try {
@@ -172,10 +174,28 @@ export async function exportSessionTranscriptMarkdownToFile(
     } catch {
       return { ok: false, outPath: input.outPath, reason: { kind: 'session_not_found' } };
     }
+    const mainMessages = await readSessionMessages(input.workspaceRoot, input.sessionId, () =>
+      store.readMessagesSnapshot(input.sessionId),
+    );
+
+    // Exclusive creation, aligned with the bundle exporter: an existing path
+    // is never overwritten, and opening at write time closes the stat/open
+    // window the friendly precheck cannot (#6036 review). Every failure that
+    // can be known before writing happens above — a failed export never
+    // leaves an empty file behind.
+    try {
+      handle = openSync(input.outPath, 'wx');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return { ok: false, outPath: input.outPath, reason: { kind: 'destination_exists' } };
+      }
+      throw error;
+    }
 
     let bytes = 0;
+    const openHandle = handle;
     const emit = (chunk: string): void => {
-      bytes += writeSync(handle, chunk);
+      bytes += writeSync(openHandle, chunk);
     };
     const renderOptions = {
       includeThinking: input.includeThinking,
@@ -185,9 +205,6 @@ export async function exportSessionTranscriptMarkdownToFile(
       emit,
     };
 
-    const mainMessages = await readSessionMessages(input.workspaceRoot, input.sessionId, () =>
-      store.readMessagesSnapshot(input.sessionId),
-    );
     renderConversationMarkdown(sessionName, mainMessages, {
       copy: {
         you: 'You',
@@ -233,7 +250,7 @@ export async function exportSessionTranscriptMarkdownToFile(
       subagentSessions,
     };
   } finally {
-    closeSync(handle);
+    if (handle !== undefined) closeSync(handle);
     await store.close?.();
   }
 }
