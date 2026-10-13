@@ -905,6 +905,41 @@ test('the Host Goal evaluator receives tool results and human card answers from 
       assert.match(row, new RegExp(value));
     }
   });
+
+  await t.test(
+    'decorated canonical credential labels protect JSON and text tool echoes',
+    async (t) => {
+      const secret = 'quiet-answer-4829';
+      for (const label of ['Credentials', 'SSH key', 'API token', 'Bearer token']) {
+        for (const content of [
+          { kind: 'json', value: { action: 'accept', values: { value: secret } } },
+          { kind: 'text', text: `Received the submitted value: ${secret}` },
+        ] satisfies Extract<StoredMessage, { type: 'tool_result' }>['content'][]) {
+          await t.test(`${label}, ${content.kind}`, async () => {
+            const context = await evaluate(
+              'SyntheticForm',
+              { operation: 'authenticate' },
+              result(content),
+              {
+                turnId: 'goal-tool-context-turn',
+                toolUseId: 'call',
+                requestId: 'decorated-credential-form-request',
+                action: 'accept',
+                message: 'Enter the account details',
+                fields: [{ name: 'value', label: `${label} (required)` }],
+                values: { value: secret },
+              },
+            );
+            assert.match(context, /\[tool\]:/);
+            assert.match(context, /\[form answer\]:/);
+            assert.match(context, /"outcome":"success"/);
+            assert.match(context, /\[redacted\]/);
+            assert.doesNotMatch(context, new RegExp(secret));
+          });
+        }
+      }
+    },
+  );
 });
 
 test('restart settles the durable current Goal execution through Hosted Execution authority', async () => {

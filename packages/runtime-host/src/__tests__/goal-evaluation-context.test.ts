@@ -404,6 +404,95 @@ test('credential form metadata prevents the matching tool result from echoing it
   }
 });
 
+test('required decorators preserve credential labels when protecting answers and tool echoes', async (t) => {
+  const secret = 'quiet-answer-4829';
+  for (const label of ['Credentials', 'SSH key', 'API token', 'Bearer token']) {
+    for (const decoratedLabel of [label, `${label} (required)`]) {
+      for (const content of [
+        { kind: 'json', value: { values: { value: secret } } },
+        { kind: 'text', text: `Received the submitted value: ${secret}` },
+      ] satisfies ToolResultContent[]) {
+        await t.test(`${decoratedLabel}, ${content.kind}`, () => {
+          const answer: GoalFormAnswer = {
+            ...formAnswer(0),
+            fields: [{ name: 'value', label: decoratedLabel }],
+            values: { value: secret },
+            selectedOptions: { value: [{ value: secret, label: `Saved ${secret}` }] },
+          };
+          const context = buildGoalEvaluationContext(
+            [call(answer.toolUseId), result(answer.toolUseId, content)],
+            [answer],
+          );
+          const formRow = context.split('\n').find((row) => row.startsWith('[form answer]:'));
+          assert.ok(formRow);
+          assert.match(formRow, /\[redacted\]/);
+          assert.match(toolRows(context)[0]!, /\[omitted|\[unavailable/);
+          assert.match(context, /"outcome":"success"/);
+          assert.doesNotMatch(context, new RegExp(secret));
+        });
+      }
+    }
+  }
+});
+
+test('ordinary decorated form labels keep their answers and tool echoes visible', async (t) => {
+  const value = 'ordinary-human-choice';
+  for (const label of ['Token budget', 'Keyboard shortcut', 'Project key', 'primary-key']) {
+    await t.test(label, () => {
+      const answer: GoalFormAnswer = {
+        ...formAnswer(0),
+        fields: [{ name: 'value', label: `${label} (required)` }],
+        values: { value },
+      };
+      const context = buildGoalEvaluationContext(
+        [
+          call(answer.toolUseId),
+          result(answer.toolUseId, { kind: 'json', value: { values: { value } } }),
+        ],
+        [answer],
+      );
+      for (const prefix of ['[tool]:', '[form answer]:']) {
+        const row = context.split('\n').find((entry) => entry.startsWith(prefix));
+        assert.ok(row);
+        assert.match(row, new RegExp(value));
+      }
+    });
+  }
+});
+
+test('UI punctuation and fullwidth labels preserve canonical credential meanings', async (t) => {
+  const secret = 'quiet-answer-4829';
+  for (const label of [
+    'Credentials[required]',
+    '*SSH key:',
+    'API token—required',
+    'Bearer token*',
+    'Ｃｒｅｄｅｎｔｉａｌｓ（ｒｅｑｕｉｒｅｄ）',
+    'service_account_key [optional]',
+    'SSH key {optional}',
+    'Credentials - required',
+  ]) {
+    await t.test(label, () => {
+      const answer: GoalFormAnswer = {
+        ...formAnswer(0),
+        fields: [{ name: 'value', label }],
+        values: { value: secret },
+        selectedOptions: { value: [{ value: secret, label: `Saved ${secret}` }] },
+      };
+      const context = buildGoalEvaluationContext(
+        [
+          call(answer.toolUseId),
+          result(answer.toolUseId, { kind: 'text', text: `Received ${secret}` }),
+        ],
+        [answer],
+      );
+      assert.match(context, /\[redacted\]/);
+      assert.match(toolRows(context)[0]!, /\[omitted|\[unavailable/);
+      assert.doesNotMatch(context, new RegExp(secret));
+    });
+  }
+});
+
 test('ordinary form answers keep their matching tool result visible', () => {
   const value = 'ordinary-deployment-target';
   const answer = { ...formAnswer(0), values: { target: value } };
@@ -542,6 +631,29 @@ test('AskUserQuestion credential answers are redacted while an ordinary chosen a
   assert.doesNotMatch(context, /plain-user-password/);
   assert.match(context, /"question":"Password \(required\)","answer":"\[redacted\]"/);
   assert.match(context, /"question":"Publish\?","answer":"No"/);
+});
+
+test('AskUserQuestion uses decorated credential meanings without hiding ordinary answers', () => {
+  const credentials = ['Credentials', 'SSH key', 'API token', 'Bearer token'].map(
+    (label, index) => ({ question: `${label} (required)`, answer: `quiet-answer-${index}` }),
+  );
+  const ordinary = [
+    { question: 'Token budget (required)', answer: '1200' },
+    { question: 'primary-key (required)', answer: 'record-id' },
+  ];
+  const context = buildGoalEvaluationContext([
+    {
+      ...call('question'),
+      toolName: 'AskUserQuestion',
+      args: { questions: [...credentials, ...ordinary].map(({ question }) => ({ question })) },
+    },
+    result('question', { kind: 'json', value: { answers: [...credentials, ...ordinary] } }),
+  ]);
+  assert.doesNotMatch(context, /quiet-answer-[0-3]/);
+  for (const { question } of credentials) {
+    assert.ok(context.includes(JSON.stringify({ question, answer: '[redacted]' })));
+  }
+  for (const entry of ordinary) assert.ok(context.includes(JSON.stringify(entry)));
 });
 
 test('a stale form answer outside both recent prose and tool Turns is not reused as current evidence', () => {

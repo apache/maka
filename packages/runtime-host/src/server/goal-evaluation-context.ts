@@ -39,8 +39,8 @@ const RESULT_LIMIT: GoalTextLimit = { codeUnits: 800, utf8Bytes: 2_400 };
 const EVIDENCE_GAP = ' … [truncated] … ';
 const OMITTED = '[omitted]';
 const UNAVAILABLE = '[unavailable]';
-// Labels are prose, so a decoration such as "Password (required)" must not
-// defeat the key-name heuristic used for structured credential fields.
+// Free-form questions need credential wording detection in addition to the
+// canonical key-name heuristic. UI label decorations are handled below.
 const SENSITIVE_FORM_LABEL =
   /\b(?:password|passwd|secret|credential|authorization|api[\s_-]*key|private[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token)\b/i;
 const OPAQUE_KEYS = new Set([
@@ -299,7 +299,18 @@ function projectResult(content: ToolResultContent, toolName: string | undefined)
 }
 
 function isCredentialLabel(label: string): boolean {
-  return isSensitiveKey(label) || SENSITIVE_FORM_LABEL.test(label);
+  // Keep the core credential vocabulary, including qualified keys. Required
+  // markers and other UI decorations must not become the key's final segment.
+  // Preserve internal hyphens/whitespace so ordinary phrases such as
+  // "primary-key" or "Token budget" do not turn into standalone secret keys.
+  const normalized = label.normalize('NFKC');
+  return (
+    isSensitiveKey(normalized) ||
+    normalized
+      .split(/[()[\]{}*:]+|[–—]|(?<=\s)-(?=\s)/u)
+      .some((part) => isSensitiveKey(part.trim())) ||
+    SENSITIVE_FORM_LABEL.test(normalized)
+  );
 }
 
 function safeJsonExcerpt(value: unknown, limit: GoalTextLimit): string {
